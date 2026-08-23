@@ -207,30 +207,16 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
 });
 
 /**
- * The fastest of `runs` samples of EACH of two workloads, in milliseconds, measured
+ * The fastest process-CPU cost of `runs` samples of each workload, in milliseconds, measured
  * alternately.
  *
- * The MINIMUM rather than a mean, because the noise being rejected is one-sided: the scheduler
- * can steal a sample and inflate it without bound, but nothing makes the work finish faster
- * than it is. On a contended machine the mean tracks the contention and the minimum tracks the
- * algorithm, and the algorithm is what is under test.
+ * Process CPU time excludes time when another test or process deschedules this worker. That is
+ * the exact noise a wall-clock ratio mistook for matcher growth in the full review run. The
+ * minimum still rejects one-sided in-process noise such as garbage collection and warmup.
  *
- * ALTERNATELY, rather than all of one and then all of the other, because the caller divides
- * these two numbers and contention does not divide out of a ratio unless both sides met the
- * same contention. Run in blocks, they do not: the larger workload occupies a longer window,
- * so it is likelier to be interrupted in EVERY one of its samples while the smaller one still
- * catches a clean slot between interruptions. That bias is systematic and it only ever points
- * one way - it inflates the numerator - which is exactly how a linear matcher reported 9.5x
- * growth (155ms -> 1470ms, against ~80ms and ~300ms idle) on a box running the whole suite
- * beside a stuck load generator. Interleaving costs nothing and puts both sides in the same
- * weather.
- *
- * `runs` carries the rest of the load: a minimum is only as good as its cleanest sample, and
- * the longer workload needs an uninterrupted window four times as wide to produce one. More
- * samples is more chances at that window, which is why the caller pays for twelve rather than
- * the five that were enough on an idle machine. Interleaved twelve held 8/8 under eight
- * competing spinners; interleaved five still lost one in six there, and blocked five lost
- * one in one.
+ * Alternating keeps runtime warmup and local CPU effects distributed across both sizes. The
+ * ratio then describes work the regex engine actually performed, not how long the test waited
+ * to be scheduled.
  */
 function fastestPairMs(
   runs: number,
@@ -240,12 +226,14 @@ function fastestPairMs(
   let bestFirst = Infinity;
   let bestSecond = Infinity;
   for (let index = 0; index < runs; index += 1) {
-    const startedFirst = performance.now();
+    const startedFirst = process.cpuUsage();
     first();
-    bestFirst = Math.min(bestFirst, performance.now() - startedFirst);
-    const startedSecond = performance.now();
+    const firstUsage = process.cpuUsage(startedFirst);
+    bestFirst = Math.min(bestFirst, (firstUsage.user + firstUsage.system) / 1000);
+    const startedSecond = process.cpuUsage();
     second();
-    bestSecond = Math.min(bestSecond, performance.now() - startedSecond);
+    const secondUsage = process.cpuUsage(startedSecond);
+    bestSecond = Math.min(bestSecond, (secondUsage.user + secondUsage.system) / 1000);
   }
   return { first: bestFirst, second: bestSecond };
 }
@@ -258,35 +246,24 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // validates only as `z.string().min(1)` and stores verbatim, so a session reporting a long
   // enough status could stall the loop that answers every other session.
   //
-  // Asserted as GROWTH rather than against a deadline, because the deadline version was a real
-  // flake: it failed at 3324ms against its 2s ceiling on a machine running three other test
-  // suites. That ceiling described itself as "two seconds against a measured ~80ms", but 60k
-  // characters actually cost ~300ms here, so the true headroom was about 6.6x and contention
-  // ate it. A wall-clock ceiling cannot tell a quadratic matcher from a busy box; a ratio can,
-  // because a uniform slowdown scales both terms and cancels. Four times the input costs about
-  // four times as long if the matcher is linear and about sixteen if it is quadratic - measured
-  // here across eight trials the ratio sat between 3.4 and 4.5, so 8 splits the two cleanly.
-  //
-  // The threshold survived contact with contention; the MEASUREMENT did not. Sampling the two
-  // sizes in blocks let the larger one absorb more interruptions than the smaller, which
-  // inflates this ratio without anything about the matcher changing - see `fastestPairMs`,
-  // which now interleaves them. Neither bound below moved: a quadratic matcher still fails
-  // both, and that is the point of leaving them where the measurements put them.
+  // Asserted as CPU GROWTH rather than a wall-clock deadline. Four times the input costs about
+  // four times as much engine work if the matcher is linear and about sixteen if it is
+  // quadratic. Process CPU time keeps scheduler contention out of both terms.
   const { first: small, second: large } = fastestPairMs(
-    12,
+    5,
     () => stripPrefsMarkers("-".repeat(15_000)),
     () => stripPrefsMarkers("-".repeat(60_000)),
   );
   const growth = large / small;
   assert.ok(
     growth < 8,
-    `4x the input cost ${growth.toFixed(1)}x the time ` +
-      `(${small.toFixed(0)}ms -> ${large.toFixed(0)}ms) - quadratic?`,
+    `4x the input cost ${growth.toFixed(1)}x the CPU time ` +
+      `(${small.toFixed(0)}ms CPU -> ${large.toFixed(0)}ms CPU) - quadratic?`,
   );
   // The backstop a ratio cannot provide: something uniformly pathological, or an outright
   // hang, keeps its shape while growing. An order of magnitude above the ~300ms this really
   // costs, and still below the ~12s the old quadratic pattern would reach at this size.
-  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms - stalled?`);
+  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms CPU - stalled?`);
 
   // And bounding the run did not cost coverage: a rule longer than the bound still reads as a
   // frame, because the flank swallows whatever the quantifier does not.

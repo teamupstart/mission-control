@@ -29,6 +29,8 @@ import type {
   ForemanLeaseResult,
   ForemanPlannerControl,
   PromptedCompletionDisposition,
+  PromptedRecoveryClaim,
+  PromptedRecoveryDelivery,
   RecordEpisode,
   SetNote,
   SetWorkItemState,
@@ -1402,6 +1404,30 @@ export class ForemanClient implements ForemanActions {
       ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
     });
     if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
+  }
+
+  /** Claim one exact daemon-revalidated pre-PR recovery attempt before injection. */
+  async claimShipRecovery(sessionId: string, claim: PromptedRecoveryClaim): Promise<SessionQueue> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/ship-recovery/claim`,
+      claim,
+    );
+    if (!res.ok) throw new Error(`claimShipRecovery ${sessionId} -> ${res.status}`);
+    return (await res.json()) as SessionQueue;
+  }
+
+  /** Confirm delivery or release only a positively undelivered exact recovery claim. */
+  async resolveShipRecoveryDelivery(
+    sessionId: string,
+    delivery: PromptedRecoveryDelivery,
+  ): Promise<boolean> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/ship-recovery/delivery`,
+      delivery,
+    ).catch(() => null);
+    return Boolean(res?.ok);
   }
 
   /** The full reconciled intent, whose objective and raw prompt the card summary omits. */

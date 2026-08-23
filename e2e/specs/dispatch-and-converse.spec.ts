@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,6 +10,7 @@ import { recordsIn } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { settled } from "../fixtures/settle.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 
 /**
  * The path this suite exists to cover: a person dispatches an agent from the dashboard and
@@ -518,6 +520,10 @@ test("Foreman completion safeguards default on and persist independently", async
   await expect(artifacts).toBeVisible();
   await expect(scout).toBeChecked();
   await expect(artifacts).toBeChecked();
+  const recoveryWait = dashboard.getByRole("spinbutton", {
+    name: "Quiet minutes before first recovery",
+  });
+  await expect(recoveryWait).toHaveValue("20");
 
   await artifacts.uncheck();
   await expect.poll(async () => {
@@ -530,11 +536,18 @@ test("Foreman completion safeguards default on and persist independently", async
       artifacts: config.skipReviewArtifactWrapup,
     };
   }).toEqual({ scout: true, artifacts: false });
+  await recoveryWait.fill("37");
+  await recoveryWait.blur();
+  await expect.poll(async () => {
+    const config = await api<{ shipRecoveryMinutes: number }>(daemon, "/api/foreman/config");
+    return config.shipRecoveryMinutes;
+  }).toBe(37);
 
   await dashboard.reload();
   await dashboard.getByRole("tab", { name: "Safety" }).click();
   await expect(scout).toBeChecked();
   await expect(artifacts).not.toBeChecked();
+  await expect(recoveryWait).toHaveValue("37");
 });
 
 test("Foreman removes automatic review and separates CI follow-through from review comments", async ({
@@ -546,6 +559,7 @@ test("Foreman removes automatic review and separates CI follow-through from revi
     wrapup: "ask",
     trackReviewFeedback: true,
     trackCiFailures: true,
+    keepShipTasksMoving: true,
   }, "PUT");
   await dashboard.goto(daemon.baseURL);
 
@@ -560,6 +574,8 @@ test("Foreman removes automatic review and separates CI follow-through from revi
     name: "Keep sessions on track with review comments",
   });
   const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
+  const recovery = popover.getByRole("checkbox", { name: "Keep pre-PR ship tasks moving" });
+  await expect(recovery).toBeChecked();
   await expect(comments).toBeChecked();
   await expect(ci).toBeChecked();
   await expect(popover).toContainText(
@@ -568,17 +584,20 @@ test("Foreman removes automatic review and separates CI follow-through from revi
 
   await captureForemanEvidence(popover);
 
+  await recovery.uncheck();
   await ci.uncheck();
   await expect.poll(async () => {
     const config = await api<{
       trackReviewFeedback: boolean;
       trackCiFailures: boolean;
+      keepShipTasksMoving: boolean;
     }>(daemon, "/api/foreman/config");
     return {
       comments: config.trackReviewFeedback,
       ci: config.trackCiFailures,
+      recovery: config.keepShipTasksMoving,
     };
-  }).toEqual({ comments: true, ci: false });
+  }).toEqual({ comments: true, ci: false, recovery: false });
 
   await dashboard.reload();
   await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
@@ -589,6 +608,237 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   await expect(reopened.getByRole("checkbox", {
     name: "Keep sessions on track with CI",
   })).not.toBeChecked();
+  await expect(reopened.getByRole("checkbox", {
+    name: "Keep pre-PR ship tasks moving",
+  })).not.toBeChecked();
+});
+
+test("Foreman recovers one settled pre-PR ship turn, records it, and stops at the open PR", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  await dispatch(dashboard, daemon, {
+    task: "Implement the retry path and leave shipping to Mission Control",
+    kind: "ship",
+  });
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toBeVisible();
+
+  type RecoverySession = {
+    id: string;
+    agent: string;
+    agentSessionId: string | null;
+    cwd: string;
+    repoRoot: string | null;
+    state: string;
+    goal: {
+      relationship: string | null;
+      promptRevision: number;
+      resolvedPromptRevision: number;
+    } | null;
+    workCycle: {
+      logicalKey: string;
+      generation: number;
+      active: boolean;
+      completedAt: number | null;
+    } | null;
+  };
+  let session: RecoverySession | null = null;
+  await expect.poll(async () => {
+    session = (await api<RecoverySession[]>(daemon, "/api/sessions"))[0] ?? null;
+    return session?.agentSessionId ?? null;
+  }, { timeout: 30_000 }).not.toBeNull();
+  if (!session?.agentSessionId) throw new Error("the dispatched ship session did not bind");
+  const logicalKey = session.agentSessionId;
+
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const hook = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session.agent,
+      sessionId: session.agentSessionId,
+      cwd: session.cwd,
+      env: {},
+    }),
+  });
+  expect(hook.status, await hook.clone().text()).toBe(204);
+
+  let generation = 0;
+  await expect.poll(async () => {
+    const current = (await api<RecoverySession[]>(daemon, "/api/sessions"))
+      .find((candidate) => candidate.agentSessionId === logicalKey) ?? null;
+    if (current?.workCycle && !current.workCycle.active && current.workCycle.completedAt !== null) {
+      session = current;
+      generation = current.workCycle.generation;
+    }
+    return current ? {
+      state: current.state,
+      relationship: current.goal?.relationship ?? null,
+      revisions: current.goal
+        ? [current.goal.resolvedPromptRevision, current.goal.promptRevision]
+        : null,
+      cycle: current.workCycle
+        ? [
+            current.workCycle.logicalKey === logicalKey,
+            current.workCycle.generation,
+            current.workCycle.active,
+            current.workCycle.completedAt !== null,
+          ]
+        : null,
+    } : null;
+  }, {
+    message: "the exact ship session should have a settled intent and completed work cycle",
+    timeout: 30_000,
+  }).toEqual({
+    state: "idle",
+    relationship: "initial",
+    revisions: [1, 1],
+    cycle: [true, expect.any(Number), false, true],
+  });
+  if (!session) throw new Error("the completed ship session disappeared");
+
+  const goal = await api<{
+    objective: string;
+    objectiveVersion: number;
+    promptRevision: number;
+  }>(daemon, `/api/sessions/${session.id}/goal`);
+  const consumed = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/queue/wrapup/prompted`, {
+    method: "POST",
+    headers: { host: new URL(daemon.baseURL).host, "content-type": "application/json" },
+    body: JSON.stringify({
+      logicalKey,
+      generation,
+      expectedIntent: {
+        objective: goal.objective,
+        objectiveVersion: goal.objectiveVersion,
+        promptRevision: goal.promptRevision,
+        episodeKey: `intent:${goal.objectiveVersion}:${goal.promptRevision}`,
+      },
+      decision: {
+        outcome: "held",
+        summary: "The built recovery path still needs focused browser coverage.",
+        gaps: [{
+          id: "browser-recovery",
+          path: "e2e/specs/dispatch-and-converse.spec.ts",
+          detail: "Cover the built recovery path.",
+        }],
+      },
+    }),
+  });
+  expect(consumed.status, await consumed.clone().text()).toBe(200);
+  await api(daemon, "/api/foreman/config", {
+    enabled: true,
+    mode: "live",
+    repoAllowlist: [session.repoRoot ?? session.cwd],
+    wrapupTriggers: [],
+    keepShipTasksMoving: true,
+    shipRecoveryMinutes: 1,
+  }, "PUT");
+
+  // The minimum is a real operator minute. Age the actual session rather than adding a
+  // test-only clock or weakening the production threshold.
+  await dashboard.waitForTimeout(61_000);
+  await daemon.startForeman();
+  await expect.poll(async () => {
+    const queue = await api<{
+      promptedRecovery?: { reason: string; attempt: number; lastDelivery: string } | null;
+    }>(daemon, `/api/sessions/${session!.id}/queue`);
+    return queue.promptedRecovery ?? null;
+  }, {
+    message: `Foreman did not deliver the held-gap recovery:\n${daemon.readLog()}`,
+    timeout: 40_000,
+  }).toMatchObject({ reason: "held_gaps", attempt: 1, lastDelivery: "delivered" });
+
+  await expect(detail.getByText(/Mock reply to: Foreman's completion review found blocking work/))
+    .toBeVisible({ timeout: 30_000 });
+  await expect(detail.getByRole("button", { name: /Foreman · 1/ })).toBeVisible();
+  await detail.getByRole("button", { name: /Foreman · 1/ }).click();
+  await detail.getByRole("button", {
+    name: /Keep managed ship task moving before its first pull request/,
+  }).click();
+  const recoveryRecord = detail.getByRole("complementary");
+  await expect(recoveryRecord.getByText("pre-PR ship recovery", { exact: true })).toBeVisible();
+  await expect(recoveryRecord.getByText(/held completion gaps; attempt 1\/3; delivered/))
+    .toBeVisible();
+
+  const head = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: session.cwd,
+    encoding: "utf8",
+  }).trim();
+  writeGhPullRequests(daemon.home, [{
+    cwd: session.cwd,
+    url: "https://github.com/acme/mission-e2e/pull/27",
+    number: 27,
+    state: "OPEN",
+    createdAt: new Date().toISOString(),
+    mergedAt: null,
+    headRefOid: head,
+  }]);
+  const prHook = await fetch(`${daemon.baseURL}/hooks/PostToolUse`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session.agent,
+      sessionId: logicalKey,
+      cwd: session.cwd,
+      toolName: "Bash",
+      prCreated: true,
+      prUrl: "https://github.com/acme/mission-e2e/pull/27",
+      prUrls: ["https://github.com/acme/mission-e2e/pull/27"],
+    }),
+  });
+  expect(prHook.status, await prHook.clone().text()).toBe(204);
+  const prStop = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session.agent,
+      sessionId: logicalKey,
+      cwd: session.cwd,
+      env: {},
+    }),
+  });
+  expect(prStop.status, await prStop.clone().text()).toBe(204);
+  await expect.poll(async () => {
+    const current = (await api<Array<{ agentSessionId: string | null; prState: string | null }>>(
+      daemon,
+      "/api/sessions",
+    )).find((candidate) => candidate.agentSessionId === logicalKey);
+    return current?.prState ?? null;
+  }, { timeout: 40_000 }).toBe("open");
+  const openPrLink = detail.getByRole("link", { name: /#27/ });
+  await expect(openPrLink).toBeVisible();
+
+  const before = await api<Array<{ situation: string }>>(
+    daemon,
+    `/api/sessions/${session.id}/foreman-episodes`,
+  );
+  await dashboard.waitForTimeout(5_000);
+  const afterOpenPr = await api<Array<{ situation: string }>>(
+    daemon,
+    `/api/sessions/${session.id}/foreman-episodes`,
+  );
+  expect(afterOpenPr.filter((episode) => episode.situation === "ship-recovery")).toHaveLength(
+    before.filter((episode) => episode.situation === "ship-recovery").length,
+  );
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await detail.screenshot({ path: join(EVIDENCE, "pre-pr-ship-recovery.png") });
+    await recoveryRecord.getByRole("button", { name: "Close" }).click();
+    await expect(recoveryRecord).toBeHidden();
+    await expect(openPrLink).toBeVisible();
+    await detail.screenshot({ path: join(EVIDENCE, "pre-pr-open-pr-boundary.png") });
+    // eslint-disable-next-line no-console
+    console.log("OBSERVED one delivered pre-PR recovery in the session ledger and open PR #27");
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/pre-pr-ship-recovery.png");
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/pre-pr-open-pr-boundary.png");
+  }
 });
 
 /**

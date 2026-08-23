@@ -38,6 +38,9 @@ const { InspectorVerdictSchema, InspectorReplySchema } = await import(
 );
 const { BacklogReportSchema } = await import("../src/server/foreman/backlog-plan.ts");
 const { QueueVerdictSchema } = await import("../src/server/foreman/queue-verify.ts");
+const { ShipRecoveryReviewWireSchema } = await import(
+  "../src/server/foreman/ship-recovery-review.ts"
+);
 const { TriageReportSchema } = await import("../src/server/foreman/triage.ts");
 const { CompactionSchema } = await import("../src/server/workflows/context.ts");
 const { ConsensusResultSchema } = await import("../src/shared/ensemble-strategies/consensus.ts");
@@ -62,6 +65,7 @@ const SCHEMAS = [
   { identifier: "InspectorReplySchema", schema: InspectorReplySchema },
   { identifier: "BacklogReportSchema", schema: BacklogReportSchema },
   { identifier: "QueueVerdictSchema", schema: QueueVerdictSchema },
+  { identifier: "ShipRecoveryReviewWireSchema", schema: ShipRecoveryReviewWireSchema },
   { identifier: "TriageReportSchema", schema: TriageReportSchema },
   { identifier: "CompactionSchema", schema: CompactionSchema },
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },

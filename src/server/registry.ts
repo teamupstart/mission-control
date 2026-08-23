@@ -56,6 +56,8 @@ import type {
   HookIngest,
   OtlpMetrics,
   PromptedCompletionDisposition,
+  PromptedRecoveryClaim,
+  PromptedRecoveryDelivery,
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
@@ -155,6 +157,8 @@ import {
   completeWorkCycle,
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration as dbConsumePromptedGeneration,
+  claimPromptedRecovery as dbClaimPromptedRecovery,
+  resolvePromptedRecoveryDelivery as dbResolvePromptedRecoveryDelivery,
   markPromptedHandoffUndelivered as dbMarkPromptedHandoffUndelivered,
   recordAgentBinding,
   rekeyQueue,
@@ -7267,6 +7271,7 @@ export class Registry extends EventEmitter {
       promptedConsumedGeneration: row?.promptedConsumedGeneration ?? null,
       promptedDirectHandoff: row?.promptedDirectHandoff ?? null,
       promptedDecision: row?.promptedDecision ?? null,
+      promptedRecovery: row?.promptedRecovery ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -7365,6 +7370,9 @@ export class Registry extends EventEmitter {
       // only durable record of why the current generation stopped, and a cwd refresh has
       // learned nothing that could revise it.
       promptedDecision: prev?.promptedDecision ?? null,
+      // Recovery belongs to the same key and exact work-cycle identity. Refreshing the
+      // checkout location neither spends nor releases it.
+      promptedRecovery: prev?.promptedRecovery ?? null,
       updatedAt: now,
     });
     return key;
@@ -7477,6 +7485,36 @@ export class Registry extends EventEmitter {
     });
     if (consumed) this.syncSessionsForQueue(input.logicalKey);
     return consumed;
+  }
+
+  /** Claim one exact daemon-validated ship recovery attempt before delivery. */
+  claimPromptedRecovery(
+    id: string,
+    input: PromptedRecoveryClaim,
+    now = Date.now(),
+  ): SessionQueue | null {
+    const session = this.sessions.get(id);
+    if (!session || noteKeyFor(session) !== input.logicalKey) return null;
+    if (session.task?.id !== input.taskId) return null;
+    const claimed = dbClaimPromptedRecovery(input, now);
+    if (!claimed) return null;
+    this.syncSessionsForQueue(input.logicalKey);
+    return this.getQueue(id);
+  }
+
+  /** Confirm delivery, or release only a positively undelivered exact recovery claim. */
+  resolvePromptedRecoveryDelivery(
+    id: string,
+    input: PromptedRecoveryDelivery,
+    now = Date.now(),
+  ): SessionQueue | null {
+    const session = this.sessions.get(id);
+    if (!session || noteKeyFor(session) !== input.logicalKey) return null;
+    if (session.task?.id !== input.taskId) return null;
+    const resolved = dbResolvePromptedRecoveryDelivery(input, now);
+    if (!resolved) return null;
+    this.syncSessionsForQueue(input.logicalKey);
+    return this.getQueue(id);
   }
 
   /**
@@ -7672,6 +7710,10 @@ export class Registry extends EventEmitter {
         // for state that is not corrupt, merely re-homed. The re-attached row reads exactly
         // like a legacy one - consumed, historical reason unknown - which is the truth.
         promptedDecision: null,
+        // Recovery identities include the source logical key, so none migrates across a
+        // reattach. The new session will earn its own attempt only after its own settled
+        // work cycle satisfies the policy.
+        promptedRecovery: null,
         // DROPPED, not carried. Every other guard on this row is a statement about the
         // SOURCE logical key's own lifecycle, and re-keying moves it wholesale. The
         // direct-shipping latch is a statement about an INTENT EPISODE, and episode keys

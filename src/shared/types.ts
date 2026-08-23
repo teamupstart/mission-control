@@ -1336,6 +1336,18 @@ export interface SessionQueue {
    * `toPromptedDecision` in `server/db.ts` logs it.
    */
   promptedDecision: PromptedCompletionDecision | null;
+  /**
+   * The current pre-PR shepherd attempt for this queue, or null when no attempt has been
+   * claimed. This is current-state projection only; `foreman_episodes` remains the
+   * append-only history of what Foreman concluded and delivered.
+   *
+   * A reader must compare task, logical key, work-cycle generation, decision identity and
+   * reason against live state before acting. A task rebind, context clear, later completed
+   * generation or observed pull request therefore makes an older value inert without an
+   * eager cleanup write.
+   */
+  /** Omitted only by a rolling-upgrade peer that predates this projection. */
+  promptedRecovery?: PromptedRecoveryState | null;
   updatedAt: number;
   items: WorkItem[];
 }
@@ -1402,6 +1414,56 @@ export interface PromptedCompletionDecision {
   /** Blocking gaps, non-empty only for `held`. Bounded in count and length. */
   gaps: PromptedCompletionGap[];
   decidedAt: number;
+}
+
+/**
+ * Why the bounded pre-PR shepherd is considering a managed `ship` session.
+ * APPEND-ONLY and persisted: add values at the end and never rename or reorder them.
+ */
+export const PROMPTED_RECOVERY_REASONS = [
+  "held_gaps",
+  "idle_empty",
+  "idle_ambiguous",
+  "direct_handoff_missing_pr",
+  "verification_failed",
+] as const;
+export type PromptedRecoveryReason = (typeof PROMPTED_RECOVERY_REASONS)[number];
+
+/** What the daemon last knew about a claimed recovery delivery. */
+export const PROMPTED_RECOVERY_DELIVERY_STATES = [
+  "unknown",
+  "delivered",
+  "confirmed_undelivered",
+  "escalated",
+] as const;
+export type PromptedRecoveryDeliveryState =
+  (typeof PROMPTED_RECOVERY_DELIVERY_STATES)[number];
+
+/**
+ * The daemon-owned current recovery projection for one logical session.
+ *
+ * Attempts 1 through 3 may deliver one instruction. Attempt 4 is the terminal, visible
+ * escalation and never types. A confirmed non-delivery keeps the same attempt number and
+ * marker eligible so the worker may safely retry it; an unknown result remains spent.
+ */
+export interface PromptedRecoveryState {
+  taskId: string;
+  logicalKey: string;
+  generation: number;
+  /** Phase 1 decision identity, or null for a legacy consumed generation. */
+  decisionGeneration: number | null;
+  decisionOutcome: PromptedCompletionOutcome | null;
+  reason: PromptedRecoveryReason;
+  /** Deterministic idempotency key derived from task/key/generation/reason/attempt. */
+  marker: string;
+  /** 1..3 are delivery attempts; 4 is exhaustion escalation. */
+  attempt: number;
+  claimedAt: number;
+  /** Server-time boundary for the next attempt or escalation; null once escalated. */
+  nextEligibleAt: number | null;
+  lastDelivery: PromptedRecoveryDeliveryState;
+  /** Bounded one-line description of what was or may have been delivered. */
+  payloadSummary: string;
 }
 
 /**

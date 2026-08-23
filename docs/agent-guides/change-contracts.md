@@ -121,6 +121,9 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_decision` and read back by exact value. Append beside the
   existing values; an older build that meets a newer one reads the whole decision as absent
   rather than coercing it to a value it does have, and the generation stays consumed either way
+- Prompted ship-recovery reasons (`PROMPTED_RECOVERY_REASONS` in `src/shared/types.ts`) - stored
+  inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
+  values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
@@ -652,6 +655,25 @@ a second amendment without the same three properties.
 
 The decision is CURRENT PROJECTION on `foreman_queues`. History belongs to `foreman_episodes`. Do
 not add a second decision ledger, and do not carry a decision across logical keys.
+
+## Pre-PR ship recovery: claim before inject
+
+A ship recovery instruction is claimed durably before it reaches a pane. The identity is the exact
+task id, logical key, completed work-cycle generation, reason, and attempt. The daemon must rebuild
+all live eligibility at the claim boundary; a worker-provided boolean is never write authority.
+Only a positively confirmed non-delivery releases that same identity. A success and an unknown
+outcome remain spent, because retrying uncertainty is a duplicate-send bug.
+
+The recovery reason and delivery-state vocabularies are append-only persisted identifiers. Three
+attempts are the fixed send budget. Attempt four is a terminal escalation projection and can never
+be resolved as delivered. A new task binding, logical key, work-cycle generation, prompted decision,
+or observed task-owned pull request makes an older projection inert rather than rewriting history.
+
+PR absence means absence across every repository attached to the task. Read the existing task and
+work-episode PR projections; do not infer it from only the session's primary `prState`, and do not
+add another GitHub poller. PR follow-through owns panes first, recovery second, and ordinary queue or
+prompt processing last. Union their touched session ids so one pass never delivers two instructions
+into one pane.
 
 ## Ledger tables
 

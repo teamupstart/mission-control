@@ -439,6 +439,8 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     wrapup: "ask",
     trackReviewFeedback: true,
     trackCiFailures: true,
+    keepShipTasksMoving: true,
+    shipRecoveryMinutes: 20,
     autoBacklog: false,
     backlogRespectOpenPrs: true,
     backlogDefaultModel: { claude: null, codex: null, pi: null },

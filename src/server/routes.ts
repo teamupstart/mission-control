@@ -95,6 +95,8 @@ import {
   SetSessionEffortSchema,
   SetWorkItemStateSchema,
   PromptedHandoffUndeliveredSchema,
+  PromptedRecoveryClaimSchema,
+  PromptedRecoveryDeliverySchema,
   PromptedWrapupSchema,
   WrapupAskedSchema,
   PushTaskSchema,
@@ -191,7 +193,7 @@ import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog } from "@shared/session.ts";
+import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import {
   capabilitiesFor,
   interruptUnsupportedWhy,
@@ -309,7 +311,13 @@ import {
   recordEpisode as recordForemanEpisode,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
-import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
+import { FOREMAN_EPISODE_LEDGER, noteAwaitsYou } from "@shared/foreman.ts";
+import { foremanMayActLive } from "./foreman/verdict.ts";
+import {
+  activeWorkflowOwnsSession,
+  followupPrs,
+} from "./foreman/review-followup.ts";
+import { decideShipShepherd } from "./foreman/ship-shepherd.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -4388,6 +4396,77 @@ export function buildApp(
       return c.json({ error: "no current direct handoff decision for that generation" }, 409);
     }
     return c.json(queues.get(session.id));
+  });
+
+  // Claim one exact pre-PR recovery attempt before Foreman types. The worker's earlier
+  // snapshot is never authority: re-read every live owner and the checkout diff here, then
+  // let the database compare-and-set the exact current recovery sequence.
+  app.post("/api/sessions/:id/queue/ship-recovery/claim", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedRecoveryClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const queue = queues.get(session.id);
+    const task = registry.getTask(parsed.data.taskId);
+    if (
+      !queue
+      || !task
+      || session.task?.id !== task.id
+      || task.kind !== "ship"
+      || !["running", "dispatching"].includes(task.status)
+    ) {
+      return c.json({ error: "the managed ship task is no longer current" }, 409);
+    }
+    const diff = await computeSessionDiff(session.cwd);
+    if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    const cfg = getForemanConfig();
+    const runs = manager.runs().filter(
+      (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
+    );
+    const decision = decideShipShepherd({
+      session,
+      queue,
+      humanOwnsSession:
+        reportBucket(session, registry.snapshot().sessions) === "needs-you"
+        || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
+      workflowOwnsSession: activeWorkflowOwnsSession(runs),
+      hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
+      featureEnabled: cfg.keepShipTasksMoving,
+      mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+      recoveryMinutes: cfg.shipRecoveryMinutes,
+      now: Date.now(),
+    });
+    if (
+      decision.kind === "skip"
+      || decision.reason !== parsed.data.reason
+      || decision.attempt !== parsed.data.attempt
+      || decision.marker !== parsed.data.marker
+      || (decision.decision?.generation ?? null) !== parsed.data.decisionGeneration
+      || (decision.decision?.outcome ?? null) !== parsed.data.decisionOutcome
+    ) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
+    const claimed = registry.claimPromptedRecovery(session.id, parsed.data);
+    return claimed
+      ? c.json(claimed)
+      : c.json({ error: "the ship recovery state changed before it could be claimed" }, 409);
+  });
+
+  // A success confirms the audit projection. Only positive evidence that nothing reached
+  // the child releases the exact claim; a lost/unknown result sends no request and remains
+  // durably spent.
+  app.post("/api/sessions/:id/queue/ship-recovery/delivery", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedRecoveryDeliverySchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = registry.resolvePromptedRecoveryDelivery(session.id, parsed.data);
+    return resolved
+      ? c.json(resolved)
+      : c.json({ error: "no matching current ship recovery claim" }, 409);
   });
 
   // The full intent record, including its durable objective and latest human prompt.

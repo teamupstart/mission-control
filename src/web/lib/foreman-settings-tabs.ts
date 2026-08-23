@@ -34,7 +34,11 @@ export const FOREMAN_SETTINGS_TABS = [
   {
     id: "safety",
     label: "Safety",
-    anchors: ["foreman/skip-scout-wrapup", "foreman/skip-review-artifact-wrapup"],
+    anchors: [
+      "foreman/skip-scout-wrapup",
+      "foreman/skip-review-artifact-wrapup",
+      "foreman/ship-recovery-minutes",
+    ],
   },
 ] as const;
 

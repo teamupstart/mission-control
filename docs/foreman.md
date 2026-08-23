@@ -181,9 +181,38 @@ generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `r
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
+**The pre-PR ship shepherd recovers only invited, task-owned `ship` sessions.** Its popover
+switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
+of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
+ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
+settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
+any open task-owned pull request in any attached repository wins and makes the shepherd hold.
+The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
+under **Settings → Foreman → Safety**.
+
+Known states use structural instructions: relay the verifier's held gaps, resume an empty
+checkout, or continue an already-authorized direct shipping handoff whose pull request did not
+appear. Only an idle checkout with ambiguous non-empty changes starts one fresh tool-less Review
+model call. Its output is checked again against the pre-PR authority boundary and may request
+implementation, documentation, tests, or evidence only. It cannot authorize commit, push,
+pull-request creation, merge, cleanup, another task, another repository, or an answer for the
+human. A repeated verification infrastructure failure escalates without a recovery send.
+Transient reviewer or evidence failures claim no recovery attempt. They are recorded on the
+session, retried after a one-minute cooldown, and escalate after three consecutive failures.
+
+Foreman claims each exact recovery in the daemon before typing. Sends one, two, and three wait
+the configured first window, then fixed **40-minute** and **80-minute** intervals. After the third
+send the next due pass records a visible escalation and types nothing. A confirmed non-delivery
+releases the same attempt for retry; an unknown delivery remains spent so a lost response cannot
+become a duplicate send after restart. Every attempt and escalation uses the existing session
+drawer and fleet decision ledger, where its reason, attempt, delivery result, next wait, quiet age,
+and completion context remain inspectable. The shepherd stops permanently for that task as soon
+as any task-owned pull request is observed; ordinary PR follow-through owns the later phase.
+
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three
-per-harness task-agent launch models, and **Safety** for the completion safeguards. Each tab shows how
+per-harness task-agent launch models, and **Safety** for the completion safeguards and pre-PR
+recovery threshold. Each tab shows how
 many settings it holds, and each field's explanation appears on hover or focus - as the
 control's tooltip and accessible description - rather than printing under the field. The
 current Foreman posture stays above the tabs so a stopped worker is always visible. **Live

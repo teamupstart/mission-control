@@ -50,6 +50,8 @@ import {
   AGENT_TYPES,
   PROMPTED_COMPLETION_OUTCOMES,
   PROMPTED_DIRECT_HANDOFF_KINDS,
+  PROMPTED_RECOVERY_DELIVERY_STATES,
+  PROMPTED_RECOVERY_REASONS,
   SESSION_RUNTIMES,
   TASK_KINDS,
   THINKING_LEVELS,
@@ -1600,6 +1602,10 @@ export const ForemanConfigSchema = z.object({
    * failing episode until CI recovers and fails again.
    */
   trackCiFailures: z.boolean().default(true),
+  /** Permission for bounded recovery before the first task-owned pull request exists. */
+  keepShipTasksMoving: z.boolean().default(true),
+  /** Quiet minutes before the first pre-PR recovery attempt. */
+  shipRecoveryMinutes: z.number().int().min(1).max(1440).default(20),
   /**
    * Whether Foreman schedules the BACKLOG on its own - reading every item, working out
    * what depends on what, and then handing one at a time to an idle agent or to a fresh
@@ -3292,6 +3298,52 @@ export const PromptedHandoffUndeliveredSchema = z.object({
   generation: z.number().int().min(1),
 });
 export type PromptedHandoffUndelivered = z.infer<typeof PromptedHandoffUndeliveredSchema>;
+
+/** Bounds for the recovery projection and its loopback mutation requests. */
+export const PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX = 600;
+export const PROMPTED_RECOVERY_ATTEMPT_MAX = 4;
+
+const PromptedRecoveryIdentitySchema = z.object({
+  taskId: z.string().min(1).max(200),
+  logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
+  generation: z.number().int().min(1),
+  decisionGeneration: z.number().int().min(1).nullable(),
+  decisionOutcome: z.enum(PROMPTED_COMPLETION_OUTCOMES).nullable(),
+  reason: z.enum(PROMPTED_RECOVERY_REASONS),
+  attempt: z.number().int().min(1).max(PROMPTED_RECOVERY_ATTEMPT_MAX),
+  marker: z.string().min(1).max(200),
+});
+
+/** Whole persisted recovery projection. Readers reject contradictions rather than coerce. */
+export const PromptedRecoveryStateSchema = PromptedRecoveryIdentitySchema.extend({
+  claimedAt: z.number().int().nonnegative(),
+  nextEligibleAt: z.number().int().nonnegative().nullable(),
+  lastDelivery: z.enum(PROMPTED_RECOVERY_DELIVERY_STATES),
+  payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+}).refine(
+  (state) => (state.decisionGeneration === null) === (state.decisionOutcome === null),
+  { message: "Recovery decision generation and outcome must be present together" },
+).refine(
+  (state) => state.attempt === 4
+    ? state.lastDelivery === "escalated" && state.nextEligibleAt === null
+    : state.lastDelivery !== "escalated" && state.nextEligibleAt !== null,
+  { message: "Recovery escalation state contradicts its attempt" },
+);
+
+/** Claim one exact recovery attempt before anything reaches the child session. */
+export const PromptedRecoveryClaimSchema = PromptedRecoveryIdentitySchema.extend({
+  payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+});
+export type PromptedRecoveryClaim = z.infer<typeof PromptedRecoveryClaimSchema>;
+
+/**
+ * Resolve the delivery knowledge for one exact claim. Unknown outcomes deliberately make
+ * no second request and remain `unknown`, which is the conservative durable answer.
+ */
+export const PromptedRecoveryDeliverySchema = PromptedRecoveryIdentitySchema.extend({
+  delivery: z.enum(["delivered", "confirmed_undelivered"]),
+});
+export type PromptedRecoveryDelivery = z.infer<typeof PromptedRecoveryDeliverySchema>;
 
 export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),

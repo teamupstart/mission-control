@@ -8,7 +8,7 @@ say which provider does that work and which model each job uses.
 
 Two separate choices, deliberately.
 
-**The provider** is app-wide - it answers *how* a model is called, not which one. Two ship: the
+**The provider** answers *how* a model is called, not which one. Two ship: the
 local `claude` CLI (the default) and `codex exec`. Claude's app-owned calls use one fresh Agent SDK
 query by default, with the one-shot `claude -p` transport retained as the
 [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md) escape hatch. Codex's app-owned calls have the same
@@ -17,8 +17,26 @@ same binary - a choice about how a reply is decoded, not about how it is fetched
 nothing about latency. Either way there is no API key anywhere in this
 path - each bills through whatever its own CLI is logged in as. It is entirely
 independent of which harness a card runs, which is the point - you can review a Codex session with
-Claude, or run the cheap jobs on the account that has quota left. Picking a provider clears the
-model boxes below it, because a `claude` model id is not something `codex` can resolve.
+Claude, or run the cheap jobs on the account that has quota left.
+
+The radio at the top of the panel is the **app-wide** provider, and every job below it starts on
+*Inherit*. Any job can leave that and choose for itself, so naming a task can run on Claude while
+compacting Workflow context runs on Codex. A job's own choice wins; when it has none, the app-wide
+radio decides, and when that is unset too the ladder falls through to
+[`MISSION_LLM_RUNNER`](configuration.md) and then the shipped default.
+
+**Picking a provider clears nothing.** Changing the app-wide radio re-resolves only the rows still
+on *Inherit* - a row that has chosen a model keeps it, because pinning a model pins its provider.
+The other half of that rule is what a row's own Provider select does: because it is a statement
+about exactly that row, changing it sends that row's model back to *Inherit* unless the new
+provider offers the same id, and the row says what it reset. (Before this, the app-wide radio wiped
+every model box on every change, which is what stopped a `claude` id from being handed to `codex`.)
+
+Whatever route a provider and a model arrive by - a saved config, an environment variable, an
+upgrade, a hand-edited blob - a job never spawns on a pair its provider cannot honour. A model id
+positively known to belong to the *other* provider is replaced with this provider's own cheap
+default and the row says which id was dropped. An id in no catalog is a new or custom model and
+passes through untouched, because model ids are free text.
 
 **The model** is per job:
 

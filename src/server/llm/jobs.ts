@@ -1,6 +1,8 @@
 import type { ZodTypeAny, TypeOf } from "zod";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
-import { getLlmConfig, llmJobModel, llmRunnerChoice } from "./config.ts";
+import type { LlmConfig } from "@shared/protocol.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
+import { getLlmConfig, llmJobModel, llmJobRunner } from "./config.ts";
 import { llmRunner } from "./index.ts";
 import { runStructured } from "./structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "./structured.ts";
@@ -24,6 +26,31 @@ import type { StructuredAttemptObserver, StructuredResult } from "./structured.t
 // so `runJob` REJECTS on a spawn/timeout/exit failure exactly as `runClaudeText` did, and
 // `runJobStructured` never throws.
 
+/**
+ * The pair a call ACTUALLY ran on, post-guard.
+ *
+ * Handed back rather than left inside, because a caller that has to record what ran - the
+ * `llm_calls` ledger, a persisted compaction stamp - otherwise has no way to obtain it and
+ * re-derives it from a second config read. That was merely redundant while the answer was
+ * app-wide; with a provider per job it is systematically wrong, since the re-derived label
+ * names the app-wide provider while the call used the job's own. It also cannot express the
+ * one thing only the callee knows: that `guardProviderModel` substituted a fallback.
+ *
+ * Resolution stays INSIDE the callee. A caller-supplied execution would hand every call site
+ * its own chance to resolve differently, which is the drift these functions' own comment
+ * ("Model and runner are the config's, not the caller's") exists to prevent.
+ */
+export interface JobExecution {
+  runner: LlmRunnerId;
+  model: string;
+}
+
+/** What `runJob` hands back: the text, and what produced it. */
+export interface JobTextResult {
+  text: string;
+  execution: JobExecution;
+}
+
 /** Options a job may set for itself. Model and runner are the config's, not the caller's. */
 export interface JobRunOptions {
   /**
@@ -41,6 +68,15 @@ export interface StructuredJobRunOptions extends JobRunOptions {
   schema?: Record<string, unknown>;
   /** Trim the syntax retry only when this call site's rendered schema is faithful. */
   shapeGuaranteed?: boolean;
+  /**
+   * Told the resolved pair ONCE, before the first attempt spends anything.
+   *
+   * For the caller that has to write a row describing a call while it is still in flight -
+   * `llm_calls` inserts at `observer.start` and closes at `finish`. The return value carries
+   * the same pair, but it arrives too late for that row, and a caller that resolved its own
+   * label instead would print the app-wide provider next to a call that used the job's.
+   */
+  onExecution?: (execution: JobExecution) => void;
 }
 
 /**
@@ -51,12 +87,31 @@ export interface StructuredJobRunOptions extends JobRunOptions {
  * error, because a missing or logged-out `claude` must cost a rougher sentence and never a
  * dispatch.
  */
-export function runJob(job: LlmJobId, prompt: string, opts: JobRunOptions = {}): Promise<string> {
+export async function runJob(
+  job: LlmJobId,
+  prompt: string,
+  opts: JobRunOptions = {},
+): Promise<JobTextResult> {
   const cfg = getLlmConfig();
-  return llmRunner(llmRunnerChoice(cfg).id).run(prompt, {
-    model: llmJobModel(job, cfg).id,
+  const execution = jobExecution(job, cfg);
+  const text = await llmRunner(execution.runner).run(prompt, {
+    model: execution.model,
     timeoutMs: opts.timeoutMs,
   });
+  return { text, execution };
+}
+
+/**
+ * The provider and the model for one call, resolved together off ONE config read.
+ *
+ * Together, because they are one decision: the model ladder's fallback and
+ * `guardProviderModel`'s verdict both depend on which provider won, so resolving them from
+ * two reads is how a Claude id ends up handed to Codex. Once, because the config is editable
+ * at runtime and a structured retry must land on the same pair as its first attempt.
+ */
+function jobExecution(job: LlmJobId, cfg: LlmConfig): JobExecution {
+  const runner = llmJobRunner(job, cfg).id;
+  return { runner, model: llmJobModel(job, cfg, runner).id };
 }
 
 /**
@@ -66,18 +121,20 @@ export function runJob(job: LlmJobId, prompt: string, opts: JobRunOptions = {}):
  * different runner or a different model than the first attempt - which would make a
  * two-attempt failure impossible to read in the log.
  */
-export function runJobStructured<S extends ZodTypeAny>(
+export async function runJobStructured<S extends ZodTypeAny>(
   job: LlmJobId,
   prompt: string,
   extract: (raw: string) => TypeOf<S> | null,
   label: string,
   opts: StructuredJobRunOptions = {},
-): Promise<StructuredResult<TypeOf<S>>> {
+): Promise<StructuredResult<TypeOf<S>> & { execution: JobExecution }> {
   const cfg = getLlmConfig();
-  const runner = llmRunner(llmRunnerChoice(cfg).id);
-  const model = llmJobModel(job, cfg).id;
-  return runStructured<S>(
-    (p) => runner.run(p, { model, timeoutMs: opts.timeoutMs, schema: opts.schema }),
+  const execution = jobExecution(job, cfg);
+  opts.onExecution?.(execution);
+  const runner = llmRunner(execution.runner);
+  const result = await runStructured<S>(
+    (p) =>
+      runner.run(p, { model: execution.model, timeoutMs: opts.timeoutMs, schema: opts.schema }),
     prompt,
     extract,
     label,
@@ -87,4 +144,7 @@ export function runJobStructured<S extends ZodTypeAny>(
         opts.shapeGuaranteed && runner.structuredOutput?.guaranteesInputShape === true,
     },
   );
+  // On the failed branch too. A caller recording what it TRIED - the `llm_calls` row, the
+  // fallback compaction stamp - needs the pair exactly as much as one recording what worked.
+  return { ...result, execution };
 }

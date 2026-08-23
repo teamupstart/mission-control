@@ -2658,11 +2658,19 @@ export const LlmConfigSchema = z.object({
    * route, the titler, the goal refiner and the digest at once, over a preference. Falling
    * back is the honest degradation, and `resolveLlmRunner` reports what it dropped so the
    * panel can say so rather than presenting the fallback as the operator's own choice.
+   *
+   * A permissive STRING rather than the enum, and the `.catch("")` kept: those two answer
+   * different failures and both are needed. The enum shape defeated the promise in the
+   * paragraph above - an unresolvable stored id degraded to `""` here, `resolveLlmRunner`
+   * skips an empty value, and the `unknown` branch was therefore dead for every stored
+   * value, so the panel presented the fallback as the operator's own pick after all. A
+   * string reaches the resolver intact and gets reported. The `.catch("")` still guards the
+   * other failure - a persisted NON-string, from a hand edit or a future build, which would
+   * otherwise fail the whole parse and take `getLlmConfig()` down with it. So: an
+   * unreadable string is a choice somebody plausibly made and is said out loud; a non-string
+   * is corruption and is recovered from silently. The PATCH below stays strict.
    */
-  runner: z
-    .union([z.enum(LLM_RUNNER_IDS), z.literal("")])
-    .catch("")
-    .default(""),
+  runner: z.string().catch("").default(""),
   /**
    * Claude's headless wire protocol, or empty for the config -> env -> default ladder.
    *
@@ -2685,8 +2693,30 @@ export const LlmConfigSchema = z.object({
    * still parse here, and `resolveLlmJobModels` simply never asks for a job it does not
    * declare. The PATCH below does validate them, so a typo from the dashboard is a 400
    * rather than a key that sits in the config forever doing nothing.
+   *
+   * The `.catch` sits on the VALUE, not only on the record, and the placement is the point.
+   * A record-level `.catch` alone is all or nothing: one id that fails `ModelIdSchema` -
+   * a hand edit, or a vocabulary a newer build introduced - silently discards EVERY other
+   * job's override. Per value, that entry recovers to "inherit" and its neighbours survive.
+   * The record-level `.catch({})` is kept behind it for the one thing a value catch cannot
+   * reach: a stored `models` that is not an object at all.
    */
-  models: z.record(z.string(), ModelOverrideSchema).catch({}).default({}),
+  models: z.record(z.string(), ModelOverrideSchema.catch("")).catch({}).default({}),
+  /**
+   * Per-job PROVIDER overrides, keyed by `LlmJobId`. Empty or absent means inherit `runner`.
+   *
+   * The sibling of `models`, and deliberately its own map rather than a field per job: the
+   * job ids are already a declared list and the panel writes one key at a time, so a per-key
+   * merge in `setLlmConfig` makes two tabs editing different jobs commute.
+   *
+   * Value-level `.catch("")` for the reason spelled out on `runner`: an unreadable string
+   * passes through so `llmJobRunner` can report it, a non-string recovers to inherit, and
+   * neither can fail the parse or disturb another job's override. What an unreadable
+   * override falls back to is the rest of the LADDER - the app-wide provider - not the
+   * shipped default; "I cannot read your choice here" is much closer to "you did not choose
+   * here" than to "use whatever ships".
+   */
+  runners: z.record(z.string(), z.string().catch("")).catch({}).default({}),
 });
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
@@ -2705,6 +2735,12 @@ export const LlmConfigPatchSchema = z
     codexTransport: z.union([z.enum(CODEX_TRANSPORTS), z.literal("")]),
     models: z
       .record(z.string(), ModelOverrideSchema)
+      .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
+        message: "unknown job id",
+      }),
+    /** Per-job providers. Strict on both halves, for `models`' reason: a typo is a 400. */
+    runners: z
+      .record(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]))
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),

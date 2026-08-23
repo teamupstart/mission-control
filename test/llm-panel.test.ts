@@ -27,7 +27,13 @@ import type { LlmStatus } from "../src/shared/types.ts";
 // Static markup rather than a browser, per the house rule: the panel's only interactivity is
 // a commit handler, and the dashboard's SSE stream hangs headless automation.
 
-const CONFIG: LlmConfig = { runner: "", claudeTransport: "", codexTransport: "", models: {} };
+const CONFIG: LlmConfig = {
+  runner: "",
+  claudeTransport: "",
+  codexTransport: "",
+  models: {},
+  runners: {},
+};
 
 function status(over: Partial<LlmStatus> = {}): LlmStatus {
   return {
@@ -37,9 +43,15 @@ function status(over: Partial<LlmStatus> = {}): LlmStatus {
     models: Object.fromEntries(
       LLM_JOB_IDS.map((job) => [
         job,
-        { job, id: LLM_JOB_SPECS[job].fallback, source: "default" as const },
+        { job, id: LLM_JOB_SPECS[job].fallback, source: "default" as const, unsupported: null },
       ]),
     ) as LlmStatus["models"],
+    jobRunners: Object.fromEntries(
+      LLM_JOB_IDS.map((job) => [
+        job,
+        { id: "claude" as const, source: "default" as const, unknown: null },
+      ]),
+    ) as LlmStatus["jobRunners"],
     runners: [
       { id: "claude", label: "Claude Code" },
       { id: "codex", label: "Codex" },
@@ -58,6 +70,13 @@ function decoded(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#x27;/g, "'")
     .replace(/&amp;/g, "&");
+}
+
+/** One named `<select>`, from its opening tag to its close, so options can be asserted. */
+function sliceSelect(html: string, name: string): string {
+  const at = html.indexOf(`aria-label="${name}"`);
+  assert.ok(at > 0, `no control named "${name}"`);
+  return html.slice(at, html.indexOf("</select>", at));
 }
 
 function render(over: Partial<LlmState> = {}): string {
@@ -80,19 +99,119 @@ test("every background job gets a field, labelled and explained", () => {
   }
 });
 
-test("every blurb is still PRINTED under its field - Foreman's tooltip-only mode did not leak", () => {
-  // `ModelField`'s `blurb` prop defaults to "block". Only the Foreman panel opts out; a
-  // default flip would silently strip the visible explanation from this whole panel while
-  // the assertion above kept passing off the tooltip's hidden copy.
+test("every blurb is still PRINTED, once per row, not left to a tooltip", () => {
+  // The blurb moved from under the model field to the row heading when the group became a
+  // matrix - the model select is now one of two controls in the row, so an explanation
+  // hanging off it described the row from the wrong place. What must not change is that it
+  // is VISIBLE: the assertion above would keep passing off the Tooltip's hidden portal copy
+  // alone, which is exactly the regression this pins.
   const html = render();
-  assert.equal((html.match(/foreman-model-blurb/g) ?? []).length, LLM_JOB_IDS.length);
+  assert.equal(
+    (html.match(/settings-matrix-slot-blurb/g) ?? []).length,
+    LLM_JOB_IDS.length,
+    "each job's row must print its own explanation exactly once",
+  );
+});
+
+test("every background job gets its own PROVIDER control, named for the job", () => {
+  // The whole point of the phase: five jobs, five providers. A single app-wide picker with
+  // five model boxes under it renders almost identically and is the state being left behind.
+  const html = decoded(render());
+  for (const job of LLM_JOB_IDS) {
+    assert.ok(
+      html.includes(`aria-label="${LLM_JOB_SPECS[job].label} provider"`),
+      `${job} has no provider of its own`,
+    );
+    assert.ok(
+      html.includes(`aria-label="${LLM_JOB_SPECS[job].label} model"`),
+      `${job}'s model select lost its accessible name when the visible label came off`,
+    );
+  }
+});
+
+test("an inheriting row says WHAT it inherits, not just that it inherits", () => {
+  // "Inherit" alone sends the operator back up the page to find out what this row runs on.
+  const html = decoded(render());
+  assert.ok(html.includes("Inherit - Claude Code"));
+});
+
+test("a job pinned to its own provider shows that provider selected, and its neighbours do not", () => {
+  const html = render({
+    config: { ...CONFIG, runners: { goal: "codex" } },
+    status: status({
+      jobRunners: {
+        ...status().jobRunners,
+        goal: { id: "codex", source: "config", unknown: null },
+      },
+    }),
+  });
+  const goal = sliceSelect(html, "Goal provider");
+  assert.match(goal, /<option value="codex" selected="">/, "the Goal row must show its own pick");
+  // The other four are untouched by a write that named one job - the failure that made the
+  // old blanket clear-on-change unusable, asserted from the panel this time.
+  for (const job of LLM_JOB_IDS.filter((j) => j !== "goal")) {
+    const at = html.indexOf(`aria-label="${LLM_JOB_SPECS[job].label} provider"`);
+    assert.ok(at > 0, `${job} lost its provider control`);
+  }
+});
+
+test("a per-job provider this build cannot resolve is named as dropped, like the app-wide one", () => {
+  // The row inherits rather than dropping to the shipped default, and says which id it could
+  // not read - otherwise the inherited provider reads back as this row's own choice, which is
+  // exactly the failure the picker above already refuses to make.
+  const html = decoded(render({
+    config: { ...CONFIG, runners: { goal: "ollama" } },
+    status: status({
+      jobRunners: {
+        ...status().jobRunners,
+        goal: { id: "claude", source: "default", unknown: "ollama" },
+      },
+    }),
+  }));
+  assert.match(html, /"ollama" is not a provider this build has, so this row is inheriting/);
+});
+
+test("an overridden row's Inherit option names the APP-WIDE provider, not its own override", () => {
+  // The one thing selecting Inherit will not do is keep this row on Codex, so labelling the
+  // option "Inherit - Codex" is a control that describes the opposite of what it does. The
+  // difference is only visible on a row that HAS an override, which is why the fixture sets
+  // one and leaves the app-wide picker alone.
+  const html = decoded(render({
+    config: { ...CONFIG, runners: { goal: "codex" } },
+    status: status({
+      jobRunners: {
+        ...status().jobRunners,
+        goal: { id: "codex", source: "config", unknown: null },
+      },
+    }),
+  }));
+  const goal = sliceSelect(html, "Goal provider");
+  assert.match(goal, /Inherit - Claude Code/);
+  assert.doesNotMatch(goal, /Inherit - Codex/, "the row advertised its override as its fallback");
+  // ...and an unpinned row, where the two answers coincide, still reads the same.
+  assert.match(sliceSelect(html, "Task title provider"), /Inherit - Claude Code/);
+});
+
+test("a model its provider cannot run is named as dropped, not silently replaced", () => {
+  // The resolver substitutes the provider's own cheap default. Presented silently, the row
+  // reads as though the operator asked for that default.
+  const html = decoded(render({
+    status: status({
+      models: {
+        ...status().models,
+        goal: { job: "goal", id: "gpt-5.6-luna", source: "default", unsupported: "claude-sonnet-5" },
+      },
+    }),
+  }));
+  assert.match(html, /"claude-sonnet-5" is not a model this provider offers/);
 });
 
 test("workflow context compaction is a visible configurable background job", () => {
   const html = decoded(render());
   assert.ok(html.includes("Workflow context"));
   assert.ok(html.includes("Compacts user goals, decisions, and rationale for Persona review."));
-  assert.ok(html.includes('id="llm-model-workflow-context"'));
+  assert.ok(html.includes('aria-label="Workflow context model"'));
+  assert.ok(html.includes('aria-label="Workflow context provider"'));
 });
 
 test("an empty box advertises the model the daemon RESOLVED, not the shipped fallback", () => {
@@ -102,7 +221,7 @@ test("an empty box advertises the model the daemon RESOLVED, not the shipped fal
     status: status({
       models: {
         ...status().models,
-        goal: { job: "goal", id: "claude-opus-4-8", source: "env" },
+        goal: { job: "goal", id: "claude-opus-4-8", source: "env", unsupported: null },
       },
     }),
   });
@@ -119,11 +238,11 @@ test("a shipped default says so, so an empty box is never mistaken for an unset 
 
 test("a config override renders in the box and explains nothing further", () => {
   const html = render({
-    config: { runner: "", claudeTransport: "", codexTransport: "", models: { goal: "claude-sonnet-5" } },
+    config: { ...CONFIG, models: { goal: "claude-sonnet-5" } },
     status: status({
       models: {
         ...status().models,
-        goal: { job: "goal", id: "claude-sonnet-5", source: "config" },
+        goal: { job: "goal", id: "claude-sonnet-5", source: "config", unsupported: null },
       },
     }),
   });

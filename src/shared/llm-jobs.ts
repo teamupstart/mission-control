@@ -1,6 +1,6 @@
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
-import { providerModelDefault } from "./model.ts";
+import { guardProviderModel, providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
 
 // The daemon's own background model calls - which model each of them runs as.
@@ -130,24 +130,59 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
  */
 export type LlmJobModelConfig = Record<string, string | undefined>;
 
+/**
+ * The operator's per-job PROVIDER overrides, keyed by job id. Empty means inherit.
+ *
+ * The sibling of `LlmJobModelConfig` and stored the same way, for the same reason: the panel
+ * writes one key at a time and a per-key merge makes two tabs commute. Typed as loose
+ * strings rather than `LlmRunnerId` because it is read straight off a persisted blob - a
+ * value a downgrade cannot resolve has to arrive intact so it can be REPORTED rather than
+ * silently sanitised. `llmJobRunner` ranks it.
+ */
+export type LlmJobRunnerConfig = Record<string, string | undefined>;
+
 export interface ResolvedLlmJobModel extends ResolvedModel {
   job: LlmJobId;
+  /**
+   * A model id that was asked for, belongs to a different provider, and was therefore
+   * dropped in favour of this job's provider's own cheap default - or null.
+   *
+   * Carried out to the panel rather than swallowed, so a row can say the pair it was given
+   * could not be honoured instead of presenting the substitute as the operator's choice.
+   */
+  unsupported: string | null;
 }
 
-/** Resolve one job: config, then env, then the shipped fallback. */
+/**
+ * Resolve one job: config, then env, then the shipped fallback - all against ITS provider.
+ *
+ * `runner` is the provider this job actually resolved to, which after per-job overrides is
+ * no longer the same answer for every job. It does two things: it picks the
+ * provider-appropriate fallback, and it is what `guardProviderModel` refuses a mismatched
+ * pair against. The guard runs LAST, over the winner of the ladder, because a mismatch can
+ * enter at any rung - a legacy config value, an env var, or a provider that moved underneath
+ * a saved id between restarts.
+ */
 export function resolveLlmJobModel(
   job: LlmJobId,
   models: LlmJobModelConfig | null | undefined,
   envValue: string | null | undefined,
   runner: LlmRunnerId = "claude",
 ): ResolvedLlmJobModel {
+  const chosen = resolveModelChoice(
+    { ...LLM_JOB_SPECS[job], fallback: providerModelDefault(runner, "cheap") },
+    models?.[job],
+    envValue,
+  );
+  const guarded = guardProviderModel(runner, chosen.id);
   return {
     job,
-    ...resolveModelChoice(
-      { ...LLM_JOB_SPECS[job], fallback: providerModelDefault(runner, "cheap") },
-      models?.[job],
-      envValue,
-    ),
+    id: guarded.id,
+    // A substituted id came from the shipped provider default, not from the layer that asked
+    // for the one that was dropped. Saying `config` here would credit the operator with a
+    // choice the app declined to honour.
+    source: guarded.unsupported === null ? chosen.source : "default",
+    unsupported: guarded.unsupported,
   };
 }
 
@@ -161,9 +196,15 @@ export function resolveLlmJobModel(
 export function resolveLlmJobModels(
   models: LlmJobModelConfig | null | undefined,
   envValues: Partial<Record<LlmJobId, string | undefined>>,
-  runner: LlmRunnerId = "claude",
+  /**
+   * One provider for every job, or - now that a job can carry its own - a function asked per
+   * job. A bare id stays accepted because most callers still have one answer, and because
+   * the two forms mean the same thing when no override is set.
+   */
+  runner: LlmRunnerId | ((job: LlmJobId) => LlmRunnerId) = "claude",
 ): Record<LlmJobId, ResolvedLlmJobModel> {
+  const runnerFor = typeof runner === "function" ? runner : (): LlmRunnerId => runner;
   return Object.fromEntries(
-    LLM_JOB_IDS.map((job) => [job, resolveLlmJobModel(job, models, envValues[job], runner)]),
+    LLM_JOB_IDS.map((job) => [job, resolveLlmJobModel(job, models, envValues[job], runnerFor(job))]),
   ) as Record<LlmJobId, ResolvedLlmJobModel>;
 }

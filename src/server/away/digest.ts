@@ -76,8 +76,12 @@ async function narrate(buf: AwayBuffer, awayMs: number): Promise<string | null> 
   try {
     // The runner has already taken its own envelope off, so what comes back is the
     // model's text - a caller that unwrapped it would be undoing its runner's flag.
-    const text = (await runJob("away-digest", prompt, { timeoutMs: DIGEST_TIMEOUT_MS })).trim();
-    return text.length > 0 ? text : null;
+    // `.text`: `runJob` also hands back the provider and model it used, which the digest has
+    // nowhere to record - the callers that do (the `llm_calls` ledger, the compaction stamp)
+    // read it from there rather than resolving the config a second time.
+    const { text } = await runJob("away-digest", prompt, { timeoutMs: DIGEST_TIMEOUT_MS });
+    const trimmed = text.trim();
+    return trimmed.length > 0 ? trimmed : null;
   } catch {
     // Missing/logged-out/slow provider - the rollup below already says what happened.
     return null;

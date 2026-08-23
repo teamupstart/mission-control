@@ -84,6 +84,7 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { resolveTaskAgent } from "./harnesses.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -130,7 +131,16 @@ export interface CreateTaskInput {
   intent: string;
   title?: string;
   kind: TaskKind;
-  agent: AgentType;
+  /**
+   * Which harness files this task. OMITTED means "whatever this kind is configured to run
+   * on" (`resolveTaskAgent`), which is what an MCP `create_task` and any other creator with
+   * no opinion should get; a caller that names one is making a pin and always wins.
+   *
+   * Resolved at CREATION rather than at launch, and that asymmetry with `model`/`effort`
+   * below is forced by the schema: `tasks.agent` is `TEXT NOT NULL`, so there is no "unset"
+   * for a row to carry. See `resolveTaskAgent`.
+   */
+  agent?: AgentType;
   /** Optional urgency. Omitted means unset, which is not the same as `low`. */
   priority?: TaskPriority | null;
   /** Optional tags, already normalized by the schema that parsed them. */
@@ -242,6 +252,9 @@ export class TaskDependencyError extends Error {}
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/** A launch effort named for a harness that cannot be launched with it. */
+export class TaskEffortUnsupportedError extends Error {}
 
 /**
  * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
@@ -1913,6 +1926,26 @@ export class TaskManager {
     }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
+    // The ONE place an omitted agent becomes a real one, so every creator - the dispatch
+    // route, an MCP `create_task`, a task source sweep, a recurring mission, a retro
+    // follow-up, an ensemble member - inherits the kind default without any of them
+    // learning that kind defaults exist. A caller that named an agent keeps it verbatim.
+    const agent = resolveTaskAgent(input.kind, input.agent);
+    // The half of `DispatchSchema`'s effort refinement that a browser-safe schema cannot run:
+    // with the agent omitted there, the harness the level was chosen for is not known until
+    // this line.
+    //
+    // Applied to EVERY caller, including one whose agent was inherited. An earlier draft let
+    // an inheriting creator through on the reasoning that its author never made the
+    // resolution - but the task row it writes is a PIN, and a stored pin is the one thing the
+    // launch ladder used to pass on without checking. Refusing here is where the operator can
+    // still act on it: `PUT /api/schedules` and the task-source save answer 400, naming the
+    // level and the harness, instead of a mission that files silently and launches wrong.
+    if (input.effort && !supportsEffort(agent, input.effort)) {
+      throw new TaskEffortUnsupportedError(
+        `reasoning effort ${input.effort} is not supported by ${agent}`,
+      );
+    }
     const id = internal?.id ?? randomUUID();
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
@@ -1940,7 +1973,7 @@ export class TaskManager {
             existing.intent !== input.intent ||
             existing.title !== explicitTitle ||
             existing.kind !== input.kind ||
-            existing.agent !== input.agent ||
+            existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
             existing.workflowId !== workflowId ||
@@ -1978,7 +2011,7 @@ export class TaskManager {
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
-      agent: input.agent,
+      agent,
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,

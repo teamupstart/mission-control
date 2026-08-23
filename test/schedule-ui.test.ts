@@ -12,7 +12,7 @@ import { SchedulePreview } from "../src/web/components/schedules/SchedulePreview
 import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
-import { mkSchedule } from "./helpers/schedule-fixture.ts";
+import { mkSchedule, mkScheduleTemplate } from "./helpers/schedule-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 /**
@@ -169,6 +169,40 @@ test("the editor distinguishes Save paused from Save & enable, and only offers l
   assert.match(html, /<option value="ship" selected="">ship - deliver a change<\/option>/);
   assert.match(html, /<option value="plan">plan - produce a reviewed plan<\/option>/);
   assert.doesNotMatch(html, /<option value="chat"/);
+});
+
+test("a mission's stored effort survives a switch to an agent that does not offer it", () => {
+  // The same silent erasure the Task kinds grid guards: a `<select>` whose value matches no
+  // option renders its FIRST option, which here reads "harness default". A mission saved on
+  // Claude at `max` and later moved to Inherit - whose list is only the levels EVERY harness
+  // offers - would therefore show "harness default" over a stored `max`, and save that
+  // erasure the next time anything else on the form changed.
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ agent: null, effort: "max" }) }),
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /max - not offered here/, "the stored level is still on the list");
+  // Disabled: it can be read and kept, but not newly chosen - a level no harness is
+  // guaranteed to offer is not something to hand somebody as a fresh choice.
+  assert.match(html, /value="max" disabled=""/);
+  assert.doesNotMatch(
+    html,
+    /<option value="" selected="">harness default<\/option>\s*<option value="max"/,
+    "the stored level, not the inherit option, is the selected one",
+  );
+
+  // A level the list DOES offer is an ordinary option with no warning attached.
+  const ordinary = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ agent: null, effort: "high" }) }),
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.doesNotMatch(ordinary, /not offered here/);
 });
 
 test("editing sequences enable/pause to the safe side, and rolls back a failed save", () => {

@@ -393,7 +393,12 @@ export const TaskSourceDefaultsSchema = z.object({
     .enum(TASK_KINDS)
     .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
     .default("ship"),
-  agent: z.enum(AGENT_TYPES).default("claude"),
+  /**
+   * `null` inherits the kind's agent from Settings -> Models, resolved as each swept row is
+   * filed. A source that names one pins it, and a stored source that already names one keeps
+   * it - only a source left unset follows the kind.
+   */
+  agent: z.enum(AGENT_TYPES).nullable().default(null),
   priority: z.enum(TASK_PRIORITIES).nullable().default(null),
   labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
   /** Whether Foreman's backlog autopilot may schedule tasks this source files. */

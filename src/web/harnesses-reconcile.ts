@@ -30,7 +30,37 @@ export function mergeHarnessesPatch(
     defaultModel: { ...before.defaultModel, ...patch.defaultModel },
     defaultEffort: { ...before.defaultEffort, ...patch.defaultEffort },
     sessionRuntime: { ...before.sessionRuntime, ...patch.sessionRuntime },
+    kindDefaults: mergeKindDefaults(before.kindDefaults, patch.kindDefaults),
   };
+}
+
+/**
+ * The kind rows, merged two levels deep - by kind, and then by field within one kind.
+ *
+ * Deeper than its siblings because the value IS a record: a shallow spread would let a
+ * patch that sets only `plan`'s effort replace the whole `plan` row and blank the agent
+ * beside it, which is precisely the lost update the per-agent merge above exists to stop,
+ * one level further in.
+ *
+ * The model-follows-agent rule is applied here as well as on the server, for the reason
+ * every rule in this file is duplicated: the panel is optimistic, so if it merged a pair
+ * the daemon will not store, the row would show a model for one beat and then lose it.
+ */
+function mergeKindDefaults(
+  before: HarnessesConfig["kindDefaults"],
+  patch: HarnessesConfigPatch["kindDefaults"],
+): HarnessesConfig["kindDefaults"] {
+  if (!patch) return before;
+  const next = { ...before };
+  for (const [kind, row] of Object.entries(patch) as [
+    keyof HarnessesConfig["kindDefaults"],
+    NonNullable<HarnessesConfigPatch["kindDefaults"]>[keyof HarnessesConfig["kindDefaults"]],
+  ][]) {
+    if (!row) continue;
+    const merged = { ...next[kind], ...row };
+    next[kind] = merged.agent === null ? { ...merged, model: null } : merged;
+  }
+  return next;
 }
 
 /**

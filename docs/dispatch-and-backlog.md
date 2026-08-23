@@ -819,13 +819,16 @@ rather than going on naming a model you have moved away from. A session **alread
 keeps the model it launched with - that is deliberate, so a restart cannot change a model
 mid-conversation; only the next dispatch picks up the new value.
 
-**Which model wins.** Three tiers, narrowest first:
+**Which model wins.** Four tiers, narrowest first:
 
 1. **The task's own model**, chosen in the dispatch form. An explicit choice, so it always wins.
 2. **Foreman's per-harness backlog model** (*Settings → Foreman → "&lt;harness&gt; backlog
    tasks"*), which applies **only** to a launch Foreman starts from the backlog. Leaving it on
    the harnesses default is what makes this card govern Foreman's launches too.
-3. **This card's default model**, else no `--model` flag at all.
+3. **The task kind's model** (*Settings → Models → Task kinds*), which applies only when the
+   task's agent matches the agent that row names - a model id belongs to one harness, so a
+   Claude id is never handed to a Codex launch. See [Models](models.md#task-kinds).
+4. **This card's default model**, else no `--model` flag at all.
 
 Tier 2 applies to **one launch** and is never written onto the task, so a task Foreman
 launched still follows this card the next time it runs - and a rescheduled task carries no
@@ -855,6 +858,13 @@ All three ship as **Harness default**, so Mission Control passes no effort overr
 CLI keeps its own configured choice. Like the model default, this is resolved when the
 task launches: changing it applies to already-shelved tasks unless a task selected its
 own effort in the dispatch form.
+
+A **task kind's effort** (*Settings → Models → Task kinds*) sits between the two, and is
+guarded differently from the kind's model above it. The levels are one shared vocabulary, so a
+level chosen for planning applies on whichever harness the task actually runs - but only if
+that harness offers it *for the model this launch resolved*. Codex drops `max` on every model
+but its newest two, so a `max` chosen for `plan` reaches a Codex launch on one of those and
+falls back to this card's default on the others rather than passing a flag the CLI rejects.
 
 ### Session runtime
 
@@ -907,7 +917,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. Turn **Allow backlog autopilot** off to make new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually |
+| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. Turn **Allow backlog autopilot** off to make new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually |
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |

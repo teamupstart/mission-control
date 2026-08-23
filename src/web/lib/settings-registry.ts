@@ -252,10 +252,25 @@ export const SETTINGS_CATEGORIES = [
     id: "models",
     label: "Models",
     icon: "◈",
-    blurb: "The provider and models behind the app's own calls",
+    // Two halves, and the blurb has to name both or it describes half a page: the app's own
+    // background calls, and what a dispatched task of each kind launches on. "the app's own
+    // calls" alone sent anyone looking for "which model plans" straight past this category.
+    blurb: "Models for the app's own calls, and per task kind for dispatched work",
     group: "background",
     scope: "machine",
-    keywords: ["provider", "runner", "title", "goal", "digest", "workflow context"],
+    keywords: [
+      "provider",
+      "runner",
+      "title",
+      "goal",
+      "digest",
+      "workflow context",
+      "task kind",
+      "plan model",
+      "ship model",
+      "scout model",
+      "effort",
+    ],
   },
   {
     id: "inspector",

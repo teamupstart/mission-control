@@ -103,7 +103,7 @@ export interface TaskKindBehavior {
  * after answering the same three questions: where it is available, who launches it, and
  * whether Foreman may schedule it.
  */
-export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
+export const TASK_KIND_BEHAVIOR = {
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
@@ -135,7 +135,34 @@ export const TASK_KIND_BEHAVIOR: Record<TaskKind, TaskKindBehavior> = {
     autopilot: false,
     constraint: null,
   },
-};
+  // `as const satisfies` rather than a plain annotation: `satisfies` keeps the
+  // exhaustiveness gate exactly as it was - a new kind still does not compile until it has
+  // answered all four questions - while `as const` keeps each answer's LITERAL type, which
+  // is what lets `HarnessLaunchedTaskKind` below be derived from this record instead of
+  // being a second, hand-maintained list that can silently disagree with it.
+} as const satisfies Record<TaskKind, TaskKindBehavior>;
+
+/**
+ * The kinds Mission Control itself launches a harness for, derived rather than listed.
+ *
+ * `pipeline` is absent because it declares `launch: "pipeline"` - Conductor owns its
+ * downstream agent, model and effort, so a per-kind default would be a control that could
+ * never reach the process it appears to describe. Derived from the behaviour registry so a
+ * future harness-launched kind joins this list by answering `TASK_KIND_BEHAVIOR`, and a
+ * future provider-launched one stays out of it, without either editing a second list.
+ */
+export type HarnessLaunchedTaskKind = {
+  [K in TaskKind]: (typeof TASK_KIND_BEHAVIOR)[K]["launch"] extends "harness" ? K : never;
+}[TaskKind];
+
+export const HARNESS_LAUNCHED_TASK_KINDS = TASK_KINDS.filter(
+  taskKindLaunchesHarness,
+) as readonly HarnessLaunchedTaskKind[];
+
+/** Whether this kind's launch is ours to give an agent, model and effort to. */
+export function taskKindLaunchesHarness(kind: TaskKind): kind is HarnessLaunchedTaskKind {
+  return TASK_KIND_BEHAVIOR[kind].launch === "harness";
+}
 
 /** Whether the external provider projection, rather than a host session, owns completion. */
 export function providerOwnsTaskCompletion(kind: TaskKind): boolean {

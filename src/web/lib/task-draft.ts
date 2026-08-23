@@ -35,6 +35,16 @@ export type DispatchDraft = {
   title: string;
   kind: TaskKind;
   agent: AgentType;
+  /**
+   * Whether `agent` is a choice somebody MADE, rather than one the form resolved for them.
+   *
+   * On the draft and not in a ref inside the modal, because it has to survive exactly what
+   * the agent beside it survives. Closing the dispatch surface is neither Clear nor a submit:
+   * the draft is kept and reopening resumes it, and a ref dies with the unmount - so a
+   * resumed Codex read as "nobody has chosen" and the kind-follows-agent effect put the
+   * kind's harness back over a decision the operator had already made and could still see.
+   */
+  agentPinned: boolean;
   /** Unset by default - "" is the empty option, which posts as null. */
   priority: TaskPriority | "";
   /**
@@ -70,7 +80,15 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   intent: "",
   title: "",
   kind: "ship",
+  /**
+   * A PLACEHOLDER, not the answer. The real seed is this kind's configured agent, which
+   * lives in a config the browser has not fetched when this constant is read - so the form
+   * opens on it and moves to the kind default the moment the defaults land (see the
+   * kind-follows-agent effect in `DispatchModal`). It matches `INHERITED_TASK_AGENT`, which
+   * is what an unconfigured installation resolves to, so nothing moves on the common path.
+   */
   agent: "claude",
+  agentPinned: false,
   priority: "",
   labels: "",
   model: "",
@@ -110,6 +128,10 @@ export function draftFromTask(t: Task): DispatchDraft {
     title: t.title,
     kind: t.kind,
     agent: t.agent,
+    // A shelved task's agent was resolved when it was filed and is an ordinary pin now, so
+    // the editor must never re-resolve it. The `editing` guard says this too; saying it on
+    // the draft as well keeps the flag meaningful for anything that reads a draft alone.
+    agentPinned: true,
     // "" is the form's empty option, which is how an unset priority round-trips: a task
     // reopened and saved unchanged must not acquire one.
     priority: t.priority ?? "",

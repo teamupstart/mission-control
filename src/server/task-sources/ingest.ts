@@ -119,7 +119,10 @@ export async function ingestSweep(
       intent: c.intent,
       title: c.title,
       kind: c.kind ?? inst.defaults.kind,
-      agent: c.agent ?? inst.defaults.agent,
+      // `?? undefined` and not `?? null`: an unset source is asking the KIND, and
+      // `DispatchSchema.agent` spells that absence rather than null. A candidate that names
+      // its own agent still wins over both.
+      agent: c.agent ?? inst.defaults.agent ?? undefined,
       // `??` and not `||`: a candidate that deliberately says `null` is saying "no
       // priority", and must not silently inherit the source's default.
       priority: c.priority !== undefined ? c.priority : inst.defaults.priority,

@@ -182,6 +182,7 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
+  TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
@@ -237,7 +238,12 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
-import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import {
+  getHarnessesConfig,
+  HarnessesConfigError,
+  resolveTaskAgent,
+  setHarnessesConfig,
+} from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -3303,7 +3309,9 @@ export function buildApp(
         title: parsed.data.title,
         intent: parsed.data.intent,
         kind: "ship",
-        agent: "claude",
+        // No agent: an agent filing work through MCP has no opinion about which harness
+        // runs it, so it takes whatever `ship` is configured to run on. Naming "claude"
+        // here was that opinion, expressed by accident.
         backlog: true,
         dependencies,
       });
@@ -5094,7 +5102,15 @@ export function buildApp(
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const next = setHarnessesConfig(parsed.data);
+    let next;
+    try {
+      next = setHarnessesConfig(parsed.data);
+    } catch (error) {
+      // A pair only the merge can judge - a model landing on a row that inherits its agent.
+      // A refusal the panel can print, not a 500.
+      if (error instanceof HarnessesConfigError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
     // Announced like every sibling settings route publishes its own change. Without this the
     // settings panel learned of another tab's edit only on its next poll, and an already-open
     // dispatch modal - which reads these defaults once, when it opens - never learned at all
@@ -5609,13 +5625,20 @@ export function buildApp(
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;
     const extraRepoRoots = resolved.extraRepoRoots;
+    // Resolved HERE rather than left to `TaskManager.create`, because the three checks below
+    // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
+    // are all questions about the harness this task will actually get, and an omitted agent
+    // is exactly the case where that is the kind's answer rather than Claude. Passed on
+    // explicitly, so the route and the task agree by construction rather than by both
+    // running the same resolution and hoping the config did not move between them.
+    const agent = resolveTaskAgent(parsed.data.kind, parsed.data.agent);
     // The harness has to be able to hold write access outside its cwd, or the secondary
     // worktrees would be provisioned and then be unreachable to the agent standing in the
     // primary. Refused here as well as hidden in the modal, so the capability gates the
     // API rather than only the button.
-    if (extraRepoRoots.length > 0 && !capabilitiesFor(parsed.data.agent).multiRepoDispatch) {
+    if (extraRepoRoots.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
       return c.json(
-        { error: `${parsed.data.agent} cannot be given write access to more than one repo` },
+        { error: `${agent} cannot be given write access to more than one repo` },
         400,
       );
     }
@@ -5624,7 +5647,7 @@ export function buildApp(
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
       const blocked = parsed.data.backlog
         ? manager.workflowSelectionBlock(workflowId)
-        : manager.dispatchWorkflowBlock(workflowId, parsed.data.agent, repoRoot);
+        : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
       if (blocked) return c.json({ error: blocked }, 409);
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
@@ -5633,18 +5656,21 @@ export function buildApp(
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock(parsed.data);
+      const planBlock = planDispatchBlock({ ...parsed.data, agent });
       if (planBlock) return c.json({ error: planBlock }, 409);
     }
     let task;
     try {
       task = tasks.create(
-        { ...parsed.data, repoRoot, extraRepoRoots, workflowId },
+        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
       );
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
+      // against the harness the kind turned out to resolve to. A refusal, not a 500.
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
     return c.json(task);

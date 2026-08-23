@@ -545,7 +545,7 @@ export function SettingsPage({
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":
-        return <LlmSettingsPanel state={llm} />;
+        return <LlmSettingsPanel state={llm} harnesses={harnesses} />;
       case "foreman":
         return (
           <ForemanSettingsPanel

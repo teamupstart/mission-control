@@ -147,7 +147,8 @@ So the composition is **conditional on the resolved harness and runtime**:
   This text *is* the operator's words.
 
 Order within the prefix, when it applies: repo manifest, then standing instructions, then the
-intent. The manifest tells the agent which checkouts exist; the instructions are about them.
+intent. The manifest tells the agent which checkouts exist; the instructions are about them - which
+is why the order is asserted as all three positions and not just "above the intent".
 
 #### Launch resolves. Assignment repeats.
 
@@ -249,8 +250,20 @@ The snapshot read route is step 8's, and sits with the session routes rather tha
 - `GET /api/instructions` → the view.
 - `PUT /api/instructions` under `bodyLimit` with a `413` handler; `409` with `{error, code, current}`
   on a stale `expectedEtag`.
-- `GET /api/instructions/resolved?repoPath=&agent=&runtime=` → the resolved text, the matched key,
-  and the delivery mechanism.
+- `GET /api/instructions/resolved?repoPath=…&agent=&runtime=` → a `StandingInstructionsDelivery`.
+
+  **`repoPath` repeats, once per attached repository, in the launch manifest's order.** A launch
+  composes a labelled block for *every* attached repository that has rules (step 4), so a route
+  that previewed only the one the operator picked would tell a two-repo dispatch that nothing will
+  be sent while the launch sends the second repository's rules - a marker lying in the one
+  direction that costs an operator the most, because a marker saying "nothing" is the reason they
+  stop looking. Compose the response with the **same `compose.ts`** the launch uses, over the same
+  ordered list, so the preview cannot drift from the delivery. Zero `repoPath` values is a `400`;
+  more than the manifest's own cap is a `400`.
+
+  **The response is the same type the snapshot stores.** That is deliberate: `what will be sent`
+  and `what was sent` are one shape, so Phase 2 renders both markers through one component and
+  neither can acquire a field the other lacks.
 
   **`agent` and `runtime` are required, and validated.** The mechanism is a property of the pair,
   not of the repository - the same text is a system prompt on `claude · terminal`, developer
@@ -390,12 +403,13 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 |---|---|
 | Keys | a PUT naming `<root>/packages/api` stores **that path**, not `<root>` - the case that makes longest-match configurable at all; a key inside a pool tree stores its main-checkout equivalent; a non-repository key is `400`; a session in `<root>/packages/api` matches the package key rather than the root's |
 | Resolution | longest match wins; `/repo-backup` does not match `/repo`; empty-string override beats the default; absent key inherits; the character cap |
-| Composition | the block is a prefix above the intent and below nothing; **a repo with no rules produces a byte-identical prompt to today**; multi-repo emits one labelled block per attached repo in manifest order |
+| Composition | the block sits **below the repo manifest and above the intent**, asserted as that exact three-way order - "above the intent" alone is also satisfied by placing it above the manifest, which inverts the reason for the order, since the manifest names the checkouts the instructions are about; **a repo with no rules produces a byte-identical prompt to today**; multi-repo emits one labelled block per attached repo in manifest order |
 | Delivery | each of the five harness · runtime pairs carries the text by its declared mechanism; **exactly one `--append-system-prompt` flag is emitted**; the standing instruction still ships when `askChannelArgs` returns `[]`; Codex's merge preserves a configured value and arms without `opts.mcp` |
 | **Assignment** | an assigned task on a pair **with** a channel composes nothing and the session's installed block still governs; on a pair **without** one it carries the **snapshot's** text; editing the configuration between launch and assignment changes neither; a session with no snapshot row is assigned a byte-identical prompt to today |
 | **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
 | Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
+| **Resolved route** | one `repoPath` and several behave the same way the launch does, byte for byte against `compose.ts`; a two-repo preview where only the *second* repository has rules returns that repository's block rather than nothing; order follows the manifest; zero `repoPath` values is a `400` |
 | **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **a multi-repo dispatch's row holds the whole composed block and one `sources` entry per contributing repository, in manifest order**; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and every subsequent native-to-native rotation**, and is reachable under the new key each time - drive at least two `/clear`s, because a hook copied from `moveLaunchTurnOnInitialBind` passes the first move and fails the second; a pruned session's row goes with it |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.

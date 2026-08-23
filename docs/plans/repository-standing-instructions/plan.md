@@ -404,13 +404,15 @@ browser tab cannot silently clobber an edit:
 |---|---|---|---|
 | `GET` | `/api/instructions` | - | default, every override, one opaque ETag |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` | `200` view, `409` conflict with `current`, `413` too large |
-| `GET` | `/api/instructions/resolved?repoPath=&agent=&runtime=` | - | the exact composed text and mechanism for one repo, from live config |
-| `GET` | `/api/sessions/:id/standing-instructions` | - | what one session actually received at launch, or `404` |
+| `GET` | `/api/instructions/resolved?repoPath=…&agent=&runtime=` | - | the exact composed block and mechanism, from live config; `repoPath` repeats once per attached repository |
+| `GET` | `/api/sessions/:id/standing-instructions` | - | the same shape, immutable: what one session actually received at launch, or `404` |
 
 The resolved route exists so the **Preview** button, the dispatch chip and the composed
 prompt can never disagree: all three read one pure
-`resolveStandingInstructions(config, repoPath)`, and the browser never reimplements the
-longest-match rule. `repositories` is a **patch**, the same convention
+`resolveStandingInstructions(config, repoPath)` and one `compose.ts`, and the browser never
+reimplements either. `repoPath` repeats because a launch composes a block for **every** attached
+repository: previewing only the one the operator picked would tell a two-repo dispatch that nothing
+is coming while the launch sends the other repository's rules. `repositories` is a **patch**, the same convention
 `WorktreesConfigPatchSchema` uses: an absent key is untouched, a string sets it, and `null`
 removes that repository's block entirely. Saving one repository therefore sends one key, and
 never a whole draft map that would commit text the operator had not saved.

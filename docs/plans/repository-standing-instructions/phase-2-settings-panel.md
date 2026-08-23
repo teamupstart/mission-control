@@ -51,8 +51,8 @@ From Phase 1, relied on and not changed:
 |---|---|
 | `GET /api/instructions` | `StandingInstructionsView` - default, repositories, one opaque ETag |
 | `PUT /api/instructions` | CAS on `expectedEtag`; `409` `{error, code, current}`; `413` oversize |
-| `GET /api/instructions/resolved?repoPath=&agent=&runtime=` | effective text, matched key, and delivery mechanism - **live config, for the dispatch note only** |
-| `GET /api/sessions/:id/standing-instructions` | the immutable snapshot of what *that* session received, or `404` - **the only source the session chip may read** |
+| `GET /api/instructions/resolved?repoPath=…&agent=&runtime=` | `StandingInstructionsDelivery`; `repoPath` repeats, once per attached repository - **live config, for the dispatch note only** |
+| `GET /api/sessions/:id/standing-instructions` | the same `StandingInstructionsDelivery`, immutable, for what *that* session received, or `404` - **the only source the session chip may read** |
 | absent key | inherit the machine-wide default → renders the `inherited` chip |
 | key present, `""` | send nothing for this repository → still an `override` |
 | `null` in a patch | remove the key → what **Use global default** sends |
@@ -243,12 +243,18 @@ is the point most easily got wrong, so it is stated before either one:
 
 | Marker | Question | Source |
 |---|---|---|
-| Dispatch note | *what will this session get?* | `GET /api/instructions/resolved` - live config, nothing has happened yet |
+| Dispatch note | *what will this session get?* | `GET /api/instructions/resolved`, **one `repoPath` per attached repository** - live config, nothing has happened yet |
 | Session chip | *what did this session get?* | `GET /api/sessions/:id/standing-instructions` - the snapshot Phase 1 wrote at launch |
 
 - **Dispatch form** (`DispatchModal.tsx`): a read-only note naming the size **and** the mechanism,
-  reading `GET /api/instructions/resolved` for the selected repository, agent and runtime. It must
-  update when the repository selection changes.
+  reading `GET /api/instructions/resolved` for **every attached repository**, in the manifest's
+  order, plus the selected agent and runtime. It must update when *any* of them changes, not only
+  the primary. Sending one `repoPath` when the form has two attached is the failure worth naming:
+  if the primary has no rule and the secondary does, the note would read "nothing will be sent"
+  while the launch sends the secondary's block - and an operator who has been told nothing is
+  coming does not go looking for it.
+  Both markers render the same `StandingInstructionsDelivery`, so build one read-only component and
+  give it two callers rather than two components with one shape between them.
 - **Session header**: a chip that reveals the text this session actually received, read from its
   launch snapshot. **It must never call the resolved route.** A session outlives the setting that
   launched it - the operator edits the rule, or removes the repository's override entirely, and a
@@ -273,6 +279,9 @@ both the current registry and `docs/agent-guides/change-contracts.md:747-755`.
 
 ### Node
 
+- A `StandingInstructionsDelivery` render test: the one read-only component both markers use,
+  given a single-repository delivery and a two-repository one, renders the size, the mechanism and
+  a labelled section per source. Written once because the component is written once.
 - A panel render test, `test/standing-instructions-panel.test.ts`, modelled on
   `test/conductor-panel.test.ts` (487 lines) or `test/task-sources-panel.test.ts` (240):
   `inherited` vs `override` chips, the counter, the disabled **Use global default**, and the empty
@@ -317,9 +326,24 @@ Cover three things:
    rule in Settings and assert the running session's chip still shows the original text. This is
    the browser proof that the chip reads the snapshot; a chip wired to the resolved route passes
    every other case in this spec and fails only this one.
-5. **Neither does the session.** Assign a second task to that same session and assert the recorded
-   argv and prompt carry the launch text, not the edited one - the browser proof of invariant 9.
-   `harness-defaults-propagate.spec.ts`'s record-dir reader already gives the assertion shape.
+5. **Neither does the session** - and the assertion has to match the channel, because the two
+   pairs are observable in different places and one of them has nothing new to observe at all.
+
+   | Pair | What an assignment does | What the spec asserts |
+   |---|---|---|
+   | `pi · terminal` (no channel) | prefixes the snapshot's text into the injected turn | the assigned turn as **rendered in the conversation** contains the launch text, and not the edited text |
+   | `claude · sdk` (durable channel) | composes nothing; no new launch, so **no new argv record** | the assigned turn as rendered contains **no** standing-instruction block, and the session's chip still shows the launch text |
+
+   Do **not** assert on argv here. An assignment injects into a running process, so
+   `recordsIn` has nothing new to read, and a spec written that way either fails against the
+   exactly-once rule or passes by observing the launch record it already asserted in (2).
+   The conversation is the right surface for both rows:
+   `e2e/specs/dispatch-and-converse.spec.ts` already reads a real transcript the fake writes and
+   asserts on the rendered turn, which is exactly this shape.
+
+   The `claude · sdk` row is the one that pins invariant 5's second half, and it is only assertable
+   *because* the block never enters the transcript on a durable channel - the same property that
+   made the session chip necessary in the first place.
 
 Two standing constraints: **never spend model tokens** - every agent binary is redirected at a fake
 by `e2e/fixtures/fake-agents.ts` - and **never add `data-testid`**. Select by role, label or
@@ -346,6 +370,10 @@ npm run test:e2e
 - A poll landing mid-edit does not revert the operator's text.
 - Saving one repository leaves every other repository's stored value untouched.
 - A session's chip shows what that session received, and does not change when the setting does.
+- The dispatch note covers every attached repository, proven with a two-repo dispatch whose
+  **secondary** is the one carrying a rule.
+- An assigned task on a no-channel pair replays the launch text; on a durable-channel pair it adds
+  nothing to the conversation.
 - The reach block states all five harness · runtime pairs, the two deliberate exclusions, and the
   line saying an edit reaches the next session rather than a running one.
 - Docs updated, including the stale Conductor sentence.

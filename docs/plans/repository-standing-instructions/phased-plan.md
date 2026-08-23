@@ -219,13 +219,28 @@ export interface StandingInstructionsView {
   etag: string;
 }
 
-/** One repository's effective answer, and how it will be delivered. */
+/** One repository's effective answer. The pure function's return, not the wire's. */
 export interface ResolvedStandingInstructions {
   /** Effective text, "" when nothing applies. */
   text: string;
   /** Which stored key produced it, or null when the default did. */
   matchedKey: string | null;
   source: "repository" | "default" | "none";
+}
+
+/**
+ * What a session gets, composed. Returned by the resolved route for a launch that has not
+ * happened, and stored verbatim by the snapshot for one that has - deliberately ONE type,
+ * so "what will be sent" and "what was sent" render through the same component and cannot
+ * drift into two answers.
+ */
+export interface StandingInstructionsDelivery {
+  /** The composed block exactly as it would be, or was, delivered. "" when nothing applies. */
+  text: string;
+  /** The channel that carries it for this harness · runtime pair. */
+  mechanism: StandingInstructionsMechanism;
+  /** One entry per contributing repository, in the launch manifest's order. */
+  sources: Array<{ repoPath: string; matchedKey: string | null }>;
 }
 ```
 
@@ -235,8 +250,8 @@ export interface ResolvedStandingInstructions {
 |---|---|---|
 | `GET` | `/api/instructions` | `StandingInstructionsView` |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` → `200` view, `409` `{error, code, current}`, `413` over `bodyLimit` |
-| `GET` | `/api/instructions/resolved?repoPath=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime. **Live config: what a session *would* get** |
-| `GET` | `/api/sessions/:id/standing-instructions` | The immutable snapshot of what *that* session received at launch, or `404`. **What a session *did* get** |
+| `GET` | `/api/instructions/resolved?repoPath=…&agent=&runtime=` | `StandingInstructionsDelivery`. **`repoPath` repeats, once per attached repository in manifest order** - a launch composes a block for every one of them, so a preview of one is not a preview. **Live config: what a session *would* get** |
+| `GET` | `/api/sessions/:id/standing-instructions` | The same `StandingInstructionsDelivery`, immutable, for what *that* session received at launch, or `404`. **What a session *did* get** |
 
 **Behavioural invariants Phase 2 may rely on and must not change:**
 

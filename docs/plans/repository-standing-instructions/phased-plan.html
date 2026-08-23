@@ -319,13 +319,28 @@ export interface StandingInstructionsView {
   etag: string;
 }
 
-/** One repository's effective answer, and how it will be delivered. */
+/** One repository's effective answer. The pure function's return, not the wire's. */
 export interface ResolvedStandingInstructions {
   /** Effective text, "" when nothing applies. */
   text: string;
   /** Which stored key produced it, or null when the default did. */
   matchedKey: string | null;
   source: "repository" | "default" | "none";
+}
+
+/**
+ * What a session gets, composed. Returned by the resolved route for a launch that has not
+ * happened, and stored verbatim by the snapshot for one that has - deliberately ONE type,
+ * so "what will be sent" and "what was sent" render through the same component and cannot
+ * drift into two answers.
+ */
+export interface StandingInstructionsDelivery {
+  /** The composed block exactly as it would be, or was, delivered. "" when nothing applies. */
+  text: string;
+  /** The channel that carries it for this harness · runtime pair. */
+  mechanism: StandingInstructionsMechanism;
+  /** One entry per contributing repository, in the launch manifest's order. */
+  sources: Array&lt;{ repoPath: string; matchedKey: string | null }&gt;;
 }</code></pre>
 
 <div class="scroll">
@@ -334,8 +349,8 @@ export interface ResolvedStandingInstructions {
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td><code>StandingInstructionsView</code></td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code> → <code>200</code> view, <code>409</code> <code>{error, code, current}</code>, <code>413</code> over <code>bodyLimit</code></td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
-<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>The immutable snapshot of what <em>that</em> session received at launch, or <code>404</code>. <strong>What a session <em>did</em> get</strong></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=…&amp;agent=&amp;runtime=</code></td><td><code>StandingInstructionsDelivery</code>. <strong><code>repoPath</code> repeats, once per attached repository in manifest order</strong> - a launch composes a block for every one of them, so a preview of one is not a preview. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>The same <code>StandingInstructionsDelivery</code>, immutable, for what <em>that</em> session received at launch, or <code>404</code>. <strong>What a session <em>did</em> get</strong></td></tr>
 </tbody>
 </table>
 </div>

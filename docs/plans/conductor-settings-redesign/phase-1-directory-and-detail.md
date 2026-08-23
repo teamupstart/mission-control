@@ -128,10 +128,12 @@ navigation is a legitimate follow-up and is out of scope here.
 
 ### One tile row, not a metric row and a chip row
 
-The mockup draws a read-only overview strip (Workspace / Registered / Dispatch ready / Need
-attention) *and* a filter chip row (Managed / All / Ready / Failing). The plan's own rule is that
-"the filter tiles are the counts", and two rows of numbers a few pixels apart is the disagreement
-`healthCounts` exists to prevent.
+An earlier draft of the mockup drew a read-only overview strip (Workspace / Registered / Dispatch
+ready / Need attention) *and* a filter chip row (Managed / All / Ready / Failing). The plan's own
+rule is that "the filter tiles are the counts", and two rows of numbers a few pixels apart is the
+disagreement `healthCounts` exists to prevent. The four metrics mapped one-to-one onto the four
+tiles, so the strip carried no number a tile did not. `plan.md` and `plan.html` now draw the single
+row, and this section records why rather than leaving the collapse to be rediscovered.
 
 **One `ConsoleStrip` carries the tiles, and they are the filter:** **Managed**, **All**, **Ready**,
 **Failing**, each carrying its count from the shared fold, with **Managed** active on first render.
@@ -148,9 +150,22 @@ state looks like; where the repository disagrees with one, the repository wins.
    (`config?.enabled && repo.enabled`). *Failing* is a repository whose `PipelineRepoStatus` carries
    an error. It is one function, read by both the tiles and the list.
 2. **Filter state.** A single object holding the active tile and the query, mirroring
-   `SourceDirectoryFilters` (`TaskSourcesPanel.tsx:780-784`). The search haystack spans the whole
-   union regardless of the active tile - name and `repoRoot`, lowercased substring, as today
-   (`ConductorPanel.tsx:366-371`).
+   `SourceDirectoryFilters` (`TaskSourcesPanel.tsx:780-784`). **The tile and the query are
+   conjoined, not alternatives** - `matchesTile && (!needle || haystack.includes(needle))`, the
+   shape `TaskSourcesPanel.tsx:838-845` already uses. The haystack itself spans name and
+   `repoRoot`, lowercased substring, as today (`ConductorPanel.tsx:366-371`); it is the *fields*
+   that are unrestricted, not the row set. Two consequences follow, both deliberate:
+
+   - **A tile's count comes from the whole union, not from the visible rows.** It describes the
+     population the tile names, exactly as `healthCounts` does (`:786-804`), so the count does not
+     move while the operator types. The alternative - search overriding the tile - would leave the
+     active tile and its number describing nothing on screen.
+   - **A query matching only unmanaged repositories returns nothing while *Managed* is active.**
+     This is the trap the managed-first default creates, and it is the one place the conjunction
+     rule is user-hostile, so it gets an answer rather than a bare empty list: when the query
+     matches under a wider tile, the empty state names that count and offers the tile. Task
+     sources shows only `"No sources match these filters."` (`TaskSourcesPanel.tsx:922`), which is
+     enough there because its default tile is *All*; it is not enough here.
 3. **Selection state.** `useState<string | null>` keyed by `pipelineRepoKey`, with the
    drop-when-gone and auto-select-first effects from finding 4. Focus returns to the row, falling
    back to the list container, as `TaskSourcesPanel.tsx:847-853` does.
@@ -206,6 +221,11 @@ state looks like; where the repository disagrees with one, the repository wins.
   stands today, which is what makes it the useful one to have first.
 - **A selection spec**: choosing a repository shows it in the detail pane, and the selection
   survives a poll rather than jumping.
+- **A search-and-filter precedence spec**, because the rule is invisible from either control alone
+  and a later change could silently invert it: with *Managed* active, a query matching only an
+  unmanaged repository renders no rows and the empty state offers the wider tile; taking that offer
+  renders the match. It also asserts a tile's count does not change while the query is typed, which
+  is the half of the rule the empty state cannot show.
 - Commands: `npm run typecheck`, `npm run lint`, `npm test`, then `npm run build` before
   `npm run test:e2e`. Two standing repository constraints apply here, both from `AGENTS.md`:
   e2e spends no model tokens, because every agent binary is redirected by

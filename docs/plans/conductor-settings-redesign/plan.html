@@ -114,16 +114,15 @@
   .mc-btn.primary { border-color: color-mix(in srgb, var(--mc-working) 55%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 18%, var(--mc-panel2)); color: #cfe4ff; }
   .mc-input { display: block; width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--mc-border); background: var(--mc-bg2); color: var(--mc-dim); font-size: 11.5px; }
   .mc-code { font-family: var(--mono); font-size: 10.5px; color: var(--mc-muted); }
-  .mc-strip { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-  .mc-stat { flex: 1 1 0; min-width: 92px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--mc-border); background: var(--mc-panel); }
-  .mc-stat b { display: block; font-size: 17px; font-weight: 680; line-height: 1.1; }
-  .mc-stat span { display: block; font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--mc-dim); margin-top: 2px; }
   .mc-pill { display: inline-block; padding: 1.5px 6px; border-radius: 5px; margin-right: 4px; font-size: 9.5px; font-weight: 640; background: #1c222a; color: var(--mc-dim); }
   .mc-pill.ok { background: color-mix(in srgb, var(--mc-idle) 15%, transparent); color: var(--mc-idle); }
   .mc-ready { font-size: 11px; font-weight: 640; color: var(--mc-idle); }
-  .mc-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 8px 0 0; }
-  .mc-chip { padding: 3px 8px; border-radius: 7px; border: 1px solid var(--mc-border); background: var(--mc-panel2); font-size: 10px; font-weight: 600; color: var(--mc-dim); white-space: nowrap; }
-  .mc-chip.on { border-color: color-mix(in srgb, var(--mc-working) 60%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 14%, var(--mc-panel2)); color: #cfe4ff; }
+  .mc-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 8px 0 0; }
+  .mc-tile { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--mc-border); background: var(--mc-panel2); text-align: left; }
+  .mc-tile b { display: block; font-size: 14px; font-weight: 680; line-height: 1.15; }
+  .mc-tile span { display: block; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--mc-dim); margin-top: 1px; }
+  .mc-tile.on { border-color: color-mix(in srgb, var(--mc-working) 60%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 14%, var(--mc-panel2)); }
+  .mc-tile.on span { color: #cfe4ff; }
   .mc-dirrow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 11.5px; }
   .mc-dirrow.sel { background: color-mix(in srgb, var(--mc-working) 10%, var(--mc-panel)); }
   .mc-dot { width: 7px; height: 7px; border-radius: 50%; background: #39424e; flex: none; }
@@ -345,27 +344,20 @@ the managed partition rather than on all of it:</p>
       <li><i>03</i><b>Observe</b><small>1 ready</small></li>
     </ul>
 
-    <div class="mc-strip">
-      <div class="mc-stat"><b>202</b><span>Workspace</span></div>
-      <div class="mc-stat"><b>1</b><span>Registered</span></div>
-      <div class="mc-stat"><b style="color:var(--mc-idle)">1</b><span>Dispatch ready</span></div>
-      <div class="mc-stat"><b>0</b><span>Need attention</span></div>
-    </div>
-
     <div class="colsB">
       <div class="mc-card">
         <div class="mc-card-body" style="padding:10px">
           <span class="mc-input">Search repositories&hellip;</span>
-          <div class="mc-chips">
-            <span class="mc-chip on">Managed 1</span><span class="mc-chip">All 202</span>
-            <span class="mc-chip">Ready 1</span><span class="mc-chip">Failing 0</span>
+          <div class="mc-tiles" role="group" aria-label="Filter repositories">
+            <span class="mc-tile on"><b>1</b><span>Managed</span></span><span class="mc-tile"><b>202</b><span>All</span></span>
+            <span class="mc-tile"><b style="color:var(--mc-idle)">1</b><span>Ready</span></span><span class="mc-tile"><b>0</b><span>Failing</span></span>
           </div>
         </div>
         <div style="border-top:1px solid var(--mc-soft)">
           <div class="mc-dirrow sel"><span class="mc-dot ok"></span><span style="flex:1">ai-harness</span><span class="mc-ready">Ready</span></div>
         </div>
         <div style="padding:10px;border-top:1px solid var(--mc-soft)">
-          <p class="mc-hint">Showing the 1 repository Conductor manages. <span style="color:var(--mc-muted)">All 202</span> lists the rest of the workspace; search reaches every one either way.</p>
+          <p class="mc-hint">1 of 202 repositories. Search narrows the active tile rather than escaping it; when a query matches only outside it, the empty state names the wider tile and offers it.</p>
         </div>
       </div>
 
@@ -403,8 +395,7 @@ the managed partition rather than on all of it:</p>
   <li><strong>The directory opens on what Conductor manages.</strong> The default filter tile is
     <em>Managed</em> - registered or consented - which is 1 row here, not 202. <code>All</code>,
     <code>Ready</code> and <code>Failing</code> are tiles beside it, so nothing is hidden and the
-    full catalogue is one click away. Search spans the whole union regardless of the active tile,
-    so typing a repository name finds it whether or not it is managed.</li>
+    full catalogue is one click away.</li>
   <li><strong>The directory rows get short.</strong> Name, a status dot, and the ready mark - so
     even the <code>All 202</code> view is a column that scrolls inside itself, not a page that
     scrolls for twenty screens.</li>
@@ -413,9 +404,19 @@ the managed partition rather than on all of it:</p>
     the last read time, the row error, and the register or enable action as a real primary
     button. Its navigation action is <strong>Open Pipelines tab</strong>: the route grammar has no
     repository-scoped pipelines address, so a label promising one would be a lie.</li>
-  <li><strong>The filter tiles are the counts</strong>, folded over one bucket function so a tally
-    and the rows it selects cannot disagree - the rule <code>ConsoleStrip</code> and Task sources'
-    health chips both already follow.</li>
+  <li><strong>The filter tiles are the counts, and there is one row of them.</strong> Not a
+    read-only metric row above a separate chip row: every number an overview strip would show is a
+    number a tile already carries, and two tallies a few pixels apart is exactly the disagreement
+    <code>healthCounts</code> (<code>TaskSourcesPanel.tsx:786-804</code>) was written to prevent.
+    One bucket function feeds both the tallies and the rows they select, so the two cannot drift -
+    the rule <code>ConsoleStrip</code> and Task sources' health chips already follow.</li>
+  <li><strong>Search narrows the active tile; it does not escape it.</strong> The tile and the
+    query combine, which is what Task sources does today
+    (<code>TaskSourcesPanel.tsx:838-845</code>), and it is what keeps a tile's count meaningful:
+    the count describes the population the tile names, not whatever rows survive a query. The cost
+    is real - a query matching only unmanaged repositories finds nothing while <em>Managed</em> is
+    active - so that case does not render as a bare empty list. When the query would match under a
+    wider tile, the empty state says how many and offers that tile.</li>
   <li><strong>The four configuration cards sit below the directory</strong>, as compact cards. They
     are global switches with nothing to do with the selected repository, so they must not compete
     with the detail pane for the right-hand column.</li>
@@ -465,6 +466,10 @@ the managed partition rather than on all of it:</p>
     assertion that fails today.</li>
   <li><code>e2e/specs/settings-conductor.spec.ts</code> covers the new shape, including selecting a
     repository from the directory and reading its detail pane.</li>
+  <li><strong>A spec that pins search-and-filter precedence</strong>, because neither control
+    reveals the rule on its own: with <em>Managed</em> active, a query matching only an unmanaged
+    repository renders no rows and the empty state offers the wider tile, and taking that offer
+    renders the match.</li>
   <li><code>docs/pipelines.md:110-140</code> - which currently documents &ldquo;the panel holds five
     cards&rdquo; - is rewritten to the new shape in the same change.</li>
 </ul>

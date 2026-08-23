@@ -112,37 +112,36 @@ Conductor takes the master-detail layout Task sources already uses - `.ts-master
 column the same way (`styles.css:17027`).
 
 ```
-+- Conductor -------------------------------- This machine -+
++- Conductor --------------------------------- This machine -+
 | ai-conductor drives a feature through a gated 22-step SDLC |
 | 01 Engine Installed - 02 Register 1 - 03 Observe 1 ready   |
-|                                                            |
-|  202            1            1               0             |
-|  workspace      registered   dispatch ready  need attention|
-+---------------------+-------------------------------------+
++----------------------+-------------------------------------+
 | [ search... ]        |  ai-harness                         |
-| (Managed 1)(All 202) |  /Users/jordanmance/workspace/...   |
-| (Ready 1)(Failing 0) |  ---------------------------------  |
-| ---------------------|  Registered with Conductor      yes |
-| * ai-harness    Ready|  Observed by Mission Control   [o-] |
-|                      |  Dispatch ready                 yes |
-|   (managed only, by  |  Events arrive by       live events |
-|    default - the     |  Last read                   4s ago |
-|    other 201 are one |                                     |
-|    tile away)        |  engine daemon running              |
+|  +-------+---------+ |  /Users/jordanmance/workspace/...   |
+|  |MANAGED| ALL     | |  ---------------------------------  |
+|  | * 1   | 202     | |  Registered with Conductor      yes |
+|  +-------+---------+ |  Observed by Mission Control   [o-] |
+|  | READY | FAILING | |  Dispatch ready                 yes |
+|  |   1   | 0       | |  Events arrive by       live events |
+|  +-------+---------+ |  Last read                   4s ago |
+| ---------------------|                                     |
+| * ai-harness    Ready|  engine daemon running              |
 |                      |  3 pipelines, 1 halted              |
+|   (managed only, by  |                                     |
+|    default - the     |                                     |
+|    other 201 are one |                                     |
+|    tile away)        |                                     |
 | ---------------------|                                     |
 | 1 of 202 repositories|  [ Open Pipelines tab ][ Stop obs. ]|
-+---------------------+-------------------------------------+
++----------------------+-------------------------------------+
 | THE ENGINE | OBSERVE PIPELINES | LAUNCH RUNTIME | TRIAGE   |
 | (the four configuration cards, below the directory)        |
-+-----------------------------------------------------------+
++------------------------------------------------------------+
 ```
 
 - **The directory opens on what Conductor manages.** The default filter tile is *Managed* -
   registered or consented - which is 1 row here, not 202. `All`, `Ready` and `Failing` are
-  tiles beside it, so nothing is hidden and the full catalogue is one click away. Search
-  spans the whole union regardless of the active tile, so typing a repository name finds it
-  whether or not it is managed.
+  tiles beside it, so nothing is hidden and the full catalogue is one click away.
 - **The directory rows get short.** Name, a status dot, and the ready mark - so even the
   `All 202` view is a column that scrolls inside itself, not a page that scrolls for twenty
   screens.
@@ -152,9 +151,18 @@ column the same way (`styles.css:17027`).
   Its navigation action is **Open Pipelines tab**: the route grammar has no repository-scoped
   pipelines address, so a label promising one would be a lie. See the phase document for the
   grammar this rests on.
-- **The filter tiles are the counts**, folded over one bucket function so a tally and the rows
-  it selects cannot disagree - the rule `ConsoleStrip` and Task sources' health chips both
-  already follow.
+- **The filter tiles are the counts, and there is one row of them.** Not a read-only metric
+  row above a separate chip row: every number an overview strip would show is a number a tile
+  already carries, and two tallies a few pixels apart is exactly the disagreement `healthCounts`
+  (`TaskSourcesPanel.tsx:786-804`) was written to prevent. One bucket function feeds both the
+  tallies and the rows they select, so the two cannot drift - the rule `ConsoleStrip` and Task
+  sources' health chips already follow.
+- **Search narrows the active tile; it does not escape it.** The tile and the query combine,
+  which is what Task sources does today (`TaskSourcesPanel.tsx:838-845`), and it is what keeps a
+  tile's count meaningful: the count describes the population the tile names, not whatever rows
+  survive a query. The cost is real - a query matching only unmanaged repositories finds nothing
+  while *Managed* is active - so that case does not render as a bare empty list. When the query
+  would match under a wider tile, the empty state says how many and offers that tile.
 - **The four configuration cards sit below the directory**, as compact cards. They are global
   switches with nothing to do with the selected repository, so they must not compete with the
   detail pane for the right-hand column.
@@ -197,6 +205,9 @@ shape has been used.
   fails today.
 - `e2e/specs/settings-conductor.spec.ts` covers the new shape, including selecting a
   repository from the directory and reading its detail pane.
+- **A spec that pins search-and-filter precedence**, because neither control reveals the rule on
+  its own: with *Managed* active, a query matching only an unmanaged repository renders no rows
+  and the empty state offers the wider tile, and taking that offer renders the match.
 - `docs/pipelines.md:110-140` - which currently documents "the panel holds five cards" - is
   rewritten to the new shape in the same change.
 

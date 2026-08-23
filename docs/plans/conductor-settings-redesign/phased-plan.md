@@ -37,9 +37,10 @@ first reading assumed.
 3. **A repo-scoped pipelines deep link does not exist.** The route grammar has exactly two
    pipeline forms - `#/runs/pipeline` and `#/runs/pipeline/:repoKey/:slug`
    (`src/web/workflows/useWorkflowRoute.ts:352-362`, `:468-478`). There is no `:repoKey`-only form,
-   and the panel holds no run slug (`PipelineRepoStatus` carries counts, not slugs). This is a
-   genuine discrepancy with the approved mockup's "Open pipelines" button, resolved in the phase
-   file: ship the tab-level link, which already exists, and leave repo scoping out of scope.
+   and the panel holds no run slug (`PipelineRepoStatus` carries counts, not slugs). This was a
+   genuine discrepancy with the approved mockup's pipelines button, resolved in the phase file and
+   carried back into the mockup: the tab-level link already exists and the action is labelled
+   **Open Pipelines tab**, with repo scoping left out of scope.
 4. **`settingsRailDot` already accepts `"conductor"`.** Its `id` parameter is
    `SettingsCategoryId | "trust"` (`src/web/lib/settings-dots.ts:59-61`) and the registry has
    carried `conductor` since `settings-registry.ts:227`. No type widening is needed - only a `case`.

@@ -383,7 +383,7 @@ the managed partition rather than on all of it:</p>
           <div class="mc-kv"><span>Last read</span><span class="mc-code">4s ago</span></div>
           <p class="mc-state" style="margin-top:10px">engine daemon running &middot; 3 pipelines, 1 halted</p>
           <div style="display:flex;gap:7px;margin-top:11px">
-            <span class="mc-btn primary">Open pipelines</span><span class="mc-btn">Stop observing</span>
+            <span class="mc-btn primary">Open Pipelines tab</span><span class="mc-btn">Stop observing</span>
           </div>
         </div>
       </div>
@@ -411,7 +411,8 @@ the managed partition rather than on all of it:</p>
   <li><strong>The detail pane gets long.</strong> Everything the current 90px row cannot hold has
     room: the full health line, the ingest mode (live events versus file tail versus plugin quiet),
     the last read time, the row error, and the register or enable action as a real primary
-    button.</li>
+    button. Its navigation action is <strong>Open Pipelines tab</strong>: the route grammar has no
+    repository-scoped pipelines address, so a label promising one would be a lie.</li>
   <li><strong>The filter tiles are the counts</strong>, folded over one bucket function so a tally
     and the rows it selects cannot disagree - the rule <code>ConsoleStrip</code> and Task sources'
     health chips both already follow.</li>

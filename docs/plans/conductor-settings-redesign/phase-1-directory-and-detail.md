@@ -106,10 +106,10 @@ why they are recorded rather than left to be rediscovered.
 Two places where the approved drawing meets a repository that disagrees. Both are settled here so
 the implementing agent does not have to reopen them.
 
-### "Open pipelines" is a tab-level link, not a repo-scoped one
+### The pipelines action is a tab-level link, not a repo-scoped one
 
-The mockup shows an **Open pipelines** button in the detail pane. A repo-scoped destination does
-not exist: the grammar has only `#/runs/pipeline` and `#/runs/pipeline/:repoKey/:slug`
+The detail pane carries a navigation action out to the pipelines surface. A repo-scoped
+destination does not exist: the grammar has only `#/runs/pipeline` and `#/runs/pipeline/:repoKey/:slug`
 (`useWorkflowRoute.ts:352-362`, `:468-478`), there is no `:repoKey`-only form, and the panel holds
 no run slug to build the two-segment address with. `PipelineRuns` has no repo-scoping input either
 - it renders every observed repository and auto-picks a cross-repository lead run
@@ -121,9 +121,10 @@ what `App.tsx:2870` navigates to in the opposite direction. The wiring follows `
 callback prop, separate from `SettingsNavigate`, which is typed to settings categories and cannot
 express a route that leaves settings. Optional so the render tests mount the panel without a router.
 
-**The label has to match.** A button in a repository's detail pane saying "Open pipelines" that
-lands on a cross-repository tab is a small lie. Prefer copy that does not promise scoping.
-Repo-scoped navigation is a legitimate follow-up and is out of scope here.
+**The label has to match, and it is "Open Pipelines tab".** A button in a repository's detail
+pane saying "Open pipelines" that lands on a cross-repository tab is a small lie, so the mockup in
+`plan.md` and `plan.html` names the tab explicitly and the implementation follows it. Repo-scoped
+navigation is a legitimate follow-up and is out of scope here.
 
 ### One tile row, not a metric row and a chip row
 
@@ -240,7 +241,7 @@ once the overlap with the tiles has been lived with, and a repo-scoped pipelines
   shape (directory and detail), default contents (managed first), and all three approved
   ride-alongs. The deferred prose-trim is recorded as a non-goal so it cannot be picked up by
   accident.
-- **Audited against the source plan** after writing: the plan's "Open pipelines" button and its
+- **Audited against the source plan** after writing: the plan's pipelines action and its
   four-metric overview strip were both found to disagree with the repository or with the plan's own
   stated rule, and both are settled in *Decisions this phase makes* rather than left to the
   implementer.

@@ -131,7 +131,7 @@ column the same way (`styles.css:17027`).
 |    tile away)        |  engine daemon running              |
 |                      |  3 pipelines, 1 halted              |
 | ---------------------|                                     |
-| 1 of 202 repositories|  [ Open pipelines ][ Stop observing]|
+| 1 of 202 repositories|  [ Open Pipelines tab ][ Stop obs. ]|
 +---------------------+-------------------------------------+
 | THE ENGINE | OBSERVE PIPELINES | LAUNCH RUNTIME | TRIAGE   |
 | (the four configuration cards, below the directory)        |
@@ -149,6 +149,9 @@ column the same way (`styles.css:17027`).
 - **The detail pane gets long.** Everything the current 90px row cannot hold has room: the
   full health line, the ingest mode (live events versus file tail versus plugin quiet), the
   last read time, the row error, and the register or enable action as a real primary button.
+  Its navigation action is **Open Pipelines tab**: the route grammar has no repository-scoped
+  pipelines address, so a label promising one would be a lie. See the phase document for the
+  grammar this rests on.
 - **The filter tiles are the counts**, folded over one bucket function so a tally and the rows
   it selects cannot disagree - the rule `ConsoleStrip` and Task sources' health chips both
   already follow.

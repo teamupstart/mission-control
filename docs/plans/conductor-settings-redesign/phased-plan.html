@@ -103,8 +103,9 @@ first reading assumed.</p>
     exist.</strong> The grammar has exactly two pipeline forms - <code>#/runs/pipeline</code> and
     <code>#/runs/pipeline/:repoKey/:slug</code> (<code>useWorkflowRoute.ts:352-362</code>,
     <code>:468-478</code>). There is no <code>:repoKey</code>-only form, and the panel holds no run
-    slug. This disagrees with the approved mockup's "Open pipelines" button and is settled in the
-    phase file.</li>
+    slug. This disagreed with the approved mockup's pipelines button; it is settled in the phase
+    file and carried back into the mockup, which now labels the action
+    <strong>Open Pipelines tab</strong>.</li>
   <li><strong><code>settingsRailDot</code> already accepts <code>"conductor"</code></strong>
     (<code>settings-dots.ts:59-61</code>). A <code>case</code> is enough, with no type widening.</li>
   <li><strong><code>dotLabel</code> switches on tone before category</strong>

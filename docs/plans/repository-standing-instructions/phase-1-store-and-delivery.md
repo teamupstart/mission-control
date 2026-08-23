@@ -65,11 +65,8 @@ Add the constants and schemas named in the phased plan's cross-phase contracts s
 block (`protocol.ts:1736-1790`) for the conflict message, conflict code and update schema.
 
 `repositories` is keyed by a canonical repo-rooted path - a repository root, or a path beneath one
-for a monorepo package - `max(4_096)` per key,
-bounded by `STANDING_INSTRUCTIONS_MAX_REPOSITORIES`.
-
-Reading this file: the Bash grep wrapper misdetects it as binary and returns zero matches silently.
-Use `command grep -a` or `sed -n`.
+for a monorepo package - `max(4_096)` per key, bounded by
+`STANDING_INSTRUCTIONS_MAX_REPOSITORIES`.
 
 ### 2. Resolution - a pure, shared function
 

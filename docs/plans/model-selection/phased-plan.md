@@ -132,6 +132,7 @@ back into Phase 1's file.
 | Contract | Owner | Consumers | Rule |
 |---|---|---|---|
 | `SettingsMatrix`, `ModelSlotRow` | Phase 1 | Phases 2, 3 | Extend by adding column definitions; never fork the component |
+| Tolerant read, strict write | Phase 1 | Phase 2 | A stored provider is permissive on read so `resolveLlmRunner` can report an unreadable id as `unknown`, and strict on write so a bad value is a 400. A `.catch` never sits on a record of independent overrides, where one bad entry would discard the rest |
 | The inherit rule | Phase 1 | Phase 2 | `null`/empty means inherit; a set value replaces and re-bases the model fallback onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an extension, not a competing ladder |
 | The pinning invariant, both halves | Phase 1 | Phases 2, 3 | The *app-wide* default never disturbs a pinned slot; a *slot's own* provider control resets that slot's model unless the new provider offers it. No phase reintroduces the blanket clear-on-change, and none answers the per-slot case differently |
 | The resolver guard | Phase 1 | Phase 2 | **Where correctness lives.** A shared helper over `(resolvedProvider, modelId)`: a model positively known to belong to another provider falls back and reports what it dropped; an id in no catalog passes through. Phase 2 routes `resolveForemanModel` and the Inspector through the same helper rather than re-deriving it |

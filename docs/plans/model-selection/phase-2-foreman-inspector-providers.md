@@ -97,6 +97,12 @@ Explicit non-goals:
 1. **`src/shared/protocol.ts`** - add a nullable per-role `runner` beside each `*Model` key on
    `ForemanConfigSchema`, defaulting to inherit. Keep the existing top-level `runner` as the
    group-level default and correct its comment. Mirror in `ForemanConfigPatchSchema`.
+   Follow Phase 1's read/write split: **permissive on read so `resolveLlmRunner` can report an
+   unreadable stored id as `unknown`, strict on write so a bad value from the panel is a 400 rather
+   than a silent no-op.** Foreman's roles are separate fields rather than a map, so the
+   record-level `.catch` trap Phase 1 fixes does not arise here - but the reporting half does, and a
+   role that silently swallowed an unknown id while a background job reported one would be the same
+   screen behaving two ways.
 2. **`src/shared/foreman-models.ts`** - resolve each role's provider as: the role's own, else
    Foreman's group-level `runner`, else the app-wide ladder. Same rule as Phase 1, one extra rung.
    The pinning invariant comes with it, **both halves**: neither the app-wide radio nor Foreman's

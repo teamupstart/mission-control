@@ -63,6 +63,20 @@ Verified against the current tree; correct anything that has moved rather than f
   (`src/shared/protocol.ts:2689`). `setLlmConfig` merges `models` **per key**
   (`src/server/llm/config.ts:55-64`) precisely so two open dashboards do not clear each other's
   edits - the new map needs the same treatment.
+- **A `.catch()` on a record is not a `.catch()` on its values.** `models` is
+  `z.record(z.string(), ModelOverrideSchema).catch({})` (`src/shared/protocol.ts:2689`), and a
+  record-level `.catch` is **all or nothing**: one value that fails validation discards the entire
+  map. `ModelOverrideSchema` wraps `ModelIdSchema` (`:853`), which has a `max(80)` and a character
+  regex, so this is already reachable today - a single malformed or newer-vocabulary id wipes every
+  job's model override, silently. Copying that shape onto a closed enum would be worse, because
+  every value a future build adds fails here.
+- **The stored `runner` cannot currently report itself as unknown, though its comment says it
+  does.** `runner` is `.catch("")` (`:2662`), so an unresolvable stored id becomes `""` *before*
+  `resolveLlmRunner` sees it; the ladder then `continue`s past an empty value and returns
+  `unknown: null`. Only the env value, which is never schema-parsed, can reach the `unknown` branch.
+  The field's own comment promises the opposite - "`resolveLlmRunner` reports what it dropped so the
+  panel can say so rather than presenting the fallback as the operator's own choice" - and
+  `ResolvedLlmRunner.unknown` exists for exactly that. The intent is right and the schema defeats it.
 - **`LlmConfigPatchSchema` is strict on write** (`src/shared/protocol.ts:2701-2716`) and refines
   `models` keys against `LLM_JOB_IDS`, while the read schema is tolerant via `.catch()`. Keep that
   asymmetry: tolerant read, strict write.
@@ -103,11 +117,31 @@ Verified against the current tree; correct anything that has moved rather than f
 
 ## Implementation steps
 
-1. **`src/shared/protocol.ts`** - add `runners: z.record(z.string(), RunnerOverrideSchema).catch({}).default({})`
-   to `LlmConfigSchema` beside `models`, where `RunnerOverrideSchema` is
-   `z.union([z.enum(LLM_RUNNER_IDS), z.literal("")])` - empty meaning inherit, mirroring
-   `ModelOverrideSchema`. Add the strict, `LLM_JOB_IDS`-refined counterpart to
+1. **`src/shared/protocol.ts`** - add `runners` to `LlmConfigSchema` beside `models`, empty
+   meaning inherit, with the strict `LLM_RUNNER_IDS`-valued and `LLM_JOB_IDS`-refined counterpart on
    `LlmConfigPatchSchema`.
+
+   **Read it as `z.record(z.string(), z.string())` - permissive values, no `.catch` on the record.**
+   Not the enum-valued, record-`.catch`ed shape `models` uses. Two reasons, and both are the
+   difference between a map of independent overrides and a single field:
+   - A record-level `.catch` is all or nothing, so one slot this build cannot read would silently
+     revert **every** job to inheritance. A map of independent overrides must fail per entry or not
+     at all.
+   - A value the resolver can classify should reach the resolver. `resolveLlmRunner`
+     (`src/shared/llm.ts:158`) already returns `{ id, source, unknown }` and is the thing that turns
+     an unreadable id into something the panel can say out loud. A schema that sanitises the value
+     first makes that branch unreachable, which is exactly the bug in the bullet below.
+
+   While in this file, close the two the same reasoning exposes. Both are pre-existing; both are one
+   line; both are in the schema this step already edits.
+   - **`runner` (`:2662`)** - drop the `.catch("")` to a permissive string so an unresolvable stored
+     id survives to `resolveLlmRunner` and is reported rather than presented as the operator's own
+     choice, which is what the field's own comment already promises. It cannot throw either way, so
+     `getLlmConfig()` stays as safe as it is now; only the reporting improves. Its single consumer is
+     `llmRunnerChoice` (`src/server/llm/config.ts:74`), which already takes `string | null |
+     undefined`, so the widened read type ripples nowhere.
+   - **`models` (`:2689`)** - move the `.catch` from the record onto the value, so a single
+     malformed or newer-vocabulary id can no longer discard every other job's override.
 2. **`src/server/llm/config.ts`** - merge `runners` per key in `setLlmConfig`, exactly as `models`
    is merged. Add `llmJobRunner(job, cfg): ResolvedLlmRunner` applying the persona rule: the job's
    own override, else `llmRunnerChoice(cfg)`. Report an unreadable stored id through `unknown`
@@ -213,7 +247,9 @@ Verified against the current tree; correct anything that has moved rather than f
 
 - `test/` - the per-job ladder (override, then app-wide, then shipped default); an unset job
   resolving identically to today; an unreadable stored runner id reported as `unknown` rather than
-  silently defaulting; `setLlmConfig` merging `runners` per key; **a legacy config - non-empty
+  silently defaulting - **for a per-job override and for the group-level `runner`, which cannot do
+  this today**; one unreadable entry leaving every *other* slot's override intact, for `runners` and
+  for `models` alike, since a record-level `.catch` is what this replaces; `setLlmConfig` merging `runners` per key; **a legacy config - non-empty
   `models`, empty `runners` - pinned to the outgoing provider when the app-wide runner is patched,
   including when the outgoing value came from `MISSION_LLM_RUNNER` rather than the stored field**; a
   job whose model belongs to another provider falling back to that provider's default *and reporting
@@ -241,6 +277,8 @@ Verified against the current tree; correct anything that has moved rather than f
 - No reachable configuration - upgraded, hand-edited, or env-driven - lets `runJob` receive a model
   its provider cannot run.
 - Foreman's `/api/llm/status` read still parses.
+- One unreadable stored override does not disturb any other slot, and is reported rather than
+  silently swallowed.
 - Docs updated; all gates green; a Playwright spec covers the new behaviour.
 
 ## Downstream handoff
@@ -277,6 +315,14 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
   review's alternative of blocking the provider change while a model is pinned: that makes the
   common case ("run this job on Codex instead") a two-step dance, and the product already resets
   rather than blocks in the same situation (`DispatchModal.tsx:2696`).
+- Review round 9 caught that the `runners` schema as drafted (`.catch({})` on the record) would
+  discard every override when one value failed, contradicting this phase's own `unknown`-reporting
+  contract. Fixed, and following the same reasoning through `src/shared/protocol.ts` found two
+  pre-existing instances of it: the group-level `runner` cannot report an unreadable stored id at
+  all despite its comment saying it does, and `models` carries the same record-level `.catch` that
+  can wipe the map. Both are closed here rather than filed, because they are one line each in a
+  schema this step already edits and because leaving them would mean a per-job override reports
+  `unknown` while the app-wide setting beside it silently does not.
 - Review round 8 asked the same question of Foreman and, in answering it, moved the design: the
   guard is now the *primary* mechanism and is exported as a shared helper, with pin-on-change
   demoted to a convenience each blob's own writer performs. That is what lets Foreman be covered

@@ -150,10 +150,11 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         </p>
         <p className="settings-hint foreman-models-hint">
           Each job can run on its own provider - name a task with Claude while compacting
-          Workflow context with Codex. Pinning a model pins its provider: the app-wide picker
-          above leaves a row that has chosen a model alone and only re-resolves the rows still
-          on Inherit, while changing a row's OWN provider sends that row's model back to
-          Inherit unless the new provider offers the same id.
+          Workflow context with Codex. Pinning a model pins its provider, literally: choosing a
+          model on an Inherit row records the provider it belongs to, so the app-wide picker
+          above leaves that row alone and only re-resolves the rows still on Inherit. Changing a
+          row's OWN provider works the other way and sends that row's model back to Inherit,
+          unless the new provider offers the same id.
         </p>
         <SettingsMatrix
           caption="Background jobs, and what each one runs on"

@@ -336,7 +336,26 @@ export function modelSlotRow({
           disabled={disabled}
           label="none"
           blurb="hover"
-          onCommit={(next) => onCommit({ model: next })}
+          onCommit={(next) =>
+            // Pinning a model PINS ITS PROVIDER, and this is the moment of pinning - so the
+            // provider is recorded here rather than inferred later. Leaving `runners[job]`
+            // empty made the rule true only along the path that writes config: `setLlmConfig`
+            // materialises the outgoing provider when the app-wide radio moves, but
+            // `MISSION_LLM_RUNNER` changing between daemon restarts moves the effective
+            // provider with NO write at all, so the pin never materialised and a saved Claude
+            // model silently inherited Codex and was replaced by the resolver guard.
+            //
+            // Two cases deliberately left alone. A CLEARED model pins nothing - the row is
+            // going back to the ladder, and recording a provider for a model that no longer
+            // exists is inventing a choice. And a row that already carries its own provider
+            // value keeps it verbatim, including one this build cannot read: a model pick is
+            // not the place to quietly resolve away an override the operator typed.
+            onCommit(
+              next.trim() && !runnerValue.trim()
+                ? { model: next, runner: runnerForCatalog }
+                : { model: next },
+            )
+          }
         />
       ),
     },

@@ -27,7 +27,15 @@ radio decides, and when that is unset too the ladder falls through to
 
 **Picking a provider clears nothing.** Changing the app-wide radio re-resolves only the rows still
 on *Inherit* - a row that has chosen a model keeps it, because pinning a model pins its provider.
-The other half of that rule is what a row's own Provider select does: because it is a statement
+
+That is literal, not a figure of speech: choosing a model on an *Inherit* row **records the
+provider it belongs to** in the same write, so the row stops following the app-wide picker from
+that moment. Recording it then rather than inferring it later is what makes the rule hold even
+when the effective provider moves with no configuration write at all - which is exactly what
+`MISSION_LLM_RUNNER` changing between daemon restarts does. Clearing a model back to *Inherit*
+records nothing, and a provider you set yourself is never rewritten by a model choice.
+
+The other half of the rule is what a row's own Provider select does: because it is a statement
 about exactly that row, changing it sends that row's model back to *Inherit* unless the new
 provider offers the same id, and the row says what it reset. (Before this, the app-wide radio wiped
 every model box on every change, which is what stopped a `claude` id from being handed to `codex`.)

@@ -163,6 +163,43 @@ test("a row's own provider change resets only that row's stranded model, and say
   );
 });
 
+test("pinning a model records the provider it belongs to, in the same write", async ({
+  dashboard,
+  daemon,
+}) => {
+  // "Pinning a model pins its provider" has to be true of the STORED config, not only of what
+  // the app-wide radio happens to do next. Recording the provider lazily - when that radio
+  // moves - left the rule false along a path that writes no config at all: MISSION_LLM_RUNNER
+  // changing between daemon restarts moves the effective provider silently, so a row with a
+  // model and an empty provider inherits the new one and the resolver guard drops the model.
+  // Asserted against `/api/llm/config`, because the defect is an omitted key in the write and
+  // the rendered row looks identical either way.
+  await openModels(dashboard, daemon.baseURL);
+  await expect(dashboard.getByRole("radio", { name: "Claude Code" })).toBeChecked();
+  await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("");
+
+  await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("claude-sonnet-5");
+  await openModels(dashboard, daemon.baseURL);
+
+  const config = await (await fetch(`${daemon.baseURL}/api/llm/config`)).json();
+  expect(
+    config.runners.goal,
+    "a pinned model was stored with no provider, so an env change would strand it",
+  ).toBe("claude");
+  expect(config.models.goal).toBe("claude-sonnet-5");
+  // The row says so too - the provider it belongs to is now shown, not left reading Inherit.
+  await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("claude");
+  // ...and no other row acquired a pin it never asked for.
+  expect(config.runners["task-title"] ?? "").toBe("");
+
+  // Clearing the model back to the ladder records nothing: a provider for a model that no
+  // longer exists would be a choice the operator never made.
+  await dashboard.getByRole("combobox", { name: "Away digest model" }).selectOption("");
+  await openModels(dashboard, daemon.baseURL);
+  const after = await (await fetch(`${daemon.baseURL}/api/llm/config`)).json();
+  expect(after.runners["away-digest"] ?? "").toBe("");
+});
+
 test("a provider change keeps a model no catalog recognises, because ids are free text", async ({
   dashboard,
   daemon,

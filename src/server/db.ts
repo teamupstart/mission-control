@@ -9629,7 +9629,13 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
          prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
          prompted_decision=excluded.prompted_decision,
-         prompted_recovery=excluded.prompted_recovery,
+         -- Undefined is the rolling-upgrade shape from a caller that does not know this
+         -- projection. It has learned nothing that can release an unknown delivery claim.
+         -- Null remains the explicit clear; objects remain explicit replacements.
+         prompted_recovery=CASE
+           WHEN ? = 1 THEN foreman_queues.prompted_recovery
+           ELSE excluded.prompted_recovery
+         END,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -9653,6 +9659,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       q.promptedDecision ? serializePromptedDecision(q.promptedDecision) : null,
       q.promptedRecovery ? serializePromptedRecovery(q.promptedRecovery) : null,
       q.updatedAt,
+      q.promptedRecovery === undefined ? 1 : 0,
     );
 }
 

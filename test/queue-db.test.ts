@@ -1432,6 +1432,15 @@ test("ship recovery claims are exact, durable, and unknown delivery is spent", (
   assert.deepEqual(getQueueRow(key)?.promptedRecovery, first);
   assert.equal(claimPromptedRecovery(claim, 101), null, "an unknown result is not retried");
 
+  const rollingUpgradeWrite = { ...getQueueRow(key)! };
+  delete rollingUpgradeWrite.promptedRecovery;
+  upsertQueue({ ...rollingUpgradeWrite, branch: "updated-by-older-peer", updatedAt: 102 });
+  assert.deepEqual(
+    getQueueRow(key)?.promptedRecovery,
+    first,
+    "a partial queue refresh cannot erase an unknown-delivery claim",
+  );
+
   const earlySecond = {
     ...claim,
     attempt: 2,

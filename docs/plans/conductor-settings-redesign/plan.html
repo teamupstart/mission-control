@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor settings: three alternatives</title>
+<style>
+  :root {
+    --page-bg: #ffffff;
+    --page-fg: #1a1d23;
+    --page-muted: #5b6472;
+    --page-dim: #78818f;
+    --page-border: #dfe3e9;
+    --page-soft: #f4f6f9;
+    --page-accent: #1f7a52;
+    --page-warn: #9a5b00;
+    --page-code: #f2f4f8;
+    /* Mission Control's own tokens. The app is dark-only (`color-scheme: dark`),
+       so the mockups below stay dark in either page theme - that is what they look like. */
+    --mc-bg: #0a0c0f;
+    --mc-bg2: #0e1116;
+    --mc-panel: #14181e;
+    --mc-panel2: #171c23;
+    --mc-border: #232a33;
+    --mc-soft: #1b2129;
+    --mc-fg: #e7ebf1;
+    --mc-muted: #939eae;
+    --mc-dim: #7c8798;
+    --mc-idle: #35c08a;
+    --mc-working: #4a9eff;
+    --mc-attention: #f6a733;
+    --mc-danger: #f85149;
+    --mc-radius: 13px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0f1216;
+      --page-fg: #e4e8ee;
+      --page-muted: #9aa4b2;
+      --page-dim: #7f8896;
+      --page-border: #262d36;
+      --page-soft: #161b21;
+      --page-accent: #4ecf95;
+      --page-warn: #e0a34a;
+      --page-code: #161b21;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 0 20px 96px;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 16px/1.65 var(--sans);
+    overflow-wrap: break-word;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  header.doc {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 48px 0 18px;
+    border-bottom: 1px solid var(--page-border);
+  }
+  header.doc h1 { margin: 0 0 8px; font-size: 34px; line-height: 1.15; letter-spacing: -0.02em; }
+  header.doc p { margin: 0; color: var(--page-muted); font-size: 15px; }
+  h2 {
+    margin: 44px 0 12px;
+    font-size: 23px;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--page-border);
+  }
+  h3 { margin: 30px 0 8px; font-size: 17px; letter-spacing: -0.005em; }
+  p, li { font-size: 15.5px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 640; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.855em;
+    background: var(--page-code);
+    border: 1px solid var(--page-border);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--page-code);
+    border: 1px solid var(--page-border);
+    border-radius: 9px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  hr { margin: 40px 0; border: 0; border-top: 1px solid var(--page-border); }
+  .lede { font-size: 16.5px; color: var(--page-muted); }
+  .figure {
+    margin: 20px 0 26px;
+    padding: 16px;
+    border: 1px solid var(--page-border);
+    border-radius: 11px;
+    background: var(--page-soft);
+    overflow-x: auto;
+  }
+  .figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .figcap { margin: 10px 0 0; font-size: 13px; color: var(--page-dim); text-align: center; }
+  .alt-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 46px 0 4px;
+  }
+  .alt-tag {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--page-accent);
+    color: var(--page-bg);
+  }
+  .alt-head h2 { margin: 0; border: 0; padding: 0; }
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+    margin: 18px 0 8px;
+  }
+  .verdict div {
+    border: 1px solid var(--page-border);
+    border-left: 3px solid var(--page-border);
+    border-radius: 8px;
+    padding: 11px 13px;
+    background: var(--page-soft);
+    font-size: 14px;
+  }
+  .verdict .good { border-left-color: var(--page-accent); }
+  .verdict .cost { border-left-color: var(--page-warn); }
+  .verdict .bad { border-left-color: #b4434a; }
+  .verdict b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 3px; }
+
+  /* ---------- Mission Control mockup chrome ---------- */
+  .mock {
+    margin: 22px 0 8px;
+    border: 1px solid var(--mc-border);
+    border-radius: var(--mc-radius);
+    background: var(--mc-bg);
+    color: var(--mc-fg);
+    font-family: var(--sans);
+    overflow: hidden;
+  }
+  .mock-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 14px;
+    background: var(--mc-bg2);
+    border-bottom: 1px solid var(--mc-soft);
+    font-size: 12px;
+    color: var(--mc-dim);
+  }
+  .mock-bar .dots { display: flex; gap: 5px; }
+  .mock-bar .dots i { width: 8px; height: 8px; border-radius: 50%; background: #2c333d; }
+  .mock-bar .grow { flex: 1; }
+  .mock-scroll { overflow-x: auto; }
+  .mock-body { padding: 16px 18px 20px; min-width: 620px; }
+  .mock h4 { margin: 0 0 3px; font-size: 15px; font-weight: 650; color: var(--mc-fg); }
+  .mc-scope {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em;
+    text-transform: uppercase; padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--mc-border); color: var(--mc-muted);
+  }
+  .mc-lede { margin: 6px 0 14px; font-size: 11.5px; color: var(--mc-dim); line-height: 1.55; }
+  .mc-card {
+    border: 1px solid var(--mc-border);
+    border-radius: 10px;
+    background: var(--mc-panel);
+    overflow: hidden;
+  }
+  .mc-card + .mc-card { margin-top: 10px; }
+  .mc-card-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 12px; min-height: 35px; border-bottom: 1px solid var(--mc-soft); background: var(--mc-panel2);
+  }
+  .mc-card-title {
+    margin: 0; font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--mc-muted);
+  }
+  .mc-card-body { padding: 10px 12px; }
+  .mc-state {
+    display: flex; align-items: center; gap: 7px;
+    margin: 0; padding: 7px 10px; border-radius: 8px;
+    font-size: 11.5px; font-weight: 600;
+    background: color-mix(in srgb, var(--mc-idle) 9%, transparent);
+    color: var(--mc-idle);
+  }
+  .mc-state.off { background: #171c23; color: var(--mc-dim); }
+  .mc-state.warn { background: color-mix(in srgb, var(--mc-attention) 10%, transparent); color: var(--mc-attention); }
+  .mc-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+  .mc-hint { margin: 0 0 8px; font-size: 11px; color: var(--mc-dim); line-height: 1.5; }
+  .mc-sw {
+    width: 30px; height: 17px; border-radius: 999px; background: #2a323d; position: relative; flex: none;
+  }
+  .mc-sw::after { content: ""; position: absolute; top: 2.5px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #737e8c; }
+  .mc-sw.on { background: color-mix(in srgb, var(--mc-idle) 55%, #14181e); }
+  .mc-sw.on::after { left: 15px; background: #d9f6e8; }
+  .mc-btn {
+    display: inline-block; padding: 5px 10px; border-radius: 7px;
+    border: 1px solid var(--mc-border); background: var(--mc-panel2);
+    color: var(--mc-fg); font-size: 11px; font-weight: 600; white-space: nowrap;
+  }
+  .mc-btn.primary { border-color: color-mix(in srgb, var(--mc-working) 55%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 18%, var(--mc-panel2)); color: #cfe4ff; }
+  .mc-input {
+    display: block; width: 100%; padding: 6px 10px; border-radius: 8px;
+    border: 1px solid var(--mc-border); background: var(--mc-bg2);
+    color: var(--mc-dim); font-size: 11.5px;
+  }
+  .mc-code { font-family: var(--mono); font-size: 10.5px; color: var(--mc-muted); }
+  .mc-strip { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .mc-stat {
+    flex: 1 1 0; min-width: 92px; padding: 7px 10px; border-radius: 9px;
+    border: 1px solid var(--mc-border); background: var(--mc-panel);
+  }
+  .mc-stat.on { border-color: color-mix(in srgb, var(--mc-working) 60%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 11%, var(--mc-panel)); }
+  .mc-stat b { display: block; font-size: 17px; font-weight: 680; line-height: 1.1; }
+  .mc-stat span { display: block; font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--mc-dim); margin-top: 2px; }
+  .mc-pill {
+    display: inline-block; padding: 1.5px 6px; border-radius: 5px; margin-right: 4px;
+    font-size: 9.5px; font-weight: 640; letter-spacing: 0.03em;
+    background: #1c222a; color: var(--mc-dim);
+  }
+  .mc-pill.ok { background: color-mix(in srgb, var(--mc-idle) 15%, transparent); color: var(--mc-idle); }
+  .mc-ready { font-size: 11px; font-weight: 640; color: var(--mc-idle); }
+
+  /* Ledger table (Alternative A) */
+  .mc-table { border: 1px solid var(--mc-border); border-radius: 10px; overflow: hidden; background: var(--mc-panel); }
+  .mc-tr { display: grid; grid-template-columns: 30px minmax(120px,1.5fr) 108px minmax(110px,1.3fr) 84px; gap: 8px; align-items: center; padding: 8px 11px; border-bottom: 1px solid var(--mc-soft); }
+  .mc-tr:last-child { border-bottom: 0; }
+  .mc-tr.head { background: var(--mc-panel2); }
+  .mc-tr.head span { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--mc-dim); }
+  .mc-cb { width: 13px; height: 13px; border-radius: 4px; border: 1px solid #39424e; background: var(--mc-bg2); }
+  .mc-cb.on { background: var(--mc-idle); border-color: var(--mc-idle); }
+  .mc-name { font-size: 12px; font-weight: 620; }
+  .mc-path { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--mc-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mc-health { font-size: 10.5px; color: var(--mc-muted); }
+  .mc-pager { display: flex; align-items: center; justify-content: space-between; padding: 8px 11px; background: var(--mc-panel2); border-top: 1px solid var(--mc-soft); }
+  .mc-pager .range { font-family: var(--mono); font-size: 10px; color: var(--mc-dim); }
+  .mc-pager .nav { display: flex; gap: 6px; }
+
+  /* Directory + detail (Alternative B) */
+  .mc-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 8px 0; }
+  .mc-chip { padding: 3px 8px; border-radius: 7px; border: 1px solid var(--mc-border); background: var(--mc-panel2); font-size: 10px; font-weight: 600; color: var(--mc-dim); white-space: nowrap; }
+  .mc-chip.on { border-color: color-mix(in srgb, var(--mc-working) 60%, var(--mc-border)); background: color-mix(in srgb, var(--mc-working) 14%, var(--mc-panel2)); color: #cfe4ff; }
+  .mc-dirrow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--mc-soft); font-size: 11.5px; }
+  .mc-dirrow:last-child { border-bottom: 0; }
+  .mc-dirrow.sel { background: color-mix(in srgb, var(--mc-working) 10%, var(--mc-panel)); }
+  .mc-dot { width: 7px; height: 7px; border-radius: 50%; background: #39424e; flex: none; }
+  .mc-dot.ok { background: var(--mc-idle); }
+  .mc-kv { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--mc-soft); font-size: 11.5px; }
+  .mc-kv:last-of-type { border-bottom: 0; }
+  .mc-kv span:first-child { color: var(--mc-muted); }
+
+  /* Managed list (Alternative C) */
+  .mc-seg { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--mc-border); border-radius: 9px; background: var(--mc-panel2); }
+  .mc-seg div { flex: 1; text-align: center; padding: 5px 6px; border-radius: 6px; font-family: var(--mono); font-size: 9.5px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--mc-dim); }
+  .mc-seg div.on { background: var(--mc-panel); color: var(--mc-fg); border: 1px solid var(--mc-border); }
+  .mc-disc { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 11px; color: var(--mc-muted); }
+  .mc-sect { margin-top: 16px; }
+  .mc-sect-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--mc-soft); }
+  .mc-sect-head h5 { margin: 0; font-size: 12.5px; font-weight: 640; color: var(--mc-fg); }
+  .mc-sect-head em { font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--mc-dim); }
+  .mc-empty { margin: 9px 0 0; font-size: 11px; color: var(--mc-dim); }
+
+  .cols2 { display: grid; grid-template-columns: 208px minmax(0,1fr); gap: 14px; align-items: start; }
+  .colsB { display: grid; grid-template-columns: 216px minmax(0,1fr); gap: 14px; align-items: start; }
+  .mockcap { margin: 4px 0 0; font-size: 13px; color: var(--page-dim); }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <h1>Conductor settings: three alternatives</h1>
+  <p>Plan &middot; <code>docs/plans/conductor-settings-redesign/plan.md</code></p>
+</header>
+
+<main>
+
+<p class="lede">The Conductor settings category does not look or behave like the settings pages
+around it, and the repository list at the bottom of it runs off the end of the page. This plan
+states what is actually wrong, in measurements rather than impressions, and then puts three
+alternative shapes for the page side by side so one can be chosen.</p>
+
+<p>Nothing here changes what Conductor <em>does</em>. The engine probe, the consent model, the two
+ordered mutations behind registration, and the launch runtime all keep their current behaviour.
+This is about the page they are presented on.</p>
+
+<h2>What the page is today</h2>
+
+<p>One <code>&lt;section className="settings-section sc-section sc-solo"&gt;</code>
+(<code>src/web/components/ConductorPanel.tsx:386</code>), 760px wide, in this order:</p>
+
+<ol>
+  <li>A three-sentence lede.</li>
+  <li>A numbered commissioning ladder - <code>01 Engine</code>, <code>02 Register repo</code>, <code>03 Observe</code>.</li>
+  <li>Conditional daemon-unreachable, error, setup and installer notices.</li>
+  <li>A prose paragraph explaining how to copy the visualizer plugin into <code>~/.ai-conductor/</code>.</li>
+  <li>Five stacked <code>ConsoleCard</code>s in a single <code>.sc-controls</code> column:
+    <ul>
+      <li><strong>The engine</strong> - probe state, registry path, and the whole guided-installer subtree.</li>
+      <li><strong>Observe pipelines</strong> - the master consent switch.</li>
+      <li><strong>Launch runtime</strong> - a two-radio Engineer host choice.</li>
+      <li><strong>Foreman triage</strong> - a switch.</li>
+      <li><strong>Workspace repositories</strong> - a search box and then every repository, forever.</li>
+    </ul>
+  </li>
+</ol>
+
+<h2>What is wrong, measured</h2>
+
+<p><strong>The list is unbounded, and on this machine it is 202 rows.</strong>
+<code>GET /api/repos</code> walks the workspace roots to depth 3 and returns every checkout it
+finds with no cap (<code>src/server/repos.ts:80</code>). <code>offeredRepos</code>
+(<code>ConductorPanel.tsx:107</code>) unions that with the engine's registered projects and the
+stored consent rows, and the panel renders the whole union. <code>.conductor-repos</code> has no
+<code>max-height</code> and no <code>overflow</code> (<code>src/web/styles.css:19979</code>), so
+the page itself grows. Each row is four lines of text plus a switch and a button. Asked directly,
+this daemon answers with <strong>202 repositories, of which 1 is registered.</strong> The other
+201 rows exist only to say &ldquo;Conductor does not manage this repository yet.&rdquo;</p>
+
+<p>The stored consent list is capped at 50 (<code>MAX_PIPELINE_REPOS</code>,
+<code>src/shared/pipeline.ts:415</code>). The rendered list is not capped at anything.</p>
+
+<p><strong>Every sibling console panel is two columns; this one is one column.</strong> GitHub
+Inspector, Shipping and Foreman all use <code>.sc-split</code> - a 332px control column
+beside a wide ledger (<code>src/web/styles.css:18615</code>). Conductor takes
+<code>.sc-solo</code>, which exists for panels that have <em>no</em> list at all
+(<code>styles.css:18636</code>, written for Workflows). Conductor has the longest list of the five
+and the layout meant for having none.</p>
+
+<p><strong>The shared paginated table exists and this panel does not use it.</strong>
+<code>ConsoleTable</code> in <code>src/web/components/settings-console.tsx:368</code> owns a
+heading, column names, a 62vh-bounded scroller, a filter strip and a pager at
+<code>CONSOLE_PAGE_SIZE = 25</code>. Its own comment says a panel &ldquo;cannot make that mistake
+through this component, because there is no prop with which to render an unpaged, unbounded
+list&rdquo;, and <code>docs/agent-guides/change-contracts.md:656</code> records that as a
+contract. The Conductor list was assembled out of raw <code>&lt;ul&gt;</code>/<code>&lt;li&gt;</code>
+beside that component rather than through it.</p>
+
+<p><strong>There are no filters and no count.</strong> There is a search box
+(<code>ConductorPanel.tsx:590</code>), added in #630, and that is the whole of it. Task sources
+- the other settings category with many configured things - has a search input, a kind
+<code>&lt;select&gt;</code>, a row of health filter buttons whose counts come from one shared fold,
+a count under the list, and focus restoration across list mutations
+(<code>src/web/components/TaskSourcesPanel.tsx:811-926</code>). Conductor has one of those five.</p>
+
+<p><strong>The tallies exist but are drawn by hand.</strong> The panel already computes
+<code>registered</code> and <code>active</code> (<code>ConductorPanel.tsx:372-373</code>) -
+exactly what <code>ConsoleStrip</code>'s count tiles exist for
+(<code>settings-console.tsx:169</code>), where a tile both reports a count and <em>is</em> the
+filter for it. Instead they are rendered as a bespoke
+<code>&lt;ol className="conductor-commissioning"&gt;</code> (<code>:393-409</code>) that restates
+the cards below it and filters nothing.</p>
+
+<p><strong>Four smaller drifts, all cheap to correct.</strong></p>
+<ul>
+  <li>The repo row's toggle borrows <code>className="skill-switch"</code> (<code>:623</code>), a
+    class defined for the Skills catalog (<code>styles.css:17649</code>) and carrying a
+    <code>.skills-list:disabled</code> descendant rule that can never apply here.</li>
+  <li>The Engineer host choice is a bespoke <code>.conductor-runtime-choice</code> radio list
+    (<code>:514-544</code>) rather than the <code>sc-field sc-seg</code> segmented control the
+    other three console panels use (<code>ShippingSettingsPanel.tsx:234</code>,
+    <code>InspectorSettingsPanel.tsx:307</code>, <code>ForemanSettingsPanel.tsx:599</code>).</li>
+  <li>The panel receives no <code>SettingsNavigate</code> prop
+    (<code>SettingsPage.tsx:526</code> passes only <code>state</code>), so it cannot deep-link to
+    Trust or anywhere else the way sibling panels do.</li>
+  <li><code>settings-dots.ts</code> has no <code>conductor</code> case, so the rail row never
+    carries a dot - even though <code>SettingsStatus</code> already carries a
+    <code>pipelines: { present, observing }</code> tuple the dot could read.</li>
+</ul>
+
+<p><strong>The category is nearly invisible to settings search.</strong>
+<code>settings-search.ts</code> carries a single entry for <code>conductor</code>
+(<code>:430</code>), pointing at <code>conductor/repos</code>. The panel renders six anchors
+- <code>conductor/pipelines</code>, <code>/detection</code>, <code>/enabled</code>,
+<code>/launch-runtime</code>, <code>/foreman-triage</code>, <code>/repos</code>. Five of the six
+cannot be jumped to from the palette. Workflows indexes 8, Foreman and Display 5 each. This passes
+the test suite because the enforced direction is index-to-render (an indexed anchor that renders
+nowhere fails) and not the reverse.</p>
+
+<h2>What feeds the repository list</h2>
+
+<p>The list today is a union of three sources, merged in authority order and sorted by path
+(<code>ConductorPanel.tsx:107-151</code>):</p>
+
+<div class="figure">
+<svg viewBox="0 0 760 220" role="img" aria-labelledby="d1t">
+  <title id="d1t">Today: three sources union into one unbounded list of 202 rows</title>
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 z" fill="#8b94a3"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui, sans-serif" font-size="11.5">
+    <rect x="8" y="14" width="212" height="52" rx="8" fill="none" stroke="#b4434a" stroke-width="1.6"/>
+    <text x="20" y="33" fill="#b4434a" font-weight="700">GET /api/repos</text>
+    <text x="20" y="48" fill="#8b94a3">workspace scan, depth 3</text>
+    <text x="20" y="61" fill="#b4434a" font-weight="640">NO CAP - 202 here</text>
+
+    <rect x="8" y="82" width="212" height="42" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="20" y="100" fill="currentColor" font-weight="640">probe.projects</text>
+    <text x="20" y="115" fill="#8b94a3">what conduct-ts manages - 1</text>
+
+    <rect x="8" y="140" width="212" height="42" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="20" y="158" fill="currentColor" font-weight="640">config.repos</text>
+    <text x="20" y="173" fill="#8b94a3">stored consent, max 50 - 1</text>
+
+    <line x1="222" y1="40" x2="332" y2="94" stroke="#8b94a3" marker-end="url(#ah)"/>
+    <line x1="222" y1="103" x2="332" y2="103" stroke="#8b94a3" marker-end="url(#ah)"/>
+    <line x1="222" y1="161" x2="332" y2="112" stroke="#8b94a3" marker-end="url(#ah)"/>
+
+    <rect x="342" y="78" width="164" height="50" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="360" y="99" fill="currentColor" font-weight="640">offeredRepos</text>
+    <text x="360" y="114" fill="#8b94a3">union by provider+root</text>
+
+    <line x1="508" y1="103" x2="596" y2="103" stroke="#8b94a3" marker-end="url(#ah)"/>
+
+    <rect x="606" y="72" width="146" height="62" rx="8" fill="none" stroke="#b4434a" stroke-width="1.6"/>
+    <text x="620" y="93" fill="#b4434a" font-weight="700">one flat &lt;ul&gt;</text>
+    <text x="620" y="109" fill="#8b94a3">202 rows</text>
+    <text x="620" y="124" fill="#b4434a" font-weight="640">no bound, no pager</text>
+  </g>
+</svg>
+<p class="figcap">Today - the workspace scan is the list.</p>
+</div>
+
+<p>Alternatives A and B keep this union and bound how much of it reaches the screen.
+Alternative C changes which source <em>is</em> the list: Conductor's own managed repositories
+become the list, and the 202-repository workspace scan moves behind an explicit
+&ldquo;Add a repository&rdquo; picker rather than being printed.</p>
+
+<div class="figure">
+<svg viewBox="0 0 760 200" role="img" aria-labelledby="d2t">
+  <title id="d2t">Alternative C: the managed repositories are the list; the workspace scan moves behind a picker</title>
+  <defs>
+    <marker id="ah2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 z" fill="#8b94a3"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui, sans-serif" font-size="11.5">
+    <rect x="8" y="16" width="196" height="38" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="20" y="40" fill="currentColor" font-weight="640">probe.projects</text>
+
+    <rect x="8" y="66" width="196" height="38" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="20" y="90" fill="currentColor" font-weight="640">config.repos</text>
+
+    <line x1="206" y1="35" x2="318" y2="58" stroke="#8b94a3" marker-end="url(#ah2)"/>
+    <line x1="206" y1="85" x2="318" y2="68" stroke="#8b94a3" marker-end="url(#ah2)"/>
+
+    <rect x="328" y="38" width="196" height="52" rx="8" fill="none" stroke="#1f7a52" stroke-width="1.6"/>
+    <text x="344" y="58" fill="#1f7a52" font-weight="700">managed list</text>
+    <text x="344" y="73" fill="#8b94a3">registered or consented</text>
+    <text x="344" y="86" fill="#8b94a3">&le; 50 - 1 here</text>
+
+    <rect x="8" y="132" width="196" height="38" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="20" y="156" fill="currentColor" font-weight="640">GET /api/repos</text>
+
+    <line x1="206" y1="151" x2="318" y2="151" stroke="#8b94a3" marker-end="url(#ah2)"/>
+
+    <rect x="328" y="126" width="196" height="50" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="344" y="146" fill="currentColor" font-weight="640">RepoCombobox</text>
+    <text x="344" y="161" fill="#8b94a3">searched, never printed</text>
+
+    <path d="M426,126 L426,96" stroke="#8b94a3" stroke-dasharray="4 3" marker-end="url(#ah2)"/>
+    <text x="436" y="114" fill="#8b94a3">one chosen repo</text>
+  </g>
+</svg>
+<p class="figcap">Alternative C - the workspace scan becomes a search, not a render.</p>
+</div>
+
+<hr>
+
+<div class="alt-head"><span class="alt-tag">A</span><h2>Console split</h2></div>
+
+<p><strong>Make Conductor the same page shape as GitHub Inspector, Shipping and Foreman.</strong></p>
+
+<p>Drop <code>sc-solo</code> and adopt <code>.sc-split</code>. The four configuration cards keep
+their contents and move into the 332px left column. The repositories become a real ledger in the
+wide right column, drawn by <code>ConsoleTable</code> with a new <code>conductor</code> variant,
+filtered by a real <code>ConsoleStrip</code>.</p>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dots"><i></i><i></i><i></i></span><span class="grow"></span><span>Settings &rsaquo; Conductor</span></div>
+  <div class="mock-scroll"><div class="mock-body">
+    <div style="display:flex;align-items:center;gap:9px;"><h4>Conductor</h4><span class="mc-scope">This machine</span></div>
+    <p class="mc-lede"><strong style="color:var(--mc-fg)">ai-conductor</strong> drives a feature through a gated 22-step SDLC in its own worktree, one step at a time, and halts for a human when a gate refuses.</p>
+
+    <div class="cols2">
+      <div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">The engine</h5><span class="mc-btn">Check again</span></div>
+          <div class="mc-card-body">
+            <p class="mc-state">Installed &middot; 0.101.1</p>
+            <p class="mc-hint" style="margin:8px 0 0"><span class="mc-code">~/.ai-conductor/registry.json</span></p>
+          </div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Observe pipelines</h5><span class="mc-sw on"></span></div>
+          <div class="mc-card-body"><p class="mc-state">On - reading 1 repository.</p></div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Launch runtime</h5></div>
+          <div class="mc-card-body">
+            <div class="mc-seg"><div class="on">Managed SDK</div><div>Terminal</div></div>
+            <p class="mc-hint" style="margin:8px 0 0">Engineer's Mission Control host only.</p>
+          </div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Foreman triage</h5><span class="mc-sw"></span></div>
+          <div class="mc-card-body"><p class="mc-state off">Off - Foreman does not act on halts.</p></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="mc-strip">
+          <div class="mc-stat on"><b>202</b><span>All</span></div>
+          <div class="mc-stat"><b style="color:var(--mc-idle)">1</b><span>Ready</span></div>
+          <div class="mc-stat"><b>1</b><span>Registered</span></div>
+          <div class="mc-stat"><b>201</b><span>Not registered</span></div>
+        </div>
+        <div style="margin-bottom:10px"><span class="mc-input">Search repositories&hellip;</span></div>
+        <div class="mc-table">
+          <div class="mc-tr head"><span></span><span>Repository</span><span>Setup</span><span>Health</span><span></span></div>
+          <div class="mc-tr">
+            <span class="mc-cb on"></span>
+            <span><span class="mc-name">ai-harness</span><span class="mc-path">/Users/jordanmance/workspace/ai-harness</span></span>
+            <span><span class="mc-pill ok">Reg</span><span class="mc-pill ok">Obs</span></span>
+            <span class="mc-health">daemon running &middot; 3 pipelines</span>
+            <span class="mc-ready">Ready</span>
+          </div>
+          <div class="mc-tr">
+            <span class="mc-cb"></span>
+            <span><span class="mc-name">ai-conductor</span><span class="mc-path">/Users/jordanmance/workspace/ai-conductor</span></span>
+            <span><span class="mc-pill">Not reg</span></span>
+            <span class="mc-health">Not managed yet.</span>
+            <span class="mc-btn primary">Register</span>
+          </div>
+          <div class="mc-tr">
+            <span class="mc-cb"></span>
+            <span><span class="mc-name">avl-hoops</span><span class="mc-path">/Users/jordanmance/workspace/avl-hoops</span></span>
+            <span><span class="mc-pill">Not reg</span></span>
+            <span class="mc-health">Not managed yet.</span>
+            <span class="mc-btn primary">Register</span>
+          </div>
+          <div class="mc-tr">
+            <span class="mc-cb"></span>
+            <span><span class="mc-name">claude-skills</span><span class="mc-path">/Users/jordanmance/workspace/claude-skills</span></span>
+            <span><span class="mc-pill">Not reg</span></span>
+            <span class="mc-health">Not managed yet.</span>
+            <span class="mc-btn primary">Register</span>
+          </div>
+          <div class="mc-tr" style="opacity:.55">
+            <span class="mc-cb"></span>
+            <span><span class="mc-name">configs-and-scripts</span><span class="mc-path">&hellip; 21 more rows on this page</span></span>
+            <span></span><span></span><span></span>
+          </div>
+          <div class="mc-pager">
+            <span class="range">1-25 of 202</span>
+            <span class="nav"><span class="mc-btn">&lsaquo; prev</span><span class="mc-btn">next &rsaquo;</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+</div>
+<p class="mockcap">Mockup A - the same split, strip, table and pager as GitHub Inspector, Shipping and Foreman.</p>
+
+<ul>
+  <li><strong>The strip is the filter.</strong> Four <code>ConsoleStat</code> tiles - All,
+    Ready, Registered, Not registered - folded over one bucket function so the tally and the
+    rows cannot disagree, exactly as <code>.sc-strip</code> already works for the three ledgers.
+    This replaces the <code>01/02/03</code> ladder, which was reporting the same two numbers
+    without filtering anything.</li>
+  <li><strong>The pager is the shared one</strong>, 25 rows a page through <code>consolePage</code>,
+    bounded at 62vh, absent rather than disabled when everything fits, with the focus rescue
+    already built in.</li>
+  <li><strong>Columns</strong>: observe switch, repository (name over path), setup (the three
+    existing pills), health line, action.</li>
+  <li>The Engineer host radios become the <code>sc-seg</code> segmented control the sibling panels
+    use, so the narrow left column holds them without a bespoke class.</li>
+</ul>
+
+<div class="verdict">
+  <div class="good"><b>Good at</b> The literal answer to &ldquo;paginated like other pages&rdquo;. Four settings panels become one system instead of three plus one.</div>
+  <div class="cost"><b>Costs</b> <code>ConsoleTable</code>'s variant union, grid tracks and newer/older pager labels all need widening; the ledger contract text has to be widened to cover a directory; six e2e row selectors get rewritten.</div>
+  <div class="bad"><b>Not good at</b> It bounds the 202 rows rather than questioning them. Page 4 of 9 is still 201 rows of &ldquo;Conductor does not manage this repository yet.&rdquo;</div>
+</div>
+
+<hr>
+
+<div class="alt-head"><span class="alt-tag">B</span><h2>Directory and detail</h2></div>
+
+<p><strong>Make Conductor the same page shape as Task sources.</strong></p>
+
+<p>Task sources is the other settings category whose subject is &ldquo;many configured
+things&rdquo;, and it opted out of the reading column to become master-detail -
+<code>.ts-master-detail</code>, <code>.ts-list-col</code>, <code>.ts-detail-col</code>
+(<code>styles.css:18019-18029</code>), with the opt-out at <code>styles.css:17027</code>.
+Conductor does the same: a metric overview, a searchable and filterable directory on the left, and
+the selected repository's full detail on the right.</p>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dots"><i></i><i></i><i></i></span><span class="grow"></span><span>Settings &rsaquo; Conductor</span></div>
+  <div class="mock-scroll"><div class="mock-body">
+    <div style="display:flex;align-items:center;gap:9px;"><h4>Conductor</h4><span class="mc-scope">This machine</span></div>
+    <div class="mc-strip" style="margin-top:12px">
+      <div class="mc-stat"><b>202</b><span>Workspace</span></div>
+      <div class="mc-stat"><b>1</b><span>Registered</span></div>
+      <div class="mc-stat"><b style="color:var(--mc-idle)">1</b><span>Dispatch ready</span></div>
+      <div class="mc-stat"><b>0</b><span>Need attention</span></div>
+    </div>
+
+    <div class="colsB">
+      <div class="mc-card">
+        <div class="mc-card-body" style="padding:10px">
+          <span class="mc-input">Search repositories&hellip;</span>
+          <div class="mc-chips">
+            <span class="mc-chip on">All 202</span><span class="mc-chip">Ready 1</span><span class="mc-chip">Not registered 201</span>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--mc-soft);max-height:242px;overflow:hidden">
+          <div class="mc-dirrow sel"><span class="mc-dot ok"></span><span style="flex:1">ai-harness</span><span class="mc-ready">Ready</span></div>
+          <div class="mc-dirrow"><span class="mc-dot"></span><span style="flex:1">ai-conductor</span></div>
+          <div class="mc-dirrow"><span class="mc-dot"></span><span style="flex:1">avl-hoops</span></div>
+          <div class="mc-dirrow"><span class="mc-dot"></span><span style="flex:1">claude-skills</span></div>
+          <div class="mc-dirrow"><span class="mc-dot"></span><span style="flex:1">configs-and-scripts</span></div>
+          <div class="mc-dirrow"><span class="mc-dot"></span><span style="flex:1">figgy</span></div>
+          <div class="mc-dirrow" style="opacity:.5"><span class="mc-dot"></span><span style="flex:1">&hellip; scrolls inside its own column</span></div>
+        </div>
+        <div style="padding:7px 10px;border-top:1px solid var(--mc-soft)"><span class="mc-hint" style="margin:0">202 repositories</span></div>
+      </div>
+
+      <div class="mc-card">
+        <div class="mc-card-head">
+          <div><h5 class="mc-card-title" style="font-size:12px;letter-spacing:0;text-transform:none;color:var(--mc-fg)">ai-harness</h5>
+          <span class="mc-code">/Users/jordanmance/workspace/ai-harness</span></div>
+          <span class="mc-ready">Ready</span>
+        </div>
+        <div class="mc-card-body">
+          <div class="mc-kv"><span>Registered with Conductor</span><span class="mc-pill ok">Yes</span></div>
+          <div class="mc-kv"><span>Observed by Mission Control</span><span class="mc-sw on"></span></div>
+          <div class="mc-kv"><span>Dispatch ready</span><span class="mc-pill ok">Yes</span></div>
+          <div class="mc-kv"><span>Events arrive by</span><span style="color:var(--mc-idle);font-weight:620">live events</span></div>
+          <div class="mc-kv"><span>Last read</span><span class="mc-code">4s ago</span></div>
+          <p class="mc-state" style="margin-top:10px">engine daemon running &middot; 3 pipelines, 1 halted</p>
+          <div style="display:flex;gap:7px;margin-top:11px">
+            <span class="mc-btn primary">Open pipelines</span><span class="mc-btn">Stop observing</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px">
+      <div class="mc-card"><div class="mc-card-head"><h5 class="mc-card-title">Engine</h5></div><div class="mc-card-body"><p class="mc-state" style="font-size:10.5px">0.101.1</p></div></div>
+      <div class="mc-card"><div class="mc-card-head"><h5 class="mc-card-title">Observe</h5><span class="mc-sw on"></span></div><div class="mc-card-body"><p class="mc-state" style="font-size:10.5px">On</p></div></div>
+      <div class="mc-card"><div class="mc-card-head"><h5 class="mc-card-title">Runtime</h5></div><div class="mc-card-body"><p class="mc-state" style="font-size:10.5px">Managed SDK</p></div></div>
+      <div class="mc-card"><div class="mc-card-head"><h5 class="mc-card-title">Triage</h5><span class="mc-sw"></span></div><div class="mc-card-body"><p class="mc-state off" style="font-size:10.5px">Off</p></div></div>
+    </div>
+  </div></div>
+</div>
+<p class="mockcap">Mockup B - short directory rows on the left, everything a repository has on the right.</p>
+
+<ul>
+  <li><strong>The directory rows get short.</strong> Name, a status dot, and nothing else -
+    so 202 of them is a column that scrolls inside itself, not a page that scrolls for twenty
+    screens.</li>
+  <li><strong>The detail pane gets long.</strong> Everything the current row cannot hold has room:
+    the full health line, the ingest mode (live events versus file tail versus plugin quiet), the
+    last read time, the row error, and the register or enable action as a real primary button.</li>
+  <li><strong>Filters exactly like Task sources'</strong>: a search input on
+    <code>.field-input</code>, a provider <code>&lt;select&gt;</code> on
+    <code>.harnesses-select</code>, health filter buttons whose counts come from one shared fold,
+    a count under the list, and the same focus restoration across polls.</li>
+</ul>
+
+<div class="verdict">
+  <div class="good"><b>Good at</b> The only option needing no pager at all, and the only one with room to grow - a run summary, the waiting halt, a per-repository ingest choice all get an obvious home.</div>
+  <div class="cost"><b>Costs</b> The largest build: a new two-pane layout with its own keyboard and focus behaviour, selection state that survives the four-second poll, an empty state, and a selection step added to nearly every existing e2e case.</div>
+  <div class="bad"><b>Not good at</b> Two of the four configuration cards are global switches with nothing to do with the selected repository, and they end up stranded below the fold.</div>
+</div>
+
+<hr>
+
+<div class="alt-head"><span class="alt-tag">C</span><h2>Manage what Conductor manages</h2></div>
+
+<p><strong>Stop printing the workspace. List the repositories Conductor actually manages, and make
+adding one an action.</strong></p>
+
+<p>This alternative treats the 202 rows as the defect rather than as a pagination problem. The
+repository card lists the union of <em>registered</em> and <em>consented</em> repositories -
+bounded by the engine's own registry and by <code>MAX_PIPELINE_REPOS = 50</code>, and equal to
+<strong>1</strong> on this machine today. Adding a repository becomes the
+<code>RepoCombobox</code> the Trust panel already uses for exactly this
+(<code>src/web/components/TrustPanel.tsx:360-366</code>), which searches the 202 instead of
+printing them.</p>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dots"><i></i><i></i><i></i></span><span class="grow"></span><span>Settings &rsaquo; Conductor</span></div>
+  <div class="mock-scroll"><div class="mock-body">
+    <div style="max-width:600px">
+      <div style="display:flex;align-items:center;gap:9px;"><h4>Conductor</h4><span class="mc-scope">This machine</span></div>
+      <p class="mc-lede" style="margin-bottom:6px"><strong style="color:var(--mc-fg)">ai-conductor</strong> &middot; engine installed 0.101.1 &middot; 1 repository observed</p>
+
+      <div class="mc-sect">
+        <div class="mc-sect-head"><h5>Engine and consent</h5></div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">The engine</h5><span class="mc-btn">Check again</span></div>
+          <div class="mc-card-body">
+            <p class="mc-state">Installed at <span class="mc-code" style="color:inherit">~/.local/bin/conduct-ts</span></p>
+          </div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Observe pipelines</h5><span class="mc-sw on"></span></div>
+          <div class="mc-card-body"><p class="mc-state">On - reading 1 repository.</p></div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Launch runtime</h5></div>
+          <div class="mc-card-body"><div class="mc-seg"><div class="on">Managed SDK</div><div>Terminal</div></div></div>
+        </div>
+        <div class="mc-card">
+          <div class="mc-card-head"><h5 class="mc-card-title">Foreman triage</h5><span class="mc-sw"></span></div>
+          <div class="mc-card-body"><p class="mc-state off">Off - Foreman does not act on pipeline halts.</p></div>
+        </div>
+        <p class="mc-disc"><span style="color:var(--mc-dim)">&#9656;</span> How pipeline events arrive - polling, or the push plugin</p>
+      </div>
+
+      <div class="mc-sect">
+        <div class="mc-sect-head"><h5>Repositories</h5><em>1</em></div>
+        <span class="mc-input">Add a repository - search repos or type a path&hellip;</span>
+        <div class="mc-card" style="margin-top:10px">
+          <div class="mc-card-body" style="display:flex;gap:10px;align-items:flex-start">
+            <span class="mc-sw on" style="margin-top:2px"></span>
+            <span style="flex:1;min-width:0">
+              <span class="mc-name" style="font-size:12.5px">ai-harness</span>
+              <span class="mc-path">/Users/jordanmance/workspace/ai-harness</span>
+              <span style="display:block;margin:5px 0 4px"><span class="mc-pill ok">Registered</span><span class="mc-pill ok">Observed</span><span class="mc-pill ok">Dispatch ready</span></span>
+              <span class="mc-health">engine daemon running &middot; 3 pipelines, 1 halted &middot; live events</span>
+            </span>
+            <span style="display:flex;flex-direction:column;gap:6px">
+              <span class="mc-btn primary">Open</span><span class="mc-btn">Stop</span>
+            </span>
+          </div>
+        </div>
+        <p class="mc-empty">Nothing else is registered. Add one above.</p>
+      </div>
+    </div>
+  </div></div>
+</div>
+<p class="mockcap">Mockup C - the list answers &ldquo;what have I registered?&rdquo; and the workspace lives in the picker.</p>
+
+<ul>
+  <li><strong>Two peer sections, not one.</strong> The panel splits into two
+    <code>settings-section</code>s - &ldquo;Engine and consent&rdquo; and
+    &ldquo;Repositories&rdquo; - which is what gives the rail and the search index real
+    anchors to land on, and what stops one <code>data-anchor</code> standing for a whole page.</li>
+  <li><strong>The managed list is still paged.</strong> It is short by construction, but it takes
+    <code>consolePage</code> at 25 anyway, so the 50-row ceiling can never reproduce the current
+    shape.</li>
+  <li><strong>The ladder collapses into the header.</strong> One line of facts instead of a
+    numbered ladder restating the cards below it. The numbered first-run sequence survives as the
+    <em>empty state</em>: with no engine and no repositories, the section is the three steps.</li>
+  <li><strong>The plugin prose becomes a disclosure</strong>, on the <code>aria-expanded</code>
+    pattern <code>WorktreeSettingsPanel.tsx:222</code> already uses. It is setup instruction read
+    once, not status read weekly.</li>
+</ul>
+
+<div class="verdict">
+  <div class="good"><b>Good at</b> Fixes the cause rather than the symptom, and costs the least: no new layout, no <code>ConsoleTable</code> generalization, and the add control already exists.</div>
+  <div class="cost"><b>Costs</b> About six e2e steps change, because an unregistered repository is now reached through the picker rather than by searching a printed list.</div>
+  <div class="bad"><b>Not good at</b> The least visually convergent - it stays a single reading column, so &ldquo;matches the current settings pages&rdquo; is only half answered.</div>
+</div>
+
+<hr>
+
+<h2>What all three do</h2>
+
+<p>Whichever shape is chosen, the same work lands with it:</p>
+<ul>
+  <li><strong>The repository list stops rendering unbounded.</strong> No option leaves 202 rows on the page.</li>
+  <li><strong><code>settings-search.ts</code> gains an entry per anchor</strong>, so the engine, the
+    consent switch, the launch runtime and Foreman triage become reachable from the palette instead
+    of only <code>conductor/repos</code>.</li>
+  <li><strong>The rail row gets a dot.</strong> <code>settings-dots.ts</code> grows a
+    <code>conductor</code> case reading the <code>SettingsStatus.pipelines</code> tuple that already
+    exists, plus its <code>dotLabel</code> branch, so colour is not the only signal.</li>
+  <li><strong>The borrowed and bespoke classes go.</strong> <code>skill-switch</code> stops being
+    borrowed from the Skills catalog, and the Engineer host choice moves to the shared
+    <code>sc-seg</code> segmented control.</li>
+  <li><strong><code>docs/pipelines.md:110-140</code></strong> - which currently documents
+    &ldquo;the panel holds five cards&rdquo; - is rewritten to the chosen shape in the same
+    change.</li>
+  <li><strong><code>e2e/specs/settings-conductor.spec.ts</code> covers the new shape</strong>,
+    including the bound: a spec that seeds many repositories and asserts the page does not render
+    all of them.</li>
+</ul>
+
+<h2>What does not change</h2>
+<ul>
+  <li>The consent model. Registration through Conductor's CLI and Mission Control's separate
+    observation stay two ordered mutations, and the whole-config <code>PUT</code> stays the single
+    consent writer.</li>
+  <li>Every server route. This is a <code>src/web</code> change; no endpoint, schema or migration
+    moves.</li>
+  <li>The claim the panel makes about itself - that Mission Control never edits Conductor's
+    registry or pipeline files.</li>
+  <li><code>MAX_PIPELINE_REPOS = 50</code> and the 50-row consent cap.</li>
+</ul>
+
+<h2>Risks</h2>
+<ul>
+  <li><strong>The tests are the real cost in all three.</strong>
+    <code>e2e/specs/settings-conductor.spec.ts</code> is 548 lines and reaches rows through
+    <code>li.conductor-repo</code>; <code>test/conductor-panel.test.ts</code> is 487 lines of markup
+    assertions; <code>test/settings-sidebar-render.test.ts</code> fingerprints the panel by the
+    string &ldquo;Conductor commissioning progress&rdquo;. Any option that moves the ladder or the
+    row markup touches all three.</li>
+  <li><strong>Alternative A widens a written contract.</strong> The ledger-table contract is about
+    append-only records. Extending <code>ConsoleTable</code> to a directory is the right reuse, but
+    the contract text has to be widened deliberately rather than quietly.</li>
+  <li><strong>Alternative C changes what the page answers.</strong> Today the list answers
+    &ldquo;what could I register?&rdquo;; afterwards it answers &ldquo;what have I
+    registered?&rdquo;. That is the intended change, but it is a change in meaning, not only in
+    layout.</li>
+</ul>
+
+</main>
+</body>
+</html>

@@ -1,10 +1,11 @@
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { INSPECTOR_MODEL_ENV, resolveInspectorModel } from "@shared/inspector.ts";
+import type { ResolvedInspectorModel } from "@shared/inspector.ts";
+import { providerOwningModel } from "@shared/model.ts";
 import { isLlmRunnerId } from "@shared/llm.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import { InspectorConfigSchema } from "@shared/protocol.ts";
-import type { ResolvedModel } from "@shared/model-choice.ts";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
 
@@ -21,9 +22,41 @@ export function getInspectorConfig(): InspectorConfig {
 
 /** Merge a patch over the current config, persist, and return the result. */
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
-  const next = InspectorConfigSchema.parse({ ...getInspectorConfig(), ...patch });
+  const cur = getInspectorConfig();
+  const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
   setAppConfig(CONFIG_KEY, next);
   return next;
+}
+
+/**
+ * Record a provider when a model is saved with none of its own - the `foreman` blob's
+ * `pinRoleProviders` rule, for the one slot this blob owns.
+ *
+ * Without it the Inspector is the asymmetric case: a Claude model chosen while its provider
+ * was inherited stores only half a pair, and the missing half is then whatever the app-wide
+ * ladder resolves to later. Move the app-wide radio to Codex and the review call is a Codex
+ * provider holding a Claude model id - and this is the call that writes where other people
+ * read. Resolution refuses that pair, so nothing incompatible is ever spawned; pinning is
+ * what stops the operator's actual choice from being the thing thrown away.
+ *
+ * Only writes that TOUCH the model pin, so an unrelated `enabled` or `mode` change never
+ * converts an inheriting slot into a pinned one - the same restriction, for the same reason,
+ * that `pinRoleProviders` applies.
+ */
+function pinInspectorProvider(
+  before: InspectorConfig,
+  patch: InspectorConfigPatch,
+): Partial<InspectorConfig> {
+  if (!Object.prototype.hasOwnProperty.call(patch, "model")) return {};
+  const merged = { ...before, ...patch };
+  const model = merged.model?.trim() ?? "";
+  if (!model) return {};
+  // An explicit provider always wins: one already stored, or one this same patch names.
+  if (merged.runner?.trim()) return {};
+  // The provider the model POSITIVELY belongs to, else the one in force before this write -
+  // a custom or newly released id belongs to nobody the catalog knows, and the provider the
+  // operator was looking at when they picked it is the only evidence there is.
+  return { runner: providerOwningModel(model) ?? inspectorRunner(before).id };
 }
 
 /**
@@ -37,7 +70,7 @@ export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig
  * Resolved per call, never captured: the config is editable at runtime through
  * `PUT /api/inspector/config`, and a value read at module load would need a restart.
  */
-export function inspectorModel(cfg: InspectorConfig = getInspectorConfig()): ResolvedModel {
+export function inspectorModel(cfg: InspectorConfig = getInspectorConfig()): ResolvedInspectorModel {
   return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), inspectorRunner(cfg).id);
 }
 

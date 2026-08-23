@@ -35,7 +35,7 @@ const {
   getForemanConfig,
   setForemanConfig,
 } = await import("../src/server/foreman/config.ts");
-const { inspectorModel, inspectorRunner, setInspectorConfig } = await import(
+const { getInspectorConfig, inspectorModel, inspectorRunner, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
 const { setLlmConfig } = await import("../src/server/llm/config.ts");
@@ -345,4 +345,94 @@ test("an unreadable Inspector provider is reported rather than swallowed", () =>
   const resolved = inspectorRunner();
   assert.equal(resolved.id, DEFAULT_LLM_RUNNER_ID);
   assert.equal(resolved.unknown, "gemini");
+});
+
+test("an unrelated Foreman write never pins a legacy role's provider", () => {
+  // THE REGRESSION (GitHub Inspector, PR #756). Pinning used to run on EVERY patch, so a
+  // write that changed something else entirely - `enabled`, `mode`, the repo allowlist - would
+  // reach a role carrying a model saved by a build that recorded no provider with it, and
+  // silently record one. For a `claude-opus-5` under app-wide Codex that pin was `claude`,
+  // which moved the next review onto a different account than the one it had been running on.
+  // Nobody asked for that, and nothing on screen said it happened.
+  setLlmConfig({ runner: "codex" });
+  setAppConfig("foreman", { reviewModel: "claude-opus-5" });
+  assert.equal(getForemanConfig().reviewRunner, undefined, "the legacy pair starts unpinned");
+  assert.equal(foremanRoleRunner("review").id, "codex", "and is running on the app-wide answer");
+
+  setForemanConfig({ mode: "live" });
+
+  assert.equal(getForemanConfig().reviewRunner, undefined, "an unrelated write pins nothing");
+  assert.equal(foremanRoleRunner("review").id, "codex", "so the role still inherits");
+});
+
+test("a group provider move pins what a legacy role was RUNNING, not what its model owns", () => {
+  // The other half of the same finding. On a group move the role's stored model is not
+  // evidence of anything the operator just decided - it may predate provider recording
+  // entirely - so the honest pin is the provider actually in force, which is what the
+  // resolver guard was already spending. Pinning the model's owner instead would use a group
+  // change as cover for moving the role somewhere it had never run.
+  setLlmConfig({ runner: "codex" });
+  setAppConfig("foreman", { reviewModel: "claude-opus-5" });
+
+  setForemanConfig({ runner: "claude" });
+
+  assert.equal(
+    getForemanConfig().reviewRunner,
+    "codex",
+    "the outgoing provider, not claude-opus-5's owner",
+  );
+  assert.equal(foremanRoleRunner("review").id, "codex");
+});
+
+test("saving a model still records the provider that model belongs to", () => {
+  // The narrowing above must not cost the rule the page is documented on: an EXPLICIT model
+  // save is a decision, and it pins the provider the chosen id positively belongs to.
+  setLlmConfig({ runner: "codex" });
+  setForemanConfig({ reviewModel: "claude-opus-5" });
+  assert.equal(getForemanConfig().reviewRunner, "claude");
+});
+
+test("saving an Inspector model with no provider pins the one it belongs to", () => {
+  // THE REGRESSION (GitHub Inspector, PR #756). Foreman's roles pinned on save and the
+  // Inspector did not, so a Claude model chosen while its provider was inherited stored half a
+  // pair. Moving the app-wide radio then handed a Codex provider a Claude model id - on the
+  // one call in this app that writes where other people read.
+  setLlmConfig({ runner: "claude" });
+  setInspectorConfig({ model: "claude-opus-5" });
+
+  assert.equal(getInspectorConfig().runner, "claude", "the model's own provider is recorded");
+
+  setLlmConfig({ runner: "codex" });
+  assert.equal(inspectorRunner().id, "claude", "so an app-wide move cannot carry it away");
+  assert.equal(inspectorModel().id, "claude-opus-5", "and the operator's model survives intact");
+});
+
+test("an unrelated Inspector write never pins its provider", () => {
+  setLlmConfig({ runner: "codex" });
+  setAppConfig("inspector", { model: "claude-opus-5" });
+
+  setInspectorConfig({ mode: "live" });
+
+  assert.equal(getInspectorConfig().runner, undefined, "an inheriting slot stays inheriting");
+});
+
+test("an incompatible Inspector pair no writer reached is refused at resolution", () => {
+  // The backstop for what pinning cannot reach: a blob written by an older build, a hand
+  // edit, or MISSION_LLM_RUNNER moving between restarts. The review is a DEEP call, so the
+  // substitute comes from the deep tier rather than quietly downgrading the review.
+  setAppConfig("inspector", { model: "claude-opus-5" });
+  setLlmConfig({ runner: "codex" });
+
+  const resolved = inspectorModel();
+  assert.equal(resolved.id, "gpt-5.6-sol", "a Codex provider gets a Codex deep model");
+  assert.equal(resolved.unsupported, "claude-opus-5", "and the dropped id is reported, not hidden");
+  assert.equal(resolved.source, "default", "a substitute is not credited to the operator");
+});
+
+test("an Inspector model its provider does offer is left exactly alone", () => {
+  setAppConfig("inspector", { runner: "codex", model: "gpt-5.6-sol" });
+  const resolved = inspectorModel();
+  assert.equal(resolved.id, "gpt-5.6-sol");
+  assert.equal(resolved.unsupported, null);
+  assert.equal(resolved.source, "config");
 });

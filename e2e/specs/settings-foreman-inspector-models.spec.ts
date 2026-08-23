@@ -355,3 +355,60 @@ test("a palette search for a Foreman model lands on the Models page and flashes 
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/settings/models");
   await expect(dashboard.locator('[data-anchor="models/inspector"]')).toHaveClass(/settings-flash/);
 });
+
+test("the Inspector's model is pinned when it is saved, and survives the app-wide move", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The Foreman sequence above, walked on the Inspector's row - which did NOT pin before this
+  // fix, so it was the asymmetric slot: a Claude model chosen while its provider was inherited
+  // stored half a pair, and the app-wide radio then handed a Codex provider a Claude model id.
+  // This is the one call in the app that writes where other people read, so it is also the
+  // worst place to discover a pair that cannot be spawned.
+  await openModels(dashboard, daemon.baseURL);
+  await dashboard.getByRole("combobox", { name: "Inspector Review model" })
+    .selectOption("claude-opus-5");
+
+  await dashboard.getByRole("radio", { name: "Codex" }).check();
+  await openModels(dashboard, daemon.baseURL);
+
+  await expect(dashboard.getByRole("combobox", { name: "Inspector Review provider" }))
+    .toHaveValue("claude");
+  await expect(dashboard.getByRole("combobox", { name: "Inspector Review model" }))
+    .toHaveValue("claude-opus-5");
+
+  // And the daemon spawns the pair the row shows, rather than a substitute.
+  const status = await (await fetch(`${daemon.baseURL}/api/inspector/status`)).json();
+  expect(status.runner.id).toBe("claude");
+  expect(status.model.id).toBe("claude-opus-5");
+  expect(status.model.unsupported, "nothing had to be dropped").toBe(null);
+  await shoot(dashboard, "10-inspector-model-pinned", "models/inspector");
+});
+
+test("an Inspector pair no writer could reach is refused, and the row says what it dropped", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The backstop for what pinning cannot reach - a blob from an older build, a hand edit,
+  // MISSION_LLM_RUNNER moving between restarts. Resolution refuses the pair so nothing
+  // incompatible is spawned, and the row names the id that was dropped instead of printing
+  // the substitute as though the operator had chosen it.
+  const seed = await fetch(`${daemon.baseURL}/api/inspector/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runner: "codex", model: "claude-opus-5" }),
+  });
+  expect(seed.ok, "the panel could not offer this pair; a stored blob can still hold it").toBe(true);
+
+  await openModels(dashboard, daemon.baseURL);
+
+  await expect(
+    dashboard.locator(".settings-matrix-reset", { hasText: "claude-opus-5" }),
+    "the dropped id is named on the row",
+  ).toBeVisible();
+
+  const status = await (await fetch(`${daemon.baseURL}/api/inspector/status`)).json();
+  expect(status.model.id, "a deep call gets a deep substitute").toBe("gpt-5.6-sol");
+  expect(status.model.unsupported).toBe("claude-opus-5");
+  await shoot(dashboard, "11-inspector-dropped-model", "models/inspector");
+});

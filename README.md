@@ -267,7 +267,11 @@ choice: its grid leads with an **All roles** row, so the deep pair can run on on
 the cheap pair runs on another. A row on *Inherit* follows the row above it - a Foreman role
 follows **All roles**, and everything else follows the app-wide picker, then
 `MISSION_LLM_RUNNER`, then the shipped default. Pinning a model pins its provider, so changing
-the picker re-resolves only the rows still inheriting.
+the picker re-resolves only the rows still inheriting. That pin is recorded only by a write that
+reaches the pair - saving that row's model, or moving the row above it - so editing an unrelated
+setting never converts an inheriting row into a pinned one. A pair that turns up anyway, from an
+older blob or a hand edit, is refused when the call is resolved rather than spawned, and the row
+names the model id it had to drop.
 
 **One upgrade note.** An unset GitHub Inspector provider used to resolve to a literal `claude`,
 which made it the one subsystem that ignored the app-wide picker and `MISSION_LLM_RUNNER`. It now

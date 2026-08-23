@@ -16,7 +16,7 @@ import type {
   FileCommentReviewState,
   FileCommentThreadStatus,
 } from "./file-comments.ts";
-import type { InspectorPosture } from "./inspector.ts";
+import type { InspectorPosture, ResolvedInspectorModel } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
@@ -2717,7 +2717,14 @@ export interface InspectionUpdated {
  * split, and the same reason, as `ForemanConfig` against `ForemanStatus.models`.
  */
 export interface InspectorStatus {
-  model: ResolvedModel;
+  /**
+   * Resolved, and carrying the id its provider refused.
+   *
+   * A bare `ResolvedModel` could not say that a stored Claude model was dropped because the
+   * provider moved underneath it, so the row would print the substitute as though the
+   * operator had picked it. Same reason `ForemanStatus` carries `unsupported` per role.
+   */
+  model: ResolvedInspectorModel;
   /**
    * The provider the review call resolves to, and which layer chose it.
    *

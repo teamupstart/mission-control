@@ -176,13 +176,29 @@ function pinRoleProviders(
   // being carried over to the incoming one.
   const outgoing = resolveForemanRunner("review", { runner: before.runner }, llmRunnerChoice());
   const merged = { ...before, ...patch };
+  const movesGroup = Object.prototype.hasOwnProperty.call(patch, "runner");
   const pins: Partial<ForemanConfig> = {};
   for (const role of FOREMAN_MODEL_ROLES) {
     const spec = FOREMAN_MODEL_SPECS[role];
+    // Only a write that reaches this pair may pin it. Any other patch - `enabled`, `mode`,
+    // the repo allowlist - leaves an inheriting role inheriting.
+    const savesModel = Object.prototype.hasOwnProperty.call(patch, spec.configKey);
+    if (!savesModel && !movesGroup) continue;
     const model = merged[spec.configKey]?.trim() ?? "";
     if (!model) continue;
     if (merged[spec.runnerKey]?.trim()) continue;
-    pins[spec.runnerKey] = providerOwningModel(model) ?? outgoing.id;
+    // Which provider to record depends on WHY we are here, and the two answers differ for a
+    // legacy role - one carrying a model saved by a build that recorded no provider with it.
+    //
+    // Saving the model: the provider it positively belongs to, else the one in force. The
+    // operator just chose this id, so its own catalog is the best evidence of what it is.
+    //
+    // Moving the group provider: the OUTGOING provider, and never the model's owner. That
+    // legacy role is running on the outgoing provider right now - with the resolver guard
+    // substituting a default if its stored model belongs elsewhere - and pinning the model's
+    // owner instead would silently move it to a provider it was not running on, which is a
+    // behaviour change on a write that asked for something else entirely.
+    pins[spec.runnerKey] = savesModel ? (providerOwningModel(model) ?? outgoing.id) : outgoing.id;
   }
   return pins;
 }

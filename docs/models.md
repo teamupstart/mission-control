@@ -108,6 +108,15 @@ id, and a pair no provider can honour is replaced at resolution with the row say
 dropped. Changing **All roles** re-resolves only the roles still inheriting; a role that already
 carries a model keeps the provider it was saved under.
 
+A provider is recorded only by a write that reaches that pair - saving the row's model, or moving
+**All roles**. Changing an unrelated Foreman setting leaves an inheriting row inheriting, so a row
+that has never chosen a provider is never quietly given one. The two cases also record different
+answers, on purpose: saving a model records the provider that **model** belongs to, because the
+operator just chose it, while an **All roles** move records the provider the row was **running
+on**. A row carrying a model saved by an older build has no recorded provider, and a group move is
+not evidence about it - so it keeps the account it was already being spent on rather than being
+carried somewhere it has never run.
+
 That last sentence describes a **fix**, not only a rule. Before this, Foreman's panel cleared all
 four model boxes whenever its provider select moved, which kept the pair valid as long as Foreman
 had a provider of its own - but an unset one inherited the app-wide value, and the app-wide radio
@@ -136,6 +145,15 @@ got a Claude review anyway, with nothing on screen saying so. An unset Inspector
 follows the same ladder as everything else on the page. **If you were relying on that fallback,
 this upgrade changes which provider the Inspector spawns**; set its provider explicitly to keep
 Claude.
+
+**Saving its model pins its provider too**, exactly as a Foreman role's does. Choosing a Claude
+review model while the provider is inherited records Claude in the same write, so a later app-wide
+move to Codex cannot carry the row away from the model it was given. And if a pair no writer could
+reach does turn up - a blob from an older build, a hand edit, `MISSION_LLM_RUNNER` moving between
+restarts - resolution refuses it rather than spawning it, substituting a model from the same
+**deep** tier and naming the dropped id on the row. A pull-request review is the only call this app
+makes that writes where other people read; it is not the one to let run on a pair that cannot
+exist, or to quietly downgrade to a cheap model.
 
 ## Task kinds
 

@@ -232,7 +232,17 @@
   .mock .sel.w-lg { min-width: 178px; }
   .mock .sel.w-sm { min-width: 104px; }
   .mock .sel.inherit { color: var(--app-dim); }
+  /* A row that inherits its agent has no agent to store a model against, so its Model cell is
+     not a control at all. Dashed and chevron-less so it reads as unavailable rather than empty. */
+  .mock .sel.off {
+    color: var(--app-dim);
+    opacity: 0.55;
+    border-style: dashed;
+    background: none;
+    justify-content: flex-start;
+  }
   .mock .sel::after { content: "⌄"; color: var(--app-dim); font-family: var(--sans); line-height: 0.6; }
+  .mock .sel.off::after { content: none; }
 
   .mock table.matrix { border-collapse: collapse; width: 100%; font-size: 13px; table-layout: fixed; }
   .mock table.matrix th {
@@ -493,13 +503,27 @@ reads is worse than no control.</p>
 default - the only ordering that keeps both existing rules true.</figcaption>
 </figure>
 
-<p>"Matched on agent" is the one subtlety. A kind default stores an agent <em>and</em> a model,
-and the stored model is only meaningful for that agent - a <code>claude-opus-5</code> id is not
-something Codex can run. So the tier applies its model <strong>only when the task's agent equals
-the kind default's agent</strong>. A plan task the operator switched to Codex by hand falls
-straight through to Codex's harness default rather than being handed a Claude model id. The
-existing per-harness key shape (<code>defaultModel: { claude, codex, pi }</code>) makes the same
-point in the other direction.</p>
+<p>"Matched on agent" is the one subtlety, and it lands differently on the two fields.</p>
+
+<p>A <strong>model</strong> id is agent-namespaced - a <code>claude-opus-5</code> id is not
+something Codex can run - so a row's model is stored <em>against</em> its agent, exactly as the
+existing <code>defaultModel: { claude, codex, pi }</code> key already stores one. Two rules follow
+from that. A row whose Agent is Inherit has no agent to store a model against, so its Model cell is
+empty and disabled and the schema rejects a model without an agent, rather than persisting a value
+that could never apply. And a row that does name an agent applies its model <strong>only when the
+task's agent equals it</strong>: a plan task the operator switched to Codex by hand falls straight
+through to Codex's harness default rather than being handed a Claude model id.</p>
+
+<p><strong>Effort</strong> is the opposite, and a blanket agent match would be wrong for it.
+<code>THINKING_LEVELS</code> is one shared vocabulary every harness reads, so "high" chosen for
+planning is meaningful whichever agent runs the task, and a row may set an effort while inheriting
+its agent. What varies is which levels a harness accepts, and the registry already answers that:
+<code>HARNESS_CAPABILITIES[agent].effort</code> is null for a harness with no launch-time effort
+control at all, and <code>levelsFor(model)</code> narrows per model - Codex declines
+<code>max</code> on everything but its newest two. So a kind's effort applies to whichever agent
+the task runs on, and falls through to that harness's own default when the harness does not offer
+the level, the same way <code>resolveSessionRuntime</code> drops a runtime the harness has no
+driver behind instead of dispatching something the operator did not ask for.</p>
 
 <h3>Where the choice is made, and by whom</h3>
 
@@ -616,14 +640,16 @@ shows what a kind with nothing set falls through to.</p>
           <tr>
             <td class="kindcell">chat</td>
             <td><span class="sel inherit">Inherit</span></td>
-            <td><span class="sel w-lg inherit">Inherit</span></td>
+            <td><span class="sel w-lg off" title="Choose an agent to pin a model">Needs an agent</span></td>
             <td><span class="sel w-sm inherit">Inherit</span></td>
           </tr>
         </tbody>
       </table>
     </div>
     <p class="hint" style="margin-top:12px">A row left on <em>Inherit</em> follows the top row -
-      Settings → Harnesses. <code style="background:none;border:0;padding:0;color:var(--app-dim)">pipeline</code>
+      Settings → Harnesses. A model belongs to an agent, so a row still on <em>Inherit</em> has
+      nowhere to put one; effort is a shared vocabulary and stays available.
+      <code style="background:none;border:0;padding:0;color:var(--app-dim)">pipeline</code>
       has no row: Conductor owns its agent, model and effort.</p>
 
     <hr>
@@ -992,7 +1018,10 @@ first, and neither blocks the other.</p>
     <td>The task-creating routes</td>
     <td>Resolve an omitted agent from the kind default instead of defaulting to
     <code>"claude"</code>. This is where MCP <code>create_task</code>, task sources and Recurring
-    Missions inherit the behaviour without each learning about it.</td>
+    Missions inherit the behaviour without each learning about it. The default has to move off
+    <code>DispatchSchema.agent</code> to do it: <code>z.enum(AGENT_TYPES).default("claude")</code>
+    turns an omitted agent into an explicit Claude before any route sees the body, and nothing
+    downstream can tell the two apart afterwards.</td>
   </tr>
   <tr>
     <td><code>src/web/components/LlmSettingsPanel.tsx</code></td>

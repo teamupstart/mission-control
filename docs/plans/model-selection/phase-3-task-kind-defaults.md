@@ -47,6 +47,17 @@ Explicit non-goals:
   `DispatchSchema.agent` defaults to `"claude"` (`src/shared/protocol.ts:953`) and
   `EMPTY_DISPATCH_DRAFT.agent` is `"claude"` (`src/web/lib/task-draft.ts:71`); those two are the
   seeds to replace.
+- **Effort is a shared vocabulary with per-harness narrowing.** `THINKING_LEVELS`
+  (`src/shared/types.ts:203`) is one list every harness reads, but
+  `HARNESS_CAPABILITIES[agent].effort` (`src/shared/harness-capabilities.ts:418`) is null for a
+  harness with no launch-time effort control, and `levelsFor(model)` (`:250`, `:599`) narrows per
+  model - `CODEX_EFFORT_LEVELS` (`:426`) drops `max` for every Codex model but its newest two.
+  `sessionEffortLevels` (`:762`) is the existing consumer of that pair. This is why effort takes a
+  capability check rather than the model's agent match: a level chosen for one agent is usually
+  meaningful on another, and the registry already says when it is not.
+- **`resolveSessionRuntime`** (`src/shared/harness-capabilities.ts:790`) is the shape to copy for
+  reporting a dropped value: it returns what it resolved to *and* what it had to drop, so a panel
+  cannot render a fallback as the operator's own choice.
 - **The triple already exists.** `EnsembleRoleSpec` (`src/shared/ensemble.ts:479`) stores
   `agent: AgentType | null`, `model: string | null`, `effort: ThinkingLevel | null`. Copy that
   shape.
@@ -66,20 +77,49 @@ Explicit non-goals:
    harness-launched kinds, each entry `{ agent, model, effort }`, every field nullable, null meaning
    inherit. Add the counterpart to `HarnessesConfigPatchSchema`, spelled out per key like its
    siblings rather than derived.
+   **Refine the entry so a non-null `model` requires a non-null `agent`.** A model id is
+   agent-namespaced, so a model stored against no agent is a value that can never apply, and the
+   write schema should refuse it rather than saving a control that silently does nothing. `effort`
+   carries no such constraint - it is a shared vocabulary and is deliberately settable on a row that
+   inherits its agent. Keep the read side tolerant: an entry persisted by a newer build that breaks
+   the rule drops its model and keeps the rest, rather than failing the whole config open.
 2. **`src/server/harnesses.ts`** - merge `kindDefaults` per key in `setHarnessesConfig`. Add the
    kind tier to `resolveDispatchModel` and `resolveDispatchEffort`, both taking the task's kind.
    The tier sits **below** the launch-only Foreman backlog model and **above** the per-harness
-   default, and its model applies **only when the task's agent equals the kind default's agent** - a
-   `claude-opus-5` id is not something Codex can run.
+   default in both. The two fields are guarded differently, and conflating them is the mistake to
+   avoid:
+   - **Model - agent match.** The kind's model applies **only when the task's agent equals the kind
+     default's agent**; a `claude-opus-5` id is not something Codex can run. A row that inherits its
+     agent cannot hold a model at all (step 1), so there is no case where a configured model
+     silently never applies.
+   - **Effort - capability check.** A blanket agent match would be wrong here: `high` chosen for
+     planning is meaningful on any harness, and a row may set an effort while inheriting its agent.
+     Apply the kind's effort to whichever agent the task runs on, then check it against
+     `HARNESS_CAPABILITIES[agent].effort?.levelsFor(model)` using the model this launch actually
+     resolved - so effort resolves **after** the model, not beside it. A harness with no `effort`
+     spec, or one that does not offer the level, falls through to `defaultEffort[agent]` rather than
+     launching with a flag the CLI will reject.
 3. **`src/web/harnesses-reconcile.ts`** - teach `mergeHarnessesPatch` the new key.
 4. **`src/server/dispatcher.ts:449-450`** - pass the task's kind to both resolvers.
 5. **Task creation** - resolve an omitted agent from the kind default instead of defaulting to
    `"claude"`. Do it where every creator converges so MCP `create_task`, task sources and Recurring
    Missions inherit it without each learning about it. Once written, the agent is an ordinary pin.
+   **The schema boundary is the trap here.** `DispatchSchema.agent` is
+   `z.enum(AGENT_TYPES).default("claude")` (`src/shared/protocol.ts:953`), so by the time a route
+   sees the parsed body an omitted agent has already become an explicit `"claude"` and no
+   downstream resolution can recover the difference. The default has to move off the schema -
+   `.optional()`, resolved once at the convergence point - or the kind default will never be
+   consulted by any caller that goes through it, which is all of them. Expect the parsed type to
+   widen to `AgentType | undefined` and the compiler to name every consumer; that list is the
+   inventory of places that were silently relying on the default. `kind` keeps its
+   `.default("ship")`, so the kind is always known when the agent is resolved.
 6. **`src/web/components/LlmSettingsPanel.tsx`** - a Task kinds group rendered through Phase 1's
    `SettingsMatrix` with four columns (Kind, Agent, Model, Effort) and the muted inherited row on
    top. Rows come from the registry, so `pipeline` is absent because it declares
-   `launch: "pipeline"`. The panel also needs the `useHarnesses` state `SettingsPage.tsx` already
+   `launch: "pipeline"`. The Model cell is disabled while that row's Agent is Inherit, and choosing
+   an agent narrows both the model catalog and the effort options to what that harness offers
+   (`levelsFor`) - the same narrowing `ModelField` already does. Say in the cell's title or hint why
+   Model is unavailable; a control disabled without a reason reads as a bug. The panel also needs the `useHarnesses` state `SettingsPage.tsx` already
    holds (L258); share that instance rather than opening a second poller.
 7. **State the asymmetry in the panel.** One line under the group: the model and effort are read
    when a task launches, so a change reaches a task already in the backlog; the agent is written
@@ -109,7 +149,15 @@ Explicit non-goals:
 ## Tests and verification
 
 - `test/` - the four-tier ladder; the agent-mismatch fall-through (a kind default's model is **not**
-  applied when the task's agent differs); the row set derived from `TASK_KIND_BEHAVIOR` so
+  applied when the task's agent differs, while its effort still is); a row that inherits its agent
+  rejected on write when it carries a model, and accepted when it carries only an effort; an effort
+  the target harness does not offer (`max` on a Codex model outside the newest two) falling through
+  to `defaultEffort[agent]` rather than reaching the launch; a harness whose `effort` spec is null
+  taking no effort from the kind tier; effort resolved against the model this launch resolved rather
+  than the row's; **MCP `create_task` with no `agent` landing on the kind's agent rather than
+  `"claude"`**, and with an explicit `agent: "claude"` still landing on Claude even when the kind
+  says otherwise - the regression test for the schema-default trap; the row set derived from
+  `TASK_KIND_BEHAVIOR` so
   `pipeline` is absent and a future harness-launched kind appears without an edit; `setHarnessesConfig`
   and `mergeHarnessesPatch` merging `kindDefaults` per key; an omitted agent resolving from the kind
   at creation across every creator.
@@ -123,7 +171,10 @@ Explicit non-goals:
 - A `plan` task dispatches on its configured agent and model without touching the form.
 - A backlogged task picks up a changed kind **model**; its agent stays as filed - and the panel says
   so.
-- A kind default whose agent does not match the task's agent falls through to the harness default.
+- A kind default whose agent does not match the task's agent falls through to the harness default
+  **for the model**, while its effort still applies - unless the target harness does not offer that
+  level, in which case the harness default does.
+- A row that inherits its agent cannot be saved with a model, and its Model cell says why.
 - `pipeline` has no row. Docs updated, gates green, Playwright spec present.
 
 ## Downstream handoff
@@ -143,3 +194,12 @@ Explicit non-goals:
   works. `settings-registry.ts` is owned by this phase alone, so the category blurb has one writer.
 - Concurrency claim checked: this phase touches `harnesses`; Phase 2 touches `foreman` and
   `inspector`. No shared schema, resolver, worker or migration.
+- Review round 1 also raised that `DispatchSchema`'s `.default("claude")` erases the omission the
+  kind default needs to see. Step 5 now names that boundary and the type widening it causes.
+- Review round 3 raised effort crossing the agent boundary, and round 1 raised a model-only row
+  that could never apply. Both were real and both are fixed here rather than deferred, because they
+  are properties of the resolver this phase introduces. The fix is deliberately **not** the
+  symmetrical guard the review proposed: a blanket agent match on effort would discard a value that
+  is portable by construction, so effort takes a capability check against the harness registry and
+  the model keeps the agent match. The source plan's "Where it lands in the ladder" section carries
+  the same split.

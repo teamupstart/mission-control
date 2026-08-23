@@ -128,12 +128,27 @@ which is the only ordering that keeps both of the existing rules true: an explic
 one launch still wins, and a per-harness default is still what a kind with nothing configured
 falls back to.
 
-"Matched on agent" is the one subtlety. A kind default stores an agent *and* a model, and the
-stored model is only meaningful for that agent - a `claude-opus-5` id is not something Codex can
-run. So the tier applies its model **only when the task's agent equals the kind default's
-agent**. A plan task the operator switched to Codex by hand falls straight through to Codex's
-harness default rather than being handed a Claude model id. The existing per-harness key shape
-(`defaultModel: { claude, codex, pi }`) makes the same point in the other direction.
+"Matched on agent" is the one subtlety, and it lands differently on the two fields.
+
+A **model** id is agent-namespaced - a `claude-opus-5` id is not something Codex can run - so a
+row's model is stored *against* its agent, exactly as the existing `defaultModel: { claude, codex,
+pi }` key already stores one. Two rules follow from that. A row whose Agent is Inherit has no agent
+to store a model against, so its Model cell is empty and disabled and the schema rejects a model
+without an agent, rather than persisting a value that could never apply. And a row that does name
+an agent applies its model **only when the task's agent equals it**: a plan task the operator
+switched to Codex by hand falls straight through to Codex's harness default rather than being
+handed a Claude model id.
+
+**Effort** is the opposite, and a blanket agent match would be wrong for it. `THINKING_LEVELS` is
+one shared vocabulary every harness reads, so "high" chosen for planning is meaningful whichever
+agent runs the task, and a row may set an effort while inheriting its agent. What varies is which
+levels a harness accepts, and the registry already answers that:
+`HARNESS_CAPABILITIES[agent].effort` is null for a harness with no launch-time effort control at
+all, and `levelsFor(model)` narrows per model - Codex declines `max` on everything but its newest
+two. So a kind's effort applies to whichever agent the task runs on, and falls through to that
+harness's own default when the harness does not offer the level, the same way
+`resolveSessionRuntime` drops a runtime the harness has no driver behind instead of dispatching
+something the operator did not ask for.
 
 ### Where the choice is made, and by whom
 
@@ -366,7 +381,10 @@ first, and neither blocks the other.
 - `src/server/dispatcher.ts:449-450` - pass the task's kind through to both resolvers.
 - The task-creating routes - resolve an omitted agent from the kind default instead of
   defaulting to `"claude"`. This is where MCP `create_task`, task sources and Recurring
-  Missions inherit the behaviour without each learning about it.
+  Missions inherit the behaviour without each learning about it. The default has to move off
+  `DispatchSchema.agent` to do it: `z.enum(AGENT_TYPES).default("claude")` turns an omitted
+  agent into an explicit Claude before any route sees the body, and nothing downstream can
+  tell the two apart afterwards.
 - `src/web/components/LlmSettingsPanel.tsx` - the matrix group above the existing Background
   jobs group. It
   reads `useLlm` today and the kind defaults live in the `harnesses` blob, so the panel takes the

@@ -363,7 +363,10 @@ reconciling back into Phase 1's file.</p>
   <tr><td><code>llmJobRunner</code>, widened <code>LlmStatus</code></td><td>Phase 1</td><td>-</td>
     <td>Foreman's three-field read of <code>/api/llm/status</code> must keep parsing</td></tr>
   <tr><td>Agent-match guard</td><td>Phase 3</td><td>-</td>
-    <td>A kind default's model applies only when the task's agent matches it</td></tr>
+    <td>A kind default's <strong>model</strong> applies only when the task's agent matches it, and
+    a row that inherits its agent cannot hold one. Its <strong>effort</strong> is portable and
+    instead checked against
+    <code>HARNESS_CAPABILITIES[agent].effort.levelsFor(model)</code></td></tr>
 </table>
 </div>
 
@@ -382,7 +385,10 @@ intermediate state.</p>
   <li>Changing the app-wide provider clears nothing.</li>
   <li>An unset Inspector provider honours <code>MISSION_LLM_RUNNER</code>.</li>
   <li>A dispatched <code>plan</code> task runs on its configured agent, model and effort; a kind
-  default whose agent does not match the task's falls through to the harness default.</li>
+  default whose agent does not match the task's falls through to the harness default for the model,
+  while its effort still applies unless that harness does not offer the level.</li>
+  <li>MCP <code>create_task</code> with no agent lands on the kind's agent rather than on
+  <code>"claude"</code>.</li>
   <li>An installation that upgrades and changes nothing behaves exactly as it did before, with the
   one intended exception of the Inspector fallback fix.</li>
 </ul>

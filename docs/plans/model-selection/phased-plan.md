@@ -134,7 +134,7 @@ back into Phase 1's file.
 | The pinning invariant | Phase 1 | Phase 2 | Pinning a model pins its provider. No phase reintroduces a clear-on-change |
 | Sibling-map storage | Phase 1 | Phase 2 | Additive record beside the existing model keys, merged per key, no migration |
 | `llmJobRunner`, widened `LlmStatus` | Phase 1 | - | Foreman's three-field read of `/api/llm/status` must keep parsing |
-| Agent-match guard | Phase 3 | - | A kind default's model applies only when the task's agent matches it |
+| Agent-match guard | Phase 3 | - | A kind default's **model** applies only when the task's agent matches it, and a row that inherits its agent cannot hold one. Its **effort** is portable and instead checked against `HARNESS_CAPABILITIES[agent].effort.levelsFor(model)` |
 
 ## Final verification
 
@@ -149,7 +149,9 @@ Across the set, once all three have merged:
 - Changing the app-wide provider clears nothing.
 - An unset Inspector provider honours `MISSION_LLM_RUNNER`.
 - A dispatched `plan` task runs on its configured agent, model and effort; a kind default whose agent
-  does not match the task's falls through to the harness default.
+  does not match the task's falls through to the harness default for the model, while its effort
+  still applies unless that harness does not offer the level.
+- MCP `create_task` with no agent lands on the kind's agent rather than on `"claude"`.
 - An installation that upgrades and changes nothing behaves exactly as it did before, with the one
   intended exception of the Inspector fallback fix.
 

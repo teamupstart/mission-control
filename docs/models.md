@@ -1,10 +1,17 @@
 # Models (what the app's own model work runs on)
 
-Mission Control does a little model work of its own - naming an untitled
+Mission Control does a good deal of model work of its own - naming an untitled
 [dispatch](dispatch-and-backlog.md#dispatch-an-agent), reconciling prompts with the [Goal](sessions.md#goal) on a card, narrating the
-[away digest](attention-and-alerts.md#away-mode), compacting Workflow evidence, and evaluating Ensemble submissions. None
-of it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
-say which provider does that work and which model each job uses.
+[away digest](attention-and-alerts.md#away-mode), compacting Workflow evidence, evaluating Ensemble submissions, judging a
+stuck session, and reviewing a pull request. None of it is the agent in a card, and none of it
+should have to be: **Settings → Models** is where you say which provider does that work and which
+model each call uses.
+
+Every app-owned model choice with a fixed place in this app is on that one page, in three groups -
+the [background jobs](#the-background-jobs), [Foreman's four roles](#foremans-four-roles), and
+[the GitHub Inspector's review](#the-github-inspectors-review). One screen answers *what is this
+app spending on its own work, and on whose account?* A [Persona's](workflows.md) model and an
+Ensemble judge's are the deliberate exception, for the reason [below](#what-is-not-here).
 
 Two separate choices, deliberately.
 
@@ -46,6 +53,8 @@ positively known to belong to the *other* provider is replaced with this provide
 default and the row says which id was dropped. An id in no catalog is a new or custom model and
 passes through untouched, because model ids are free text.
 
+## The background jobs
+
 **The model** is per job:
 
 | Job | Default | Env | What it does |
@@ -73,6 +82,57 @@ fallback, so a missing or logged-out provider degrades their output rather than 
 dispatch. An Ensemble evaluation is different: a provider failure or invalid reply fails its
 durable, bounded attempt, and the engine never invents a recommendation or a question set.
 
-**Foreman's four models and the GitHub Inspector's review model are not here.** They live with the
-subsystem that spends them - **Settings → Foreman** and **Settings → GitHub Inspector** - because each
-panel owns the config it writes.
+## Foreman's four roles
+
+[Foreman](foreman.md) makes four distinct model calls, and they are on this page rather than in
+Foreman's own panel. Review and Verify read a transcript, a diff and a policy and judge them;
+Triage is the cheap router that keeps most sessions away from Review at all; Backlog reads the task
+list once per change and orders it by what depends on what. Their cost profiles genuinely differ,
+which is why each row carries its own provider as well as its own model - the deep pair can run on
+one account while the cheap pair runs on another.
+
+Foreman's grid leads with an **All roles** row. That is Foreman's group-level provider, and it is
+what *Inherit* means on the four rows beneath it - one more rung than a background job has:
+
+    a role's own provider  →  Foreman's All roles  →  the app-wide radio  →  MISSION_LLM_RUNNER  →  shipped default
+
+Everything else is the same rule, deliberately: pinning a model pins its provider, changing a
+row's own provider sends that row's model back to *Inherit* unless the new provider offers the same
+id, and a pair no provider can honour is replaced at resolution with the row saying which id was
+dropped. Changing **All roles** re-resolves only the roles still inheriting; a role that already
+carries a model keeps the provider it was saved under.
+
+That last sentence describes a **fix**, not only a rule. Before this, Foreman's panel cleared all
+four model boxes whenever its provider select moved, which kept the pair valid as long as Foreman
+had a provider of its own - but an unset one inherited the app-wide value, and the app-wide radio
+is on a different page where Foreman's clearing never fired. An installation with role models
+saved and no Foreman provider set was therefore stranded on a mismatched pair by an app-wide
+change. It is not stranded now: saving a model on a role **records the provider it belongs to in
+the same write**, so the pair the operator chose is still the pair in force after the radio moves,
+and the role's own provider is what the row goes on showing. A model no catalog claims - a custom
+or newly released id - records the provider it was chosen under instead, which is the same answer
+from the only evidence there is.
+
+The models Foreman launches a backlog *task* with are a different question - they choose what a
+launched agent runs as rather than what Foreman itself spends - and stay under
+**Settings → Foreman → Launches**.
+
+## The GitHub Inspector's review
+
+The [GitHub Inspector's](inspector-and-shipping.md#the-review-model) single review model is here
+too, as a one-row grid with the same vocabulary. Whether it posts anything is Dry run versus Live,
+which stays under **Settings → GitHub Inspector** with the rest of its posture.
+
+**Leaving its provider unset now means what it says.** It used to resolve to a literal `claude`,
+which made the Inspector the one subsystem in the app that ignored the app-wide radio and
+[`MISSION_LLM_RUNNER`](configuration.md) - an operator who had pinned everything to one provider
+got a Claude review anyway, with nothing on screen saying so. An unset Inspector provider now
+follows the same ladder as everything else on the page. **If you were relying on that fallback,
+this upgrade changes which provider the Inspector spawns**; set its provider explicitly to keep
+Claude.
+
+## What is not here
+
+A [Persona's](workflows.md) model, and an Ensemble judge's, stay on the Persona. There is one per
+row and no fixed number of them, so they are a field on a definition rather than an app setting
+with a place on a settings page - which is the same reason they were never moved.

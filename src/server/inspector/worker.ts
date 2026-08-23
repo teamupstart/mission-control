@@ -30,7 +30,7 @@ import type {
 } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig, inspectorModel } from "./config.ts";
+import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
@@ -188,7 +188,10 @@ function inspectorRunOptions(
   role: LlmSpendRole,
   schema?: Record<string, unknown>,
 ) {
-  const runner = llmRunner(cfg.runner ?? "claude");
+  // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
+  // ladder, and resolving it here a second way is how the worker and the panel come to print
+  // different providers for the same call.
+  const runner = llmRunner(inspectorRunner(cfg).id);
   return {
     runner,
     options: {

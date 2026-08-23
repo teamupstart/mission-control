@@ -89,8 +89,14 @@ export function backlogTimeoutMs(count: number): number {
  * all four roles at once inside `resolveForemanModel`.
  */
 export function backlogModel(
-  cfg: { backlogModel?: string; runner?: LlmRunnerId },
-  runner: LlmRunnerId = cfg.runner ?? DEFAULT_LLM_RUNNER_ID,
+  cfg: { backlogModel?: string },
+  /**
+   * The provider the BACKLOG role resolved to. It used to default to `cfg.runner`, which is
+   * now only the group-level rung of a three-rung ladder whose bottom one the caller alone
+   * can see - so the caller resolves it (`foremanRoleRunner`, or the worker's per-pass map)
+   * and hands the answer down.
+   */
+  runner: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): string {
   return resolveForemanModel("backlog", cfg, process.env, runner).id;
 }

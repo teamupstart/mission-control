@@ -276,15 +276,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
-    id: "foreman-models",
-    label: "Foreman provider and models",
-    description: "The provider and the four models behind Review, Verify, Triage, and Backlog.",
-    category: "foreman",
-    anchor: "foreman/provider",
-    keywords: ["model", "review", "verify", "triage", "backlog", "provider", "runner"],
-    kind: "jump",
-  },
-  {
     id: "foreman-skip-scout-wrapup",
     label: "Skip automatic completion for Scout tasks",
     description: "Keep Scout findings out of Ship it, No-Mistakes Review, and Straight to PR.",
@@ -528,6 +519,40 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     ],
     kind: "jump",
   },
+  // Re-pointed here from the Foreman and GitHub Inspector categories when their model
+  // controls moved. The IDS are unchanged - `foreman-models` and `review-model` are the keys
+  // a keybinding is stored under (`BINDABLE_CONTROL_IDS`), so renaming one to match its new
+  // home would silently orphan a chord somebody had bound. Only the category and the anchor
+  // move, which is exactly what changed.
+  {
+    id: "foreman-models",
+    label: "Foreman provider and models",
+    description: "The provider and the four models behind Review, Verify, Triage, and Backlog.",
+    category: "models",
+    anchor: "models/foreman",
+    keywords: [
+      "foreman",
+      "model",
+      "review",
+      "verify",
+      "triage",
+      "backlog",
+      "provider",
+      "runner",
+      "per role",
+      "inherit",
+    ],
+    kind: "jump",
+  },
+  {
+    id: "review-model",
+    label: "GitHub Inspector review model",
+    description: "The provider and model GitHub Inspector reviews pull requests with.",
+    category: "models",
+    anchor: "models/inspector",
+    keywords: ["inspector", "github", "model", "provider", "runner", "review", "pull request"],
+    kind: "jump",
+  },
   {
     id: "inspector-enabled",
     label: "Run GitHub Inspector",
@@ -547,15 +572,6 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["dry run", "live", "publish", "post", "comments"],
     kind: "jump",
     risky: true,
-  },
-  {
-    id: "review-model",
-    label: "Review model",
-    description: "The provider and model GitHub Inspector reviews with.",
-    category: "inspector",
-    anchor: "inspector/provider",
-    keywords: ["model", "provider", "runner", "review"],
-    kind: "jump",
   },
   {
     id: "yolo",

@@ -1,9 +1,17 @@
 import { useState } from "react";
+import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
+import type { ForemanModelRole } from "@shared/foreman-models.ts";
+import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import { isLlmRunnerId, LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
+import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
+import type { ForemanConfigPatch, InspectorConfigPatch } from "@shared/protocol.ts";
+import type { ForemanState } from "../useForeman.ts";
+import type { InspectorState } from "../useInspector.ts";
+import type { LlmProviderView } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
-import { modelSlotRow, SettingsMatrix } from "./SettingsMatrix.tsx";
+import { modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
@@ -14,10 +22,22 @@ import { Tooltip } from "./Tooltip.tsx";
 // provider while reviewing with Claude, which is the whole reason the axes are separate
 // (`@shared/llm.ts`).
 //
-// It deliberately does NOT edit Foreman's four models or the Inspector's one. Those live
-// with their subsystems - in the blob that panel owns - and a second surface writing the
-// same blob would turn a per-key merge into a lost update. The copy below says where they
-// are rather than pretending this is every model in the app.
+// It edits three blobs - `llm`, `foreman` and `inspector` - and that is a deliberate
+// reversal. The rule it used to follow was "each panel owns the config it writes", which
+// bought a clean writer boundary and cost the operator the only question worth bringing to
+// this page: what is this app spending, and on whose account? Answering it meant visiting
+// three panels and holding three inherit rules in your head. So the page moved to follow the
+// QUESTION, and the writer boundary is preserved a level down instead: each group commits
+// through the hook that owns its blob (`llm.update`, `foreman.update`, `inspector.update`),
+// every patch carries only the keys it is changing, and every server merge is per key. Two
+// tabs editing different groups still commute.
+//
+// What is NOT here, and is not a gap in that claim: a Persona's model and an Ensemble
+// judge's. Those are a field on a row in an unbounded list, one per Persona - not an app
+// setting with a fixed place on a settings page. Foreman's per-harness BACKLOG DISPATCH
+// models are absent for a different reason: they choose what a launched agent runs as, which
+// is the dispatch ladder, not a call this app makes on its own account. They stay on
+// Foreman's Launches tab.
 
 /** Where the value in a box came from, when it is not the box's own. See `modelSourceNote`. */
 function runnerNote(state: LlmState): string | null {
@@ -35,9 +55,39 @@ function runnerNote(state: LlmState): string | null {
     : "Shipped default.";
 }
 
-export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Element {
+export function LlmSettingsPanel({
+  state,
+  foreman,
+  inspector,
+}: {
+  state: LlmState;
+  /**
+   * Foreman's own state, passed down rather than polled again here.
+   *
+   * A second poller would be a second idea of the truth on one screen: this panel and the
+   * Foreman panel would answer "what is Review running as?" from two reads taken seconds
+   * apart, and the write path would have two optimistic caches to reconcile.
+   */
+  foreman: ForemanState;
+  /** The Inspector's, for the same reason. */
+  inspector: InspectorState;
+}): React.JSX.Element {
   const { config, status, update, error } = state;
   const runners = status?.runners ?? [];
+  /**
+   * Move the app-wide provider, then make the two groups that INHERIT it say so.
+   *
+   * Foreman's four roles and the Inspector's review resolve through this picker whenever they
+   * have chosen nothing themselves, but they live in their own blobs behind their own hooks -
+   * so this write changes what they will spawn with while nothing tells them to look again.
+   * Without the two refreshes their rows go on naming the old provider, and printing the old
+   * provider's default model id, for up to a poll interval. On the one page whose whole claim
+   * is that it says what each call will actually spawn, that is the failure to avoid.
+   */
+  const changeAppWide = async (id: LlmRunnerId): Promise<void> => {
+    await update({ runner: id });
+    await Promise.all([foreman.refresh(), inspector.refresh()]);
+  };
   // The operator's OWN stored choice first, then what the daemon resolved.
   //
   // Not `status.runner.id` alone, which is what this was: the status is re-read from the
@@ -74,12 +124,14 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           feature reaches is COMPUTED (`agentList`); copy that needs no enumeration to be
           true should not acquire one. */}
       <p className="settings-hint">
-        Mission Control does a little model work of its own - naming an untitled task,
-        rewriting a prompt into the sentence on a card, narrating what happened while you were
-        away. This is the provider those calls go through, and which model each of them uses.
-        It has nothing to do with the agent in a card: which harness a session runs and which
-        model judges it are independent choices, so the cheap jobs can run somewhere cheaper
-        than whatever is in your cards.
+        Mission Control does a good deal of model work of its own - naming an untitled task,
+        rewriting a prompt into the sentence on a card, judging a stuck session, reviewing a
+        pull request. Every one of those calls is on your account, and every one this app keeps
+        a fixed slot for is on this page: the provider it goes through, the model it spawns
+        with, and which of them it inherited rather than chose. It has nothing to do with the
+        agent in a card - which harness a session runs and which model judges it are
+        independent choices, so the cheap jobs can run somewhere cheaper than whatever is in
+        your cards. What is deliberately not a slot here is named at the bottom.
       </p>
 
       {/* The daemon has not answered. Said out loud, because everything below falls back to
@@ -121,7 +173,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
                   // that has: a model set in a row below is a pinned pair, and the write
                   // path records the outgoing provider onto any legacy row that has a model
                   // but no provider yet. Only Inherit rows re-resolve.
-                  onChange={() => void update({ runner: r.id })}
+                  onChange={() => void changeAppWide(r.id)}
                 />
                 <span>{r.label}</span>
               </label>
@@ -206,12 +258,220 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         </p>
       </div>
 
+      <ForemanModelsGroup foreman={foreman} providers={runners} appWide={status?.runner} />
+
+      <InspectorModelGroup inspector={inspector} providers={runners} appWide={status?.runner} />
+
       <p className="settings-hint llm-elsewhere">
-        Foreman's four models are under <strong>Foreman</strong>, and GitHub Inspector's review
-        model is under <strong>GitHub Inspector</strong> - each with the subsystem that spends it.
+        A Persona's model, and an Ensemble judge's, stay on the Persona - there is one per row
+        rather than a fixed slot, so they live in <strong>Workflows</strong>. The models Foreman
+        launches a backlog <em>task</em> with are a dispatch choice rather than a call this app
+        makes on its own account, and stay under <strong>Foreman</strong>.
       </p>
 
       {error && <p className="settings-error">{error}</p>}
     </section>
+  );
+}
+
+/**
+ * Foreman's four roles: a group-level provider, and a row per role that may override it.
+ *
+ * Three rungs rather than the background jobs' two, and the extra one is why this group
+ * leads with a row of its own: "Inherit" on a role row means Foreman's value, not the
+ * app-wide one, and a grid that did not show what was being inherited would make the word
+ * unreadable. That first row is editable - it is a real setting, not a readout - which is
+ * why it is not marked `inherited`; that flag is for a muted, uneditable line.
+ */
+function ForemanModelsGroup({
+  foreman,
+  providers,
+  appWide,
+}: {
+  foreman: ForemanState;
+  providers: LlmProviderView[];
+  /** What the app-wide picker above resolved to - what Foreman's OWN Inherit option means. */
+  appWide: ResolvedLlmRunner | undefined;
+}): React.JSX.Element {
+  const { config, status, update } = foreman;
+  const [reset, setReset] = useState<Partial<Record<ForemanModelRole, string>>>({});
+  /**
+   * What a role's Inherit option resolves to: Foreman's group-level answer.
+   *
+   * Taken WHOLE from the daemon, which resolved it through every layer the browser cannot
+   * see. It used to be rebuilt here as `{ id: status.runner, source: "config", unknown: null }`
+   * from the bare id, and that discarded the one case the id cannot carry: a stored provider
+   * this build does not have. Such a value inherits the app-wide answer, so the reconstructed
+   * object drew that inherited provider as Foreman's own deliberate choice, with nothing on
+   * screen saying which saved id had been dropped - on the one row that has no `unknown` line
+   * of its own to fall back on.
+   */
+  const groupRunner: ResolvedLlmRunner | undefined = status?.groupRunner ?? appWide;
+  /** The stored group provider, when this build cannot resolve it. Said out loud, below. */
+  const unreadableGroup = status?.groupRunner?.unknown ?? null;
+
+  return (
+    <div className="foreman-models" data-anchor="models/foreman">
+      <p className="settings-group-label">Foreman</p>
+      <p className="settings-hint foreman-models-hint">
+        Foreman spawns a fresh, isolated call for each of these. Review and Verify read a
+        transcript, a diff and a policy and judge them, so they are the expensive pair; Triage
+        is the cheap router that keeps most sessions away from Review at all, and Backlog reads
+        the task list once per change. Each row may run somewhere different - keep the deep pair
+        on one account and the cheap pair on another - or leave it on Inherit and follow the row
+        above it.
+      </p>
+      <SettingsMatrix
+        caption="Foreman's four model roles, and what each one runs on"
+        columns={[
+          { key: "provider", label: "Provider" },
+          { key: "model", label: "Model" },
+        ]}
+        rows={[
+          {
+            key: "foreman-group",
+            label: "All roles",
+            blurb: "What every role below runs on unless it has chosen for itself.",
+            cells: {
+              provider: (
+                <ProviderSelect
+                  id="foreman-provider"
+                  name="Foreman provider"
+                  tooltip="Which provider Foreman's model roles run through when they have not chosen their own. Inherit follows the app-wide picker."
+                  value={config?.runner ?? ""}
+                  inherited={appWide}
+                  providers={providers}
+                  disabled={!config}
+                  // Nothing is cleared here. A role that has pinned a model has had its
+                  // provider recorded beside it - either because it was pinned through this
+                  // panel, or because `setForemanConfig` materialised the outgoing one on the
+                  // way past - so this select disturbs only the roles still inheriting. The
+                  // old control wiped all four model boxes on every change, which was the
+                  // only way to keep a pair valid when there was one provider for all of
+                  // them, and is now a deletion of choices nobody asked to lose.
+                  onCommit={(next) => void update({ runner: next })}
+                />
+              ),
+              model: <span className="settings-hint">Per role below.</span>,
+            },
+            // The same sentence `modelSlotRow` gives a role whose own override cannot be
+            // read, in the same place, because it is the same failure one rung up.
+            note: unreadableGroup
+              ? (
+                <span className="settings-matrix-reset">
+                  {`"${unreadableGroup}" is not a provider this build has, so Foreman's roles are inheriting the app-wide one instead.`}
+                </span>
+              )
+              : undefined,
+          },
+          ...FOREMAN_MODEL_ROLES.map((role) => {
+            const spec = FOREMAN_MODEL_SPECS[role];
+            return modelSlotRow({
+              key: `foreman-${role}`,
+              anchor: null,
+              spec,
+              // "Review" is Foreman's here and the Inspector's further down the same page.
+              nameScope: "Foreman",
+              providers,
+              runnerValue: config?.[spec.runnerKey] ?? "",
+              runnerResolved: status?.roleRunners?.[role],
+              // Foreman's group-level answer, NOT the app-wide one: that is the rung
+              // directly under a role, and it is what selecting Inherit here actually gives.
+              inheritedRunner: groupRunner,
+              modelValue: config?.[spec.configKey] ?? "",
+              modelResolved: status?.models?.[role],
+              disabled: !config,
+              reset: reset[role] ?? null,
+              onCommit: (patch) => {
+                const dropped =
+                  patch.model === "" && patch.runner !== undefined
+                    ? (config?.[spec.configKey] ?? "")
+                    : "";
+                setReset((prev) => ({
+                  ...prev,
+                  [role]: dropped
+                    ? `${dropped} isn't offered by this provider, so this role is back on Inherit.`
+                    : undefined,
+                }));
+                // Only the keys being changed, never a round-trip of the whole blob:
+                // `setForemanConfig` spreads a patch at the top level, so a stale sibling
+                // read from an earlier poll would be written back over a newer value.
+                void update({
+                  ...(patch.runner !== undefined ? { [spec.runnerKey]: patch.runner } : {}),
+                  ...(patch.model !== undefined ? { [spec.configKey]: patch.model } : {}),
+                } as ForemanConfigPatch);
+              },
+            });
+          }),
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * The Inspector's single review model - the one call in the app that writes somewhere public.
+ *
+ * A one-row grid rather than a pair of fields, so it reads as another slot in the same table
+ * and inherits the same vocabulary: Inherit means the app-wide picker, pinning a model pins
+ * its provider, and a pair that cannot be honoured says so in the row.
+ */
+function InspectorModelGroup({
+  inspector,
+  providers,
+  appWide,
+}: {
+  inspector: InspectorState;
+  providers: LlmProviderView[];
+  appWide: ResolvedLlmRunner | undefined;
+}): React.JSX.Element {
+  const { config, model, runner, update } = inspector;
+  const [reset, setReset] = useState<string | null>(null);
+  return (
+    <div className="foreman-models" data-anchor="models/inspector">
+      <p className="settings-group-label">GitHub Inspector</p>
+      <p className="settings-hint foreman-models-hint">
+        One call, and the only one on this page that can write somewhere other people read: it
+        reviews each push to a pull request we opened and answers the follow-ups in its own
+        threads. Whether it posts at all is Dry run versus Live, under{" "}
+        <strong>GitHub Inspector</strong>; this is only what it thinks with.
+      </p>
+      <SettingsMatrix
+        caption="GitHub Inspector's review call, and what it runs on"
+        columns={[
+          { key: "provider", label: "Provider" },
+          { key: "model", label: "Model" },
+        ]}
+        rows={[
+          modelSlotRow({
+            key: "inspector",
+            anchor: null,
+            spec: INSPECTOR_MODEL_SPEC,
+            nameScope: "Inspector",
+            providers,
+            runnerValue: config?.runner ?? "",
+            runnerResolved: runner ?? undefined,
+            inheritedRunner: appWide,
+            modelValue: config?.model ?? "",
+            modelResolved: model ?? undefined,
+            disabled: !config,
+            reset,
+            onCommit: (patch) => {
+              const dropped =
+                patch.model === "" && patch.runner !== undefined ? (config?.model ?? "") : "";
+              setReset(
+                dropped
+                  ? `${dropped} isn't offered by this provider, so the review model is back on Inherit.`
+                  : null,
+              );
+              void update({
+                ...(patch.runner !== undefined ? { runner: patch.runner } : {}),
+                ...(patch.model !== undefined ? { model: patch.model } : {}),
+              } as InspectorConfigPatch);
+            },
+          }),
+        ]}
+      />
+    </div>
   );
 }

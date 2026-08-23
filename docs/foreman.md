@@ -371,18 +371,19 @@ next call observe the operator's latest choice.
 ### Which model Foreman runs as
 
 Foreman spawns a fresh, tool-less headless call for four different jobs, and each one picks its
-own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
-One **Provider** row above the four says which CLI they all spawn through - `claude` or
-`codex exec` - and changing it clears all four boxes, since a model id does not carry across.
-This one provider controls **Review, Verify, Triage, and Backlog** together. The separate
-**Launches** tab does not control any of those calls. It chooses the models of task agents
-Foreman starts from the backlog, which is unrelated to the model that reads dependencies.
+own provider **and** its own model. Both live on
+**[Settings → Models](models.md#foremans-four-roles)**, with every other call this app makes on
+your account - Foreman's own panel keeps a pointer to them and nothing else. Run Review and Verify
+on one account and the two cheap calls on another, or leave a row on *Inherit* and let it follow
+the **All roles** row above it, which in turn follows the app-wide picker when it is unset. An
+environment variable set in the daemon's shell is not silently dropped anywhere on that ladder.
+
+The separate **Launches** tab did not move and does not control any of those calls. It chooses the
+models of task agents Foreman starts from the backlog, which is unrelated to the model that reads
+dependencies.
+
 Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
 keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
-Left unchosen it follows the app-wide
-[Models](models.md#models-what-the-apps-own-model-work-runs-on) provider rather than a hardcoded
-`claude`, so an environment variable set in the daemon's shell is not silently dropped
-here.
 
 | Call | Default | Config key | What it does |
 |---|---|---|---|
@@ -391,8 +392,9 @@ here.
 | Triage | `claude-haiku-4-5` | `triageModel` | The [cheap tier](#the-cheap-tier)'s Tier 1 router - buckets the ask, never solves it |
 | Backlog | `claude-sonnet-5` | `backlogModel` | Reads the [backlog](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) once per change and says what depends on what. It supplies edges, never position - [the order is yours](dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set) |
 
-Each field resolves the same way: **your setting, then the environment variable, then the
-shipped default**. Clearing a field means "fall back", not "run with no model" - so emptying the
+Each field resolves the same way - the full ladder, and what changing a provider does or does not
+clear, is in [Models](models.md#foremans-four-roles): **your setting, then the environment
+variable, then the shipped default**. Clearing a field means "fall back", not "run with no model" - so emptying the
 box hands the decision to `FOREMAN_REVIEW_MODEL` (or the default), it never spawns the CLI
 without a `--model`. The panel prints which of the three is in force, because an environment
 variable set in the daemon's shell outranks the box and would otherwise be invisible from the

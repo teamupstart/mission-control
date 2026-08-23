@@ -20,9 +20,7 @@ import type {
   LlmRunnerId,
   ResolvedLlmRunner,
 } from "@shared/llm.ts";
-import type { LlmStatus } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
-import { allLlmRunners } from "./index.ts";
 
 // The LLM config: a schema-validated blob over the `app_config` KV, mirroring
 // `foreman/config.ts` and `inspector/config.ts`, so a new key needs no migration - Zod's
@@ -38,6 +36,14 @@ import { allLlmRunners } from "./index.ts";
 //
 // The env lookups are on this side of the shared/server line for the usual reason: `envVar`
 // reads `node:os`, and the dashboard imports the resolvers.
+//
+// What is deliberately NOT here is `llmStatus`, which lives in `./status.ts`. It is the only
+// thing that needs `allLlmRunners()`, and that one import pulls in every provider adapter -
+// including `claude-cli.ts`, which freezes `MISSION_CLAUDE_BIN` at module load. This file is
+// read by the Inspector's and Foreman's configs to resolve the app-wide rung of their
+// ladders, and through `settings-status.ts` that reaches `registry.ts`; carrying the adapters
+// along would put the operator's real `claude` binary into the module graph of anything that
+// asks what provider a subsystem inherits. Reading a preference should not load a spawner.
 
 const CONFIG_KEY = "llm";
 
@@ -182,29 +188,4 @@ export function llmJobModel(
   runnerId: LlmRunnerId = llmJobRunner(job, cfg).id,
 ): ResolvedLlmJobModel {
   return resolveLlmJobModel(job, cfg.models, envVar(LLM_JOB_SPECS[job].envKey), runnerId);
-}
-
-/** Every job at once, plus the runner, Claude transport and available providers. */
-export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
-  const envValues = Object.fromEntries(
-    LLM_JOB_IDS.map((job) => [job, envVar(LLM_JOB_SPECS[job].envKey)]),
-  ) as Partial<Record<LlmJobId, string | undefined>>;
-  return {
-    runner: llmRunnerChoice(cfg),
-    // Foreman reads this resolved value over HTTP. It cannot read app_config, and resolving
-    // only from its own environment would let the daemon and worker disagree about a stored
-    // choice until one of them restarted.
-    claudeTransport: claudeTransportChoice(cfg),
-    codexTransport: codexTransportChoice(cfg),
-    // Each job against ITS provider, which is no longer one answer for all five.
-    models: resolveLlmJobModels(cfg.models, envValues, (job) => llmJobRunner(job, cfg).id),
-    // Beside the models rather than folded into them: a row prints the provider and the
-    // model as two controls, and the provider carries its own source and `unknown`.
-    jobRunners: Object.fromEntries(
-      LLM_JOB_IDS.map((job) => [job, llmJobRunner(job, cfg)]),
-    ) as Record<LlmJobId, ResolvedLlmRunner>,
-    // Ids AND labels, because a label lives on the implementation and the browser cannot
-    // import one - see `LlmStatus.runners`.
-    runners: allLlmRunners().map((r) => ({ id: r.id, label: r.label })),
-  };
 }

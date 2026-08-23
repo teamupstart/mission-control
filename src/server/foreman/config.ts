@@ -11,7 +11,17 @@ import type {
 import { WRAPUP_MODES } from "@shared/queue.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
-import { resolveForemanModels } from "@shared/foreman-models.ts";
+import {
+  FOREMAN_MODEL_ROLES,
+  FOREMAN_MODEL_SPECS,
+  resolveForemanRunner,
+  resolveForemanRunners,
+  resolveForemanModels,
+} from "@shared/foreman-models.ts";
+import type { ForemanModelRole } from "@shared/foreman-models.ts";
+import { isLlmRunnerId } from "@shared/llm.ts";
+import { providerOwningModel } from "@shared/model.ts";
+import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { getBacklogPlan } from "../backlog.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
@@ -115,10 +125,108 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
   const next = ForemanConfigSchema.parse({
     ...cur,
     ...patch,
+    ...pinRoleProviders(cur, patch),
     backlogDefaultModel: { ...cur.backlogDefaultModel, ...(patch.backlogDefaultModel ?? {}) },
   });
   setAppConfig(CONFIG_KEY, next);
   return next;
+}
+
+/**
+ * Record a provider on every role that carries a MODEL and has none of its own.
+ *
+ * "Pinning a model pins its provider" is the rule the whole page is documented on, and this
+ * is where it is made durable for the `foreman` blob. A role with a model is by definition
+ * not inheriting any more, so leaving its provider unset stores only half of a pair - and the
+ * missing half is then supplied by whatever the ladder happens to resolve to later.
+ *
+ * Which provider gets recorded, in order:
+ *
+ *  - The one the model POSITIVELY belongs to (`providerOwningModel`). A saved
+ *    `claude-opus-5` came from Claude whatever the ladder says today, so that is the honest
+ *    answer and the one that keeps working across every later move.
+ *  - Otherwise the provider in force BEFORE this write. A custom or newly released id belongs
+ *    to nobody the catalog knows, so the best available answer is the one the operator was
+ *    looking at when they picked it - which is also exactly what the panel records at the
+ *    moment of pinning, so the two paths agree.
+ *
+ * This used to fire only when Foreman's own `runner` moved, and that left the reachable
+ * sequence the pinning rule exists to prevent: leave Foreman's provider and the role's unset,
+ * save a Claude model, then move the APP-WIDE radio. That writes the `llm` blob only, so no
+ * Foreman write ever happened, the role went on inheriting, and the resolver guard replaced
+ * the operator's model with the new provider's default. The guard is still the backstop for
+ * everything no writer can reach - `MISSION_LLM_RUNNER` moving between restarts, a
+ * hand-edited blob - but a model saved through this function is now recorded with the
+ * provider it was chosen under, so the guard has nothing to refuse.
+ *
+ * It writes only within the `foreman` blob. Reaching across from `setLlmConfig` would be what
+ * turns a per-key merge into a lost update, so it is not done - and is not needed, because
+ * the provenance is captured when the model is saved rather than chased afterwards.
+ *
+ * An explicit provider always wins: a role that already has one, or whose provider this same
+ * patch names, is left exactly as written.
+ */
+function pinRoleProviders(
+  before: ForemanConfig,
+  patch: ForemanConfigPatch,
+): Partial<ForemanConfig> {
+  // The provider in force before this write, which is what an unattributable model was
+  // chosen under. Read off `before` deliberately: on a group-level change this is the
+  // OUTGOING provider, so a role carrying a model keeps what it was running rather than
+  // being carried over to the incoming one.
+  const outgoing = resolveForemanRunner("review", { runner: before.runner }, llmRunnerChoice());
+  const merged = { ...before, ...patch };
+  const pins: Partial<ForemanConfig> = {};
+  for (const role of FOREMAN_MODEL_ROLES) {
+    const spec = FOREMAN_MODEL_SPECS[role];
+    const model = merged[spec.configKey]?.trim() ?? "";
+    if (!model) continue;
+    if (merged[spec.runnerKey]?.trim()) continue;
+    pins[spec.runnerKey] = providerOwningModel(model) ?? outgoing.id;
+  }
+  return pins;
+}
+
+/**
+ * Which provider ONE Foreman role spawns through - role, then Foreman's group-level value,
+ * then the app-wide ladder.
+ *
+ * Resolved per call, never captured at module load: the config is editable at runtime and a
+ * value read once would need a daemon restart to take effect. Same rule `llmJobRunner` and
+ * `inspectorModel` follow.
+ */
+export function foremanRoleRunner(
+  role: ForemanModelRole,
+  cfg: ForemanConfig = getForemanConfig(),
+): ResolvedLlmRunner {
+  return resolveForemanRunner(role, cfg, llmRunnerChoice());
+}
+
+/**
+ * Foreman's group-level answer: its own `runner` when it has a readable one, else app-wide.
+ *
+ * What the panel prints as the value every un-overridden role inherits, and what the worker
+ * falls back to. NOT the answer for any particular role - ask `foremanRoleRunner` for that.
+ *
+ * Resolved, not reduced to an id: a stored value this build cannot read - a provider a newer
+ * version had, a hand-edited blob - inherits the app-wide answer AND is carried in `unknown`,
+ * exactly as a role's own override is. Dropping that here made the group row the one control
+ * on the page that could not say why the provider an operator saved is not the one in force;
+ * it drew the inherited answer as Foreman's own choice, which is the failure every other
+ * `unknown` line on this page exists to prevent.
+ */
+export function foremanGroupRunnerResolved(
+  cfg: ForemanConfig = getForemanConfig(),
+): ResolvedLlmRunner {
+  const asked = cfg.runner?.trim() ?? "";
+  if (!asked) return llmRunnerChoice();
+  if (isLlmRunnerId(asked)) return { id: asked, source: "config", unknown: null };
+  return { ...llmRunnerChoice(), unknown: asked };
+}
+
+/** The same answer as an id, for the callers that only ever wanted one. */
+export function foremanGroupRunner(cfg: ForemanConfig = getForemanConfig()): LlmRunnerId {
+  return foremanGroupRunnerResolved(cfg).id;
 }
 
 /**
@@ -250,8 +358,14 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   // the process that spawns the calls cannot print different providers. An unset
   // `cfg.runner` is "the operator never chose HERE", which hands the question to the
   // app-wide resolution - not to a literal "claude", which would drop the env layer.
-  const runner = cfg.runner ?? llmRunnerChoice().id;
-  const models = resolveForemanModels(cfg, process.env, runner);
+  //
+  // Per ROLE now, because the four no longer share one answer. `runner` below stays the
+  // group-level value - it is what an un-overridden role inherits, and it is the field the
+  // panel's Inherit options are labelled with - and `roleRunners` carries the per-role axis
+  // beside it, exactly as `LlmStatus` carries `jobRunners` beside `runner`.
+  const groupRunner = foremanGroupRunnerResolved(cfg);
+  const roleRunners = resolveForemanRunners(cfg, llmRunnerChoice());
+  const models = resolveForemanModels(cfg, process.env, (role) => roleRunners[role].id);
   const leader = liveLease(now);
   const reported = leader && plannerHealthReport?.workerId === leader.workerId
     ? plannerHealthReport
@@ -267,7 +381,10 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
       }
     : {
         state: "healthy",
-        runner,
+        // The BACKLOG role's provider, not the group-level one: this line reports what the
+        // dependency planner is about to spawn with, and the worker's circuit identity is
+        // keyed on that same pair.
+        runner: roleRunners.backlog.id,
         model: models.backlog.id,
         failureCount: 0,
         lastError: null,
@@ -297,7 +414,9 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     // Resolved here, from the daemon's own env, because the browser has no `process`
     // and so cannot see the env layer at all - see `ForemanStatus.models`.
     models,
-    runner,
+    runner: groupRunner.id,
+    groupRunner,
+    roleRunners,
   };
 }
 

@@ -18929,6 +18929,18 @@ select.foreman-model-input {
   min-width: 0;
 }
 
+/* The signpost the Models tab left behind. A direct child of `.sc-controls`, which is a flex
+   column with its own gap, so the paragraph's default margins would double the spacing above
+   the strip. Zeroed here and left to the gap, the way the cards beside it are. */
+.foreman-models-moved {
+  margin: 0;
+}
+/* The second paragraph - what did NOT move - needs the gap the zeroed margin removed, or the
+   two run together as one block and the distinction they draw is the first thing lost. */
+.foreman-models-moved + .foreman-models-moved {
+  margin-top: 8px;
+}
+
 /* ---- Foreman's configuration groups ----
    A compact local rail over one visible card. This is separate from `.sc-seg`: the latter
    is a real radio group for changing a stored value, while this strip only changes which

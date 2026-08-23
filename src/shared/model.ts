@@ -223,9 +223,44 @@ export interface GuardedProviderModel {
  * provider the app's own calls can spawn through, and its provider-qualified ids belong to
  * nobody here.
  */
-export function guardProviderModel(provider: LlmRunnerId, modelId: string): GuardedProviderModel {
+/**
+ * Which provider a model id POSITIVELY belongs to, or null when nobody can claim it.
+ *
+ * The other half of `guardProviderModel`'s question, asked before a pair exists rather than
+ * after: the guard is told a provider and refuses a model that belongs elsewhere, and this is
+ * for the write path that has only a model and needs to record the provider it came with.
+ *
+ * Exactly as narrow, and for the same reason. An id in no catalog is a new or custom model,
+ * not a mistake, so it is unowned rather than assigned to a guess - a caller that gets null
+ * keeps whatever provider it would have used anyway. An id in more than one catalog belongs to
+ * neither for this purpose: recording one of them would be picking a side no evidence supports.
+ */
+export function providerOwningModel(modelId: string): LlmRunnerId | null {
   const asked = modelId.trim();
-  if (!asked) return { id: providerModelDefault(provider, "cheap"), unsupported: null };
+  if (!asked) return null;
+  const owners = LLM_RUNNER_IDS.filter((runner) =>
+    MODEL_CATALOG[runner].some((choice) => choice.id === asked),
+  );
+  return owners.length === 1 ? owners[0]! : null;
+}
+
+export function guardProviderModel(
+  provider: LlmRunnerId,
+  modelId: string,
+  /**
+   * Which tier the SUBSTITUTE comes from when a pair has to be refused.
+   *
+   * `cheap` because every caller was a background job when this was written, and every one of
+   * those is cheap by design. Foreman's roles are not: substituting Haiku for a Review whose
+   * operator asked for Opus would silently downgrade the most consequential judgement in the
+   * system while reporting only that a model id was dropped. The slot knows its own tier -
+   * it already picks its shipped fallback from one - so it says so here too, and the
+   * substitute lands in the same class as the choice it is replacing.
+   */
+  tier: "deep" | "balanced" | "cheap" = "cheap",
+): GuardedProviderModel {
+  const asked = modelId.trim();
+  if (!asked) return { id: providerModelDefault(provider, tier), unsupported: null };
   if (MODEL_CATALOG[provider].some((choice) => choice.id === asked)) {
     return { id: asked, unsupported: null };
   }
@@ -233,7 +268,7 @@ export function guardProviderModel(provider: LlmRunnerId, modelId: string): Guar
     (other) => other !== provider && MODEL_CATALOG[other].some((choice) => choice.id === asked),
   );
   if (!belongsElsewhere) return { id: asked, unsupported: null };
-  return { id: providerModelDefault(provider, "cheap"), unsupported: asked };
+  return { id: providerModelDefault(provider, tier), unsupported: asked };
 }
 
 /**

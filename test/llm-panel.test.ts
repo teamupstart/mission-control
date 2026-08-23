@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LlmSettingsPanel } from "../src/web/components/LlmSettingsPanel.tsx";
+import type { ForemanState } from "../src/web/useForeman.ts";
+import type { InspectorState } from "../src/web/useInspector.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
 import { LLM_RUNNER_ENV_VAR, LLM_RUNNER_IDS } from "../src/shared/llm.ts";
@@ -81,6 +83,34 @@ function sliceSelect(html: string, name: string): string {
   return html.slice(at, html.indexOf("</select>", at));
 }
 
+/**
+ * Foreman and the Inspector, pre-poll.
+ *
+ * Null config is what the page shows before the daemon answers: every control present and
+ * disabled. That is the right fixture for a file asking what the panel RENDERS, and it keeps
+ * this file about the background jobs - the Foreman and Inspector groups have their own
+ * assertions in `foreman-models-panel.test.ts`.
+ */
+const FOREMAN: ForemanState = {
+  config: null,
+  status: null,
+  backlogPlan: null,
+  episodes: [],
+  update: async () => true,
+  refresh: async () => {},
+  error: null,
+};
+const INSPECTOR: InspectorState = {
+  config: null,
+  inspections: [],
+  model: null,
+  runner: null,
+  update: async () => true,
+  refresh: async () => {},
+  resolveFindings: async () => true,
+  error: null,
+};
+
 function render(over: Partial<LlmState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
@@ -90,7 +120,9 @@ function render(over: Partial<LlmState> = {}): string {
     error: null,
     ...over,
   };
-  return renderToStaticMarkup(createElement(LlmSettingsPanel, { state }));
+  return renderToStaticMarkup(
+    createElement(LlmSettingsPanel, { state, foreman: FOREMAN, inspector: INSPECTOR }),
+  );
 }
 
 test("every background job gets a field, labelled and explained", () => {
@@ -107,9 +139,16 @@ test("every blurb is still PRINTED, once per row, not left to a tooltip", () => 
   // hanging off it described the row from the wrong place. What must not change is that it
   // is VISIBLE: the assertion above would keep passing off the Tooltip's hidden portal copy
   // alone, which is exactly the regression this pins.
+  // Scoped to the background-jobs group. The page now carries Foreman's and the Inspector's
+  // grids too, and counting blurbs across all three would make this assertion move whenever
+  // a group is added rather than when a job's explanation goes missing.
   const html = render();
+  const group = html.slice(
+    html.indexOf('data-anchor="models/jobs"'),
+    html.indexOf('data-anchor="models/foreman"'),
+  );
   assert.equal(
-    (html.match(/settings-matrix-slot-blurb/g) ?? []).length,
+    (group.match(/settings-matrix-slot-blurb/g) ?? []).length,
     LLM_JOB_IDS.length,
     "each job's row must print its own explanation exactly once",
   );

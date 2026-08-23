@@ -43,6 +43,7 @@ function mkState(over: Partial<ForemanConfig> = {}): ForemanState {
     backlogPlan: null,
     episodes: [],
     update: async () => true,
+    refresh: async () => {},
     error: null,
   };
 }
@@ -121,9 +122,11 @@ test("the Tier control lists all three cheap-tier options", () => {
 
 test("exactly one tier option is checked, following config.triage", () => {
   const shadow = renderPanel(mkState({ triage: "shadow" }));
+  // Sliced to the next PANEL rather than to `foreman/provider`, which used to be the first
+  // anchor after the tier control and now lives on Settings > Models.
   const shadowGroup = shadow.slice(
     shadow.indexOf('data-anchor="foreman/cheap-tier"'),
-    shadow.indexOf('data-anchor="foreman/provider"'),
+    shadow.indexOf('id="foreman-settings-panel-launches"'),
   );
   assert.equal((shadowGroup.match(/checked/g) ?? []).length, 1);
   assert.match(shadowGroup, /checked[^]*?Shadow - run the cheap tier/);
@@ -131,7 +134,7 @@ test("exactly one tier option is checked, following config.triage", () => {
   const on = renderPanel(mkState({ triage: "on" }));
   const onGroup = on.slice(
     on.indexOf('data-anchor="foreman/cheap-tier"'),
-    on.indexOf('data-anchor="foreman/provider"'),
+    on.indexOf('id="foreman-settings-panel-launches"'),
   );
   assert.equal((onGroup.match(/checked/g) ?? []).length, 1);
   assert.match(onGroup, /checked[^]*?On - cheap tier answers/);
@@ -167,15 +170,20 @@ test("with no answer from the daemon the count is unknown, not zero", () => {
   assert.doesNotMatch(html, /0 repositories grant/);
 });
 
-test("Foreman provider and every model are catalog-backed dropdowns", () => {
+// Foreman's provider and its four role models moved to Settings > Models, where every
+// app-owned model choice is answerable in one screen. What has to be true HERE is the
+// negative - the controls are gone, so two panels cannot write the same keys and search
+// cannot have two places to send one operator - plus a pointer that survives a bookmark.
+// The controls themselves are asserted in `foreman-models-panel.test.ts`.
+test("Foreman's own provider and model controls are gone, leaving a pointer", () => {
   const html = renderPanel(mkState({ runner: "codex" }));
-  assert.match(html, /id="foreman-provider"/);
-  assert.match(html, /<option value="codex" selected="">Codex<\/option>/);
+  assert.doesNotMatch(html, /id="foreman-provider"/);
   for (const id of ["foreman-model-review", "foreman-model-verify", "foreman-model-triage", "foreman-model-backlog"]) {
-    assert.match(html, new RegExp(`<select[^>]*id="${id}"`));
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /GPT-5\.6 Sol/);
-  assert.doesNotMatch(html, /Claude Code provider/);
+  assert.match(html, /Open them in Models/);
+  // Named, so the pointer says which of Foreman's models moved and which did not.
+  assert.match(html, /Review, Verify, Triage and the Backlog[\s\S]*dependency planner/);
 });
 
 test("Foreman exposes separate compatible defaults for fresh backlog launches", () => {
@@ -188,12 +196,14 @@ test("Foreman exposes separate compatible defaults for fresh backlog launches", 
   assert.match(html, /unrelated to the Backlog[\s\S]*dependency planner/);
 });
 
-test("Foreman Provider visibly owns all four model roles", () => {
+test("the pointer keeps the backlog LAUNCH models distinct from the four that moved", () => {
+  // The confusion this line exists to prevent: both are "Foreman models" by name, and only
+  // one set is a call Foreman makes on its own account. The other chooses what a launched
+  // agent runs as, which is the dispatch ladder, and it stays here.
   const html = renderPanel(mkState({ runner: "codex" }));
-  assert.match(html, /Foreman Provider controls all four model roles/);
-  for (const role of ["Review", "Verify", "Triage", "Backlog dependency planner"]) {
-    assert.match(html, new RegExp(role));
-  }
+  assert.match(html, /now live with every other model this app spends on/);
+  assert.match(html, /stay on <strong>Launches<\/strong>/);
+  assert.match(html, /id="foreman-backlog-task-model-claude"/);
 });
 
 // ---- the prose is printed once, not twice ----
@@ -205,9 +215,6 @@ test("Foreman Provider visibly owns all four model roles", () => {
 test("the model blurbs render tooltip-only in Foreman - no visible duplicate, no lost sentence", () => {
   const html = decoded(renderPanel(mkState()));
   assert.doesNotMatch(html, /foreman-model-blurb/);
-  for (const role of FOREMAN_MODEL_ROLES) {
-    assert.ok(html.includes(FOREMAN_MODEL_SPECS[role].blurb), `the ${role} blurb went missing`);
-  }
   for (const agent of ["Claude", "Codex", "Pi"]) {
     assert.ok(
       html.includes(`Used when Foreman launches an unpinned ${agent} task from the backlog.`),
@@ -216,10 +223,14 @@ test("the model blurbs render tooltip-only in Foreman - no visible duplicate, no
   }
 });
 
-test("the provider explanation lives in its tooltip, not a printed paragraph", () => {
+test("the pointer to Models is reachable from any tab, not buried inside one", () => {
+  // A bookmark or a keyboard walk that expected the Models tab now lands on Posture, so the
+  // signpost has to be outside the tab strip - inside a tabpanel it would be hidden exactly
+  // when it is needed. It carries no `data-anchor`: search points at the Models page itself.
   const html = decoded(renderPanel(mkState()));
-  assert.match(html, /<span[^>]*class="tt-desc">Runs every Foreman model role through this provider\./);
-  assert.doesNotMatch(html, /<p class="settings-hint">Runs every Foreman model role/);
+  const beforeStrip = html.slice(0, html.indexOf('role="tablist"'));
+  assert.match(beforeStrip, /Open them in Models/);
+  assert.doesNotMatch(html, /data-anchor="foreman\/provider"/);
 });
 
 test("the safeguard descriptions are tooltip-only while their labels stay printed", () => {

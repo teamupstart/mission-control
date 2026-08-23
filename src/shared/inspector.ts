@@ -107,7 +107,10 @@ export const INSPECTOR_MODEL_ENV = "INSPECTOR_MODEL";
 export const INSPECTOR_MODEL_SPEC: ModelChoiceSpec = {
   envVar: `MISSION_${INSPECTOR_MODEL_ENV}`,
   fallback: "claude-sonnet-5",
-  label: "Review model",
+  // "Review", not "Review model". It names a SLOT, and the surfaces that render it already
+  // supply the noun - the Models grid puts it in a row under Provider and Model columns, so
+  // "Review model" made the controls read "Review model provider" and "Review model model".
+  label: "Review",
   blurb: "Reviews each push and answers follow-ups in GitHub Inspector's own threads.",
 };
 

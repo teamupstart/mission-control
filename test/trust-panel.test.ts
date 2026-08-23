@@ -221,6 +221,7 @@ function foreman(over: Partial<{ repoAllowlist: string[]; config: null }> = {}):
     backlogPlan: null,
     episodes: [],
     update: async () => true,
+    refresh: async () => {},
     error: null,
   };
 }
@@ -234,7 +235,9 @@ function inspector(
         : InspectorConfigSchema.parse({ repoAllowlist: over.repoAllowlist ?? [] }),
     inspections: [],
     model: null,
+    runner: null,
     update: async () => true,
+    refresh: async () => {},
     resolveFindings: async () => true,
     error: null,
   };

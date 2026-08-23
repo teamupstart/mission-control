@@ -60,6 +60,17 @@ export interface ForemanState {
    * for it, so a rejected write never leaves the two stores disagreeing.
    */
   update: (patch: ForemanConfigPatch) => Promise<boolean>;
+  /**
+   * Re-read config and status now, without writing anything.
+   *
+   * For the one case a write to THIS blob cannot cover: Foreman's resolved providers and
+   * models are derived from the app-wide picker as well, and that lives in another blob with
+   * another hook. Moving the app-wide radio therefore changes every Foreman row that is still
+   * inheriting, with no Foreman write to hang a re-read on - and the rows would go on naming
+   * the old provider until the next poll, on the one page whose claim is that it says what
+   * each call will actually spawn.
+   */
+  refresh: () => Promise<void>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -138,6 +149,15 @@ export function useForeman(): ForemanState {
     };
   }, [setConfig]);
 
+  const reread = useCallback(async (): Promise<void> => {
+    // Same sequencer discipline as the poll: a read issued earlier must not land on top.
+    const token = readSeq.current.begin();
+    const [c, s] = await Promise.all([fetchForemanConfig(), fetchForemanStatus()]);
+    if (!readSeq.current.isCurrent(token)) return;
+    if (s) setStatus(s);
+    if (c) setConfig(c);
+  }, [setConfig]);
+
   /**
    * Apply a config change optimistically, and TAKE IT BACK if the server refuses.
    *
@@ -168,16 +188,19 @@ export function useForeman(): ForemanState {
         return false;
       }
       setError(null);
-      // Retires every poll already in flight before re-reading: one of them was issued
-      // before this write and would otherwise land afterwards, repainting the control
-      // with the value we just replaced. See `readSeq`.
-      const token = readSeq.current.begin();
-      const c = await fetchForemanConfig();
-      if (c && readSeq.current.isCurrent(token)) setConfig(c);
+      // Re-reads the STATUS as well as the config, and that is load-bearing rather than
+      // tidy: Settings > Models renders Foreman's four roles from `status` - what each one
+      // resolved to, what its Inherit option is labelled with, and which model id was dropped
+      // when a pair could not be honoured. All three are DERIVED from the value this write
+      // just changed, so re-reading only the config leaves a row saying "Inherit - Claude
+      // Code" for up to `POLL_MS` after the operator moved the group to Codex - the same
+      // failure `useLlm` re-reads its own status to avoid. It also retires every poll already
+      // in flight, one of which was issued before this write. See `readSeq`.
+      await reread();
       return true;
     },
-    [setConfig],
+    [reread, setConfig],
   );
 
-  return { config, status, backlogPlan, episodes, update, error };
+  return { config, status, backlogPlan, episodes, update, refresh: reread, error };
 }

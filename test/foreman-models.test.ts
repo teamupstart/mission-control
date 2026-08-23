@@ -30,16 +30,20 @@ test("config wins over env, env wins over the shipped default", () => {
     role: "review",
     id: "from-config",
     source: "config",
+    // In no catalog, so nothing was dropped - model ids are free text. See `guardProviderModel`.
+    unsupported: null,
   });
   assert.deepEqual(resolveForemanModel("review", {}, env), {
     role: "review",
     id: "from-env",
     source: "env",
+    unsupported: null,
   });
   assert.deepEqual(resolveForemanModel("review", {}, {}), {
     role: "review",
     id: spec.fallback,
     source: "default",
+    unsupported: null,
   });
 });
 
@@ -71,7 +75,12 @@ test("the worker resolves an inherited Codex backlog model through the effective
 
 test("a typed id is trimmed, so a stray space can't become a different model", () => {
   const r = resolveForemanModel("backlog", { backlogModel: "  claude-sonnet-5  " }, {});
-  assert.deepEqual(r, { role: "backlog", id: "claude-sonnet-5", source: "config" });
+  assert.deepEqual(r, {
+    role: "backlog",
+    id: "claude-sonnet-5",
+    source: "config",
+    unsupported: null,
+  });
 });
 
 test("a missing config resolves rather than throwing - the panel renders before the first poll", () => {

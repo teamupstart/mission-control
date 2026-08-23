@@ -223,7 +223,9 @@ function inspectorHtml(): string {
     config: InspectorConfigSchema.parse({ enabled: true, mode: "live" }),
     inspections: [row()],
     model: null,
+    runner: null,
     update: async () => true,
+    refresh: async () => {},
     resolveFindings: async () => true,
     error: null,
   };
@@ -303,6 +305,7 @@ function foremanHtml(episodes: ForemanEpisodeSummary[] = [episode()]): string {
     backlogPlan: null,
     episodes,
     update: async () => true,
+    refresh: async () => {},
     error: null,
   };
   return renderToStaticMarkup(
@@ -374,7 +377,9 @@ test("a ledger longer than a page shows one page of rows and a pager", () => {
         config: InspectorConfigSchema.parse({ enabled: true, mode: "live" }),
         inspections: rows,
         model: null,
+        runner: null,
         update: async () => true,
+        refresh: async () => {},
         resolveFindings: async () => true,
         error: null,
       } satisfies InspectorState,

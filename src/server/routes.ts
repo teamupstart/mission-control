@@ -300,8 +300,14 @@ import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
-import { getInspectorConfig, inspectorModel, setInspectorConfig } from "./inspector/config.ts";
-import { getLlmConfig, llmStatus, setLlmConfig } from "./llm/config.ts";
+import {
+  getInspectorConfig,
+  inspectorModel,
+  inspectorRunner,
+  setInspectorConfig,
+} from "./inspector/config.ts";
+import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
+import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
@@ -5040,7 +5046,7 @@ export function buildApp(
   // browser, so a panel showing `config || default` would confidently print a model a
   // `MISSION_INSPECTOR_MODEL` in the daemon's environment is overriding.
   app.get("/api/inspector/status", (c) =>
-    c.json({ model: inspectorModel() } satisfies InspectorStatus),
+    c.json({ model: inspectorModel(), runner: inspectorRunner() } satisfies InspectorStatus),
   );
 
   // --- LLM: which provider does the app's own offline work, and on which model ---

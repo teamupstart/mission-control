@@ -795,6 +795,7 @@ export function ConsoleDetail({
                 ref={filesRef}
                 session={session}
                 controller={view.files}
+                fileCommentThreads={view.fileCommentThreads}
                 onExtract={() => view.onOpenFiles(session.id)}
                 isOverlayOpen={view.isOverlayOpen}
               />

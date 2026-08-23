@@ -4427,6 +4427,149 @@ body {
 .file-codemirror { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .file-codemirror .cm-editor { height: 100%; }
 .file-codemirror .cm-scroller { overflow: auto; }
+
+/* Comment mode over a RENDERED document: the preview keeps its half of the pane and the
+   source takes the other, so a line number is clickable without the reader losing the thing
+   they were reading. Both children are already `flex: 1`, so all this does is set the share
+   and draw the seam. Below the phone breakpoint there is no room for two columns, so they
+   stack and each takes half the height. */
+.file-content.is-comment-split > .file-preview-reader {
+  /* An explicit basis on BOTH halves, or they do not halve. The preview's own rule is
+     `flex: 1`, whose basis is 0, so a basis on the source column alone handed it that
+     width plus an equal share of what was left - a 70/30 split of a pane meant to be even. */
+  flex: 1 1 52%;
+  border-right: 1px solid var(--border);
+}
+.file-content.is-comment-split > .file-codemirror { flex: 1 1 48%; }
+@media (max-width: 640px) {
+  .file-content.is-comment-split { flex-direction: column; }
+  .file-content.is-comment-split > .file-preview-reader {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .file-content.is-comment-split > .file-preview-reader,
+  .file-content.is-comment-split > .file-codemirror { flex: 1 1 50%; min-height: 0; }
+}
+
+/* Line comments in the Files workspace.
+   Deliberately NOT written as descendants of `.file-toolbar` or `.file-mode`: the Persona,
+   session-action and Foreman profile editors all reuse those two classes for their own
+   toolbars, and none of them has comments. Nothing here is `position: fixed` or lifted
+   above the topbar's z-index either, so the desktop shell's drag region is untouched. */
+.file-comment-controls { display: flex; flex: none; gap: 6px; }
+.file-comment-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--muted);
+  background: transparent;
+  font: 10.5px var(--sans);
+  cursor: pointer;
+}
+.file-comment-toggle:hover:not(:disabled) { color: var(--fg); }
+.file-comment-toggle.on {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  background: color-mix(in oklab, var(--working) 16%, var(--panel));
+}
+.file-comment-toggle:disabled { opacity: .45; cursor: default; }
+
+/* The marker rides at the end of the line it is about, INSIDE the content - CodeMirror's
+   gutters carry `aria-hidden`, so a named control cannot live in one. See `FileEditor.tsx`. */
+.cm-file-comment-marker {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 7px;
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 20%, transparent);
+  font: 9px var(--sans);
+  line-height: 1.45;
+  vertical-align: middle;
+  cursor: pointer;
+  user-select: none;
+}
+.cm-file-comment-marker:hover { background: color-mix(in oklab, var(--working) 34%, transparent); }
+.cm-file-comment-marker.is-draft {
+  color: var(--dim);
+  background: color-mix(in oklab, var(--dim) 20%, transparent);
+}
+.cm-file-comment-marker.is-answered {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 20%, transparent);
+}
+.cm-file-comment-marker.is-outdated {
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 20%, transparent);
+}
+.cm-file-comment-marker.is-resolved {
+  color: var(--dim);
+  background: color-mix(in oklab, var(--dim) 12%, transparent);
+}
+
+/* The panel's outer spacing is the HOST's padding, never the panel's margin. CodeMirror
+   measures a block widget with `offsetHeight`, which excludes margins, so a margin here
+   makes the content taller than the gutter thinks it is and every line below the panel
+   drifts out of step with its own line number. */
+.file-comment-host { display: block; padding: 6px 10px 10px; }
+.file-comment-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--working);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--panel);
+  font: 11.5px var(--sans);
+  white-space: normal;
+}
+.file-comment-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.file-comment-panel-spacer { flex: 1; }
+.file-comment-id { flex: none; color: var(--working); font-size: 10.5px; }
+.file-comment-line { flex: none; color: var(--dim); font-size: 10.5px; }
+.file-comment-state { flex: none; color: var(--muted); font-size: 10.5px; }
+.file-comment-state.is-answered { color: var(--idle); }
+.file-comment-state.is-resolved { color: var(--dim); }
+.file-comment-stale { flex: none; color: var(--attention); font-size: 10.5px; }
+.file-comment-quote {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+}
+.file-comment-truncated { margin: 0; color: var(--dim); font-size: 10.5px; }
+.file-comment-messages { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.file-comment-message { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; }
+.file-comment-author { color: var(--fg); font-size: 10.5px; font-weight: 600; }
+.file-comment-message.is-agent .file-comment-author { color: var(--working); }
+.file-comment-when { color: var(--dim); font-size: 10px; }
+.file-comment-body { grid-column: 1 / -1; margin: 0; color: var(--fg); white-space: pre-wrap; }
+.file-comment-box {
+  min-height: 56px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--bg-2);
+  font: 11.5px var(--sans);
+  resize: vertical;
+}
+.file-comment-box:focus { border-color: var(--working); outline: none; }
+.file-comment-error { margin: 0; color: var(--danger); font-size: 10.5px; }
+.file-comment-panel-foot { display: flex; align-items: center; gap: 6px; }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
 .file-image-preview {

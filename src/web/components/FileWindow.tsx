@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Session } from "@shared/types.ts";
+import type { FileCommentThread, Session } from "@shared/types.ts";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { FileWorkspace } from "./FileWorkspace.tsx";
@@ -16,10 +16,12 @@ function initialRect(): Rect {
 export function FileWindow({
   session,
   controller,
+  fileCommentThreads,
   onClose,
 }: {
   session: Session;
   controller: SessionFilesController;
+  fileCommentThreads: FileCommentThread[];
   onClose: () => void;
 }): React.JSX.Element {
   const [rect, setRect] = useState(initialRect);
@@ -70,7 +72,12 @@ export function FileWindow({
             <Tooltip label="Close the files window"><button className="icon-btn" onClick={onClose} aria-label="Close files window">✕</button></Tooltip>
           </div>
         </header>
-        <FileWorkspace session={session} controller={controller} extracted />
+        <FileWorkspace
+          session={session}
+          controller={controller}
+          fileCommentThreads={fileCommentThreads}
+          extracted
+        />
         {!maximized && <div className="file-window-resize" onPointerDown={resize} aria-hidden />}
       </div>
     </Overlay>

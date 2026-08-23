@@ -774,8 +774,8 @@ radio.</figcaption>
 
 <h3>The chokepoint is two functions</h3>
 
-<p>Of the twelve places the daemon runs an app-owned model call, <strong>ten already take an
-explicit runner id</strong>. Only two read the app-wide value, and they are the two five-line
+<p>Of the twelve app-owned runner lookups in the daemon, <strong>ten already take an explicit
+runner id</strong>. Only two read the app-wide value, and they are the two five-line
 wrappers in <code>src/server/llm/jobs.ts</code> that every background job goes through:</p>
 
 <pre><code>export function runJob(job: LlmJobId, prompt: string, opts: JobRunOptions = {}): Promise&lt;string&gt; {

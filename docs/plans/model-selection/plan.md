@@ -214,8 +214,8 @@ model choice, which is its own kind of annoying. The three things that are actua
 
 ### The chokepoint is two functions
 
-Of the twelve places the daemon runs an app-owned model call, **ten already take an explicit
-runner id**. Only two read the app-wide value, and they are the two five-line wrappers in
+Of the twelve app-owned runner lookups in the daemon, **ten already take an explicit runner
+id**. Only two read the app-wide value, and they are the two five-line wrappers in
 `src/server/llm/jobs.ts` that every background job goes through:
 
 ```ts

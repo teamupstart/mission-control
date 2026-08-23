@@ -43,8 +43,8 @@ Explicit non-goals:
 Verified against the current tree; correct anything that has moved rather than forcing it.
 
 - **The chokepoint is two functions.** `runJob` and `runJobStructured`
-  (`src/server/llm/jobs.ts:54-90`) are the only two of the daemon's twelve app-owned model call
-  sites that read the app-wide runner. Both do
+  (`src/server/llm/jobs.ts:54-90`) are the only two of the daemon's twelve app-owned runner
+  lookups that read the app-wide runner. Both do
   `llmRunner(llmRunnerChoice(cfg).id).run(prompt, { model: llmJobModel(job, cfg).id, … })`. Their
   own doc comment says "Model and runner are the config's, not the caller's" - that comment is what
   this phase makes more precise, not less true.

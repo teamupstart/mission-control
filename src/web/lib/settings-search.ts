@@ -312,6 +312,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "foreman-ship-recovery-minutes",
+    label: "Pre-PR ship recovery wait",
+    description: "Set the quiet window before Foreman resumes an eligible managed Ship task.",
+    category: "foreman",
+    anchor: "foreman/ship-recovery-minutes",
+    keywords: ["ship", "recovery", "idle", "quiet", "minutes", "pull request", "escalation"],
+    kind: "jump",
+  },
+  {
     id: "foreman-episodes",
     label: "Foreman decisions",
     description: "Every prompt Foreman has decided on, across every session, newest first.",

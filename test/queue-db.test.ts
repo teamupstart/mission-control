@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
+import { shipRecoveryMarker } from "../src/shared/ship-recovery.ts";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
 // so this never touches the real ~/.mission-control db (config.ts resolves the
@@ -34,6 +35,8 @@ const {
   bootstrapPromptedConsumedGeneration,
   consumePromptedGeneration,
   markPromptedHandoffUndelivered,
+  claimPromptedRecovery,
+  resolvePromptedRecoveryDelivery,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -1374,7 +1377,11 @@ test("a database that predates the decision column upgrades, reads null, and sta
     { env, cwd: process.cwd(), encoding: "utf8" },
   ).trim();
   const result = JSON.parse(read.split("\n").at(-1)!) as {
-    legacyRow: { promptedConsumedGeneration: number | null; promptedDecision: unknown };
+    legacyRow: {
+      promptedConsumedGeneration: number | null;
+      promptedDecision: unknown;
+      promptedRecovery: unknown;
+    };
     wrote: boolean;
     fresh: { promptedDecision: { outcome: string; generation: number } | null };
   };
@@ -1382,9 +1389,225 @@ test("a database that predates the decision column upgrades, reads null, and sta
   // than failing every queue write - and it reads as "consumed, reason unknown", which is
   // the truthful answer for a row written before anyone recorded one.
   assert.equal(result.legacyRow.promptedDecision, null);
+  assert.equal(result.legacyRow.promptedRecovery, null);
   assert.equal(result.legacyRow.promptedConsumedGeneration, 4, "a legacy row is not fresh work");
   assert.equal(result.wrote, true);
   assert.equal(result.fresh.promptedDecision?.outcome, "verification_failed");
   assert.equal(result.fresh.promptedDecision?.generation, 1);
   rmSync(legacy, { recursive: true, force: true });
+});
+
+test("ship recovery claims are exact, durable, and unknown delivery is spent", () => {
+  const key = `recovery-unknown-${++n}`;
+  markWorkCycleActive(key, 10);
+  completeWorkCycle(key, 11, 11);
+  assert.equal(consumePromptedGeneration({
+    noteKey: key,
+    sessionCwd: "/repo",
+    generation: 1,
+    ask: false,
+    directHandoff: null,
+    decision: { outcome: "held", summary: "one gap", gaps: [{ id: "gap", path: "a.ts", detail: "test it" }] },
+    now: 12,
+  }), true);
+
+  const base = {
+    taskId: "task-recovery",
+    logicalKey: key,
+    generation: 1,
+    decisionGeneration: 1,
+    decisionOutcome: "held" as const,
+    reason: "held_gaps" as const,
+    attempt: 1,
+  };
+  const claim = {
+    ...base,
+    marker: shipRecoveryMarker(base),
+    payloadSummary: "Address a.ts and rerun its focused test.",
+    terminal: false,
+  };
+  const first = claimPromptedRecovery(claim, 100);
+  assert.equal(first?.lastDelivery, "unknown");
+  assert.equal(first?.nextEligibleAt, 100 + 40 * 60_000);
+  assert.deepEqual(getQueueRow(key)?.promptedRecovery, first);
+  assert.equal(claimPromptedRecovery(claim, 101), null, "an unknown result is not retried");
+
+  const earlySecond = {
+    ...claim,
+    attempt: 2,
+    marker: shipRecoveryMarker({ ...base, attempt: 2 }),
+  };
+  assert.equal(claimPromptedRecovery(earlySecond, 100 + 40 * 60_000 - 1), null);
+  assert.equal(claimPromptedRecovery(earlySecond, 100 + 40 * 60_000)?.attempt, 2);
+
+  markWorkCycleActive(key, 100 + 40 * 60_000 + 1);
+  completeWorkCycle(key, 100 + 40 * 60_000 + 2, 100 + 40 * 60_000 + 2);
+  assert.equal(consumePromptedGeneration({
+    noteKey: key,
+    sessionCwd: "/repo",
+    generation: 2,
+    ask: false,
+    directHandoff: null,
+    decision: { outcome: "empty", summary: "new completion", gaps: [] },
+    now: 100 + 40 * 60_000 + 3,
+  }), true);
+  assert.equal(getQueueRow(key)?.promptedRecovery, null, "a new completion resets recovery");
+});
+
+test("only a positively undelivered recovery releases the exact same attempt", () => {
+  const key = `recovery-release-${++n}`;
+  markWorkCycleActive(key, 20);
+  completeWorkCycle(key, 21, 21);
+  consumePromptedGeneration({
+    noteKey: key,
+    sessionCwd: "/repo",
+    generation: 1,
+    ask: false,
+    directHandoff: null,
+    decision: null,
+    now: 22,
+  });
+  const identity = {
+    taskId: "task-release",
+    logicalKey: key,
+    generation: 1,
+    decisionGeneration: null,
+    decisionOutcome: null,
+    reason: "idle_empty" as const,
+    attempt: 1,
+  };
+  const claim = {
+    ...identity,
+    marker: shipRecoveryMarker(identity),
+    payloadSummary: "Resume implementation.",
+    terminal: false,
+  };
+  assert.ok(claimPromptedRecovery(claim, 200));
+  assert.equal(resolvePromptedRecoveryDelivery({
+    ...identity,
+    marker: claim.marker,
+    delivery: "confirmed_undelivered",
+  }, 201)?.lastDelivery, "confirmed_undelivered");
+  const retried = claimPromptedRecovery(claim, 201);
+  assert.equal(retried?.attempt, 1);
+  assert.equal(retried?.marker, claim.marker);
+  assert.equal(retried?.lastDelivery, "unknown");
+
+  assert.equal(resolvePromptedRecoveryDelivery({
+    ...identity,
+    marker: "stale-marker",
+    delivery: "delivered",
+  }, 202), null);
+  assert.equal(resolvePromptedRecoveryDelivery({
+    ...identity,
+    marker: claim.marker,
+    delivery: "delivered",
+  }, 203)?.lastDelivery, "delivered");
+});
+
+test("three recovery sends end in a no-send escalation projection", () => {
+  const key = `recovery-escalate-${++n}`;
+  markWorkCycleActive(key, 30);
+  completeWorkCycle(key, 31, 31);
+  consumePromptedGeneration({
+    noteKey: key,
+    sessionCwd: "/repo",
+    generation: 1,
+    ask: false,
+    directHandoff: null,
+    decision: null,
+    now: 32,
+  });
+  const common = {
+    taskId: "task-escalate",
+    logicalKey: key,
+    generation: 1,
+    decisionGeneration: null,
+    decisionOutcome: null,
+    reason: "idle_empty" as const,
+    payloadSummary: "Resume implementation.",
+    terminal: false,
+  };
+  const claimAt = (attempt: number, now: number) => claimPromptedRecovery({
+    ...common,
+    attempt,
+    marker: shipRecoveryMarker({ ...common, attempt }),
+  }, now);
+  const first = claimAt(1, 300)!;
+  const second = claimAt(2, first.nextEligibleAt!)!;
+  const third = claimAt(3, second.nextEligibleAt!)!;
+  const fourth = claimAt(4, third.nextEligibleAt!);
+  assert.equal(fourth?.attempt, 4);
+  assert.equal(fourth?.lastDelivery, "escalated");
+  assert.equal(fourth?.nextEligibleAt, null);
+  assert.equal(resolvePromptedRecoveryDelivery({
+    ...common,
+    attempt: 4,
+    marker: fourth!.marker,
+    delivery: "delivered",
+  }, third.nextEligibleAt!), null, "an escalation cannot be resolved as a delivery");
+});
+
+test("malformed or contradictory recovery JSON reads as absent while completion stays consumed", () => {
+  const key = `recovery-broken-${++n}`;
+  markWorkCycleActive(key, 40);
+  completeWorkCycle(key, 41, 41);
+  consumePromptedGeneration({
+    noteKey: key,
+    sessionCwd: "/repo",
+    generation: 1,
+    ask: false,
+    directHandoff: null,
+    decision: null,
+    now: 42,
+  });
+  const poison = (payload: string): void => {
+    openDb().prepare(`UPDATE foreman_queues SET prompted_recovery = ? WHERE note_key = ?`)
+      .run(payload, key);
+  };
+  const valid = {
+    taskId: "task-broken",
+    logicalKey: key,
+    generation: 1,
+    decisionGeneration: null,
+    decisionOutcome: null,
+    reason: "idle_empty",
+    marker: shipRecoveryMarker({
+      taskId: "task-broken",
+      logicalKey: key,
+      generation: 1,
+      reason: "idle_empty",
+      attempt: 1,
+    }),
+    attempt: 1,
+    claimedAt: 50,
+    nextEligibleAt: 60,
+    lastDelivery: "unknown",
+    payloadSummary: "resume",
+  };
+  for (const [why, payload] of [
+    ["invalid JSON", "{broken"],
+    ["missing task", JSON.stringify({ ...valid, taskId: undefined })],
+    ["unknown reason", JSON.stringify({ ...valid, reason: "newer_reason" })],
+    ["contradictory escalation", JSON.stringify({ ...valid, attempt: 4, lastDelivery: "unknown", nextEligibleAt: null })],
+    ["wrong marker", JSON.stringify({ ...valid, marker: "not-the-derived-marker" })],
+    ["wrong key", JSON.stringify({ ...valid, logicalKey: "another-key" })],
+  ] as const) {
+    poison(payload);
+    const row = getQueueRow(key);
+    assert.equal(row?.promptedRecovery, null, why);
+    assert.equal(row?.promptedConsumedGeneration, 1, `${why}: no replay`);
+    assert.equal(claimPromptedRecovery({
+      taskId: "task-broken",
+      logicalKey: key,
+      generation: 1,
+      decisionGeneration: null,
+      decisionOutcome: null,
+      reason: "idle_empty",
+      attempt: 1,
+      marker: valid.marker,
+      payloadSummary: "resume",
+      terminal: false,
+    }, 70), null, `${why}: unreadable state must not be replaced by a new claim`);
+  }
 });

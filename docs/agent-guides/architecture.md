@@ -193,6 +193,27 @@ actionable, and not what the row says. A legacy row with no decision is consumed
 is not fresh work. A context-key rotation selects another row, and no disposition migrates across
 logical keys.
 
+### Pre-PR ship recovery projection
+
+`foreman_queues.prompted_recovery` is a validated current projection for the bounded ship
+shepherd. It stores task id, logical key, current completed work-cycle generation, the Phase 1
+decision identity when one exists, append-only reason, attempt, deterministic marker, claim time,
+next eligibility, delivery knowledge, and a bounded payload summary. It is not history;
+`foreman_episodes` remains the append-only audit.
+
+The Foreman worker's fleet pass orders PR follow-through before ship recovery, then excludes every
+touched pane from ordinary target processing. The worker reads policy inputs over HTTP and the
+daemon alone writes recovery state. The claim route rebuilds eligibility from the current Registry,
+task, queue, Workflow, PR, diff, config, trust, invite, and work-cycle projections before a database
+compare-and-set. This makes the worker's earlier snapshot advisory rather than authority. Unknown
+injection results stay claimed across worker and daemon restarts; only a positive non-delivery may
+release the exact same attempt.
+
+Recovery reasons are structural except `idle_ambiguous`. That one invokes the existing Review model
+through a fresh tool-less call and records spend under `foreman:ship-recovery`. The parsed output is
+post-checked against the pre-PR authority boundary. No recovery model can add repository scope or
+authorize commit, push, pull-request creation, merge, cleanup, another task, or a human answer.
+
 ## GitHub Inspector and PR provenance
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge

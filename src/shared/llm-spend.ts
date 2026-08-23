@@ -10,7 +10,7 @@
 // A ROLE is the answer: a stable synthetic note key naming the subsystem AND the job. Not
 // one `foreman` bucket, because the questions worth asking are per job - "is shadow triage
 // worth what it costs", "did the review prompt fix land" - and a single bucket answers none
-// of them. Six keys is what makes those separately answerable.
+// of them. Separate append-only keys make those questions answerable.
 //
 // Pure, and in `shared`, for the reason `llm.ts` is: the daemon WRITES these keys, the
 // Foreman worker REPORTS them over a route, and the cost strip RENDERS them. Three readers
@@ -44,6 +44,7 @@ export const LLM_SPEND_ROLES = [
   // sibling here instead of a second vocabulary; `PIPELINE_SPEND_ROLES` in `pipeline.ts` is
   // what stops a provider shipping without one.
   "pipeline:ai-conductor",
+  "foreman:ship-recovery",
 ] as const;
 
 export type LlmSpendRole = (typeof LLM_SPEND_ROLES)[number];
@@ -68,6 +69,7 @@ export const LLM_SPEND_ROLE_LABELS: Record<LlmSpendRole, string> = {
   "inspector:review": "GitHub Inspector review",
   "inspector:reply": "GitHub Inspector reply",
   "pipeline:ai-conductor": "ai-conductor pipelines",
+  "foreman:ship-recovery": "Foreman ship recovery",
 };
 
 /**

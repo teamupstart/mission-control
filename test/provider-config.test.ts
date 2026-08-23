@@ -42,6 +42,8 @@ test("Foreman ships enabled with both wrap-up triggers, and still authorises not
   assert.equal(fresh.wrapup, "ask", "a wrap-up moment must still ask rather than type");
   assert.equal(fresh.trackReviewFeedback, true);
   assert.equal(fresh.trackCiFailures, true);
+  assert.equal(fresh.keepShipTasksMoving, true);
+  assert.equal(fresh.shipRecoveryMinutes, 20);
 });
 
 test("an operator who explicitly turned Foreman off keeps it off across the flip", () => {
@@ -64,6 +66,20 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
   assert.equal(upgraded.skipScoutWrapup, true);
   assert.equal(upgraded.skipReviewArtifactWrapup, true);
+  assert.equal(upgraded.keepShipTasksMoving, true);
+  assert.equal(upgraded.shipRecoveryMinutes, 20);
+});
+
+test("Foreman persists bounded pre-PR recovery controls", () => {
+  const off = setForemanConfig({ keepShipTasksMoving: false });
+  assert.equal(off.keepShipTasksMoving, false);
+  assert.equal(off.shipRecoveryMinutes, 20);
+
+  const tuned = setForemanConfig({ shipRecoveryMinutes: 37 });
+  assert.equal(tuned.keepShipTasksMoving, false);
+  assert.equal(tuned.shipRecoveryMinutes, 37);
+  assert.throws(() => setForemanConfig({ shipRecoveryMinutes: 0 }));
+  assert.throws(() => setForemanConfig({ shipRecoveryMinutes: 1441 }));
 });
 
 test("Foreman persists the two completion safeguards independently", () => {

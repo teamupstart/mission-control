@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { ForemanConfig, PromptedCompletionDisposition } from "@shared/protocol.ts";
+import type {
+  ForemanConfig,
+  PromptedCompletionDisposition,
+  PromptedRecoveryClaim,
+} from "@shared/protocol.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -17,7 +21,9 @@ import type {
   SessionQueue,
   WorkItem,
 } from "@shared/types.ts";
-import { activePaneDialog, reportBucket } from "@shared/session.ts";
+import { noteAwaitsYou } from "@shared/foreman.ts";
+import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { activePaneDialog, reportBucket, settledIdle } from "@shared/session.ts";
 import {
   ForemanClient,
   foremanClaudeTransportFallback,
@@ -54,6 +60,7 @@ import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
   diffMayIncludeOtherWork,
+  hasPane,
   inFlightItem,
   planFromVerify,
   tickTargets,
@@ -98,6 +105,9 @@ import {
 } from "./workflow-claim.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 import { runPipelineTriage } from "./pipeline-triage.ts";
+import { reviewShipRecovery } from "./ship-recovery-review.ts";
+import { decideShipShepherd } from "./ship-shepherd.ts";
+import type { ShipShepherdDecision } from "./ship-shepherd.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -200,6 +210,18 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 /** Consecutive prompted-wrap-up attempts that got nowhere - see PromptedFailureTracker. */
 const promptedFailures = new PromptedFailureTracker();
+
+/** Pre-claim reviewer failures are not recovery sends, so bound them separately. */
+const SHIP_RECOVERY_REVIEW_FAILURE_CAP = 3;
+const SHIP_RECOVERY_REVIEW_RETRY_MS = Number(
+  process.env.FOREMAN_SHIP_RECOVERY_REVIEW_RETRY_MS || 60_000,
+);
+const shipRecoveryReviewFailures = new Map<string, {
+  noteKey: string;
+  strikes: number;
+  nextAt: number;
+  reason: string;
+}>();
 
 /**
  * Consume one completed generation: the write that disarms the trigger, and the ONLY thing that clears
@@ -435,6 +457,19 @@ async function main(): Promise<void> {
       if (nudgedThisPass.size > 0) advanced = true;
     } catch (err) {
       log(`review follow-through failed (${String(err)})`);
+    }
+
+    // Pre-PR recovery is the last fleet-level pane owner. It runs after review
+    // follow-through so an existing pull request always wins, and receives that pass's
+    // claimed ids so no session can get both instructions. Its daemon claim repeats every
+    // ownership/current-state check immediately before delivery and remains unknown on a
+    // lost response, so a worker restart cannot turn uncertainty into a double-send.
+    try {
+      const recovered = await runShipShepherd(client, cfg, nudgedThisPass);
+      for (const id of recovered) nudgedThisPass.add(id);
+      if (recovered.size > 0) advanced = true;
+    } catch (err) {
+      log(`pre-PR ship recovery failed (${String(err)})`);
     }
 
     if (targets.length === 0) {
@@ -998,6 +1033,440 @@ async function runReviewFollowup(
     }
   }
   return nudged;
+}
+
+/**
+ * Keep eligible invited ship sessions moving only until their first task-owned PR.
+ *
+ * The pure policy decides from one observation. The daemon then repeats that decision and
+ * compare-and-sets the exact attempt before this process types, so this worker is only the
+ * orchestrator: it never owns recovery state and cannot broaden eligibility. Unknown
+ * delivery remains claimed. Only an InjectError that positively says nothing landed is
+ * released for the exact same-attempt retry.
+ */
+async function runShipShepherd(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  alreadyTouched: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const touched = new Set<string>();
+  const sessions = await client.sessions().catch(() => null);
+  if (!sessions) return touched;
+  const liveNoteKeys = new Set(sessions.map(noteKeyOf));
+  for (const [key, failure] of shipRecoveryReviewFailures) {
+    if (!liveNoteKeys.has(failure.noteKey)) shipRecoveryReviewFailures.delete(key);
+  }
+
+  for (const session of sessions) {
+    if (alreadyTouched.has(session.id)) continue;
+    const task = session.task;
+    if (!task || task.kind !== "ship") continue;
+
+    // Queue and Workflow are durable owners outside the card snapshot. Failure to read
+    // either holds this candidate: missing evidence can never become permission to type.
+    const [queue, workflowRuns] = await Promise.all([
+      client.queue(session.id).catch(() => undefined),
+      client.workflowRuns(noteKeyOf(session)).catch(() => undefined),
+    ]);
+    if (queue === undefined || workflowRuns === undefined) continue;
+
+    // Diff errors also hold. Treating "could not inspect" as empty would route a dirty,
+    // ambiguous checkout into the structural empty instruction and erase the only branch
+    // that requires judgment.
+    const diff = await client.diff(session.id).catch(() => null);
+    if (!diff?.ok) continue;
+
+    let decision = decideShipShepherd({
+      session,
+      queue,
+      humanOwnsSession:
+        reportBucket(session, sessions) === "needs-you"
+        || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
+      workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
+      hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+      diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
+      featureEnabled: cfg.keepShipTasksMoving,
+      mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+      recoveryMinutes: cfg.shipRecoveryMinutes,
+      now: Date.now(),
+    });
+    if (decision.kind === "skip") continue;
+
+    let payload = decision.kind === "recover" ? decision.payload : null;
+    let terminalSummary = decision.kind === "escalate" ? decision.summary : null;
+    if (decision.kind === "recover" && decision.needsReview) {
+      const failureKey = [task.id, queue!.noteKey, decision.generation, decision.attempt].join(":");
+      const priorFailure = shipRecoveryReviewFailures.get(failureKey)
+        ?? restoredShipRecoveryReviewFailure(session, decision);
+      if (priorFailure) shipRecoveryReviewFailures.set(failureKey, priorFailure);
+      if (priorFailure && Date.now() < priorFailure.nextAt) continue;
+      let reviewFailure: string | null = null;
+      const goal = await client.goal(session.id).catch(() => null);
+      if (!goal?.objective) {
+        terminalSummary = "The durable task objective is unavailable, so bounded recovery cannot choose a safe next turn.";
+      } else {
+        const [window, standards] = await Promise.all([
+          client.transcript(session.id).catch(() => null),
+          client.standards(session.id, changedPaths(diff.patch)).catch(() => null),
+        ]);
+        if (!window || !standards) {
+          reviewFailure = "the bounded task evidence could not be read safely";
+        } else {
+          const reviewed = await reviewShipRecovery({
+            objective: goal.objective,
+            focus: goal.focus,
+            diff: diff.patch,
+            diffTruncated: diff.truncated,
+            transcript: window.messages,
+            transcriptTruncated: window.truncated,
+            standards: standards.docs,
+            standardsTruncated: standards.truncated,
+            completionContract: taskCompletionContract("ship")!,
+            idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
+            priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
+          }, reviewModel(cfg), triageRunnerId);
+          if (reviewed.kind === "failed") {
+            reviewFailure = reviewed.reason;
+          } else if (reviewed.verdict.action === "escalate") {
+            shipRecoveryReviewFailures.delete(failureKey);
+            terminalSummary = reviewed.verdict.reason;
+          } else {
+            shipRecoveryReviewFailures.delete(failureKey);
+            payload = reviewed.verdict.instruction;
+          }
+        }
+      }
+      if (reviewFailure) {
+        const strikes = (priorFailure?.strikes ?? 0) + 1;
+        shipRecoveryReviewFailures.set(failureKey, {
+          noteKey: queue!.noteKey,
+          strikes,
+          nextAt: Date.now() + SHIP_RECOVERY_REVIEW_RETRY_MS,
+          reason: reviewFailure,
+        });
+        if (strikes < SHIP_RECOVERY_REVIEW_FAILURE_CAP) {
+          await recordShipRecoveryReviewFailure(client, session, decision, strikes, reviewFailure);
+          log(`${session.name}: bounded recovery review failed ${strikes}/${SHIP_RECOVERY_REVIEW_FAILURE_CAP}; will retry (${reviewFailure})`);
+          continue;
+        }
+        shipRecoveryReviewFailures.delete(failureKey);
+        terminalSummary = `The bounded recovery reviewer failed ${strikes} times: ${reviewFailure}`;
+      }
+      if (terminalSummary) {
+        decision = terminalRecoveryDecision(decision, task.id, queue!.noteKey, terminalSummary);
+      }
+    }
+
+    if (decision.kind === "recover" && !payload) continue;
+    const summary = oneLine(
+      decision.kind === "escalate" ? decision.summary : payload!,
+      600,
+    );
+    const claim = recoveryClaim(task.id, queue!.noteKey, decision, summary);
+    const claimedQueue = await client.claimShipRecovery(session.id, claim).catch((err) => {
+      log(`${session.name}: pre-PR recovery claim refused (${String(err)})`);
+      return null;
+    });
+    if (!claimedQueue) continue;
+
+    if (decision.kind === "escalate") {
+      touched.add(session.id);
+      await recordShipRecovery(client, session, decision, {
+        delivery: "escalated",
+        detail: decision.summary,
+        sentText: null,
+      });
+      log(`${session.name}: escalated pre-PR recovery (${reasonLabel(decision.reason)})`);
+      continue;
+    }
+
+    // One last delivery-channel/owner check after the durable mark and immediately before
+    // injection. Embedded sessions have no pane token: their supervisor handle is the
+    // reachable channel, so pane identity is conditional just as it is for queue delivery.
+    // Since the claim is already unknown, aborting here must positively release it. A
+    // later pass retries the same identity rather than spending an attempt that sent none.
+    const [freshCfg, freshSessions] = await Promise.all([
+      client.getConfig().catch(() => null),
+      client.sessions().catch(() => null),
+    ]);
+    const fresh = freshSessions ? resolveLiveSession(freshSessions, noteKeyOf(session)) : null;
+    const freshRuns = fresh
+      ? await client.workflowRuns(noteKeyOf(fresh)).catch(() => null)
+      : null;
+    const freshQueue = fresh ? await client.queue(fresh.id).catch(() => null) : null;
+    if (
+      !freshCfg
+      || !freshSessions
+      || !fresh
+      || !freshRuns
+      || !freshQueue
+      || !isLeader
+      || !freshCfg.enabled
+      || !freshCfg.keepShipTasksMoving
+      || fresh.task?.id !== task.id
+      || !["running", "dispatching"].includes(fresh.task.status)
+      || fresh.foremanInvite === null
+      || !fresh.hooksSeen
+      || !hasPane(fresh)
+      || (paneKeyOf(session) !== null && paneKeyOf(fresh) !== paneKeyOf(session))
+      || reportBucket(fresh, freshSessions) === "needs-you"
+      || Boolean(fresh.note && noteAwaitsYou(fresh.note.disposition))
+      || activeWorkflowOwnsSession(freshRuns)
+      || followupPrs(fresh).length > 0
+      || fresh.pendingTurns.length > 0
+      || freshQueue.items.length > 0
+      || freshQueue.promptedRecovery?.marker !== claim.marker
+      || freshQueue.promptedRecovery?.lastDelivery !== "unknown"
+      || fresh.workCycle?.logicalKey !== claim.logicalKey
+      || fresh.workCycle.generation !== claim.generation
+      || fresh.workCycle.active
+      || fresh.workCycle.completedAt === null
+      || !settledIdle(fresh, Date.now(), freshCfg.shipRecoveryMinutes * 60_000)
+      || !foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot)
+    ) {
+      await releaseShipRecovery(client, session.id, claim);
+      await recordShipRecovery(client, session, decision, {
+        delivery: "confirmed undelivered",
+        detail: payload!,
+        sentText: null,
+      });
+      continue;
+    }
+
+    try {
+      await client.inject(fresh.id, payload!);
+    } catch (err) {
+      const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
+      if (confirmedUndelivered) {
+        await releaseShipRecovery(client, fresh.id, claim);
+      } else {
+        touched.add(session.id);
+        touched.add(fresh.id);
+      }
+      await recordShipRecovery(client, fresh, decision, {
+        delivery: confirmedUndelivered ? "confirmed undelivered" : "delivery unknown",
+        detail: payload!,
+        sentText: null,
+      });
+      log(`${fresh.name}: pre-PR recovery delivery failed (${String(err)})`);
+      continue;
+    }
+
+    // Confirmation is useful audit, but its failure never frees the already-unknown claim.
+    // The child received the turn; a second send would be the harmful side of the ambiguity.
+    await client.resolveShipRecoveryDelivery(fresh.id, {
+      ...claim,
+      delivery: "delivered",
+    });
+    touched.add(session.id);
+    touched.add(fresh.id);
+    await recordShipRecovery(client, fresh, decision, {
+      delivery: "delivered",
+      detail: payload!,
+      sentText: payload!,
+    });
+    log(`${fresh.name}: sent pre-PR recovery attempt ${decision.attempt}/3 (${reasonLabel(decision.reason)})`);
+  }
+
+  return touched;
+}
+
+function restoredShipRecoveryReviewFailure(
+  session: Session,
+  decision: Extract<ShipShepherdDecision, { kind: "recover" }>,
+): { noteKey: string; strikes: number; nextAt: number; reason: string } | null {
+  const note = session.note;
+  const prefix = `${decision.marker}:review-failure:`;
+  if (!note?.handledMarker?.startsWith(prefix)) return null;
+  const strikes = Number(note.handledMarker.slice(prefix.length));
+  if (!Number.isInteger(strikes) || strikes < 1 || strikes >= SHIP_RECOVERY_REVIEW_FAILURE_CAP) {
+    return null;
+  }
+  return {
+    noteKey: noteKeyOf(session),
+    strikes,
+    nextAt: note.updatedAt + SHIP_RECOVERY_REVIEW_RETRY_MS,
+    reason: note.brief?.split("\n", 1)[0] || "the prior bounded recovery review failed",
+  };
+}
+
+async function recordShipRecoveryReviewFailure(
+  client: ForemanClient,
+  session: Session,
+  decision: Extract<ShipShepherdDecision, { kind: "recover" }>,
+  strike: number,
+  reason: string,
+): Promise<void> {
+  const marker = `${decision.marker}:review-failure:${strike}`;
+  const purpose = `Pre-PR ship recovery review failed safely (${strike}/${SHIP_RECOVERY_REVIEW_FAILURE_CAP}).`;
+  const brief = `${reason}\n\nNo recovery attempt was claimed or sent. The bounded reviewer will retry after its cooldown.`;
+  await client.putNote(session.id, {
+    purpose,
+    brief,
+    recommendation: null,
+    disposition: "skipped",
+    lastAction: "Held pre-PR recovery after a bounded reviewer failure",
+    handledMarker: marker,
+  }).catch((err) => log(`${session.name}: could not update the recovery-failure note (${String(err)})`));
+  await client.recordEpisode(session.id, {
+    marker,
+    situation: "ship-recovery",
+    surface: "terminal",
+    question: "Choose one bounded next implementation turn for an ambiguous idle checkout.",
+    pane: null,
+    purpose,
+    brief,
+    recommendation: null,
+    classification: `ambiguous review failure ${strike}/${SHIP_RECOVERY_REVIEW_FAILURE_CAP}`,
+    confidence: null,
+    tier: 2,
+    triageReason: reason,
+    skipReason: null,
+    disposition: "skipped",
+    lastAction: "No recovery attempt claimed or sent",
+    sentText: null,
+    sentOption: null,
+    sentBy: null,
+  });
+}
+
+function terminalRecoveryDecision(
+  decision: Extract<ShipShepherdDecision, { kind: "recover" }>,
+  taskId: string,
+  logicalKey: string,
+  summary: string,
+): Extract<ShipShepherdDecision, { kind: "escalate" }> {
+  return {
+    kind: "escalate",
+    reason: decision.reason,
+    generation: decision.generation,
+    attempt: 4,
+    marker: shipRecoveryMarker({
+      taskId,
+      logicalKey,
+      generation: decision.generation,
+      reason: decision.reason,
+      attempt: 4,
+    }),
+    summary,
+    decision: decision.decision,
+  };
+}
+
+function recoveryClaim(
+  taskId: string,
+  logicalKey: string,
+  decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
+  payloadSummary: string,
+): PromptedRecoveryClaim {
+  return {
+    taskId,
+    logicalKey,
+    // The recovery generation belongs to the current completed work cycle, not necessarily
+    // the prompted decision: direct handoff intentionally recovers a later settled cycle.
+    generation: decision.generation,
+    decisionGeneration: decision.decision?.generation ?? null,
+    decisionOutcome: decision.decision?.outcome ?? null,
+    reason: decision.reason,
+    attempt: decision.attempt,
+    marker: decision.marker,
+    payloadSummary,
+    terminal: decision.kind === "escalate" && decision.reason === "idle_ambiguous",
+  };
+}
+
+async function releaseShipRecovery(
+  client: ForemanClient,
+  sessionId: string,
+  claim: PromptedRecoveryClaim,
+): Promise<void> {
+  await client.resolveShipRecoveryDelivery(sessionId, {
+    ...claim,
+    delivery: "confirmed_undelivered",
+  });
+}
+
+async function recordShipRecovery(
+  client: ForemanClient,
+  session: Session,
+  decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
+  result: {
+    delivery: "delivered" | "delivery unknown" | "confirmed undelivered" | "escalated";
+    detail: string;
+    sentText: string | null;
+  },
+): Promise<void> {
+  const attempt = decision.kind === "escalate" ? "escalation" : `attempt ${decision.attempt}/3`;
+  const quietMinutes = Math.max(
+    0,
+    Math.floor((Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000),
+  );
+  const next = recoveryNextLabel(decision, result.delivery);
+  const purpose = `Pre-PR ship recovery: ${reasonLabel(decision.reason)}, ${attempt}, ${result.delivery}, ${next}.`;
+  const decisionSummary = decision.decision?.summary.trim();
+  const brief = [
+    result.detail,
+    decisionSummary && decisionSummary !== result.detail
+      ? `Completion decision: ${decisionSummary}`
+      : null,
+    `Quiet age: ${quietMinutes} minutes. Delivery: ${result.delivery}. Next: ${next}.`,
+  ].filter((line): line is string => Boolean(line)).join("\n\n");
+  const disposition = result.delivery === "escalated"
+    ? "escalated" as const
+    : result.delivery === "confirmed undelivered"
+      ? "skipped" as const
+      : "answered" as const;
+  await client.putNote(session.id, {
+    purpose,
+    brief,
+    recommendation: null,
+    disposition,
+    lastAction: result.delivery === "delivered"
+      ? `Sent bounded ${reasonLabel(decision.reason)} recovery ${attempt}`
+      : `Pre-PR recovery ${result.delivery}`,
+    handledMarker: decision.marker,
+  }).catch((err) => log(`${session.name}: could not update the recovery note (${String(err)})`));
+  await client.recordEpisode(session.id, {
+    marker: decision.marker,
+    situation: "ship-recovery",
+    surface: "terminal",
+    question: `Keep managed ship task moving before its first pull request: ${reasonLabel(decision.reason)}.`,
+    pane: null,
+    purpose,
+    brief,
+    recommendation: null,
+    classification: `${reasonLabel(decision.reason)}; ${attempt}; ${result.delivery}`,
+    confidence: decision.kind === "recover" && decision.needsReview ? null : 1,
+    tier: decision.kind === "recover" && decision.needsReview ? 2 : 0,
+    triageReason: null,
+    skipReason: null,
+    disposition,
+    lastAction: `Pre-PR recovery ${result.delivery}`,
+    sentText: result.sentText,
+    sentOption: null,
+    sentBy: result.delivery === "delivered" ? "foreman" : null,
+  });
+}
+
+function recoveryNextLabel(
+  decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
+  delivery: "delivered" | "delivery unknown" | "confirmed undelivered" | "escalated",
+): string {
+  if (delivery === "confirmed undelivered") return "same attempt ready to retry";
+  if (decision.kind === "escalate") return "stopped for human attention";
+  if (decision.attempt === 1) return "next attempt after 40 minutes";
+  if (decision.attempt === 2) return "next attempt after 80 minutes";
+  return "attempt budget exhausted; escalation is next";
+}
+
+function reasonLabel(reason: Exclude<ShipShepherdDecision, { kind: "skip" }>["reason"]): string {
+  switch (reason) {
+    case "held_gaps": return "held completion gaps";
+    case "idle_empty": return "empty idle checkout";
+    case "idle_ambiguous": return "ambiguous idle checkout";
+    case "direct_handoff_missing_pr": return "missing direct-handoff PR";
+    case "verification_failed": return "verification failure";
+  }
 }
 
 /**

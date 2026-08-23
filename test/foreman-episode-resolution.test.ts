@@ -100,3 +100,16 @@ test("the episode records pane delivery capability without exposing its internal
   assert.ok(html.includes("pane available"), html);
   assert.ok(!html.includes("terminal-pane"), html);
 });
+
+test("a ship recovery episode exposes its operator-facing audit category", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ForemanEpisodeCard, {
+      episode: ep({
+        situation: "ship-recovery",
+        question: "Keep managed ship task moving before its first pull request.",
+      }),
+      detail: true,
+    }),
+  );
+  assert.ok(html.includes("pre-PR ship recovery"), html);
+});

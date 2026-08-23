@@ -166,6 +166,8 @@ function pendingSituationLabel(situation: string): string {
       return "structured request";
     case "terminal-no-pane":
       return "no pane available";
+    case "ship-recovery":
+      return "pre-PR ship recovery";
     default:
       return situation;
   }

@@ -45,6 +45,7 @@ import type {
   PromptedCompletionOutcome,
   PromptedDirectHandoff,
   PromptedDirectHandoffKind,
+  PromptedRecoveryState,
   SessionQueue,
   Task,
   TaskAutomaticCleanup,
@@ -68,9 +69,14 @@ import {
   PROMPTED_DECISION_GAP_ID_MAX,
   PROMPTED_DECISION_GAP_PATH_MAX,
   PROMPTED_DECISION_SUMMARY_MAX,
+  PromptedRecoveryStateSchema,
   PromptedCompletionDispositionSchema,
   type PromptedCompletionDisposition,
+  type PromptedRecoveryClaim,
+  type PromptedRecoveryDelivery,
 } from "@shared/protocol.ts";
+import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { nextShipRecoveryAt } from "./foreman/ship-shepherd.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
@@ -1811,6 +1817,8 @@ export function openDb(): DatabaseSync {
       -- one more thing for a reader to reconcile. See toPromptedDecision below, which
       -- refuses a payload whose logical key or generation is not this row's own.
       prompted_decision TEXT,
+      -- Current bounded pre-PR recovery projection. History remains in foreman_episodes.
+      prompted_recovery TEXT,
       updated_at      INTEGER NOT NULL
     );
 
@@ -3352,6 +3360,10 @@ function migrate(d: DatabaseSync): void {
   // work - `prompted_consumed_generation` remains the replay guard - so an upgrade cannot
   // re-run a spent generation merely because nobody recorded why it stopped.
   addColumn(d, "foreman_queues", "prompted_decision", "TEXT");
+
+  // Current pre-PR ship recovery claim. One validated JSON object because every field is
+  // one CAS identity and a partial scalar group has no safe interpretation.
+  addColumn(d, "foreman_queues", "prompted_recovery", "TEXT");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -9333,6 +9345,7 @@ interface QueueRow {
   prompted_direct_handoff_episode: string | null;
   prompted_direct_handoff_generation: number | null;
   prompted_decision: string | null;
+  prompted_recovery: string | null;
   updated_at: number;
 }
 
@@ -9357,6 +9370,7 @@ function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
     promptedConsumedGeneration: r.prompted_consumed_generation,
     promptedDirectHandoff: toPromptedDirectHandoff(r),
     promptedDecision: toPromptedDecision(r),
+    promptedRecovery: toPromptedRecovery(r),
     updatedAt: r.updated_at,
   };
 }
@@ -9490,6 +9504,34 @@ function serializePromptedDecision(decision: PromptedCompletionDecision): string
   return JSON.stringify(decision);
 }
 
+/** Read one all-or-nothing recovery projection, failing closed on every contradiction. */
+function toPromptedRecovery(r: QueueRow): PromptedRecoveryState | null {
+  if (!r.prompted_recovery) return null;
+  const reject = (why: string): null => {
+    warnOnce(
+      `prompted-recovery:${r.note_key}:${why}`,
+      `foreman_queues ${r.note_key}: ignoring unreadable prompted recovery (${why})`,
+    );
+    return null;
+  };
+  let value: unknown;
+  try {
+    value = JSON.parse(r.prompted_recovery);
+  } catch {
+    return reject("invalid JSON");
+  }
+  const parsed = PromptedRecoveryStateSchema.safeParse(value);
+  if (!parsed.success) return reject(parsed.error.issues[0]?.message ?? "invalid state");
+  const state = parsed.data;
+  if (state.logicalKey !== r.note_key) return reject("logical key mismatch");
+  if (state.marker !== shipRecoveryMarker(state)) return reject("marker mismatch");
+  return state;
+}
+
+function serializePromptedRecovery(state: PromptedRecoveryState): string {
+  return JSON.stringify(state);
+}
+
 /**
  * The three latch columns as the one all-or-nothing fact they are.
  *
@@ -9574,8 +9616,8 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
           prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
           prompted_consumed_generation, prompted_direct_handoff_kind,
           prompted_direct_handoff_episode, prompted_direct_handoff_generation,
-          prompted_decision, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          prompted_decision, prompted_recovery, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
          wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
@@ -9587,6 +9629,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
          prompted_direct_handoff_episode=excluded.prompted_direct_handoff_episode,
          prompted_direct_handoff_generation=excluded.prompted_direct_handoff_generation,
          prompted_decision=excluded.prompted_decision,
+         prompted_recovery=excluded.prompted_recovery,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -9608,6 +9651,7 @@ export function upsertQueue(q: Omit<SessionQueue, "items">): void {
       // unreadable payload back into storage, and cannot carry a decision onto a row whose
       // consumed generation has moved.
       q.promptedDecision ? serializePromptedDecision(q.promptedDecision) : null,
+      q.promptedRecovery ? serializePromptedRecovery(q.promptedRecovery) : null,
       q.updatedAt,
     );
 }
@@ -9749,13 +9793,13 @@ export function consumePromptedGeneration(
        prompted_evidence, prompted_activity_at, prompted_legacy_cutover_generation,
        prompted_consumed_generation, prompted_direct_handoff_kind,
        prompted_direct_handoff_episode, prompted_direct_handoff_generation,
-       prompted_decision, updated_at
+       prompted_decision, prompted_recovery, updated_at
      )
      SELECT ?, ?, NULL,
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
             NULL, NULL, NULL, NULL, NULL, generation,
             ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
-            ?, ?
+            ?, NULL, ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -9775,6 +9819,9 @@ export function consumePromptedGeneration(
        -- Phase 2 would send its gaps back into a session that already addressed them.
        -- Clearing on a null decision is the same rule, applied to a caller that gave none.
        prompted_decision = excluded.prompted_decision,
+       -- A newly consumed completion generation owns a new recovery sequence. Clear the
+       -- prior current projection in the same statement so its attempt cannot carry over.
+       prompted_recovery = NULL,
        -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
        -- one. It would be erasing the record of an instruction that was already typed,
        -- and the next tick would type it again. Preserving is safe because eligibility
@@ -9818,6 +9865,175 @@ export function consumePromptedGeneration(
     ask,
   );
   return Number(result.changes) === 1;
+}
+
+/**
+ * Claim one exact pre-PR recovery attempt before injection.
+ *
+ * This is the durable CAS half only. The Registry/route boundary re-resolves task,
+ * authorization, human, queue, Workflow, PR and idle ownership before it calls here. This
+ * statement then makes a lost worker response conservative: the claim is already `unknown`
+ * and a restart cannot send it again.
+ */
+export function claimPromptedRecovery(
+  input: PromptedRecoveryClaim,
+  now: number,
+  d: DatabaseSync = openDb(),
+): PromptedRecoveryState | null {
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+      .get(input.logicalKey) as unknown as QueueRow | undefined;
+    if (!row) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const expectedMarker = shipRecoveryMarker(input);
+    const decision = toPromptedDecision(row);
+    const decisionMatches = input.decisionGeneration === null
+      ? decision === null && input.decisionOutcome === null
+      : decision?.generation === input.decisionGeneration
+        && decision.outcome === input.decisionOutcome;
+    const cycle = d.prepare(
+      `SELECT generation, active, completed_at FROM session_work_cycles WHERE logical_key = ?`,
+    ).get(input.logicalKey) as unknown as {
+      generation: number;
+      active: number;
+      completed_at: number | null;
+    } | undefined;
+    if (
+      expectedMarker !== input.marker
+      || !decisionMatches
+      || !cycle
+      || cycle.generation !== input.generation
+      || cycle.active !== 0
+      || cycle.completed_at === null
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+
+    const previous = toPromptedRecovery(row);
+    // Null in storage is the legacy/no-attempt case. Non-null storage that the validated
+    // reader rejected is a different fact: this build cannot prove which attempt was
+    // spent, so it must not overwrite the evidence with a fresh attempt-one claim.
+    if (row.prompted_recovery !== null && previous === null) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const sameSequence = previous !== null
+      && previous.taskId === input.taskId
+      && previous.logicalKey === input.logicalKey
+      && previous.generation === input.generation
+      && previous.reason === input.reason
+      && previous.decisionGeneration === input.decisionGeneration
+      && previous.decisionOutcome === input.decisionOutcome;
+    let allowed = false;
+    if (!sameSequence) {
+      allowed = input.attempt === 1
+        || (input.attempt === 4 && (input.reason === "verification_failed" || input.terminal));
+    } else if (previous.lastDelivery !== "escalated") {
+      const due = previous.nextEligibleAt !== null && now >= previous.nextEligibleAt;
+      allowed = due && (
+        (input.terminal && input.attempt === 4)
+        || (previous.lastDelivery === "confirmed_undelivered"
+          ? input.attempt === previous.attempt
+          : input.attempt === previous.attempt + 1)
+      );
+    }
+    if (
+      !allowed
+      || (
+        input.attempt === 4
+        && input.reason !== "verification_failed"
+        && !input.terminal
+        && previous?.attempt !== 3
+      )
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+
+    const next: PromptedRecoveryState = {
+      taskId: input.taskId,
+      logicalKey: input.logicalKey,
+      generation: input.generation,
+      decisionGeneration: input.decisionGeneration,
+      decisionOutcome: input.decisionOutcome,
+      reason: input.reason,
+      marker: input.marker,
+      attempt: input.attempt,
+      payloadSummary: input.payloadSummary,
+      claimedAt: now,
+      nextEligibleAt: input.attempt === 4 ? null : nextShipRecoveryAt(input.attempt, now),
+      lastDelivery: input.attempt === 4 ? "escalated" : "unknown",
+    };
+    const parsed = PromptedRecoveryStateSchema.safeParse(next);
+    if (!parsed.success) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const changed = d.prepare(
+      `UPDATE foreman_queues SET prompted_recovery = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(serializePromptedRecovery(next), now, input.logicalKey);
+    if (Number(changed.changes) !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return next;
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/** Confirm success or positively release one exact recovery delivery claim. */
+export function resolvePromptedRecoveryDelivery(
+  input: PromptedRecoveryDelivery,
+  now: number,
+  d: DatabaseSync = openDb(),
+): PromptedRecoveryState | null {
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+      .get(input.logicalKey) as unknown as QueueRow | undefined;
+    const current = row ? toPromptedRecovery(row) : null;
+    if (
+      !current
+      || current.taskId !== input.taskId
+      || current.logicalKey !== input.logicalKey
+      || current.generation !== input.generation
+      || current.decisionGeneration !== input.decisionGeneration
+      || current.decisionOutcome !== input.decisionOutcome
+      || current.reason !== input.reason
+      || current.attempt !== input.attempt
+      || current.marker !== input.marker
+      || current.marker !== shipRecoveryMarker(input)
+      || current.lastDelivery === "escalated"
+    ) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const desired = input.delivery;
+    if (current.lastDelivery !== "unknown" && current.lastDelivery !== desired) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const next: PromptedRecoveryState = {
+      ...current,
+      lastDelivery: desired,
+      nextEligibleAt: desired === "confirmed_undelivered" ? now : current.nextEligibleAt,
+    };
+    d.prepare(
+      `UPDATE foreman_queues SET prompted_recovery = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(serializePromptedRecovery(next), now, input.logicalKey);
+    d.exec("COMMIT");
+    return next;
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 /**

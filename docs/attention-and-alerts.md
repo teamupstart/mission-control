@@ -87,6 +87,14 @@ alert names the missing step rather than the silence - "repair round 2 never reo
 or "waiting for a pushed head" for the GitHub Inspector findings that clear only when the
 poller sees a new head **on the remote**.
 
+Pre-PR ship recovery also produces attention when safe automation has no next send. A prompted
+completion with `verification_failed` escalates immediately because no model judged the work.
+An eligible ship session that remains stalled through three bounded recovery sends escalates on
+the next due pass without a fourth instruction. Both are durable Foreman escalation episodes, so
+they appear in the session's Foreman history, the fleet decision ledger, and the ordinary
+Foreman-attention path. Opening the record shows the recovery reason, attempt history, delivery
+knowledge, and completion context instead of presenting an unlabelled idle session.
+
 It deep-links to the **run** rather than to the session, because the run is where that
 step is named and where its state can be read. What you can do when you arrive is not a
 property of the status alone - it depends on the run's resumption posture, which is the

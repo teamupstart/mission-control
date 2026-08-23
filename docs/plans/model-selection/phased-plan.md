@@ -23,7 +23,9 @@ already written into the source plan's *Decisions taken* tables.
 - **All three slot groups** gain their own provider: the five background jobs, Foreman's four roles
   individually, and the Inspector's review model.
 - **Both latent bugs are fixed in this work**: the Inspector's env-dropping fallback and the
-  workflow-context provenance mislabelling.
+  workflow-context provenance mislabelling. Review then surfaced a third, verified against the
+  current tree: a Foreman role model saved while Foreman's own provider is unset is stranded by an
+  app-wide provider change, because Foreman's panel only clears on its own select. Phase 2 fixes it.
 
 ## What the investigation changed
 
@@ -132,7 +134,8 @@ back into Phase 1's file.
 | `SettingsMatrix`, `ModelSlotRow` | Phase 1 | Phases 2, 3 | Extend by adding column definitions; never fork the component |
 | The inherit rule | Phase 1 | Phase 2 | `null`/empty means inherit; a set value replaces and re-bases the model fallback onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an extension, not a competing ladder |
 | The pinning invariant, both halves | Phase 1 | Phases 2, 3 | The *app-wide* default never disturbs a pinned slot; a *slot's own* provider control resets that slot's model unless the new provider offers it. No phase reintroduces the blanket clear-on-change, and none answers the per-slot case differently |
-| Pin-on-provider-change, and the resolver guard | Phase 1 | Phase 2 | Changing a group-level provider first materialises the outgoing one onto everything below it that has a model and no provider of its own, in `setLlmConfig` rather than a click handler. Resolution separately refuses a model positively known to belong to another provider, and reports what it dropped |
+| The resolver guard | Phase 1 | Phase 2 | **Where correctness lives.** A shared helper over `(resolvedProvider, modelId)`: a model positively known to belong to another provider falls back and reports what it dropped; an id in no catalog passes through. Phase 2 routes `resolveForemanModel` and the Inspector through the same helper rather than re-deriving it |
+| Pin-on-provider-change | Phase 1 | Phase 2 | A convenience, not the invariant: changing a group-level provider first materialises the outgoing one onto everything below it that has a model and no provider. Each blob's own writer does it - `setLlmConfig` for `llm`, `setForemanConfig` for `foreman`. No cross-blob writes |
 | Sibling-map storage | Phase 1 | Phase 2 | Additive record beside the existing model keys, merged per key, no migration |
 | `llmJobRunner`, widened `LlmStatus` | Phase 1 | - | Foreman's three-field read of `/api/llm/status` must keep parsing |
 | Agent-match guard | Phase 3 | - | A kind default's **model** applies only when the task's agent matches it, and a row that inherits its agent cannot hold one. Its **effort** is portable and instead checked against `HARNESS_CAPABILITIES[agent].effort.levelsFor(model)` |
@@ -152,6 +155,8 @@ Across the set, once all three have merged:
 - No reachable configuration - upgraded, hand-edited, or env-driven - lets an app-owned call receive
   a model its provider cannot run.
 - An unset Inspector provider honours `MISSION_LLM_RUNNER`.
+- A Foreman role model saved while Foreman's own provider is unset survives an app-wide provider
+  change - the one behaviour on this list that is broken before the work starts.
 - A dispatched `plan` task runs on its configured agent, model and effort; a kind default whose agent
   does not match the task's falls through to the harness default for the model, while its effort
   still applies unless that harness does not offer the level.

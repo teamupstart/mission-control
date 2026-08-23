@@ -61,6 +61,14 @@ Explicit non-goals:
   identity, or the circuit will compare against a stale provider.
 - **`resolveForemanModel` already takes a runner** (`src/shared/foreman-models.ts:94`) and maps role
   to tier. It needs the role's own runner passed in.
+- **Foreman has the same legacy shape, and it is already broken today.** `ForemanSettingsPanel.tsx:649-656`
+  clears the four role models when **Foreman's own** provider select changes, so those stay aligned.
+  But `cfg.runner` is optional and an unset one inherits the app-wide resolution
+  (`src/server/foreman/config.ts:253`), and the app-wide radio lives on a different page where
+  Foreman's clearing never fires. So an installation with role models saved and no Foreman provider
+  set is stranded by an app-wide change **on the current build**, before any of this work. Verified,
+  not inferred. This phase fixes it; the pull request should name it as a pre-existing bug rather
+  than claiming it as new behaviour.
 - **The Inspector drops the env layer.** `inspectorModel` resolves `cfg.runner ?? "claude"`
   (`src/server/inspector/config.ts:38`), so an unset Inspector provider ignores
   `MISSION_LLM_RUNNER` and the app config. `src/server/inspector/worker.ts:191` makes the same
@@ -96,9 +104,16 @@ Explicit non-goals:
    provider resets that role's model unless the new provider offers it. Reuse Phase 1's helper
    rather than re-deriving the rule - a Foreman role that answered it differently from a background
    job would be the same screen behaving two ways. Phase 1's **pin-on-provider-change** obligation
-   comes with it: a patch that changes Foreman's group-level `runner` must first materialise the
-   outgoing provider onto every role that has a model and no provider of its own, or an existing
-   installation's four role models are stranded the first time that select moves.
+   comes with it, applied **inside `setForemanConfig`** - this phase writes the `foreman` blob and
+   Phase 1 writes `llm`, and neither reaches into the other. A patch that changes Foreman's
+   group-level `runner` first materialises the outgoing resolved provider onto every role that has a
+   model and no provider of its own.
+
+   The harder case is the one that is broken today: Foreman's `runner` is *unset*, the roles inherit
+   the app-wide value, and it is the **app-wide** radio that moves - so no Foreman write happens at
+   all and nothing here can intercept it. That case is covered by Phase 1's **resolver guard**,
+   which is why that guard is a shared helper and why `resolveForemanModel` must route through it.
+   Do not solve it with a cross-blob write from `setLlmConfig`.
 3. **`src/server/foreman/config.ts`** - resolve per role and report each role's resolved provider so
    the panel and the worker cannot print different answers.
 4. **`src/server/foreman/worker.ts`** - replace the single `triageRunnerId` with a per-role
@@ -143,8 +158,11 @@ Explicit non-goals:
 ## Tests and verification
 
 - `test/` - per-role provider resolution including the three-rung ladder (role, Foreman group,
-  app-wide); the Inspector honouring `MISSION_LLM_RUNNER` when its own provider is unset - a
-  regression test for the exact bug; the backlog planner identity carrying the role's runner;
+  app-wide); **a role model saved while Foreman's provider is unset surviving an app-wide provider
+  change** - the regression test for the bug that exists on today's build; `setForemanConfig`
+  pinning the outgoing provider onto role models when Foreman's own `runner` is patched; the
+  Inspector honouring `MISSION_LLM_RUNNER` when its own provider is unset - a regression test for
+  the exact bug; the backlog planner identity carrying the role's runner;
   `setForemanConfig` leaving sibling keys intact when patched with only model and runner keys.
 - `test/` - the anchor-ownership contract: every anchor the search index names is owned by exactly
   one tab/category. Extend whatever test currently pins `FOREMAN_SETTINGS_TABS` rather than adding a
@@ -172,10 +190,13 @@ Explicit non-goals:
 
 ## Cross-phase audit record
 
-- Review round 7's upgrade case applies here too and is handled by consuming Phase 1's
-  pin-on-provider-change helper rather than by a second rule; step 2 and the compatibility notes say
-  so. Foreman's blob has the same shape of legacy state - role models saved under a group-level
-  provider that has no per-role record of itself.
+- Review round 8 raised the legacy case for Foreman specifically. Verified against the tree and it
+  is **already broken on the current build**: Foreman's panel clears on its own provider select, but
+  an unset `cfg.runner` inherits the app-wide value and the app-wide radio is on another page. This
+  phase fixes it, and the fix reshaped Phase 1: the resolver guard became the primary mechanism and
+  a shared helper, because an app-wide change cannot be intercepted by a `foreman` writer and the
+  alternative - `setLlmConfig` writing into the `foreman` blob - would break the single-writer rule.
+  Pin-on-provider-change stays, per blob, as the convenience that preserves a deliberate choice.
 - Reconciled with Phase 1: this phase consumes `SettingsMatrix`, `ModelSlotRow`, the inherit rule
   and both halves of the pinning invariant, and adds no second clear-on-change. Phase 1's review
   round 6 settled the per-slot half after this file was written; step 2 was updated to consume it

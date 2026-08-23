@@ -114,16 +114,22 @@ Verified against the current tree; correct anything that has moved rather than f
    rather than swallowing it.
 
    **Also in `setLlmConfig`: when a patch changes `runner`, first materialise the outgoing provider
-   onto every job that has a model and no runner of its own.** That is the upgrade path. A legacy
-   config's models are unpinned but were only ever safe because the old clearing rule kept them in
-   step with the app-wide radio; the moment that radio moves is the moment - and the only moment -
-   the provenance is both needed and still knowable. Use the *resolved* outgoing provider
-   (`resolveLlmRunner(before.runner, env).id`), not the raw stored field, so an installation driven
-   by `MISSION_LLM_RUNNER` pins the provider its models actually belong to.
+   onto every job that has a model and no runner of its own.** A legacy config's models are unpinned
+   but were only ever safe because the old clearing rule kept them in step with the app-wide radio;
+   the moment that radio moves is the moment - and the only moment - the provenance is both needed
+   and still knowable. Use the *resolved* outgoing provider (`resolveLlmRunner(before.runner,
+   env).id`), not the raw stored field, so an installation driven by `MISSION_LLM_RUNNER` pins the
+   provider its models actually belong to.
 
-   This belongs here and not in the panel's radio handler: `PUT /api/llm/config` is a route, a
-   second dashboard tab is a second writer, and a rule enforced in one click handler is a rule with
-   an unguarded back door.
+   This preserves an operator's deliberate model choice across an app-wide switch. It is **not**
+   what keeps the pair valid - step 6 is, at resolution, for every blob and every route into this
+   state. Keeping correctness out of the write path is deliberate: a rule enforced only where the
+   config is written has as many back doors as it has writers, and this one already has a route
+   (`PUT /api/llm/config`), a second dashboard tab, and a sibling blob Phase 2 owns.
+
+   Write only within this blob. `setLlmConfig` owns `llm`; it must not reach into `foreman`, which
+   is why Phase 2 carries the same step for Foreman's roles rather than this one growing to cover
+   them.
 3. **`src/shared/llm-jobs.ts`** - extend `resolveLlmJobModels` (and any status projection) so each
    job's model resolves against *its* runner.
 4. **`src/server/llm/jobs.ts`** - in both `runJob` and `runJobStructured`, resolve the job's runner
@@ -132,17 +138,23 @@ Verified against the current tree; correct anything that has moved rather than f
 5. **`LlmStatus`** - carry each job's resolved runner beside its resolved model, and its source, so
    the panel can print which layer won. Keep `runner` (the app-wide one) as-is so Foreman's
    existing read is untouched.
-6. **The resolver refuses a pair no provider can honour.** Belt and braces for the write path
-   above: when a job's resolved model is positively known to belong to a different provider, fall
-   back to that provider's `providerModelDefault(runner, "cheap")` and **report what was dropped**
-   rather than swallowing it - the `ResolvedSessionRuntime.unsupported` shape
+6. **The resolver refuses a pair no provider can honour. This is where correctness lives.** Export
+   it as a small shared helper over `(resolvedProvider, modelId)` - not baked into this blob's job
+   loop - because Phase 2 has to apply the identical rule to Foreman's roles and the Inspector, and
+   two blobs answering this differently is the bug in two places.
+
+   When a resolved model is positively known to belong to a different provider, fall back to that
+   provider's `providerModelDefault(runner, "cheap")` and **report what was dropped** rather than
+   swallowing it - the `ResolvedSessionRuntime.unsupported` shape
    (`src/shared/harness-capabilities.ts:790`), surfaced through `ResolvedLlmJobModel` so the panel
    can say it. An id in no catalog passes through untouched, per the free-text finding above.
 
-   This closes a hole no write-path fix can reach: `MISSION_LLM_RUNNER` changing between daemon
-   restarts moves the effective app-wide provider without `setLlmConfig` ever running. That hole
-   exists today, identically and for the same reason, so this is a fix carried along rather than a
-   regression introduced - say so in the pull request.
+   Putting correctness here rather than in the write path is what makes step 2 a *convenience*
+   instead of a load-bearing invariant, and it is the only layer that covers every way a mismatch
+   can arise: an upgrade, a hand-edited blob, a second writer, and `MISSION_LLM_RUNNER` changing
+   between daemon restarts - which moves the effective provider with no config write at all, so no
+   write-path fix can ever reach it. That last case is broken on today's build for the same reason,
+   so this is a fix carried along rather than a regression introduced; say so in the pull request.
 7. **Shared UI: the settings matrix.** Add a small presentational component - suggested
    `src/web/components/SettingsMatrix.tsx` - rendering a labelled table from column definitions and
    rows, with an optional muted, non-editable "inherited" first row. Add a `ModelSlotRow` (or
@@ -247,8 +259,11 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
 - **Pin-on-provider-change in `setLlmConfig`** - a patch that changes a group-level provider first
   materialises the outgoing one onto everything below it that has a model and no provider of its
   own. Phase 2 inherits the identical obligation for Foreman's group-level `runner`.
-- **The resolver guard** - a model positively known to belong to another provider falls back and
-  reports what it dropped; an id in no catalog passes through.
+- **The resolver guard** - exported as a helper over `(resolvedProvider, modelId)`. A model
+  positively known to belong to another provider falls back and reports what it dropped; an id in no
+  catalog passes through. **Correctness lives here, not in the write path.** Phase 2 applies the same
+  helper to Foreman's four roles and the Inspector rather than re-deriving it, and neither phase
+  writes into the other's blob.
 
 ## Cross-phase audit record
 
@@ -259,6 +274,11 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
   review's alternative of blocking the provider change while a model is pinned: that makes the
   common case ("run this job on Codex instead") a two-step dance, and the product already resets
   rather than blocks in the same situation (`DispatchModal.tsx:2696`).
+- Review round 8 asked the same question of Foreman and, in answering it, moved the design: the
+  guard is now the *primary* mechanism and is exported as a shared helper, with pin-on-change
+  demoted to a convenience each blob's own writer performs. That is what lets Foreman be covered
+  without `setLlmConfig` reaching across into the `foreman` blob, which would have broken the
+  single-writer-per-blob rule that makes a per-key merge sufficient concurrency control.
 - Review round 7 found that the upgrade case was unhandled: existing installations carry models
   that are unpinned but were only safe because the old clearing rule kept them aligned, so removing
   that rule would let the next app-wide change strand them. Adopted the review's remedy, moved to

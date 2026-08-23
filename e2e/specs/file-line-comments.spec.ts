@@ -977,4 +977,45 @@ test.describe("line comments in the Files editor", () => {
     expect(storedOpeningBodies(daemon)[0]!.body, "the queued comment is what the reader wrote")
       .toBe(COMMENT);
   });
+
+  test("the first keystroke is written before the reader can lose it", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * "Durable from the first keystroke" is the promise the whole draft design rests on, and
+     * it had a 400ms hole in it. The debounce that keeps typing from becoming one request per
+     * character also gated the row's EXISTENCE, so a reader who typed a sentence and reloaded
+     * inside that window had begun no request at all - and the flush an unmount owes cannot
+     * outlive a page that is already going away.
+     *
+     * This reloads immediately after typing, with no wait: nothing here is allowed to depend
+     * on the debounce having elapsed.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    await lineNumber(page, 3).click();
+    await page.getByRole("textbox", { name: "Comment on line 3" }).fill(COMMENT);
+    await page.reload();
+
+    await expect
+      .poll(() => storedOpeningBodies(daemon).map((row) => row.body), {
+        message: "the first keystroke was lost to the debounce",
+        timeout: 10_000,
+      })
+      .toEqual([COMMENT]);
+
+    // And it is still a draft the reader can reopen and finish, not an orphan row.
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+    await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
+    await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toHaveValue(COMMENT);
+  });
 });

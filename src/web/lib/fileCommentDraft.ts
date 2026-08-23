@@ -224,6 +224,8 @@ export function useFileCommentDraft(input: {
   const instances = useRef(0);
   /** The thread the most recent composer created, so a cancel can still find it. */
   const createdThreadId = useRef<CreatedDraftThread | null>(null);
+  /** The composer whose create has already been asked for, so only one ever is. */
+  const createRequested = useRef<number | null>(null);
   /** What the daemon currently holds, so an unchanged body costs no request. */
   const written = useRef<PersistedBody | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -343,6 +345,7 @@ export function useFileCommentDraft(input: {
     if (!anchor) return false;
     written.current = null;
     createdThreadId.current = null;
+    createRequested.current = null;
     instances.current += 1;
     setComposer({
       instance: instances.current,
@@ -376,6 +379,8 @@ export function useFileCommentDraft(input: {
       id: thread.id,
       messageId: opening?.id ?? null,
     };
+    // The row already exists, so no composer opened this way ever asks for a create.
+    createRequested.current = instances.current;
     setComposer({
       instance: instances.current,
       sessionId: thread.sessionId,
@@ -401,6 +406,32 @@ export function useFileCommentDraft(input: {
     patch({ text: value });
     if (state.current) state.current = { ...state.current, text: value };
     if (timer.current) clearTimeout(timer.current);
+
+    /*
+     * The FIRST persistable keystroke is written at once. Everything after it is debounced.
+     *
+     * "Durable from the first keystroke" was a promise with a 400ms hole in it: a reader who
+     * typed a sentence and reloaded, closed the extracted window, or navigated inside that
+     * window had begun no request at all, and the flush the unmount owes cannot outlive a
+     * page that is already going away. The debounce exists to keep typing from becoming one
+     * request per character - it was never meant to gate the row's existence.
+     *
+     * Guarded on the instance so it happens once per composer: a second keystroke arriving
+     * while the create is still in the air must not start a second create. Once the chain
+     * has the row, `draftKnownRow` turns every later write into an edit.
+     */
+    const current = state.current;
+    const unwritten = current
+      && !current.threadId
+      && createdThreadId.current?.instance !== current.instance
+      && createRequested.current !== current.instance;
+    if (unwritten && isPersistableBody(value)) {
+      createRequested.current = current.instance;
+      timer.current = null;
+      void enqueue(() => persist());
+      return;
+    }
+
     timer.current = setTimeout(() => {
       timer.current = null;
       void enqueue(() => persist());

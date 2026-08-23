@@ -113,7 +113,7 @@ GitHub.
 
 ### Mockup 2 - one repository, expanded
 
-The card is the shape `WorktreeSettingsPanel`'s `RepositoryCard` already draws: a disclosure
+The card is the shape `WorktreeSettingsPanel`'s repository rows already draw: a disclosure
 header carrying the repo name and its root, an `override` / `inherited` chip, and a **Use
 global default** button disabled until there is an override to remove. `RepositoryName`
 renders the leaf with the full path in a tooltip, per that component's stated rule.

@@ -156,8 +156,10 @@ Layout is specified by the mockups in [`plan.html`](plan.html); read them rather
 - A repository list below. Each card: disclosure header with `RepositoryName` (leaf plus full path
   in a tooltip - that component's stated rule), an `override` / `inherited` chip, the textarea, an
   `n / 8,000` counter, the **reach** block, and the buttons.
-- **Use global default** is disabled unless there is an override to remove, mirroring
-  `WorktreeSettingsPanel.tsx:191-193`, and sends `null` for that key.
+- **Use global default** is disabled unless there is an override to remove, and sends `null` for
+  that key. The pattern to copy is `WorktreeSettingsPanel.tsx` - its `StateChip` at `:232` renders
+  `overridden ? "override" : "inherited"`, and its reset button at `:274-276` is a `btn btn-ghost`
+  wrapped in a `Tooltip`, `disabled={!overridden}`, posting `null` for the key.
 - Adding a repository uses `RepoCombobox` and resolves through `resolveRepo` before staging, the
   way `TrustPanel` and `CommandLibrary.tsx:560-585` already do. A subdirectory is a legitimate key.
 
@@ -211,7 +213,7 @@ both the current registry and `docs/agent-guides/change-contracts.md:747-755`.
 New spec in `e2e/specs/`, read [`e2e/README.md`](../../../e2e/README.md) first. Two models to
 combine:
 
-- **`e2e/specs/settings-worktrees.spec.ts`** (216 lines) for the settings half: navigate to
+- **`e2e/specs/settings-worktrees.spec.ts`** (343 lines) for the settings half: navigate to
   `#/settings/standing-instructions`, assert the tab is `aria-selected`, drive the real controls,
   read the daemon DB through `withDaemonDb`.
 - **`e2e/specs/harness-defaults-propagate.spec.ts`** (314 lines) for the proof that it *arrived*.

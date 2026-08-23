@@ -26,7 +26,8 @@ In scope:
 2. The Background jobs group rebuilt as a provider/model matrix, and the shared matrix + row
    components that Phases 2 and 3 reuse.
 3. The clearing rule: pinning a model pins its provider.
-4. The workflow-context compaction provenance fix.
+4. The workflow-context compaction provenance fix, and the job-API change it needs: `runJob` and
+   `runJobStructured` return the runner and model they actually used.
 
 Explicit non-goals:
 
@@ -48,6 +49,20 @@ Verified against the current tree; correct anything that has moved rather than f
   `llmRunner(llmRunnerChoice(cfg).id).run(prompt, { model: llmJobModel(job, cfg).id, … })`. Their
   own doc comment says "Model and runner are the config's, not the caller's" - that comment is what
   this phase makes more precise, not less true.
+- **The job API resolves internally and returns no provenance, so a caller cannot record what
+  ran.** `runJob` returns `Promise<string>` and `runJobStructured` returns
+  `StructuredResult<T>` (`src/server/llm/jobs.ts:54-90`); both resolve the pair inside and keep it.
+  That is why `manager.ts:5704-5706` re-derives `llmRunnerChoice(config)` and
+  `llmJobModel("workflow-context", config)` from a **second** `getLlmConfig()` read to label its
+  `llm_calls` rows, and why `context.ts:302-304` does the same for `compaction`. Today that is
+  merely redundant and racy. **After this phase it is systematically wrong**: the call would use the
+  job's own runner while the label uses the app-wide one, so every installation with an override set
+  gets a mislabelled row every time. Step 6's guard can make them differ again by substituting a
+  fallback. Only the callee knows the answer.
+- **`runJobStructured` already reads the config once on purpose** - its comment says so, "so the
+  retry cannot land on a different runner or a different model than the first attempt". The pair is
+  therefore per *call*, not per attempt, which is what lets it be handed to
+  `StructuredAttemptObserver` once rather than threaded through each attempt.
 - **There is no runner singleton.** `llmRunner(id)` (`src/server/llm/index.ts:34`) is a total
   lookup over `Record<LlmRunnerId, LlmRunner>`; `resolveLlmRunner` (`src/shared/llm.ts:158`) is a
   pure ladder returning `{ id, source, unknown }`.
@@ -185,7 +200,9 @@ Verified against the current tree; correct anything that has moved rather than f
    job's model resolves against *its* runner.
 4. **`src/server/llm/jobs.ts`** - in both `runJob` and `runJobStructured`, resolve the job's runner
    once and pass its id into both `llmRunner(...)` and `llmJobModel(job, cfg, runnerId)`. This is
-   the whole of the behavioural change; everything downstream already takes an id.
+   the whole of the behavioural change; everything downstream already takes an id. Step 9 widens
+   these same two functions to return the pair they resolved - do both edits together rather than
+   opening this file twice.
 5. **`LlmStatus`** - carry each job's resolved runner beside its resolved model, and its source, so
    the panel can print which layer won. Keep `runner` (the app-wide one) as-is so Foreman's
    existing read is untouched.
@@ -227,9 +244,28 @@ Verified against the current tree; correct anything that has moved rather than f
    Without the second half, one select would store a Claude model under a Codex runner and hand
    `runJob` a pair no runner can honour. Say the whole rule in the group's hint copy; it replaces a
    behaviour operators may have learned.
-9. **`src/server/workflows/context.ts:302-304`** - label the persisted `compaction` metadata with
-   the runner and model the call actually used rather than a separately-resolved pair. Do the same
-   for the `llm_calls` row built at `src/server/workflows/manager.ts:5705-5706`.
+9. **Return the execution provenance from the job API, then use it for both the call and the
+   label.** The provenance fix cannot be written without this: a caller that wants to record what
+   ran currently has no way to obtain it, which is exactly why the two sites below re-resolve.
+
+   Have `runJob` and `runJobStructured` carry the resolved pair out with the result - `runJob`
+   returning `{ text, execution }` and `runJobStructured` returning its `StructuredResult` widened
+   with the same `execution`, where `execution` is the `{ runner, model }` the call actually used,
+   post-guard. Resolution stays **inside** the callee: do not take a caller-supplied execution
+   object instead. That would hand every call site its own chance to resolve differently, which is
+   the drift the functions' own comment ("Model and runner are the config's, not the caller's") is
+   there to prevent, and it cannot express step 6's guard substituting a fallback.
+
+   The ripple is five call sites and the compiler names all of them: `away/digest.ts:79`,
+   `task-title.ts`, `goal/refiner.ts`, `workflows/context.ts`, `workflows/manager.ts`. Three only
+   need `.text`. Widen both functions rather than adding a second provenance-returning variant - two
+   functions that differ only in what they tell you is an invitation to call the uninformative one.
+
+   Then: **`src/server/workflows/context.ts:302-304`** labels the persisted `compaction` metadata
+   from that returned `execution` rather than a separately-resolved pair, and the `llm_calls` row at
+   **`src/server/workflows/manager.ts:5704-5706`** does the same. The pair is fixed for the whole
+   call, so hand it to `StructuredAttemptObserver` once at construction rather than per attempt -
+   both attempts of a retry ran on it, which is the property that comment already guarantees.
 10. **`src/web/lib/settings-search.ts`** - the Background jobs entry (`:441`) should reach the
    provider controls; add per-job anchors if the existing single `models/provider` anchor no longer
    describes the group.
@@ -279,7 +315,11 @@ Verified against the current tree; correct anything that has moved rather than f
   provider changes**, and kept when the new provider's catalog offers the same id - the two
   asserted apart, since they are opposite behaviours reached from the same panel; and no reachable
   state in which a stored runner/model pair disagrees by the time `runJob` reads it.
-- `test/` - the workflow-context fix: the recorded runner equals the runner the call used.
+- `test/` - the workflow-context fix: the recorded runner equals the runner the call used -
+  asserted with a **per-job override set**, since that is the case where a re-resolving label and
+  the real call diverge every time rather than only under a race. Also that a `runJob` /
+  `runJobStructured` caller can obtain the pair at all, and that the pair it reports is the
+  post-guard one when step 6 substituted a fallback.
 - `e2e/` - **required, this is a UI change.** Set one background job to a non-default provider,
   assert the other four did not move, and assert that flipping the app-wide radio no longer clears
   a pinned model. Select by role/label. The fake agents in `e2e/fixtures/fake-agents.ts` must stay
@@ -320,6 +360,10 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
 - **Pin-on-provider-change in `setLlmConfig`** - a patch that changes a group-level provider first
   materialises the outgoing one onto everything below it that has a model and no provider of its
   own. Phase 2 inherits the identical obligation for Foreman's group-level `runner`.
+- **The job API returns execution provenance** - `runJob` and `runJobStructured` hand back the
+  `{ runner, model }` the call actually used, post-guard. Resolution stays inside the callee; no
+  caller supplies its own. Anything that needs to record what ran reads it from there rather than
+  re-resolving.
 - **The resolver guard** - exported as a helper over `(resolvedProvider, modelId)`. A model
   positively known to belong to another provider falls back and reports what it dropped; an id in no
   catalog passes through. **Correctness lives here, not in the write path.** Phase 2 applies the same
@@ -335,6 +379,12 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
   review's alternative of blocking the provider change while a model is pinned: that makes the
   common case ("run this job on Codex instead") a two-step dance, and the product already resets
   rather than blocks in the same situation (`DispatchModal.tsx:2696`).
+- Review round 13 caught that step 9 stated an outcome the API could not deliver: the job functions
+  resolve internally and return no provenance, so "label it with what the call actually used" was
+  unimplementable and an implementer would have re-resolved, reproducing the bug. Step 9 now carries
+  the API change first. Took the return-provenance option rather than the caller-supplied-execution
+  option the review offered as an alternative, because a caller-supplied pair reintroduces the drift
+  the functions' own comment exists to prevent and cannot express step 6's guard.
 - Review round 12 caught that the round 9 fix traded one failure for a worse one: dropping the
   record-level `.catch` without adding a per-value one means a non-string persisted entry fails the
   whole `LlmConfigSchema` parse and `getLlmConfig()` throws. The step now names all three placements

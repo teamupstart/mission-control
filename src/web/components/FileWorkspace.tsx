@@ -163,6 +163,9 @@ export function FileWorkspace({
     sessionId: session.id,
     path: selectedPath,
     revision: buffer?.document.revision ?? null,
+    // A write that failed after its composer closed has nowhere else to be seen. This is the
+    // same notice a refused anchor uses, and it renders whenever no panel is open.
+    onDetachedError: setThreadError,
   });
   /**
    * Whether the source is already the surface on screen - a plain file, or Editor chosen.

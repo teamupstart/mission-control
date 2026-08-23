@@ -49,6 +49,7 @@ import {
 } from "../src/web/lib/fileComments.ts";
 import {
   draftCreateRequest,
+  discardFailureMessage,
   draftBodyToWrite,
   draftKnownRow,
   draftThreadToDelete,
@@ -648,4 +649,23 @@ test("one composer's saved body does not silence another composer's edit", () =>
 
   // Nothing worth writing is still nothing worth writing.
   assert.equal(draftBodyToWrite(composerState({ text: "   " }), knownB, null), null);
+});
+
+test("a discard that failed names the file and line it left behind", () => {
+  /*
+   * The one failure with no composer left to show it in: Cancel closes the panel on the
+   * click, so a refused DELETE answers into an empty room. The reader was told the comment
+   * was discarded, and a marker for it appears on the line anyway.
+   *
+   * So the message names WHERE, not just what: by the time it is read the reader may have
+   * moved to another file, and "the comment could not be discarded" would send them looking.
+   */
+  const message = discardFailureMessage(
+    { path: "docs/plans/spec.md", startLine: 84 },
+    "HTTP 500",
+  );
+  assert.match(message, /docs\/plans\/spec\.md/);
+  assert.match(message, /line 84/);
+  assert.match(message, /still there as a draft/);
+  assert.match(message, /HTTP 500/, "the daemon's own words are kept, not swallowed");
 });

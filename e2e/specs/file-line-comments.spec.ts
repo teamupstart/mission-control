@@ -1018,4 +1018,62 @@ test.describe("line comments in the Files editor", () => {
     await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toHaveValue(COMMENT);
   });
+
+  test("a discard that the daemon refuses is reported, not swallowed", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * Cancel closes the composer on the click, so a refused DELETE answers into an empty
+     * room. The reader had been told the comment was discarded - and then a marker for it
+     * appeared on the line with nothing to explain why.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    await lineNumber(page, 3).click();
+    const box = page.getByRole("textbox", { name: "Comment on line 3" });
+    await box.fill(COMMENT);
+    await expect
+      .poll(() => storedThreads(daemon).length, { message: "the draft was never written" })
+      .toBe(1);
+
+    // Only the DELETE is refused. The row survives, which is the state the reader has to be
+    // told about, because the marker is about to show up regardless.
+    await page.route("**/api/file-comments/*", async (route, request) => {
+      if (request.method() !== "DELETE") return route.continue();
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the daemon refused this discard" }),
+      });
+    });
+
+    await box.press("Escape");
+    await expect(box).toBeHidden();
+
+    await expect(
+      page.getByText(/could not be discarded, so it is still there as a draft/),
+      "a failed discard must say so rather than leaving a marker unexplained",
+    ).toBeVisible();
+    // The notice names WHERE, because a reader who has moved on cannot guess.
+    await expect(page.getByText(new RegExp(`${SOURCE.replace(/[.]/g, "\\.")} line 3`)))
+      .toBeVisible();
+    expect(storedThreads(daemon), "the row is still there, which is what was reported")
+      .toHaveLength(1);
+
+    // And it is dismissable, like every other notice here. Scoped to the notice that carries
+    // the message: the launch-failure notice has a Dismiss of its own.
+    await page
+      .locator(".file-notice", { hasText: /could not be discarded/ })
+      .getByRole("button", { name: "Dismiss" })
+      .click();
+    await expect(page.getByText(/could not be discarded/)).toBeHidden();
+  });
 });

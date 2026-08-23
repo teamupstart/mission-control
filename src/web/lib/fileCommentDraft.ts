@@ -206,10 +206,33 @@ export function draftBodyToWrite(
   return ours && written.body === body ? null : body;
 }
 
+/**
+ * What a reader is told when discarding a comment did not take.
+ *
+ * It names the file and line rather than saying "the comment", because a cancel that fails is
+ * discovered LATER - the composer closed on the click, and the marker the reader is looking
+ * at may be on a file they have since moved away from.
+ */
+export function discardFailureMessage(
+  composer: Pick<FileCommentComposerState, "path" | "startLine">,
+  error: string,
+): string {
+  return `That comment on ${composer.path} line ${composer.startLine} could not be discarded, `
+    + `so it is still there as a draft - ${error}`;
+}
+
 export function useFileCommentDraft(input: {
   sessionId: string;
   path: string | null;
   revision: string | null;
+  /**
+   * Told when a write finished badly AFTER its composer closed.
+   *
+   * The composer is where an error normally lands, and a cancel has already dismissed it by
+   * the time the daemon answers - so a refusal had nowhere to go and the reader was told the
+   * comment was discarded while its marker quietly stayed on the line.
+   */
+  onDetachedError?: (message: string) => void;
 }): FileCommentDraftController {
   const [composer, setComposer] = useState<FileCommentComposerState | null>(null);
   const state = useRef<FileCommentComposerState | null>(null);
@@ -482,7 +505,11 @@ export function useFileCommentDraft(input: {
       const id = draftThreadToDelete(current, createdThreadId.current);
       if (!id) return;
       if (createdThreadId.current?.instance === current.instance) createdThreadId.current = null;
-      await deleteFileComment(id);
+      const discarded = await deleteFileComment(id);
+      // A refusal here is the one failure with no composer left to show it in, and the one
+      // the reader is least equipped to guess at: they were told it was discarded, and a
+      // marker for it is about to appear on the line anyway.
+      if (!discarded.ok) target.current.onDetachedError?.(discardFailureMessage(current, discarded.error));
     });
   }, [enqueue]);
 

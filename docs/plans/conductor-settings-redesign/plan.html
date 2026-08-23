@@ -170,7 +170,7 @@ This is about the page they are presented on.</p>
 <p>Two shapes were considered and rejected:</p>
 
 <div class="rejected">
-  <div><b>Console split</b> Adopting <code>.sc-split</code> and drawing the repositories through the shared <code>ConsoleTable</code>. The most literal answer to &ldquo;match the other settings pages&rdquo;, but it bounds the 202 rows rather than questioning them - page 4 of 9 would still be 201 rows of &ldquo;Conductor does not manage this repository yet&rdquo;.</div>
+  <div><b>Console split</b> Adopting <code>.sc-split</code> and drawing the repositories through the shared <code>ConsoleTable</code>. The most literal answer to &ldquo;match the other settings pages&rdquo;, but it bounds the 202 rows rather than questioning them - page 4 of 9 would still be 201 rows of &ldquo;Conductor does not manage this repository yet&rdquo;. What is rejected is paging as the <em>whole</em> answer, not paging: the chosen shape still pages the list, it just does not open on 202 rows to page through.</div>
   <div><b>Manage what Conductor manages</b> Listing only registered repositories and moving the workspace scan behind a picker. The cheapest option and it fixes the cause, but it stays a single reading column and so only half answers the complaint.</div>
 </div>
 
@@ -396,9 +396,14 @@ the managed partition rather than on all of it:</p>
     <em>Managed</em> - registered or consented - which is 1 row here, not 202. <code>All</code>,
     <code>Ready</code> and <code>Failing</code> are tiles beside it, so nothing is hidden and the
     full catalogue is one click away.</li>
-  <li><strong>The directory rows get short.</strong> Name, a status dot, and the ready mark - so
-    even the <code>All 202</code> view is a column that scrolls inside itself, not a page that
-    scrolls for twenty screens.</li>
+  <li><strong>The directory rows get short, and the list is paged.</strong> Name, a status dot,
+    and the ready mark. A bounded scroller alone would only stop the <em>page</em> growing - the
+    DOM would still hold a row per repository the moment <code>All</code> is picked, which is the
+    thing this change exists to stop. So the list is sliced through <code>consolePage</code> at
+    <code>CONSOLE_PAGE_SIZE</code> like every other settings ledger
+    (<code>docs/agent-guides/change-contracts.md</code>, &ldquo;Ledger tables&rdquo;), for every
+    tile and not only the default. <code>Managed</code> is one row here, so no pager is drawn;
+    <code>All 202</code> is nine pages of twenty-five.</li>
   <li><strong>The detail pane gets long.</strong> Everything the current 90px row cannot hold has
     room: the full health line, the ingest mode (live events versus file tail versus plugin quiet),
     the last read time, the row error, and the register or enable action as a real primary
@@ -462,8 +467,10 @@ the managed partition rather than on all of it:</p>
 <h2>Verification</h2>
 <ul>
   <li><strong>A spec that seeds many repositories and asserts the page does not render all of
-    them.</strong> This is the regression the whole change exists to prevent, and it is the one
-    assertion that fails today.</li>
+    them - on every tile, including <code>All</code>.</strong> This is the regression the whole
+    change exists to prevent, and it is the one assertion that fails today. Asserting it only on
+    the managed default would pass against a directory that still emits 202 rows the moment an
+    operator picks <code>All</code>, which is the same defect wearing a different filter.</li>
   <li><code>e2e/specs/settings-conductor.spec.ts</code> covers the new shape, including selecting a
     repository from the directory and reading its detail pane.</li>
   <li><strong>A spec that pins search-and-filter precedence</strong>, because neither control

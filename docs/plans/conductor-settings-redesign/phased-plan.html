@@ -126,6 +126,15 @@ first reading assumed.</p>
     id, and the settings route grammar is category-only by design. Key by
     <code>pipelineRepoKey(provider, repoRoot)</code>, and a hash form for the selection would be a
     change to that grammar rather than a detail of this work.</li>
+  <li><strong>A bounded scroller is not a bound on the DOM.</strong> The directory needs the pager
+    as well as the height budget, or picking the <code>All</code> tile puts a row per repository
+    back in the document - 202 here - which is the defect the change exists to remove.
+    <code>consolePage</code> (<code>settings-console.tsx:324</code>) is the reusable half of the
+    ledger contract and clamps the page, which matters because this list is polled at 4s and
+    filtered by its own tiles; <code>ConsoleTable</code> itself is not reusable here, because it
+    owns its heading, columns and caption and has no notion of a selected row.
+    <code>docs/agent-guides/change-contracts.md</code> (&ldquo;Ledger tables&rdquo;) states both
+    sides.</li>
   <li><strong>Test churn is smaller than the file sizes suggest.</strong> 9 of 23 tests in
     <code>conductor-panel.test.ts</code> touch row markup, and 5 of 12 in the e2e spec.
     <code>settings-sidebar-render.test.ts</code> fingerprints the panel by "Conductor commissioning
@@ -134,14 +143,14 @@ first reading assumed.</p>
 
 <h2>Sizing</h2>
 
-<p><strong>Estimate: 620-780 gross non-test implementation lines</strong>, counting lines added or
+<p><strong>Estimate: 660-820 gross non-test implementation lines</strong>, counting lines added or
 materially changed across every layer.</p>
 
 <div class="tablewrap">
 <table>
   <thead><tr><th>Surface</th><th>Est.</th><th>Assumption</th></tr></thead>
   <tbody>
-    <tr><td><code>ConductorPanel.tsx</code> - directory, detail pane, filter fold, selection</td><td class="num">~360</td><td>Mirrors <code>SourceDirectory</code> + helpers (~147 lines) plus a richer detail pane; replaces the 119-line list section</td></tr>
+    <tr><td><code>ConductorPanel.tsx</code> - directory, detail pane, filter fold, selection, pager</td><td class="num">~400</td><td>Mirrors <code>SourceDirectory</code> + helpers (~147 lines) plus a richer detail pane; replaces the 119-line list section. The pager adds ~40: <code>consolePage</code> and the <code>.sc-pager*</code> classes already exist, so it is the page state, its reset on filter change, and the focus handoff</td></tr>
     <tr><td><code>styles.css</code> - master-detail, directory, tiles; minus old <code>.conductor-repo*</code></td><td class="num">~180</td><td>The <code>ts-*</code> directory and master-detail block is ~165 lines</td></tr>
     <tr><td><code>settings-search.ts</code> - five new entries</td><td class="num">~50</td><td>Existing entries run 9-13 lines each</td></tr>
     <tr><td><code>settings-dots.ts</code> + <code>dotLabel</code> branch</td><td class="num">~25</td><td>One <code>case</code> plus one tone arm</td></tr>
@@ -226,7 +235,9 @@ later work will meet them:</p>
     <code>settings-dots</code> and <code>settings-sidebar-render</code> all green.</li>
   <li><code>npm run build</code>, then <code>npm run test:e2e</code> for
     <code>e2e/specs/settings-conductor.spec.ts</code>, including the new bound spec that seeds many
-    repositories and asserts the page does not render all of them.</li>
+    repositories and asserts the page does not render all of them - including that the DOM row
+    count stays at or under <code>CONSOLE_PAGE_SIZE</code> after switching to the
+    <code>All</code> tile.</li>
   <li><code>docs/pipelines.md</code> matches the shipped panel.</li>
 </ul>
 

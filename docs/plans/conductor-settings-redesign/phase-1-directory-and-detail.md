@@ -140,6 +140,48 @@ row, and this section records why rather than leaving the collapse to be redisco
 If the implementer finds a read-only summary genuinely earns its space alongside, that is a
 judgement call to make and record - but it must not restate a number a tile already shows.
 
+### The directory is paged, not just scrolled
+
+A bounded scrolling column stops the *page* growing; it does not stop the DOM holding a row per
+repository. Under the `All` tile that is 202 rows again, which is the exact defect this phase
+exists to remove - so the height budget is not the bound, the pager is.
+
+`docs/agent-guides/change-contracts.md` ("Ledger tables") already states the three properties, and
+they are the component's rather than each panel's precisely so a panel cannot skip one:
+
+- **One page of rows, at `CONSOLE_PAGE_SIZE`**, sliced through `consolePage`
+  (`settings-console.tsx:324`), which clamps the page rather than trusting it. Its doc comment
+  names why it is a named fold and not a `slice`: these lists are polled and filtered, so the row
+  count moves under an operator sitting on the last page. Conductor polls at 4s and its tiles are a
+  filter, so both halves of that apply here.
+- **A height budget on the container, not on the rows**, so the pager cannot end up below the
+  budget and out of reach.
+- **The pager restarts with the filter**, because changing the tile is a new list.
+- **Paging keeps the keyboard's place**: reaching the first or last page disables the button just
+  pressed, and a browser blurs a control that becomes disabled, so focus is handed to the button
+  that can still act.
+
+**The directory is not a `ConsoleTable`, and must not be made one.** That component owns its own
+heading, columns, scroller, pager and caption and has no prop for a selected row, while this list's
+whole purpose is to drive the detail pane beside it. The change contract says as much in its last
+paragraph - lists that are not settings ledgers keep their own shapes. What carries across is
+`consolePage` and the four properties above, not the component. The pager's *markup* costs little
+either: `.sc-pager`, `.sc-pager-range`, `.sc-pager-nav` and `.sc-pager-btn` are already in
+`styles.css:19217-19264`, and the focus handoff is worked out in `settings-console.tsx:427-441` -
+copy that reasoning rather than rediscovering why a disabled button loses focus.
+
+Two consequences for the rest of this phase, both of which are ways this can be got wrong:
+
+- **Selection is keyed, so it survives paging.** The selected repository is held by
+  `pipelineRepoKey`, never by index, and it is *not* cleared when the operator turns the page - the
+  detail pane keeps showing the repository they picked while they look for another. Clearing it
+  would empty the right-hand column on every page turn.
+- **Auto-select-first means first of the filtered set, not first of the visible page.** Otherwise
+  turning the page silently moves the selection and the detail pane changes under the operator.
+
+`Managed` is 1 row on this machine, so no pager is drawn in the default state - the contract's
+"absent, not disabled, when everything fits on one page". The pager appears when `All` is picked.
+
 ## Implementation shape
 
 The route below is the order the work falls into, not a script. Each item names what the finished
@@ -169,12 +211,14 @@ state looks like; where the repository disagrees with one, the repository wins.
 3. **Selection state.** `useState<string | null>` keyed by `pipelineRepoKey`, with the
    drop-when-gone and auto-select-first effects from finding 4. Focus returns to the row, falling
    back to the list container, as `TaskSourcesPanel.tsx:847-853` does.
-4. **The directory column.** A search input on `.field-input`, the `ConsoleStrip` tiles, then a list
-   of short rows - name, a status dot, and the ready mark. Rows are buttons carrying `aria-current`
-   for the selected one (`TaskSourcesPanel.tsx:906-909` explains why `aria-current` and not
-   `aria-selected`). The list's height is bounded so it scrolls in its own column. Under it, a count
-   sentence naming both the filter and the whole, so the empty case on a fresh machine reads as
-   "nothing registered yet" rather than as a broken page.
+4. **The directory column.** A search input on `.field-input`, the `ConsoleStrip` tiles, then a
+   list of short rows - name, a status dot, and the ready mark. Rows are buttons carrying
+   `aria-current` for the selected one (`TaskSourcesPanel.tsx:906-909` explains why `aria-current`
+   and not `aria-selected`). The rows handed to the list are **one page**, sliced by `consolePage`
+   from the tile-and-query result, with the page number reset when either changes; the height
+   budget sits on the container so the pager stays reachable. Under it, a count sentence naming the
+   page, the filter and the whole, so the empty case on a fresh machine reads as "nothing
+   registered yet" rather than as a broken page.
 5. **The detail column.** For the selected repository: name, path, the three setup facts, the
    observation switch, the health line from the existing `repoHealthLine`, the ingest mode, the last
    read, any row error, and the primary action - **Register and observe**, **Enable observation**,
@@ -215,10 +259,14 @@ state looks like; where the repository disagrees with one, the repository wins.
   `:273`, `:287`, `:380`, plus `:210`'s neighbours). Those become selecting from the directory and
   acting in the detail pane. `:210`'s stale-consent test finds rows by the
   `Observe pipelines in <name>` aria-label and survives if that label is kept.
-- **The bound spec, which is the point of the change.** It seeds many repositories through the daemon
-  fixture and asserts the page does not render them all - that the directory opens on the managed
-  set and the DOM row count stays small. This is the assertion that fails against the panel as it
-  stands today, which is what makes it the useful one to have first.
+- **The bound spec, which is the point of the change.** It seeds many repositories through the
+  daemon fixture and asserts the page does not render them all: the directory opens on the managed
+  set, **and the DOM row count stays at or under `CONSOLE_PAGE_SIZE` after switching to `All`**.
+  Asserting only the managed default would pass against a directory that still emits a row per
+  repository the moment `All` is picked - the same defect wearing a different filter - so the tile
+  switch is the load-bearing half of this spec. It also pages forward once and asserts the
+  selection made before the turn is still the one in the detail pane. This is the assertion that
+  fails against the panel as it stands today, which is what makes it the useful one to have first.
 - **A selection spec**: choosing a repository shows it in the detail pane, and the selection
   survives a poll rather than jumping.
 - **A search-and-filter precedence spec**, because the rule is invisible from either control alone

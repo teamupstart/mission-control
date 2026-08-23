@@ -63,7 +63,14 @@ first reading assumed.
    (`settings-registry.ts:317-322`). Conductor does the same, keyed by
    `pipelineRepoKey(provider, repoRoot)`, and a hash form for the selection would be a change to
    that grammar rather than a detail of this work.
-10. **Test churn is smaller than the file sizes suggest.** 9 of 23 tests in
+10. **A bounded scroller is not a bound on the DOM.** The directory needs the pager as well as the
+    height budget, or picking the `All` tile puts a row per repository back in the document - 202
+    here - which is the defect the change exists to remove. `consolePage`
+    (`settings-console.tsx:324`) is the reusable half of the ledger contract and clamps the page,
+    which matters because this list is polled at 4s and filtered by its own tiles; `ConsoleTable`
+    itself is not reusable here, because it owns its heading, columns and caption and has no notion
+    of a selected row. `docs/agent-guides/change-contracts.md` ("Ledger tables") states both sides.
+11. **Test churn is smaller than the file sizes suggest.** 9 of 23 tests in
     `test/conductor-panel.test.ts` touch row markup, and 5 of 12 in
     `e2e/specs/settings-conductor.spec.ts`. `test/settings-sidebar-render.test.ts` fingerprints the
     panel by the string "Conductor commissioning progress", which survives only because trimming
@@ -71,12 +78,12 @@ first reading assumed.
 
 ## Sizing
 
-**Estimate: 620-780 gross non-test implementation lines**, counting lines added or materially
+**Estimate: 660-820 gross non-test implementation lines**, counting lines added or materially
 changed across every layer.
 
 | Surface | Estimate | Assumption |
 | --- | --- | --- |
-| `ConductorPanel.tsx` - directory, detail pane, filter fold, selection | ~360 | Mirrors `SourceDirectory` + helpers (~147 lines) plus a richer detail pane than Task sources', which delegates to a separate `SourceCard`; replaces the 119-line list section |
+| `ConductorPanel.tsx` - directory, detail pane, filter fold, selection, pager | ~400 | Mirrors `SourceDirectory` + helpers (~147 lines) plus a richer detail pane than Task sources', which delegates to a separate `SourceCard`; replaces the 119-line list section. The pager adds ~40: `consolePage` and the `.sc-pager*` classes already exist, so it is the page state, its reset on filter change, and the focus handoff |
 | `styles.css` - master-detail, directory, tiles; minus old `.conductor-repo*` | ~180 | The `ts-*` directory and master-detail block is ~165 lines |
 | `settings-search.ts` - five new entries | ~50 | Existing entries run 9-13 lines each |
 | `settings-dots.ts` + `dotLabel` branch | ~25 | One `case` plus one tone arm |

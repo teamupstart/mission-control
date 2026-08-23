@@ -22,7 +22,9 @@ Reviewed and resolved on the rendered plan:
 Two shapes were considered and rejected. **Console split** - adopting `.sc-split` and drawing
 the repositories through the shared `ConsoleTable` - is the most literal answer to "match the
 other settings pages", but it bounds the 202 rows rather than questioning them, and page 4 of
-9 would still be 201 rows of "Conductor does not manage this repository yet". **Manage what
+9 would still be 201 rows of "Conductor does not manage this repository yet". What is rejected
+there is paging as the *whole* answer, not paging: the shape below still pages the list, it just
+does not open on 202 rows to page through. **Manage what
 Conductor manages** - listing only registered repositories and moving the workspace scan
 behind a picker - is the cheapest and fixes the cause, but it stays a single reading column
 and so only half answers the complaint. Directory and detail does both: the workspace stops
@@ -142,9 +144,13 @@ column the same way (`styles.css:17027`).
 - **The directory opens on what Conductor manages.** The default filter tile is *Managed* -
   registered or consented - which is 1 row here, not 202. `All`, `Ready` and `Failing` are
   tiles beside it, so nothing is hidden and the full catalogue is one click away.
-- **The directory rows get short.** Name, a status dot, and the ready mark - so even the
-  `All 202` view is a column that scrolls inside itself, not a page that scrolls for twenty
-  screens.
+- **The directory rows get short, and the list is paged.** Name, a status dot, and the ready
+  mark. A bounded scroller alone would only stop the *page* growing - the DOM would still hold a
+  row per repository the moment `All` is picked, which is the thing this change exists to stop.
+  So the list is sliced through `consolePage` at `CONSOLE_PAGE_SIZE` like every other settings
+  ledger (`docs/agent-guides/change-contracts.md`, "Ledger tables"), for every tile and not only
+  the default. `Managed` is one row here, so no pager is drawn; `All 202` is nine pages of
+  twenty-five.
 - **The detail pane gets long.** Everything the current 90px row cannot hold has room: the
   full health line, the ingest mode (live events versus file tail versus plugin quiet), the
   last read time, the row error, and the register or enable action as a real primary button.
@@ -200,9 +206,11 @@ shape has been used.
 
 ## Verification
 
-- **A spec that seeds many repositories and asserts the page does not render all of them.**
-  This is the regression the whole change exists to prevent, and it is the one assertion that
-  fails today.
+- **A spec that seeds many repositories and asserts the page does not render all of them - on
+  every tile, including `All`.** This is the regression the whole change exists to prevent, and
+  it is the one assertion that fails today. Asserting it only on the managed default would pass
+  against a directory that still emits 202 rows the moment an operator picks `All`, which is the
+  same defect wearing a different filter.
 - `e2e/specs/settings-conductor.spec.ts` covers the new shape, including selecting a
   repository from the directory and reading its detail pane.
 - **A spec that pins search-and-filter precedence**, because neither control reveals the rule on

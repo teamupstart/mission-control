@@ -1,7 +1,7 @@
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
-import { modelChoicesFor } from "@shared/model.ts";
+import { guardProviderModel } from "@shared/model.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import { ModelField } from "./ModelField.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -219,15 +219,23 @@ export function ProviderSelect({
  * one click stores a Claude id under a Codex runner and hands the job a pair no runner can
  * honour.
  *
- * Only a PINNED model is at stake. An empty box is already inheriting and re-resolves to the
- * new provider's own default with nothing to reset. And a model the new provider also offers
- * is KEPT - the two providers genuinely share an id far less often than an operator changes
- * their mind, but when they do, silently clearing it would be the surprising answer.
+ * Delegates to `guardProviderModel` rather than asking the catalog directly, and that is the
+ * whole point of the function still existing: the panel and the resolver have to answer
+ * "can this provider run this model" the SAME way, or the two disagree and the disagreement
+ * is a bug in two places. Asking `modelChoicesFor(provider)` for membership was a stricter,
+ * parallel rule - it cleared any id neither catalog recognises, which is exactly the custom
+ * or newly-released id the resolver deliberately keeps because it cannot prove it is
+ * incompatible. That made selecting a provider silently delete a configured model the server
+ * would have honoured.
+ *
+ * So a model is reset only when it is POSITIVELY KNOWN to belong to another provider. Three
+ * cases survive: an empty box (already inheriting, nothing to reset), a model the new
+ * provider also offers, and an id in no catalog at all - model ids are free text.
  */
 export function modelSurvivesProviderChange(model: string, provider: LlmRunnerId): boolean {
   const pinned = model.trim();
   if (!pinned) return true;
-  return modelChoicesFor(provider).some((choice) => choice.id === pinned);
+  return guardProviderModel(provider, pinned).unsupported === null;
 }
 
 /**

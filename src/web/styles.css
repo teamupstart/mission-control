@@ -18522,6 +18522,20 @@ button.wf-carried.is-link:focus-visible {
 select.settings-matrix-provider {
   max-width: 200px;
 }
+/* The 260px cap on `.foreman-model-input` is sized for a stacked settings card, where a model
+   id sits alone on its own line. In a matrix cell the column is already the constraint, and
+   the label can carry a catalog miss's "- not currently reported" suffix, so the cap only
+   makes a long one collide with the chevron sooner. Fill the column instead.
+   This narrows the collision; it does not close it. Under `appearance: base-select` Chromium
+   draws the selected label in an inner box that the `text-overflow: ellipsis` on the select
+   cannot reach, and `::selectedcontent` - the pseudo-element that would - is not supported in
+   the Chromium this ships against (`CSS.supports("selector(::selectedcontent)")` is false).
+   That is an app-wide property of every select with a label longer than its track, not
+   something this table introduced. */
+.settings-matrix select.foreman-model-input {
+  width: 100%;
+  max-width: none;
+}
 /* The pair, not either control, so it spans the row - see the component comment. */
 .settings-matrix-note {
   padding: 0 10px 9px;

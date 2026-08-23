@@ -5,7 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { LlmSettingsPanel } from "../src/web/components/LlmSettingsPanel.tsx";
 import type { LlmState } from "../src/web/useLlm.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
-import { LLM_RUNNER_ENV_VAR } from "../src/shared/llm.ts";
+import { LLM_RUNNER_ENV_VAR, LLM_RUNNER_IDS } from "../src/shared/llm.ts";
+import { guardProviderModel, MODEL_CATALOG } from "../src/shared/model.ts";
+import { modelSurvivesProviderChange } from "../src/web/components/SettingsMatrix.tsx";
 import type { LlmConfig } from "../src/shared/protocol.ts";
 import type { LlmStatus } from "../src/shared/types.ts";
 
@@ -291,6 +293,56 @@ test("the panel says where the models it does NOT edit live", () => {
   const html = render();
   assert.ok(html.includes("Foreman"));
   assert.ok(html.includes("Inspector"));
+});
+
+// The panel's reset predicate and the daemon's resolver guard answer one question - "can this
+// provider run this model" - and they have to answer it identically. They did not: the panel
+// asked the catalog for membership, which clears any id NEITHER catalog knows, while the
+// resolver deliberately keeps such an id because it cannot prove it is incompatible. A custom
+// or newly-released model was therefore deleted by a provider click the server would have
+// honoured. These pin the two together rather than pinning the panel's own behaviour, so the
+// next change to either has to move both.
+
+test("a provider change keeps a model no catalog knows - ids are free text", () => {
+  // The regression. `gpt-6-unreleased` and a vendor's private id are not Claude's and not
+  // Codex's; nothing here can say they are wrong, so nothing here may throw them away.
+  for (const custom of ["gpt-6-unreleased", "internal/tuned-v3", "some-future-model"]) {
+    for (const provider of LLM_RUNNER_IDS) {
+      assert.equal(
+        modelSurvivesProviderChange(custom, provider),
+        true,
+        `"${custom}" was deleted by a switch to ${provider}`,
+      );
+      // ...and the resolver agrees, which is the property that matters.
+      assert.equal(guardProviderModel(provider, custom).unsupported, null);
+    }
+  }
+});
+
+test("a provider change resets only a model positively known to belong to another provider", () => {
+  assert.equal(modelSurvivesProviderChange("claude-sonnet-5", "codex"), false);
+  assert.equal(modelSurvivesProviderChange("gpt-5.6-sol", "claude"), false);
+  // Kept: the provider's own catalog, and an empty box that is already inheriting.
+  assert.equal(modelSurvivesProviderChange("claude-sonnet-5", "claude"), true);
+  assert.equal(modelSurvivesProviderChange("gpt-5.6-sol", "codex"), true);
+  assert.equal(modelSurvivesProviderChange("", "codex"), true);
+  assert.equal(modelSurvivesProviderChange("   ", "codex"), true);
+});
+
+test("the panel resets a model exactly when the resolver would refuse it, over both catalogs", () => {
+  // Swept rather than sampled: every shipped id against every provider. A divergence here is
+  // the panel deleting something the daemon would have run, or keeping something it will drop.
+  for (const provider of LLM_RUNNER_IDS) {
+    for (const other of LLM_RUNNER_IDS) {
+      for (const choice of MODEL_CATALOG[other]) {
+        assert.equal(
+          modelSurvivesProviderChange(choice.id, provider),
+          guardProviderModel(provider, choice.id).unsupported === null,
+          `the panel and the resolver disagree about ${choice.id} on ${provider}`,
+        );
+      }
+    }
+  }
 });
 
 test("a refused edit is reported where it was made", () => {

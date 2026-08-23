@@ -163,6 +163,41 @@ test("a row's own provider change resets only that row's stranded model, and say
   );
 });
 
+test("a provider change keeps a model no catalog recognises, because ids are free text", async ({
+  dashboard,
+  daemon,
+}) => {
+  // A custom or newly-released id belongs to no shipped catalog, so nothing in the browser can
+  // prove it incompatible - and the daemon's resolver deliberately passes it through for that
+  // reason. A panel that cleared it on a provider click would be silently deleting a model the
+  // server would have run. Seeded over the API because the select only offers catalog rows;
+  // a stored off-catalog id is reached through config, which is exactly how a real one arrives.
+  const seeded = await fetch(`${daemon.baseURL}/api/llm/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ models: { goal: "gpt-6-unreleased" } }),
+  });
+  expect(seeded.ok, "the daemon should accept an off-catalog model id").toBe(true);
+
+  await openModels(dashboard, daemon.baseURL);
+  await expect(dashboard.getByRole("combobox", { name: "Goal model" })).toHaveValue(
+    "gpt-6-unreleased",
+  );
+
+  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
+  await openModels(dashboard, daemon.baseURL);
+  await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("codex");
+  await expect(
+    dashboard.getByRole("combobox", { name: "Goal model" }),
+    "a provider click deleted a configured model neither catalog can rule out",
+  ).toHaveValue("gpt-6-unreleased");
+  // The daemon agrees - it resolves the pair rather than substituting a default.
+  const status = await (await fetch(`${daemon.baseURL}/api/llm/status`)).json();
+  expect(status.models.goal.id).toBe("gpt-6-unreleased");
+  expect(status.models.goal.unsupported).toBe(null);
+  await shoot(dashboard, "06-off-catalog-model-survives");
+});
+
 test("choosing Inherit judges the model against the app-wide provider, not the one abandoned", async ({
   dashboard,
   daemon,

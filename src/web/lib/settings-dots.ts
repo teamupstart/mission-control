@@ -77,6 +77,15 @@ export function settingsRailDot(
       return status.shipping.autoMerge ? "armed" : null;
     case "task-sources":
       return status.taskSources.failing > 0 ? "failing" : null;
+    // Green whenever Mission Control is actually READING a repository, which is the same
+    // claim the Inspector's green makes: this subsystem is doing its live thing right now.
+    // `observing` rather than `observedRepoKeys`, because the keys are an appended optional
+    // field an older daemon may not send at all - and a dot that goes dark during a rolling
+    // update is a worse reading than one derived from the count both builds carry.
+    // Deliberately NOT ranked into `settingsGearDot`: observation is a posture, not an
+    // alarm, and the gear is for "something needs you".
+    case "conductor":
+      return status.pipelines.observing > 0 ? "live" : null;
     case "trust":
       // Armed AND a merge-without-review blind spot somewhere: the same trap the Shipping
       // panel warns about, summarized to one rail dot. The panel's other amber - armed check

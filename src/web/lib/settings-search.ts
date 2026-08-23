@@ -430,10 +430,60 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "conductor-repos",
     label: "Conductor repositories",
-    description: "Which repositories an external SDLC engine's pipelines are observed in.",
+    description: "The repository directory: which checkouts Conductor manages, and which are observed.",
     category: "conductor",
     anchor: "conductor/repos",
-    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe"],
+    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe", "directory"],
+    kind: "jump",
+  },
+  // The other five anchors this panel renders. It drew six and indexed one, so the engine,
+  // the master switch, the Engineer host and Foreman triage were reachable only by opening
+  // the category and scrolling - which is what the palette exists to replace. Every one is
+  // a `jump`: none is a boolean the palette could honestly flip from a search row, and the
+  // consent switch is exactly the kind whose copy has to be on screen when it moves.
+  {
+    id: "conductor-overview",
+    label: "Conductor commissioning",
+    description: "Where an external SDLC engine's setup stands: engine, registration, observation.",
+    category: "conductor",
+    anchor: "conductor/pipelines",
+    keywords: ["ai-conductor", "pipeline", "sdlc", "commissioning", "setup", "register", "overview"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-detection",
+    label: "Conductor engine detection",
+    description: "Whether conduct-ts was found, where, which version, and which registry it read.",
+    category: "conductor",
+    anchor: "conductor/detection",
+    keywords: ["conduct-ts", "engine", "install", "installer", "version", "registry", "probe", "path"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-enabled",
+    label: "Observe Conductor pipelines",
+    description: "The master consent switch for reading any Conductor pipeline state at all.",
+    category: "conductor",
+    anchor: "conductor/enabled",
+    keywords: ["observe", "consent", "master switch", "pipeline", "ai-conductor", "read"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-launch-runtime",
+    label: "Conductor Engineer host",
+    description: "Which Mission Control host starts Engineer: the managed Agent SDK, or a terminal.",
+    category: "conductor",
+    anchor: "conductor/launch-runtime",
+    keywords: ["engineer", "launch", "runtime", "agent sdk", "terminal", "host", "pipeline"],
+    kind: "jump",
+  },
+  {
+    id: "conductor-foreman-triage",
+    label: "Foreman pipeline triage",
+    description: "Whether Foreman may unpark mechanical pipeline halts on its own.",
+    category: "conductor",
+    anchor: "conductor/foreman-triage",
+    keywords: ["foreman", "triage", "halt", "unpark", "mechanical", "pipeline"],
     kind: "jump",
   },
   {

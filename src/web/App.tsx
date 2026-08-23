@@ -3012,6 +3012,8 @@ export function App(): React.JSX.Element {
                 page: "runs",
                 ...(Object.keys(filters).length > 0 ? { filters } : {}),
               })}
+              // The return leg of the Pipelines tab's own "Conductor settings" button.
+              onOpenPipelines={() => navigate({ page: "runs", kind: "pipelines" })}
               onLeave={() => navigate({ page: "fleet" })}
               foreman={foreman}
               cost={cost}

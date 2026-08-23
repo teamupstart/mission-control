@@ -14,6 +14,7 @@ import {
   seedConductorRun,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
+import { selectConductorRepo, toggleConductorObservation } from "../fixtures/conductor-panel.ts";
 
 /**
  * A conductor-driven agent, carded - and told apart from an ordinary one.
@@ -439,9 +440,11 @@ test.describe("a session an external engine is driving", () => {
     await expect(dashboard.locator(".console-detail button.pipeline-chip")).toHaveCount(1, { timeout: SETTLE });
 
     await dashboard.goto(`${daemon.baseURL}/#/settings/conductor`);
+    await selectConductorRepo(dashboard, daemon.repo);
     const repoSwitch = dashboard.getByRole("checkbox", { name: "Observe pipelines in demo-repo" });
     await expect(repoSwitch).toBeChecked();
-    await repoSwitch.uncheck();
+    await toggleConductorObservation(dashboard);
+    await expect(repoSwitch).not.toBeChecked();
     await expect(dashboard.getByText(/On, but no repository is switched on/)).toBeVisible();
 
     await dashboard.goto(`${daemon.baseURL}/#/fleet`);

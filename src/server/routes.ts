@@ -207,6 +207,7 @@ import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
   type StandingInstructionsDelivery,
 } from "@shared/standing-instructions.ts";
 import {
@@ -440,9 +441,28 @@ const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1
  */
 const FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES =
   FOREMAN_INSTRUCTIONS_MAX_LENGTH * 6 + 16 * 1024;
-/** The same ×6 escape headroom, over the standing-instruction ceiling and the key cap. */
+/**
+ * The same ×6 escape headroom, sized for the patch the SCHEMA accepts rather than for the
+ * one-box save a panel usually sends.
+ *
+ * `StandingInstructionsUpdateSchema` permits up to `STANDING_INSTRUCTIONS_MAX_REPOSITORIES`
+ * keys in one request, each a key of up to `STANDING_INSTRUCTIONS_MAX_KEY_LENGTH` and a box
+ * of up to `STANDING_INSTRUCTIONS_MAX_LENGTH`, plus the machine-wide default. Budgeting for
+ * a single box and a single key made a bulk write - eleven full repositories is enough - a
+ * 413 BEFORE the schema it satisfies was ever consulted, which is the worst kind of refusal:
+ * the API says yes and the transport says no, with no way for a caller to tell which limit it
+ * hit. Derived from the same three constants for that reason, so raising a cap cannot leave
+ * this behind.
+ *
+ * A ceiling, not an allocation: `bodyLimit` refuses past it while streaming, so an ordinary
+ * one-repository save still costs a few hundred bytes.
+ */
 const STANDING_INSTRUCTIONS_BODY_MAX_BYTES =
-  STANDING_INSTRUCTIONS_MAX_LENGTH * 6 + STANDING_INSTRUCTIONS_MAX_KEY_LENGTH * 6 + 16 * 1024;
+  (STANDING_INSTRUCTIONS_MAX_LENGTH + STANDING_INSTRUCTIONS_MAX_KEY_LENGTH) *
+    STANDING_INSTRUCTIONS_MAX_REPOSITORIES *
+    6 +
+  STANDING_INSTRUCTIONS_MAX_LENGTH * 6 +
+  16 * 1024;
 /**
  * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
  * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a

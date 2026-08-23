@@ -20,6 +20,9 @@ const { openDb } = await import("../src/server/db.ts");
 const { resolveRepoPath } = await import("../src/server/repos.ts");
 const { STANDING_INSTRUCTIONS_HEADING } = await import("../src/server/instructions/compose.ts");
 const { STANDING_INSTRUCTIONS_CONFLICT_CODE } = await import("../src/shared/protocol.ts");
+const { STANDING_INSTRUCTIONS_MAX_LENGTH } = await import(
+  "../src/shared/standing-instructions.ts"
+);
 
 type Registry = import("../src/server/registry.ts").Registry;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
@@ -129,8 +132,46 @@ test("a stale expectedEtag is a 409 carrying the current view, and writes nothin
 
 test("an oversize body is a 413 before the schema ever sees it", async () => {
   const first = await view();
-  const res = await put({ expectedEtag: first.etag, default: "x".repeat(2_000_000) });
+  const res = await put({ expectedEtag: first.etag, default: "x".repeat(20_000_000) });
   assert.equal(res.status, 413);
+});
+
+test("a multi-repository patch the schema accepts is not refused by the transport first", async () => {
+  // The failure this closes: the body limit budgeted for ONE box and ONE key, while the
+  // schema accepts up to STANDING_INSTRUCTIONS_MAX_REPOSITORIES of them. Eleven full-length
+  // repositories is already enough to be rejected with 413 before the schema it satisfies is
+  // ever consulted - the API saying yes and the transport saying no, with nothing in the
+  // refusal to tell a caller which limit it hit.
+  const first = await view();
+  const repositories: Record<string, string> = {};
+  // Eleven DISTINCT keys - package-level directories of this checkout, which is what a
+  // monorepo's per-package rules look like and what `resolveRepoPath` preserves. Real paths,
+  // because the route canonicalizes every key: a fixture that was merely long would clear the
+  // transport and then be refused for an entirely different reason.
+  for (const dir of [
+    "src/shared",
+    "src/server",
+    "src/web",
+    "test",
+    "docs",
+    "e2e",
+    "scripts",
+    "skills",
+    "personas",
+    "src/server/harness",
+    "src/server/instructions",
+  ]) {
+    repositories[join(CHECKOUT, dir)] = "x".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH);
+  }
+  const res = await put({
+    expectedEtag: first.etag,
+    default: "y".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH),
+    repositories,
+  });
+  assert.equal(res.status, 200, "a schema-valid patch is not a 413");
+  const stored = (await res.json()) as View;
+  assert.equal(stored.default.length, STANDING_INSTRUCTIONS_MAX_LENGTH);
+  assert.equal(Object.keys(stored.repositories).length, 11);
 });
 
 test("the resolved route previews what a launch would send, for this exact pair", async () => {

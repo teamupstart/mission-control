@@ -1,4 +1,4 @@
-import type { BacklogPlan, ReviewItem, Session, Task } from "@shared/types.ts";
+import type { BacklogPlan, FileCommentThread, ReviewItem, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
@@ -100,6 +100,16 @@ export interface SessionViewProps {
    */
   workflowsTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
+  /**
+   * Every live line-comment thread, for every session - the Files tab narrows to its own.
+   * Whole rather than per-session so the integrated tab and the extracted Files window
+   * cannot hold two different narrowings of the same frames.
+   *
+   * Optional for the same reason `isOverlayOpen` is: a layout test that never opens a Files
+   * tab has no threads to hand it, and a surface with none behaves exactly as one with an
+   * empty list.
+   */
+  fileCommentThreads?: FileCommentThread[];
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */
   onComplete: (id: string) => void;

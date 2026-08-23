@@ -255,6 +255,7 @@ export function App(): React.JSX.Element {
     workflowBindingSummaries,
     ensembleSummaries,
     pipelineRuns,
+    fileCommentThreads,
     fleetCost,
     lineSummary,
     settingsStatus,
@@ -1745,6 +1746,7 @@ export function App(): React.JSX.Element {
     conversationTabRequest,
     workflowsTabRequest,
     files,
+    fileCommentThreads,
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
     onKill: setKillSessionId,
@@ -3150,7 +3152,12 @@ export function App(): React.JSX.Element {
         )}
 
         {filesSession && (
-          <FileWindow session={filesSession} controller={files} onClose={closeFiles} />
+          <FileWindow
+            session={filesSession}
+            controller={files}
+            fileCommentThreads={fileCommentThreads}
+            onClose={closeFiles}
+          />
         )}
 
         {filePickerSession && (

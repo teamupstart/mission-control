@@ -681,6 +681,56 @@ remains inert: its document renders immediately, then a bounded set of checkout-
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
+### Comment on a line
+
+**Comment** in the Files toolbar turns on comment mode (<kbd>m</kbd>, in the integrated tab)
+for any file with source to read. With it on, clicking a line number opens a box under that
+line. An image has no lines and shows the control disabled with that as the reason.
+
+**This works in Preview as well as in the Editor.** A comment names a line and quotes it, so
+something with line numbers has to be on screen to click - but turning the control on over a
+rendered Markdown or HTML document no longer takes that document away. The preview keeps its
+half of the pane and the source appears beside it, read-only, carrying the line numbers and
+the markers. You stay in Preview; **Preview** stays the pressed view; <kbd>e</kbd> is one key
+away if you meant to edit. On a phone-width window the two stack instead.
+
+What you write is saved from the first keystroke as a *draft* - it is a real row in the
+daemon's state, not a string in the browser tab, so closing the file, reloading the page, or
+closing the extracted Files window does not lose it. **Comment** submits it into that
+session's review queue, and it stays in the file as a marker.
+
+**A comment has to quote something, so a blank line borrows the nearest line that speaks.**
+Clicking one quotes a range rather than the empty line alone: down to the next line with text
+on it, or - when the blank line is last, with nothing below - up to the line above. The panel
+names the range it took, so you can see what you are commenting on before you write.
+
+The marker goes on the range's **first** line. Reaching down, that is still the blank line you
+clicked, and the marker sits there. Reaching up, from a blank line at the end of the file, the
+range starts above and the marker sits on that line instead - one line up from the click.
+
+A file of nothing but blank lines has nothing to anchor to at all, and says so instead of
+writing a comment that could never point anywhere.
+
+A marker is a small button at the end of the line it is about, and its accessible name says
+which comment it is, which line it is on and what state it is in - queued, answered, moved, or
+resolved, and how many replies it carries. (At the end of the line rather than in the gutter
+because CodeMirror hides both its gutters from assistive technology, which is right for line
+numbers and would have made this control unreachable.) Clicking one expands the thread: the
+original comment, every reply in time order, and a box to add another. A line carrying more
+than one thread steps through them on each click, and closes on the last. <kbd>Esc</kbd> closes
+the panel, and <kbd>⌘</kbd><kbd>Enter</kbd> submits from either box.
+
+**Resolve** closes a thread, and only a person ever does - a thread does not close itself and
+an agent cannot close one. Closed threads stop being drawn; **Resolved** in the toolbar
+brings them back, where each offers **Reopen**. That control appears only while comment mode
+is on and the file has at least one closed thread - it is part of deciding what you are
+looking at, not a permanent fixture of the toolbar.
+
+Two things comment mode is not, yet. Nothing is sent to any agent: the queue accumulates and is
+delivered separately. And a marker is drawn on the *source*, not yet on the rendered document
+beside it, so in Preview you click a line in the source column rather than a paragraph in the
+preview.
+
 Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
 `mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,
 no-network sandbox and exposes a numbered accessible name. A malformed block reports its error
@@ -846,6 +896,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
+| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click | Integrated Files tab on a file with source |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
 | <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the selected Console/Board detail | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -880,18 +931,25 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
 and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> controls are in-surface
-keys rather than fleet chords - they only exist while their surface is active - so they are fixed
-for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and wins while
-that tab is open: an in-surface key is claimed on the capture phase, so the surface you are
-looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
+editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> controls
+are in-surface keys rather than fleet chords - they only exist while their surface is active - so
+they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
+wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
+are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
+Comment mode takes <kbd>m</kbd> and shadows nothing. The mnemonic letter was <kbd>c</kbd>, which
+completes the selected session's task - and while shadowing a fleet chord in a surface is exactly
+what <kbd>p</kbd> and <kbd>e</kbd> already do, both of those shadow actions you can take again a
+second later from anywhere. Complete ends a session, and a tab that quietly withheld it for as long
+as you were reading a file is not the same trade. <kbd>m</kbd> was unclaimed, so comment mode takes
+it and no fleet action loses its key.
 
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
 Codex / Claude in the Console and Board detail's tab strip; Focus, Diff, Reset, Interrupt,
 Complete and Kill in the Console
-footer; the Console's Conversation, Work queue, Diff and Files tabs; Dispatch and the Fleet,
+footer; the Console's Conversation, Work queue, Diff and Files tabs; the Files toolbar's Preview,
+Editor and Comment controls; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure; the Diff reader's
 Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact

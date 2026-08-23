@@ -157,6 +157,33 @@ test("the daemon revalidates, claims, releases, and suppresses pre-PR recovery o
   });
   assert.equal(retry.status, 200, "positive non-delivery retries the same attempt");
 
+  const beforeForgery = queues.get(sessionId)?.promptedRecovery;
+  writeFileSync(join(repo, "README.md"), "fixture\nambiguous local work\n");
+  const forgedTerminal = {
+    ...identity,
+    reason: "idle_ambiguous" as const,
+    attempt: 4,
+    marker: shipRecoveryMarker({
+      ...identity,
+      reason: "idle_ambiguous",
+      attempt: 4,
+    }),
+    payloadSummary: "Claim the reviewer escalated.",
+    terminal: true,
+  };
+  const forged = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(forgedTerminal),
+  });
+  assert.equal(forged.status, 409, "request shape cannot manufacture a reviewer escalation");
+  assert.deepEqual(
+    queues.get(sessionId)?.promptedRecovery,
+    beforeForgery,
+    "a forged terminal claim cannot replace the current durable attempt",
+  );
+  writeFileSync(join(repo, "README.md"), "fixture\n");
+
   const session = registry.getSession(sessionId)!;
   session.prUrl = "https://github.com/acme/repo/pull/7";
   session.prNumber = 7;

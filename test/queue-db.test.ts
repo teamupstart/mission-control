@@ -1424,7 +1424,6 @@ test("ship recovery claims are exact, durable, and unknown delivery is spent", (
     ...base,
     marker: shipRecoveryMarker(base),
     payloadSummary: "Address a.ts and rerun its focused test.",
-    terminal: false,
   };
   const first = claimPromptedRecovery(claim, 100);
   assert.equal(first?.lastDelivery, "unknown");
@@ -1489,7 +1488,6 @@ test("only a positively undelivered recovery releases the exact same attempt", (
     ...identity,
     marker: shipRecoveryMarker(identity),
     payloadSummary: "Resume implementation.",
-    terminal: false,
   };
   assert.ok(claimPromptedRecovery(claim, 200));
   assert.equal(resolvePromptedRecoveryDelivery({
@@ -1535,8 +1533,12 @@ test("three recovery sends end in a no-send escalation projection", () => {
     decisionOutcome: null,
     reason: "idle_empty" as const,
     payloadSummary: "Resume implementation.",
-    terminal: false,
   };
+  assert.equal(claimPromptedRecovery({
+    ...common,
+    attempt: 4,
+    marker: shipRecoveryMarker({ ...common, attempt: 4 }),
+  }, 299), null, "a request cannot manufacture exhaustion before attempt three");
   const claimAt = (attempt: number, now: number) => claimPromptedRecovery({
     ...common,
     attempt,
@@ -1616,7 +1618,6 @@ test("malformed or contradictory recovery JSON reads as absent while completion 
       attempt: 1,
       marker: valid.marker,
       payloadSummary: "resume",
-      terminal: false,
     }, 70), null, `${why}: unreadable state must not be replaced by a new claim`);
   }
 });

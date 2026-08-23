@@ -194,7 +194,6 @@ import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
-import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
 import {
   capabilitiesFor,
   interruptUnsupportedWhy,
@@ -4425,24 +4424,11 @@ export function buildApp(
       recoveryMinutes: cfg.shipRecoveryMinutes,
       now: Date.now(),
     });
-    const terminalModelEscalation = parsed.data.terminal
-      && decision.kind === "recover"
-      && decision.reason === "idle_ambiguous"
-      && parsed.data.attempt === 4;
-    const expectedMarker = terminalModelEscalation && decision.kind === "recover"
-      ? shipRecoveryMarker({
-        taskId: parsed.data.taskId,
-        logicalKey: parsed.data.logicalKey,
-        generation: parsed.data.generation,
-        reason: parsed.data.reason,
-        attempt: 4,
-      })
-      : decision.kind === "skip" ? null : decision.marker;
     if (
       decision.kind === "skip"
       || decision.reason !== parsed.data.reason
-      || (!terminalModelEscalation && decision.attempt !== parsed.data.attempt)
-      || expectedMarker !== parsed.data.marker
+      || decision.attempt !== parsed.data.attempt
+      || decision.marker !== parsed.data.marker
       || (decision.decision?.generation ?? null) !== parsed.data.decisionGeneration
       || (decision.decision?.outcome ?? null) !== parsed.data.decisionOutcome
     ) {

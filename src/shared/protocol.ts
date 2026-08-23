@@ -3333,8 +3333,6 @@ export const PromptedRecoveryStateSchema = PromptedRecoveryIdentitySchema.extend
 /** Claim one exact recovery attempt before anything reaches the child session. */
 export const PromptedRecoveryClaimSchema = PromptedRecoveryIdentitySchema.extend({
   payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
-  /** Terminal model/refusal escalation; never authorizes a delivery. */
-  terminal: z.boolean().optional().default(false),
 });
 export type PromptedRecoveryClaim = z.infer<typeof PromptedRecoveryClaimSchema>;
 

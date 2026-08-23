@@ -9938,12 +9938,11 @@ export function claimPromptedRecovery(
     let allowed = false;
     if (!sameSequence) {
       allowed = input.attempt === 1
-        || (input.attempt === 4 && (input.reason === "verification_failed" || input.terminal));
+        || (input.attempt === 4 && input.reason === "verification_failed");
     } else if (previous.lastDelivery !== "escalated") {
       const due = previous.nextEligibleAt !== null && now >= previous.nextEligibleAt;
       allowed = due && (
-        (input.terminal && input.attempt === 4)
-        || (previous.lastDelivery === "confirmed_undelivered"
+        (previous.lastDelivery === "confirmed_undelivered"
           ? input.attempt === previous.attempt
           : input.attempt === previous.attempt + 1)
       );
@@ -9953,7 +9952,6 @@ export function claimPromptedRecovery(
       || (
         input.attempt === 4
         && input.reason !== "verification_failed"
-        && !input.terminal
         && previous?.attempt !== 3
       )
     ) {

@@ -1154,6 +1154,17 @@ async function runShipShepherd(
       }
       if (terminalSummary) {
         decision = terminalRecoveryDecision(decision, task.id, queue!.noteKey, terminalSummary);
+        // Reviewer-directed escalation is audited directly and never submitted as a
+        // claim. The claim route derives exhaustion only from durable attempt state; a
+        // caller-supplied terminal flag must not be able to manufacture attempt four.
+        touched.add(session.id);
+        await recordShipRecovery(client, session, decision, {
+          delivery: "escalated",
+          detail: decision.summary,
+          sentText: null,
+        });
+        log(`${session.name}: escalated pre-PR recovery (${reasonLabel(decision.reason)})`);
+        continue;
       }
     }
 
@@ -1371,7 +1382,6 @@ function recoveryClaim(
     attempt: decision.attempt,
     marker: decision.marker,
     payloadSummary,
-    terminal: decision.kind === "escalate" && decision.reason === "idle_ambiguous",
   };
 }
 

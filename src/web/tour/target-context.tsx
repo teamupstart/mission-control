@@ -1,9 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useRef } from "react";
 
-import type { TourTargetId, TourTargetRegistry } from "./target-registry.ts";
+import {
+  tourTargetScope,
+  type TourTargetId,
+  type TourTargetRegistry,
+  type TourTaskTargetId,
+} from "./target-registry.ts";
 
 interface TourTargetContextValue {
   registry: TourTargetRegistry;
+  /** The task the active tour run created, if it has created one. */
   activeTaskId: string | null;
 }
 
@@ -68,19 +74,22 @@ export function useOwnedTourTargetRef<T extends HTMLElement>(
   return useRegistryTargetRef<T>(registry, id, true);
 }
 
-/** Register only the rendered owner belonging to the demo task for this tour run. */
+/**
+ * Register only the rendered owner belonging to the task this tour run created.
+ *
+ * The eligible ids are derived from each target's declared scope in the namespace table, so a
+ * tour that adds a task-scoped target does not also have to be added to a union here. The
+ * runtime scope check makes the same refusal at the one call site a cast could reach.
+ */
 export function useTourTaskTargetRef<T extends HTMLElement>(
-  id: Extract<
-    TourTargetId,
-    "demo-task" | "review-modal" | "session-actions" | "complete-modal"
-  >,
+  id: TourTaskTargetId,
   taskId: string | null | undefined,
 ): (element: T | null) => void {
   const context = useContext(TourTargetContext);
   return useRegistryTargetRef<T>(
     context?.registry ?? null,
     id,
-    Boolean(taskId && taskId === context?.activeTaskId),
+    tourTargetScope(id) === "task" && Boolean(taskId && taskId === context?.activeTaskId),
   );
 }
 

@@ -41,7 +41,7 @@ export function ReviewModal({
   reviews: ReviewItem[];
   onClose: () => void;
 }): React.JSX.Element {
-  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("review-modal", session.task?.id);
+  const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
   // Close automatically once the session has no more pending reviews.
   useEffect(() => {
     if (reviews.length === 0) onClose();

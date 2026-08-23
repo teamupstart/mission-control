@@ -45,6 +45,8 @@ import {
 } from "../lib/settings-registry.ts";
 import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import type { TourId } from "../tour/contracts.ts";
+import { TOUR_ENTRIES } from "../tour/entries.ts";
 
 /** Stable per-tab id, so the pane can name its tab as its `aria-labelledby` label. */
 function tabDomId(id: SettingsCategoryId): string {
@@ -181,7 +183,7 @@ export function SettingsPage({
   worktreesRevision = 0,
   workflowSummaries = [],
   onOpenPalette,
-  onStartSeeWorkTour,
+  onStartTour,
   onOpenForemanProfile,
   jump = null,
 }: {
@@ -254,8 +256,8 @@ export function SettingsPage({
    * of its own - there is one input over everything, and this page is not a second one.
    */
   onOpenPalette?: () => void;
-  /** Start the user-invoked See the work tour from the rail's permanent learning entry. */
-  onStartSeeWorkTour: () => void;
+  /** Start a user-invoked tour from the rail's permanent learning entry. */
+  onStartTour: (tourId: TourId) => void;
   /** Leave Settings for Foreman's fixed System profile in Library. */
   onOpenForemanProfile?: () => void;
   /**
@@ -694,25 +696,29 @@ export function SettingsPage({
           <p className="settings-rail-footer-label" id="settings-help-title">
             Help &amp; tours
           </p>
-          <Tooltip label="Tour the fleet, Board, and one session's work desk">
-            <button
-              type="button"
-              className="settings-tour-start"
-              onClick={onStartSeeWorkTour}
-              aria-label="Start See the work tour"
-            >
-              <span className="settings-tour-start-icon" aria-hidden>
-                ▶
-              </span>
-              <span className="settings-tour-start-copy">
-                <strong>See the work</strong>
-                <small>Start the guided tour</small>
-              </span>
-              <span className="settings-tour-start-arrow" aria-hidden>
-                →
-              </span>
-            </button>
-          </Tooltip>
+          {/* One row per registered tour. With one tour registered this is the same single
+              button, the same copy, and the same accessible name it has always been. */}
+          {TOUR_ENTRIES.map((tour) => (
+            <Tooltip key={tour.id} label={tour.settings.tooltip}>
+              <button
+                type="button"
+                className="settings-tour-start"
+                onClick={() => onStartTour(tour.id)}
+                aria-label={tour.settings.ariaLabel}
+              >
+                <span className="settings-tour-start-icon" aria-hidden>
+                  ▶
+                </span>
+                <span className="settings-tour-start-copy">
+                  <strong>{tour.settings.heading}</strong>
+                  <small>{tour.settings.hint}</small>
+                </span>
+                <span className="settings-tour-start-arrow" aria-hidden>
+                  →
+                </span>
+              </button>
+            </Tooltip>
+          ))}
         </div>
       </div>
 

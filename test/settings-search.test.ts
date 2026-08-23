@@ -81,7 +81,7 @@ function renderCategory(category: SettingsCategoryId): string {
       layout: "console",
       onLayoutChange: () => {},
       settingsStatus: EVERY_CATEGORY,
-      onStartSeeWorkTour: () => {},
+      onStartTour: () => {},
     }),
   );
 }

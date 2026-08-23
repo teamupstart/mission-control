@@ -879,11 +879,11 @@ function DispatchModal({
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
-  const tourModalRef = useTourTargetRef<HTMLElement>("dispatch-modal");
-  const tourKindRef = useTourTargetRef<HTMLDivElement>("dispatch-kind");
-  const tourInputRef = useTourTargetRef<HTMLLabelElement>("dispatch-input");
-  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("dispatch-workflow");
-  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("dispatch-submit");
+  const tourModalRef = useTourTargetRef<HTMLElement>("see-work:dispatch-modal");
+  const tourKindRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-kind");
+  const tourInputRef = useTourTargetRef<HTMLLabelElement>("see-work:dispatch-input");
+  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-workflow");
+  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("see-work:dispatch-submit");
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const availableTaskKinds =

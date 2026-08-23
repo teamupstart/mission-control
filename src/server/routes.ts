@@ -24,9 +24,7 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
-  SEE_WORK_TOUR_DEMO_INTENT,
-  SEE_WORK_TOUR_PREVIEW_INTENT,
-  SeeWorkTourDispatchSchema,
+  TourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
@@ -187,6 +185,7 @@ import {
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
+import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
@@ -5651,91 +5650,59 @@ export function buildApp(
     return c.json(task);
   });
 
-  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
-  // second dispatch API: the body chooses only a repository, while this route fixes the
-  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
-  app.post("/api/tours/see-work/dispatch", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+  // The tour route family. Not a second dispatch API: the body chooses only a repository,
+  // while `SERVER_TOURS` fixes the prompt, agent, model, kind, Workflow posture, and MCP tool
+  // list of every task a tour may create. An unknown tour, or an operation a tour does not
+  // declare, is refused here rather than falling through to general dispatch.
+  async function runTourRecipe(c: Context, operation: TourOperation) {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
+    const recipe = tour.operations[operation];
+    if (!recipe) {
+      return c.json({ ok: false, error: `that tour does not support ${operation}` }, 404);
+    }
+    const parsed = await parseBody(c, TourDispatchSchema);
     if (!parsed.ok) return parsed.res;
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
 
     const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour demo",
-        intent: SEE_WORK_TOUR_DEMO_INTENT,
-        kind: "ship",
-        agent: "codex",
-        model: "gpt-5.6-terra",
-        workflowId: null,
-        backlog: true,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo"],
-      },
+      { ...recipe.create, repoRoot: resolved.repoRoot, extraRepoRoots: [] },
       undefined,
       MANUAL_DISPATCH_TASK_CREATE,
     );
+    if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
-      overrideDisabled: true,
-      missionMcp: { tools: ["request_input"] },
+      overrideDisabled: recipe.dispatch.overrideDisabled,
+      missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
-      await tasks.complete(task.id, "Tour demo");
+      await tasks.complete(task.id, recipe.outcome);
       return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
     }
     return c.json({ ok: true, task: launched.task ?? task });
-  });
+  }
 
-  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
-  // through the manual-dispatch capability, which is the only supported way Chat can launch.
-  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
-  // and the no-MCP posture remain server-owned.
-  app.post("/api/tours/see-work/preview", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
-    if (!parsed.ok) return parsed.res;
-    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+  app.post("/api/tours/:tourId/dispatch", (c) => runTourRecipe(c, "dispatch"));
 
-    const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour conversation",
-        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
-        kind: "chat",
-        agent: "codex",
-        workflowId: null,
-        backlog: false,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo", "tour-preview"],
-      },
-      undefined,
-      MANUAL_DISPATCH_TASK_CREATE,
-    );
-    return c.json({ ok: true, task });
-  });
+  // An empty fleet has no real desk for See the work's third stop to reveal. Its preview
+  // recipe creates one fixed Chat task through the manual-dispatch capability, which is the
+  // only supported way Chat can launch.
+  app.post("/api/tours/:tourId/preview", (c) => runTourRecipe(c, "preview"));
 
-  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
-  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
-  // during provisioning has no session to stop, so cancellation first closes that race.
-  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+  // A tour's single terminal path for every task it created. A live demo follows
+  // CompleteModal's ordering: record the outcome, then stop the session. An Exit during
+  // provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/:tourId/tasks/:id/complete", async (c) => {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
     const id = c.req.param("id");
     const task = tasks.get(id);
     if (!task) return c.json({ ok: false, error: "no such task" }, 404);
-    const isShipDemo =
-      task.title === "Tour demo" &&
-      task.labels.includes("tour-demo") &&
-      task.intent.startsWith("[Mission Control See the work tour demo]");
-    const isChatPreview =
-      task.title === "Tour conversation" &&
-      task.kind === "chat" &&
-      task.labels.includes("tour-preview") &&
-      task.intent.startsWith("[Mission Control See the work tour conversation]");
-    if (!isShipDemo && !isChatPreview) {
+    // The identity check is what keeps this route off a task the tour did not create. It
+    // reads the title, labels, and intent prefix the recipe itself wrote, never the caller.
+    const recipe = tourRecipeFor(tour, task);
+    if (!recipe) {
       return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
     }
 
@@ -5744,8 +5711,7 @@ export function buildApp(
       const cancelled = await tasks.cancel(id);
       if (!cancelled.ok) return c.json(cancelled, 500);
     }
-    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
-    const completed = await tasks.complete(id, outcome);
+    const completed = await tasks.complete(id, recipe.outcome);
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
     session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
     if (session) {

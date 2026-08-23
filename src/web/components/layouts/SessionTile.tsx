@@ -113,7 +113,7 @@ export function SessionTile({
   const held = heldBy !== null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
-  const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>("demo-task", session.task?.id);
+  const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>("see-work:demo-task", session.task?.id);
   const isTourTask = useIsTourTask(session.task?.id);
   const toggleWorkflowExpanded = useCallback(
     () => setWorkflowExpanded((expanded) => !expanded),

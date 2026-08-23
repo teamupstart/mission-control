@@ -1,0 +1,224 @@
+# Phase 2 - Foreman's four roles and the Inspector, on the Models page
+
+## Outcome
+
+Foreman's Review, Verify, Triage and Backlog each choose their own provider instead of sharing
+one, the Inspector stops ignoring the environment when its provider is unset, and every app-owned
+model choice that is an app *setting* becomes visible on a single page.
+
+After this phase, Settings → Models answers "what is this app spending, and on whose account?" for
+every fixed slot in the product: the five background jobs, Foreman's four roles and the Inspector's
+review model. Personas and Ensemble judges stay where they are and are not a gap in that claim -
+their model is a field on a persona or role definition, one per row and unbounded in number, so it
+is not an app setting and has no fixed place on a settings page. The source plan's group inventory
+(*The pattern is already three-fifths built*) draws the same line: the first three groups have a
+fixed slot count, the last two are "one per Persona" and "one per judge".
+
+## Entry criteria and dependencies
+
+- **Direct phase dependencies:** Phase 1 (`phase-1-background-job-providers.md`). This phase renders
+  into `SettingsMatrix` / `ModelSlotRow` and applies the inherit and pinning rules Phase 1
+  establishes.
+- **Session dependency:** the planning session's pull request must merge.
+
+## Scope
+
+In scope:
+
+1. A per-role provider for Foreman's four model calls, inheriting from Foreman's existing
+   group-level `runner`.
+2. Moving Foreman's and the Inspector's model controls onto Settings → Models, leaving pointer
+   lines behind.
+3. The Inspector's fallback fix.
+
+Explicit non-goals:
+
+- **Foreman's per-harness backlog dispatch models.** `foreman/backlog-model-claude|codex|pi` live
+  on Foreman's **Launches** tab and are tier 2 of the *dispatch* ladder - a different thing from
+  Foreman's own four model calls. They stay exactly where they are. Confusing the two would move a
+  dispatch setting onto a page about app-owned calls.
+- Every other Foreman and Inspector setting - mode, allowlist, timings, posture. Only the model and
+  provider rows move.
+- Task kinds (Phase 3) and the background jobs (Phase 1).
+
+## Repository findings
+
+- **Foreman already has one provider for all four roles.** `ForemanConfigSchema.runner` is
+  `z.enum(LLM_RUNNER_IDS).optional()` (`src/shared/protocol.ts:1441`), documented as "Provider used
+  for **every** Foreman model call". That comment stops being true in this phase; update it.
+- **Foreman resolves it correctly.** `src/server/foreman/config.ts:253` is
+  `cfg.runner ?? llmRunnerChoice().id`, with a comment explaining that a literal `"claude"` "would
+  drop the env layer". That is the ladder to keep and to copy.
+- **The worker holds one id per pass, deliberately.** `triageRunnerId`
+  (`src/server/foreman/worker.ts:2434`) is a module-level `let` with the rationale "every triage in
+  a pass runs on the same provider", refreshed once per loop pass from
+  `cfg.runner ?? llmSelection?.runner`. That rationale expires here: the value becomes per role.
+  The four call sites already take a runner id as a parameter - `foreman/review.ts:51`,
+  `foreman/queue-verify.ts:187-195`, `worker.ts:2465`, `foreman/backlog-plan.ts:331-343` - so this
+  is a change of what is passed, not of how.
+- **The backlog planner freezes its identity.** `worker.ts:551-557` builds a planner-circuit
+  identity from runner+model and reads it back at `:714-715`. A per-role runner must flow into that
+  identity, or the circuit will compare against a stale provider.
+- **`resolveForemanModel` already takes a runner** (`src/shared/foreman-models.ts:94`) and maps role
+  to tier. It needs the role's own runner passed in.
+- **Foreman has the same legacy shape, and it is already broken today.** `ForemanSettingsPanel.tsx:649-656`
+  clears the four role models when **Foreman's own** provider select changes, so those stay aligned.
+  But `cfg.runner` is optional and an unset one inherits the app-wide resolution
+  (`src/server/foreman/config.ts:253`), and the app-wide radio lives on a different page where
+  Foreman's clearing never fires. So an installation with role models saved and no Foreman provider
+  set is stranded by an app-wide change **on the current build**, before any of this work. Verified,
+  not inferred. This phase fixes it; the pull request should name it as a pre-existing bug rather
+  than claiming it as new behaviour.
+- **The Inspector drops the env layer.** `inspectorModel` resolves `cfg.runner ?? "claude"`
+  (`src/server/inspector/config.ts:38`), so an unset Inspector provider ignores
+  `MISSION_LLM_RUNNER` and the app config. `src/server/inspector/worker.ts:191` makes the same
+  `?? "claude"` choice when picking the runner instance. Both must move to
+  `?? llmRunnerChoice().id`. The Inspector is the only subsystem still doing this.
+- **Foreman settings has a Models tab.** `FOREMAN_SETTINGS_TABS` (`src/web/lib/foreman-settings-tabs.ts`)
+  declares a `models` tab owning `foreman/provider`, `foreman/model-review`, `foreman/model-verify`,
+  `foreman/model-triage`, `foreman/model-backlog`. Its header comment calls it "the one answer to
+  which tab owns a settings anchor", and settings search selects the tab before scrolling - so
+  moving those anchors means editing this table, not just the panel.
+- **The search index points at Foreman.** `src/web/lib/settings-search.ts:279` is the
+  `foreman-models` entry, "The provider and the four models behind Review, Verify, Triage, and
+  Backlog." It must re-point to the `models` category, or ⌘K will scroll to a control that is no
+  longer there.
+- **The panel renders from the registry.** `ForemanSettingsPanel.tsx:671` maps `FOREMAN_MODEL_ROLES`
+  over `ModelField`; the same rows move rather than being rewritten.
+- **A second writer of the `foreman` blob is safe here, checkably.**
+  `ForemanConfigPatchSchema` is `.partial()` (`src/shared/protocol.ts:1683`) and
+  `setForemanConfig` merges the patch over a freshly read `cur` (`src/server/foreman/config.ts:113`),
+  so a patch carrying only model and runner keys cannot disturb a sibling key. Note that
+  `setForemanConfig` spreads at the top level rather than merging per key like `setLlmConfig` - so
+  send only the keys being changed and never round-trip a whole sub-object from a stale poll.
+
+## Implementation steps
+
+1. **`src/shared/protocol.ts`** - add a nullable per-role `runner` beside each `*Model` key on
+   `ForemanConfigSchema`, defaulting to inherit. Keep the existing top-level `runner` as the
+   group-level default and correct its comment. Mirror in `ForemanConfigPatchSchema`.
+   Follow Phase 1's read/write split: **permissive on read so `resolveLlmRunner` can report an
+   unreadable stored id as `unknown`, strict on write so a bad value from the panel is a 400 rather
+   than a silent no-op.** Foreman's roles are separate fields rather than a map, so the
+   record-level `.catch` trap Phase 1 fixes does not arise here - but the other two halves do. Each
+   role's provider keeps a `.catch` on its own value, so a non-string persisted value cannot fail the
+   whole `ForemanConfigSchema` parse and take Foreman down over a preference; and an unreadable
+   *string* is reported rather than swallowed, because a role that quietly ignored an unknown id
+   while a background job reported one would be the same screen behaving two ways.
+2. **`src/shared/foreman-models.ts`** - resolve each role's provider as: the role's own, else
+   Foreman's group-level `runner`, else the app-wide ladder. Same rule as Phase 1, one extra rung.
+   The pinning invariant comes with it, **both halves**: neither the app-wide radio nor Foreman's
+   group-level provider may disturb a role that has pinned a model, while changing a *role's own*
+   provider resets that role's model unless the new provider offers it. Reuse Phase 1's helper
+   rather than re-deriving the rule - a Foreman role that answered it differently from a background
+   job would be the same screen behaving two ways. Phase 1's **pin-on-provider-change** obligation
+   comes with it, applied **inside `setForemanConfig`** - this phase writes the `foreman` blob and
+   Phase 1 writes `llm`, and neither reaches into the other. A patch that changes Foreman's
+   group-level `runner` first materialises the outgoing resolved provider onto every role that has a
+   model and no provider of its own.
+
+   The harder case is the one that is broken today: Foreman's `runner` is *unset*, the roles inherit
+   the app-wide value, and it is the **app-wide** radio that moves - so no Foreman write happens at
+   all and nothing here can intercept it. That case is covered by Phase 1's **resolver guard**,
+   which is why that guard is a shared helper and why `resolveForemanModel` must route through it.
+   Do not solve it with a cross-blob write from `setLlmConfig`.
+3. **`src/server/foreman/config.ts`** - resolve per role and report each role's resolved provider so
+   the panel and the worker cannot print different answers.
+4. **`src/server/foreman/worker.ts`** - replace the single `triageRunnerId` with a per-role
+   resolution, retire the now-false comment at `:2426-2433`, and thread the role's runner into the
+   backlog planner identity (`:551-557`, `:714-715`). Preserve the existing behaviour of retaining
+   the last known values when the HTTP status read fails.
+5. **`src/server/inspector/config.ts:38` and `worker.ts:191`** - `?? "claude"` becomes
+   `?? llmRunnerChoice().id`. This is a behaviour change for anyone relying on the broken fallback;
+   call it out in the pull request.
+6. **`src/web/components/LlmSettingsPanel.tsx`** - add Foreman and GitHub Inspector groups, rendered
+   through Phase 1's `SettingsMatrix` / `ModelSlotRow`. Group headings keep the app-owned calls
+   legible as distinct subsystems.
+7. **`src/web/useLlm.ts` / `SettingsPage.tsx`** - the panel now reads and writes `llm`, `foreman` and
+   `inspector`. Pass it the Foreman and Inspector state `SettingsPage` already holds rather than
+   opening a second poller with its own idea of the truth.
+8. **`ForemanSettingsPanel.tsx` / `InspectorSettingsPanel.tsx`** - replace the model controls with a
+   pointer line naming Settings → Models. Leave every other setting untouched.
+9. **`src/web/lib/foreman-settings-tabs.ts`** - remove the `models` tab's anchors, or the tab, and
+   keep the table the single answer to anchor ownership. Whatever it now says must remain true for
+   the keyboard walk and for settings search.
+10. **`src/web/lib/settings-search.ts`** - re-point `foreman-models` and the Inspector's model entry
+    to the `models` category with anchors that resolve there. A ⌘K result that scrolls nowhere is
+    worse than no result.
+11. **Docs** - `docs/foreman.md`, `docs/inspector-and-shipping.md`, `docs/models.md`, and
+    `docs/configuration.md`. `docs/models.md` currently states that Foreman's four and the
+    Inspector's one live with their subsystems "because each panel owns the config it writes"; that
+    paragraph is now wrong and its replacement should say what was traded and why.
+
+## Data and compatibility
+
+- **No migration.** Per-role `runner` keys are additive and default to inherit.
+- **An installation that already set Foreman's provider keeps it.** Its four roles inherit from the
+  group-level value, so behaviour is unchanged until a role is overridden - and when that group-level
+  value is next changed, the roles carrying a model are pinned to the outgoing provider first, per
+  Phase 1's rule.
+- **The Inspector fix changes behaviour** for an installation that set `MISSION_LLM_RUNNER` and left
+  the Inspector's provider unset: the Inspector now honours it. That is the intended fix, and it is
+  the one place in this phase where an upgrade is not a no-op.
+- **Anchors move.** Any bookmark or deep link to `#/settings/foreman` expecting the models tab lands
+  on a panel that now points elsewhere; the pointer line is what makes that recoverable.
+
+## Tests and verification
+
+- `test/` - per-role provider resolution including the three-rung ladder (role, Foreman group,
+  app-wide); **a role model saved while Foreman's provider is unset surviving an app-wide provider
+  change** - the regression test for the bug that exists on today's build; `setForemanConfig`
+  pinning the outgoing provider onto role models when Foreman's own `runner` is patched; the
+  Inspector honouring `MISSION_LLM_RUNNER` when its own provider is unset - a regression test for
+  the exact bug; the backlog planner identity carrying the role's runner;
+  `setForemanConfig` leaving sibling keys intact when patched with only model and runner keys.
+- `test/` - the anchor-ownership contract: every anchor the search index names is owned by exactly
+  one tab/category. Extend whatever test currently pins `FOREMAN_SETTINGS_TABS` rather than adding a
+  parallel one.
+- `e2e/` - **required.** Set two Foreman roles to different providers and assert both render;
+  assert Foreman's settings page shows the pointer instead of the model controls; assert a ⌘K
+  search for a Foreman model lands on the Models page.
+- `npm run typecheck`, `npm run lint`, `npm test`, `npm run build && npm run test:e2e`.
+
+## Merge and exit criteria
+
+- Foreman's four roles can run on different providers, and the worker spawns each on the one shown.
+- An installation with Foreman role models already saved keeps running them on the provider they
+  were saved under, including after Foreman's group-level provider is changed.
+- An unset Inspector provider follows `MISSION_LLM_RUNNER` and the app config.
+- Every app-owned model choice except Personas and Ensemble judges is visible on Settings → Models.
+- Foreman and Inspector panels point at it; no anchor is orphaned.
+- Docs corrected, gates green, Playwright spec covering the move.
+
+## Downstream handoff
+
+- Nothing depends on this phase. It is a leaf.
+- If Phase 3 merges first, this phase rebases onto its `LlmSettingsPanel.tsx` group structure - the
+  two add different groups and the conflict is positional, not semantic.
+
+## Cross-phase audit record
+
+- Review round 8 raised the legacy case for Foreman specifically. Verified against the tree and it
+  is **already broken on the current build**: Foreman's panel clears on its own provider select, but
+  an unset `cfg.runner` inherits the app-wide value and the app-wide radio is on another page. This
+  phase fixes it, and the fix reshaped Phase 1: the resolver guard became the primary mechanism and
+  a shared helper, because an app-wide change cannot be intercepted by a `foreman` writer and the
+  alternative - `setLlmConfig` writing into the `foreman` blob - would break the single-writer rule.
+  Pin-on-provider-change stays, per blob, as the convenience that preserves a deliberate choice.
+- Reconciled with Phase 1: this phase consumes `SettingsMatrix`, `ModelSlotRow`, the inherit rule
+  and both halves of the pinning invariant, and adds no second clear-on-change. Phase 1's review
+  round 6 settled the per-slot half after this file was written; step 2 was updated to consume it
+  rather than to restate it. The per-role ladder adds one rung
+  (role → Foreman group → app-wide) to Phase 1's two; that is an extension of Phase 1's rule, not a
+  competing one, and Phase 1's handoff is worded to allow it.
+- Review round 4 flagged that the outcome claimed every app-owned model choice on one page while
+  the plan leaves Personas and Ensemble judges where they are. The exit criteria already carried
+  the exclusion; the outcome did not, and the two now agree. The exclusion itself is unchanged and
+  is not an omission - an unbounded per-row field is not an app setting, which is the same reason
+  the source plan never moved it.
+- Reconciled with Phase 3: both edit `LlmSettingsPanel.tsx`, `settings-search.ts` and
+  `docs/models.md`. Ownership is by section; neither touches the other's group. Phase 3 owns the
+  Models **category blurb** in `settings-registry.ts`; this phase does not edit that file.
+- Boundary recorded during writing: Foreman's per-harness *backlog dispatch* models were initially
+  in scope by association and are explicitly excluded, because they belong to the dispatch ladder
+  Phase 3 extends, not to the app-owned calls this phase consolidates.

@@ -169,8 +169,23 @@ class CommentMarkerWidget extends WidgetType {
     // announced itself as "●" would say nothing about which line or what state.
     button.setAttribute("aria-label", this.marker.label);
     button.textContent = "●";
+    // The widget is not part of the document being edited. Without this the button sits
+    // inside `.cm-content`'s `contenteditable` region, where a browser treats it as text
+    // rather than as a control - which is what keeps it out of the tab order.
+    button.contentEditable = "false";
+    // Two listeners, and the split is the point. `mousedown` only defends the caret: left
+    // to the browser, a press here lands in the document behind the widget and moves the
+    // insertion point. ACTIVATION is on `click`, which a native button also fires for Enter
+    // and for Space - so the marker answers the keyboard as well as the pointer.
+    //
+    // Acting on `mousedown` alone was the bug: this control was moved out of the gutter
+    // precisely because CodeMirror hides gutters from assistive technology, and then it
+    // could still only be reached with a mouse.
     button.addEventListener("mousedown", (event) => {
-      // Without this the click lands in the document behind the widget and moves the caret.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       this.onSelect(this.marker.line);

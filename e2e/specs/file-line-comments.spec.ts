@@ -765,4 +765,52 @@ test.describe("line comments in the Files editor", () => {
       .toBe(2);
     await expect(replyBox).toHaveValue("");
   });
+
+  test("a marker opens its thread from the keyboard, not only from a mouse", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The marker was moved out of the gutter because CodeMirror hides both its gutters from
+     * assistive technology - and then it acted on `mousedown` only, so the control that
+     * exists for reachability could still be reached with a mouse alone. Enter and Space did
+     * nothing, which is the whole thread unreachable for anyone not using a pointer.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    await lineNumber(page, 3).click();
+    await page.getByRole("textbox", { name: "Comment on line 3" }).fill(COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
+    await expect(marker).toBeVisible();
+
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
+    await expect(thread).toBeHidden();
+
+    // It takes focus at all - a button inside CodeMirror's `contenteditable` content is
+    // treated as text rather than as a control unless the widget opts out of editing.
+    await marker.focus();
+    await expect(marker).toBeFocused();
+
+    // ---- Enter opens it ----
+    await page.keyboard.press("Enter");
+    await expect(thread, "Enter on a focused marker must open its thread").toContainText(COMMENT);
+
+    // ---- and Space steps it closed again, exactly as a second click would ----
+    await marker.focus();
+    await page.keyboard.press(" ");
+    await expect(thread, "Space must activate the marker too").toBeHidden();
+
+    // The pointer still works, and still does not move the caret into the document behind
+    // the marker - which is why `mousedown` is defended even though it no longer activates.
+    await marker.click();
+    await expect(thread).toContainText(COMMENT);
+  });
 });

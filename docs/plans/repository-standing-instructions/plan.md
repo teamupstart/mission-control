@@ -142,6 +142,7 @@ renders the leaf with the full path in a tooltip, per that component's stated ru
 │   ✓ pi     · terminal    prompt text        composed above turn one             │
 │   ✗ sessions started outside Mission Control      not reachable - see below     │
 │   ✗ Foreman / Inspector / Persona review prompts  not in scope - see below      │
+│   ⏱ sessions already running                     keep what they launched with   │
 │                                                                                 │
 │  [ Save ]  [ Revert ]                        [ Use global default ]  [ Preview ] │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -259,7 +260,7 @@ above would have to admit it.
 flowchart LR
   P[Settings panel] -->|PUT /api/instructions| D[daemon]
   D --> S[(app_config<br/>instructions)]
-  T[dispatch / assignment] --> R{resolve<br/>longest path match}
+  T[launch: a dispatch] --> R{resolve<br/>longest path match}
   S --> R
   R --> C{harness · runtime<br/>has out-of-band?}
   C -->|yes| A[system prompt /<br/>developerInstructions]
@@ -267,6 +268,28 @@ flowchart LR
   A --> L[agent session]
   B --> L
 ```
+
+The diagram is one occasion. **An assignment is the other, and it does not re-enter it.**
+`withTaskKindContract` is also reached from `tasks.ts:2970`, injecting into a session that is
+already running - where there is no argv to append to and no `thread/start` to carry a value, so
+the left half of that flow has nothing to act on. An assignment therefore resolves nothing and
+replays the snapshot the launch recorded:
+
+| Occasion | What the session gets |
+|---|---|
+| Launch | resolve, then out of band if the pair has a channel and a prefix if not |
+| Assignment, pair **has** a channel | nothing - the block is still installed on that process |
+| Assignment, pair has **none** | the snapshot's text, prefixed again, because a prefix does not govern later turns |
+| Assignment, no snapshot | nothing |
+
+Which settles a question the store would otherwise leave open:
+
+> **A session keeps the standing instructions it launched with. An edit takes effect on the next
+> session, not a running one.**
+
+A live process's system prompt cannot be rewritten, so the alternative is not "edits reach running
+sessions" - it is edits reaching them on two of the five pairs and not the other three, for the same
+feature. The panel says which it is.
 
 ### Resolution is longest-path-match on the repository root
 

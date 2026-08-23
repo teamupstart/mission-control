@@ -248,10 +248,18 @@ export interface ResolvedStandingInstructions {
    and performs no write.
 4. `resolveStandingInstructions` is a pure function exported from shared code. Phase 2 calls the
    route, never reimplements the matching.
-5. **Exactly one delivery per session.** A harness · runtime pair with an out-of-band channel gets
-   the block there and is **not** also prefixed into turn one; a pair without one is prefixed and
-   has no out-of-band send. Never both - the agent would read the same rule twice in its first
-   turn. Whether a pair has a channel is read from `StandingInstructionsSpec` in one place, so the
+5. **Exactly one delivery per occasion, and a launch is the only occasion that resolves.**
+
+   *At launch*: a harness · runtime pair with an out-of-band channel gets the block there and is
+   **not** also prefixed into turn one; a pair without one is prefixed and has no out-of-band send.
+   Never both - the agent would read the same rule twice in its first turn.
+
+   *At assignment* into a live session (`tasks.ts:2970`): nothing is resolved. A pair with a channel
+   gets **nothing**, because the block is still installed on that process; a pair without one gets
+   the **snapshot's** text prefixed again, because a prefix does not govern later turns; a session
+   with no snapshot gets nothing.
+
+   Whether a pair has a channel is read from `StandingInstructionsSpec` in one place, so the
    composer, the resolved route and the dispatch marker cannot disagree.
 6. The resolved route requires `agent` and `runtime`, because the mechanism is a property of the
    pair rather than of the repository. An unknown `agent`, or a `runtime` the harness does not
@@ -259,13 +267,21 @@ export interface ResolvedStandingInstructions {
 7. **What a session received is recorded, not re-resolved.** Phase 1 writes the **composed block
    exactly as delivered** - every attached repository's labelled block, in manifest order - together
    with its mechanism and one provenance entry per contributing repository, to a per-session row at
-   launch, keyed by `noteKeyFor(s)`, once and never updated. Editing or removing the configuration afterwards does not change or delete any
-   existing session's row. The session header chip reads that snapshot and **only** that snapshot;
-   the resolved route is for the pre-launch dispatch note, where live config is the right answer.
+   launch, keyed by `noteKeyFor(s)`, once and never updated. Editing or removing the configuration
+   afterwards does not change or delete any existing session's row. The session header chip reads
+   that snapshot and **only** that snapshot; the resolved route is for the pre-launch dispatch note,
+   where live config is the right answer. The row follows **every** note-key rotation, not only the
+   first bind - the `moveForemanInviteKey` policy, not `moveLaunchTurnOnInitialBind`'s - and it is
+   what an assignment replays, not merely what the chip reads.
 8. A **save writes exactly one field**: one repository's key, or `default`. Combined with (7), the
    two ways an operator could be shown or sent an instruction they never wrote are both closed - an
    unsaved draft cannot be persisted by a neighbouring save, and a saved change cannot rewrite the
    history of a session that already launched.
+9. **A session keeps the standing instructions it launched with.** An edit takes effect on the next
+   session, not a running one. This follows from (5): a live process's system prompt cannot be
+   rewritten, so the alternative is not "edits reach running sessions" but edits reaching them on
+   two of the five pairs and not the other three, for the same feature. Phase 2 renders the sentence
+   in the panel.
 
 ---
 

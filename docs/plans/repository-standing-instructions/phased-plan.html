@@ -352,11 +352,17 @@ boundary-matched.</li>
 with the current view and performs no write.</li>
 <li><code>resolveStandingInstructions</code> is a pure function exported from shared code. Phase 2
 calls the route, never reimplements the matching.</li>
-<li><strong>Exactly one delivery per session.</strong> A harness · runtime pair with an out-of-band
-channel gets the block there and is <strong>not</strong> also prefixed into turn one; a pair without
-one is prefixed and has no out-of-band send. Never both - the agent would read the same rule twice
-in its first turn. Whether a pair has a channel is read from <code>StandingInstructionsSpec</code> in
-one place, so the composer, the resolved route and the dispatch marker cannot disagree.</li>
+<li><strong>Exactly one delivery per occasion, and a launch is the only occasion that
+resolves.</strong>
+<p><em>At launch</em>: a harness · runtime pair with an out-of-band channel gets the block there and
+is <strong>not</strong> also prefixed into turn one; a pair without one is prefixed and has no
+out-of-band send. Never both - the agent would read the same rule twice in its first turn.</p>
+<p><em>At assignment</em> into a live session (<code>tasks.ts:2970</code>): nothing is resolved. A
+pair with a channel gets <strong>nothing</strong>, because the block is still installed on that
+process; a pair without one gets the <strong>snapshot's</strong> text prefixed again, because a
+prefix does not govern later turns; a session with no snapshot gets nothing.</p>
+<p>Whether a pair has a channel is read from <code>StandingInstructionsSpec</code> in one place, so
+the composer, the resolved route and the dispatch marker cannot disagree.</p></li>
 <li>The resolved route requires <code>agent</code> and <code>runtime</code>, because the mechanism is
 a property of the pair rather than of the repository. An unknown <code>agent</code>, or a
 <code>runtime</code> the harness does not offer, is a <code>400</code> rather than a default.</li>
@@ -366,11 +372,19 @@ manifest order - together with its mechanism and one provenance entry per contri
 a per-session row at launch, keyed by <code>noteKeyFor(s)</code>, once and never updated. Editing or removing the configuration afterwards
 does not change or delete any existing session's row. The session header chip reads that snapshot and
 <strong>only</strong> that snapshot; the resolved route is for the pre-launch dispatch note, where
-live config is the right answer.</li>
+live config is the right answer. The row follows <strong>every</strong> note-key rotation, not only
+the first bind - the <code>moveForemanInviteKey</code> policy, not
+<code>moveLaunchTurnOnInitialBind</code>'s - and it is what an assignment replays, not merely what
+the chip reads.</li>
 <li>A <strong>save writes exactly one field</strong>: one repository's key, or <code>default</code>.
 Combined with (7), the two ways an operator could be shown or sent an instruction they never wrote
 are both closed - an unsaved draft cannot be persisted by a neighbouring save, and a saved change
 cannot rewrite the history of a session that already launched.</li>
+<li><strong>A session keeps the standing instructions it launched with.</strong> An edit takes effect
+on the next session, not a running one. This follows from (5): a live process's system prompt cannot
+be rewritten, so the alternative is not "edits reach running sessions" but edits reaching them on two
+of the five pairs and not the other three, for the same feature. Phase 2 renders the sentence in the
+panel.</li>
 </ol>
 
 <h2>Final verification strategy</h2>

@@ -57,6 +57,7 @@ From Phase 1, relied on and not changed:
 | key present, `""` | send nothing for this repository → still an `override` |
 | `null` in a patch | remove the key → what **Use global default** sends |
 | `STANDING_INSTRUCTIONS_MAX_LENGTH` | 8,000 - the counter's denominator |
+| launch resolves, assignment repeats | a running session keeps what it launched with; an edit reaches the next one |
 
 ## Repository findings
 
@@ -196,10 +197,11 @@ Layout is specified by the mockups in [`plan.html`](plan.html); read them rather
   way `TrustPanel` and `CommandLibrary.tsx:560-585` already do. A subdirectory is a legitimate key.
 
 The **reach** block is a required part of this phase, not decoration. It states per harness and
-runtime which sessions get the text and by which mechanism, and it is the honest answer to the one
-question a standing instruction otherwise leaves an operator guessing at.
+runtime which sessions get the text and by which mechanism, **and when a change to it takes effect**,
+and it is the honest answer to the questions a standing instruction otherwise leaves an operator
+guessing at.
 
-It has **seven** rows, and the last two are as required as the first five. Both `✗` rows are shipped,
+It has **eight** rows, and the last three are as required as the first five. Both `✗` rows are shipped,
 tested strings, because each renders an approved decision that was a deliberate product boundary
 rather than a gap:
 
@@ -207,6 +209,13 @@ rather than a gap:
 |---|---|
 | `✗ sessions started outside Mission Control` - not reachable | `reach` - Mission-Control-launched sessions only |
 | `✗ Foreman / Inspector / Persona review prompts` - not in scope | `standards-bundle` - sessions only, for now |
+| `⏱ sessions already running` - keep what they launched with | cross-phase invariant 9 - launch resolves, assignment repeats |
+
+The third is about **when**, not **where**, which is why it is a distinct row rather than a footnote
+on the first. An operator who edits a rule while five sessions are open needs to know before they go
+looking that none of the five changed. Phase 1's reasoning holds it up: a live process's system
+prompt cannot be rewritten, so the alternative was never "edits reach running sessions" - it was
+edits reaching them on two of the five pairs and not the other three.
 
 The second is the easier of the two to drop, and the more damaging to omit. Without it the panel
 reads as though a rule written here also governs the Inspector's review of the resulting pull
@@ -264,9 +273,9 @@ both the current registry and `docs/agent-guides/change-contracts.md:747-755`.
   `test/conductor-panel.test.ts` (487 lines) or `test/task-sources-panel.test.ts` (240):
   `inherited` vs `override` chips, the counter, the disabled **Use global default**, and the empty
   state. Assert the reach block **row by row**: five `✓` pairs with their mechanisms, and **both**
-  `✗` exclusions - externally started sessions, and Mission Control's own review prompts. A generic
-  "the reach block renders" assertion passes while an exclusion is missing, which is the case that
-  matters.
+  `✗` exclusions - externally started sessions, and Mission Control's own review prompts - and the
+  `⏱` row saying a running session keeps what it launched with. A generic "the reach block renders"
+  assertion passes while a row is missing, which is the case that matters.
 - Additions to `test/settings-sidebar-render.test.ts` (~30 lines): the conventional pair that every
   recent category added - "Standing instructions is a category of its own: its panel shows, the
   others don't", and "with no answer from the daemon, the panel says so rather than showing an
@@ -304,6 +313,9 @@ Cover three things:
    rule in Settings and assert the running session's chip still shows the original text. This is
    the browser proof that the chip reads the snapshot; a chip wired to the resolved route passes
    every other case in this spec and fails only this one.
+5. **Neither does the session.** Assign a second task to that same session and assert the recorded
+   argv and prompt carry the launch text, not the edited one - the browser proof of invariant 9.
+   `harness-defaults-propagate.spec.ts`'s record-dir reader already gives the assertion shape.
 
 Two standing constraints: **never spend model tokens** - every agent binary is redirected at a fake
 by `e2e/fixtures/fake-agents.ts` - and **never add `data-testid`**. Select by role, label or
@@ -330,7 +342,8 @@ npm run test:e2e
 - A poll landing mid-edit does not revert the operator's text.
 - Saving one repository leaves every other repository's stored value untouched.
 - A session's chip shows what that session received, and does not change when the setting does.
-- The reach block states all five harness · runtime pairs and the two deliberate exclusions.
+- The reach block states all five harness · runtime pairs, the two deliberate exclusions, and the
+  line saying an edit reaches the next session rather than a running one.
 - Docs updated, including the stale Conductor sentence.
 - Typecheck, lint, tests, build and e2e green; one reviewable pull request merged.
 

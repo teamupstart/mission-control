@@ -27,7 +27,7 @@ adds the editor.
 - The `app_config` store: read, compare-and-swap write, ETag.
 - Longest-path-match resolution, boundary-safe.
 - The three configuration HTTP routes, plus the snapshot read route.
-- Composition into the dispatch and assignment prompt seam.
+- Composition into the dispatch and assignment prompt seam, which are different occasions and not one.
 - Delivery on all five live harness · runtime pairs, including the two channels not currently used.
 - A per-session snapshot of what was actually delivered, written at launch and never rewritten.
 - Tests for all of the above, and the docs those changes touch.
@@ -132,6 +132,37 @@ So the composition is **conditional on the resolved harness and runtime**:
 
 Order within the prefix, when it applies: repo manifest, then standing instructions, then the
 intent. The manifest tells the agent which checkouts exist; the instructions are about them.
+
+#### Launch resolves. Assignment repeats.
+
+The rule above is about a **launch**. `withTaskKindContract` is reached from two seams and only one of
+them is one: `dispatcher.ts:417` starts a process, `tasks.ts:2970` injects into a session that is
+already running. An assignment has no argv to append to, no `query()` options to set and no
+`thread/start` to carry a value - so step 6 has nothing to hook, and the rule as stated so far would
+send an assigned task **no standing instruction at all** on the three pairs that have a channel.
+
+The fix is not a second out-of-band path. It is that an assignment does not resolve anything:
+
+| Occasion | What happens |
+|---|---|
+| **Launch** (`dispatcher.ts:417`) | Resolution runs. Out of band if the pair has a channel, prefix if it does not. The result is recorded in the snapshot (step 8). |
+| **Assignment**, pair **has** a channel | Compose nothing. The block is still installed on that process and that checkout - that is what "durable" means, and it is the same fact that makes the snapshot survive `/clear`. |
+| **Assignment**, pair has **none** | Prefix **the snapshot's text**, not a fresh resolution. A prefix is turn-one prose that can be compacted away and does not govern later turns - the approved decisions table says exactly this - so it has to be repeated, and it has to be repeated *unchanged*. |
+| **Assignment**, no snapshot row | Nothing. A session launched without a standing instruction does not acquire one mid-life. |
+
+**Why an assignment must not re-resolve.** The repository cannot have changed: `assign` refuses a
+multi-repo task and resolves the session's own checkout (`tasks.ts:2953-2956`). The only thing that
+can have changed is the configuration - and a live process's system prompt cannot be rewritten, so
+re-resolving would give `claude · terminal` one mid-session semantic and `pi · terminal` another, for
+the same feature, with the reach block left to explain the difference. One boundary instead, stated
+product-wide:
+
+> **A session keeps the standing instructions it launched with. An edit takes effect on the next
+> session, not a running one.**
+
+Phase 2 renders that sentence in the panel. It is also what makes the session chip true by
+construction: the snapshot is not a parallel record of what was delivered, it **is** what an
+assignment delivers.
 
 **One decision, read once.** Whether a pair has a channel is `StandingInstructionsSpec` (step 6),
 so this step must ask that spec rather than re-deriving the answer from an agent name or a runtime
@@ -269,20 +300,34 @@ composed block is non-empty - a session with no standing instruction has no row 
 **It must ride the key changing under it.** The row is written while argv is being composed, before
 the agent has reported its own session id, so it is keyed on `s.id`. When `agentSessionId` arrives,
 `noteKeyFor` starts returning a different key and the row is orphaned - the chip would silently empty
-out a few seconds into every Claude terminal session. `session_launch_turns` has exactly this problem
-and `moveSessionLaunchTurn` (`src/server/db.ts:8143`) is exactly the shape of the fix. Move this row
-alongside it, in the same transaction, rather than adding a second bind hook.
+out a few seconds into every Claude terminal session. And a `/clear` rotates the key again, for as
+long as the process lives.
 
-**But not its policy.** `moveSessionLaunchTurn` is called only on the *first* bind, and deliberately
-**strands** the row on a native-to-native rotation - a `/clear` - because a launch turn belongs to one
-conversation (`src/server/db.ts:8137-8142`, `Registry.moveLaunchTurnOnInitialBind` at
-`src/server/registry.ts:6487`). A standing instruction does not. It belongs to the **process**:
-`--append-system-prompt` is a flag on the running CLI and is still in force after `/clear`, and
-Codex's value lives on the mutated `LaunchConfig` that survives `clearContext` (`codex/sdk.ts:569`).
-So the snapshot follows every rotation, for as long as the process carrying it lives. Copying the
-launch turn's stranding rule would blank the chip on the first `/clear` while the instruction it
-described was still governing the session - which is the same class of lie this step exists to
-prevent, arriving from the other direction.
+**Copy `moveForemanInviteKey`, not `moveSessionLaunchTurn`.** This is the trap in this step, because
+the launch turn is the nearer-looking neighbour and the wrong one. `moveSessionLaunchTurn`'s only
+caller is `Registry.moveLaunchTurnOnInitialBind` (`src/server/registry.ts:6487`), whose guard
+`if (fromKey !== previous.id) return` its own docstring calls *"the whole method"*: it fires only on
+the first bind and deliberately **strands** the row on a native-to-native rotation, because carrying a
+launch turn into a new conversation would let the projection swallow a real message. Attaching the
+snapshot to that path gives it exactly the behaviour this step forbids - the chip goes blank on the
+first `/clear` while the instruction it described is still governing the session.
+
+That same docstring names the right one:
+
+> The guard is the whole method, and it is what separates this from `moveForemanInviteKey`, **which
+> moves on every rotation.**
+
+So define `moveStandingInstructionsKey(fromKey, toKey)` beside `moveForemanInviteKey`
+(`src/server/registry.ts:6867`), with no initial-bind guard and the same last-write-wins on the
+destination, and call it from the same six rotation sites (`registry.ts:1930`, `:2313`, `:2581`,
+`:2733`, `:4715`, `:4812`) plus `resetSession` in `src/server/reset.ts`, which is why that method is
+public.
+
+**Why the two policies differ, in one line.** A launch turn is a *projection into one conversation*
+and must not be carried into the next. The snapshot is a *record of what governs the process* -
+`--append-system-prompt` is a flag on the running CLI, and Codex's value lives on the mutated
+`LaunchConfig` that survives `clearContext` (`codex/sdk.ts:569`) - and `/clear` does not end the
+process.
 
 **Prune it with its neighbours.** `pruneSessionLaunchTurns(liveKeys, olderThan)` is called from
 `src/server/registry.ts:6549`; the snapshot prunes on the same pass and the same liveness set.
@@ -310,10 +355,11 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 | Resolution | longest match wins; `/repo-backup` does not match `/repo`; empty-string override beats the default; absent key inherits; the character cap |
 | Composition | the block is a prefix above the intent and below nothing; **a repo with no rules produces a byte-identical prompt to today**; multi-repo emits one labelled block per attached repo in manifest order |
 | Delivery | each of the five harness · runtime pairs carries the text by its declared mechanism; **exactly one `--append-system-prompt` flag is emitted**; the standing instruction still ships when `askChannelArgs` returns `[]`; Codex's merge preserves a configured value and arms without `opts.mcp` |
+| **Assignment** | an assigned task on a pair **with** a channel composes nothing and the session's installed block still governs; on a pair **without** one it carries the **snapshot's** text; editing the configuration between launch and assignment changes neither; a session with no snapshot row is assigned a byte-identical prompt to today |
 | **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
 | Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
-| **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **a multi-repo dispatch's row holds the whole composed block and one `sources` entry per contributing repository, in manifest order**; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and a native-to-native rotation**, and is reachable under the new key each time; a pruned session's row goes with it |
+| **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **a multi-repo dispatch's row holds the whole composed block and one `sources` entry per contributing repository, in manifest order**; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and every subsequent native-to-native rotation**, and is reachable under the new key each time - drive at least two `/clear`s, because a hook copied from `moveLaunchTurnOnInitialBind` passes the first move and fails the second; a pruned session's row goes with it |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.
 
@@ -332,6 +378,8 @@ is no UI yet; Phase 2 owns the browser proof.
 ## Merge and exit criteria
 
 - All five harness · runtime pairs deliver by their declared mechanism, each proven by a test.
+- An assigned task on a live session delivers by replaying its snapshot, never by re-resolving, and
+  never twice on a pair whose channel is durable.
 - A repository with no standing instructions dispatches a byte-identical prompt and argv to `main`.
 - The configuration routes behave as the cross-phase contract states, including CAS and the size
   limit.
@@ -354,6 +402,8 @@ Phase 2 may rely on, and must not change:
 - The launch snapshot and `GET /api/sessions/:id/standing-instructions`. This is the **only** source
   the session header chip may read; the resolved route is for the pre-launch dispatch note, where
   live config is the correct answer.
+- **Launch resolves, assignment repeats**, and the panel states the boundary that follows from it:
+  a session keeps the standing instructions it launched with.
 
 Phase 2 owns everything under `src/web/`, the settings registry entry, the search index entry, the
 two read-only markers, and the e2e spec.

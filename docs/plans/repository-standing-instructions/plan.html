@@ -258,8 +258,8 @@ there is an override to remove. <code>RepositoryName</code> renders the leaf wit
 in a tooltip, per that component's stated rule.</p>
 
 <div class="fig">
-<svg viewBox="0 0 860 452" role="img" aria-label="Mockup of an expanded repository card containing a markdown text box with two standing instructions, a character counter, and a reach block listing which harness and runtime pairs receive the text and by which mechanism.">
-  <rect x="1" y="1" width="858" height="450" rx="10" class="panel" stroke-width="1.2"/>
+<svg viewBox="0 0 860 496" role="img" aria-label="Mockup of an expanded repository card containing a markdown text box with two standing instructions, a character counter, and a reach block listing which harness and runtime pairs receive the text and by which mechanism, which two kinds of session it deliberately does not reach, and that a running session keeps the text it launched with.">
+  <rect x="1" y="1" width="858" height="494" rx="10" class="panel" stroke-width="1.2"/>
 
   <text x="20" y="30" class="hd">▾  ai-harness</text>
   <text x="140" y="30" class="dim mono">~/workspace/ai-harness</text>
@@ -281,7 +281,7 @@ in a tooltip, per that component's stated rule.</p>
 
   <!-- reach -->
   <text x="20" y="230" class="lbl" font-weight="650">Reach</text>
-  <rect x="20" y="240" width="820" height="150" rx="8" class="sub" stroke-width="1.2"/>
+  <rect x="20" y="240" width="820" height="194" rx="8" class="sub" stroke-width="1.2"/>
 
   <text x="36" y="262" fill="var(--ok)" font-size="12">✓</text>
   <text x="56" y="262" class="lbl mono">claude · terminal</text>
@@ -317,15 +317,25 @@ in a tooltip, per that component's stated rule.</p>
   <text x="400" y="378" class="dim">not reachable</text>
   <text x="700" y="378" class="dim">by design</text>
 
+  <text x="36" y="400" fill="var(--bad)" font-size="12">✗</text>
+  <text x="56" y="400" class="lbl">Foreman / Inspector / Persona review prompts</text>
+  <text x="400" y="400" class="dim">not in scope</text>
+  <text x="700" y="400" class="dim">by design</text>
+
+  <text x="36" y="422" fill="var(--warn)" font-size="12">⏱</text>
+  <text x="56" y="422" class="lbl">sessions already running</text>
+  <text x="400" y="422" class="dim">keep what they launched with</text>
+  <text x="700" y="422" class="dim">edits reach the next</text>
+
   <!-- buttons -->
-  <rect x="20" y="410" width="66" height="26" rx="6" fill="var(--accent)"/>
-  <text x="53" y="427" text-anchor="middle" fill="#fff" font-size="12" font-weight="650">Save</text>
-  <rect x="94" y="410" width="72" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
-  <text x="130" y="427" text-anchor="middle" class="lbl">Revert</text>
-  <rect x="612" y="410" width="140" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
-  <text x="682" y="427" text-anchor="middle" class="lbl">Use global default</text>
-  <rect x="762" y="410" width="78" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
-  <text x="801" y="427" text-anchor="middle" class="lbl">Preview</text>
+  <rect x="20" y="454" width="66" height="26" rx="6" fill="var(--accent)"/>
+  <text x="53" y="471" text-anchor="middle" fill="#fff" font-size="12" font-weight="650">Save</text>
+  <rect x="94" y="454" width="72" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="130" y="471" text-anchor="middle" class="lbl">Revert</text>
+  <rect x="612" y="454" width="140" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="682" y="471" text-anchor="middle" class="lbl">Use global default</text>
+  <rect x="762" y="454" width="78" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="801" y="471" text-anchor="middle" class="lbl">Preview</text>
 </svg>
 </div>
 <p class="cap">Mockup 2 - the <strong>reach</strong> block is not decoration. It is stated per
@@ -473,7 +483,7 @@ block above would have to admit it.</p>
 </div>
 
 <div class="fig">
-<svg viewBox="0 0 860 250" role="img" aria-label="Flow diagram: the Settings panel PUTs to the daemon which stores the config in app_config; a dispatch resolves the longest matching repository path against that store, then branches on whether the harness and runtime pair has an out-of-band channel, delivering either a system prompt or a prefix block into the agent session.">
+<svg viewBox="0 0 860 250" role="img" aria-label="Flow diagram: the Settings panel PUTs to the daemon which stores the config in app_config; a launch resolves the longest matching repository path against that store, then branches on whether the harness and runtime pair has an out-of-band channel, delivering either a system prompt or a prefix block into the agent session.">
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" class="arrowfill"/>
@@ -485,8 +495,8 @@ block above would have to admit it.</p>
   <text x="82" y="56" text-anchor="middle" class="dim">Standing instructions</text>
 
   <rect x="12" y="158" width="140" height="44" rx="8" class="sub" stroke-width="1.2"/>
-  <text x="82" y="179" text-anchor="middle" class="lbl">Dispatch</text>
-  <text x="82" y="194" text-anchor="middle" class="dim">or assignment</text>
+  <text x="82" y="179" text-anchor="middle" class="lbl">Launch</text>
+  <text x="82" y="194" text-anchor="middle" class="dim">a dispatch</text>
 
   <rect x="192" y="20" width="164" height="44" rx="8" class="sub" stroke-width="1.2"/>
   <text x="274" y="41" text-anchor="middle" class="lbl">daemon</text>
@@ -529,8 +539,33 @@ block above would have to admit it.</p>
   <path d="M 775 196 L 775 166" class="flow" marker-end="url(#ah)"/>
 </svg>
 </div>
-<p class="cap">The one new arrow into the dispatch path: a resolved, repo-scoped block that
+<p class="cap">The one new arrow into the launch path: a resolved, repo-scoped block that
 branches on harness capability rather than on an agent name.</p>
+
+<p>The diagram is one occasion. <strong>An assignment is the other, and it does not re-enter
+it.</strong> <code>withTaskKindContract</code> is also reached from <code>tasks.ts:2970</code>,
+injecting into a session that is already running - where there is no argv to append to and no
+<code>thread/start</code> to carry a value, so the left half of that flow has nothing to act on. An
+assignment therefore resolves nothing and replays the snapshot the launch recorded:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Occasion</th><th>What the session gets</th></tr></thead>
+<tbody>
+<tr><td>Launch</td><td>resolve, then out of band if the pair has a channel and a prefix if not</td></tr>
+<tr><td>Assignment, pair <strong>has</strong> a channel</td><td>nothing - the block is still installed on that process</td></tr>
+<tr><td>Assignment, pair has <strong>none</strong></td><td>the snapshot's text, prefixed again, because a prefix does not govern later turns</td></tr>
+<tr><td>Assignment, no snapshot</td><td>nothing</td></tr>
+</tbody>
+</table>
+</div>
+
+<blockquote><p><strong>A session keeps the standing instructions it launched with. An edit takes
+effect on the next session, not a running one.</strong></p></blockquote>
+
+<p>A live process's system prompt cannot be rewritten, so the alternative is not "edits reach running
+sessions" - it is edits reaching them on two of the five pairs and not the other three, for the same
+feature. The panel says which it is.</p>
 
 <h3>Resolution is longest-path-match on the repository root</h3>
 

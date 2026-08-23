@@ -3,6 +3,8 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import { isLlmRunnerId, LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
 import type { LlmState } from "../useLlm.ts";
+import type { HarnessesState } from "../useHarnesses.ts";
+import { TaskKindDefaultsGroup } from "./TaskKindDefaults.tsx";
 import { modelSlotRow, SettingsMatrix } from "./SettingsMatrix.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -35,7 +37,21 @@ function runnerNote(state: LlmState): string | null {
     : "Shipped default.";
 }
 
-export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Element {
+export function LlmSettingsPanel({
+  state,
+  harnesses,
+}: {
+  state: LlmState;
+  /**
+   * The harnesses config, SHARED with the rest of Settings rather than polled again here.
+   *
+   * `SettingsPage` already holds one instance for the Harnesses panel, and a second poller
+   * over the same blob would be two optimistic writers racing each other's reads - the exact
+   * lost update `useHarnesses`'s edit counter exists to prevent, reintroduced one component
+   * over.
+   */
+  harnesses: HarnessesState;
+}): React.JSX.Element {
   const { config, status, update, error } = state;
   const runners = status?.runners ?? [];
   // The operator's OWN stored choice first, then what the daemon resolved.
@@ -80,6 +96,11 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         It has nothing to do with the agent in a card: which harness a session runs and which
         model judges it are independent choices, so the cheap jobs can run somewhere cheaper
         than whatever is in your cards.
+      </p>
+      <p className="settings-hint">
+        The <strong>Task kinds</strong> grid further down is the other half of the page, and it
+        is about exactly the opposite: the agent in a card, and what a dispatched task of each
+        kind launches on.
       </p>
 
       {/* The daemon has not answered. Said out loud, because everything below falls back to
@@ -205,6 +226,13 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           Model choices come from the provider selected in each row.
         </p>
       </div>
+
+      {/* Not the app's own calls - the harness in a CARD, per task kind. It sits on this page
+          because the question a person arrives with is "which model runs my planning", and
+          being told that Mission Control's own titling calls live under Models while a plan
+          task's model lives somewhere else answers a question nobody asked. The two groups
+          stay visibly separate, and the copy in each says which calls it is about. */}
+      <TaskKindDefaultsGroup state={harnesses} />
 
       <p className="settings-hint llm-elsewhere">
         Foreman's four models are under <strong>Foreman</strong>, and GitHub Inspector's review

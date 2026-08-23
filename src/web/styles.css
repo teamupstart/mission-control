@@ -18556,6 +18556,42 @@ select.settings-matrix-provider {
   line-height: 1.5;
   color: color-mix(in oklab, var(--attention) 86%, var(--fg));
 }
+/* The task-kind grid is FOUR columns where its sibling is two, so the 40% slot column that
+   reads well beside one control leaves three of them fighting over the rest - and a select
+   narrower than its label draws that label under its own chevron. The row headings here are
+   one word plus a short purpose, so they need far less than 40%. Scoped by the group's own
+   anchor rather than by a prop on the shared table: this is a fact about how wide THIS grid's
+   headings are, not a new mode the component has to offer. */
+[data-anchor="models/task-kinds"] .settings-matrix-corner {
+  width: 26%;
+  min-width: 150px;
+}
+[data-anchor="models/task-kinds"] .settings-matrix select {
+  width: 100%;
+  max-width: none;
+  /* Narrows the collision the app-wide `appearance: base-select` note above describes; it
+     does not close it. A label longer than its track is clipped rather than wrapped either
+     way, and the copy is what keeps these inside their tracks. */
+  text-overflow: ellipsis;
+}
+
+/* An inherited row's cells are READINGS, not controls: they say what a row below falls back
+   to. Sized to sit on the same baseline as the select beside them in the rows underneath, so
+   the column still reads as one column rather than as a caption above a grid. */
+/* The inherited row's note: where these values come from. Muted, not the amber a dropped
+   value gets - an untouched installation must not look like it has a problem. */
+.settings-matrix-inherited-note {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.settings-matrix-inherited-value {
+  display: block;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--dim);
+}
 /* Inside a matrix cell the row heading beside it is already the field's name, so the card
    chrome and the label slot both come off and only the control is left. */
 .foreman-model-row.is-unlabelled {

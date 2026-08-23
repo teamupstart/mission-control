@@ -77,7 +77,12 @@ test("DispatchSchema fills defaults and requires repo + intent", () => {
   assert.equal(ok.success, true);
   if (ok.success) {
     assert.equal(ok.data.kind, "ship");
-    assert.equal(ok.data.agent, "claude");
+    // The agent DELIBERATELY has no schema default. It carried `.default("claude")` until the
+    // per-kind defaults arrived, and that default was the reason none of them could ever have
+    // applied: an omitted agent had already become an explicit Claude by the time any code
+    // that knows the kind could see it. It is resolved at `TaskManager.create` instead, and
+    // `kind` keeps its own default so the kind is always known when it happens.
+    assert.equal(ok.data.agent, undefined);
     assert.equal(ok.data.backlog, false);
     assert.equal(ok.data.enabled, true);
   }

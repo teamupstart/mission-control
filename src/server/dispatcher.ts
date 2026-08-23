@@ -493,8 +493,19 @@ export class Dispatcher {
       // `options.defaultModel` is Foreman's per-harness backlog model, ranked between the
       // task's own pin and the panel default - see `resolveDispatchModel` for the tiers and
       // for why it is passed here rather than written onto the task row.
-      const model = resolveDispatchModel(task.agent, task.model, options.defaultModel ?? null);
-      const effort = resolveDispatchEffort(task.agent, task.effort);
+      //
+      // The kind tier sits below Foreman's launch-only model and above the per-harness
+      // default in both resolvers, and the two calls are now ORDERED rather than merely
+      // adjacent: a kind's effort is checked against the model THIS launch resolved, because
+      // `levelsFor` narrows per model. Passing `task.model` here instead would ask the
+      // question about a pin the task may not even carry.
+      const model = resolveDispatchModel(
+        task.agent,
+        task.model,
+        options.defaultModel ?? null,
+        task.kind,
+      );
+      const effort = resolveDispatchEffort(task.agent, task.effort, task.kind, model);
       // The fork. `runtime` was resolved before provisioning (see the multi-repo guard up
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.

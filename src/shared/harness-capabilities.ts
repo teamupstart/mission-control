@@ -793,6 +793,25 @@ export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
   return HARNESS_CAPABILITIES[agent];
 }
 
+/**
+ * The effort levels this harness offers AT LAUNCH for a given model.
+ *
+ * The launch-time twin of `sessionEffortLevels`, and separate from it for the reason
+ * `EffortSpec.levelsFor` already gives: the live picker also has to answer where the
+ * session's CURRENT level sits and which neighbours it may step to, none of which exists
+ * before a session does. A launch has only two facts - the harness and the model - and both
+ * are known here.
+ *
+ * Empty for a harness with no launch-time effort control at all, which is the honest answer
+ * and the one every caller wants: nothing is offered, so nothing may be passed.
+ */
+export function launchEffortLevels(
+  agent: AgentType,
+  modelId: string | null,
+): readonly ThinkingLevel[] {
+  return HARNESS_CAPABILITIES[agent].effort?.levelsFor(modelId) ?? [];
+}
+
 export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
   return HARNESS_CAPABILITIES[agent].effort?.levels.includes(level) ?? false;
 }

@@ -70,6 +70,13 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   intent: "",
   title: "",
   kind: "ship",
+  /**
+   * A PLACEHOLDER, not the answer. The real seed is this kind's configured agent, which
+   * lives in a config the browser has not fetched when this constant is read - so the form
+   * opens on it and moves to the kind default the moment the defaults land (see the
+   * kind-follows-agent effect in `DispatchModal`). It matches `INHERITED_TASK_AGENT`, which
+   * is what an unconfigured installation resolves to, so nothing moves on the common path.
+   */
   agent: "claude",
   priority: "",
   labels: "",

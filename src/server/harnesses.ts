@@ -4,7 +4,14 @@ import {
   type HarnessesConfigPatch,
 } from "@shared/protocol.ts";
 import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
-import type { AgentType, SessionRuntime, ThinkingLevel } from "@shared/types.ts";
+import {
+  launchEffortFor,
+  launchModelFor,
+  taskKindAgent,
+  taskKindDefaultFor,
+} from "@shared/kind-defaults.ts";
+import type { TaskKindDefault } from "@shared/protocol.ts";
+import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
@@ -53,17 +60,81 @@ export function getHarnessesConfig(): HarnessesConfig {
  * changed the Claude default cannot clear the Codex one it never showed the operator.
  * Scalar keys use the shallow spread.
  */
+export class HarnessesConfigError extends Error {}
+
 export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig {
   const cur = getHarnessesConfig();
+  const merged = mergeKindDefaults(cur.kindDefaults, patch.kindDefaults);
+  // Judged on the MERGE, which is the only place it can be judged. The patch schema catches
+  // the contradiction stated in one write (`agent: null` beside a model), but a patch naming
+  // only a model is not contradictory on its own - it depends entirely on what the row it
+  // lands on already holds. Refused rather than silently dropped by the read transform: an
+  // API client that saved a model and got a 200 back has been told it worked.
+  for (const [kind, row] of Object.entries(merged)) {
+    if (row.model && row.agent === null) {
+      throw new HarnessesConfigError(
+        `the ${kind} kind inherits its agent, so it cannot pin the model ${row.model}`,
+      );
+    }
+  }
   const next = HarnessesConfigSchema.parse({
     ...cur,
     ...patch,
     defaultModel: { ...cur.defaultModel, ...(patch.defaultModel ?? {}) },
     defaultEffort: { ...cur.defaultEffort, ...(patch.defaultEffort ?? {}) },
     sessionRuntime: { ...cur.sessionRuntime, ...(patch.sessionRuntime ?? {}) },
+    kindDefaults: merged,
   });
   setAppConfig(CONFIG_KEY, next);
   return next;
+}
+
+/**
+ * The kind rows, merged by KIND and then by FIELD within a kind.
+ *
+ * One level deeper than the per-agent maps above, because the value is itself a record and
+ * the same lost-update argument applies inside it: the panel writes one cell at a time, so
+ * a patch naming only `plan`'s effort must not replace `plan`'s whole row and take the
+ * agent beside it with it.
+ *
+ * Mirrored in the browser by `mergeHarnessesPatch` - if this rule changes, that one follows.
+ */
+function mergeKindDefaults(
+  cur: HarnessesConfig["kindDefaults"],
+  patch: HarnessesConfigPatch["kindDefaults"],
+): HarnessesConfig["kindDefaults"] {
+  if (!patch) return cur;
+  const next = { ...cur };
+  for (const [kind, row] of Object.entries(patch) as [
+    keyof HarnessesConfig["kindDefaults"],
+    NonNullable<HarnessesConfigPatch["kindDefaults"]>[keyof HarnessesConfig["kindDefaults"]],
+  ][]) {
+    if (row) next[kind] = { ...next[kind], ...row };
+  }
+  return next;
+}
+
+/** This kind's stored launch defaults, read from the config in force right now. */
+export function taskKindDefaults(kind: TaskKind): TaskKindDefault | null {
+  return taskKindDefaultFor(getHarnessesConfig(), kind);
+}
+
+/**
+ * The agent a task of this kind is FILED with, when its creator did not name one.
+ *
+ * The asymmetry that shapes this whole feature lives here. `tasks.agent` is `TEXT NOT
+ * NULL`, so unlike the model and the effort there is no "unset" to resolve at launch: a
+ * task must be created holding an agent, so the kind default is read ONCE, at creation, and
+ * from then on the row carries an ordinary pin. An operator who changes a kind's agent
+ * reaches the next task filed, never a task already shelved - which is the opposite of how
+ * the model behaves, and is why the panel says so out loud.
+ *
+ * Called at the single convergence point every creator passes through
+ * (`TaskManager.create`), plus the dispatch route, which needs the answer a few lines
+ * earlier to run its capability checks against the agent the task will actually get.
+ */
+export function resolveTaskAgent(kind: TaskKind, requested?: AgentType | null): AgentType {
+  return requested ?? taskKindAgent(getHarnessesConfig(), kind);
 }
 
 /**
@@ -81,22 +152,38 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
  *    model arrives here. Deliberately not persisted anywhere: it is a property of one
  *    launch, and writing it onto the task row (which is what `TaskManager.dispatch` used
  *    to do) pinned the task permanently, since `reschedule` does not clear `model`.
+ *  - the KIND's model, when this task's agent matches the agent that row names.
  *  - the Harnesses panel default for this agent, else null.
+ *
+ * The tiers themselves live in `@shared/kind-defaults.ts`, so the dispatch form can label
+ * its "Default - …" option with the answer this will actually give rather than a second
+ * guess at it.
  */
 export function resolveDispatchModel(
   agent: AgentType,
   taskModel: string | null,
   launchModel: string | null = null,
+  kind: TaskKind | null = null,
 ): string | null {
-  return taskModel ?? launchModel ?? getHarnessesConfig().defaultModel[agent];
+  return launchModelFor(getHarnessesConfig(), agent, kind, taskModel, launchModel);
 }
 
-/** The task override, then the launch-time harness default, else no effort override. */
+/**
+ * The task override, then the kind's effort, then the launch-time harness default.
+ *
+ * The kind tier is guarded differently from the model tier above - a capability check rather
+ * than an agent match - and `launchEffortFor` is where that reasoning is written down. What
+ * matters at this seam is the ORDERING it forces on the caller: `model` is a parameter, so
+ * the effort has to be resolved AFTER the model and against the answer that came back, not
+ * beside it.
+ */
 export function resolveDispatchEffort(
   agent: AgentType,
   taskEffort: ThinkingLevel | null,
+  kind: TaskKind | null = null,
+  model: string | null = null,
 ): ThinkingLevel | null {
-  return taskEffort ?? getHarnessesConfig().defaultEffort[agent];
+  return launchEffortFor(getHarnessesConfig(), agent, kind, taskEffort, model);
 }
 
 /**

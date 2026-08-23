@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model selection - phased implementation</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2027;
+    --page-muted: #5c6675;
+    --page-dim: #798494;
+    --page-panel: #ffffff;
+    --page-border: #dde2e9;
+    --page-border-soft: #e8ecf1;
+    --page-accent: #2f6feb;
+    --page-accent-soft: rgba(47, 111, 235, 0.09);
+    --page-new: #1f8a5b;
+    --page-new-soft: rgba(31, 138, 91, 0.11);
+    --page-code-bg: #f1f3f6;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+    /* The dashboard's own tokens, used only inside the mockup frames, which show a dark
+       app whichever way this page is being read. */
+    --app-bg: #0a0c0f;
+    --app-bg-2: #0e1116;
+    --app-panel: #14181e;
+    --app-border: #232a33;
+    --app-border-soft: #1b2129;
+    --app-fg: #e7ebf1;
+    --app-muted: #939eae;
+    --app-dim: #7c8798;
+    --app-idle: #35c08a;
+    --app-terracotta: #d97757;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Deliberately a step LIGHTER than the app's own `--bg` (#0a0c0f). The mockup frames
+         below use the real dashboard tokens, and if the page sat on the same value they
+         would dissolve into it instead of reading as screenshots of another surface. */
+      --page-bg: #101319;
+      --page-fg: #e7ebf1;
+      --page-muted: #939eae;
+      --page-dim: #7c8798;
+      --page-panel: #191e26;
+      --page-border: #2a323d;
+      --page-border-soft: #212832;
+      --page-accent: #4a9eff;
+      --page-accent-soft: rgba(74, 158, 255, 0.12);
+      --page-new: #35c08a;
+      --page-new-soft: rgba(53, 192, 138, 0.13);
+      --page-code-bg: #0b0e12;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0 20px 96px;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  main { max-width: 860px; margin: 0 auto; }
+
+  header.plan-head {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 52px 0 26px;
+    border-bottom: 1px solid var(--page-border);
+  }
+  header.plan-head .eyebrow {
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--page-dim);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  header.plan-head h1 { margin: 0 0 12px; font-size: 34px; line-height: 1.18; letter-spacing: -0.02em; }
+  header.plan-head p.lede { margin: 0; color: var(--page-muted); font-size: 17px; }
+  header.plan-head .path {
+    margin-top: 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--page-dim);
+  }
+
+  h2 {
+    margin: 52px 0 14px;
+    font-size: 23px;
+    letter-spacing: -0.01em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--page-border-soft);
+  }
+  h3 { margin: 34px 0 10px; font-size: 17.5px; letter-spacing: -0.005em; }
+  p { margin: 0 0 15px; }
+  ul, ol { margin: 0 0 15px; padding-left: 24px; }
+  li { margin: 0 0 9px; }
+  li > ul, li > ol { margin-top: 9px; }
+  strong { font-weight: 650; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.865em;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-border-soft);
+    border-radius: 5px;
+    padding: 1px 5px;
+    word-break: break-word;
+  }
+
+  pre {
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-border);
+    border-radius: 10px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.6px; }
+
+  .scroller { overflow-x: auto; margin: 0 0 18px; }
+
+  figure { margin: 26px 0 30px; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption {
+    margin-top: 12px;
+    font-size: 13.5px;
+    color: var(--page-muted);
+    text-align: center;
+  }
+
+  .callout {
+    border: 1px solid var(--page-border);
+    border-left: 3px solid var(--page-accent);
+    background: var(--page-accent-soft);
+    border-radius: 0 10px 10px 0;
+    padding: 15px 18px;
+    margin: 0 0 20px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* ---- SVG diagram theming ---- */
+  .d-box { fill: var(--page-panel); stroke: var(--page-border); stroke-width: 1.2; }
+  .d-box-new { fill: var(--page-new-soft); stroke: var(--page-new); stroke-width: 1.6; }
+  .d-box-store { fill: var(--page-accent-soft); stroke: var(--page-accent); stroke-width: 1.3; }
+  .d-t { fill: var(--page-fg); font-family: var(--sans); font-size: 12.5px; }
+  .d-t-sm { fill: var(--page-muted); font-family: var(--sans); font-size: 10.8px; }
+  .d-t-mono { fill: var(--page-fg); font-family: var(--mono); font-size: 11.5px; }
+  .d-t-new { fill: var(--page-new); font-family: var(--sans); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; }
+  .d-t-head { fill: var(--page-dim); font-family: var(--sans); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; }
+  .d-arrow { stroke: var(--page-dim); stroke-width: 1.4; fill: none; }
+  .d-arrow-dash { stroke: var(--page-accent); stroke-width: 1.3; fill: none; stroke-dasharray: 4 3.5; }
+  .d-lane { fill: none; stroke: var(--page-border-soft); stroke-width: 1.2; stroke-dasharray: 5 4; }
+
+  table.plain { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  table.plain th, table.plain td {
+    text-align: left;
+    padding: 9px 14px 9px 0;
+    border-bottom: 1px solid var(--page-border-soft);
+    vertical-align: top;
+  }
+  table.plain th { color: var(--page-dim); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+
+  .decisions {
+    border: 1px solid var(--page-border);
+    border-radius: 12px;
+    background: var(--page-panel);
+    padding: 20px 22px;
+    margin: 26px 0 0;
+  }
+  .decisions h2 { margin-top: 0; border: 0; padding: 0; }
+  .decisions ol { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<header class="plan-head">
+  <p class="eyebrow">Mission Control · phased implementation</p>
+  <h1>Model selection - phased implementation</h1>
+  <p class="lede">Implementation index for the approved plan. Three phases, one pull request
+  each.</p>
+  <p class="path">docs/plans/model-selection/phased-plan.md</p>
+</header>
+
+<main>
+
+<p>Source plan: <a href="plan.md">plan.md</a> (rendered at <a href="plan.html">plan.html</a>),
+reviewed in two rounds. Every selection is a <strong>requirement</strong>, not an open question.</p>
+
+<h2>What the investigation changed</h2>
+
+<p>Four findings from reading the repository moved the boundaries, and one corrected the plan
+itself.</p>
+
+<ol>
+  <li><strong>The provider was never one app-wide switch.</strong> The plan's first draft said it
+  was. Personas and Ensemble judges already choose per call; Foreman has one provider for all four
+  of its roles; the Inspector has its own. Only the five background jobs have nothing. The plan was
+  corrected before phasing.</li>
+  <li><strong>Foreman settings already has a Models tab.</strong>
+  <code>FOREMAN_SETTINGS_TABS</code> owns <code>foreman/provider</code> and four model anchors, and
+  its comment calls it "the one answer to which tab owns a settings anchor". Consolidating is
+  therefore a <strong>move</strong> - tabs, anchors and the ⌘K index - not just an addition.</li>
+  <li><strong>There is no settings table component.</strong> <code>&lt;table&gt;</code> appears in
+  <code>src/web/components/</code> only in <code>DiffViewer.tsx</code>. All three groups are
+  matrices, so one phase builds that component and the others render into it. That is the only
+  dependency edge between Phase 1 and Phase 3.</li>
+  <li><strong>Foreman's per-harness backlog dispatch models are a different thing</strong> and are
+  explicitly out of scope - they belong to the dispatch ladder, not to the app-owned calls being
+  consolidated.</li>
+</ol>
+
+<h2>Sizing and phase count</h2>
+
+<p>Estimated <strong>non-test implementation lines</strong>, added or materially changed:</p>
+
+<div class="scroller">
+<table class="plain">
+  <tr><th>Area</th><th style="width:24%">Estimate</th></tr>
+  <tr><td>Background-job providers, incl. shared matrix + row components</td><td>300 - 400</td></tr>
+  <tr><td>Foreman per-role providers, Inspector fix, consolidation + anchor move</td><td>320 - 420</td></tr>
+  <tr><td>Task-kind defaults across schema, resolvers, creators, dispatch form, panel</td><td>380 - 480</td></tr>
+  <tr><td><strong>Total</strong></td><td><strong>1000 - 1300</strong></td></tr>
+</table>
+</div>
+
+<p>Assumptions: no migrations (every new key is an additive sibling with a default); no new HTTP
+routes; the matrix component is roughly 120 lines including CSS; documentation and tests are real
+work but excluded from the count by the rubric.</p>
+
+<div class="callout">
+<p><strong>Why three and not one.</strong> At 1000-1300 lines this is far past the 200-line
+one-shot threshold, and past what a mid-tier model can implement, verify and explain in one pass.
+The work also spans two genuinely independent subsystems - the dispatch path over the
+<code>harnesses</code> blob, and the app-owned call path over <code>llm</code> /
+<code>foreman</code> / <code>inspector</code> - that share no schema, resolver or worker.</p>
+<p><strong>Why three and not four or five.</strong> Each phase is a vertical slice that ships
+working behaviour and leaves the repository valid. Splitting Phase 1 into "config plumbing" then
+"UI" would add config keys nothing can set; splitting Phase 2's per-role providers from the
+consolidation would move controls onto a page and then change what they do a week later; splitting
+Phase 3 by layer would leave a resolver tier no surface writes to.</p>
+<p><strong>Why Phase 1 is the background jobs rather than the task kinds.</strong> The task-kind
+work was decided first, but the background jobs are the gap the operator actually hit - they are
+the only model slots in the product with no provider of their own.</p>
+</div>
+
+<h2>Phases</h2>
+
+<div class="scroller">
+<table class="plain">
+  <tr><th>#</th><th>Phase</th><th style="width:12%">Depends on</th><th>Delivers</th></tr>
+  <tr>
+    <td>1</td>
+    <td><a href="phase-1-background-job-providers.md">A provider per background job</a></td>
+    <td>-</td>
+    <td>Per-job providers; the shared settings matrix; the pinning rule; the workflow-context
+    provenance fix</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><a href="phase-2-foreman-inspector-providers.md">Foreman's four roles and the Inspector, on
+    the Models page</a></td>
+    <td>1</td>
+    <td>Per-role Foreman providers; the Inspector fallback fix; every app-owned model choice on one
+    page</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><a href="phase-3-task-kind-defaults.md">An agent, model and effort per task kind</a></td>
+    <td>1</td>
+    <td>The kind tier, the agent seed, and the Task kinds matrix</td>
+  </tr>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+
+<figure>
+<svg viewBox="0 0 860 250" role="img" aria-label="The planning session's pull request gates all three phases; Phase 1 precedes Phases 2 and 3, which run concurrently.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g color="var(--page-dim)">
+    <rect class="d-box-store" x="16" y="94" width="188" height="58" rx="9"/>
+    <text class="d-t" x="30" y="116">Planning session PR</text>
+    <text class="d-t-sm" x="30" y="134">publishes these artifacts</text>
+
+    <path class="d-arrow" marker-end="url(#ah)" d="M 204 123 L 258 123"/>
+
+    <rect class="d-box-new" x="260" y="94" width="210" height="58" rx="9"/>
+    <text class="d-t-new" x="274" y="114">PHASE 1</text>
+    <text class="d-t" x="274" y="134">Background job providers</text>
+
+    <path class="d-arrow" marker-end="url(#ah)" d="M 470 112 C 520 112 530 60 580 56"/>
+    <path class="d-arrow" marker-end="url(#ah)" d="M 470 134 C 520 134 530 188 580 192"/>
+
+    <rect class="d-box" x="582" y="28" width="262" height="56" rx="9"/>
+    <text class="d-t-head" x="596" y="48">PHASE 2</text>
+    <text class="d-t" x="596" y="68">Foreman roles + Inspector</text>
+
+    <rect class="d-box" x="582" y="164" width="262" height="56" rx="9"/>
+    <text class="d-t-head" x="596" y="184">PHASE 3</text>
+    <text class="d-t" x="596" y="204">Task kind defaults</text>
+
+    <text class="d-t-sm" x="596" y="128">2 and 3 run concurrently -</text>
+    <text class="d-t-sm" x="596" y="142">no shared schema or resolver</text>
+
+    <text class="d-t-sm" x="16" y="176">Every phase also carries</text>
+    <text class="d-t-sm" x="16" y="190">the planning-session edge,</text>
+    <text class="d-t-sm" x="16" y="204">so nothing dispatches before</text>
+    <text class="d-t-sm" x="16" y="218">these files reach the</text>
+    <text class="d-t-sm" x="16" y="232">default branch.</text>
+  </g>
+</svg>
+<figcaption>Direct prerequisites only. Group A is Phase 1 alone; Group B is Phases 2 and 3
+together.</figcaption>
+</figure>
+
+<h2>Concurrency and merge order</h2>
+
+<p>Phase 1 first. Then Phase 2 and Phase 3 in either order, or at the same time; the second to
+merge rebases onto the other's group structure in <code>LlmSettingsPanel.tsx</code>.</p>
+
+<p>Phases 2 and 3 share no schema, resolver, worker or migration - Phase 2 touches
+<code>foreman</code> and <code>inspector</code>, Phase 3 touches <code>harnesses</code>. They do
+both add a group to <code>LlmSettingsPanel.tsx</code> and both touch
+<code>settings-search.ts</code> and <code>docs/models.md</code>. Those conflicts are
+<strong>positional, not semantic</strong>: each adds its own group and its own entries, ownership
+is by section, and either merge order works. <code>settings-registry.ts</code> has exactly one
+writer (Phase 3), so the Models category blurb cannot be written twice.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Phase 1 establishes these; Phases 2 and 3 consume them and must not change them without
+reconciling back into Phase 1's file.</p>
+
+<div class="scroller">
+<table class="plain">
+  <tr><th style="width:22%">Contract</th><th style="width:10%">Owner</th><th style="width:14%">Consumers</th><th>Rule</th></tr>
+  <tr><td><code>SettingsMatrix</code>, <code>ModelSlotRow</code></td><td>Phase 1</td><td>2, 3</td>
+    <td>Extend by adding column definitions; never fork the component</td></tr>
+  <tr><td>The inherit rule</td><td>Phase 1</td><td>2</td>
+    <td><code>null</code>/empty means inherit; a set value replaces and re-bases the model fallback
+    onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an
+    extension, not a competing ladder</td></tr>
+  <tr><td>The pinning invariant</td><td>Phase 1</td><td>2</td>
+    <td>Pinning a model pins its provider. No phase reintroduces a clear-on-change</td></tr>
+  <tr><td>Sibling-map storage</td><td>Phase 1</td><td>2</td>
+    <td>Additive record beside the existing model keys, merged per key, no migration</td></tr>
+  <tr><td><code>llmJobRunner</code>, widened <code>LlmStatus</code></td><td>Phase 1</td><td>-</td>
+    <td>Foreman's three-field read of <code>/api/llm/status</code> must keep parsing</td></tr>
+  <tr><td>Agent-match guard</td><td>Phase 3</td><td>-</td>
+    <td>A kind default's model applies only when the task's agent matches it</td></tr>
+</table>
+</div>
+
+<h2>Final verification</h2>
+
+<p>Each phase runs <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+and - because all three change UI - <code>npm run build &amp;&amp; npm run test:e2e</code> with a
+Playwright spec covering its own behaviour. No phase may lean on a later one to repair an
+intermediate state.</p>
+
+<p>Across the set, once all three have merged:</p>
+
+<ul>
+  <li>The five background jobs, Foreman's four roles and the Inspector's review model each resolve
+  their own provider, falling back to the app-wide radio when unset.</li>
+  <li>Changing the app-wide provider clears nothing.</li>
+  <li>An unset Inspector provider honours <code>MISSION_LLM_RUNNER</code>.</li>
+  <li>A dispatched <code>plan</code> task runs on its configured agent, model and effort; a kind
+  default whose agent does not match the task's falls through to the harness default.</li>
+  <li>An installation that upgrades and changes nothing behaves exactly as it did before, with the
+  one intended exception of the Inspector fallback fix.</li>
+</ul>
+
+</main>
+
+</body>
+</html>

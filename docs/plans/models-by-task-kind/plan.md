@@ -135,52 +135,11 @@ existing `harnesses_config_changed` event (`src/shared/types.ts:2955`), so a sec
 already-open dispatch form both re-read it rather than going on naming a model you moved away
 from - exactly as the harness defaults do today.
 
-## Three layouts
+## The layout
 
-All three put the control on **Settings → Models**, as asked. They differ in the shape of the
-control and in how much new vocabulary they introduce.
-
-### Layout A - a card per kind
-
-The Models page gains a **Task kinds** group above the existing **Background jobs** group.
-One card per harness-launched kind, in registry order, each carrying the kind's `blurb` as its
-description and three selects: Agent, Model, Effort.
-
-```
-TASK KINDS
-Which agent and model each kind of dispatched task starts on...
-
-┌──────────────────────────────────────────────────────────┐
-│ ship                                                     │
-│  Agent [ Claude Code ▾ ]  Model [ Opus 5 ▾ ]  Effort [ high ▾ ] │
-│  Deliver a change, as a pull request.                    │
-│  Harness default.                                        │
-└──────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────┐
-│ plan                                                     │
-│  Agent [ Claude Code ▾ ]  Model [ Fable 5 ▾ ]  Effort [ xhigh ▾ ] │
-│  Produce a reviewed plan, and optionally schedule...     │
-└──────────────────────────────────────────────────────────┘
-     ...scout, chat...
-
-BACKGROUND JOBS
-     ...unchanged...
-```
-
-It is the page's existing idiom applied to a second subject: the Background jobs group is
-already a stack of cards, each a label, a select, a description and a source note, and this
-reads as more of the same. Four kinds is four cards, so the page grows by roughly one screen.
-
-**In its favour:** nothing new to learn, each kind gets room for its own blurb and its own
-"where this value came from" note, and it degrades well if a kind later needs a fifth control.
-**Against:** the page gets long, and comparing plan against ship means scrolling between two
-cards.
-
-### Layout B - one matrix
-
-Same home, one compact table instead of four cards. Rows are kinds, columns are Agent, Model
-and Effort. A first row, muted and not editable, shows what a kind with nothing set falls
-through to.
+**Adopted: one matrix on Settings → Models**, above the existing Background jobs group. Rows are
+kinds, columns are Agent, Model and Effort. A first row, muted and not editable, shows what a kind
+with nothing set falls through to.
 
 ```
 TASK KINDS
@@ -192,44 +151,19 @@ TASK KINDS
   chat           [Inherit     ▾]  [Inherit     ▾]    [Inherit▾]
 
   A row left on Inherit follows Settings → Harnesses.
+  pipeline has no row: Conductor owns its agent, model and effort.
 ```
 
-**In its favour:** the whole configuration is one glance, which is the actual job - "is scout
-cheaper than ship?" is a comparison, and a table is what comparisons are read from. It stays
-four short rows however many controls each row grows. Inheritance is legible because the
-inherited row is drawn.
-**Against:** a new control shape for this page, three selects on one line is tight at narrow
-widths, and there is no room for each kind's blurb - the kind's name has to carry it, or it
-moves to a tooltip.
+The whole configuration is one glance, which is the actual job - "is scout cheaper than ship?" is a
+comparison, and a table is what comparisons are read from. It stays four short rows however many
+controls each row grows, and inheritance is legible because the inherited row is *drawn* rather
+than described.
 
-### Layout C - named presets, assigned per kind
-
-The Models page gains a **Presets** group - named bundles of (agent, model, effort) that the
-operator writes, like `Deep`, `Balanced`, `Fast` - and a short assignment list mapping each kind
-to one preset.
-
-```
-PRESETS
-  Deep      Claude Code · Fable 5      · xhigh    [edit] [x]
-  Balanced  Claude Code · Opus 5       · high     [edit] [x]
-  Fast      Codex       · GPT-5.6 Luna · low      [edit] [x]
-  + New preset
-
-TASK KINDS
-  ship   [ Balanced ▾ ]
-  scout  [ Fast     ▾ ]
-  plan   [ Deep     ▾ ]
-  chat   [ Fast     ▾ ]
-```
-
-**In its favour:** the assignment list stays four short lines forever, "make everything cheaper
-this week" is one preset edit rather than four, and a preset is a thing Foreman's backlog model,
-the Inspector's review model and the background jobs above could all point at later, which would
-collapse four scattered model pickers into one vocabulary.
-**Against:** it is a second concept to name, store and validate, and it buys nothing on day one
-that Layout B does not - with four kinds and three presets you have added indirection to
-configure the same twelve values. It is the right shape only if the presets are going to be
-reused.
+Two costs come with it and are accepted. Three selects on one line is tight at narrow widths, so
+the table scrolls inside its own container rather than compressing its selects. And there is no
+room for each kind's `blurb`, so the kind's own name carries the row and the blurb moves to the
+row's tooltip - which is where `TASK_KIND_INFO.blurb` already goes on the surfaces that have no
+line to spare for it.
 
 ## What changes
 
@@ -250,7 +184,8 @@ Roughly, and in the order the change would be made:
 - The task-creating routes - resolve an omitted agent from the kind default instead of
   defaulting to `"claude"`. This is where MCP `create_task`, task sources and Recurring
   Missions inherit the behaviour without each learning about it.
-- `src/web/components/LlmSettingsPanel.tsx` - the new group, in whichever layout is chosen. It
+- `src/web/components/LlmSettingsPanel.tsx` - the matrix group above the existing Background
+  jobs group. It
   reads `useLlm` today and the kind defaults live in the `harnesses` blob, so the panel takes the
   `useHarnesses` state as a second prop. `SettingsPage.tsx` already holds that state (L258) and
   passes it to the Harnesses panel, so both surfaces share one instance rather than opening a
@@ -286,10 +221,18 @@ Roughly, and in the order the change would be made:
 - **A session Mission Control merely discovered is never touched.** Every key in this blob is
   scoped to dispatch.
 
-## Open questions for you
+## Decisions taken
 
-1. **Which layout** - A (a card per kind), B (one matrix), or C (named presets).
-2. **What a kind default carries** - the agent only, agent + model, or agent + model + effort.
-3. **How far it reaches** - only the dispatch form's starting values, or the launch-time tier as
-   well, so backlog, MCP, task-source and Recurring Mission tasks follow it too.
-</content>
+| Question | Adopted | Not taken |
+|---|---|---|
+| The control's shape | **One matrix** - rows are kinds, columns are Agent / Model / Effort, with the inherited row drawn on top | A card per kind (the page's existing idiom, but a screen longer and poor at comparison); named presets (reusable later, pure indirection on day one) |
+| What a kind default carries | **Agent + model + effort**, each nullable, null meaning inherit - the same triple an Ensemble role already stores | Agent + model only; model only |
+| How far it reaches | **Every path that creates or launches a task** - a real tier in `resolveDispatchModel`, plus the agent seed for the dispatch form, MCP `create_task`, task sources and Recurring Missions | Seeding the dispatch form and nothing else |
+| After this plan | **Stop here** - no phase documents and no scheduled implementation tasks | Create a phased implementation plan |
+
+The reach decision is what makes the create-time / launch-time asymmetry above load-bearing rather
+than incidental, so it is the thing to keep in view when this is built: **the model and the effort
+are a tier, the agent is a seed**, and the panel has to say so where an operator will read it.
+
+This plan is approved as written and is not scheduled. Picking it up later means starting from
+"What changes" - no phase documents exist and no implementation tasks were created.

@@ -27,15 +27,12 @@
     --app-bg: #0a0c0f;
     --app-bg-2: #0e1116;
     --app-panel: #14181e;
-    --app-panel-2: #171c23;
     --app-border: #232a33;
     --app-border-soft: #1b2129;
     --app-fg: #e7ebf1;
     --app-muted: #939eae;
     --app-dim: #7c8798;
-    --app-working: #4a9eff;
     --app-idle: #35c08a;
-    --app-purple: #a371f7;
     --app-terracotta: #d97757;
   }
 
@@ -153,24 +150,6 @@
   }
   .callout p:last-child { margin-bottom: 0; }
 
-  .pro-con { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 0 0 18px; }
-  @media (max-width: 700px) { .pro-con { grid-template-columns: 1fr; } }
-  .pro-con div {
-    border: 1px solid var(--page-border);
-    border-radius: 10px;
-    padding: 13px 15px;
-    background: var(--page-panel);
-    font-size: 14.5px;
-  }
-  .pro-con h4 {
-    margin: 0 0 7px;
-    font-size: 11.5px;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-    color: var(--page-dim);
-  }
-  .pro-con p { margin: 0; }
-
   /* ---- SVG diagram theming ---- */
   .d-box { fill: var(--page-panel); stroke: var(--page-border); stroke-width: 1.2; }
   .d-box-new { fill: var(--page-new-soft); stroke: var(--page-new); stroke-width: 1.6; }
@@ -229,37 +208,12 @@
   .mock .grouplabel:first-child { margin-top: 0; }
   .mock .hint { margin: 0 0 14px; color: var(--app-muted); font-size: 13px; line-height: 1.55; }
   .mock .hint.tight { margin-bottom: 10px; }
-  .mock .src { color: var(--app-dim); font-family: var(--mono); font-size: 11.5px; }
   .mock hr {
     border: 0;
     border-top: 1px solid var(--app-border-soft);
     margin: 22px 0 0;
   }
 
-  .mock .card {
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-panel);
-    padding: 14px 16px;
-    margin: 0 0 10px;
-  }
-  .mock .card .kind {
-    font-family: var(--mono);
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--app-fg);
-    margin: 0 0 10px;
-  }
-  .mock .row3 { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
-  .mock .fld { display: flex; flex-direction: column; gap: 4px; }
-  /* :first-child, not `> span` - the value span is a sibling of the label and must keep
-     its own casing. */
-  .mock .fld > span:first-child {
-    font-size: 10.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-dim);
-  }
   .mock .sel {
     display: inline-flex;
     align-items: center;
@@ -279,7 +233,6 @@
   .mock .sel.w-sm { min-width: 104px; }
   .mock .sel.inherit { color: var(--app-dim); }
   .mock .sel::after { content: "⌄"; color: var(--app-dim); font-family: var(--sans); line-height: 0.6; }
-  .mock .desc { color: var(--app-muted); font-size: 12.5px; margin: 0; }
 
   .mock table.matrix { border-collapse: collapse; width: 100%; font-size: 13px; }
   .mock table.matrix th {
@@ -315,57 +268,6 @@
     color: var(--app-dim);
   }
 
-  .mock .preset {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    background: var(--app-panel);
-    margin: 0 0 8px;
-  }
-  .mock .preset .name {
-    font-weight: 650;
-    min-width: 88px;
-    color: var(--app-fg);
-  }
-  .mock .preset .parts {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--app-muted);
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .mock .preset .acts { color: var(--app-dim); font-size: 12px; white-space: nowrap; }
-  .mock .addpreset {
-    display: inline-block;
-    padding: 7px 13px;
-    border: 1px dashed var(--app-border);
-    border-radius: 8px;
-    color: var(--app-muted);
-    font-size: 12.5px;
-    margin-top: 2px;
-  }
-  .mock .assign {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--app-border-soft);
-  }
-  .mock .assign:last-of-type { border-bottom: 0; }
-  .mock .assign .kind {
-    font-family: var(--mono);
-    font-size: 13px;
-    min-width: 66px;
-    margin: 0;
-    font-weight: 500;
-  }
-  .mock .assign .blurb { color: var(--app-dim); font-size: 12px; }
-
   .mock .agent-claude { color: var(--app-terracotta); }
   .mock .agent-codex { color: var(--app-idle); }
 
@@ -380,27 +282,6 @@
   }
   .mock .bgjob:last-child { border-bottom: 0; }
   .mock .bgjob .n { min-width: 118px; color: var(--app-muted); }
-
-  .radio-row { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 13.5px; }
-  .radio-row .rd {
-    width: 13px; height: 13px; border-radius: 50%;
-    border: 1px solid var(--app-border); display: inline-block;
-  }
-  .radio-row .rd.on { border-color: var(--app-working); box-shadow: inset 0 0 0 3px var(--app-working); }
-
-  .option-tag {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--page-accent);
-    border: 1px solid var(--page-accent);
-    border-radius: 999px;
-    padding: 2px 9px;
-    margin-right: 9px;
-    vertical-align: 2px;
-  }
 
   table.plain { border-collapse: collapse; width: 100%; font-size: 14.5px; }
   table.plain th, table.plain td {
@@ -669,101 +550,11 @@ again when that task launches, to resolve its model.</figcaption>
 re-read it rather than going on naming a model you moved away from - exactly as the harness
 defaults do today.</p>
 
-<h2>Three layouts</h2>
+<h2>The layout</h2>
 
-<p>All three put the control on <strong>Settings → Models</strong>, as asked. They differ in the
-shape of the control and in how much new vocabulary they introduce.</p>
-
-<h3><span class="option-tag">Layout A</span>A card per kind</h3>
-
-<p>The Models page gains a <strong>Task kinds</strong> group above the existing <strong>Background
-jobs</strong> group. One card per harness-launched kind, in registry order, each carrying the
-kind's <code>blurb</code> as its description and three selects: Agent, Model, Effort.</p>
-
-<div class="mock">
-  <div class="mock-chrome">
-    <span class="mock-dot"></span><span class="mock-dot"></span><span class="mock-dot"></span>
-    <span class="mock-crumb">#/settings/models</span>
-  </div>
-  <div class="mock-body">
-    <h4 class="mock-title">Models</h4>
-
-    <p class="grouplabel">Task kinds</p>
-    <p class="hint">Which agent and model each kind of dispatched task starts on. A field left on
-      <em>Inherit</em> follows Settings → Harnesses. The model and effort are read when the task
-      launches, so a change reaches a task already in the backlog; the agent is written when the
-      task is created, so it reaches the next one you file.</p>
-
-    <div class="card">
-      <p class="kind">ship</p>
-      <div class="row3">
-        <span class="fld"><span>Agent</span><span class="sel"><span class="agent-claude">Claude Code</span></span></span>
-        <span class="fld"><span>Model</span><span class="sel w-lg">Opus 5</span></span>
-        <span class="fld"><span>Effort</span><span class="sel w-sm">high</span></span>
-      </div>
-      <p class="desc">Deliver a change, as a pull request.</p>
-    </div>
-
-    <div class="card">
-      <p class="kind">scout</p>
-      <div class="row3">
-        <span class="fld"><span>Agent</span><span class="sel"><span class="agent-codex">Codex</span></span></span>
-        <span class="fld"><span>Model</span><span class="sel w-lg">GPT-5.6 Luna</span></span>
-        <span class="fld"><span>Effort</span><span class="sel w-sm">low</span></span>
-      </div>
-      <p class="desc">Investigate and report. No diff, so no after-work.</p>
-    </div>
-
-    <div class="card">
-      <p class="kind">plan</p>
-      <div class="row3">
-        <span class="fld"><span>Agent</span><span class="sel"><span class="agent-claude">Claude Code</span></span></span>
-        <span class="fld"><span>Model</span><span class="sel w-lg">Fable 5</span></span>
-        <span class="fld"><span>Effort</span><span class="sel w-sm">xhigh</span></span>
-      </div>
-      <p class="desc">Produce a reviewed plan, and optionally schedule the work.</p>
-    </div>
-
-    <div class="card">
-      <p class="kind">chat</p>
-      <div class="row3">
-        <span class="fld"><span>Agent</span><span class="sel inherit">Inherit</span></span>
-        <span class="fld"><span>Model</span><span class="sel w-lg inherit">Inherit</span></span>
-        <span class="fld"><span>Effort</span><span class="sel w-sm inherit">Inherit</span></span>
-      </div>
-      <p class="desc">Talk with an agent without a planned artifact.</p>
-      <p class="src">Following Settings → Harnesses.</p>
-    </div>
-
-    <hr>
-    <p class="grouplabel">Background jobs</p>
-    <p class="hint tight">Unchanged - the provider and the five models behind Mission Control's own
-      calls.</p>
-    <div class="bgjob"><span class="n">Task title</span><span>Default - gpt-5.6-luna</span></div>
-    <div class="bgjob"><span class="n">Goal</span><span>Default - gpt-5.6-luna</span></div>
-    <div class="bgjob"><span class="n">Away digest</span><span>Default - gpt-5.6-luna</span></div>
-  </div>
-</div>
-
-<div class="pro-con">
-  <div>
-    <h4>In its favour</h4>
-    <p>Nothing new to learn - it is the page's existing idiom applied to a second subject. Each
-    kind gets room for its own blurb and its own "where this value came from" note, and it
-    degrades well if a kind later needs a fifth control.</p>
-  </div>
-  <div>
-    <h4>Against</h4>
-    <p>The page grows by roughly one screen, and comparing plan against ship means scrolling
-    between two cards.</p>
-  </div>
-</div>
-
-<h3><span class="option-tag">Layout B</span>One matrix</h3>
-
-<p>Same home, one compact table instead of four cards. Rows are kinds, columns are Agent, Model
-and Effort. A first row, muted and not editable, shows what a kind with nothing set falls through
-to.</p>
+<p><strong>Adopted: one matrix on Settings → Models</strong>, above the existing Background jobs
+group. Rows are kinds, columns are Agent, Model and Effort. A first row, muted and not editable,
+shows what a kind with nothing set falls through to.</p>
 
 <div class="mock">
   <div class="mock-chrome">
@@ -828,102 +619,16 @@ to.</p>
   </div>
 </div>
 
-<div class="pro-con">
-  <div>
-    <h4>In its favour</h4>
-    <p>The whole configuration is one glance, which is the actual job - "is scout cheaper than
-    ship?" is a comparison, and a table is what comparisons are read from. It stays four short
-    rows however many controls each row grows, and inheritance is legible because the inherited
-    row is drawn.</p>
-  </div>
-  <div>
-    <h4>Against</h4>
-    <p>A new control shape for this page. Three selects on one line is tight at narrow widths, and
-    there is no room for each kind's blurb - the kind's name has to carry it, or it moves to a
-    tooltip.</p>
-  </div>
-</div>
+<p>The whole configuration is one glance, which is the actual job - "is scout cheaper than ship?"
+is a comparison, and a table is what comparisons are read from. It stays four short rows however
+many controls each row grows, and inheritance is legible because the inherited row is
+<em>drawn</em> rather than described.</p>
 
-<h3><span class="option-tag">Layout C</span>Named presets, assigned per kind</h3>
-
-<p>The Models page gains a <strong>Presets</strong> group - named bundles of (agent, model,
-effort) that the operator writes, like <code>Deep</code>, <code>Balanced</code>,
-<code>Fast</code> - and a short assignment list mapping each kind to one preset.</p>
-
-<div class="mock">
-  <div class="mock-chrome">
-    <span class="mock-dot"></span><span class="mock-dot"></span><span class="mock-dot"></span>
-    <span class="mock-crumb">#/settings/models</span>
-  </div>
-  <div class="mock-body">
-    <h4 class="mock-title">Models</h4>
-
-    <p class="grouplabel">Presets</p>
-    <p class="hint">A named agent, model and effort you can point several things at.</p>
-
-    <div class="preset">
-      <span class="name">Deep</span>
-      <span class="parts"><span class="agent-claude">Claude Code</span> · Fable 5 · xhigh</span>
-      <span class="acts">Edit ·  ✕</span>
-    </div>
-    <div class="preset">
-      <span class="name">Balanced</span>
-      <span class="parts"><span class="agent-claude">Claude Code</span> · Opus 5 · high</span>
-      <span class="acts">Edit ·  ✕</span>
-    </div>
-    <div class="preset">
-      <span class="name">Fast</span>
-      <span class="parts"><span class="agent-codex">Codex</span> · GPT-5.6 Luna · low</span>
-      <span class="acts">Edit ·  ✕</span>
-    </div>
-    <span class="addpreset">+ New preset</span>
-
-    <p class="grouplabel">Task kinds</p>
-    <p class="hint tight">Which preset each kind of dispatched task starts on.</p>
-
-    <div class="assign">
-      <span class="kind">ship</span>
-      <span class="sel">Balanced</span>
-      <span class="blurb">Deliver a change, as a pull request.</span>
-    </div>
-    <div class="assign">
-      <span class="kind">scout</span>
-      <span class="sel">Fast</span>
-      <span class="blurb">Investigate and report.</span>
-    </div>
-    <div class="assign">
-      <span class="kind">plan</span>
-      <span class="sel">Deep</span>
-      <span class="blurb">Produce a reviewed plan.</span>
-    </div>
-    <div class="assign">
-      <span class="kind">chat</span>
-      <span class="sel inherit">Inherit</span>
-      <span class="blurb">Talk with an agent without a planned artifact.</span>
-    </div>
-
-    <hr>
-    <p class="grouplabel">Background jobs</p>
-    <p class="hint tight">Unchanged.</p>
-    <div class="bgjob"><span class="n">Task title</span><span>Default - gpt-5.6-luna</span></div>
-  </div>
-</div>
-
-<div class="pro-con">
-  <div>
-    <h4>In its favour</h4>
-    <p>The assignment list stays four short lines forever, "make everything cheaper this week" is
-    one preset edit rather than four, and a preset is a thing Foreman's backlog model, the
-    Inspector's review model and the background jobs above could all point at later - which would
-    collapse four scattered model pickers into one vocabulary.</p>
-  </div>
-  <div>
-    <h4>Against</h4>
-    <p>A second concept to name, store and validate, and it buys nothing on day one that Layout B
-    does not: with four kinds and three presets you have added indirection to configure the same
-    twelve values. It is the right shape only if the presets are going to be reused.</p>
-  </div>
-</div>
+<p>Two costs come with it and are accepted. Three selects on one line is tight at narrow widths,
+so the table scrolls inside its own container rather than compressing its selects. And there is no
+room for each kind's <code>blurb</code>, so the kind's own name carries the row and the blurb moves
+to the row's tooltip - which is where <code>TASK_KIND_INFO.blurb</code> already goes on the
+surfaces that have no line to spare for it.</p>
 
 <h2>What changes</h2>
 
@@ -968,7 +673,7 @@ effort) that the operator writes, like <code>Deep</code>, <code>Balanced</code>,
   </tr>
   <tr>
     <td><code>src/web/components/LlmSettingsPanel.tsx</code></td>
-    <td>The new group, in whichever layout is chosen. It reads <code>useLlm</code> today and the
+    <td>The matrix group above the existing Background jobs group. It reads <code>useLlm</code> today and the
     kind defaults live in the <code>harnesses</code> blob, so the panel takes the
     <code>useHarnesses</code> state as a second prop. <code>SettingsPage.tsx</code> already holds
     that state (L258) and passes it to the Harnesses panel, so both surfaces share one instance
@@ -1024,18 +729,44 @@ effort) that the operator writes, like <code>Deep</code>, <code>Balanced</code>,
 </ul>
 
 <div class="decisions">
-<h2>Open questions for you</h2>
-<ol>
-  <li><strong>Which layout</strong> - A (a card per kind), B (one matrix), or C (named
-  presets).</li>
-  <li><strong>What a kind default carries</strong> - the agent only, agent + model, or agent +
-  model + effort.</li>
-  <li><strong>How far it reaches</strong> - only the dispatch form's starting values, or the
-  launch-time tier as well, so backlog, MCP, task-source and Recurring Mission tasks follow it
-  too.</li>
-</ol>
-<p style="margin-top:14px;color:var(--page-muted);font-size:14px">These are asked as selectable
-options in the Mission Control dashboard - answer them there rather than here.</p>
+<h2>Decisions taken</h2>
+<div class="scroller">
+<table class="plain">
+  <tr><th style="width:20%">Question</th><th style="width:42%">Adopted</th><th>Not taken</th></tr>
+  <tr>
+    <td>The control's shape</td>
+    <td><strong>One matrix</strong> - rows are kinds, columns are Agent / Model / Effort, with the
+    inherited row drawn on top</td>
+    <td>A card per kind (the page's existing idiom, but a screen longer and poor at comparison);
+    named presets (reusable later, pure indirection on day one)</td>
+  </tr>
+  <tr>
+    <td>What a kind default carries</td>
+    <td><strong>Agent + model + effort</strong>, each nullable, null meaning inherit - the same
+    triple an Ensemble role already stores</td>
+    <td>Agent + model only; model only</td>
+  </tr>
+  <tr>
+    <td>How far it reaches</td>
+    <td><strong>Every path that creates or launches a task</strong> - a real tier in
+    <code>resolveDispatchModel</code>, plus the agent seed for the dispatch form, MCP
+    <code>create_task</code>, task sources and Recurring Missions</td>
+    <td>Seeding the dispatch form and nothing else</td>
+  </tr>
+  <tr>
+    <td>After this plan</td>
+    <td><strong>Stop here</strong> - no phase documents and no scheduled implementation tasks</td>
+    <td>Create a phased implementation plan</td>
+  </tr>
+</table>
+</div>
+<p>The reach decision is what makes the create-time / launch-time asymmetry above load-bearing
+rather than incidental, so it is the thing to keep in view when this is built: <strong>the model
+and the effort are a tier, the agent is a seed</strong>, and the panel has to say so where an
+operator will read it.</p>
+<p style="margin-bottom:0;color:var(--page-muted);font-size:14px">This plan is approved as written
+and is not scheduled. Picking it up later means starting from <em>What changes</em> - no phase
+documents exist and no implementation tasks were created.</p>
 </div>
 
 </main>

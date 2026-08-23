@@ -41,7 +41,10 @@ const { DispatchSchema, HarnessesConfigPatchSchema, HarnessesConfigSchema } = aw
   "@shared/protocol.ts"
 );
 const { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_BEHAVIOR } = await import("@shared/task.ts");
-const { TASK_KINDS } = await import("@shared/types.ts");
+const { MODEL_CATALOG } = await import("@shared/model.ts");
+const { launchEffortLevels, supportsEffort } = await import("@shared/harness-capabilities.ts");
+const { launchEffortFor } = await import("@shared/kind-defaults.ts");
+const { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } = await import("@shared/types.ts");
 const { mergeHarnessesPatch } = await import("../src/web/harnesses-reconcile.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -148,7 +151,6 @@ test("the kind's effort is taken only where the harness offers it at launch", as
   // same question, and a harness that declares no effort spec at all answers it with an empty
   // list - the arm that must take NOTHING from the kind tier rather than pass a flag on.
   const { launchEffortLevels } = await import("@shared/harness-capabilities.ts");
-  const { AGENT_TYPES, THINKING_LEVELS } = await import("@shared/types.ts");
   for (const agent of AGENT_TYPES) {
     const levels = launchEffortLevels(agent, null);
     const missing = THINKING_LEVELS.find((level) => !levels.includes(level));
@@ -243,6 +245,66 @@ test("a row that inherits its agent may set an effort but never a model", () => 
   assert.equal(
     HarnessesConfigPatchSchema.safeParse({ kindDefaults: { pipeline: { agent: "claude" } } }).success,
     false,
+  );
+});
+
+test("a model that belongs to another harness is refused at the write, not at the launch", () => {
+  // The browser cannot save this pair: choosing an agent narrows the Model select, and an
+  // agent change strands a model the new harness does not offer. A direct PUT has neither
+  // control, and the pair it can save is the dangerous one - the row's agent MATCHES the task
+  // it launches, so `taskKindModel` hands a Claude id to Codex as a `--model` flag.
+  assert.throws(
+    () => setHarnessesConfig({ kindDefaults: { plan: { agent: "codex", model: "claude-opus-4-8" } } }),
+    /belongs to another harness/,
+  );
+  assert.equal(getHarnessesConfig().kindDefaults.plan.model, null, "and nothing was written");
+
+  // Belongs-elsewhere, not absent-from-this-build's-table. A model id is free text: Pi mirrors
+  // its account's models and a newer build ships ids this one has never seen, so an unknown id
+  // is stored and applied rather than refused.
+  setHarnessesConfig({ kindDefaults: { plan: { agent: "pi", model: "some-provider/model-nobody-shipped-yet" } } });
+  assert.equal(
+    getHarnessesConfig().kindDefaults.plan.model,
+    "some-provider/model-nobody-shipped-yet",
+  );
+});
+
+test("the harness default effort is checked against the model too, with nothing below it", () => {
+  // The last tier, and the one with no tier under it to fall to. It is chosen per HARNESS
+  // while the levels are offered per MODEL, so a card set to a level only some of that
+  // harness's models offer would otherwise reach the others as a flag the CLI rejects.
+  //
+  // Today no shipped model can produce that pair, and the first assertion is what says so:
+  // `HarnessesConfigSchema` only accepts a level in the harness's BASE list, and no shipped
+  // model removes one - Codex's per-model rule only ADDS `max` on its newest two. So this is
+  // a guard against a narrowing that does not exist yet, and the invariant is asserted here
+  // rather than assumed, so the day a model does narrow, this test says which guard it is.
+  for (const agent of AGENT_TYPES) {
+    for (const choice of MODEL_CATALOG[agent]) {
+      for (const level of THINKING_LEVELS.filter((l) => supportsEffort(agent, l))) {
+        assert.ok(
+          launchEffortLevels(agent, choice.id).includes(level),
+          `${choice.id} narrows ${agent}'s levels by dropping ${level}: the ladder's final`
+            + " tier now has a reachable case, and this test should assert it end to end",
+        );
+      }
+    }
+  }
+
+  // The guard itself, at the one door that can be handed such a pair: a stored config from a
+  // build whose base list was wider, or a model that narrows later. `max` is not in Codex's
+  // base list, so the schema would refuse this - which is exactly why it is built by hand.
+  const config = HarnessesConfigSchema.parse({});
+  const stored = { ...config, defaultEffort: { ...config.defaultEffort, codex: "max" as const } };
+  assert.equal(
+    launchEffortFor(stored, "codex", "ship", null, "gpt-5.6-luna"),
+    null,
+    "a harness default the model cannot offer must become no flag at all",
+  );
+  assert.equal(
+    launchEffortFor(stored, "codex", "ship", null, "gpt-5.6-sol"),
+    "max",
+    "...and must still apply on a model that does offer it",
   );
 });
 

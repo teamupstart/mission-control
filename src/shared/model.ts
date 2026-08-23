@@ -177,6 +177,24 @@ export function modelChoicesFor(
   return [...known, { id: extra, label: modelLabel(extra) ?? extra, hint: "not in this build" }];
 }
 
+/**
+ * Whether this id is one some OTHER harness ships and this one does not.
+ *
+ * The narrow question on purpose, and the same one the settings panels already answer when
+ * they decide whether an agent change strands a model: a model id is free text, because a
+ * newer build's id and every model Pi mirrors from its account are legitimate values this
+ * build's table has never heard of. Refusing everything absent from `MODEL_CATALOG[agent]`
+ * would refuse those. Refusing an id that positively belongs somewhere else refuses only
+ * the pairing that can never work - `claude-opus-4-8` on Codex, which reaches the CLI as a
+ * `--model` flag naming a model it has never heard of.
+ */
+export function modelBelongsToAnotherHarness(agent: AgentType, modelId: string): boolean {
+  if (MODEL_CATALOG[agent].some((choice) => choice.id === modelId)) return false;
+  return Object.entries(MODEL_CATALOG).some(
+    ([other, choices]) => other !== agent && choices.some((choice) => choice.id === modelId),
+  );
+}
+
 /** Provider-compatible shipped defaults for Mission Control's own model calls. */
 export function providerModelDefault(
   provider: LlmRunnerId,

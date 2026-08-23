@@ -141,10 +141,15 @@ export function launchEffortFor(
   model: string | null,
 ): ThinkingLevel | null {
   const offered = launchEffortLevels(agent, model);
-  const pinned = taskEffort && offered.includes(taskEffort) ? taskEffort : null;
+  const offers = (level: ThinkingLevel | null): ThinkingLevel | null =>
+    level && offered.includes(level) ? level : null;
   return (
-    pinned ??
+    offers(taskEffort) ??
     (kind ? taskKindEffort(config, agent, kind, model) : null) ??
-    config.defaultEffort[agent]
+    // The harness default is checked too, and for the same reason as the tiers above it: it
+    // is chosen per HARNESS while the levels are offered per MODEL, so a card set to a level
+    // its newest models offer still has to answer for a task launching on an older one.
+    // Nothing below this to fall to, so an unavailable default becomes no flag at all.
+    offers(config.defaultEffort[agent])
   );
 }

@@ -908,14 +908,6 @@ function DispatchModal({
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
-  /**
-   * Whether the operator has moved the Agent select themselves on this draft.
-   *
-   * A ref and not state: nothing renders from it, and it must not be a dependency of the
-   * effect it guards - flipping it is exactly the moment that effect must NOT re-run and
-   * put the kind default back over the choice just made.
-   */
-  const agentPickedByHand = useRef(false);
   const tourModalRef = useTourTargetRef<HTMLElement>("dispatch-modal");
   const tourKindRef = useTourTargetRef<HTMLDivElement>("dispatch-kind");
   const tourInputRef = useTourTargetRef<HTMLLabelElement>("dispatch-input");
@@ -1388,20 +1380,23 @@ function DispatchModal({
    *    task was filed and is now an ordinary pin, and re-resolving it in the editor would
    *    rewrite somebody's stored choice for them.
    *  - `tourDemo`, whose draft is server-owned down to the harness.
-   *  - `agentPickedByHand`, the standing rule this form already follows for After work: a
-   *    choice made by hand is never reverted by a later kind switch.
+   *  - `draft.agentPinned`, the standing rule this form already follows for After work: a
+   *    choice made by hand is never reverted by a later kind switch. It lives on the DRAFT
+   *    rather than in a ref because closing this surface keeps the draft and reopening
+   *    resumes it - a ref dies with the unmount, and a resumed harness would then read as
+   *    "nobody has chosen" and be overwritten on sight.
    *
    * `pipeline` reaches here and moves nothing: it has no kind row at all, so `taskKindAgent`
    * answers with the inherited agent and `pipelineAgentForKindTransition` above still owns
    * that kind's harness.
    */
   useEffect(() => {
-    if (editing || tourDemo || agentPickedByHand.current || !defaults) return;
+    if (editing || tourDemo || draft.agentPinned || !defaults) return;
     if (!usesHarness) return;
     const wanted = taskKindAgent(defaults, draft.kind);
     if (wanted === draft.agent || !selectableAgents.includes(wanted)) return;
     update({ agent: wanted, ...overridesForAgent(wanted) });
-  }, [defaults, draft.agent, draft.kind, editing, tourDemo, usesHarness]);
+  }, [defaults, draft.agent, draft.agentPinned, draft.kind, editing, tourDemo, usesHarness]);
 
   // ---- the guided pass ----------------------------------------------------------------
   //
@@ -1535,8 +1530,7 @@ function DispatchModal({
       // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
       // guard, which is what keeps confirming the current harness from dropping anything.
       commit: () => {
-        agentPickedByHand.current = true;
-        update({ agent: a, ...overridesForAgent(a) });
+        update({ agent: a, agentPinned: true, ...overridesForAgent(a) });
       },
       ...(managedPipeline
         ? {
@@ -2653,11 +2647,10 @@ function DispatchModal({
                         // that kind's default underneath the operator - the same rule After
                         // work follows with its stash. Set before the pass takes the value,
                         // because the pass's own commit is this same choice by another route.
-                        agentPickedByHand.current = true;
                         // While the pass is asking this question, using the control it is
                         // about answers it - the same write, and the pass moves on.
                         if (guidedTakeValue("harness", agent)) return;
-                        update({ agent, ...overridesForAgent(agent) });
+                        update({ agent, agentPinned: true, ...overridesForAgent(agent) });
                       }}
                     >
                     {/* Driven off the union, so a harness that exists cannot be one the

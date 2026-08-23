@@ -12,6 +12,7 @@ import {
 } from "@shared/kind-defaults.ts";
 import type { TaskKindDefault } from "@shared/protocol.ts";
 import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
+import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
@@ -74,6 +75,22 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
     if (row.model && row.agent === null) {
       throw new HarnessesConfigError(
         `the ${kind} kind inherits its agent, so it cannot pin the model ${row.model}`,
+      );
+    }
+    // The other half of "a model belongs to one harness", which the browser enforces by
+    // narrowing its Model select and stranding a model an agent change orphaned - and which a
+    // direct `PUT` therefore does not get for free. Without this a row can be saved as
+    // `{ agent: "codex", model: "claude-opus-4-8" }`, and because the agent MATCHES the task
+    // it launches, `taskKindModel` hands that id to Codex as a `--model` flag rather than
+    // dropping it.
+    //
+    // Positively-belongs-elsewhere, not absent-from-this-catalog: a model id is free text, so
+    // a newer build's id and every model Pi mirrors from its account are legitimate values
+    // this build has never heard of, and refusing those would refuse the honest case to catch
+    // the impossible one.
+    if (row.model && row.agent && modelBelongsToAnotherHarness(row.agent, row.model)) {
+      throw new HarnessesConfigError(
+        `the model ${row.model} belongs to another harness, so the ${kind} kind cannot run it on ${row.agent}`,
       );
     }
   }

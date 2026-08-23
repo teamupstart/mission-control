@@ -297,11 +297,22 @@ test("the ambiguous reviewer accepts only bounded pre-PR implementation authorit
     instruction: "Finish the focused retry test and run that test file.",
   });
   assert.equal(forbiddenRecoveryInstruction("Finish the focused retry test."), false);
+  assert.equal(
+    forbiddenRecoveryInstruction("Clarify the stale code comment and verify the error message."),
+    false,
+  );
   for (const forbidden of [
     "Commit and push the changes.",
     "Open a pull request.",
     "Clean up the unrelated checkout.",
     "Create another task in the other repo.",
+    "Reply to the user that the task is complete.",
+    "Finish the test, then respond with a status update.",
+    "Answer on the operator's behalf.",
+    "Post a comment saying the work is ready.",
+    "Comment on the conversation with the result.",
+    "Notify the requester that verification passed.",
+    "Speak for the human and accept the tradeoff.",
   ]) {
     assert.equal(forbiddenRecoveryInstruction(forbidden), true, forbidden);
   }

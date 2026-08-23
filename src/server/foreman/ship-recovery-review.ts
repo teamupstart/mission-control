@@ -13,6 +13,16 @@ const REASON_MAX = 600;
 const DIFF_MAX = 80_000;
 const TRANSCRIPT_MAX = 40_000;
 
+const OUTSIDE_PRE_PR_RECOVERY =
+  /\b(commit|push|pull[ -]?request|\bpr\b|merge|delete|remove|clean up|new task|create task|another repo|other repo|cross-repo)\b/i;
+const HUMAN_REPLY_DIRECTIVES = [
+  /\b(reply|respond|answer)\b/i,
+  /\b(?:leave|post|send|write)\s+(?:a\s+)?(?:comment|message|response)\b/i,
+  /\bcomment\s+(?:back|that|saying|to|on\s+(?:the\s+)?(?:user|human|operator|requester|conversation|thread|issue|pull[ -]?request|pr))\b/i,
+  /\b(?:tell|notify|inform|message|contact)\s+(?:the\s+)?(?:user|human|operator|requester)\b/i,
+  /\b(?:on\s+(?:the\s+)?(?:user|human|operator|requester)(?:'s)?\s+behalf|speak\s+for\s+(?:the\s+)?(?:user|human|operator|requester))\b/i,
+];
+
 const clamp = (max: number) => (value: string) => value.slice(0, max);
 const RecoveryInstructionSchema = z.string().trim().min(1).transform(clamp(INSTRUCTION_MAX));
 const RecoveryReasonSchema = z.string().trim().min(1).transform(clamp(REASON_MAX));
@@ -88,8 +98,8 @@ export function extractShipRecoveryReview(raw: string): ShipRecoveryReview | nul
 
 /** Post-parse authority guard, independent of prompt compliance. */
 export function forbiddenRecoveryInstruction(text: string): boolean {
-  return /\b(commit|push|pull[ -]?request|\bpr\b|merge|delete|remove|clean up|new task|create task|another repo|other repo|cross-repo)\b/i
-    .test(text);
+  return OUTSIDE_PRE_PR_RECOVERY.test(text)
+    || HUMAN_REPLY_DIRECTIVES.some((pattern) => pattern.test(text));
 }
 
 export function buildShipRecoveryReviewPrompt(input: ShipRecoveryReviewInput): string {

@@ -473,6 +473,10 @@ the managed partition rather than on all of it:</p>
     operator picks <code>All</code>, which is the same defect wearing a different filter.</li>
   <li><code>e2e/specs/settings-conductor.spec.ts</code> covers the new shape, including selecting a
     repository from the directory and reading its detail pane.</li>
+  <li><strong>An off-filter selection spec</strong>: select a repository under <code>All</code>,
+    switch to <code>Managed</code>, and assert the detail pane still shows it, says it is outside
+    the current filter, and that taking the offered tile brings its row back with the selection
+    unchanged.</li>
   <li><strong>A spec that pins search-and-filter precedence</strong>, because neither control
     reveals the rule on its own: with <em>Managed</em> active, a query matching only an unmanaged
     repository renders no rows and the empty state offers the wider tile, and taking that offer
@@ -494,9 +498,15 @@ the managed partition rather than on all of it:</p>
     problem - its directory restores focus across list mutations
     (<code>TaskSourcesPanel.tsx:847-853</code>). The selected repository must be held by key, not by
     index, or a poll will move the selection under the operator.</li>
-  <li><strong>A repository can leave the managed partition while selected</strong> - consent
-    withdrawn, or the engine de-registers it. The detail pane needs a defined answer for that rather
-    than rendering a stale row.</li>
+  <li><strong>A selected repository can stop being listed, in two different ways that need two
+    different answers.</strong> It can leave the <em>union</em> - consent withdrawn, the engine
+    de-registers it, a poll stops returning it - and then the selection clears and the pane stops
+    showing a stale row. Or it can merely leave the <em>active filter</em>, which is an ordinary
+    flow here: pick something under <code>All</code>, switch back to <code>Managed</code>, and the
+    key is still valid so nothing clears it. The selection is kept in that case, because the
+    operator chose it and no filter interaction asked to un-choose it, but the pane says the
+    repository is outside the current filter and offers the tile that holds it. Silently discarding
+    the selection and silently showing a repository with no row are both worse.</li>
   <li><strong>The default filter hides 201 rows by design.</strong> That is the point, but it means
     the <code>Managed</code> tile has to be unmistakably a filter and not a title, or an operator
     will read an empty directory on a fresh machine as a broken page rather than as &ldquo;nothing

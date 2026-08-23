@@ -170,17 +170,49 @@ either: `.sc-pager`, `.sc-pager-range`, `.sc-pager-nav` and `.sc-pager-btn` are 
 `styles.css:19217-19264`, and the focus handoff is worked out in `settings-console.tsx:427-441` -
 copy that reasoning rather than rediscovering why a disabled button loses focus.
 
-Two consequences for the rest of this phase, both of which are ways this can be got wrong:
-
-- **Selection is keyed, so it survives paging.** The selected repository is held by
-  `pipelineRepoKey`, never by index, and it is *not* cleared when the operator turns the page - the
-  detail pane keeps showing the repository they picked while they look for another. Clearing it
-  would empty the right-hand column on every page turn.
-- **Auto-select-first means first of the filtered set, not first of the visible page.** Otherwise
-  turning the page silently moves the selection and the detail pane changes under the operator.
-
 `Managed` is 1 row on this machine, so no pager is drawn in the default state - the contract's
 "absent, not disabled, when everything fits on one page". The pager appears when `All` is picked.
+
+### What selection does when the rows move underneath it
+
+The directory changes what it lists for four different reasons - the tile, the query, the page, and
+the 4s poll - and the detail pane beside it holds one repository. Every one of those is a chance to
+either strand the pane or move it under the operator, so the rule is written out rather than left
+to whichever effect happens to fire first.
+
+**Selection is keyed by `pipelineRepoKey(provider, repoRoot)`, never by index, and it is governed
+by the union - not by what is currently on screen.**
+
+- **Turning the page does not change it.** The pane keeps showing the repository the operator
+  picked while they look for another; clearing it would empty the right-hand column on every page
+  turn.
+- **Changing the tile or the query does not change it either.** An explicit selection is not
+  discarded because a filter stopped matching it - the operator chose that repository, and no
+  filter interaction asked to un-choose it.
+- **It clears only when the repository leaves the union**, which is the drop-when-gone effect from
+  finding 4: consent withdrawn, the engine de-registers it, or a poll simply stops returning it.
+  That effect keys on `offeredRepos`, exactly as `TaskSourcesPanel.tsx:1013` keys on the full
+  `sources` list rather than on the filtered one.
+
+**The state this leaves is real and needs a signal.** Select an unmanaged repository under `All`,
+switch back to `Managed`, and the selected key is still perfectly valid in the union - so
+drop-when-gone does not fire, and the detail pane shows a repository that has no row in the
+directory beside it. Task sources has this behaviour today and gets away with it because its
+default filter is *All*, so reaching the state takes deliberate effort. Conductor's default tile is
+*Managed*, which is 1 row of 202 here, so it is an ordinary flow rather than a corner: open `All`,
+pick something to look at, go back.
+
+So the detail pane says when its repository is outside the current filter, and offers the tile that
+contains it - the same shape as the empty-search answer above, and for the same reason: a narrow
+default must never leave the operator somewhere that reads as broken with no way back. It is a line
+in the pane, not a modal and not a toast.
+
+**Auto-select-first fills a `null` selection from the first row of the current filtered set** -
+deliberately *not* `union[0]`, which is what `TaskSourcesPanel.tsx:1022-1023` uses. Under a narrow
+default tile, `union[0]` would routinely select a repository that is not on screen, manufacturing
+the very off-filter state described above on first render. When the filtered set is empty, nothing
+is selected and the pane shows the empty guidance instead; that is the correct answer on a fresh
+machine with nothing registered.
 
 ## Implementation shape
 
@@ -209,7 +241,10 @@ state looks like; where the repository disagrees with one, the repository wins.
      sources shows only `"No sources match these filters."` (`TaskSourcesPanel.tsx:922`), which is
      enough there because its default tile is *All*; it is not enough here.
 3. **Selection state.** `useState<string | null>` keyed by `pipelineRepoKey`, with the
-   drop-when-gone and auto-select-first effects from finding 4. Focus returns to the row, falling
+   drop-when-gone and auto-select-first effects from finding 4, behaving as
+   "What selection does when the rows move underneath it" above sets out - in particular,
+   drop-when-gone keys on the union while auto-select-first reads the filtered set, and neither
+   the tile, the query nor the page clears an explicit selection. Focus returns to the row, falling
    back to the list container, as `TaskSourcesPanel.tsx:847-853` does.
 4. **The directory column.** A search input on `.field-input`, the `ConsoleStrip` tiles, then a
    list of short rows - name, a status dot, and the ready mark. Rows are buttons carrying
@@ -269,6 +304,11 @@ state looks like; where the repository disagrees with one, the repository wins.
   fails against the panel as it stands today, which is what makes it the useful one to have first.
 - **A selection spec**: choosing a repository shows it in the detail pane, and the selection
   survives a poll rather than jumping.
+- **An off-filter selection spec**, covering the transition this plan would otherwise leave to
+  chance: select a repository under `All`, switch to `Managed`, and assert the detail pane still
+  shows it, that it says the repository is outside the current filter, and that taking the offered
+  tile brings its row back and leaves the selection unchanged. It also asserts the reverse never
+  happens silently - changing a filter does not swap the pane to a different repository.
 - **A search-and-filter precedence spec**, because the rule is invisible from either control alone
   and a later change could silently invert it: with *Managed* active, a query matching only an
   unmanaged repository renders no rows and the empty state offers the wider tile; taking that offer

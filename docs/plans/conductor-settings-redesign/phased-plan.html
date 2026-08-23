@@ -225,7 +225,7 @@ later work will meet them:</p>
     nowhere else.</li>
   <li><strong>The selected repository is keyed by
     <code>pipelineRepoKey(provider, repoRoot)</code></strong>, never by list index, because the view
-    is polled every four seconds.</li>
+    is polled every four seconds. It is governed by the union rather than by what is on screen: the tile, the query and the page never clear an explicit selection, and only a repository leaving <code>offeredRepos</code> does. A selection outside the active filter is kept and signalled in the detail pane rather than dropped.</li>
 </ul>
 
 <h2>Final verification</h2>

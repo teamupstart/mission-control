@@ -230,9 +230,15 @@ shape has been used.
   `POLL_MS = 4000`, and Task sources hit exactly this problem - its directory restores focus
   across list mutations (`TaskSourcesPanel.tsx:847-853`). The selected repository must be held
   by key, not by index, or a poll will move the selection under the operator.
-- **A repository can leave the managed partition while selected** - consent withdrawn, or the
-  engine de-registers it. The detail pane needs a defined answer for that rather than
-  rendering a stale row.
+- **A selected repository can stop being listed, in two different ways that need two different
+  answers.** It can leave the *union* - consent withdrawn, the engine de-registers it, a poll
+  stops returning it - and then the selection clears and the pane stops showing a stale row. Or it
+  can merely leave the *active filter*, which is an ordinary flow here: pick something under
+  `All`, switch back to `Managed`, and the key is still valid so nothing clears it. The selection
+  is kept in that case, because the operator chose it and no filter interaction asked to un-choose
+  it, but the pane says the repository is outside the current filter and offers the tile that
+  holds it. Silently discarding the selection and silently showing a repository with no row are
+  both worse.
 - **The default filter hides 201 rows by design.** That is the point, but it means the
   `Managed` tile has to be unmistakably a filter and not a title, or an operator will read an
   empty directory on a fresh machine as a broken page rather than as "nothing registered yet".

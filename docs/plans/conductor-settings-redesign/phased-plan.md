@@ -141,7 +141,10 @@ later work will meet them:
 - **Anchors stay unconditional and keep their current six names.** The search index points at them
   and the render test requires each to appear inside the Conductor panel and nowhere else.
 - **The selected repository is keyed by `pipelineRepoKey(provider, repoRoot)`**, never by list
-  index, because the view is polled every four seconds.
+  index, because the view is polled every four seconds. It is governed by the union rather than by
+  what is on screen: the tile, the query and the page never clear an explicit selection, and only a
+  repository leaving `offeredRepos` does. A selection outside the active filter is kept and
+  signalled in the detail pane rather than dropped.
 
 ## Final verification
 

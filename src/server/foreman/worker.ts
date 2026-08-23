@@ -34,6 +34,8 @@ import {
 } from "./client.ts";
 import { setLlmSpendSink } from "../llm/spend.ts";
 import { reviewModel, reviewSession } from "./review.ts";
+import { FOREMAN_MODEL_ROLES, resolveForemanRunner } from "@shared/foreman-models.ts";
+import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
@@ -349,7 +351,7 @@ async function main(): Promise<void> {
       lastSpendSweepAt = Date.now();
       sweepSpendOutbox();
     }
-    let cfg;
+    let cfg: ForemanConfig;
     try {
       cfg = await client.getConfig();
     } catch (err) {
@@ -371,12 +373,26 @@ async function main(): Promise<void> {
     // app-wide answer so a Settings edit reaches both processes on the next pass. One status
     // request carries both facts, and a transient failure retains both last-known values.
     const llmSelection = await client.llmSelection().catch(() => null);
-    triageRunnerId = cfg.runner ?? llmSelection?.runner ?? triageRunnerId;
+    // PER ROLE. The app-wide rung is whatever the daemon last told us; the two above it -
+    // the role's own provider and Foreman's group-level one - are read straight off the
+    // config this pass already fetched. When the daemon cannot answer, this role's previous
+    // resolution stands in as that bottom rung, which is what keeps a blip from moving a
+    // role onto a provider the operator did not pick.
+    roleRunnerIds = Object.fromEntries(
+      FOREMAN_MODEL_ROLES.map((role) => [
+        role,
+        resolveForemanRunner(role, cfg, {
+          id: llmSelection?.runner ?? roleRunnerIds[role],
+          source: "config",
+          unknown: null,
+        }).id,
+      ]),
+    ) as Record<ForemanModelRole, LlmRunnerId>;
     if (llmSelection) {
       claudeTransport = llmSelection.claudeTransport;
       codexTransport = llmSelection.codexTransport;
     }
-    await syncBacklogPlanner(client, cfg, triageRunnerId);
+    await syncBacklogPlanner(client, cfg, roleRunnerIds.backlog);
     if (isLeader) await publishBacklogPlannerHealth(client);
 
     // Identity and retry control are observed even while disabled, above. That way a
@@ -1135,7 +1151,7 @@ async function runShipShepherd(
               completionContract: taskCompletionContract("ship")!,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
-            }, reviewModel(cfg), triageRunnerId);
+            }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review);
             if (reviewed.kind === "failed") {
               reviewFailure = reviewed.reason;
             } else if (reviewed.verdict.action === "escalate") {
@@ -2003,7 +2019,7 @@ async function processPromptedWrapup(
     // behavior is untouched - and so is every other task kind, because only `ship` has a
     // contract to give.
     completionContract: taskCompletionContract(session.task?.kind),
-  }, verifyModel(cfg), triageRunnerId);
+  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify);
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
@@ -2360,7 +2376,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  }, verifyModel(cfg), triageRunnerId);
+  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify);
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -2875,7 +2891,7 @@ async function fullReview(
     ...captured,
   };
 
-  const result = await reviewSession(input, reviewModel(cfg), triageRunnerId);
+  const result = await reviewSession(input, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review);
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a
@@ -2928,15 +2944,21 @@ async function readInstructions(client: ForemanClient): Promise<string> {
 }
 
 /**
- * The provider the cheap tier spawns through, refreshed once per outer loop pass.
+ * The provider each of Foreman's four roles spawns through, refreshed once per outer pass.
  *
- * Held here rather than threaded through `processTarget` because it is not a property of
- * any one session: every triage in a pass runs on the same provider, and passing it down
- * five frames to reach `triageDeps` would put a preference in five signatures. Refreshed
- * per pass so a change in Settings lands within a tick without a worker restart, and seeded
- * with the default so the very first pass has an answer even if the daemon is slow.
+ * One entry per ROLE, not one value for the pass. This was a single provider id, on the
+ * rationale that every triage in a pass runs on the same one - true then, and beside the
+ * point now: a role carries its own provider, so Review and Triage in the SAME pass can
+ * legitimately differ. What survives of that rationale is why this is module state at all -
+ * a provider is not a property of any one session, and threading it down five frames to
+ * reach `triageDeps` would put a preference in five signatures.
+ *
+ * Refreshed per pass so a Settings change lands within a tick without a worker restart, and
+ * seeded with the default so the very first pass has an answer even if the daemon is slow.
  */
-let triageRunnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID;
+let roleRunnerIds: Record<ForemanModelRole, LlmRunnerId> = Object.fromEntries(
+  FOREMAN_MODEL_ROLES.map((role) => [role, DEFAULT_LLM_RUNNER_ID]),
+) as Record<ForemanModelRole, LlmRunnerId>;
 
 /**
  * The Claude wire transport this worker process applies to all four Foreman call sites.
@@ -2966,8 +2988,9 @@ let codexTransport: CodexTransport = foremanCodexTransportFallback();
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
+    runner: roleRunnerIds.triage,
     runModel: (prompt, model, schema) =>
-      llmRunner(triageRunnerId).run(prompt, {
+      llmRunner(roleRunnerIds.triage).run(prompt, {
         model,
         timeoutMs: TRIAGE_TIMEOUT_MS,
         role: "foreman:triage",

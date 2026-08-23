@@ -2,7 +2,7 @@ import { repoAllowlisted } from "./allowlist.ts";
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorConfig } from "./protocol.ts";
-import { providerModelDefault } from "./model.ts";
+import { guardProviderModel, providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
 
 const INSPECTOR_MAX_ROUNDS = 100;
@@ -107,9 +107,24 @@ export const INSPECTOR_MODEL_ENV = "INSPECTOR_MODEL";
 export const INSPECTOR_MODEL_SPEC: ModelChoiceSpec = {
   envVar: `MISSION_${INSPECTOR_MODEL_ENV}`,
   fallback: "claude-sonnet-5",
-  label: "Review model",
+  // "Review", not "Review model". It names a SLOT, and the surfaces that render it already
+  // supply the noun - the Models grid puts it in a row under Provider and Model columns, so
+  // "Review model" made the controls read "Review model provider" and "Review model model".
+  label: "Review",
   blurb: "Reviews each push and answers follow-ups in GitHub Inspector's own threads.",
 };
+
+/**
+ * The Inspector's resolved model, plus the id its provider refused.
+ *
+ * `ResolvedModel` with one more field, the same shape `ResolvedForemanModel` carries: a
+ * dropped id has to reach the panel, or the row shows a model the operator never chose and
+ * says nothing about the one they did.
+ */
+export interface ResolvedInspectorModel extends ResolvedModel {
+  /** The stored id this provider cannot run, or null when the pair is honoured. */
+  unsupported: string | null;
+}
 
 /**
  * What the Inspector will spawn with, and why.
@@ -121,8 +136,8 @@ export function resolveInspectorModel(
   cfg: Pick<InspectorConfig, "model"> | null | undefined,
   envValue: string | null | undefined,
   runner: LlmRunnerId = "claude",
-): ResolvedModel {
-  return resolveModelChoice(
+): ResolvedInspectorModel {
+  const chosen = resolveModelChoice(
     {
       ...INSPECTOR_MODEL_SPEC,
       fallback: runner === "claude" ? INSPECTOR_MODEL_SPEC.fallback : providerModelDefault(runner, "deep"),
@@ -130,4 +145,20 @@ export function resolveInspectorModel(
     cfg?.model,
     envValue,
   );
+  // The guard runs LAST, over the winner of the ladder, exactly as `resolveForemanModel` runs
+  // it - and for a reason specific to this call. Making the Inspector's provider inheritable
+  // means an app-wide provider change moves it with NO Inspector write to intercept, so a
+  // model saved under Claude can be handed to Codex with nothing in between. Of every call
+  // this app makes, this is the one that writes where other people read, so spawning a
+  // provider/model pair that cannot exist is the least acceptable place to find out. `deep`
+  // because a pull-request review is a deep call: substituting a cheap model for a refused
+  // pair would quietly downgrade the review rather than refuse it.
+  const guarded = guardProviderModel(runner, chosen.id, "deep");
+  return {
+    id: guarded.id,
+    // A substituted id came from the provider default, not from the layer that asked for the
+    // one that was dropped, so it is not the operator's choice to report.
+    source: guarded.unsupported === null ? chosen.source : "default",
+    unsupported: guarded.unsupported,
+  };
 }

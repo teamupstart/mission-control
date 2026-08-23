@@ -16,7 +16,7 @@ import type {
   FileCommentReviewState,
   FileCommentThreadStatus,
 } from "./file-comments.ts";
-import type { InspectorPosture } from "./inspector.ts";
+import type { InspectorPosture, ResolvedInspectorModel } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
@@ -1674,12 +1674,35 @@ export interface ForemanStatus {
    * The provider every Foreman role actually spawns through, resolved the same way and
    * for the same reason as `models` above.
    *
-   * Foreman's own `runner` when it has one; otherwise the app-wide ladder (`llm` config,
-   * then `MISSION_LLM_RUNNER`, then the default), which the browser cannot see. The panel
+   * Foreman's GROUP-LEVEL answer: its own `runner` when it has a readable one, otherwise the
+   * app-wide ladder (`llm` config, then `MISSION_LLM_RUNNER`, then the default). The panel
    * renders this rather than `config.runner ?? "claude"`, which would print a provider the
-   * operator neither chose nor is running on.
+   * daemon is not using.
+   *
+   * NOT the answer for any particular role - see `roleRunners`. This is what a role that has
+   * not chosen its own provider inherits, which is exactly what the panel's per-role Inherit
+   * options are labelled with.
    */
   runner: LlmRunnerId;
+  /**
+   * The same group-level answer, with the layer that chose it and any stored value this build
+   * could not read.
+   *
+   * APPENDED beside `runner` rather than widening it, for the reason `roleRunners` was: other
+   * readers already parse `runner` as a bare id. What this adds is the only thing a bare id
+   * cannot carry - a persisted provider that no longer resolves. That case inherits the
+   * app-wide answer, and without `unknown` the group control draws the inherited provider as
+   * Foreman's own choice with nothing on screen saying the saved one was dropped.
+   */
+  groupRunner: ResolvedLlmRunner;
+  /**
+   * Which provider each of Foreman's four roles resolved to, and which layer chose it.
+   *
+   * APPENDED beside `runner` rather than replacing it, for the reason `LlmStatus.jobRunners`
+   * was: `runner` is a field other readers already parse, and reshaping it would break them.
+   * A role with no override of its own simply repeats the group-level value.
+   */
+  roleRunners: Record<ForemanModelRole, ResolvedLlmRunner>;
 }
 
 /** One bounded snapshot of the backlog dependency planner's effective runtime and health. */
@@ -2694,7 +2717,24 @@ export interface InspectionUpdated {
  * split, and the same reason, as `ForemanConfig` against `ForemanStatus.models`.
  */
 export interface InspectorStatus {
-  model: ResolvedModel;
+  /**
+   * Resolved, and carrying the id its provider refused.
+   *
+   * A bare `ResolvedModel` could not say that a stored Claude model was dropped because the
+   * provider moved underneath it, so the row would print the substitute as though the
+   * operator had picked it. Same reason `ForemanStatus` carries `unsupported` per role.
+   */
+  model: ResolvedInspectorModel;
+  /**
+   * The provider the review call resolves to, and which layer chose it.
+   *
+   * Sent by the daemon rather than derived in the browser, for this interface's standing
+   * reason: an unset `InspectorConfig.runner` now inherits the app-wide ladder, whose env
+   * layer the browser cannot see. A panel reading `config.runner ?? "claude"` would print a
+   * provider the daemon is not using - which is the bug this phase fixes, not one to
+   * reintroduce one layer up.
+   */
+  runner: ResolvedLlmRunner;
 }
 
 export interface LlmProviderView {

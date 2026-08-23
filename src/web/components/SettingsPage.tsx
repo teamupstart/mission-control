@@ -545,7 +545,17 @@ export function SettingsPage({
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":
-        return <LlmSettingsPanel state={llm} harnesses={harnesses} />;
+        // Handed Foreman's and the Inspector's state rather than opening pollers of its own:
+        // this page already holds both, and two readers of one blob on one screen is two
+        // ideas of what Review is running as, seconds apart.
+        return (
+          <LlmSettingsPanel
+            state={llm}
+            harnesses={harnesses}
+            foreman={foreman}
+            inspector={inspector}
+          />
+        );
       case "foreman":
         return (
           <ForemanSettingsPanel

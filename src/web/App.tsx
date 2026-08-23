@@ -2724,10 +2724,11 @@ export function App(): React.JSX.Element {
             foremanSummary={{
               runner: foreman.status?.runner ?? null,
               models: foreman.status?.models ?? null,
+              roleRunners: foreman.status?.roleRunners ?? null,
             }}
             upstream={personaDrift.upstream}
             onCheckUpstream={personaDrift.refresh}
-            onOpenForemanModels={() => openSettingsAnchor("foreman", "foreman/provider")}
+            onOpenForemanModels={() => openSettingsAnchor("models", "models/foreman")}
             onOpenForemanPosture={() => openSettingsAnchor("foreman", "foreman/cheap-tier")}
             onOpenForemanTrust={() => openSettingsAnchor("trust", "trust/matrix")}
             onOpenForemanControl={() => setForemanOpenRequest((request) => request + 1)}
@@ -2764,6 +2765,7 @@ export function App(): React.JSX.Element {
             foremanSummary={{
               runner: foreman.status?.runner ?? null,
               models: foreman.status?.models ?? null,
+              roleRunners: foreman.status?.roleRunners ?? null,
             }}
             personaUpstream={personaDrift.upstream}
             sessionActions={sessionActions}

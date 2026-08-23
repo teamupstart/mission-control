@@ -187,13 +187,23 @@ export function ProviderSelect({
 }): React.JSX.Element {
   const inheritedLabel =
     providers.find((provider) => provider.id === inherited?.id)?.label ?? inherited?.id ?? "app-wide";
+  /**
+   * The stored value, or Inherit when this build cannot read it.
+   *
+   * A `<select>` whose value matches no option shows an empty box - neither the saved value
+   * nor the one actually in force, and the operator's only reading of it is "unset". The
+   * honest rendering is the option that IS in force, which for an unreadable override is
+   * Inherit, with the row's note beside it naming the id that was dropped. Narrowed here
+   * rather than at each caller so every row on the page answers this the same way.
+   */
+  const selected = knownRunner(value) ?? "";
   return (
     <Tooltip label={tooltip}>
       <select
         id={id}
         aria-label={name}
         className="field-input settings-matrix-provider"
-        value={value}
+        value={selected}
         disabled={disabled}
         onChange={(event) => onCommit(knownRunner(event.target.value) ?? "")}
       >
@@ -249,6 +259,7 @@ export function modelSlotRow({
   key,
   anchor,
   spec,
+  nameScope,
   providers,
   runnerValue,
   runnerResolved,
@@ -262,6 +273,17 @@ export function modelSlotRow({
   key: string;
   anchor: string | null;
   spec: ModelChoiceSpec;
+  /**
+   * Which group this row belongs to, prefixed onto the two controls' ACCESSIBLE names.
+   *
+   * The page now carries three groups' rows, and two of them label a row "Review" - Foreman's
+   * deep judgement and the GitHub Inspector's pull-request pass are genuinely both called that.
+   * The visible headings disambiguate them; a screen reader reading a control on its own, and a
+   * spec selecting one by name, get "Review provider" twice and no way to tell which account is
+   * about to be charged. The heading in the row stays short; only the control names carry the
+   * group.
+   */
+  nameScope?: string;
   providers: LlmProviderView[];
   /** The stored provider override, or "" for inherit. */
   runnerValue: string;
@@ -288,6 +310,7 @@ export function modelSlotRow({
   onCommit: (patch: { runner?: LlmRunnerId | ""; model?: string }) => void;
 }): SettingsMatrixRow {
   const runnerForCatalog: LlmRunnerId = knownRunner(runnerValue) ?? runnerResolved?.id ?? "claude";
+  const name = nameScope ? `${nameScope} ${spec.label}` : spec.label;
   const dropped = modelResolved?.unsupported ?? null;
   const unreadableProvider = runnerResolved?.unknown ?? null;
   return {
@@ -299,8 +322,8 @@ export function modelSlotRow({
       provider: (
         <ProviderSelect
           id={`${key}-provider`}
-          name={`${spec.label} provider`}
-          tooltip={`Which provider runs ${spec.label.toLowerCase()}. Inherit follows the app-wide picker.`}
+          name={`${name} provider`}
+          tooltip={`Which provider runs ${name.toLowerCase()}. Inherit follows the app-wide picker.`}
           value={runnerValue}
           inherited={inheritedRunner}
           providers={providers}
@@ -329,7 +352,7 @@ export function modelSlotRow({
         <ModelField
           id={`${key}-model`}
           anchor={null}
-          spec={spec}
+          spec={nameScope ? { ...spec, label: name } : spec}
           value={modelValue}
           resolved={modelResolved}
           runner={runnerForCatalog}

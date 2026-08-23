@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LlmSettingsPanel } from "../src/web/components/LlmSettingsPanel.tsx";
+import type { ForemanState } from "../src/web/useForeman.ts";
+import type { InspectorState } from "../src/web/useInspector.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
 import { LLM_RUNNER_ENV_VAR, LLM_RUNNER_IDS } from "../src/shared/llm.ts";
@@ -83,6 +85,34 @@ function sliceSelect(html: string, name: string): string {
   return html.slice(at, html.indexOf("</select>", at));
 }
 
+/**
+ * Foreman and the Inspector, pre-poll.
+ *
+ * Null config is what the page shows before the daemon answers: every control present and
+ * disabled. That is the right fixture for a file asking what the panel RENDERS, and it keeps
+ * this file about the background jobs - the Foreman and Inspector groups have their own
+ * assertions in `foreman-models-panel.test.ts`.
+ */
+const FOREMAN: ForemanState = {
+  config: null,
+  status: null,
+  backlogPlan: null,
+  episodes: [],
+  update: async () => true,
+  refresh: async () => {},
+  error: null,
+};
+const INSPECTOR: InspectorState = {
+  config: null,
+  inspections: [],
+  model: null,
+  runner: null,
+  update: async () => true,
+  refresh: async () => {},
+  resolveFindings: async () => true,
+  error: null,
+};
+
 function render(over: Partial<LlmState> = {}, harnessesOver: Partial<HarnessesState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
@@ -98,7 +128,14 @@ function render(over: Partial<LlmState> = {}, harnessesOver: Partial<HarnessesSt
     error: null,
     ...harnessesOver,
   };
-  return renderToStaticMarkup(createElement(LlmSettingsPanel, { state, harnesses }));
+  return renderToStaticMarkup(
+    createElement(LlmSettingsPanel, {
+      state,
+      harnesses,
+      foreman: FOREMAN,
+      inspector: INSPECTOR,
+    }),
+  );
 }
 
 test("every background job gets a field, labelled and explained", () => {
@@ -113,8 +150,15 @@ test("every background job gets a field, labelled and explained", () => {
 function jobsGroup(html: string): string {
   const at = html.indexOf('data-anchor="models/jobs"');
   assert.ok(at > 0, "no background jobs group");
-  const end = html.indexOf('data-anchor="models/task-kinds"', at);
-  return html.slice(at, end > 0 ? end : undefined);
+  // Ends at whichever group comes next, because the page now carries four: the jobs, then
+  // Foreman's four roles, the Inspector's review, and the task-kind grid. A slice that named
+  // only the last of them would silently swallow the two in between and turn an assertion
+  // about the jobs into one about how many rows the whole page has.
+  const end = ["models/foreman", "models/inspector", "models/task-kinds"]
+    .map((anchor) => html.indexOf(`data-anchor="${anchor}"`, at))
+    .filter((index) => index > 0)
+    .sort((a, b) => a - b)[0];
+  return html.slice(at, end !== undefined ? end : undefined);
 }
 
 test("every blurb is still PRINTED, once per row, not left to a tooltip", () => {
@@ -123,12 +167,13 @@ test("every blurb is still PRINTED, once per row, not left to a tooltip", () => 
   // hanging off it described the row from the wrong place. What must not change is that it
   // is VISIBLE: the assertion above would keep passing off the Tooltip's hidden portal copy
   // alone, which is exactly the regression this pins.
-  // Scoped to the jobs group, because the page now carries a SECOND matrix below it - the
-  // task-kind grid - whose rows print their own blurbs. Counting the whole document would
-  // make this assertion about how many kinds exist, which is not what it is pinning.
-  const html = jobsGroup(render());
+  // Scoped to the background-jobs group, because the page now carries three more matrices -
+  // Foreman's roles, the Inspector's review, and the task-kind grid - whose rows print their
+  // own blurbs. Counting the whole document would make this assertion about how many groups
+  // exist rather than about a job's explanation going missing.
+  const group = jobsGroup(render());
   assert.equal(
-    (html.match(/settings-matrix-slot-blurb/g) ?? []).length,
+    (group.match(/settings-matrix-slot-blurb/g) ?? []).length,
     LLM_JOB_IDS.length,
     "each job's row must print its own explanation exactly once",
   );

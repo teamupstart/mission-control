@@ -138,14 +138,15 @@ test("Foreman's fixed System profile owns exact guidance and links every other s
   await expect(dashboard.getByRole("dialog", { name: "Foreman settings" })).toHaveCount(0);
   await expect.poll(() => hash(dashboard)).toBe("#/library/personas/foreman");
 
-  // Provider/model facts navigate to the existing Models tab and exact provider owner.
+  // Provider/model facts navigate to Settings > Models, where Foreman's four roles now live
+  // beside every other call this app makes on the operator's account.
   await chip(dashboard, "provider").click();
   await dashboard.getByRole("group", { name: "Foreman model summary" })
     .getByRole("button", { name: "Open Models settings" }).click();
-  await expect.poll(() => hash(dashboard)).toBe("#/settings/foreman");
-  await expect(dashboard.locator(".sc-controls").getByRole("tab", { name: "Models" }))
-    .toHaveAttribute("aria-selected", "true");
-  await expect(dashboard.locator('[data-anchor="foreman/provider"]')).toHaveClass(/settings-flash/);
+  await expect.poll(() => hash(dashboard)).toBe("#/settings/models");
+  await expect(dashboard.locator('[data-anchor="models/foreman"]')).toHaveClass(/settings-flash/);
+  await expect(dashboard.getByRole("combobox", { name: "Foreman Review provider" })).toBeVisible();
+  await dashboard.getByRole("tab", { name: "Foreman" }).click();
 
   const guidanceCard = dashboard.getByRole("heading", { name: "Standing guidance" })
     .locator("..").locator("..");

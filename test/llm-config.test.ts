@@ -34,9 +34,11 @@ const {
   llmJobModel,
   llmJobRunner,
   llmRunnerChoice,
-  llmStatus,
   setLlmConfig,
 } = await import("../src/server/llm/config.ts");
+// From `./status.ts`, not `./config.ts`: the status assembles the provider LIST, which is the
+// one thing that needs every adapter loaded, and the resolvers deliberately do not.
+const { llmStatus } = await import("../src/server/llm/status.ts");
 const { LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
 const {
   CLAUDE_TRANSPORT_ENV_VAR,

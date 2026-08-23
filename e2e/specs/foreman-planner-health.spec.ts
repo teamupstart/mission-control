@@ -84,13 +84,19 @@ test("a degraded backlog planner is diagnosable and retryable without restarting
   });
   await expect(health.getByRole("button", { name: "Retry planner now" })).toBeEnabled();
 
-  // The durable settings say which side of the provider/model divide owns each choice.
+  // The durable settings say which side of the provider/model divide owns each choice - and
+  // they now sit on two different pages. What the PLANNER itself spends is the Backlog role on
+  // Settings > Models, beside every other call this app makes on the operator's account.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/models`);
+  await expect(dashboard.getByRole("combobox", { name: "Foreman Backlog provider" })).toBeVisible();
+  // The row's blurb, which the tooltip on the model control repeats verbatim - so this asks
+  // the grid for it rather than the page.
+  await expect(
+    dashboard.locator(".settings-matrix-slot-blurb", { hasText: /Reads the backlog once per change/ }),
+  ).toBeVisible();
+
+  // What a LAUNCHED agent runs as is a different question and stayed on Foreman.
   await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
-  await dashboard.getByRole("tab", {
-    name: "Models",
-    description: /Show Foreman Models settings/,
-  }).click();
-  await expect(dashboard.getByText(/Foreman Provider controls all four model roles/)).toBeVisible();
   await dashboard.getByRole("tab", {
     name: "Launches",
     description: /Show Foreman Launches settings/,

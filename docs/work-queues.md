@@ -318,10 +318,11 @@ the dispatch model order, which [Settings → Harnesses](dispatch-and-backlog.md
 full - including what this field does and does not persist. If an autopilot-launched agent
 isn't on the model you expected, that list is where to start.
 
-These are task-agent models, not Foreman's dependency planner. **Settings → Foreman →
-Models → Provider** controls all four of Foreman's own model roles, including **Backlog**;
-the **Backlog** role's model field selects the dependency planner model. Changing a Launches
-field never changes the provider or model that reads the dependency graph.
+These are task-agent models, not Foreman's dependency planner. Foreman's own four roles -
+including **Backlog**, which is the dependency planner - each pick their own provider and
+model on **[Settings → Models](models.md#foremans-four-roles)**. Changing a Launches field
+never changes the provider or model that reads the dependency graph, and neither does moving
+one of the Models rows change what a launched agent runs as.
 
 **The autopilot only assigns into sessions Mission Control created** - embedded ones and
 ones it dispatched. That is a stricter bar than the rest of Foreman applies: everything else

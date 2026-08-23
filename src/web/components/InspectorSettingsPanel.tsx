@@ -4,10 +4,6 @@ import type { InspectorState } from "../useInspector.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
-import { ModelField, ModelSuggestions } from "./ModelField.tsx";
-import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
-import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { AGENT_IDENTITY } from "@shared/agent.ts";
 import {
   ConsoleCard,
   ConsoleState,
@@ -229,7 +225,7 @@ export function InspectorSettingsPanel({
   state: InspectorState;
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
-  const { config, inspections, model, update, error } = state;
+  const { config, inspections, update, error } = state;
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
   const allowlist = config?.repoAllowlist ?? [];
@@ -325,60 +321,30 @@ export function InspectorSettingsPanel({
               <p className="settings-hint">{MODE_LABEL[mode]}.</p>
             </fieldset>
 
-            <div className="sc-field" data-anchor="inspector/provider">
-              <label className="sc-field-label" htmlFor="inspector-provider">
-                Provider
-              </label>
-              <Tooltip label="Which model provider GitHub Inspector's review call is spawned with">
-                <select
-                  id="inspector-provider"
-                  className="field-input sc-input"
-                  value={config?.runner ?? "claude"}
-                  disabled={!config}
-                  onChange={(e) =>
-                    void update({
-                      runner: e.target.value as (typeof LLM_RUNNER_IDS)[number],
-                      model: "",
-                    })
-                  }
+            {/* The pointer left by the provider select and the model box. Both moved to
+                Settings > Models, where every call this app makes on your account is
+                answerable in one screen - including what an unset provider now inherits,
+                which is a question this panel could not answer at all while it resolved to a
+                literal Claude. No `data-anchor`: search points at the Models page, and an
+                anchor whose only content is a signpost is a result that jumps to a sentence
+                rather than to a control. */}
+            <p className="settings-hint">
+              GitHub Inspector starts an isolated call per review. Claude receives read-only tools
+              scoped to the worktree; Codex reviews the supplied diff without repository tools.
+            </p>
+            <p className="settings-hint">
+              Which provider and model it starts now sits with every other model this app spends
+              on.{" "}
+              <Tooltip label="Open Settings > Models and flash GitHub Inspector's row">
+                <button
+                  type="button"
+                  className="settings-link"
+                  onClick={() => onNavigate("models", "models/inspector")}
                 >
-                  {LLM_RUNNER_IDS.map((runner) => (
-                    <option key={runner} value={runner}>
-                      {AGENT_IDENTITY[runner].label}
-                    </option>
-                  ))}
-                </select>
+                  Open it in Models →
+                </button>
               </Tooltip>
-              <p className="settings-hint">
-                GitHub Inspector starts an isolated call per review. Claude receives read-only tools
-                scoped to the worktree; Codex reviews the supplied diff without repository tools.
-              </p>
-            </div>
-
-            {/* The model picker is filtered by the provider above it, and switching
-                provider clears the stored id (see the select's onChange) - a Claude model
-                name is not a thing Codex can be spawned with. `ModelField` is the same
-                `<select>` over the shared browser catalog that Foreman, Models and the Persona
-                editor use, so an off-catalog id set by another build stays selectable
-                instead of silently reading as "no model chosen". */}
-            <div className="sc-field sc-model">
-              <ModelSuggestions providerLabel={AGENT_IDENTITY[config?.runner ?? "claude"].label} />
-              <ModelField
-                anchor="inspector/model"
-                id="inspector-model"
-                spec={INSPECTOR_MODEL_SPEC}
-                value={config?.model ?? ""}
-                resolved={model ?? undefined}
-                runner={config?.runner ?? "claude"}
-                disabled={!config}
-                onCommit={(next) =>
-                  // Empty is STORED as empty, same rule as Foreman's fields: it means "clear my
-                  // override and go back to the ladder", and dropping it from the patch would
-                  // leave the old id in place while the box looks cleared.
-                  void update({ model: next })
-                }
-              />
-            </div>
+            </p>
           </ConsoleCard>
 
           <ConsoleCard title="May post in" anchor="inspector/reviewed-repos">

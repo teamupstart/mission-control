@@ -177,13 +177,19 @@ than read.
 
 ### The review model
 
-**Settings → GitHub Inspector → Model** names what the review and the follow-up replies spawn as,
-and the **Provider** row above it names the CLI they spawn through. It ships as
-`claude-sonnet-5` on the `claude` provider, and the field's own line tells you where the
-value in force came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's
-environment, or the shipped default. Leave it empty to accept whichever of the other two
-applies. The GitHub Inspector keeps its own provider choice rather than following the app-wide
-one, because [what it can read](#what-it-can-read-and-why-that-is-a-trade) changes with it.
+**[Settings → Models](models.md#the-github-inspectors-review)** names what the review and the
+follow-up replies spawn as, and the provider they spawn through - beside every other call this app
+makes on your account. The GitHub Inspector's own panel keeps a pointer to them; everything else
+about its posture stays there. It ships as `claude-sonnet-5`, and the row tells you where the value
+in force came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's environment, or the
+shipped default. Leave it empty to accept whichever of the other two applies.
+
+**An unset provider now inherits.** It used to resolve to a literal `claude`, which made this the
+one subsystem in the app that ignored the app-wide picker and
+[`MISSION_LLM_RUNNER`](configuration.md): an operator who had pinned everything to one provider got
+a Claude review anyway, with nothing on screen saying so. If you were relying on that, name
+`claude` here explicitly - the choice matters, because
+[what it can read](#what-it-can-read-and-why-that-is-a-trade) changes with the provider.
 
 Naming a default at all is the point. An unset `--model` inherits whatever the local
 `claude` CLI happens to default to - on one machine that resolved to the 1M-context Opus

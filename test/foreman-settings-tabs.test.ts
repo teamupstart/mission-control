@@ -24,6 +24,7 @@ function renderPanel(): string {
     backlogPlan: null,
     episodes: [],
     update: async () => true,
+    refresh: async () => {},
     error: null,
   };
   return renderToStaticMarkup(

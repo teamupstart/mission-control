@@ -106,6 +106,7 @@ import { RunsKindTabs, type RunsKind } from "./pipelines/RunsKindTabs.tsx";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
 import { personaDriftSurface, usePersonaDrift } from "./workflows/usePersonaDrift.ts";
 import { SessionActionLibrary } from "./workflows/SessionActionLibrary.tsx";
@@ -136,6 +137,14 @@ import {
   type SeeWorkTourNavigation,
   type SeeWorkTourRuntime,
 } from "./tour/tours/see-work.ts";
+import {
+  LIBRARY_TOUR,
+  LIBRARY_TOUR_COMMAND_SLOT,
+  selectLibraryTourRun,
+  type LibraryTourNavigation,
+  type LibraryTourRun,
+  type LibraryTourRuntime,
+} from "./tour/tours/library.ts";
 import { createTourTargetRegistry } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -266,6 +275,8 @@ interface TourRun {
 interface TourBinding {
   /** The task this run created, so its task-scoped targets can pick their one owner. */
   activeTaskId: string | null;
+  /** The run this tour singled out, so its run-scoped targets can pick their one owner. */
+  activeRunId: string | null;
   /** Reclaim everything the run created. Throwing leaves the run installed and retryable. */
   cleanup: () => Promise<void>;
   /** Null while this tour is not ready to be driven yet. */
@@ -414,6 +425,15 @@ export function App(): React.JSX.Element {
   const [seeWorkTourTaskId, setSeeWorkTourTaskId] = useState<string | null>(null);
   const [seeWorkTourBriefReady, setSeeWorkTourBriefReady] = useState(false);
   const [seeWorkTourRepoRoot, setSeeWorkTourRepoRoot] = useState<string | null>(null);
+  /**
+   * The finished run the Library tour pinned when it started, or null when none qualified.
+   *
+   * Held for the whole run rather than re-selected per stop: a newer run landing mid-tour
+   * must not move the operator to a different artifact than the one the previous stop just
+   * explained, and the summary keeps its durable `sessionName` after the live collection
+   * drops the session it reviewed.
+   */
+  const [libraryTourRun, setLibraryTourRun] = useState<LibraryTourRun | null>(null);
   const tourSequence = useRef(0);
   const activeTourRef = useRef<TourRun | null>(null);
   const tourBindingsRef = useRef<Record<TourId, TourBinding> | null>(null);
@@ -864,6 +884,16 @@ export function App(): React.JSX.Element {
     });
   }, [sessions, tasks]);
 
+  /** The run the Library tour pins when it starts. The rule itself lives with the tour. */
+  const pickLibraryTourRun = useCallback((): LibraryTourRun | null => (
+    selectLibraryTourRun(workflowRuns, new Set(sessions.map((session) => session.id)))
+  ), [sessions, workflowRuns]);
+
+  /** Pin that run on this Library tour run. The tour creates nothing else to reclaim. */
+  const beginLibraryRun = useCallback((): void => {
+    setLibraryTourRun(pickLibraryTourRun());
+  }, [pickLibraryTourRun]);
+
   /**
    * How each tour opens: the resource it wants to point at, and the run state it seeds.
    *
@@ -875,7 +905,10 @@ export function App(): React.JSX.Element {
     begin: (run: TourRun) => void;
   }>>(() => ({
     "see-work": { resource: pickSeeWorkSession, begin: beginSeeWorkRun },
-  }), [beginSeeWorkRun, pickSeeWorkSession]);
+    // The Library tour singles out a run rather than a session, and it pins it in `begin`
+    // rather than as the run's `resource`: the run is a whole summary, not an id.
+    "library": { resource: () => null, begin: beginLibraryRun },
+  }), [beginLibraryRun, beginSeeWorkRun, pickSeeWorkSession]);
 
   /**
    * Start a tour. One active run at a time, whichever tour asks.
@@ -1093,6 +1126,16 @@ export function App(): React.JSX.Element {
     setSeeWorkTourTaskId(null);
     setSeeWorkTourBriefReady(false);
     setSeeWorkTourRepoRoot(null);
+  }, []);
+
+  /**
+   * Reclaim what a Library run held, which is one pinned run summary and nothing else.
+   *
+   * It cannot fail, and that is a property of the tour rather than of this function: nothing
+   * was created, dispatched, saved, or bound, so there is no daemon round trip to refuse.
+   */
+  const cleanupLibraryRun = useCallback(async (): Promise<void> => {
+    setLibraryTourRun(null);
   }, []);
 
   /**
@@ -1392,6 +1435,38 @@ export function App(): React.JSX.Element {
   const requestWorkflowsTab = useCallback((sessionId: string) => {
     setWorkflowsTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, []);
+
+  /**
+   * Every move the Library tour makes.
+   *
+   * All seven are route transitions the dashboard already performs for a link, plus the one
+   * existing Workflows-tab request. Nothing here clicks a control, opens an editor, or writes:
+   * the tour's whole subject is authoring, and it teaches it without authoring anything.
+   */
+  const libraryNavigation = useMemo<LibraryTourNavigation>(() => ({
+    showLibrary: () => navigate({ page: "library" }),
+    showPersona: (personaId) => navigate({ page: "library", shelf: "personas", assetId: personaId }),
+    showAction: (actionId) => navigate({ page: "library", shelf: "actions", assetId: actionId }),
+    showCommandSlot: () => navigate({
+      page: "library",
+      shelf: "commands",
+      assetId: LIBRARY_TOUR_COMMAND_SLOT,
+    }),
+    showWorkflow: () => navigate({
+      page: "library",
+      shelf: "workflows",
+      assetId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
+    }),
+    showRun: (runId) => navigate({ page: "runs", runId }),
+    showRunSession: (sessionId) => {
+      if (!navigate({ page: "fleet" })) return false;
+      setSelectedId(sessionId);
+      if (layout === "board") setBoardOpen(true);
+      // The existing request owner, nonce and all, rather than a second way to reveal a tab.
+      requestWorkflowsTab(sessionId);
+      return true;
+    },
+  }), [layout, navigate, requestWorkflowsTab]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
     setLauncherFocusError(message);
@@ -1771,6 +1846,41 @@ export function App(): React.JSX.Element {
       }
     : null;
 
+  /** The built-in Persona and Session action the Library tour teaches on.
+   *
+   * Chosen from the live catalogs rather than pinned to a literal id: built-in asset ids are
+   * durable app data, but the tour has no business hard-coding which shipped reviewer exists.
+   * The lowest id among the active built-ins is deterministic across machines and reloads, and
+   * an install with no built-in at all falls back to the tour's own "still loading" copy.
+   */
+  const libraryTourPersonaId = useMemo(() => (
+    personas
+      .filter((persona) => persona.builtin && persona.archivedAt === null)
+      .map((persona) => persona.id)
+      .sort()[0] ?? null
+  ), [personas]);
+  const libraryTourActionId = useMemo(() => (
+    sessionActions
+      .filter((action) => action.builtin && action.archivedAt === null)
+      .map((action) => action.id)
+      .sort()[0] ?? null
+  ), [sessionActions]);
+  const libraryTourRuntime: LibraryTourRuntime = {
+    personaId: libraryTourPersonaId,
+    actionId: libraryTourActionId,
+    workflowReady: workflowSummaries.some(
+      (workflow) => workflow.id === NO_MISTAKES_REVIEW_WORKFLOW_ID,
+    ),
+    run: libraryTourRun,
+    // Read every render against the LIVE collection, so a session evicted between the run
+    // stop and the ladder stop moves the tour to its own fallback through the ordinary event
+    // path rather than through a state reading of the session it lost.
+    runSessionLive: Boolean(
+      libraryTourRun?.sessionId
+      && sessions.some((session) => session.id === libraryTourRun.sessionId),
+    ),
+  };
+
   /**
    * Every tour's binding, keyed by `TourId`.
    *
@@ -1781,6 +1891,7 @@ export function App(): React.JSX.Element {
   const tourBindings: Record<TourId, TourBinding> = {
     "see-work": {
       activeTaskId: seeWorkTourTaskId,
+      activeRunId: null,
       cleanup: cleanupSeeWorkRun,
       mount: ({ isTop, onFinish }) => seeWorkNavigation && (
         <GuidedTourController
@@ -1788,6 +1899,23 @@ export function App(): React.JSX.Element {
           registry={tourTargets}
           navigation={seeWorkNavigation}
           runtime={seeWorkTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
+    "library": {
+      // This tour creates nothing, so it owns no task; the one resource it singles out is a
+      // run that already existed, and forgetting it is the whole of its cleanup.
+      activeTaskId: null,
+      activeRunId: libraryTourRun?.id ?? null,
+      cleanup: cleanupLibraryRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={LIBRARY_TOUR}
+          registry={tourTargets}
+          navigation={libraryNavigation}
+          runtime={libraryTourRuntime}
           isTop={isTop}
           onFinish={onFinish}
         />
@@ -2752,7 +2880,11 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
-      <TourTargetHost registry={tourTargets} activeTaskId={activeTourBinding?.activeTaskId ?? null}>
+      <TourTargetHost
+        registry={tourTargets}
+        activeTaskId={activeTourBinding?.activeTaskId ?? null}
+        activeRunId={activeTourBinding?.activeRunId ?? null}
+      >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
         <header className="topbar" ref={topbarRef}>

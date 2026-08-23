@@ -85,6 +85,15 @@ import {
 } from "./WorkflowLadderPeek.tsx";
 
 interface WorkflowLadderProps {
+  /**
+   * A semantic ref the HOST may attach to this ladder's panel.
+   *
+   * Two hosts draw this component - a session's Workflows tab and every Board tile - so which
+   * ladder a guided tour means is the host's to say rather than this renderer's. Absent
+   * everywhere else, and the panel's element, class, and accessible name are the same either
+   * way.
+   */
+  sectionRef?: React.Ref<HTMLElement>;
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
   onOpenRun: () => void;
@@ -171,6 +180,7 @@ export function WorkflowLadder({
   retro = null,
   onRetro,
   sessionBound,
+  sectionRef,
   isPending = () => false,
 }: WorkflowLadderProps): React.JSX.Element {
   // `pending` is false on purpose, and it is not an oversight. That flag is the shared
@@ -187,7 +197,7 @@ export function WorkflowLadder({
 
   if (pipeline === null) {
     return (
-      <section className="wf-ladder-fallback" aria-label="Workflow run">
+      <section className="wf-ladder-fallback" aria-label="Workflow run" ref={sectionRef}>
         <WorkflowChip run={summary} onOpen={onOpenRun} />
         {/* Offered here too. A run whose version cannot be projected still belongs to a
             session that was corrected and reviewed, and the offer is about that session -
@@ -240,7 +250,11 @@ export function WorkflowLadder({
   const spentGateStatus = spentInspectorGateStatus(detail);
 
   return (
-    <section className="wf-ladder-panel" aria-label={`${summary.workflowName} workflow stages`}>
+    <section
+      className="wf-ladder-panel"
+      aria-label={`${summary.workflowName} workflow stages`}
+      ref={sectionRef}
+    >
       <header className="wf-ladder-head">
         <span className="wf-ladder-name">⌁ {summary.workflowName}</span>
         <span className="wf-ladder-version">v{summary.workflowVersion}</span>
@@ -658,9 +672,12 @@ export function WorkflowLadderPanel({
   tileDisclosure = null,
   stageDetail = "load",
   session = null,
+  sectionRef,
 }: {
   run: WorkflowRunSummary;
   onOpenRun: () => void;
+  /** Forwarded to the ladder. See `WorkflowLadderProps.sectionRef`. */
+  sectionRef?: React.Ref<HTMLElement>;
   tileDisclosure?: WorkflowTileDisclosureState | null;
   /**
    * Where the stage detail comes from.
@@ -913,6 +930,7 @@ export function WorkflowLadderPanel({
     <WorkflowLadder
       summary={run}
       detail={detail}
+      sectionRef={sectionRef}
       onOpenRun={onOpenRun}
       retro={retro}
       onRetro={session ? runRetro : undefined}

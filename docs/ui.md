@@ -375,12 +375,16 @@ Workflow posture, and MCP tool list. An unknown tour, or an operation a tour did
 is refused before any task is created rather than falling through to general dispatch, and
 cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
 
-#### Comparison spike: See the work
+Two tours are registered, and neither stores progress: there is no first-run trigger, no
+resume prompt, and no "you have not finished this tour" nudge. Exiting one restores the page,
+the asset, and the control it started from, and starting it again starts it at stop one.
+
+#### See the work
 
 **See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
-in the palette's **Do** group, runs an isolated evaluation of `driver.js@1.8.0`. It is
-user-started only. There is no first-run trigger, progress storage, new top-bar control, or
-chapter beyond this one guided sequence:
+in the palette's **Do** group, teaches the operating half of the product and runs an isolated
+evaluation of `driver.js@1.8.0`. It is user-started only. There is no first-run trigger,
+progress storage, new top-bar control, or chapter beyond this one guided sequence:
 
 1. **Fleet and the Line** spotlights the permanent pipeline strip.
 2. **Board View** switches through the existing layout owner and spotlights the real Board.
@@ -437,6 +441,69 @@ refused, the snapshot still returns immediately and a centered error dialog reta
 edits files, runs workflow Commands, sends application messages beyond the Chat preview's
 fixed opening prompt, answers a review, enables Foreman, changes Trust, saves assets, creates
 a pull request, or runs a retro.
+
+#### Author what runs
+
+**Author what runs** in the same **Help & tours** footer, or **Start Author what runs tour**
+in the palette, teaches the AUTHORING half: the Library's four editable assets, and the
+workflow that composes them into a definition of done. It is fifteen stops and nineteen
+spotlights - four stops spend two beats on one lesson - plus a centered closing card.
+
+It walks the shelves BOTTOM-UP, which is dependency order rather than reading order: Personas,
+then Actions, then Commands, then Workflows, because a workflow is built out of the first
+three and the builder's node palette is exactly those three assets. The Library's own shelf
+order is left alone; a page reordered to match a tour would be the tour dictating the product.
+
+1. **The Library** opens `#/library` and names the six shelves by the question each one heads,
+   reading those questions from the shelf registry rather than restating them.
+2. **The Persona library** opens a shipped built-in Persona and spotlights the rail's System,
+   Built-in and Yours groups.
+3. **What a Persona is** spends two beats on one lesson: the property chips, then the guidance
+   Markdown that IS the asset.
+4. **Editing one** spotlights the promoted verb, which on a built-in reads **Duplicate to
+   edit** - the ownership rule stated by the control rather than by a sentence.
+5. **The Action library** opens a shipped built-in Session action on the same rail and
+   workspace grammar.
+6. **The contract, and the instruction** spotlights the labelled **Session action contract**
+   region - the `requires skill` and `completes when` chips and the sentence they form - and
+   then the instruction editor.
+7. **A Command slot** opens `#/library/commands/test` and spotlights the default rule.
+8. **Overrides, and saving one** spotlights the add-override row, then **Save Command**, whose
+   point is that saving executes nothing.
+9. **The builder** opens the built-in **No-Mistakes Review** and spotlights the workflow rail
+   and node palette.
+10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
+    Publish button - the draft-versus-published lesson without a draft existing.
+11. **No-Mistakes Review** walks the five stages on the authored pipeline strip.
+12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
+13. **A run, moving** opens `#/runs/:id` on one finished run and spotlights its pipeline strip,
+    then its review worklist.
+14. **Where a run is watched** returns to the fleet, opens that run's session and its
+    **Workflows** tab, and spotlights the vertical stage ladder.
+15. **That is the authoring half** is a centered card that offers the other tour without
+    starting it.
+
+**The run it opens is one that already happened.** The tour selects the newest FINISHED run of
+the built-in No-Mistakes Review whose session is still in the live collection, from the summaries
+the dashboard already holds over SSE - no second request, nothing created, and no model call.
+The workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a
+run of another workflow need not carry any of the five stages stop 11 just walked.
+
+Both clauses matter. A run outlives the session it reviewed - the binding is orphaned and the
+summary keeps a durable `sessionName` for exactly that case - so a finished run with no session
+left is the common case rather than the rare one, and stop 14 opens that session's Workflows
+tab. When no run qualifies, stops 13 and 14 stay real stops with Back, Next and Exit, and
+explain the same two surfaces against the built-in graph still on screen. When the session is
+evicted between the two stops, stop 14 falls back in place and names the run's durable session
+name.
+
+**It writes nothing.** Every editing affordance it spotlights is on a built-in, where the
+promoted verb is **Duplicate to edit** and Publish is disabled, so the tour has nothing to save
+and can never raise the unsaved-changes gate. It creates no task, session, workflow, binding,
+or run, which is why it declares no server-side recipe at all: `POST /api/tours/library/*` is
+refused with the same answer an invented tour id gets. If the operator is already holding a
+dirty draft when they start it, the entry-route preflight raises the existing leave dialog with
+no tour active.
 
 **Comparison finding:** Driver.js supplies spotlight geometry, bounded `waitForElement`
 progression, a centered missing-target fallback, labelled dialog semantics, and initial focus,

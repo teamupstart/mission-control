@@ -523,15 +523,25 @@ export function InspectorFooter({
 export function PipelineFrame({
   ariaLabel,
   repair = null,
+  stripRef,
   children,
 }: {
   ariaLabel: string;
   repair?: ReactNode;
+  /**
+   * A semantic ref the owning surface may attach to the strip.
+   *
+   * Three surfaces draw this frame - the workflow builder's Pipeline view, one workflow run,
+   * and an external engine's pipeline - and a guided tour spotlights two of them as different
+   * stops. Which one a ref means is therefore the caller's to say. Absent everywhere else,
+   * and the strip's element, class, role, and label are identical either way.
+   */
+  stripRef?: React.Ref<HTMLDivElement>;
   children: ReactNode;
 }): React.JSX.Element {
   return (
     <div className="wf-pipeline">
-      <div className="wf-pipeline-strip" role="group" aria-label={ariaLabel}>
+      <div className="wf-pipeline-strip" role="group" aria-label={ariaLabel} ref={stripRef}>
         {children}
       </div>
       {repair && <p className="wf-pipeline-repair">{repair}</p>}

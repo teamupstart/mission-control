@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 
 import {
   tourTargetScope,
+  type TourRunTargetId,
   type TourTargetId,
   type TourTargetRegistry,
   type TourTaskTargetId,
@@ -11,6 +12,14 @@ interface TourTargetContextValue {
   registry: TourTargetRegistry;
   /** The task the active tour run created, if it has created one. */
   activeTaskId: string | null;
+  /**
+   * The workflow run the active tour run singled out, if it singled one out.
+   *
+   * The same idea as `activeTaskId` and deliberately beside it rather than in a second
+   * provider: a tour narrows a per-resource target to ONE rendered owner, and the kinds of
+   * resource it can narrow by are a short list held in one place.
+   */
+  activeRunId: string | null;
 }
 
 const TourTargetContext = createContext<TourTargetContextValue | null>(null);
@@ -18,17 +27,19 @@ const TourTargetContext = createContext<TourTargetContextValue | null>(null);
 export function TourTargetHost({
   registry,
   activeTaskId = null,
+  activeRunId = null,
   children,
 }: {
   registry: TourTargetRegistry;
   activeTaskId?: string | null;
+  activeRunId?: string | null;
   children: React.ReactNode;
 }): React.JSX.Element {
-  return (
-    <TourTargetContext.Provider value={{ registry, activeTaskId }}>
-      {children}
-    </TourTargetContext.Provider>
+  const value = useMemo(
+    () => ({ registry, activeTaskId, activeRunId }),
+    [activeRunId, activeTaskId, registry],
   );
+  return <TourTargetContext.Provider value={value}>{children}</TourTargetContext.Provider>;
 }
 
 function useRegistryTargetRef<T extends HTMLElement>(
@@ -64,6 +75,26 @@ export function useTourTargetRef<T extends HTMLElement>(
 ): (element: T | null) => void {
   const context = useContext(TourTargetContext);
   return useRegistryTargetRef<T>(context?.registry ?? null, id, true);
+}
+
+/**
+ * Register only the rendered owner belonging to the workflow run this tour run selected.
+ *
+ * The Library tour's stage ladder is drawn by one component with two call sites - a session's
+ * Workflows tab and every Board tile - so "the ladder" names several owners at once and the
+ * tour has to say which run's. Scope is read from the namespace table for the same reason the
+ * task hook reads it there: a cast reaching this call site is still refused at runtime.
+ */
+export function useTourRunTargetRef<T extends HTMLElement>(
+  id: TourRunTargetId,
+  runId: string | null | undefined,
+): (element: T | null) => void {
+  const context = useContext(TourTargetContext);
+  return useRegistryTargetRef<T>(
+    context?.registry ?? null,
+    id,
+    tourTargetScope(id) === "run" && Boolean(runId && runId === context?.activeRunId),
+  );
 }
 
 /** Register an App-owned target that sits above TourTargetHost in the component tree. */

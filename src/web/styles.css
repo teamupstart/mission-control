@@ -14998,6 +14998,15 @@ button.lib-chip:focus-visible {
   height: 100%;
   padding: 18px;
 }
+/* The Action editor's contract region: the chips, the retained-completion note and the
+   sentence they form, given one labelled box. It repeats the editor column's own gap so the
+   three rows sit exactly where they did before they were grouped. */
+.wf-action-contract-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
 .persona-editor-head,
 .wf-action-editor-head,
 .wf-command-editor-head {

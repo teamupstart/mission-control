@@ -6,9 +6,14 @@ import type { TourId } from "./contracts.ts";
  * `page` targets are ordinary chrome - the Line, the Board, the Dispatch form - and the one
  * rendered owner is always the right one. `task` targets are rendered once per session or
  * task, so the tour's own demo task has to be named before one can be chosen; see
- * `useTourTaskTargetRef`.
+ * `useTourTaskTargetRef`. `run` targets are the same shape one level along: rendered once per
+ * workflow run, so the run a tour selected has to be named before one can be chosen; see
+ * `useTourRunTargetRef`.
+ *
+ * Both narrow scopes resolve through the SAME active-run record on the host - one field per
+ * kind of resource a tour can single out, never a second registry or a second context.
  */
-export type TourTargetScope = "page" | "task";
+export type TourTargetScope = "page" | "task" | "run";
 
 /**
  * Every semantic target, grouped by the tour that owns it.
@@ -34,6 +39,35 @@ export const TOUR_TARGET_NAMESPACES = {
     "session-actions": "task",
     "complete-modal": "task",
   },
+  "library": {
+    "library-page": "page",
+    "persona-rail": "page",
+    "persona-chips": "page",
+    "persona-guidance": "page",
+    "persona-primary-action": "page",
+    "action-rail": "page",
+    "action-contract": "page",
+    "action-instruction": "page",
+    "command-default": "page",
+    "command-overrides": "page",
+    "command-save": "page",
+    "workflow-rail": "page",
+    "workflow-surface-toggle": "page",
+    "workflow-publish": "page",
+    "workflow-pipeline-strip": "page",
+    "workflow-bind": "page",
+    "run-pipeline-strip": "page",
+    "run-worklist": "page",
+    /**
+     * The one Library target whose owner is rendered per RUN rather than per page.
+     *
+     * A session's Workflows tab and every Board tile draw the same ladder component, so
+     * "the ladder" names several rendered owners at once. Its scope is `run`: only the
+     * owner drawn for the run this tour run selected registers, exactly as a `task` target
+     * registers only the owner belonging to the task a run created.
+     */
+    "session-workflow-ladder": "run",
+  },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;
 
 type Namespaces = typeof TOUR_TARGET_NAMESPACES;
@@ -43,14 +77,20 @@ export type TourTargetId = {
   [Tour in keyof Namespaces]: `${Tour & string}:${keyof Namespaces[Tour] & string}`;
 }[keyof Namespaces];
 
-/** Only the targets whose declared scope is `task`. Derived, never restated. */
-export type TourTaskTargetId = {
+/** The targets whose declared scope is `Scope`. Derived, never restated. */
+type ScopedTargetId<Scope extends TourTargetScope> = {
   [Tour in keyof Namespaces]: {
-    [Name in keyof Namespaces[Tour]]: Namespaces[Tour][Name] extends "task"
+    [Name in keyof Namespaces[Tour]]: Namespaces[Tour][Name] extends Scope
       ? `${Tour & string}:${Name & string}`
       : never;
   }[keyof Namespaces[Tour]];
 }[keyof Namespaces];
+
+/** Only the targets whose declared scope is `task`. */
+export type TourTaskTargetId = ScopedTargetId<"task">;
+
+/** Only the targets whose declared scope is `run`. */
+export type TourRunTargetId = ScopedTargetId<"run">;
 
 export const TOUR_TARGET_IDS: readonly TourTargetId[] = Object.entries(TOUR_TARGET_NAMESPACES)
   .flatMap(([tour, names]) => Object.keys(names).map((name) => `${tour}:${name}` as TourTargetId));

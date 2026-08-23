@@ -145,6 +145,12 @@ through 9 are preserved for bindings that already pin them, and version 10 is cu
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
+The **Author what runs** guided tour walks this workflow - its five stages, its disabled
+Publish, and its binding control - after teaching the three assets it is composed of, and then
+follows one finished run of it into the Runs page and its session's Workflows tab. Start it from
+the Settings rail's **Help & tours** footer or the ⌘K palette. See
+[guided tours](ui.md#guided-tours).
+
 Stage 1 is a deterministic gate: the [`typecheck` and `test` Commands](#command-nodes), placed
 ahead of every reviewer so that a change which does not compile costs no model calls at all.
 Both are evaluated on the same submission and both must pass at their All-pass Join before

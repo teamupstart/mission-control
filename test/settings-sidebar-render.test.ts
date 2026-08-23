@@ -646,4 +646,8 @@ test("the Help & tours footer draws one row per registered tour, from the regist
   // One registered tour, one row: the footer is derived, not a list kept in parallel.
   assert.equal(html.split('class="settings-tour-start"').length - 1, TOUR_ENTRIES.length);
   assert.ok(html.includes('aria-label="Start See the work tour"'));
+  // The second registered tour is a row for the same reason the first is: the footer is a
+  // list drawn from the registry, so the Library tour needed no Settings change of its own.
+  assert.ok(html.includes('aria-label="Start Author what runs tour"'));
+  assert.ok(html.includes("<strong>Author what runs</strong>"));
 });

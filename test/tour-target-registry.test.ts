@@ -139,9 +139,34 @@ test("task scope is declared beside the target, not inferred by a hook's allow-l
   assert.equal(tourTargetOwner("nope:line"), null);
 });
 
-test("the namespace table is the one source of target names", () => {
+test("run scope is declared beside the target too, and only the ladder claims it", () => {
+  // The Library tour's stage ladder is drawn by one component with two hosts - a session's
+  // Workflows tab and every Board tile - so it is scoped to the RUN a tour selected, exactly
+  // as a demo task's tile is scoped to the task a run created. Everything else on that tour
+  // is ordinary page chrome with one rendered owner.
   assert.deepEqual(
-    Object.keys(TOUR_TARGET_NAMESPACES["see-work"]).map((name) => `see-work:${name}`),
-    TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "see-work"),
+    TOUR_TARGET_IDS.filter((id) => tourTargetScope(id) === "run"),
+    ["library:session-workflow-ladder"],
   );
+  assert.equal(tourTargetScope("library:library-page"), "page");
+  assert.equal(tourTargetOwner("library:library-page"), "library");
+});
+
+test("the Library tour's nineteen targets are declared, namespaced, and its own", () => {
+  const library = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "library");
+  assert.equal(library.length, 19);
+  assert.equal(new Set(library).size, 19);
+  for (const id of library) assert.ok(id.startsWith("library:"));
+  // Two tours, and no target belongs to both.
+  const seeWork = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "see-work");
+  assert.equal(seeWork.length + library.length, TOUR_TARGET_IDS.length);
+});
+
+test("the namespace table is the one source of target names", () => {
+  for (const tour of Object.keys(TOUR_TARGET_NAMESPACES) as (keyof typeof TOUR_TARGET_NAMESPACES)[]) {
+    assert.deepEqual(
+      Object.keys(TOUR_TARGET_NAMESPACES[tour]).map((name) => `${tour}:${name}`),
+      TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === tour),
+    );
+  }
 });

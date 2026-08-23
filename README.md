@@ -20,9 +20,11 @@ choose, and the defaults draw the card the previous release drew.
 
 Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
 per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
-One tour runs at a time. The temporary **See the work** product tour is the one registered
-today; **Start See the work tour** is its palette command.
-If the fleet is empty, the tour starts one temporary Chat conversation and uses its real Board
+One tour runs at a time, and two are registered.
+
+**See the work** teaches the operating half - the Line, the Board, one session's desk, and a
+task from dispatch through review to completion.
+If the fleet is empty, it starts one temporary Chat conversation and uses its real Board
 drill-in to show the session desk. Its Dispatch sequence
 then fills the real task input, explains the **None** Workflow choice, and waits for the
 operator to click the highlighted **Dispatch now** button while the rest of the form stays
@@ -30,6 +32,15 @@ visible. Its final step opens the real Complete dialog with the outcome prefille
 demo**, so the operator can inspect **Run a retro first** and **Complete & close**. Those dialog
 actions stay disabled during the preview; the tour owns its fixed cleanup and never runs a
 retro.
+
+**Author what runs** teaches the authoring half, in dependency order: Personas, Actions,
+Commands, then the workflow that composes all three. It walks fifteen stops through the Library
+on shipped built-ins, ends on **No-Mistakes Review**, and then follows one finished run of that
+workflow into the Runs page and its session's **Workflows** tab. It writes nothing - no asset
+is saved, duplicated, published, or bound, no run is started, and no model is called - and a
+machine with no finished No-Mistakes run reads the same two stops against the built-in graph
+instead. Neither tour stores progress, and both restore the page, the asset, and the control
+you started from when you exit.
 
 Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
 and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press

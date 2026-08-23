@@ -44,6 +44,7 @@ import {
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Authoring a workflow as stages of Persona reviewers and deterministic Checks.
@@ -424,6 +425,8 @@ export function PipelineEditor({
   >(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
+  /** The guided tour's handle on THIS strip - the built-in graph, not a run of it. */
+  const tourStripRef = useTourTargetRef<HTMLDivElement>("library:workflow-pipeline-strip");
 
   // A graph the Pipeline view is showing is stage-expressible by construction (the toggle
   // refuses otherwise), so this is a type narrowing rather than a fallback path.
@@ -865,6 +868,7 @@ export function PipelineEditor({
     <div className="wf-pipeline-editor" ref={root}>
       <PipelineFrame
         ariaLabel="Workflow pipeline editor"
+        stripRef={tourStripRef}
         repair={pipeline.stages.length === 0 ? null : pipeline.stages.some(
           (stage) => stage.kind === "session_action",
         )

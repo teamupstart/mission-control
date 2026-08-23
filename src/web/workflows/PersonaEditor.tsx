@@ -29,6 +29,7 @@ import {
 } from "../library/LibraryWorkspaceHeader.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { personaMarkdownBlob, personaRequest } from "./personaApi.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 export interface PersonaDraftSeed {
   name: string;
@@ -652,6 +653,14 @@ export function PersonaEditor({
       disabled: saving || overLimit || (persona !== null && !dirty),
       onClick: () => void save(),
     };
+  /*
+   * The guided tour's three semantic handles on this screen: what configures a Persona, the
+   * Markdown that IS the Persona, and the one promoted verb. Registration is inert unless a
+   * tour is running, and none of them changes what this editor renders.
+   */
+  const tourChipsRef = useTourTargetRef<HTMLDivElement>("library:persona-chips");
+  const tourGuidanceRef = useTourTargetRef<HTMLElement>("library:persona-guidance");
+  const tourPrimaryRef = useTourTargetRef<HTMLButtonElement>("library:persona-primary-action");
   const overflow = personaOverflowActions({
     persona: persona !== null,
     builtin,
@@ -673,6 +682,7 @@ export function PersonaEditor({
     <article className={`persona-editor${archived ? " is-archived" : ""}${builtin ? " is-builtin" : ""}`}>
       <LibraryWorkspaceHeader
         className="persona-editor-head"
+        primaryRef={tourPrimaryRef}
         // `persona-fields` still names exactly what it holds - the Persona's own scalar
         // fields - now that provider and model have become chips. It is also what four
         // Playwright specs reach the Name and Description inputs through, and those
@@ -737,7 +747,7 @@ export function PersonaEditor({
       />
       {error && <p className="persona-error" role="alert">{error}</p>}
 
-      <LibraryPropertyChips>
+      <LibraryPropertyChips containerRef={tourChipsRef}>
         <LibraryPropertyChip
           name="provider"
           value={effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}
@@ -799,7 +809,7 @@ export function PersonaEditor({
         </p>
       )}
 
-      <section className="persona-guidance" aria-label="Persona guidance">
+      <section className="persona-guidance" aria-label="Persona guidance" ref={tourGuidanceRef}>
         <header className="file-toolbar persona-guidance-toolbar">
           <span className="file-path mono">{markdownPath(draft.name)}</span>
           <span className="file-language">Markdown</span>

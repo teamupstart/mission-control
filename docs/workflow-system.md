@@ -14,7 +14,7 @@ Markdown sources are compiled into generated modules by
 [`scripts/builtin-session-actions.ts`](../scripts/builtin-session-actions.ts), so installed
 defaults and operator-managed copies remain distinct.
 
-The current built-in No-Mistakes Review is version 9. It runs the compiled
+The current built-in No-Mistakes Review is version 10. It runs the compiled
 `builtin:code-quality-judge` Persona after the parallel deep reviewers and before the verified
 Pull Request action, then completes under the existing `none` policy. Older immutable versions
 and custom workflows may still use the `inspector` completion policy, which is presented as the

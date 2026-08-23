@@ -17,6 +17,7 @@ import { personaRoutingLabel } from "../library/library-model.ts";
 import { LibraryAssetUsage } from "../library/LibraryAssetUsage.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   deriveImportedPersonaName,
   importPersonaFromPath,
@@ -211,6 +212,8 @@ export function PersonaLibrary({
   const importRef = useRef<HTMLInputElement>(null);
   const [importPath, setImportPath] = useState("");
   const [importing, setImporting] = useState(false);
+  /** The guided tour's semantic handle on this rail. Inert unless a tour is running. */
+  const tourRailRef = useTourTargetRef<HTMLElement>("library:persona-rail");
 
   const listed = useMemo(
     () => filterPersonas(ordered, personaState, search),
@@ -450,7 +453,7 @@ export function PersonaLibrary({
 
   return (
     <section className="persona-library">
-      <aside className="persona-sidebar" aria-label="Persona library">
+      <aside className="persona-sidebar" aria-label="Persona library" ref={tourRailRef}>
         <LibraryBackRow onLeave={onLeave} />
         <div className="persona-sidebar-head">
           <div>

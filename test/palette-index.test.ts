@@ -23,6 +23,7 @@ import {
 import { SETTINGS_CONTROLS } from "../src/web/lib/settings-search.ts";
 import { SETTINGS_CATEGORIES } from "../src/web/lib/settings-registry.ts";
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
+import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 
 // What is at stake: the palette is the app's only cross-home search, so an asset that fails
 // to appear here is an asset an operator cannot find by name at all - and a row that appears
@@ -442,7 +443,7 @@ test("every strategy the build can launch is offered, and only through Dispatch"
   assert.ok(rows.some((row) => row.title.includes("Best of N")));
 });
 
-test("the fixed commands include the isolated tour spike beside existing affordances", () => {
+test("the fixed commands include one row per registered tour beside existing affordances", () => {
   const rows = paletteRows(stores()).filter((row) => row.kind === "command");
   const targets = rows.map((row) => row.target.kind).sort();
   assert.deepEqual(targets, [
@@ -452,7 +453,9 @@ test("the fixed commands include the isolated tour spike beside existing afforda
     "route",
     "route",
     "route",
-    "start-tour",
+    // One per registered tour, and DERIVED: adding a third tour changes this count without
+    // touching the palette, which is the property being pinned rather than the number two.
+    ...TOUR_ENTRIES.map(() => "start-tour"),
   ]);
   const tour = find(rows, "command:see-work-tour");
   assert.equal(tour.title, "Start See the work tour");
@@ -460,6 +463,20 @@ test("the fixed commands include the isolated tour spike beside existing afforda
   // The row is derived from the tour registry, so its target carries which tour to start
   // rather than the palette holding a second name for the one tour that exists.
   assert.equal(tour.target.kind === "start-tour" ? tour.target.tourId : null, "see-work");
+  // Every registered tour has exactly one row, in registry order, carrying its own id.
+  const tourRows = rows.filter((row) => row.target.kind === "start-tour");
+  assert.deepEqual(
+    tourRows.map((row) => (row.target.kind === "start-tour" ? row.target.tourId : null)),
+    TOUR_ENTRIES.map((entry) => entry.id),
+  );
+  assert.deepEqual(tourRows.map((row) => row.id), TOUR_ENTRIES.map((entry) => entry.palette.rowId));
+  assert.deepEqual(
+    tourRows.map((row) => row.title),
+    TOUR_ENTRIES.map((entry) => entry.palette.title),
+  );
+  const library = find(rows, "command:library-tour");
+  assert.equal(library.title, "Start Author what runs tour");
+  assert.equal(library.target.kind === "start-tour" ? library.target.tourId : null, "library");
   // Feedback is the second doorway onto the topbar glyph, and it opens THAT modal - App
   // routes both through one `openFeedback`, so there is one draft behind the two entries.
   const feedback = find(rows, "command:report-product-issue");

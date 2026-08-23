@@ -61,6 +61,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { DeleteButton } from "../components/DeleteButton.tsx";
 import { LibraryBackRow } from "../library/LibraryBackRow.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 interface CreateResponse { summary: WorkflowSummary }
 
@@ -357,6 +358,15 @@ export function WorkflowLibrary({
     () => workflow ? projectStages(workflow.draft) : null,
     [workflow?.draft],
   );
+  /*
+   * The guided tour's four semantic handles on the builder: what exists and what adds to it,
+   * the two views of one workflow, the control that freezes a version, and the one that
+   * attaches a published version to a session. Inert unless a tour is running.
+   */
+  const tourRailRef = useTourTargetRef<HTMLElement>("library:workflow-rail");
+  const tourSurfaceToggleRef = useTourTargetRef<HTMLDivElement>("library:workflow-surface-toggle");
+  const tourPublishRef = useTourTargetRef<HTMLButtonElement>("library:workflow-publish");
+  const tourBindRef = useTourTargetRef<HTMLButtonElement>("library:workflow-bind");
   const [chosenMode, setChosenMode] = useState<"pipeline" | "graph" | null>(null);
   const mode = workflowEditorMode(chosenMode, blockers.length === 0);
   // One expression, so the canvas, the pipeline, both properties rails and every graph-editing
@@ -821,7 +831,11 @@ export function WorkflowLibrary({
           </button>
         </Tooltip>
       </div>
-      <aside className={`workflow-library-sidebar${mobileDrawer === "library" ? " mobile-open" : ""}`} aria-label="Workflow library and node palette">
+      <aside
+        className={`workflow-library-sidebar${mobileDrawer === "library" ? " mobile-open" : ""}`}
+        aria-label="Workflow library and node palette"
+        ref={tourRailRef}
+      >
         <LibraryBackRow onLeave={onLeave} />
         <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></Tooltip></header>
         <div className="workflow-library-list">
@@ -924,7 +938,12 @@ export function WorkflowLibrary({
             <header className="workflow-builder-toolbar">
               <div><p className="workflow-eyebrow">{workflow.builtin ? "Built-in workflow" : `Draft revision ${workflow.draftRevision}`}</p><h3>{workflow.name}</h3></div>
               <span className={draft.saving || transitioning ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{transitioning ? "Working…" : draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
-              <div className="wf-view-toggle" role="group" aria-label="Editing surface">
+              <div
+                className="wf-view-toggle"
+                role="group"
+                aria-label="Editing surface"
+                ref={tourSurfaceToggleRef}
+              >
                 <Tooltip label={blockers.length === 0
                   ? "Author this workflow as stages of reviewers"
                   : "This graph is not a pipeline - see the reasons below the toolbar"}>
@@ -1059,7 +1078,7 @@ export function WorkflowLibrary({
                   </Tooltip>
                 )}
                 <Tooltip label={workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
-                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null, builtin: workflow.builtin })} onClick={() => void draft.publish()}>Publish</button>
+                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null, builtin: workflow.builtin })} ref={tourPublishRef} onClick={() => void draft.publish()}>Publish</button>
                 </Tooltip>
               </div>
             </header>
@@ -1273,7 +1292,7 @@ export function WorkflowLibrary({
             && workflow.currentVersionId !== null && (
             <section className="wf-pipeline-bind">
               <Tooltip label={`Pick a session to run ${workflow.name} against`}>
-                <button className="btn" onClick={() => onBindWorkflow(workflow)}>
+                <button className="btn" ref={tourBindRef} onClick={() => onBindWorkflow(workflow)}>
                   Bind to a session…
                 </button>
               </Tooltip>

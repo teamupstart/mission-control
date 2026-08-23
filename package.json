@@ -38,7 +38,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src hooks test scripts e2e integrations",
     "pretest": "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs",
-    "test": "node --test --test-concurrency=${MISSION_TEST_CONCURRENCY:-2} --import ./test/setup-state.mjs --import tsx 'test/**/*.test.ts'",
+    "test": "node --test --test-concurrency=${MISSION_TEST_CONCURRENCY:-6} --import ./test/setup-state.mjs --import tsx 'test/**/*.test.ts'",
     "posttest": "npm run test:workflow-evidence",
     "test:workflow-evidence": "node --test --import ./test/setup-state.mjs --import tsx test/workflow-image-evidence.test.ts test/workflow-test-evidence-audit.test.ts",
     "pretest:electron": "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs",

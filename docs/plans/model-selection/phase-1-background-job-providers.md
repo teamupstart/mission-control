@@ -70,7 +70,18 @@ Verified against the current tree; correct anything that has moved rather than f
   exactly `runner.id`, `claudeTransport`, `codexTransport`. It never reads `models`. Widening
   `LlmStatus` must not break that parse.
 - **The clearing behaviour is one line.** `LlmSettingsPanel.tsx:100` writes
-  `models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""]))` on every provider change.
+  `models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""]))` on every provider change. It is
+  the only thing standing between the config and a `runners.goal = "codex"` /
+  `models.goal = "claude-haiku-4-5"` pair, so whatever replaces it has to answer the per-slot case
+  as well as the app-wide one.
+- **The catalog answers "does this provider offer that model".** `modelChoicesFor(agent, extra)`
+  (`src/shared/model.ts:168`) is keyed off `MODEL_CATALOG` (`:135`), and it keeps an id it does not
+  recognise, marked "not in this build", rather than discarding it - the same say-what-you-dropped
+  ethic as `ResolvedSessionRuntime`. `providerModelDefault(runner, "cheap")` (`:178`) is what an
+  unset job already falls back to.
+- **Reset-on-change is already shipped, one page over.** The dispatch form resets the model and
+  effort when the agent beneath them changes and says so in its hint
+  (`DispatchModal.tsx:2696`). The per-slot rule below is that same rule, not a new one.
 - **There is no settings table component.** `<table>` appears in `src/web/components/` only in
   `DiffViewer.tsx:295`. The matrix is new markup, which is why this phase owns it.
 - **`ModelField`** (`src/web/components/ModelField.tsx`) is the existing per-model control, already
@@ -105,9 +116,18 @@ Verified against the current tree; correct anything that has moved rather than f
    - Select by role/label; **no `data-testid`.**
 7. **`src/web/components/LlmSettingsPanel.tsx`** - render Background jobs through the matrix, with a
    Provider column. Remove the clear-on-provider-change write from the radio handler and implement
-   the new rule instead: **pinning a model pins its provider**, so a slot with a model set records
-   the provider that model belongs to and only Inherit slots re-resolve. Say the rule in the group's
-   hint copy - it replaces a behaviour operators may have learned.
+   the new rule instead: **pinning a model pins its provider**. The rule has two halves, and it is
+   the same principle both times - *whose* choice is this control?
+   - **The app-wide radio** says nothing about any particular slot, so it disturbs none of them. A
+     slot with a model set keeps it; only Inherit slots re-resolve.
+   - **A slot's own Provider select** is a statement about exactly that slot, so its model follows.
+     Drop the pinned model back to Inherit unless `modelChoicesFor(newProvider)` offers the same
+     id, and let the slot resolve through `providerModelDefault(newProvider, "cheap")`. Say what was
+     reset and why, in the row - do not drop a configured id silently.
+
+   Without the second half, one select would store a Claude model under a Codex runner and hand
+   `runJob` a pair no runner can honour. Say the whole rule in the group's hint copy; it replaces a
+   behaviour operators may have learned.
 8. **`src/server/workflows/context.ts:302-304`** - label the persisted `compaction` metadata with
    the runner and model the call actually used rather than a separately-resolved pair. Do the same
    for the `llm_calls` row built at `src/server/workflows/manager.ts:5705-5706`.
@@ -134,7 +154,10 @@ Verified against the current tree; correct anything that has moved rather than f
 - `test/` - the per-job ladder (override, then app-wide, then shipped default); an unset job
   resolving identically to today; an unreadable stored runner id reported as `unknown` rather than
   silently defaulting; `setLlmConfig` merging `runners` per key; a model pinned to one provider
-  surviving an app-wide provider change.
+  surviving an app-wide provider change; **that same model dropped to Inherit when the slot's own
+  provider changes**, and kept when the new provider's catalog offers the same id - the two
+  asserted apart, since they are opposite behaviours reached from the same panel; and no reachable
+  state in which a stored runner/model pair disagrees by the time `runJob` reads it.
 - `test/` - the workflow-context fix: the recorded runner equals the runner the call used.
 - `e2e/` - **required, this is a UI change.** Set one background job to a non-default provider,
   assert the other four did not move, and assert that flipping the app-wide radio no longer clears
@@ -146,6 +169,8 @@ Verified against the current tree; correct anything that has moved rather than f
 
 - A background job can be set to a provider different from the app-wide one and runs on it.
 - Changing the app-wide provider clears nothing and only re-resolves Inherit slots.
+- Changing one slot's own provider resets that slot's pinned model unless the new provider offers
+  it, says so in the row, and leaves every other slot alone.
 - Foreman's `/api/llm/status` read still parses.
 - Docs updated; all gates green; a Playwright spec covers the new behaviour.
 
@@ -158,8 +183,10 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
   four columns. Extend by adding column definitions, never by forking the component.
 - **The inherit rule** - `null`/empty means inherit; a set value replaces and re-bases the model
   fallback onto the chosen provider. Phase 2 applies the identical rule per Foreman role.
-- **The pinning invariant** - pinning a model pins its provider. Phase 2 must not reintroduce a
-  clear-on-change anywhere.
+- **The pinning invariant, both halves** - pinning a model pins its provider, so the *app-wide*
+  default never disturbs a pinned slot; and a *slot's own* provider control resets that slot's model
+  unless the new provider offers it. Phase 2 applies the identical pair per Foreman role. Do not
+  reintroduce the blanket clear-on-change, and do not answer the per-slot case differently.
 - **The sibling-map storage pattern** - an additive `runners`-style record beside the existing
   model keys, merged per key. Phase 2 applies the same shape to `ForemanConfigSchema`.
 - **`llmJobRunner`** and the widened `LlmStatus` shape.
@@ -167,6 +194,12 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
 ## Cross-phase audit record
 
 - Written first; no earlier phases to reconcile.
+- Review round 6 found the invariant only answered the app-wide case, leaving a slot's own
+  provider select free to strand a Claude model under a Codex runner. Both halves are now stated
+  here, because this phase owns the invariant and Phases 2 and 3 consume it. The fix is not the
+  review's alternative of blocking the provider change while a model is pinned: that makes the
+  common case ("run this job on Codex instead") a two-step dance, and the product already resets
+  rather than blocks in the same situation (`DispatchModal.tsx:2696`).
 - Reviewed against Phase 2: Phase 2 owns every Foreman and Inspector change, including the
   Inspector's `?? "claude"` fallback. This phase deliberately leaves both alone so the two can be
   reviewed apart.

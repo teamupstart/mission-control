@@ -131,7 +131,7 @@ back into Phase 1's file.
 |---|---|---|---|
 | `SettingsMatrix`, `ModelSlotRow` | Phase 1 | Phases 2, 3 | Extend by adding column definitions; never fork the component |
 | The inherit rule | Phase 1 | Phase 2 | `null`/empty means inherit; a set value replaces and re-bases the model fallback onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an extension, not a competing ladder |
-| The pinning invariant | Phase 1 | Phase 2 | Pinning a model pins its provider. No phase reintroduces a clear-on-change |
+| The pinning invariant, both halves | Phase 1 | Phases 2, 3 | The *app-wide* default never disturbs a pinned slot; a *slot's own* provider control resets that slot's model unless the new provider offers it. No phase reintroduces the blanket clear-on-change, and none answers the per-slot case differently |
 | Sibling-map storage | Phase 1 | Phase 2 | Additive record beside the existing model keys, merged per key, no migration |
 | `llmJobRunner`, widened `LlmStatus` | Phase 1 | - | Foreman's three-field read of `/api/llm/status` must keep parsing |
 | Agent-match guard | Phase 3 | - | A kind default's **model** applies only when the task's agent matches it, and a row that inherits its agent cannot hold one. Its **effort** is portable and instead checked against `HARNESS_CAPABILITIES[agent].effort.levelsFor(model)` |

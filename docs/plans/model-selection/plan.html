@@ -973,6 +973,23 @@ move by re-resolving rather than by being cleared.</p>
 <p>That also removes the page's most surprising behaviour, where changing one radio silently
 wipes five configured model ids.</p>
 
+<p><strong>Changing a slot's own provider is the other half of the same rule, and it does the
+opposite.</strong> The invariant is about <em>whose</em> choice a control is. The app-wide radio
+says nothing about any particular slot, so it must not disturb one that has been pinned. A slot's
+own Provider select is a statement about exactly that slot, so its model follows: a pinned model
+drops back to Inherit unless the newly-chosen provider's catalog offers the same id
+(<code>modelChoicesFor</code>, <code>src/shared/model.ts:168</code>), and the slot then resolves
+through <code>providerModelDefault(runner, "cheap")</code> like any unset job. Without that half, a
+job could hold <code>runners.goal = "codex"</code> beside <code>models.goal =
+"claude-haiku-4-5"</code> and hand <code>runJob</code> a pair no runner can honour.</p>
+
+<p>The product already behaves this way one page over: the dispatch form resets the model and
+effort when the agent under them changes, and says so in as many words
+(<code>DispatchModal.tsx:2696</code>). The panel should say it too rather than dropping the id
+silently - naming the model it reset is the same courtesy <code>modelChoicesFor</code> already
+extends to an id it does not recognise, which it keeps and marks "not in this build" instead of
+discarding.</p>
+
 <h3>The app-wide Provider radio stays</h3>
 
 <p>Demoted, not deleted. It becomes the answer for every slot left on Inherit, which is what an

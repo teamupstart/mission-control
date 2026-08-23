@@ -133,7 +133,10 @@ Explicit non-goals:
 9. **`DispatchModal.tsx` / `src/web/lib/task-draft.ts`** - choosing a Kind moves the Agent select,
    and the model/effort hint strings name the kind default when it applies. Respect the existing
    rule that a choice made by hand is never reverted by a later kind switch - the same rule the
-   kind-to-after-work behaviour already follows.
+   kind-to-after-work behaviour already follows. The form's own "Switching agent resets the model
+   and effort overrides" (`:2696`) stays true and is the precedent Phase 1's per-slot rule copies;
+   the **Task kinds matrix** answers it the same way, so changing a row's Agent resets that row's
+   Model unless the new agent's catalog offers the same id.
 10. **`src/web/lib/settings-search.ts`** - entries so "plan model" reaches the row.
 11. **Docs** - `docs/models.md`, `docs/harnesses-and-terminals.md`, and
     `docs/dispatch-and-backlog.md`, whose "Which model wins" section enumerates the tiers and would
@@ -189,8 +192,10 @@ Explicit non-goals:
 
 - Reconciled with Phase 1: consumes `SettingsMatrix` and extends it to four columns, which Phase 1's
   handoff explicitly permits ("extend by adding column definitions, never by forking"). The inherit
-  rule is the same; the pinning invariant does not apply here because a dispatch model is pinned to
-  an *agent*, not a provider, and the agent-match guard is the equivalent protection.
+  rule is the same. The pinning invariant transposes rather than being absent: a dispatch model is
+  pinned to an *agent* instead of a provider, so the agent-match guard plays the role of the
+  app-wide half, and the per-slot half is the row's own Agent select resetting its Model - which is
+  what `DispatchModal.tsx:2696` already does one surface over. Step 9 says so.
 - Reconciled with Phase 2: no shared contracts. Both add a group to `LlmSettingsPanel.tsx` and both
   touch `settings-search.ts` and `docs/models.md`; ownership is by section and either merge order
   works. `settings-registry.ts` is owned by this phase alone, so the category blurb has one writer.

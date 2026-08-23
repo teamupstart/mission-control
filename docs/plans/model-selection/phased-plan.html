@@ -356,8 +356,10 @@ reconciling back into Phase 1's file.</p>
     <td><code>null</code>/empty means inherit; a set value replaces and re-bases the model fallback
     onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an
     extension, not a competing ladder</td></tr>
-  <tr><td>The pinning invariant</td><td>Phase 1</td><td>2</td>
-    <td>Pinning a model pins its provider. No phase reintroduces a clear-on-change</td></tr>
+  <tr><td>The pinning invariant, both halves</td><td>Phase 1</td><td>2, 3</td>
+    <td>The <em>app-wide</em> default never disturbs a pinned slot; a <em>slot's own</em> provider
+    control resets that slot's model unless the new provider offers it. No phase reintroduces the
+    blanket clear-on-change, and none answers the per-slot case differently</td></tr>
   <tr><td>Sibling-map storage</td><td>Phase 1</td><td>2</td>
     <td>Additive record beside the existing model keys, merged per key, no migration</td></tr>
   <tr><td><code>llmJobRunner</code>, widened <code>LlmStatus</code></td><td>Phase 1</td><td>-</td>

@@ -91,6 +91,11 @@ Explicit non-goals:
    group-level default and correct its comment. Mirror in `ForemanConfigPatchSchema`.
 2. **`src/shared/foreman-models.ts`** - resolve each role's provider as: the role's own, else
    Foreman's group-level `runner`, else the app-wide ladder. Same rule as Phase 1, one extra rung.
+   The pinning invariant comes with it, **both halves**: neither the app-wide radio nor Foreman's
+   group-level provider may disturb a role that has pinned a model, while changing a *role's own*
+   provider resets that role's model unless the new provider offers it. Reuse Phase 1's helper
+   rather than re-deriving the rule - a Foreman role that answered it differently from a background
+   job would be the same screen behaving two ways.
 3. **`src/server/foreman/config.ts`** - resolve per role and report each role's resolved provider so
    the panel and the worker cannot print different answers.
 4. **`src/server/foreman/worker.ts`** - replace the single `triageRunnerId` with a per-role
@@ -161,7 +166,9 @@ Explicit non-goals:
 ## Cross-phase audit record
 
 - Reconciled with Phase 1: this phase consumes `SettingsMatrix`, `ModelSlotRow`, the inherit rule
-  and the pinning invariant, and adds no second clear-on-change. The per-role ladder adds one rung
+  and both halves of the pinning invariant, and adds no second clear-on-change. Phase 1's review
+  round 6 settled the per-slot half after this file was written; step 2 was updated to consume it
+  rather than to restate it. The per-role ladder adds one rung
   (role → Foreman group → app-wide) to Phase 1's two; that is an extension of Phase 1's rule, not a
   competing one, and Phase 1's handoff is worded to allow it.
 - Review round 4 flagged that the outcome claimed every app-owned model choice on one page while

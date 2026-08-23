@@ -398,12 +398,12 @@ What happens to the agent is yours to choose, in **Settings → Shipping**:
 | Close the session after merge | What happens |
 |---|---|
 | **off** (default) | The agent stays, with its checkout and its context. Once idle, its merged task lands; a later follow-up reopens it |
-| **on** | If the agent is idle with an empty queue when the merge is observed, Mission Control first marks the task done and then closes its session, freeing a fleet slot for a fresh dispatch. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+| **on** | Once the agent is idle with an empty queue, Mission Control first marks the merged task done and then closes its session, freeing a fleet slot for a fresh dispatch. If the merge is observed mid-turn, closure waits for that later idle transition. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
 
 An agent that is still **working**, awaiting input, awaiting review, or carrying queued
 work is neither closed nor failed as a substitute for completion, even with the switch
-on. The merge is recorded either way, so its task lands correctly whenever the episode
-does finish.
+on. The merge is recorded either way. Once the same episode does finish idle with an empty
+queue, its task lands and the enabled switch closes the session.
 
 The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
 nothing about files still sitting unsaved in that checkout, and reclaiming runs

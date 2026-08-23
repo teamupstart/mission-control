@@ -224,6 +224,9 @@ export interface Ok {
   error?: string;
 }
 
+/** The merge identity needed to close the session after its task finishes. */
+type MergedSessionRef = Pick<TaskPrMerged, "taskId" | "sessionId" | "episodeId">;
+
 /**
  * What `reorder` answers with. The status is chosen HERE rather than reverse-engineered
  * from the sentence at the route, because the two refusals read the same to a string match
@@ -818,7 +821,7 @@ export class TaskManager {
     });
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
-    registry.onTaskPrMerged((e) => void this.settleMergedTask(e));
+    registry.onTaskPrMerged((e) => this.settleMergedTask(e));
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
     registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
@@ -1048,16 +1051,16 @@ export class TaskManager {
    * session is left alone, while a session that later disappears settles through
    * `agentWentAway`.
    *
-   * The disposition of the agent remains a separate preference. With
-   * `closeSessionAfterMerge` enabled, an idle merged session is closed only AFTER its
-   * task has been recorded done, and only if it still matches that task and episode
-   * after the asynchronous checkout-safety probe. Work resuming during that probe
-   * reopens the inferred completion and cancels the close.
+   * The disposition of the agent remains a separate preference. The shared idle-completion
+   * path below applies it only AFTER the task has been recorded done, whether idleness came
+   * before this event or later. `closeMergedSession` then rechecks the task and episode after
+   * its asynchronous checkout-safety probe. Work resuming during that probe reopens the
+   * inferred completion and cancels the close.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
    */
-  private async settleMergedTask(e: TaskPrMerged): Promise<void> {
+  private settleMergedTask(e: TaskPrMerged): void {
     try {
       const t = this.registry.getTask(e.taskId);
       if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
@@ -1069,21 +1072,8 @@ export class TaskManager {
       // asked here too or the task stays running for ever. Both callers land on one
       // predicate rather than two that could drift.
       if (session) this.settleIfEpisodeFinished(session);
-      if (!getShippingConfig().closeSessionAfterMerge) return;
-      // This preference is "complete, then close", never Kill's "stop and let the task
-      // settle as failed". `settleIfEpisodeFinished` is deliberately narrower than
-      // "not working": awaiting input/review is still an unfinished turn. Requiring the
-      // completion it just recorded keeps those states out of the terminal kill path.
-      if (
-        session?.state !== "idle" ||
-        this.registry.getTask(e.taskId)?.status !== "done" ||
-        this.autoCompleted.get(e.taskId) !== e.sessionId
-      ) {
-        return;
-      }
-      await this.closeMergedSession(e);
     } catch (error) {
-      console.error("[merge] closing merged session failed:", e.taskId, error);
+      console.error("[merge] settling merged task failed:", e.taskId, error);
     }
   }
 
@@ -1149,6 +1139,12 @@ export class TaskManager {
       requireStopped: false,
       confirmIncompleteScout: false,
       inferredFrom: s.id,
+    }, undefined, () => {
+      this.closeMergedSessionAfterCompletion({
+        taskId: t.id,
+        sessionId: s.id,
+        episodeId: binding.episodeId,
+      });
     });
   }
 
@@ -1430,6 +1426,14 @@ export class TaskManager {
     );
   }
 
+  /** Apply the operator's preference after either merge/idle event ordering completes. */
+  private closeMergedSessionAfterCompletion(e: MergedSessionRef): void {
+    if (!getShippingConfig().closeSessionAfterMerge) return;
+    void this.closeMergedSession(e).catch((error: unknown) => {
+      console.error("[merge] closing merged session failed:", e.taskId, error);
+    });
+  }
+
   /**
    * Close the agent of a task that was completed after its merge, and reclaim its
    * checkout if that is safe.
@@ -1448,7 +1452,7 @@ export class TaskManager {
    * session's does. That is the house rule holding: freeing a tree is the operator's call
    * whenever anything could be lost by it.
    */
-  private async closeMergedSession(e: TaskPrMerged): Promise<void> {
+  private async closeMergedSession(e: MergedSessionRef): Promise<void> {
     const session = this.registry.getSession(e.sessionId);
     if (!session) return;
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
@@ -3484,8 +3488,12 @@ export class TaskManager {
     id: string,
     input: CompletionInput,
     onScoutRefusal?: (problems: string[]) => void,
+    onCompleted?: (task: Task) => void,
   ): void {
     void this.runCompletion(id, input)
+      .then((task) => {
+        if (task) onCompleted?.(task);
+      })
       .catch((error: unknown) => {
         if (error instanceof ScoutArchiveNotReadyError) {
           // Ordinary while a scout is still working: the merge landed but the report has not

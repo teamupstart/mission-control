@@ -204,12 +204,17 @@ Counted as production lines added or materially changed, excluding tests and doc
 <tr><td>Settings panel component</td><td>400</td><td>ConductorPanel +326, TaskSourcesPanel +303, WorktreeSettingsPanel +382</td></tr>
 <tr><td>React hook with reconcile guard</td><td>180</td><td>useConductor +157, useWorktrees +168</td></tr>
 <tr><td>Registry, SettingsPage, search index, api client</td><td>70</td><td>measured: 9-24 + 6-8 + 7-27 + 15</td></tr>
-<tr><td>Per-session delivery snapshot</td><td>90</td><td><code>session_launch_turns</code> is the same key, first-bind move and prune shape</td></tr>
+<tr><td>Per-session delivery snapshot</td><td>110</td><td>table plus <code>moveStandingInstructionsKey</code> across the seven sites <code>moveForemanInviteKey</code> is called from</td></tr>
+<tr><td>Assignment replay path</td><td>40</td><td>reads the snapshot at <code>tasks.ts:2970</code>; no new channel</td></tr>
 <tr><td>Dispatch and session markers</td><td>90</td><td>two small read-only surfaces</td></tr>
 <tr><td>CSS</td><td>110</td><td>60-300 depending on reuse of <code>.kb-row</code> / <code>.settings-hint</code></td></tr>
 </tbody>
 </table>
 </div>
+
+<p>The rows above are the phase estimates: 130 + 160 + 130 + 55 + 120 + 110 + 40 = <strong>745</strong>
+for Phase 1, and 400 + 180 + 70 + 90 + 110 = <strong>850</strong> for Phase 2. They are stated to the
+row rather than rounded, so a later change to one of them moves a number a reader can check.</p>
 
 <p>Tests are additional and substantial - roughly 420-740 lines across a panel render test, an HTTP
 test, sidebar-render additions and one e2e spec.</p>
@@ -250,8 +255,8 @@ an inert mechanism awaiting its editor.</p>
 <table>
 <thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Prereq</th><th>Est.</th></tr></thead>
 <tbody>
-<tr><td>1</td><td><a href="phase-1-store-and-delivery.md">Store and delivery</a></td><td>The <code>app_config</code> store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot</td><td>none</td><td>~690</td></tr>
-<tr><td>2</td><td><a href="phase-2-settings-panel.md">Settings panel</a></td><td>The Standing instructions settings category, the dispatch and session markers, and the e2e spec</td><td>Phase 1</td><td>~900</td></tr>
+<tr><td>1</td><td><a href="phase-1-store-and-delivery.md">Store and delivery</a></td><td>The <code>app_config</code> store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot</td><td>none</td><td>~745</td></tr>
+<tr><td>2</td><td><a href="phase-2-settings-panel.md">Settings panel</a></td><td>The Standing instructions settings category, the dispatch and session markers, and the e2e spec</td><td>Phase 1</td><td>~850</td></tr>
 </tbody>
 </table>
 </div>

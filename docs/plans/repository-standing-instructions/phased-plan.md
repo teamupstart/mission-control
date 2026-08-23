@@ -129,9 +129,14 @@ Assumptions behind the estimate, anchored on measured comparables in this reposi
 | Settings panel component | 400 | ConductorPanel +326, TaskSourcesPanel +303, WorktreeSettingsPanel +382 at introduction |
 | React hook with reconcile guard | 180 | useConductor +157, useWorktrees +168, useTaskSources 221 |
 | Registry, SettingsPage, search index, api client | 70 | measured: 9-24 + 6-8 + 7-27 + 15 |
-| Per-session delivery snapshot | 90 | `session_launch_turns` is the same key, first-bind move and prune shape |
+| Per-session delivery snapshot | 110 | table plus `moveStandingInstructionsKey` across the seven sites `moveForemanInviteKey` is called from |
+| Assignment replay path | 40 | reads the snapshot at `tasks.ts:2970`; no new channel |
 | Dispatch and session markers | 90 | two small read-only surfaces |
 | CSS | 110 | 60-300 depending on reuse of `.kb-row` / `.settings-hint` |
+
+The rows above are the phase estimates: 130 + 160 + 130 + 55 + 120 + 110 + 40 = **745** for Phase 1,
+and 400 + 180 + 70 + 90 + 110 = **850** for Phase 2. They are stated to the row rather than rounded,
+so a later change to one of them moves a number a reader can check.
 
 Tests are additional and substantial - roughly 420-740 lines across a panel render test, an HTTP
 test, sidebar-render additions and one e2e spec.
@@ -167,8 +172,8 @@ its editor.
 
 | # | Phase | Delivers | Direct prerequisites | Est. impl. lines |
 |---|---|---|---|---|
-| 1 | [Store and delivery](phase-1-store-and-delivery.md) | The `app_config` store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot | none | ~690 |
-| 2 | [Settings panel](phase-2-settings-panel.md) | The Standing instructions settings category, the dispatch and session markers, and the e2e spec | Phase 1 | ~900 |
+| 1 | [Store and delivery](phase-1-store-and-delivery.md) | The `app_config` store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot | none | ~745 |
+| 2 | [Settings panel](phase-2-settings-panel.md) | The Standing instructions settings category, the dispatch and session markers, and the e2e spec | Phase 1 | ~850 |
 
 ### Dependency graph
 

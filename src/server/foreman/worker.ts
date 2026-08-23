@@ -222,6 +222,11 @@ const shipRecoveryReviewFailures = new Map<string, {
   nextAt: number;
   reason: string;
 }>();
+/** Reviewer terminal verdicts awaiting the daemon's required durable note write. */
+const shipRecoveryReviewEscalations = new Map<string, {
+  noteKey: string;
+  summary: string;
+}>();
 
 /**
  * Consume one completed generation: the write that disarms the trigger, and the ONLY thing that clears
@@ -1056,6 +1061,9 @@ async function runShipShepherd(
   for (const [key, failure] of shipRecoveryReviewFailures) {
     if (!liveNoteKeys.has(failure.noteKey)) shipRecoveryReviewFailures.delete(key);
   }
+  for (const [key, escalation] of shipRecoveryReviewEscalations) {
+    if (!liveNoteKeys.has(escalation.noteKey)) shipRecoveryReviewEscalations.delete(key);
+  }
 
   for (const session of sessions) {
     if (alreadyTouched.has(session.id)) continue;
@@ -1096,73 +1104,85 @@ async function runShipShepherd(
     let terminalSummary = decision.kind === "escalate" ? decision.summary : null;
     if (decision.kind === "recover" && decision.needsReview) {
       const failureKey = [task.id, queue!.noteKey, decision.generation, decision.attempt].join(":");
-      const priorFailure = shipRecoveryReviewFailures.get(failureKey)
-        ?? restoredShipRecoveryReviewFailure(session, decision);
-      if (priorFailure) shipRecoveryReviewFailures.set(failureKey, priorFailure);
-      if (priorFailure && Date.now() < priorFailure.nextAt) continue;
-      let reviewFailure: string | null = null;
-      const goal = await client.goal(session.id).catch(() => null);
-      if (!goal?.objective) {
-        terminalSummary = "The durable task objective is unavailable, so bounded recovery cannot choose a safe next turn.";
-      } else {
-        const [window, standards] = await Promise.all([
-          client.transcript(session.id).catch(() => null),
-          client.standards(session.id, changedPaths(diff.patch)).catch(() => null),
-        ]);
-        if (!window || !standards) {
-          reviewFailure = "the bounded task evidence could not be read safely";
+      const pendingEscalation = shipRecoveryReviewEscalations.get(failureKey);
+      if (pendingEscalation) terminalSummary = pendingEscalation.summary;
+      if (!terminalSummary) {
+        const priorFailure = shipRecoveryReviewFailures.get(failureKey)
+          ?? restoredShipRecoveryReviewFailure(session, decision);
+        if (priorFailure) shipRecoveryReviewFailures.set(failureKey, priorFailure);
+        if (priorFailure && Date.now() < priorFailure.nextAt) continue;
+        let reviewFailure: string | null = null;
+        const goal = await client.goal(session.id).catch(() => null);
+        if (!goal?.objective) {
+          terminalSummary = "The durable task objective is unavailable, so bounded recovery cannot choose a safe next turn.";
         } else {
-          const reviewed = await reviewShipRecovery({
-            objective: goal.objective,
-            focus: goal.focus,
-            diff: diff.patch,
-            diffTruncated: diff.truncated,
-            transcript: window.messages,
-            transcriptTruncated: window.truncated,
-            standards: standards.docs,
-            standardsTruncated: standards.truncated,
-            completionContract: taskCompletionContract("ship")!,
-            idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
-            priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
-          }, reviewModel(cfg), triageRunnerId);
-          if (reviewed.kind === "failed") {
-            reviewFailure = reviewed.reason;
-          } else if (reviewed.verdict.action === "escalate") {
-            shipRecoveryReviewFailures.delete(failureKey);
-            terminalSummary = reviewed.verdict.reason;
+          const [window, standards] = await Promise.all([
+            client.transcript(session.id).catch(() => null),
+            client.standards(session.id, changedPaths(diff.patch)).catch(() => null),
+          ]);
+          if (!window || !standards) {
+            reviewFailure = "the bounded task evidence could not be read safely";
           } else {
-            shipRecoveryReviewFailures.delete(failureKey);
-            payload = reviewed.verdict.instruction;
+            const reviewed = await reviewShipRecovery({
+              objective: goal.objective,
+              focus: goal.focus,
+              diff: diff.patch,
+              diffTruncated: diff.truncated,
+              transcript: window.messages,
+              transcriptTruncated: window.truncated,
+              standards: standards.docs,
+              standardsTruncated: standards.truncated,
+              completionContract: taskCompletionContract("ship")!,
+              idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
+              priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
+            }, reviewModel(cfg), triageRunnerId);
+            if (reviewed.kind === "failed") {
+              reviewFailure = reviewed.reason;
+            } else if (reviewed.verdict.action === "escalate") {
+              shipRecoveryReviewFailures.delete(failureKey);
+              terminalSummary = reviewed.verdict.reason;
+            } else {
+              shipRecoveryReviewFailures.delete(failureKey);
+              payload = reviewed.verdict.instruction;
+            }
           }
         }
-      }
-      if (reviewFailure) {
-        const strikes = (priorFailure?.strikes ?? 0) + 1;
-        shipRecoveryReviewFailures.set(failureKey, {
-          noteKey: queue!.noteKey,
-          strikes,
-          nextAt: Date.now() + SHIP_RECOVERY_REVIEW_RETRY_MS,
-          reason: reviewFailure,
-        });
-        if (strikes < SHIP_RECOVERY_REVIEW_FAILURE_CAP) {
-          await recordShipRecoveryReviewFailure(client, session, decision, strikes, reviewFailure);
-          log(`${session.name}: bounded recovery review failed ${strikes}/${SHIP_RECOVERY_REVIEW_FAILURE_CAP}; will retry (${reviewFailure})`);
-          continue;
+        if (reviewFailure) {
+          const strikes = (priorFailure?.strikes ?? 0) + 1;
+          shipRecoveryReviewFailures.set(failureKey, {
+            noteKey: queue!.noteKey,
+            strikes,
+            nextAt: Date.now() + SHIP_RECOVERY_REVIEW_RETRY_MS,
+            reason: reviewFailure,
+          });
+          if (strikes < SHIP_RECOVERY_REVIEW_FAILURE_CAP) {
+            await recordShipRecoveryReviewFailure(client, session, decision, strikes, reviewFailure);
+            log(`${session.name}: bounded recovery review failed ${strikes}/${SHIP_RECOVERY_REVIEW_FAILURE_CAP}; will retry (${reviewFailure})`);
+            continue;
+          }
+          shipRecoveryReviewFailures.delete(failureKey);
+          terminalSummary = `The bounded recovery reviewer failed ${strikes} times: ${reviewFailure}`;
         }
-        shipRecoveryReviewFailures.delete(failureKey);
-        terminalSummary = `The bounded recovery reviewer failed ${strikes} times: ${reviewFailure}`;
       }
       if (terminalSummary) {
+        shipRecoveryReviewEscalations.set(failureKey, {
+          noteKey: queue!.noteKey,
+          summary: terminalSummary,
+        });
         decision = terminalRecoveryDecision(decision, task.id, queue!.noteKey, terminalSummary);
         // Reviewer-directed escalation is audited directly and never submitted as a
         // claim. The claim route derives exhaustion only from durable attempt state; a
-        // caller-supplied terminal flag must not be able to manufacture attempt four.
-        touched.add(session.id);
+        // caller-supplied terminal flag must not be able to manufacture attempt four. The
+        // note write is required: until the daemon durably accepts the exact terminal
+        // marker, the cached verdict is retried without another model call and this pass
+        // does not treat the recovery as complete.
         await recordShipRecovery(client, session, decision, {
           delivery: "escalated",
           detail: decision.summary,
           sentText: null,
-        });
+        }, { requireDurableNote: true });
+        shipRecoveryReviewEscalations.delete(failureKey);
+        touched.add(session.id);
         log(`${session.name}: escalated pre-PR recovery (${reasonLabel(decision.reason)})`);
         continue;
       }
@@ -1405,6 +1425,7 @@ async function recordShipRecovery(
     detail: string;
     sentText: string | null;
   },
+  options: { requireDurableNote?: boolean } = {},
 ): Promise<void> {
   const attempt = decision.kind === "escalate" ? "escalation" : `attempt ${decision.attempt}/3`;
   const quietMinutes = Math.max(
@@ -1426,16 +1447,21 @@ async function recordShipRecovery(
     : result.delivery === "confirmed undelivered"
       ? "skipped" as const
       : "answered" as const;
-  await client.putNote(session.id, {
-    purpose,
-    brief,
-    recommendation: null,
-    disposition,
-    lastAction: result.delivery === "delivered"
-      ? `Sent bounded ${reasonLabel(decision.reason)} recovery ${attempt}`
-      : `Pre-PR recovery ${result.delivery}`,
-    handledMarker: decision.marker,
-  }).catch((err) => log(`${session.name}: could not update the recovery note (${String(err)})`));
+  try {
+    await client.putNote(session.id, {
+      purpose,
+      brief,
+      recommendation: null,
+      disposition,
+      lastAction: result.delivery === "delivered"
+        ? `Sent bounded ${reasonLabel(decision.reason)} recovery ${attempt}`
+        : `Pre-PR recovery ${result.delivery}`,
+      handledMarker: decision.marker,
+    });
+  } catch (err) {
+    log(`${session.name}: could not update the recovery note (${String(err)})`);
+    if (options.requireDurableNote) throw err;
+  }
   await client.recordEpisode(session.id, {
     marker: decision.marker,
     situation: "ship-recovery",

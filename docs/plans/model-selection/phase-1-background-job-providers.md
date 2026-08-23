@@ -191,9 +191,12 @@ Verified against the current tree; correct anything that has moved rather than f
   sibling key on a schema-validated `app_config` blob with a `.default({})`, so nothing has to be
   rewritten to open the database. What does change is what a saved `models[job]` *means*: today it
   is implicitly bound to the app-wide runner, because the clearing rule kept it that way. Afterwards
-  it means whatever `runners` says. Step 2 records that provenance at the one moment it is both
-  needed and knowable - the app-wide provider changing - which is why this needs no backfill pass,
-  no version marker and no write on read.
+  it means whatever `runners` says. Two things follow, and neither is a backfill pass, a version
+  marker or a write on read. Step 6 makes an unpinned legacy model **safe** wherever it is read, by
+  refusing a pair its provider cannot honour. Step 2 makes it **preserved** rather than merely safe,
+  by recording the provenance at the one moment it is both needed and still knowable - the app-wide
+  provider changing. Safety does not depend on the write happening; only the operator's original
+  choice does.
 - **Upgrade is a no-op.** Every job ships with no runner override, so all five resolve through
   `llmRunnerChoice` exactly as today.
 - **Downgrade is safe.** A build without this change ignores `runners` and resolves every job

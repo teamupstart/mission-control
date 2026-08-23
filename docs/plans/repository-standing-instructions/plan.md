@@ -331,6 +331,15 @@ indistinguishable from Foreman typing at them. This plan does not do it, and the
 so in a shipped, tested string rather than a placeholder. An explicit operator-initiated
 injection was considered at review and deferred; it would sit on this same store.
 
+**Sessions already running, when the rule changes under them.** This one is about *when*
+rather than *where*, and it is the reason the reach block has a third kind of row. A session
+is given its standing instructions once, at launch, and keeps them: an edit takes effect on
+the next session. The alternative is not "edits reach running sessions" - a live process's
+system prompt cannot be rewritten, so it would be edits reaching `codex · terminal` and
+`pi · terminal` sessions and not the other three, for the same feature, on a schedule the
+operator cannot see. One boundary the panel can state beats three-fifths of a behaviour it
+would have to explain.
+
 **The dashboard composer.** `POST /api/sessions/:id/inject` (`routes.ts:3712`) passes text
 through untouched, and is the only agent-facing channel with no composition step at all.
 Prefixing every message would burn the instruction into the transcript dozens of times, and

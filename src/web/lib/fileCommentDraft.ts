@@ -384,6 +384,10 @@ export function useFileCommentDraft(input: {
   }, []);
 
   const change = useCallback((value: string) => {
+    // A submission in flight owns this composer. `FileCommentComposer` freezes its box, and
+    // this is the same rule stated where the requests are: an edit accepted here would be
+    // queued BEHIND the queue call and would rewrite a message the reader had submitted.
+    if (state.current?.busy) return;
     patch({ text: value });
     if (state.current) state.current = { ...state.current, text: value };
     if (timer.current) clearTimeout(timer.current);
@@ -399,6 +403,10 @@ export function useFileCommentDraft(input: {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     patch({ busy: true, error: null });
+    // On the ref as well as in React: `change` and `cancel` are called from event handlers
+    // that can run before this render lands, and both ask the ref whether the composer is
+    // still the reader's to alter.
+    state.current = { ...current, busy: true };
     void enqueue(async () => {
       const threadId = await persist(current);
       if (!threadId) {
@@ -416,6 +424,8 @@ export function useFileCommentDraft(input: {
 
   const cancel = useCallback(() => {
     const current = state.current;
+    // Nothing to discard once it is on its way into the queue - see `change`.
+    if (current?.busy) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     setComposer(null);

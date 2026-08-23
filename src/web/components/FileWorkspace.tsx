@@ -431,11 +431,13 @@ export function FileWorkspace({
     setThreadError("This file has no text to anchor a comment to.");
   }, [buffer?.text, draft, openThreadOnLine, threadLines]);
 
-  const reply = useCallback(async (threadId: string, body: string): Promise<void> => {
+  /** Answers whether the reply landed, so a rejected one keeps its text to retry. */
+  const reply = useCallback(async (threadId: string, body: string): Promise<boolean> => {
     setThreadBusy(true);
     const result = await appendFileCommentMessage(threadId, body);
     setThreadBusy(false);
     setThreadError(result.ok ? null : result.error);
+    return result.ok;
   }, []);
 
   const setThreadStatus = useCallback(async (
@@ -488,7 +490,7 @@ export function FileWorkspace({
             thread={openThread}
             busy={threadBusy}
             error={threadError}
-            onReply={(body) => { void reply(openThread.id, body); }}
+            onReply={(body) => reply(openThread.id, body)}
             onResolve={() => { void setThreadStatus(openThread.id, "resolved"); }}
             onReopen={() => { void setThreadStatus(openThread.id, "draft"); }}
             onClose={() => setOpenThreadId(null)}

@@ -64,6 +64,19 @@ export function FileCommentComposer({
     box.current?.focus();
   }, [startLine]);
 
+  /*
+   * A submission in flight FREEZES this composer, rather than only greying its button.
+   *
+   * Submitting is two requests - the last edit, then the queue - and the reader's text is
+   * already a durable row throughout. Leaving the box live meant a keystroke during a slow
+   * queue request scheduled an edit BEHIND it, so the message a reader submitted could still
+   * change afterwards; and Cancel stayed armed over a comment that was on its way into the
+   * review queue.
+   *
+   * Read-only rather than disabled: the words are still theirs to select and copy while they
+   * wait, and a disabled textarea is unreachable and unreadable to a screen reader.
+   */
+
   return (
     <section
       className="file-comment-panel is-composer"
@@ -79,15 +92,18 @@ export function FileCommentComposer({
         value={value}
         placeholder="What is wrong with this line?"
         aria-label={`Comment on ${lineRange(startLine, endLine)}`}
+        readOnly={busy}
         onChange={(event) => onChange(event.currentTarget.value)}
         onKeyDown={(event) => {
           // Escape cancels the composer and stops there. It must not reach App's global
           // Escape, which would also hand the Console reader back to its rail and then
-          // drop the fleet selection - three layers peeled by one press.
+          // drop the fleet selection - three layers peeled by one press. It is still stopped
+          // while busy, when it cancels nothing: the reader is looking at this panel either
+          // way, and one press should not peel the layers behind it.
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
-            onCancel();
+            if (!busy) onCancel();
             return;
           }
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -98,8 +114,8 @@ export function FileCommentComposer({
       />
       {error && <p className="file-comment-error" role="alert">{error}</p>}
       <footer className="file-comment-panel-foot">
-        <Tooltip label="Discard this comment">
-          <button className="btn" onClick={onCancel}>Cancel</button>
+        <Tooltip label={busy ? "This comment is being submitted" : "Discard this comment"}>
+          <button className="btn" disabled={busy} onClick={onCancel}>Cancel</button>
         </Tooltip>
         <Tooltip label="Add this comment to the review">
           <button
@@ -134,13 +150,30 @@ export function FileCommentThreadCard({
   thread: FileCommentThreadModel;
   busy: boolean;
   error: string | null;
-  onReply: (body: string) => void;
+  /** Resolves true when the reply reached the thread. False keeps the text to retry. */
+  onReply: (body: string) => Promise<boolean>;
   onResolve: () => void;
   onReopen: () => void;
   onClose: () => void;
 }): React.JSX.Element {
   const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
   const resolvable = canResolveThread(thread);
+  /*
+   * The reply box empties on SUCCESS, not on click.
+   *
+   * Clearing it immediately meant a rejected or offline request took the reader's sentence
+   * with it: the error appeared above a box that no longer held what to retry, and the only
+   * way forward was to type it again from memory.
+   */
+  const send = async (): Promise<void> => {
+    const body = reply.trim();
+    if (!body || sending) return;
+    setSending(true);
+    const ok = await onReply(body);
+    setSending(false);
+    if (ok) setReply("");
+  };
   // A thread past the wire cap arrives carrying its NEWEST messages, not all of them.
   // Saying so is the honest thing: the alternative is a reader counting replies and
   // concluding the earlier ones were lost.
@@ -194,8 +227,7 @@ export function FileCommentThreadCard({
           }
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && reply.trim()) {
             event.preventDefault();
-            onReply(reply.trim());
-            setReply("");
+            void send();
           }
         }}
       />
@@ -213,8 +245,8 @@ export function FileCommentThreadCard({
         <Tooltip label="Add this reply to the thread">
           <button
             className="btn btn-primary"
-            disabled={busy || reply.trim().length === 0}
-            onClick={() => { onReply(reply.trim()); setReply(""); }}
+            disabled={busy || sending || reply.trim().length === 0}
+            onClick={() => { void send(); }}
           >
             Reply
           </button>

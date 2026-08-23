@@ -683,4 +683,86 @@ test.describe("line comments in the Files editor", () => {
       })
       .toBe(ECHO);
   });
+
+  test("a comment being submitted is frozen, and a failed reply keeps its text", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * Two things a reader can lose to a slow or refused request, both raised by review.
+     *
+     * The submission is two requests with the reader's durable row between them, so a
+     * keystroke during a slow queue call used to schedule an edit behind it - rewriting a
+     * message that had already been submitted - and Cancel stayed armed over a comment on its
+     * way into the queue.
+     *
+     * The reply box used to empty on CLICK. A rejected request then showed an error above a
+     * box that no longer held what to retry, and the sentence had to be typed again.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    // ---- frozen while the queue request is out ----
+    await page.route("**/api/file-comments/*/queue", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await route.continue();
+    });
+
+    await lineNumber(page, 3).click();
+    const box = page.getByRole("textbox", { name: "Comment on line 3" });
+    await box.fill(COMMENT);
+    await expect
+      .poll(() => storedThreads(daemon).length, { message: "the draft was never written" })
+      .toBe(1);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+
+    await expect(box, "the box must not take edits while the submission is out")
+      .toHaveAttribute("readonly", "");
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // Read-only and not disabled, so the words stay selectable and stay readable to a screen
+    // reader while the reader waits.
+    await expect(box).toBeEnabled();
+    // And the keyboard route to cancelling is shut too.
+    await box.press("Escape");
+    await expect(box).toBeVisible();
+
+    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
+    await expect(marker).toBeVisible({ timeout: 10_000 });
+    // What was submitted is what was written: nothing rode in behind the queue call.
+    expect(storedThreads(daemon)).toHaveLength(1);
+    expect(storedThreads(daemon)[0]!.status).toBe("queued");
+
+    // ---- a refused reply keeps what the reader typed ----
+    await marker.click();
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
+    await page.route("**/api/file-comments/*/messages", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the daemon refused this reply" }),
+      }));
+
+    const replyBox = thread.getByPlaceholder("Reply…");
+    await replyBox.fill(REPLY);
+    await thread.getByRole("button", { name: "Reply", exact: true }).click();
+
+    await expect(thread.getByRole("alert")).toBeVisible();
+    await expect(replyBox, "a refused reply must not take the reader's sentence with it")
+      .toHaveValue(REPLY);
+    expect(storedThreads(daemon)[0]!.messages, "nothing was appended").toBe(1);
+
+    // And the retry works from the text still sitting there, once the route is let go.
+    await page.unroute("**/api/file-comments/*/messages");
+    await thread.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect
+      .poll(() => storedThreads(daemon)[0]?.messages, { message: "the retry never landed" })
+      .toBe(2);
+    await expect(replyBox).toHaveValue("");
+  });
 });

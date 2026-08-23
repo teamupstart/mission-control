@@ -303,6 +303,35 @@ test("the composer names the line it is anchored to and quotes it back", () => {
   assert.ok(hasTooltip(html, "Discard this comment"));
 });
 
+test("a comment being submitted is frozen, not merely un-clickable", () => {
+  /*
+   * Submitting is two requests - the last edit, then the queue - and the reader's text is a
+   * durable row the whole time. `busy` used to grey the Comment button and nothing else, so a
+   * keystroke during a slow queue call scheduled an edit BEHIND it and could rewrite a message
+   * that had already been submitted, and Cancel stayed armed over a comment on its way into
+   * the review queue.
+   */
+  const html = renderToStaticMarkup(
+    createElement(FileCommentComposer, {
+      startLine: 3,
+      endLine: 3,
+      quote: "line two says something",
+      value: "already said",
+      busy: true,
+      error: null,
+      onChange: () => {},
+      onSubmit: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /<textarea[^>]*readonly/i, "the box is frozen while the submission is out");
+  assert.match(html, /disabled[^>]*>Cancel</, "and there is nothing left to cancel");
+  assert.ok(hasTooltip(html, "This comment is being submitted"), "the tooltip says why");
+  // Read-only rather than disabled: the words stay selectable, and stay readable to a screen
+  // reader, while the reader waits.
+  assert.doesNotMatch(html, /<textarea[^>]*disabled/i);
+});
+
 test("a multi-line anchor reads as a range", () => {
   const html = renderToStaticMarkup(
     createElement(FileCommentComposer, {
@@ -327,7 +356,7 @@ test("an expanded thread shows what was said, offers a reply, and offers to clos
       thread: thread(),
       busy: false,
       error: null,
-      onReply: () => {},
+      onReply: () => Promise.resolve(true),
       onResolve: () => {},
       onReopen: () => {},
       onClose: () => {},
@@ -367,7 +396,7 @@ test("a resolved thread offers to reopen, and an agent reply is attributed to th
       thread: settled,
       busy: false,
       error: null,
-      onReply: () => {},
+      onReply: () => Promise.resolve(true),
       onResolve: () => {},
       onReopen: () => {},
       onClose: () => {},
@@ -385,7 +414,7 @@ test("a thread past the wire cap says it is showing a tail, rather than losing t
       thread: thread({ messageCount: 64 }),
       busy: false,
       error: null,
-      onReply: () => {},
+      onReply: () => Promise.resolve(true),
       onResolve: () => {},
       onReopen: () => {},
       onClose: () => {},

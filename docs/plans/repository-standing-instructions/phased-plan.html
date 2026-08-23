@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Repository standing instructions - implementation index</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2024; --muted: #5b6470; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --warn: #b4690e; --ok: #1a7f37; --bad: #cf222e;
+    --box: #ffffff; --box-stroke: #c7ccd3; --sel: #e6efff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa4b2; --rule: #262c34;
+      --card: #161b22; --accent: #6ea8fe; --warn: #e0a955; --ok: #57ab5a; --bad: #f85149;
+      --box: #1b2129; --box-stroke: #3a434f; --sel: #1d2c46;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 22px 96px; }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 42px 0 10px; padding-top: 14px; border-top: 1px solid var(--rule); letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  .lede { color: var(--muted); font-size: 17px; margin: 0 0 16px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 5px; padding: 0.05em 0.35em; }
+  pre { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  pre code { background: none; border: 0; padding: 0; font-size: 13.5px; line-height: 1.6; }
+  a { color: var(--accent); }
+  ul, ol { padding-left: 1.2em; }
+  li { margin: 6px 0; }
+  strong { font-weight: 650; }
+  .scroll { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; }
+  tr.hi td { background: var(--sel); }
+  .callout { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 8px 8px 0; }
+  .callout.req { border-left-color: var(--warn); }
+  .callout.bad { border-left-color: var(--bad); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .files { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 6px; }
+  .files a { display: inline-block; font-size: 13.5px; padding: 6px 11px; border-radius: 7px;
+    background: var(--card); border: 1px solid var(--rule); text-decoration: none; }
+  .fig { margin: 22px 0 6px; padding: 16px; background: var(--card); border: 1px solid var(--rule);
+    border-radius: 10px; overflow-x: auto; }
+  .fig svg { display: block; min-width: 620px; width: 100%; height: auto; }
+  .cap { color: var(--muted); font-size: 13px; margin: 6px 2px 22px; }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  svg .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  svg .lbl { fill: var(--fg); font-size: 12.5px; }
+  svg .dim { fill: var(--muted); font-size: 11px; }
+  svg .hd { fill: var(--fg); font-size: 13.5px; font-weight: 650; }
+  svg .sub { fill: var(--box); stroke: var(--box-stroke); }
+  svg .flow { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .arrowfill { fill: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Repository standing instructions</h1>
+<p class="lede">Implementation index. Two phases, one pull request each.</p>
+
+<div class="files">
+  <a href="plan.html">Approved plan (rendered)</a>
+  <a href="plan.md">plan.md</a>
+  <a href="phase-1-store-and-delivery.md">Phase 1 - Store and delivery</a>
+  <a href="phase-2-settings-panel.md">Phase 2 - Settings panel</a>
+</div>
+
+<h2>Incorporated human decisions</h2>
+
+<p>These were submitted at the plan review and are <strong>requirements, not options</strong>. A
+phase that re-opens one is doing the wrong work.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th></tr></thead>
+<tbody>
+<tr><td><code>editor-home</code></td><td>A new <strong>Standing instructions</strong> settings category, in the <em>Sessions</em> group with a <code>This machine</code> scope badge</td></tr>
+<tr><td><code>delivery</code></td><td><strong>Capability-declared</strong>: out-of-band where the harness and runtime have a channel, prompt text where they do not. Wiring Claude's SDK <code>systemPrompt.append</code> and Codex's <code>developerInstructions</code> is in scope.</td></tr>
+<tr><td><code>reach</code></td><td><strong>Mission-Control-launched sessions only</strong> - dispatch and assignment. No injection into adopted sessions.</td></tr>
+<tr><td><code>standards-bundle</code></td><td><strong>Sessions only.</strong> Standing instructions do <strong>not</strong> join the standards bundle read by Foreman, the Inspector and workflow Personas.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Repository findings that change the plan</h2>
+
+<p>The source plan was written from a reading of the code; three of its claims did not survive a
+closer look. Each is recorded as a decision, and each is owned by Phase 1.</p>
+
+<h3>Finding 1 - a second <code>--append-system-prompt</code> flag would silently discard the first</h3>
+
+<p>The plan's delivery table reads <code>claude · terminal</code> → <code>--append-system-prompt</code>
+→ "in use", which invites the obvious implementation: contribute a second flag beside the ask
+channel's. <strong>That is wrong and it fails silently.</strong></p>
+
+<p>Verified against the <code>claude</code> binary on this machine (2.1.239):
+<code>--append-system-prompt &lt;prompt&gt;</code> is declared as a <strong>single-value</strong>
+option, not variadic - contrast <code>--betas &lt;betas...&gt;</code> two lines below it in the same
+help output. The binary carries an explicit guard for the sibling conflict
+(<code>Cannot use both --append-system-prompt and --append-system-prompt-file</code>) but
+<strong>no</strong> collector or error for the flag repeated against itself, so a repeat is last-wins
+and the earlier value is dropped without a word.</p>
+
+<div class="callout bad">
+<p>The failure mode is the worst available: on Claude the text never appears in the transcript
+anyway, so a dropped standing instruction is indistinguishable from one that was never set.</p>
+<p><strong>Decision:</strong> the Claude terminal path composes <strong>one</strong>
+<code>--append-system-prompt</code> value from every contributor. Phase 1 owns the composer.</p>
+</div>
+
+<p>There is a documented precedent for getting this exact class of thing wrong here:
+<code>docs/plans/ask-channel/plan.md:185-219</code> records that the codebase previously probed
+<code>--help</code> prose for flag support and guessed wrong, disabling the ask channel on every
+dispatch.</p>
+
+<h3>Finding 2 - folding into <code>askChannelArgs</code> would inherit its all-or-nothing failure</h3>
+
+<p><code>askChannelArgs</code> (<code>src/server/ask-channel.ts:165-206</code>) returns
+<code>[]</code> on <strong>any</strong> failure - a missing MCP bundle (<code>:172-181</code>) or the
+blanket <code>catch</code> (<code>:196-205</code>). Its own contract comment says "ALL FOUR FLAGS OR
+NONE". Its result is spliced unconditionally into the argv at
+<code>src/server/dispatcher.ts:520-529</code>.</p>
+
+<p>That contract is correct for what it guards: an agent with <code>AskUserQuestion</code> removed and
+no replacement is worse than one with the built-in intact. But a standing instruction has
+<strong>nothing to do with the MCP bundle</strong>, and hanging it inside that function would mean an
+unbuilt <code>dist</code> silently drops the operator's instruction too.</p>
+
+<div class="callout req">
+<p><strong>Decision:</strong> Phase 1 extracts the system-prompt append into its own contributor that
+emits independently of the MCP registration, and composes the ask-channel redirect and the standing
+instruction into its single value. The redirect keeps its existing all-or-nothing tie to the MCP
+flags; the standing instruction does not acquire one.</p>
+</div>
+
+<h3>Finding 3 - Codex's <code>developerInstructions</code> is gated on <code>opts.mcp</code></h3>
+
+<p><code>src/server/harness/codex/sdk.ts:1429</code> wraps the whole <code>config/read</code> + merge
+block in <code>if (opts.mcp)</code>. With no <code>missionMcp</code> the block is skipped,
+<code>config.developerInstructions</code> stays <code>null</code> (initialised at <code>:1409</code>),
+and <code>threadStartParams</code> (<code>:1333-1348</code>) omits the key entirely.</p>
+
+<p>That gate is coherent for the current payload - <code>MISSION_CONTROL_REVIEW_INSTRUCTION</code>
+tells the agent to call an MCP tool that would not exist - but a standing instruction hung off the
+same channel would silently never be sent on any ordinary dispatch, which is most of them.</p>
+
+<div class="callout req">
+<p><strong>Decision:</strong> Phase 1 ungates the <code>config/read</code> + merge for the
+standing-instruction case, so the channel arms whenever there is text to send. The existing review
+instruction keeps its <code>opts.mcp</code> gate. The value must survive <code>clearContext</code>,
+which rebuilds params from the same mutated <code>LaunchConfig</code>
+(<code>codex/sdk.ts:569</code>).</p>
+</div>
+
+<h3>Confirmed as written</h3>
+
+<ul>
+<li><strong>Claude SDK <code>systemPrompt.append</code> exists and is unused.</strong> Type at
+<code>@anthropic-ai/claude-agent-sdk@0.3.220</code>:
+<code>systemPrompt?: string | string[] | { type: 'preset'; preset: 'claude_code'; append?: string; excludeDynamicSections?: boolean }</code>.
+A bare <code>string</code> <strong>replaces</strong> the Claude Code prompt, so the preset+append
+object is the only non-destructive form. <code>src/server/harness/claude/sdk.ts:1114-1181</code>
+passes no <code>systemPrompt</code> at all.</li>
+<li><strong><code>withTaskKindContract</code> is the single composition seam</strong>, at
+<code>src/server/task-contract.ts:133</code>, reached from <code>dispatcher.ts:417</code> and
+<code>tasks.ts:2970</code>. Every <code>TaskKind</code> passes through it.</li>
+<li><strong><code>app_config</code> needs no migration.</strong> Six config modules carry the same
+sentence: a schema-validated blob over that KV, with zod defaults applying on every read.</li>
+<li><strong>Longest-match on <code>repo_root</code> is established</strong> -
+<code>workflow_command_overrides</code> (<code>src/server/db.ts:1106-1112</code>) - and boundary
+matching already exists in <code>src/shared/allowlist.ts</code>.</li>
+<li><strong>Pi's turn one rides the argv</strong> (<code>preparePiLaunch</code>), which makes the
+prompt-text path e2e-assertable through the fake's argv record.</li>
+</ul>
+
+<p><strong>Environment note.</strong> <code>node_modules</code> is not installed in this worktree. The
+implementing agent runs <code>npm install</code> first; the Playwright browser additionally needs
+<code>npx playwright install chromium</code> once per machine.</p>
+
+<h2>Sizing and phase count</h2>
+
+<p><strong>Estimate: 1,200-1,800 gross non-test implementation lines</strong>, centred near 1,500.
+Counted as production lines added or materially changed, excluding tests and documentation.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Area</th><th>Est.</th><th>Anchor</th></tr></thead>
+<tbody>
+<tr><td>Shared schemas and harness capability</td><td>130</td><td><code>WorktreesConfigSchema</code> + patch is ~60 lines</td></tr>
+<tr><td>Server store, ETag, longest-match resolve</td><td>160</td><td><code>foreman/instructions.ts</code> is 112 for the single-document version</td></tr>
+<tr><td>Composition and block rendering</td><td>130</td><td><code>intentWithRepoManifest</code> + <code>withRepoMemoryPointer</code></td></tr>
+<tr><td>Routes</td><td>55</td><td>measured GET/PUT pairs run 25-70</td></tr>
+<tr><td>Delivery across 5 harness · runtime pairs</td><td>120</td><td>includes the Finding 1 and 2 refactor</td></tr>
+<tr><td>Settings panel component</td><td>400</td><td>ConductorPanel +326, TaskSourcesPanel +303, WorktreeSettingsPanel +382</td></tr>
+<tr><td>React hook with reconcile guard</td><td>180</td><td>useConductor +157, useWorktrees +168</td></tr>
+<tr><td>Registry, SettingsPage, search index, api client</td><td>70</td><td>measured: 9-24 + 6-8 + 7-27 + 15</td></tr>
+<tr><td>Per-session delivery snapshot</td><td>110</td><td>table plus <code>moveStandingInstructionsKey</code> across the seven sites <code>moveForemanInviteKey</code> is called from</td></tr>
+<tr><td>Assignment replay path</td><td>40</td><td>reads the snapshot at <code>tasks.ts:2970</code>; no new channel</td></tr>
+<tr><td>Dispatch and session markers</td><td>90</td><td>two small read-only surfaces</td></tr>
+<tr><td>CSS</td><td>110</td><td>60-300 depending on reuse of <code>.kb-row</code> / <code>.settings-hint</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The rows above are the phase estimates: 130 + 160 + 130 + 55 + 120 + 110 + 40 = <strong>745</strong>
+for Phase 1, and 400 + 180 + 70 + 90 + 110 = <strong>850</strong> for Phase 2. They are stated to the
+row rather than rounded, so a later change to one of them moves a number a reader can check.</p>
+
+<p>Tests are additional and substantial - roughly 420-740 lines across a panel render test, an HTTP
+test, sidebar-render additions and one e2e spec.</p>
+
+<h3>Why two phases</h3>
+
+<p>Above the 200-line one-shot threshold by roughly sevenfold, so the question is whether one task or
+two. Two, because:</p>
+
+<ul>
+<li>The two halves have <strong>different risk profiles and different verification</strong>. Phase 1's
+risk is prompt-composition correctness across five launch paths and two SDK adapters, provable
+entirely by <code>node:test</code>. Phase 2's is a browser state machine and an e2e spec. One agent
+doing both would be switching between them rather than finishing either.</li>
+<li>The merge boundary is <strong>independently testable and real</strong>. Phase 1 ends with the
+daemon delivering correctly, exercisable over HTTP with no UI at all.</li>
+<li>Phase 1 touches three <strong>controlled paths</strong> - <code>src/shared/</code>,
+<code>src/server/harness/</code>, and the dispatch composition seam. Phase 2 touches none of them.
+Reviewing a ~1,500-line diff spanning both is materially worse than reviewing two.</li>
+</ul>
+
+<p><strong>Why not three.</strong> The obvious third cut - store and routes as one phase, delivery as
+another - would leave Phase 1 with a config nothing reads: a dead surface and a second source of
+truth about what "delivered" means. Splitting the two read-only markers out of Phase 2 would produce
+a phase of roughly 90 lines that cannot be tested without the panel that writes the value it
+displays.</p>
+
+<div class="callout">
+<p><strong>Why Phase 1 leaving no UI is acceptable.</strong> The stored default is empty and
+resolution returns nothing for every repository, so Phase 1 merges with <strong>zero behavior
+change</strong> to any existing session. It is not a half-built feature sitting in the product; it is
+an inert mechanism awaiting its editor.</p>
+</div>
+
+<h2>Phases</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Prereq</th><th>Est.</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-store-and-delivery.md">Store and delivery</a></td><td>The <code>app_config</code> store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot</td><td>none</td><td>~745</td></tr>
+<tr><td>2</td><td><a href="phase-2-settings-panel.md">Settings panel</a></td><td>The Standing instructions settings category, the dispatch and session markers, and the e2e spec</td><td>Phase 1</td><td>~850</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="fig">
+<svg viewBox="0 0 800 150" role="img" aria-label="Dependency graph: the planning session's pull request gates both phases; Phase 1 delivers the store, resolution, routes, delivery and the per-session launch snapshot, and Phase 2 depends on it for the settings category, markers and end-to-end spec.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="arrowfill"/>
+    </marker>
+  </defs>
+
+  <rect x="12" y="44" width="168" height="62" rx="9" class="sub" stroke-width="1.3" stroke-dasharray="5 4"/>
+  <text x="96" y="68" text-anchor="middle" class="lbl">This plan's PR</text>
+  <text x="96" y="86" text-anchor="middle" class="dim">publishes the artifacts</text>
+  <text x="96" y="99" text-anchor="middle" class="dim">every task points at</text>
+
+  <rect x="248" y="34" width="216" height="82" rx="9" class="sub" stroke-width="1.3"/>
+  <text x="356" y="58" text-anchor="middle" class="hd">Phase 1</text>
+  <text x="356" y="77" text-anchor="middle" class="lbl">Store and delivery</text>
+  <text x="356" y="95" text-anchor="middle" class="dim">store · resolve · routes</text>
+  <text x="356" y="108" text-anchor="middle" class="dim">5 pairs · launch snapshot</text>
+
+  <rect x="532" y="34" width="256" height="82" rx="9" class="sub" stroke-width="1.3"/>
+  <text x="660" y="58" text-anchor="middle" class="hd">Phase 2</text>
+  <text x="660" y="77" text-anchor="middle" class="lbl">Settings panel</text>
+  <text x="660" y="95" text-anchor="middle" class="dim">category · markers · e2e</text>
+  <text x="660" y="108" text-anchor="middle" class="dim">the feature becomes reachable</text>
+
+  <path d="M 180 75 L 242 75" class="flow" marker-end="url(#ah)"/>
+  <path d="M 96 44 L 96 22 L 660 22 L 660 28" class="flow" marker-end="url(#ah)" stroke-dasharray="5 4"/>
+  <path d="M 464 75 L 526 75" class="flow" marker-end="url(#ah)"/>
+
+  <text x="211" y="68" text-anchor="middle" class="dim">gates</text>
+  <text x="495" y="68" text-anchor="middle" class="dim">gates</text>
+</svg>
+</div>
+<p class="cap">Strictly serial. Phase 2 consumes Phase 1's wire contract, its resolved-text route
+and its per-session launch snapshot, so there is nothing to run concurrently. Both tasks also depend on this planning session, so both
+stay backlogged until this plan's own pull request merges.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Phase 1 fixes these and Phase 2 consumes them without changing them.</p>
+
+<pre><code>export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
+export const STANDING_INSTRUCTIONS_MAX_REPOSITORIES = 200;
+
+/** Stored shape. `default` applies to any repo with no block of its own. */
+export const StandingInstructionsConfigSchema: z.ZodType&lt;{
+  default: string;
+  repositories: Record&lt;string, string&gt;;
+}&gt;;
+
+/** What GET returns, and what a PUT must echo back its etag from. */
+export interface StandingInstructionsView {
+  default: string;
+  repositories: Record&lt;string, string&gt;;
+  /** Opaque CAS token over the whole document. */
+  etag: string;
+}
+
+/** One repository's effective answer. The pure function's return, not the wire's. */
+export interface ResolvedStandingInstructions {
+  /** Effective text, "" when nothing applies. */
+  text: string;
+  /** Which stored key produced it, or null when the default did. */
+  matchedKey: string | null;
+  source: "repository" | "default" | "none";
+}
+
+/**
+ * What a session gets, composed. Returned by the resolved route for a launch that has not
+ * happened, and stored verbatim by the snapshot for one that has - deliberately ONE type,
+ * so "what will be sent" and "what was sent" render through the same component and cannot
+ * drift into two answers.
+ */
+export interface StandingInstructionsDelivery {
+  /** The composed block exactly as it would be, or was, delivered. "" when nothing applies. */
+  text: string;
+  /** The channel that carries it for this harness · runtime pair. */
+  mechanism: StandingInstructionsMechanism;
+  /** One entry per contributing repository, in the launch manifest's order. */
+  sources: Array&lt;{ repoPath: string; matchedKey: string | null }&gt;;
+}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>Semantics</th></tr></thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td><code>StandingInstructionsView</code></td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code> → <code>200</code> view, <code>409</code> <code>{error, code, current}</code>, <code>413</code> over <code>bodyLimit</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=…&amp;agent=&amp;runtime=</code></td><td><code>StandingInstructionsDelivery</code>. <strong><code>repoPath</code> repeats, once per attached repository in manifest order</strong> - a launch composes a block for every one of them, so a preview of one is not a preview. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>The same <code>StandingInstructionsDelivery</code>, immutable, for what <em>that</em> session received at launch, or <code>404</code>. <strong>What a session <em>did</em> get</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>Behavioural invariants Phase 2 may rely on and must not change:</strong></p>
+
+<ol>
+<li><strong>In the stored document</strong>, an <strong>absent</strong> repository key means
+"inherit the default" and a key present with <code>""</code> means "send nothing for this
+repository". <strong>In a PUT body</strong> <code>repositories</code> is a <em>patch</em>, following
+<code>WorktreesConfigPatchSchema</code> (<code>src/shared/protocol.ts:2182-2208</code>): an absent key
+leaves the stored value alone, a string sets it, and <code>null</code> removes it. A caller therefore
+saves one repository by sending that one key, and <strong>must not</strong> send its whole draft map -
+doing so persists every other repository's unsaved text as though the operator had committed to
+it.</li>
+<li>Resolution is longest-path-match on the <strong>canonical repo-rooted path</strong>,
+boundary-matched.
+<p><strong>Every path entering this feature goes through <code>resolveRepoPath</code> and is used as
+<code>.path</code></strong> - the PUT that stores a key, the composer that matches at launch, and the
+resolved route that previews one. Never <code>.repoRoot</code>: collapsing to the root makes a
+monorepo package key unreachable on the read side and silently overwrites the parent's rule on the
+write side. Never the raw string either: sessions normally run in pooled worktrees, so an
+uncanonicalized preview matches no stored key and reports that nothing applies while the launch
+delivers a block.</p></li>
+<li>The PUT is compare-and-swap on <code>expectedEtag</code>; a stale caller gets <code>409</code>
+with the current view and performs no write.</li>
+<li><code>resolveStandingInstructions</code> is a pure function exported from shared code. Phase 2
+calls the route, never reimplements the matching.</li>
+<li><strong>Exactly one delivery per occasion, and a launch is the only occasion that
+resolves.</strong>
+<p><em>At launch</em>: a harness · runtime pair with an out-of-band channel gets the block there and
+is <strong>not</strong> also prefixed into turn one; a pair without one is prefixed and has no
+out-of-band send. Never both - the agent would read the same rule twice in its first turn.</p>
+<p><em>At assignment</em> into a live session (<code>tasks.ts:2970</code>): nothing is resolved. A
+pair with a channel gets <strong>nothing</strong>, because the block is still installed on that
+process; a pair without one gets the <strong>snapshot's</strong> text prefixed again, because a
+prefix does not govern later turns; a session with no snapshot gets nothing.</p>
+<p>Whether a pair has a channel is read from <code>StandingInstructionsSpec</code> in one place, so
+the composer, the resolved route and the dispatch marker cannot disagree.</p></li>
+<li>The resolved route requires <code>agent</code> and <code>runtime</code>, because the mechanism is
+a property of the pair rather than of the repository. An unknown <code>agent</code>, or a
+<code>runtime</code> the harness does not offer, is a <code>400</code> rather than a default.</li>
+<li><strong>What a session received is recorded, not re-resolved.</strong> Phase 1 writes the
+<strong>composed block exactly as delivered</strong> - every attached repository's labelled block, in
+manifest order - together with its mechanism and one provenance entry per contributing repository, to
+a per-session row at launch, keyed by <code>noteKeyFor(s)</code>, once and never updated. Editing or removing the configuration afterwards
+does not change or delete any existing session's row. The session header chip reads that snapshot and
+<strong>only</strong> that snapshot; the resolved route is for the pre-launch dispatch note, where
+live config is the right answer. The row follows <strong>every</strong> note-key rotation, not only
+the first bind - the <code>moveForemanInviteKey</code> policy, not
+<code>moveLaunchTurnOnInitialBind</code>'s - and it is what an assignment replays, not merely what
+the chip reads.</li>
+<li>A <strong>save writes exactly one field</strong>: one repository's key, or <code>default</code>.
+Combined with (7), the two ways an operator could be shown or sent an instruction they never wrote
+are both closed - an unsaved draft cannot be persisted by a neighbouring save, and a saved change
+cannot rewrite the history of a session that already launched.</li>
+<li><strong>A session keeps the standing instructions it launched with.</strong> An edit takes effect
+on the next session, not a running one. This follows from (5): a live process's system prompt cannot
+be rewritten, so the alternative is not "edits reach running sessions" but edits reaching them on two
+of the five pairs and not the other three, for the same feature. Phase 2 renders the sentence in the
+panel.</li>
+</ol>
+
+<h2>Final verification strategy</h2>
+
+<p>Per phase, in its own file. Across both:</p>
+
+<ul>
+<li><code>npm run typecheck</code> and <code>npm run lint</code> clean.</li>
+<li><code>npm test</code> green, including the settings registry walks a new category must satisfy.</li>
+<li><code>npm run build</code> then <code>npm run test:e2e</code> green, with the new spec proving a
+rule written in Settings reaches the very next dispatch's command line - the assertion shape
+<code>e2e/specs/harness-defaults-propagate.spec.ts</code> already uses against the fake agents' argv
+records.</li>
+<li>The decisive regression guard, owned by Phase 1 and re-run in Phase 2: <strong>a repository with
+no standing instructions produces a byte-identical prompt and argv to today.</strong></li>
+</ul>
+
+<h2>Documentation</h2>
+
+<p>Both phases update the docs they change. Two specifics:</p>
+
+<ul>
+<li><code>docs/skills-and-settings.md</code> gains the new category. Its section at lines 237-250 is
+already <strong>stale</strong> - it still calls Conductor "the one category that is conditional",
+contradicting both the current registry and
+<code>docs/agent-guides/change-contracts.md:747-755</code>. Correct it while editing that file.</li>
+<li><code>docs/configuration.md</code> gains the <code>app_config</code> key and the character cap.</li>
+</ul>
+
+<p class="cap">Source of truth:
+<code>docs/plans/repository-standing-instructions/phased-plan.md</code>. This page is a rendering of
+it.</p>
+
+</div>
+</body>
+</html>

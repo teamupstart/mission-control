@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Repository standing instructions</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2024; --muted: #5b6470; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --warn: #b4690e; --ok: #1a7f37; --bad: #cf222e;
+    --box: #ffffff; --box-stroke: #c7ccd3; --box-bad: #fbeaea; --box-good: #e9f5ec;
+    --sel: #e6efff; --field: #ffffff; --field-stroke: #b9c0c9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa4b2; --rule: #262c34;
+      --card: #161b22; --accent: #6ea8fe; --warn: #e0a955; --ok: #57ab5a; --bad: #f85149;
+      --box: #1b2129; --box-stroke: #3a434f; --box-bad: #3a2224; --box-good: #1f3326;
+      --sel: #1d2c46; --field: #11161c; --field-stroke: #3a434f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 22px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 42px 0 10px; padding-top: 14px; border-top: 1px solid var(--rule); letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  .lede { color: var(--muted); font-size: 17px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 5px; padding: 0.05em 0.35em; }
+  pre { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  pre code { background: none; border: 0; padding: 0; font-size: 13.5px; line-height: 1.6; }
+  a { color: var(--accent); }
+  ul, ol { padding-left: 1.2em; }
+  li { margin: 6px 0; }
+  strong { font-weight: 650; }
+  blockquote { margin: 18px 0; padding: 4px 0 4px 16px; border-left: 3px solid var(--box-stroke);
+    color: var(--muted); font-style: italic; }
+  blockquote p { margin: 6px 0; }
+  .scroll { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; }
+  tr.hi td { background: var(--sel); }
+  .callout { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 8px 8px 0; }
+  .callout.req { border-left-color: var(--warn); }
+  .callout.bad { border-left-color: var(--bad); }
+  .callout.ok { border-left-color: var(--ok); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+    font-weight: 700; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--rule);
+    color: var(--muted); background: var(--card); vertical-align: 2px; }
+  .tag.bad { color: var(--bad); border-color: var(--bad); }
+  .tag.ok { color: var(--ok); border-color: var(--ok); }
+  .fig { margin: 22px 0 6px; padding: 16px; background: var(--card); border: 1px solid var(--rule);
+    border-radius: 10px; overflow-x: auto; }
+  .fig svg { display: block; min-width: 660px; width: 100%; height: auto; }
+  .cap { color: var(--muted); font-size: 13px; margin: 6px 2px 22px; }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  svg .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  svg .lbl { fill: var(--fg); font-size: 12px; }
+  svg .dim { fill: var(--muted); font-size: 11px; }
+  svg .hd { fill: var(--fg); font-size: 13.5px; font-weight: 650; }
+  svg .grp { fill: var(--muted); font-size: 9.5px; letter-spacing: 0.1em; font-weight: 700; }
+  svg .panel { fill: var(--box); stroke: var(--box-stroke); }
+  svg .sub { fill: var(--card); stroke: var(--box-stroke); }
+  svg .field { fill: var(--field); stroke: var(--field-stroke); }
+  svg .sel { fill: var(--sel); stroke: var(--accent); }
+  svg .flow { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+  svg .arrowfill { fill: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Repository standing instructions</h1>
+<p class="lede">One box per repository, in the operator's own words, that every session Mission
+Control opens into that repository is told before it starts work.</p>
+
+<blockquote>
+<p>"Never run E2E tests locally. They only run in CI."</p>
+<p>"Always prove a bug with a failing test before implementing the fix."</p>
+</blockquote>
+
+<p>Today an operator who wants either of those has two bad options: retype it into every
+session by hand, or commit it into the repository's <code>AGENTS.md</code> where it becomes a
+rule for the whole team on every machine. This plan adds the third: a
+<strong>machine-local, per-repository standing instruction</strong> that Mission Control
+composes into every session it opens there.</p>
+
+<h2>The problem, precisely</h2>
+
+<p>Mission Control already carries several kinds of standing prose, and none of them is this
+one.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Existing</th><th>Scope</th><th>Lives in</th><th>Reaches</th></tr></thead>
+<tbody>
+<tr><td><code>AGENTS.md</code> / <code>CLAUDE.md</code></td><td>one repository</td><td>the repository, committed</td><td>every session, every machine, every teammate</td></tr>
+<tr><td><a href="../../repository-memory.md"><code>.agents/memory</code></a></td><td>one repository</td><td>the repository, committed</td><td>same, via the root doc's reference line</td></tr>
+<tr><td><a href="../../foreman.md">Foreman instructions</a></td><td>the whole machine</td><td><code>app_config</code>, local</td><td>Foreman's own review prompts, never a session</td></tr>
+<tr><td>Ask-channel redirect</td><td>every dispatch</td><td>shipped constant</td><td>Claude terminal sessions, via <code>--append-system-prompt</code></td></tr>
+<tr class="hi"><td><strong>This plan</strong></td><td><strong>one repository</strong></td><td><strong><code>app_config</code>, local</strong></td><td><strong>every session MC opens into that repo</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The gap is the intersection nothing covers: <strong>repo-specific and operator-local</strong>.
+That is exactly where the two examples sit.</p>
+
+<ul>
+<li><em>"Never run E2E tests locally"</em> is a fact about <strong>this machine</strong>.
+<code>npm run test:e2e</code> needs a Playwright browser <code>npm install</code> does not fetch,
+and the suite is sharded across two CI runners. It is wrong to commit, because a teammate
+whose machine is set up for it may well want to run it.</li>
+<li><em>"Prove a bug with a test first"</em> is a working preference the operator holds, which
+they may not have team consensus to impose in <code>AGENTS.md</code>, and which they want
+applied from today rather than after a pull request lands.</li>
+</ul>
+
+<div class="callout">
+<p>Committing either into the repository to get it applied is a <strong>social cost paid for a
+mechanical want</strong>. That is the whole justification for this feature. If an instruction
+belongs to the repository rather than to the operator, <code>AGENTS.md</code> remains the right
+answer and this plan does not replace it - the panel's own copy says so.</p>
+</div>
+
+<h3>It is also the only channel that reaches Claude, Codex and Pi alike</h3>
+
+<p><code>AGENTS.md</code> reaches Claude and Codex natively and does not reach Pi at all, which
+is why dispatch already prepends a repository-memory pointer to Pi's opening prompt
+(<code>src/server/dispatcher.ts:507</code>, <code>src/server/memory.ts:46</code>). Text the daemon
+composes is harness-agnostic by construction.</p>
+
+<h2>What the operator gets</h2>
+
+<ol>
+<li>A <strong>Standing instructions</strong> panel in Settings listing every repository in the
+workspace.</li>
+<li>Per repository: one markdown box, an <code>override</code> / <code>inherited</code> chip, and
+a <strong>reach</strong> block saying in plain words which sessions this will and will not
+touch.</li>
+<li>One <strong>machine-wide default</strong> above the list, applying to every repository with
+no block of its own - the "one default plus repository exceptions" shape the Command Library
+and the Worktrees panel already use.</li>
+<li>Visible markers, so nobody debugs an instruction they cannot see: the dispatch form says
+how much standing instruction will be sent, and the session detail carries a chip that
+reveals the exact composed text <strong>that session received</strong> - recorded at launch,
+so editing the rule later never rewrites what a running session is shown to have been told.</li>
+</ol>
+
+<p>Nothing is on by default. A repository with an empty box dispatches a byte-identical prompt
+to today, and that is a test rather than an aspiration.</p>
+
+<h2>Where it lives</h2>
+
+<h3>The Settings rail gains one category</h3>
+
+<p><code>src/web/lib/settings-registry.ts</code> is pure data, and its own doc comment says adding
+a category is "appending an entry here plus a <code>case</code> in <code>renderCategory</code>,
+never lengthening a scroll." This one joins the <strong>Sessions</strong> group with scope
+<code>machine</code> ("Changes what the daemon does locally") beside Harnesses, Worktrees and
+Skills - because that is precisely what it does. It never writes <code>~/</code> (so not
+<code>home</code>, as Skills and Cost are) and never acts on GitHub.</p>
+
+<div class="fig">
+<svg viewBox="0 0 860 430" role="img" aria-label="Mockup of the Settings page with a new Standing instructions category selected in the left rail, showing a machine-wide default box above a list of repositories.">
+  <rect x="1" y="1" width="858" height="428" rx="10" class="panel" stroke-width="1.2"/>
+  <line x1="228" y1="1" x2="228" y2="429" stroke="var(--box-stroke)" stroke-width="1.2"/>
+
+  <!-- rail -->
+  <text x="20" y="30" class="grp">THIS SCREEN</text>
+  <text x="20" y="52" class="lbl">▦   Display</text>
+  <text x="20" y="74" class="lbl">⌨   Keyboard</text>
+  <text x="20" y="96" class="lbl">+   Dispatch</text>
+
+  <text x="20" y="128" class="grp">SESSIONS</text>
+  <text x="20" y="150" class="lbl">⚙   Harnesses</text>
+  <text x="20" y="172" class="lbl">⑂   Worktrees</text>
+  <text x="20" y="194" class="lbl">✦   Skills</text>
+  <rect x="10" y="203" width="208" height="24" rx="6" class="sel" stroke-width="1.2"/>
+  <text x="20" y="220" class="lbl" font-weight="650">✎   Standing instructions</text>
+  <text x="20" y="248" class="lbl">$   Cost</text>
+
+  <text x="20" y="280" class="grp">BACKGROUND WORK</text>
+  <text x="20" y="302" class="lbl">●   Foreman</text>
+  <text x="20" y="324" class="lbl">⌘   Workflows</text>
+  <text x="20" y="346" class="lbl">⇊   Task sources</text>
+  <text x="20" y="368" class="lbl">⇶   Conductor</text>
+  <text x="20" y="390" class="lbl">◈   Models</text>
+
+  <text x="20" y="416" class="grp">LEAVES THE MACHINE</text>
+  <text x="118" y="416" class="dim">⌕  Inspector   ⚑  Shipping   ⛨  Trust</text>
+
+  <!-- panel head -->
+  <text x="252" y="34" class="hd">Standing instructions</text>
+  <rect x="740" y="21" width="102" height="18" rx="9" fill="var(--card)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="791" y="34" class="dim" text-anchor="middle">This machine</text>
+  <line x1="252" y1="48" x2="842" y2="48" stroke="var(--rule)" stroke-width="1"/>
+  <text x="252" y="68" class="dim">Text Mission Control sends to every session it opens, before the session's own</text>
+  <text x="252" y="84" class="dim">request. Stored here, never committed to a repository.</text>
+
+  <!-- default block -->
+  <rect x="252" y="100" width="590" height="86" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="266" y="120" class="lbl" font-weight="650">Every repository</text>
+  <rect x="750" y="108" width="78" height="17" rx="8.5" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="789" y="120" class="dim" text-anchor="middle">inherited</text>
+  <rect x="266" y="130" width="562" height="34" rx="6" class="field" stroke-width="1.1"/>
+  <text x="278" y="151" class="dim mono">(empty - nothing is sent by default)</text>
+  <text x="828" y="180" class="dim" text-anchor="end">0 / 8,000</text>
+
+  <!-- repo list -->
+  <text x="252" y="212" class="lbl" font-weight="650">Repositories</text>
+  <text x="842" y="212" class="dim" text-anchor="end">2 configured</text>
+
+  <rect x="252" y="222" width="590" height="46" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="266" y="242" class="lbl">▾  ai-harness</text>
+  <text x="400" y="242" class="dim mono">~/workspace/ai-harness</text>
+  <rect x="700" y="231" width="62" height="17" rx="8.5" fill="var(--box)" stroke="var(--accent)" stroke-width="1"/>
+  <text x="731" y="243" class="dim" text-anchor="middle" fill="var(--accent)">override</text>
+  <rect x="770" y="231" width="58" height="17" rx="8.5" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="799" y="243" class="dim" text-anchor="middle">2 rules</text>
+  <text x="266" y="260" class="dim">Never run E2E tests locally - `npm run test:e2e` needs a Playwright browser…</text>
+
+  <rect x="252" y="276" width="590" height="30" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="266" y="295" class="lbl">▸  storefront</text>
+  <text x="400" y="295" class="dim mono">~/workspace/storefront</text>
+  <rect x="770" y="285" width="58" height="17" rx="8.5" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="799" y="297" class="dim" text-anchor="middle">inherited</text>
+
+  <rect x="252" y="314" width="590" height="30" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="266" y="333" class="lbl">▸  api</text>
+  <text x="400" y="333" class="dim mono">~/workspace/mono/packages/api</text>
+  <rect x="700" y="323" width="62" height="17" rx="8.5" fill="var(--box)" stroke="var(--accent)" stroke-width="1"/>
+  <text x="731" y="335" class="dim" text-anchor="middle" fill="var(--accent)">override</text>
+  <rect x="770" y="323" width="58" height="17" rx="8.5" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="799" y="335" class="dim" text-anchor="middle">1 rule</text>
+
+  <text x="252" y="372" class="dim">A subdirectory may carry its own block. The longest matching path wins, exactly as</text>
+  <text x="252" y="388" class="dim">a workflow Command override already resolves.</text>
+</svg>
+</div>
+<p class="cap">Mockup 1 - the rail entry sits in <strong>Sessions</strong> with a
+<em>This machine</em> scope badge, and the panel is a machine-wide default above a list of
+repository exceptions.</p>
+
+<h3>One repository, expanded</h3>
+
+<p>The card is the shape <code>WorktreeSettingsPanel</code>'s repository rows already
+draw: a disclosure header carrying the repo name and its root, an <code>override</code> /
+<code>inherited</code> chip, and a <strong>Use global default</strong> button disabled until
+there is an override to remove. <code>RepositoryName</code> renders the leaf with the full path
+in a tooltip, per that component's stated rule.</p>
+
+<div class="fig">
+<svg viewBox="0 0 860 496" role="img" aria-label="Mockup of an expanded repository card containing a markdown text box with two standing instructions, a character counter, and a reach block listing which harness and runtime pairs receive the text and by which mechanism, which two kinds of session it deliberately does not reach, and that a running session keeps the text it launched with.">
+  <rect x="1" y="1" width="858" height="494" rx="10" class="panel" stroke-width="1.2"/>
+
+  <text x="20" y="30" class="hd">▾  ai-harness</text>
+  <text x="140" y="30" class="dim mono">~/workspace/ai-harness</text>
+  <rect x="700" y="17" width="62" height="18" rx="9" fill="var(--box)" stroke="var(--accent)" stroke-width="1"/>
+  <text x="731" y="30" class="dim" text-anchor="middle" fill="var(--accent)">override</text>
+  <rect x="770" y="17" width="58" height="18" rx="9" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="799" y="30" class="dim" text-anchor="middle">2 rules</text>
+  <line x1="20" y1="44" x2="840" y2="44" stroke="var(--rule)" stroke-width="1"/>
+
+  <text x="20" y="66" class="dim">Sent to every session Mission Control opens into this repository.</text>
+
+  <rect x="20" y="78" width="820" height="106" rx="7" class="field" stroke-width="1.2"/>
+  <text x="34" y="100" class="lbl mono">Never run E2E tests locally - `npm run test:e2e` needs a Playwright browser this</text>
+  <text x="34" y="118" class="lbl mono">machine does not have. Run `npm test` and `npm run typecheck`, and let CI cover</text>
+  <text x="34" y="136" class="lbl mono">the browser layer.</text>
+  <text x="34" y="166" class="lbl mono">Always prove a bug with a failing test before implementing the fix.</text>
+  <rect x="497" y="155" width="1.6" height="14" fill="var(--accent)"/>
+  <text x="840" y="200" class="dim" text-anchor="end">291 / 8,000   ·   markdown</text>
+
+  <!-- reach -->
+  <text x="20" y="230" class="lbl" font-weight="650">Reach</text>
+  <rect x="20" y="240" width="820" height="194" rx="8" class="sub" stroke-width="1.2"/>
+
+  <text x="36" y="262" fill="var(--ok)" font-size="12">✓</text>
+  <text x="56" y="262" class="lbl mono">claude · terminal</text>
+  <text x="230" y="262" class="lbl">system prompt</text>
+  <text x="400" y="262" class="dim mono">--append-system-prompt</text>
+  <text x="700" y="262" class="dim">in use today</text>
+
+  <text x="36" y="284" fill="var(--ok)" font-size="12">✓</text>
+  <text x="56" y="284" class="lbl mono">claude · sdk</text>
+  <text x="230" y="284" class="lbl">system prompt</text>
+  <text x="400" y="284" class="dim mono">systemPrompt.append</text>
+  <text x="700" y="284" class="dim" fill="var(--warn)">new wiring</text>
+
+  <text x="36" y="306" fill="var(--ok)" font-size="12">✓</text>
+  <text x="56" y="306" class="lbl mono">codex · sdk</text>
+  <text x="230" y="306" class="lbl">developer instructions</text>
+  <text x="400" y="306" class="dim mono">developerInstructions</text>
+  <text x="700" y="306" class="dim" fill="var(--warn)">joins a merge</text>
+
+  <text x="36" y="328" fill="var(--ok)" font-size="12">✓</text>
+  <text x="56" y="328" class="lbl mono">codex · terminal</text>
+  <text x="230" y="328" class="lbl">prompt text</text>
+  <text x="400" y="328" class="dim">composed above turn one</text>
+
+  <text x="36" y="350" fill="var(--ok)" font-size="12">✓</text>
+  <text x="56" y="350" class="lbl mono">pi · terminal</text>
+  <text x="230" y="350" class="lbl">prompt text</text>
+  <text x="400" y="350" class="dim">composed above turn one</text>
+
+  <line x1="36" y1="360" x2="824" y2="360" stroke="var(--rule)" stroke-width="1"/>
+  <text x="36" y="378" fill="var(--bad)" font-size="12">✗</text>
+  <text x="56" y="378" class="lbl">sessions started outside Mission Control</text>
+  <text x="400" y="378" class="dim">not reachable</text>
+  <text x="700" y="378" class="dim">by design</text>
+
+  <text x="36" y="400" fill="var(--bad)" font-size="12">✗</text>
+  <text x="56" y="400" class="lbl">Foreman / Inspector / Persona review prompts</text>
+  <text x="400" y="400" class="dim">not in scope</text>
+  <text x="700" y="400" class="dim">by design</text>
+
+  <text x="36" y="422" fill="var(--warn)" font-size="12">⏱</text>
+  <text x="56" y="422" class="lbl">sessions already running</text>
+  <text x="400" y="422" class="dim">keep what they launched with</text>
+  <text x="700" y="422" class="dim">edits reach the next</text>
+
+  <!-- buttons -->
+  <rect x="20" y="454" width="66" height="26" rx="6" fill="var(--accent)"/>
+  <text x="53" y="471" text-anchor="middle" fill="#fff" font-size="12" font-weight="650">Save</text>
+  <rect x="94" y="454" width="72" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="130" y="471" text-anchor="middle" class="lbl">Revert</text>
+  <rect x="612" y="454" width="140" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="682" y="471" text-anchor="middle" class="lbl">Use global default</text>
+  <rect x="762" y="454" width="78" height="26" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="801" y="471" text-anchor="middle" class="lbl">Preview</text>
+</svg>
+</div>
+<p class="cap">Mockup 2 - the <strong>reach</strong> block is not decoration. It is stated per
+harness <em>and</em> runtime, because that is the granularity at which the answer differs.</p>
+
+<div class="callout">
+<p>Any other way of shipping this leaves the operator guessing which sessions actually got the
+text, and a standing instruction that silently reaches half the fleet is worse than none: it
+is trusted and wrong. The panel states the answer where the text is written.</p>
+</div>
+
+<h3>Visible at dispatch and on the session</h3>
+
+<div class="fig">
+<svg viewBox="0 0 860 300" role="img" aria-label="Mockup of the dispatch form showing a read-only note that standing instructions will be sent, with its size and mechanism, and of a session header carrying a standing-instructions chip.">
+  <!-- dispatch modal -->
+  <rect x="1" y="1" width="470" height="238" rx="10" class="panel" stroke-width="1.2"/>
+  <text x="20" y="28" class="hd">Dispatch</text>
+  <line x1="20" y1="40" x2="451" y2="40" stroke="var(--rule)" stroke-width="1"/>
+
+  <text x="20" y="62" class="dim">Repository</text>
+  <rect x="120" y="48" width="331" height="24" rx="6" class="field" stroke-width="1.1"/>
+  <text x="132" y="65" class="lbl mono">~/workspace/ai-harness</text>
+  <text x="438" y="65" class="dim">▾</text>
+
+  <text x="20" y="96" class="dim">Agent</text>
+  <rect x="120" y="82" width="150" height="24" rx="6" class="field" stroke-width="1.1"/>
+  <text x="132" y="99" class="lbl mono">claude</text>
+  <text x="286" y="96" class="dim">Runtime</text>
+  <rect x="350" y="82" width="101" height="24" rx="6" class="field" stroke-width="1.1"/>
+  <text x="362" y="99" class="lbl mono">terminal</text>
+
+  <rect x="20" y="118" width="431" height="42" rx="6" class="field" stroke-width="1.1"/>
+  <text x="32" y="143" class="lbl">Fix the flaky pane-capture test</text>
+
+  <rect x="20" y="170" width="431" height="38" rx="7" class="sub" stroke-width="1.2"/>
+  <text x="34" y="188" fill="var(--accent)" font-size="12">✎</text>
+  <text x="52" y="188" class="lbl">standing instructions for ai-harness will be sent</text>
+  <text x="52" y="202" class="dim">291 characters · as a system prompt</text>
+  <rect x="392" y="179" width="46" height="19" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1"/>
+  <text x="415" y="192" text-anchor="middle" class="dim">view</text>
+
+  <rect x="303" y="212" width="66" height="24" rx="6" fill="var(--box)" stroke="var(--box-stroke)" stroke-width="1.1"/>
+  <text x="336" y="228" text-anchor="middle" class="lbl">Cancel</text>
+  <rect x="377" y="212" width="74" height="24" rx="6" fill="var(--accent)"/>
+  <text x="414" y="228" text-anchor="middle" fill="#fff" font-size="12" font-weight="650">Dispatch</text>
+
+  <!-- session header -->
+  <rect x="500" y="1" width="358" height="86" rx="10" class="panel" stroke-width="1.2"/>
+  <text x="518" y="30" class="hd">ai-harness · fix flaky pane test</text>
+  <text x="518" y="58" class="dim mono">claude · terminal · auto</text>
+  <rect x="690" y="45" width="152" height="20" rx="10" fill="var(--card)" stroke="var(--accent)" stroke-width="1"/>
+  <text x="704" y="59" fill="var(--accent)" font-size="11">✎</text>
+  <text x="718" y="59" class="dim" fill="var(--accent)">standing instructions</text>
+
+  <rect x="500" y="105" width="358" height="134" rx="10" class="sub" stroke-width="1.2"/>
+  <text x="518" y="130" class="lbl" font-weight="650">What the chip shows - and what it must not</text>
+  <text x="518" y="154" class="dim">It shows the text this session was given at launch, kept</text>
+  <text x="518" y="172" class="dim">as a record. Edit the rule later and the chip does not</text>
+  <text x="518" y="190" class="dim">move: a chip resolving live config would quote a running</text>
+  <text x="518" y="208" class="dim">session words it never saw. It names the channel too - on</text>
+  <text x="518" y="226" class="dim">Claude the text never enters the transcript at all.</text>
+
+  <text x="20" y="268" class="dim">Read-only, and not the same source: the dispatch note forecasts from live config, the session chip records</text>
+  <text x="20" y="286" class="dim">what that session was given at launch, so editing a rule later never rewrites a session's history.</text>
+</svg>
+</div>
+<p class="cap">Mockup 3 - the cost is made visible where it is spent, both surfaces name the
+delivery mechanism rather than only the fact of delivery, and the two read different sources:
+the dispatch note forecasts, the session chip records.</p>
+
+<h2>How it reaches a session</h2>
+
+<h3>The composition seam already exists</h3>
+
+<p>Dispatch composes its final prompt in exactly one function,
+<code>withTaskKindContract</code> (<code>src/server/task-contract.ts:133</code>), reached from
+exactly two seams - <code>dispatcher.ts:417</code> for a fresh dispatch and
+<code>tasks.ts:2970</code> for a task assigned onto a live session:</p>
+
+<pre><code>composedIntent  ──►  withTaskKindContract(task, composedIntent, inputs)  ──►  launch
+   │                        │
+   │                        ├─ executionAuthorizationContract(...)   server-owned
+   │                        └─ KIND_CONTRACT[task.kind](...)         per-kind contract
+   │
+   ├─ intentWithRepoManifest(task)      multi-repo manifest prefix   (dispatcher.ts:1984)
+   └─ withRepoMemoryPointer(root, ...)  the Pi-only memory pointer   (dispatcher.ts:507)</code></pre>
+
+<p><code>task-contract.ts:127-133</code> states the ordering rule this plan obeys: <strong>the
+operator's own words stay the exact prefix</strong>, server-owned material follows. A
+repository standing instruction is server-composed but it <em>is</em> the operator's words, so
+it is composed as a <strong>prefix block above the intent</strong> - the same position and the
+same reasoning as the repo manifest. It is context the agent needs before it reads the
+request, not a rule about what "delivered" means afterwards.</p>
+
+<h3>Delivery is per harness <em>and</em> per runtime</h3>
+
+<p>Mission Control already appends to Claude's system prompt on terminal dispatch - the ask
+channel's redirect (<code>src/server/ask-channel.ts:192</code>), whose doc comment records that
+1260 bytes of arbitrary shell metacharacters arrived byte-identical through
+<code>tmux new-session</code>. Three of the five live (harness, runtime) pairs have an
+out-of-band channel, and they are not the same channel:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Harness · runtime</th><th>Out-of-band channel</th><th>Status today</th></tr></thead>
+<tbody>
+<tr><td><code>claude · terminal</code></td><td><code>--append-system-prompt</code></td><td><span class="tag ok">in use</span> <code>ask-channel.ts:192</code></td></tr>
+<tr><td><code>claude · sdk</code></td><td><code>systemPrompt: { preset: "claude_code", append }</code></td><td>available, <strong>unused</strong> - <code>harness/claude/sdk.ts:1130-1180</code></td></tr>
+<tr><td><code>codex · sdk</code></td><td><code>developerInstructions</code> on <code>thread/start</code></td><td><span class="tag ok">in use</span> <code>harness/codex/sdk.ts:1440</code> already merges a configured value</td></tr>
+<tr><td><code>codex · terminal</code></td><td>none - launch prep is <code>-c</code> overrides and hooks only</td><td><code>harness/codex/launch.ts:67-87</code></td></tr>
+<tr><td><code>pi · terminal</code></td><td>none - Pi has no file or config channel</td><td>stated at <code>dispatcher.ts:490-499</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>So the mechanism is declared by the harness registry the way
+<code>PermissionModeSpec.launchArgs</code> and <code>EffortSpec.launchArgs</code> already are,
+never branched on an agent name at the call site:</p>
+
+<pre><code>// src/shared/harness-capabilities.ts
+export interface StandingInstructionsSpec {
+  /**
+   * How this harness carries operator text that is not a conversation turn, per runtime.
+   * Null for a runtime with no such channel - the text is composed into turn one instead.
+   */
+  outOfBand: Partial&lt;Record&lt;SessionRuntime, (text: string) =&gt; OutOfBandDelivery&gt;&gt;;
+}</code></pre>
+
+<ul>
+<li><strong>An out-of-band channel exists</strong> - the text never occupies a conversation
+turn, is never summarised away by compaction, and governs every turn of the session rather
+than only the first. This is strictly the better delivery and is preferred wherever it is
+available.</li>
+<li><strong>No channel</strong> (codex terminal, pi) - the text is composed into turn one as a
+fenced <code>## Standing instructions for this repository</code> block, the exact degradation
+Pi's memory pointer already makes.</li>
+</ul>
+
+<div class="callout req">
+<p>Adding the two currently-unused channels (Claude SDK, and joining Codex's existing
+<code>developerInstructions</code> merge) is part of this work, not a follow-up. Without them
+the feature would silently degrade to prompt text on two of the five pairs, and the reach
+block above would have to admit it.</p>
+</div>
+
+<div class="fig">
+<svg viewBox="0 0 860 250" role="img" aria-label="Flow diagram: the Settings panel PUTs to the daemon which stores the config in app_config; a launch resolves the longest matching repository path against that store, then branches on whether the harness and runtime pair has an out-of-band channel, delivering either a system prompt or a prefix block into the agent session.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="arrowfill"/>
+    </marker>
+  </defs>
+
+  <rect x="12" y="20" width="140" height="44" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="82" y="41" text-anchor="middle" class="lbl">Settings panel</text>
+  <text x="82" y="56" text-anchor="middle" class="dim">Standing instructions</text>
+
+  <rect x="12" y="158" width="140" height="44" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="82" y="179" text-anchor="middle" class="lbl">Launch</text>
+  <text x="82" y="194" text-anchor="middle" class="dim">a dispatch</text>
+
+  <rect x="192" y="20" width="164" height="44" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="274" y="41" text-anchor="middle" class="lbl">daemon</text>
+  <text x="274" y="56" text-anchor="middle" class="dim mono">PUT /api/instructions</text>
+
+  <rect x="192" y="88" width="164" height="46" rx="8" class="panel" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="274" y="108" text-anchor="middle" class="lbl mono">app_config</text>
+  <text x="274" y="124" text-anchor="middle" class="dim">default + overrides</text>
+
+  <rect x="376" y="152" width="136" height="56" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="444" y="173" text-anchor="middle" class="lbl">resolve</text>
+  <text x="444" y="189" text-anchor="middle" class="dim">longest path match</text>
+  <text x="444" y="203" text-anchor="middle" class="dim">on the repo root</text>
+
+  <rect x="540" y="152" width="140" height="56" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="610" y="176" text-anchor="middle" class="lbl">harness · runtime</text>
+  <text x="610" y="194" text-anchor="middle" class="dim">out-of-band channel?</text>
+
+  <rect x="702" y="42" width="146" height="54" rx="8" class="panel" stroke-width="1.2" stroke="var(--ok)"/>
+  <text x="775" y="62" text-anchor="middle" class="lbl">yes</text>
+  <text x="775" y="78" text-anchor="middle" class="dim">system prompt /</text>
+  <text x="775" y="91" text-anchor="middle" class="dim mono">developerInstructions</text>
+
+  <rect x="702" y="196" width="146" height="46" rx="8" class="panel" stroke-width="1.2" stroke="var(--warn)"/>
+  <text x="775" y="216" text-anchor="middle" class="lbl">no</text>
+  <text x="775" y="232" text-anchor="middle" class="dim">prefix above turn one</text>
+
+  <rect x="702" y="118" width="146" height="42" rx="8" class="sub" stroke-width="1.2"/>
+  <text x="775" y="138" text-anchor="middle" class="lbl">agent session</text>
+  <text x="775" y="152" text-anchor="middle" class="dim">every turn / turn one</text>
+
+  <path d="M 152 42 L 186 42" class="flow" marker-end="url(#ah)"/>
+  <path d="M 274 64 L 274 82" class="flow" marker-end="url(#ah)"/>
+  <path d="M 356 111 L 366 111 L 366 170 L 370 170" class="flow" marker-end="url(#ah)"/>
+  <path d="M 152 180 L 370 180" class="flow" marker-end="url(#ah)"/>
+  <path d="M 512 180 L 534 180" class="flow" marker-end="url(#ah)"/>
+  <path d="M 680 170 L 691 170 L 691 69 L 696 69" class="flow" marker-end="url(#ah)"/>
+  <path d="M 680 192 L 691 192 L 691 219 L 696 219" class="flow" marker-end="url(#ah)"/>
+  <path d="M 775 96 L 775 112" class="flow" marker-end="url(#ah)"/>
+  <path d="M 775 196 L 775 166" class="flow" marker-end="url(#ah)"/>
+</svg>
+</div>
+<p class="cap">The one new arrow into the launch path: a resolved, repo-scoped block that
+branches on harness capability rather than on an agent name.</p>
+
+<p>The diagram is one occasion. <strong>An assignment is the other, and it does not re-enter
+it.</strong> <code>withTaskKindContract</code> is also reached from <code>tasks.ts:2970</code>,
+injecting into a session that is already running - where there is no argv to append to and no
+<code>thread/start</code> to carry a value, so the left half of that flow has nothing to act on. An
+assignment therefore resolves nothing and replays the snapshot the launch recorded:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Occasion</th><th>What the session gets</th></tr></thead>
+<tbody>
+<tr><td>Launch</td><td>resolve, then out of band if the pair has a channel and a prefix if not</td></tr>
+<tr><td>Assignment, pair <strong>has</strong> a channel</td><td>nothing - the block is still installed on that process</td></tr>
+<tr><td>Assignment, pair has <strong>none</strong></td><td>the snapshot's text, prefixed again, because a prefix does not govern later turns</td></tr>
+<tr><td>Assignment, no snapshot</td><td>nothing</td></tr>
+</tbody>
+</table>
+</div>
+
+<blockquote><p><strong>A session keeps the standing instructions it launched with. An edit takes
+effect on the next session, not a running one.</strong></p></blockquote>
+
+<p>A live process's system prompt cannot be rewritten, so the alternative is not "edits reach running
+sessions" - it is edits reaching them on two of the five pairs and not the other three, for the same
+feature. The panel says which it is.</p>
+
+<h3>Resolution is longest-path-match on the repo-rooted path</h3>
+
+<p><code>workflow_command_overrides</code> already stores <code>repo_root</code> as "a repository
+root OR a path beneath one - the monorepo override - and the longest match wins at resolution
+time" (<code>src/server/db.ts:1106-1112</code>). This follows it exactly: a block set on
+<code>~/workspace/mono/packages/api</code> beats one set on <code>~/workspace/mono</code>, and a
+repository with neither falls through to the machine-wide default. Matching is on the path
+<strong>boundary</strong>, reusing the rule <code>src/shared/allowlist.ts</code> already defines
+so <code>/repo-backup</code> never matches <code>/repo</code>.</p>
+
+<p>Two consequences worth writing down:</p>
+
+<ul>
+<li><strong>The key is resolved, not the raw checkout path - and it is <code>.path</code>, not
+<code>.repoRoot</code>.</strong> Every key is written through <code>POST /api/repos/resolve</code>
+→ <code>resolveRepoPath</code> (<code>src/server/repos.ts:146-177</code>), which walks a linked
+worktree back to its owning main checkout <em>and</em> re-roots the subdirectory onto it. That is
+what keeps a <code>~/.treehouse/...</code> pool path out of durable config, so a session in a pool
+slot resolves the same rules as one in the main checkout. It has to be <code>.path</code>:
+<code>resolveRepoRoot</code> collapses <code>mono/packages/api</code> to <code>mono</code>, which
+would store the package rule as the monorepo rule and leave the longest-match behaviour above
+impossible to configure. (Worktree policy keys on the <em>git common directory</em> instead, because
+it configures pools; this keys on the path, because it configures repositories and must support
+subdirectories.)</li>
+<li><strong>A multi-repo task gets a block per attached repository that has one.</strong>
+Dispatch already hands the agent write access to every attached repo and already emits a
+manifest naming them (<code>dispatcher.ts:1984-2024</code>). Standing instructions for a
+secondary repo are composed as labelled blocks under that manifest, in the manifest's order.
+Sending only the primary repo's rules would be the exact laundering that
+<code>taskReposAllowlisted</code> refuses for consent.</li>
+</ul>
+
+<h2>What this does not reach, and why the UI says so</h2>
+
+<p><strong>Sessions Mission Control did not launch.</strong> Mission Control discovers agent
+sessions by TTY and adopts them; there is no argv to carry a flag and no turn one to compose
+into. The only way to reach them would be to type a turn into a live session the operator is
+working in - which is what <code>src/server/injections.ts</code> exists to <em>record as
+non-human</em>, and which would be indistinguishable from Foreman typing at them. This plan
+does not do it, and the panel says so in a shipped, tested string rather than a placeholder.
+An explicit operator-initiated injection was considered at review and deferred; it would sit
+on this same store.</p>
+
+<p><strong>Sessions already running, when the rule changes under them.</strong> This one is
+about <em>when</em> rather than <em>where</em>, and it is the reason the reach block has a
+third kind of row. A session is given its standing instructions once, at launch, and keeps
+them: an edit takes effect on the next session. The alternative is not "edits reach running
+sessions" - a live process's system prompt cannot be rewritten, so it would be edits reaching
+<code>codex · terminal</code> and <code>pi · terminal</code> sessions and not the other three,
+for the same feature, on a schedule the operator cannot see. One boundary the panel can state
+beats three-fifths of a behaviour it would have to explain.</p>
+
+<p><strong>The dashboard composer.</strong> <code>POST /api/sessions/:id/inject</code>
+(<code>routes.ts:3712</code>) passes text through untouched, and is the only agent-facing
+channel with no composition step at all. Prefixing every message would burn the instruction
+into the transcript dozens of times, and where an out-of-band channel exists it already
+governs every turn.</p>
+
+<p><strong>Mission Control's own review prompts</strong> - Foreman triage, GitHub Inspector,
+workflow Personas - read the <a href="../../inspector-and-shipping.md">standards bundle</a> and
+nothing else (<code>src/server/standards.ts:109</code>, consumed at
+<code>routes.ts:2882</code>, <code>inspector/worker.ts:898</code>,
+<code>workflows/context.ts:416</code>). Standing instructions <strong>do not join that
+bundle</strong>, decided at review. Joining it is genuinely useful - "never run E2E locally"
+is a thing an Inspector should not fail a pull request over - but it is also a widening: the
+bundle is capped at 64KB per prompt and already drops the memory index first when it
+overflows, and what it carries today is <em>what the repository asserts</em>, which this
+deliberately is not. Revisit with evidence from the session path.</p>
+
+<h2>Data model and routes</h2>
+
+<h3>Storage</h3>
+
+<p>An <code>app_config</code> record, following <code>WorktreesConfig</code>'s per-repository
+shape, rather than a new table:</p>
+
+<pre><code>// src/shared/protocol.ts
+export const STANDING_INSTRUCTIONS_MAX_LENGTH = 8_000;
+export const STANDING_INSTRUCTIONS_MAX_REPOSITORIES = 200;
+
+export const StandingInstructionsConfigSchema = z
+  .object({
+    /** Applies to any repository with no block of its own. Empty means send nothing. */
+    default: z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH).default(""),
+    /** Keyed by a canonical repo-rooted path: a repository root, or a path beneath one. */
+    repositories: z
+      .record(z.string().min(1).max(4_096), z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH))
+      .default({}),
+  })
+  .strict();</code></pre>
+
+<p><code>app_config</code> because it is what Foreman instructions, <code>WorktreesConfig</code>,
+<code>AwayConfig</code>, <code>SkillsConfig</code> and every other config blob in this
+repository use, and because a schema-validated blob over that KV "needs no migration" - the
+sentence appears verbatim in six config modules. A record rather than a
+<code>workflow_command_overrides</code>-shaped table because the panel edits the default and an
+override in one gesture, which a single KV write makes atomic and two tables would not.</p>
+
+<div class="callout">
+<p><strong>8,000 characters</strong>, an order of magnitude below Foreman's 64,000, and the cap
+is a design statement rather than a storage one. This text is prepended to <em>every</em>
+session in the repository; at 8KB it is already comparable to the repo's own
+<code>AGENTS.md</code>. Anything longer is a document, and a document belongs in the repository
+where it can be reviewed.</p>
+</div>
+
+<h3>Routes</h3>
+
+<p>Mirroring <code>/api/foreman/instructions</code> (<code>src/server/routes.ts:2895</code>) -
+the closest existing thing to this feature, and the only prose-configuration surface in the
+app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413</code>, and its
+<code>409</code> conflict body, so a second browser tab cannot silently clobber an edit:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>Body</th><th>Answers</th></tr></thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>-</td><td>default, every override, one opaque ETag</td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code></td><td><code>200</code> view, <code>409</code> conflict with <code>current</code>, <code>413</code> too large</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=…&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed block and mechanism, from live config; <code>repoPath</code> repeats once per attached repository</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>-</td><td>the same shape, immutable: what one session actually received at launch, or <code>404</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The resolved route exists so the <strong>Preview</strong> button, the dispatch chip and the
+composed prompt can never disagree: all three read one pure
+<code>resolveStandingInstructions(config, repoPath)</code> and one <code>compose.ts</code>, and
+the browser never reimplements either. <code>repoPath</code> repeats because a launch composes a
+block for <strong>every</strong> attached repository: previewing only the one the operator picked
+would tell a two-repo dispatch that nothing is coming while the launch sends the other repository's
+rules. <code>repositories</code> is a <strong>patch</strong>, the same
+convention <code>WorktreesConfigPatchSchema</code> uses: an absent key is untouched, a string
+sets it, and <code>null</code> removes that repository's block entirely. Saving one repository
+therefore sends one key, and never a whole draft map that would commit text the operator had
+not saved.</p>
+
+<p><strong>The last row is the one that is easy to leave out.</strong> A session outlives the
+setting that launched it, so the session chip cannot ask what the rule <em>is</em> - it has to
+be told what the rule <em>was</em>. The daemon records the delivered text and its mechanism
+against the session at launch, once, and never updates it. Without that, editing a rule would
+silently restate every running session's history, and removing one would erase it: an operator
+debugging why an agent did something would be reading the wrong instruction, or none, with
+nothing on screen to say so.</p>
+
+<h2>Testing</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Layer</th><th>What it pins</th></tr></thead>
+<tbody>
+<tr><td><code>test/</code> node:test</td><td><code>resolveStandingInstructions</code>: longest match wins, path-boundary safety (<code>/repo-backup</code> vs <code>/repo</code>), empty override means "send nothing" while an absent one means "inherit", the character cap</td></tr>
+<tr><td><code>test/</code> node:test</td><td>composition: the block lands above the intent and below nothing; a repo with no rules produces a <strong>byte-identical</strong> prompt to today, on all five harness · runtime pairs</td></tr>
+<tr><td><code>test/</code> node:test</td><td>multi-repo: one labelled block per attached repo that has rules, in manifest order</td></tr>
+<tr><td><code>test/</code> HTTP</td><td>ETag conflict returns <code>409</code> carrying the current view; oversize body returns <code>413</code>; the resolved route agrees with the composer</td></tr>
+<tr><td><code>renderToStaticMarkup</code></td><td><code>settings-sidebar-render.test.ts</code> walks the registry - the new category must be reachable, contiguous within its group, and its <code>data-anchor</code>s unique</td></tr>
+<tr class="hi"><td><strong><code>e2e/</code> Playwright</strong></td><td><strong>required.</strong> Settings → Standing instructions: type a rule for a repository, save, reload, read it back. Dispatch into that repository against the fake agent and assert the rule reached it. Dispatch into a repository with no rule and assert it did not.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The e2e spec selects by role, label and placeholder only - never <code>data-testid</code> -
+and runs against <code>e2e/fixtures/fake-agents.ts</code>, so no model tokens are spent.</p>
+
+<h2>Risks and non-goals</h2>
+
+<ul>
+<li><strong>Not a replacement for <code>AGENTS.md</code>.</strong> A rule that belongs to the
+repository should be committed to it, where a teammate on another machine and an agent nobody
+launched from Mission Control both get it. The panel says this in its header copy.</li>
+<li><strong>Context cost is real.</strong> 8KB prepended to every dispatch is not free. The
+cap, the character counter and the dispatch chip make the cost visible both when it is written
+and when it is spent.</li>
+<li><strong>Instruction conflict is undetectable.</strong> A standing instruction contradicting
+the repo's own <code>AGENTS.md</code> is an operator error this feature cannot catch. Composing
+it as a <em>prefix</em> is the deliberate mitigation: the execution authorization and the kind
+contract stay authoritative underneath it, exactly as <code>task-contract.ts</code> already
+documents.</li>
+<li><strong>Not a per-session override.</strong> No "send this once" and no per-task exemption.
+If either turns out to be wanted it is a follow-up on the same store, not a reason to shape the
+store differently now.</li>
+<li><strong>Two out-of-band channels get their first use here.</strong> Claude's SDK
+<code>systemPrompt.append</code> and Codex's <code>developerInstructions</code> merge are both
+reachable but one is unexercised in this codebase. Each needs a test that proves the text
+arrived, not merely that the option was passed.</li>
+</ul>
+
+<h2>Decisions taken</h2>
+
+<p>Four choices were open at review and are now settled. They are recorded here rather than
+left as alternatives, because a phase that re-litigates one of them is a phase doing the wrong
+work.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th><th>Rejected, and why</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>Where the editor lives</strong></td>
+<td>A new <strong>Standing instructions</strong> settings category, in the <em>Sessions</em> group with a <code>This machine</code> scope badge</td>
+<td><em>Trust</em> owns the repository list but its badge is "Acts on GitHub" and its shape is a boolean grant matrix, not prose. The <em>Worktrees</em> cards already do override/inherited, but filing session behaviour inside checkout policy hides it.</td>
+</tr>
+<tr>
+<td><strong>How the text is delivered</strong></td>
+<td><strong>Out-of-band where the harness and runtime have a channel, prompt text where they do not</strong> - which makes wiring Claude's SDK <code>systemPrompt.append</code> and Codex's <code>developerInstructions</code> part of this work</td>
+<td>Uniform prompt text is simpler and visible in the transcript, but it occupies turn one, can be compacted away, and does not govern later turns. Writing into the checkout's own agent config would reach more sessions by writing repo content - the exact thing this feature exists to avoid.</td>
+</tr>
+<tr>
+<td><strong>How far it reaches</strong></td>
+<td><strong>Mission-Control-launched sessions only</strong> - dispatch and assignment</td>
+<td>A one-click injection into an adopted session was considered and deferred: it is a second delivery path, and the panel's honest "not reachable" line is the better first answer. Not foreclosed; it would sit on this same store.</td>
+</tr>
+<tr>
+<td><strong>MC's own review prompts</strong></td>
+<td><strong>No - sessions only, for now.</strong> Standing instructions do not join the standards bundle</td>
+<td>Foreman, the Inspector and Personas would stop flagging work for obeying an instruction the operator gave, which is real. But the bundle is capped at 64KB and already drops the memory index first when it overflows, and its meaning today is "what the repository asserts" - which this deliberately is not.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout req">
+<p>Two of these constrain the phasing directly. The delivery decision means <strong>no phase may
+ship a harness the reach block would have to lie about</strong> - the out-of-band channels land
+with the feature, not after it. The reach decision means the panel's "not reachable" line is a
+shipped, tested string rather than a placeholder.</p>
+</div>
+
+<p class="cap">Source of truth: <code>docs/plans/repository-standing-instructions/plan.md</code>.
+This page is a rendering of it.</p>
+
+</div>
+</body>
+</html>

@@ -129,6 +129,7 @@ Assumptions behind the estimate, anchored on measured comparables in this reposi
 | Settings panel component | 400 | ConductorPanel +326, TaskSourcesPanel +303, WorktreeSettingsPanel +382 at introduction |
 | React hook with reconcile guard | 180 | useConductor +157, useWorktrees +168, useTaskSources 221 |
 | Registry, SettingsPage, search index, api client | 70 | measured: 9-24 + 6-8 + 7-27 + 15 |
+| Per-session delivery snapshot | 90 | `session_launch_turns` is the same key, first-bind move and prune shape |
 | Dispatch and session markers | 90 | two small read-only surfaces |
 | CSS | 110 | 60-300 depending on reuse of `.kb-row` / `.settings-hint` |
 
@@ -166,19 +167,20 @@ its editor.
 
 | # | Phase | Delivers | Direct prerequisites | Est. impl. lines |
 |---|---|---|---|---|
-| 1 | [Store and delivery](phase-1-store-and-delivery.md) | The `app_config` store, longest-match resolution, the three routes, and delivery on all five harness · runtime pairs | none | ~600 |
+| 1 | [Store and delivery](phase-1-store-and-delivery.md) | The `app_config` store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot | none | ~690 |
 | 2 | [Settings panel](phase-2-settings-panel.md) | The Standing instructions settings category, the dispatch and session markers, and the e2e spec | Phase 1 | ~900 |
 
 ### Dependency graph
 
 ```
-Phase 1 (store, resolution, routes, delivery)
+Phase 1 (store, resolution, routes, delivery, launch snapshot)
    │
    └──► Phase 2 (settings category, markers, e2e)
 ```
 
-Strictly serial. Phase 2 consumes Phase 1's wire contract (`StandingInstructionsView`, the three
-routes, the ETag semantics) and its resolved-text route, so there is nothing to run concurrently.
+Strictly serial. Phase 2 consumes Phase 1's wire contract (`StandingInstructionsView`, the routes,
+the ETag semantics), its resolved-text route and its per-session launch snapshot, so there is
+nothing to run concurrently.
 Both phases are single-repository; neither needs sibling repositories attached.
 
 ### Merge order
@@ -228,12 +230,19 @@ export interface ResolvedStandingInstructions {
 |---|---|---|
 | `GET` | `/api/instructions` | `StandingInstructionsView` |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` → `200` view, `409` `{error, code, current}`, `413` over `bodyLimit` |
-| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime |
+| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime. **Live config: what a session *would* get** |
+| `GET` | `/api/sessions/:id/standing-instructions` | The immutable snapshot of what *that* session received at launch, or `404`. **What a session *did* get** |
 
 **Behavioural invariants Phase 2 may rely on and must not change:**
 
-1. An **absent** repository key means "inherit the default"; a key present with `""` means "send
-   nothing for this repository". Reset is a `null` in the patch, which removes the key.
+1. **In the stored document**, an **absent** repository key means "inherit the default" and a key
+   present with `""` means "send nothing for this repository".
+
+   **In a PUT body** `repositories` is a *patch*, following `WorktreesConfigPatchSchema`
+   (`src/shared/protocol.ts:2182-2208`): an absent key leaves the stored value alone, a string sets
+   it, and `null` removes it. A caller therefore saves one repository by sending that one key, and
+   **must not** send its whole draft map - doing so persists every other repository's unsaved text
+   as though the operator had committed to it.
 2. Resolution is longest-path-match on the **resolved repository root**, boundary-matched.
 3. The PUT is compare-and-swap on `expectedEtag`; a stale caller gets `409` with the current view
    and performs no write.
@@ -247,6 +256,15 @@ export interface ResolvedStandingInstructions {
 6. The resolved route requires `agent` and `runtime`, because the mechanism is a property of the
    pair rather than of the repository. An unknown `agent`, or a `runtime` the harness does not
    offer, is a `400` rather than a default.
+7. **What a session received is recorded, not re-resolved.** Phase 1 writes the delivered text, its
+   mechanism and its matched key to a per-session row at launch, keyed by `noteKeyFor(s)`, once and
+   never updated. Editing or removing the configuration afterwards does not change or delete any
+   existing session's row. The session header chip reads that snapshot and **only** that snapshot;
+   the resolved route is for the pre-launch dispatch note, where live config is the right answer.
+8. A **save writes exactly one field**: one repository's key, or `default`. Combined with (7), the
+   two ways an operator could be shown or sent an instruction they never wrote are both closed - an
+   unsaved draft cannot be persisted by a neighbouring save, and a saved change cannot rewrite the
+   history of a session that already launched.
 
 ---
 

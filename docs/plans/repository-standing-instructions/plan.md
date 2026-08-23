@@ -63,7 +63,8 @@ harness-agnostic by construction.
    the Worktrees panel already use.
 4. Visible markers, so nobody debugs an instruction they cannot see: the dispatch form says
    how much standing instruction will be sent, and the session detail carries a chip that
-   reveals the exact composed text.
+   reveals the exact composed text **that session received** - recorded at launch, so editing
+   the rule later never rewrites what a running session is shown to have been told.
 
 Nothing is on by default. A repository with an empty box dispatches a byte-identical prompt
 to today, and that is a test rather than an aspiration.
@@ -173,10 +174,17 @@ and runtime because that is the granularity at which the answer differs.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-Both are read-only affordances over the same stored text, and both name the *mechanism* as
-well as the size - because on Claude the text never appears in the transcript, so a chip
-that only said "sent" would leave an operator searching a conversation for something that
-was never in it. Neither is editable there; one editor, in Settings, is the point.
+Both are read-only, and both name the *mechanism* as well as the size - because on Claude the
+text never appears in the transcript, so a marker that only said "sent" would leave an
+operator searching a conversation for something that was never in it. Neither is editable
+there; one editor, in Settings, is the point.
+
+They do **not** read the same thing, and the difference matters. The dispatch note is a
+forecast - nothing has happened yet, so it reads live configuration and must follow the
+repository picker. The session chip is a record: it reads what that session was given at
+launch and is fixed from then on. Point them both at live configuration and the chip starts
+lying the first time the operator edits a rule, which is exactly when they are most likely to
+be looking at it.
 
 ---
 
@@ -361,13 +369,24 @@ browser tab cannot silently clobber an edit:
 |---|---|---|---|
 | `GET` | `/api/instructions` | - | default, every override, one opaque ETag |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` | `200` view, `409` conflict with `current`, `413` too large |
-| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | - | the exact composed text and mechanism for one repo |
+| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | - | the exact composed text and mechanism for one repo, from live config |
+| `GET` | `/api/sessions/:id/standing-instructions` | - | what one session actually received at launch, or `404` |
 
 The resolved route exists so the **Preview** button, the dispatch chip and the composed
 prompt can never disagree: all three read one pure
 `resolveStandingInstructions(config, repoRoot)`, and the browser never reimplements the
-longest-match rule. A `null` override in the patch removes that repository's block entirely,
-the same convention `WorktreesConfigPatchSchema` uses.
+longest-match rule. `repositories` is a **patch**, the same convention
+`WorktreesConfigPatchSchema` uses: an absent key is untouched, a string sets it, and `null`
+removes that repository's block entirely. Saving one repository therefore sends one key, and
+never a whole draft map that would commit text the operator had not saved.
+
+**The last row is the one that is easy to leave out.** A session outlives the setting that
+launched it, so the session chip cannot ask what the rule *is* - it has to be told what the
+rule *was*. The daemon records the delivered text and its mechanism against the session at
+launch, once, and never updates it. Without that, editing a rule would silently restate every
+running session's history, and removing one would erase it: an operator debugging why an agent
+did something would be reading the wrong instruction, or none, with nothing on screen to say
+so.
 
 ---
 

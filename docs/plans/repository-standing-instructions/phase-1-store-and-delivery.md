@@ -26,9 +26,10 @@ adds the editor.
 - A `StandingInstructionsSpec` capability on the harness registry.
 - The `app_config` store: read, compare-and-swap write, ETag.
 - Longest-path-match resolution, boundary-safe.
-- The three HTTP routes.
+- The three configuration HTTP routes, plus the snapshot read route.
 - Composition into the dispatch and assignment prompt seam.
 - Delivery on all five live harness · runtime pairs, including the two channels not currently used.
+- A per-session snapshot of what was actually delivered, written at launch and never rewritten.
 - Tests for all of the above, and the docs those changes touch.
 
 ## Non-goals
@@ -195,7 +196,8 @@ what makes it assertable in Phase 2's e2e spec.
 
 ### 7. Routes - `src/server/routes.ts`
 
-Three routes, modelled on `/api/foreman/instructions` (`routes.ts:2895-2915`):
+Three configuration routes, modelled on `/api/foreman/instructions` (`routes.ts:2895-2915`).
+The snapshot read route is step 8's, and sits with the session routes rather than here:
 
 - `GET /api/instructions` → the view.
 - `PUT /api/instructions` under `bodyLimit` with a `413` handler; `409` with `{error, code, current}`
@@ -218,7 +220,66 @@ what keeps a `~/.treehouse/...` pool path out of durable config. Refuse a key th
 with a `400`, the way `PUT /api/pipelines/config` already does (`routes.ts:5087-5100`).
 
 The resolved route is what Phase 2's preview and dispatch marker read, so that the browser never
-reimplements the matching rule.
+reimplements the matching rule. It answers *what will a session get*, and it is **not** an answer
+about a session that has already launched - see step 8.
+
+### 8. The per-session snapshot - what this session actually received
+
+> **A session outlives the setting that launched it.** The resolved route reads live config, so a
+> session header that called it would quote a running session text it never saw the moment the
+> operator edits the rule - or show nothing at all once the override is removed. The chip exists so
+> nobody debugs an instruction they cannot see; a chip that lies is worse than no chip, because it
+> sends the operator looking for the cause of a behaviour in a rule that was not in effect.
+
+So the delivered text is **recorded at launch** and read back by identity, never re-resolved.
+
+**Where it lives.** A new table, keyed exactly like `session_notes`, `session_goals` and
+`session_launch_turns` - `noteKeyFor(s)` (`src/server/registry.ts:7854-7856`), which is
+`agentSessionId ?? s.id`. Its own row rather than a column on one of those, for the reason
+`session_goals`' own comment in `src/server/db.ts:884-887` gives: a second writer sharing another
+table's `updated_at` and disposition corrupts both meanings.
+
+```
+note_key    TEXT PRIMARY KEY   -- noteKeyFor(s)
+repo_root   TEXT NOT NULL      -- the resolved root the match ran against
+text        TEXT NOT NULL      -- the resolved text exactly as delivered
+mechanism   TEXT NOT NULL      -- which channel carried it, from StandingInstructionsSpec
+matched_key TEXT               -- the stored key that produced it, NULL when the default did
+created_at  INTEGER NOT NULL
+```
+
+**No `updated_at`, and no second write.** The row is a record of something that happened. A row
+that can be updated is a row that can be made to disagree with the launch it describes, which is
+the whole finding. Write it once, at the moment the delivery is composed, and only when the
+resolved text is non-empty - a session with no standing instruction has no row and no chip.
+
+**It must ride the key changing under it.** The row is written while argv is being composed, before
+the agent has reported its own session id, so it is keyed on `s.id`. When `agentSessionId` arrives,
+`noteKeyFor` starts returning a different key and the row is orphaned - the chip would silently empty
+out a few seconds into every Claude terminal session. `session_launch_turns` has exactly this problem
+and `moveSessionLaunchTurn` (`src/server/db.ts:8143`) is exactly the shape of the fix. Move this row
+alongside it, in the same transaction, rather than adding a second bind hook.
+
+**But not its policy.** `moveSessionLaunchTurn` is called only on the *first* bind, and deliberately
+**strands** the row on a native-to-native rotation - a `/clear` - because a launch turn belongs to one
+conversation (`src/server/db.ts:8137-8142`, `Registry.moveLaunchTurnOnInitialBind` at
+`src/server/registry.ts:6487`). A standing instruction does not. It belongs to the **process**:
+`--append-system-prompt` is a flag on the running CLI and is still in force after `/clear`, and
+Codex's value lives on the mutated `LaunchConfig` that survives `clearContext` (`codex/sdk.ts:569`).
+So the snapshot follows every rotation, for as long as the process carrying it lives. Copying the
+launch turn's stranding rule would blank the chip on the first `/clear` while the instruction it
+described was still governing the session - which is the same class of lie this step exists to
+prevent, arriving from the other direction.
+
+**Prune it with its neighbours.** `pruneSessionLaunchTurns(liveKeys, olderThan)` is called from
+`src/server/registry.ts:6549`; the snapshot prunes on the same pass and the same liveness set.
+Otherwise an 8,000-character row per dead session accumulates forever.
+
+**Route.** `GET /api/sessions/:id/standing-instructions` → the snapshot, or `404` when there is
+none. A dedicated fetch rather than a field on the session wire type: the text is up to 8,000
+characters and `session_upsert` is broadcast over SSE for every session on every change, so a field
+would put the whole corpus on the wire repeatedly to serve one detail view. The session header is a
+single-session surface; it can afford one request.
 
 ## Tests
 
@@ -239,6 +300,7 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 | **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
 | Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
+| **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and a native-to-native rotation**, and is reachable under the new key each time; a pruned session's row goes with it |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.
 
@@ -258,7 +320,10 @@ is no UI yet; Phase 2 owns the browser proof.
 
 - All five harness · runtime pairs deliver by their declared mechanism, each proven by a test.
 - A repository with no standing instructions dispatches a byte-identical prompt and argv to `main`.
-- The three routes behave as the cross-phase contract states, including CAS and the size limit.
+- The configuration routes behave as the cross-phase contract states, including CAS and the size
+  limit.
+- A launch snapshot records what was delivered, survives the first agent-session bind, and does not
+  move when the configuration is later edited or removed.
 - `docs/configuration.md` documents the `app_config` key and the cap.
 - Typecheck, lint, tests, build and smoke green; one reviewable pull request merged.
 
@@ -266,12 +331,15 @@ is no UI yet; Phase 2 owns the browser proof.
 
 Phase 2 may rely on, and must not change:
 
-- The wire types and the three routes exactly as the cross-phase contract states them.
+- The wire types and the four routes exactly as the cross-phase contract states them.
 - Absent-means-inherit, empty-means-send-nothing, `null`-in-a-patch-removes.
 - Longest-path-match on the resolved repository root, boundary-matched.
 - Compare-and-swap on `expectedEtag`, with `409` carrying the current view.
 - `resolveStandingInstructions` as the one matching implementation. Phase 2 calls the resolved
   route; it does not re-derive the match in the browser.
+- The launch snapshot and `GET /api/sessions/:id/standing-instructions`. This is the **only** source
+  the session header chip may read; the resolved route is for the pre-launch dispatch note, where
+  live config is the correct answer.
 
 Phase 2 owns everything under `src/web/`, the settings registry entry, the search index entry, the
 two read-only markers, and the e2e spec.
@@ -288,3 +356,8 @@ two read-only markers, and the e2e spec.
   Deciding it later would mean a browser control inventing a semantic the store does not have.
 - Composition order (manifest, then instructions, then intent) is fixed here so Phase 2's
   **Preview** button and dispatch marker can quote the delivered text without guessing.
+- The launch snapshot was pulled **into** this phase after review rather than left to Phase 2. Phase
+  2 could not have built it: the only moment the delivered text and its mechanism are both known is
+  the moment this phase composes them, and a browser reading live config cannot reconstruct it
+  afterwards. It is inert on merge like the rest of the phase - the resolved text is empty
+  everywhere, so no row is ever written.

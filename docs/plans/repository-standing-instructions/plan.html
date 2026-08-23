@@ -150,7 +150,8 @@ no block of its own - the "one default plus repository exceptions" shape the Com
 and the Worktrees panel already use.</li>
 <li>Visible markers, so nobody debugs an instruction they cannot see: the dispatch form says
 how much standing instruction will be sent, and the session detail carries a chip that
-reveals the exact composed text.</li>
+reveals the exact composed text <strong>that session received</strong> - recorded at launch,
+so editing the rule later never rewrites what a running session is shown to have been told.</li>
 </ol>
 
 <p>Nothing is on by default. A repository with an empty box dispatches a byte-identical prompt
@@ -381,19 +382,20 @@ is trusted and wrong. The panel states the answer where the text is written.</p>
   <text x="718" y="59" class="dim" fill="var(--accent)">standing instructions</text>
 
   <rect x="500" y="105" width="358" height="134" rx="10" class="sub" stroke-width="1.2"/>
-  <text x="518" y="130" class="lbl" font-weight="650">Why a chip and not just a transcript line</text>
-  <text x="518" y="154" class="dim">On Claude the text rides the system prompt, so it never</text>
-  <text x="518" y="172" class="dim">appears in the conversation at all. A chip that only said</text>
-  <text x="518" y="190" class="dim">"sent" would leave an operator searching a transcript for</text>
-  <text x="518" y="208" class="dim">something that was never in it - so both surfaces name the</text>
-  <text x="518" y="226" class="dim">mechanism as well as the size.</text>
+  <text x="518" y="130" class="lbl" font-weight="650">What the chip shows - and what it must not</text>
+  <text x="518" y="154" class="dim">It shows the text this session was given at launch, kept</text>
+  <text x="518" y="172" class="dim">as a record. Edit the rule later and the chip does not</text>
+  <text x="518" y="190" class="dim">move: a chip resolving live config would quote a running</text>
+  <text x="518" y="208" class="dim">session words it never saw. It names the channel too - on</text>
+  <text x="518" y="226" class="dim">Claude the text never enters the transcript at all.</text>
 
-  <text x="20" y="268" class="dim">Both are read-only affordances over the same stored text, resolved through the same route the</text>
-  <text x="20" y="286" class="dim">composer uses. Neither is editable there; one editor, in Settings, is the point.</text>
+  <text x="20" y="268" class="dim">Read-only, and not the same source: the dispatch note forecasts from live config, the session chip records</text>
+  <text x="20" y="286" class="dim">what that session was given at launch, so editing a rule later never rewrites a session's history.</text>
 </svg>
 </div>
-<p class="cap">Mockup 3 - the cost is made visible where it is spent, and both surfaces name
-the delivery mechanism rather than only the fact of delivery.</p>
+<p class="cap">Mockup 3 - the cost is made visible where it is spent, both surfaces name the
+delivery mechanism rather than only the fact of delivery, and the two read different sources:
+the dispatch note forecasts, the session chip records.</p>
 
 <h2>How it reaches a session</h2>
 
@@ -637,7 +639,8 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>-</td><td>default, every override, one opaque ETag</td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code></td><td><code>200</code> view, <code>409</code> conflict with <code>current</code>, <code>413</code> too large</td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed text and mechanism for one repo</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed text and mechanism for one repo, from live config</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>-</td><td>what one session actually received at launch, or <code>404</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -645,8 +648,19 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 <p>The resolved route exists so the <strong>Preview</strong> button, the dispatch chip and the
 composed prompt can never disagree: all three read one pure
 <code>resolveStandingInstructions(config, repoRoot)</code>, and the browser never reimplements
-the longest-match rule. A <code>null</code> override in the patch removes that repository's
-block entirely, the same convention <code>WorktreesConfigPatchSchema</code> uses.</p>
+the longest-match rule. <code>repositories</code> is a <strong>patch</strong>, the same
+convention <code>WorktreesConfigPatchSchema</code> uses: an absent key is untouched, a string
+sets it, and <code>null</code> removes that repository's block entirely. Saving one repository
+therefore sends one key, and never a whole draft map that would commit text the operator had
+not saved.</p>
+
+<p><strong>The last row is the one that is easy to leave out.</strong> A session outlives the
+setting that launched it, so the session chip cannot ask what the rule <em>is</em> - it has to
+be told what the rule <em>was</em>. The daemon records the delivered text and its mechanism
+against the session at launch, once, and never updates it. Without that, editing a rule would
+silently restate every running session's history, and removing one would erase it: an operator
+debugging why an agent did something would be reading the wrong instruction, or none, with
+nothing on screen to say so.</p>
 
 <h2>Testing</h2>
 

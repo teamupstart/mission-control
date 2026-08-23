@@ -204,6 +204,7 @@ Counted as production lines added or materially changed, excluding tests and doc
 <tr><td>Settings panel component</td><td>400</td><td>ConductorPanel +326, TaskSourcesPanel +303, WorktreeSettingsPanel +382</td></tr>
 <tr><td>React hook with reconcile guard</td><td>180</td><td>useConductor +157, useWorktrees +168</td></tr>
 <tr><td>Registry, SettingsPage, search index, api client</td><td>70</td><td>measured: 9-24 + 6-8 + 7-27 + 15</td></tr>
+<tr><td>Per-session delivery snapshot</td><td>90</td><td><code>session_launch_turns</code> is the same key, first-bind move and prune shape</td></tr>
 <tr><td>Dispatch and session markers</td><td>90</td><td>two small read-only surfaces</td></tr>
 <tr><td>CSS</td><td>110</td><td>60-300 depending on reuse of <code>.kb-row</code> / <code>.settings-hint</code></td></tr>
 </tbody>
@@ -249,14 +250,14 @@ an inert mechanism awaiting its editor.</p>
 <table>
 <thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Prereq</th><th>Est.</th></tr></thead>
 <tbody>
-<tr><td>1</td><td><a href="phase-1-store-and-delivery.md">Store and delivery</a></td><td>The <code>app_config</code> store, longest-match resolution, the three routes, and delivery on all five harness · runtime pairs</td><td>none</td><td>~600</td></tr>
+<tr><td>1</td><td><a href="phase-1-store-and-delivery.md">Store and delivery</a></td><td>The <code>app_config</code> store, longest-match resolution, the routes, delivery on all five harness · runtime pairs, and the per-session launch snapshot</td><td>none</td><td>~690</td></tr>
 <tr><td>2</td><td><a href="phase-2-settings-panel.md">Settings panel</a></td><td>The Standing instructions settings category, the dispatch and session markers, and the e2e spec</td><td>Phase 1</td><td>~900</td></tr>
 </tbody>
 </table>
 </div>
 
 <div class="fig">
-<svg viewBox="0 0 800 150" role="img" aria-label="Dependency graph: the planning session's pull request gates both phases; Phase 1 delivers the store, resolution, routes and delivery, and Phase 2 depends on it for the settings category, markers and end-to-end spec.">
+<svg viewBox="0 0 800 150" role="img" aria-label="Dependency graph: the planning session's pull request gates both phases; Phase 1 delivers the store, resolution, routes, delivery and the per-session launch snapshot, and Phase 2 depends on it for the settings category, markers and end-to-end spec.">
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" class="arrowfill"/>
@@ -272,7 +273,7 @@ an inert mechanism awaiting its editor.</p>
   <text x="356" y="58" text-anchor="middle" class="hd">Phase 1</text>
   <text x="356" y="77" text-anchor="middle" class="lbl">Store and delivery</text>
   <text x="356" y="95" text-anchor="middle" class="dim">store · resolve · routes</text>
-  <text x="356" y="108" text-anchor="middle" class="dim">5 harness · runtime pairs</text>
+  <text x="356" y="108" text-anchor="middle" class="dim">5 pairs · launch snapshot</text>
 
   <rect x="532" y="34" width="256" height="82" rx="9" class="sub" stroke-width="1.3"/>
   <text x="660" y="58" text-anchor="middle" class="hd">Phase 2</text>
@@ -288,8 +289,8 @@ an inert mechanism awaiting its editor.</p>
   <text x="495" y="68" text-anchor="middle" class="dim">gates</text>
 </svg>
 </div>
-<p class="cap">Strictly serial. Phase 2 consumes Phase 1's wire contract and its resolved-text route,
-so there is nothing to run concurrently. Both tasks also depend on this planning session, so both
+<p class="cap">Strictly serial. Phase 2 consumes Phase 1's wire contract, its resolved-text route
+and its per-session launch snapshot, so there is nothing to run concurrently. Both tasks also depend on this planning session, so both
 stay backlogged until this plan's own pull request merges.</p>
 
 <h2>Cross-phase contracts</h2>
@@ -328,7 +329,8 @@ export interface ResolvedStandingInstructions {
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td><code>StandingInstructionsView</code></td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code> → <code>200</code> view, <code>409</code> <code>{error, code, current}</code>, <code>413</code> over <code>bodyLimit</code></td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>The immutable snapshot of what <em>that</em> session received at launch, or <code>404</code>. <strong>What a session <em>did</em> get</strong></td></tr>
 </tbody>
 </table>
 </div>
@@ -336,9 +338,14 @@ export interface ResolvedStandingInstructions {
 <p><strong>Behavioural invariants Phase 2 may rely on and must not change:</strong></p>
 
 <ol>
-<li>An <strong>absent</strong> repository key means "inherit the default"; a key present with
-<code>""</code> means "send nothing for this repository". Reset is a <code>null</code> in the patch,
-which removes the key.</li>
+<li><strong>In the stored document</strong>, an <strong>absent</strong> repository key means
+"inherit the default" and a key present with <code>""</code> means "send nothing for this
+repository". <strong>In a PUT body</strong> <code>repositories</code> is a <em>patch</em>, following
+<code>WorktreesConfigPatchSchema</code> (<code>src/shared/protocol.ts:2182-2208</code>): an absent key
+leaves the stored value alone, a string sets it, and <code>null</code> removes it. A caller therefore
+saves one repository by sending that one key, and <strong>must not</strong> send its whole draft map -
+doing so persists every other repository's unsaved text as though the operator had committed to
+it.</li>
 <li>Resolution is longest-path-match on the <strong>resolved repository root</strong>,
 boundary-matched.</li>
 <li>The PUT is compare-and-swap on <code>expectedEtag</code>; a stale caller gets <code>409</code>
@@ -353,6 +360,16 @@ one place, so the composer, the resolved route and the dispatch marker cannot di
 <li>The resolved route requires <code>agent</code> and <code>runtime</code>, because the mechanism is
 a property of the pair rather than of the repository. An unknown <code>agent</code>, or a
 <code>runtime</code> the harness does not offer, is a <code>400</code> rather than a default.</li>
+<li><strong>What a session received is recorded, not re-resolved.</strong> Phase 1 writes the
+delivered text, its mechanism and its matched key to a per-session row at launch, keyed by
+<code>noteKeyFor(s)</code>, once and never updated. Editing or removing the configuration afterwards
+does not change or delete any existing session's row. The session header chip reads that snapshot and
+<strong>only</strong> that snapshot; the resolved route is for the pre-launch dispatch note, where
+live config is the right answer.</li>
+<li>A <strong>save writes exactly one field</strong>: one repository's key, or <code>default</code>.
+Combined with (7), the two ways an operator could be shown or sent an instruction they never wrote
+are both closed - an unsaved draft cannot be persisted by a neighbouring save, and a saved change
+cannot rewrite the history of a session that already launched.</li>
 </ol>
 
 <h2>Final verification strategy</h2>

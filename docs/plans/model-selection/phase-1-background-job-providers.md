@@ -121,31 +121,48 @@ Verified against the current tree; correct anything that has moved rather than f
    meaning inherit, with the strict `LLM_RUNNER_IDS`-valued and `LLM_JOB_IDS`-refined counterpart on
    `LlmConfigPatchSchema`.
 
-   **Read it as `z.record(z.string(), z.string())` - permissive values, no `.catch` on the record.**
-   Not the enum-valued, record-`.catch`ed shape `models` uses. Two reasons, and both are the
-   difference between a map of independent overrides and a single field:
-   - A record-level `.catch` is all or nothing, so one slot this build cannot read would silently
-     revert **every** job to inheritance. A map of independent overrides must fail per entry or not
-     at all.
-   - A value the resolver can classify should reach the resolver. `resolveLlmRunner`
-     (`src/shared/llm.ts:158`) already returns `{ id, source, unknown }` and is the thing that turns
-     an unreadable id into something the panel can say out loud. A schema that sanitises the value
-     first makes that branch unreachable, which is exactly the bug in the bullet below.
+   **Read it as `z.record(z.string(), z.string().catch(""))`.** The `.catch` goes on the *value*,
+   and the placement is the whole point - there are three options here and only one is correct:
+   - **On the record** (`z.record(...).catch({})`, the shape `models` uses today) is all or nothing:
+     one entry this build cannot read silently reverts **every** job to inheritance.
+   - **Absent** (`z.record(z.string(), z.string())`) is worse in the other direction. A persisted
+     value that is not a string at all - a number, a null, an object from a hand edit or a future
+     build - fails the whole `LlmConfigSchema` parse, and `getLlmConfig()` throws. The `runner`
+     field's own comment spells out what that costs: "takes down the settings route, the titler, the
+     goal refiner and the digest at once, over a preference."
+   - **On the value** is both: a malformed entry recovers to empty and inherits, every other entry
+     survives untouched, and the record never fails.
 
-   While in this file, close the two the same reasoning exposes. Both are pre-existing; both are one
-   line; both are in the schema this step already edits.
-   - **`runner` (`:2662`)** - drop the `.catch("")` to a permissive string so an unresolvable stored
-     id survives to `resolveLlmRunner` and is reported rather than presented as the operator's own
-     choice, which is what the field's own comment already promises. It cannot throw either way, so
-     `getLlmConfig()` stays as safe as it is now; only the reporting improves. Its single consumer is
+   A *string* value passes through even when this build cannot resolve it, which is the second
+   requirement: `resolveLlmRunner` (`src/shared/llm.ts:158`) returns `{ id, source, unknown }` and is
+   what turns an unreadable id into something the panel can say out loud. Sanitising a string before
+   the resolver sees it makes that branch unreachable. So the split is deliberate: an unreadable
+   **string** is a choice the operator plausibly made and is reported; a **non-string** is
+   corruption and is recovered from silently.
+
+   While in this file, close the two instances of the same mistake already here. Both are
+   pre-existing, both one line, both in the schema this step already edits.
+   - **`runner` (`:2662`)** - `.catch("")` currently sanitises an unresolvable stored id to `""`
+     *before* `resolveLlmRunner` sees it, and the ladder skips empty values, so the `unknown` branch
+     is dead for stored config values even though the field's comment promises it reports. Widen the
+     value to a permissive string but **keep a `.catch("")` on it** - `z.string().catch("").default("")`
+     - so an unknown id is reported while a non-string still cannot throw. Its single consumer is
      `llmRunnerChoice` (`src/server/llm/config.ts:74`), which already takes `string | null |
      undefined`, so the widened read type ripples nowhere.
-   - **`models` (`:2689`)** - move the `.catch` from the record onto the value, so a single
-     malformed or newer-vocabulary id can no longer discard every other job's override.
+   - **`models` (`:2689`)** - move the `.catch` from the record onto the value, so a single malformed
+     or newer-vocabulary id can no longer discard every other job's override.
 2. **`src/server/llm/config.ts`** - merge `runners` per key in `setLlmConfig`, exactly as `models`
    is merged. Add `llmJobRunner(job, cfg): ResolvedLlmRunner` applying the persona rule: the job's
    own override, else `llmRunnerChoice(cfg)`. Report an unreadable stored id through `unknown`
    rather than swallowing it.
+
+   Write that fallback deliberately rather than by calling `resolveLlmRunner(cfg.runners[job],
+   undefined)`. That function falls back to `DEFAULT_LLM_RUNNER_ID` when it cannot read a value,
+   which is right for the app-wide field but wrong for a per-job override: the rungs beneath an
+   unreadable override are **the rest of the ladder**, not the bottom of it. An override this build
+   cannot read should report `unknown` and then inherit the app-wide resolution, because "I cannot
+   read your choice here" is much closer to "you did not choose here" than to "use the shipped
+   default".
 
    **Also in `setLlmConfig`: when a patch changes `runner`, first materialise the outgoing provider
    onto every job that has a model and no runner of its own.** A legacy config's models are unpinned
@@ -249,7 +266,10 @@ Verified against the current tree; correct anything that has moved rather than f
   resolving identically to today; an unreadable stored runner id reported as `unknown` rather than
   silently defaulting - **for a per-job override and for the group-level `runner`, which cannot do
   this today**; one unreadable entry leaving every *other* slot's override intact, for `runners` and
-  for `models` alike, since a record-level `.catch` is what this replaces; `setLlmConfig` merging `runners` per key; **a legacy config - non-empty
+  for `models` alike, since a record-level `.catch` is what this replaces; **a non-string persisted
+  override recovering that entry to inherit rather than throwing `getLlmConfig()`** - the difference
+  between a `.catch` on the value and no `.catch` at all; an unreadable override inheriting the
+  app-wide provider rather than dropping to the shipped default; `setLlmConfig` merging `runners` per key; **a legacy config - non-empty
   `models`, empty `runners` - pinned to the outgoing provider when the app-wide runner is patched,
   including when the outgoing value came from `MISSION_LLM_RUNNER` rather than the stored field**; a
   job whose model belongs to another provider falling back to that provider's default *and reporting
@@ -315,6 +335,11 @@ Phases 2 and 3 may rely on, and must not change without reconciling here:
   review's alternative of blocking the provider change while a model is pinned: that makes the
   common case ("run this job on Codex instead") a two-step dance, and the product already resets
   rather than blocks in the same situation (`DispatchModal.tsx:2696`).
+- Review round 12 caught that the round 9 fix traded one failure for a worse one: dropping the
+  record-level `.catch` without adding a per-value one means a non-string persisted entry fails the
+  whole `LlmConfigSchema` parse and `getLlmConfig()` throws. The step now names all three placements
+  and why only the value-level one satisfies both requirements at once. The earlier claim that the
+  `runner` field "cannot throw either way" was simply wrong and is corrected.
 - Review round 9 caught that the `runners` schema as drafted (`.catch({})` on the record) would
   discard every override when one value failed, contradicting this phase's own `unknown`-reporting
   contract. Fixed, and following the same reasoning through `src/shared/protocol.ts` found two

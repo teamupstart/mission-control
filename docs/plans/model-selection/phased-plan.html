@@ -354,9 +354,9 @@ reconciling back into Phase 1's file.</p>
     <td>Extend by adding column definitions; never fork the component</td></tr>
   <tr><td>Tolerant read, strict write</td><td>Phase 1</td><td>2</td>
     <td>A stored provider is permissive on read so <code>resolveLlmRunner</code> can report an
-    unreadable id as <code>unknown</code>, and strict on write so a bad value is a 400. A
-    <code>.catch</code> never sits on a record of independent overrides, where one bad entry would
-    discard the rest</td></tr>
+    unreadable <strong>string</strong> id as <code>unknown</code>, and strict on write so a bad
+    value is a 400. The <code>.catch</code> sits on the <strong>value</strong>: on the record one bad
+    entry discards the rest, absent one bad entry throws the whole config</td></tr>
   <tr><td>The inherit rule</td><td>Phase 1</td><td>2</td>
     <td><code>null</code>/empty means inherit; a set value replaces and re-bases the model fallback
     onto the chosen provider. Phase 2 adds one rung (role → Foreman group → app-wide), which is an

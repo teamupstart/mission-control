@@ -8,6 +8,7 @@ import type {
 } from "@shared/types.ts";
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
@@ -336,6 +337,11 @@ interface LaunchConfig {
  * learns arrives on `events`.
  */
 class CodexSdkSession implements SdkSessionHandle {
+  /**
+   * How this launch actually carried the operator's standing instructions, when it is not
+   * what was asked for. Set once, during launch, before the handle is returned.
+   */
+  standingInstructionsMechanism?: StandingInstructionsMechanism;
   private readonly out = new EventStream();
   private readonly pending = new Map<string, Pending>();
   private readonly fileChanges = new Map<
@@ -576,6 +582,14 @@ class CodexSdkSession implements SdkSessionHandle {
     this.lastUsage = null;
     this.bind(started, true);
   };
+
+  /**
+   * Record that the standing instructions rode turn one because this connection's
+   * `config/read` could not be used. Called during launch only, before the handle escapes.
+   */
+  markStandingInstructionsPrefixed(): void {
+    this.standingInstructionsMechanism = "prompt-prefix";
+  }
 
   async stop(): Promise<void> {
     if (this.stopped) return;
@@ -1426,7 +1440,46 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           },
         };
         await client.request<InitializeResponse>("initialize", params);
-        if (opts.mcp) {
+        // `developerInstructions` REPLACES whatever the operator configured, so the value
+        // has to be merged rather than set - which is why this reads the config first.
+        //
+        // Armed by either contributor, not by `opts.mcp` alone. The review instruction
+        // keeps its MCP gate, because it tells the agent to call a tool that would not
+        // exist otherwise; a repository standing instruction has nothing to do with the
+        // bundle, and gating it the same way would mean it was silently never sent on any
+        // ordinary dispatch, which is most of them.
+        const standing = opts.standingInstructions;
+        // Whether the operator's standing instructions ended up riding turn one instead of
+        // this channel. False for as long as the channel is still expected to work.
+        let standingFellBackToPrompt = false;
+        if (opts.mcp || standing) {
+          const wanted = [
+            opts.mcp ? "Mission Control review routing" : null,
+            standing ? "standing instructions" : null,
+          ]
+            .filter(Boolean)
+            .join(" and ");
+          // Two different failures, one handler, because the consequence is the same: this
+          // channel cannot be used safely. `developerInstructions` REPLACES whatever the
+          // operator configured in Codex, so a value we could not read is a value we must not
+          // overwrite - sending ours alone would silently delete theirs.
+          //
+          // What must NOT follow from that is dropping the operator's own words on the floor.
+          // The dispatcher has already chosen this out-of-band channel and therefore left the
+          // block out of turn one, so a bare warning here delivers the instructions NOWHERE.
+          // The fallback is the same prompt prefix the two channel-less pairs use, composed
+          // by the caller so the block still lands below the repository manifest and above
+          // the request. Mission Control's review routing has no such fallback and needs
+          // none: it names an MCP tool, so an unsent instruction only omits a suggestion.
+          const unusable = (why: string, detail?: unknown): void => {
+            const fallback = standing && opts.standingInstructionsPrompt;
+            const outcome = fallback
+              ? "standing instructions were delivered in turn one instead"
+              : `${wanted} was not added`;
+            if (fallback) standingFellBackToPrompt = true;
+            if (detail === undefined) console.warn(`[sdk] codex ${why}; ${outcome}`);
+            else console.warn(`[sdk] codex ${why}; ${outcome}:`, detail);
+          };
           try {
             const read = await client.request<ConfigReadResult>("config/read", {
               cwd: opts.cwd,
@@ -1434,22 +1487,22 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
             });
             const configured = configuredDeveloperInstructions(read);
             if (configured === undefined) {
-              console.warn(
-                "[sdk] codex config/read returned invalid developer_instructions; " +
-                  "Mission Control review routing was not added",
-              );
+              unusable("config/read returned invalid developer_instructions");
             } else {
-              config.developerInstructions = configured
-                ? `${configured}\n\n${MISSION_CONTROL_REVIEW_INSTRUCTION}`
-                : MISSION_CONTROL_REVIEW_INSTRUCTION;
+              config.developerInstructions =
+                [configured, opts.mcp ? MISSION_CONTROL_REVIEW_INSTRUCTION : null, standing || null]
+                  .filter((part): part is string => !!part)
+                  .join("\n\n") || null;
             }
           } catch (err) {
-            console.warn(
-              "[sdk] codex config/read failed; Mission Control review routing was not added:",
-              err instanceof Error ? err.message : String(err),
-            );
+            unusable("config/read failed", err instanceof Error ? err.message : String(err));
           }
         }
+        // Reported on the handle so the launch snapshot records the channel that actually
+        // carried the text. An assignment later reads that snapshot to decide whether the
+        // rule is still installed on this process or has to be repeated in turn one, and a
+        // prefix does not govern later turns.
+        if (standingFellBackToPrompt) session.markStandingInstructionsPrefixed();
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,
@@ -1464,7 +1517,20 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // Turn one, awaited: `SdkSpec.launch` promises a session that is running what it
         // was asked to run, and a dispatch whose intent was never accepted has to FAIL
         // rather than come back as a card sitting idle with the task marked running.
-        if (opts.prompt) await session.seed(opts.prompt);
+        //
+        // The fallback is checked FIRST and independently of `opts.prompt`, because the case
+        // that has no turn one is exactly the case that most needs it: a resume sends no
+        // intent, so a resumed session whose channel is unusable would otherwise come back
+        // running under none of the rules the operator wrote and running them nowhere else
+        // either. On that path the caller's fallback is the block by itself, which is the
+        // whole of what a resume owes - the intent is already in the conversation being
+        // reopened. `standingFellBackToPrompt` is only ever true when that string is
+        // non-empty, so this never seeds a turn nobody composed.
+        if (standingFellBackToPrompt) {
+          await session.seed(opts.standingInstructionsPrompt);
+        } else if (opts.prompt) {
+          await session.seed(opts.prompt);
+        }
       } catch (err) {
         // Nothing above this line is durable yet - no row, no card, no SSE frame - so the
         // only thing to unwind is the subprocess.

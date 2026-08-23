@@ -162,6 +162,22 @@ export interface ClaudeSdkQueryOptions {
    * sibling checkout cannot be added to a session that did not start with it.
    */
   additionalDirectories?: string[];
+  /**
+   * The operator's repository standing instructions, APPENDED to Claude Code's own prompt.
+   *
+   * Typed as the preset object only, deliberately. The vendor also accepts a bare `string`
+   * here, and that form REPLACES Claude Code's system prompt - which would make an embedded
+   * session a different agent from the dispatched pane running the same task. Narrowing the
+   * type is how that stays impossible to reach by accident rather than by convention.
+   *
+   * Absent on a launch with nothing to send, rather than sent with an empty `append`.
+   */
+  systemPrompt?: {
+    type: "preset";
+    preset: "claude_code";
+    append?: string;
+    excludeDynamicSections?: boolean;
+  };
   resume?: string;
   mcpServers?: Record<string, unknown>;
   canUseTool: (

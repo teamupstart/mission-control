@@ -118,6 +118,12 @@ export function startGoalRefiner(registry: Registry): () => void {
         // property - a third timer would be a third place to get that property wrong.
         const launches = registry.pruneLaunchTurns(now - GOAL_PRUNE_AGE_MS);
         if (launches > 0) console.log(`[goal] pruned ${launches} orphaned launch marker(s)`);
+        // And the launch standing-instruction snapshots, which accumulate identically -
+        // one row per session that ever received one, up to 8,000 characters each. Same
+        // tick, same window, same live-key safety property.
+        const standing = registry.pruneStandingInstructions(now - GOAL_PRUNE_AGE_MS);
+        if (standing > 0)
+          console.log(`[goal] pruned ${standing} orphaned standing-instruction snapshot(s)`);
       }
     } catch (err) {
       console.error("[goal] poll failed:", err);

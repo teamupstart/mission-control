@@ -28,8 +28,15 @@ const fakeBundle = join(home, "server.mjs");
 writeFileSync(fakeBundle, "// not executed by this test\n");
 process.env.HARNESS_MCP_SERVER = fakeBundle;
 
-const { askChannelArgs, askChannelPaths, askChannelPrompt, ASK_TOOL, DISALLOWED_TOOL } =
-  await import("../src/server/ask-channel.ts");
+const {
+  askChannelArgs,
+  askChannelContribution,
+  systemPromptAppendArgs,
+  askChannelPaths,
+  askChannelPrompt,
+  ASK_TOOL,
+  DISALLOWED_TOOL,
+} = await import("../src/server/ask-channel.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -86,6 +93,63 @@ test("a filesystem failure skips the channel instead of failing the dispatch", a
   } finally {
     chmodSync(askChannelPaths.dir, 0o700);
   }
+});
+
+test("exactly ONE --append-system-prompt is ever emitted, carrying every contributor", async () => {
+  // Finding 1, and it fails silently in the worst available way. `--append-system-prompt` is
+  // declared single-value by the CLI (contrast `--betas <betas...>` two lines below it in the
+  // same help output), and the binary carries a guard for the `--append-system-prompt-file`
+  // conflict but NONE against the flag repeated against itself - so a second flag is
+  // last-wins and the first value is dropped without a word. On Claude the appended text
+  // never appears in the transcript either, so a dropped standing instruction is
+  // indistinguishable from one that was never set.
+  const contribution = await askChannelContribution("claude");
+  const args = [
+    ...contribution.args,
+    ...systemPromptAppendArgs([contribution.redirect, "Never run E2E locally."]),
+  ];
+  assert.equal(
+    args.filter((a) => a === "--append-system-prompt").length,
+    1,
+    "a second flag would silently discard the first",
+  );
+  const value = flag(args, "--append-system-prompt");
+  assert.match(String(value), new RegExp(ASK_TOOL), "the ask redirect survived");
+  assert.match(String(value), /Never run E2E locally\./, "and so did the operator's own words");
+
+  // No contributors renders no flag at all, which is what keeps a launch with neither an ask
+  // channel nor a standing instruction byte-identical to what it always was.
+  assert.deepEqual(systemPromptAppendArgs([null, null]), []);
+  assert.deepEqual(systemPromptAppendArgs([]), []);
+});
+
+test("the standing instruction still ships when the ask channel bails entirely", async () => {
+  // Finding 2. `askChannelContribution` is all-or-nothing on ANY failure, and that contract
+  // is correct for what it guards - an agent with `AskUserQuestion` removed and no
+  // replacement is worse than one with the built-in intact. But a standing instruction has
+  // nothing to do with the MCP bundle, and folding it inside that function would mean an
+  // unbuilt `dist` silently dropped the operator's own words too.
+  const prior = process.env.HARNESS_MCP_SERVER;
+  process.env.HARNESS_MCP_SERVER = join(home, "does-not-exist.mjs");
+  try {
+    const contribution = await askChannelContribution("claude");
+    assert.deepEqual(contribution, { args: [], redirect: null }, "the channel is fully off");
+    assert.deepEqual(
+      [...contribution.args, ...systemPromptAppendArgs([contribution.redirect, "Never force-push."])],
+      ["--append-system-prompt", "Never force-push."],
+      "and the operator's own words ship anyway",
+    );
+  } finally {
+    process.env.HARNESS_MCP_SERVER = prior;
+  }
+});
+
+test("askChannelArgs is the composition, so the two spellings cannot drift", async () => {
+  const contribution = await askChannelContribution("claude");
+  assert.deepEqual(await askChannelArgs("claude"), [
+    ...contribution.args,
+    ...systemPromptAppendArgs([contribution.redirect]),
+  ]);
 });
 
 test("codex is left alone - these are Claude's flags", async () => {

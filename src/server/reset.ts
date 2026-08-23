@@ -126,6 +126,12 @@ export async function resetSession(
         // carried the invite through the registry's own rotation move - but a rotation
         // this call observes that the registry's sites did not would otherwise strand it.
         registry.moveForemanInviteKey(pendingTurnKey, currentPendingTurnKey);
+        // The launch's standing instructions move with it, for the same reason and one
+        // more: `--append-system-prompt` is a flag on the process this reset did not kill,
+        // and Codex's developer instructions live on the mutated `LaunchConfig` that
+        // survives a context clear. The text is still governing the agent, so the record of
+        // it has to still be reachable under the key the session now holds.
+        registry.moveStandingInstructionsKey(pendingTurnKey, currentPendingTurnKey);
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

@@ -91,6 +91,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Skill directory prefixes
 - Task source kinds
 - LLM job IDs
+- Standing-instruction mechanisms (`STANDING_INSTRUCTIONS_MECHANISMS`) - written into
+  `session_standing_instructions.mechanism` at launch and read back by exact value for the life
+  of that row, which is what an assignment replays and what the session header reads. A rename
+  makes every historical row unreadable, and the degradation on an unknown value is
+  `prompt-prefix`, so a reordered vocabulary would silently re-prefix text that was in fact
+  delivered out of band
 - LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
   queried back by exact value, so a rename orphans every historical row it wrote
 - Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`,

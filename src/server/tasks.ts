@@ -82,6 +82,7 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 
 /**
@@ -2965,9 +2966,23 @@ export class TaskManager {
     // reject; the dispatcher's seam guards the same risk the same way.
     let r: InjectResult;
     try {
+      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+      // refuses a multi-repo task and stands in the session's own checkout - so the only
+      // thing that could have is the configuration, and a live process's system prompt
+      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+      // one mid-session semantic and the pairs without one another, for the same feature.
+      // One boundary instead: a session keeps the standing instructions it launched with.
+      //
+      // So this replays the session's own launch snapshot, and only for a session whose
+      // pair had no out-of-band channel. On the three pairs that do, the block is still
+      // installed on that process - that is what "durable" means - and prefixing it again
+      // would have the agent read the same rule twice. A session with no snapshot acquires
+      // nothing mid-life.
+      const launched = this.registry.standingInstructionsFor(s.id);
+      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
       r = await inject(
         this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, ready.intent, {
+        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
           fallbackRoot: s.cwd,
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,

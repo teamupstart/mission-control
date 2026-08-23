@@ -19,7 +19,10 @@ import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
-import { askChannelArgs } from "./ask-channel.ts";
+import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
+import { withStandingInstructions } from "./instructions/compose.ts";
+import { standingInstructionsForLaunch } from "./instructions/resolve.ts";
+import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import {
@@ -199,6 +202,14 @@ export class Dispatcher {
        */
       onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /**
+       * What the operator's standing instructions resolve to for these checkouts.
+       *
+       * A seam only so a focused test can drive composition and delivery without seeding a
+       * settings document and a repository per case. Production always takes
+       * `standingInstructionsForLaunch`.
+       */
+      standingInstructions?: typeof standingInstructionsForLaunch;
       /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
@@ -414,10 +425,46 @@ export class Dispatcher {
       // seams. The operator's intent remains the exact prefix; server-owned authorization
       // and the narrower kind contract follow it in one deterministic order.
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
-      const intent = withTaskKindContract(provisioned, intentWithRepoManifest(provisioned), {
-        planSkills: planSkills?.ok ? planSkills.commands : null,
-        workflowEvidence,
-      });
+      // The operator's own standing instructions for these checkouts, resolved ONCE, here.
+      //
+      // A LAUNCH is the only occasion that resolves them: an assignment into a live session
+      // replays this session's snapshot instead (see `tasks.ts`), because a running
+      // process's system prompt cannot be rewritten and re-resolving would give
+      // `claude · terminal` one mid-session semantic and `pi · terminal` another for the
+      // same feature. A session keeps the standing instructions it launched with.
+      //
+      // Every attached repository contributes, in the manifest's order, because this
+      // dispatch hands the agent write access to all of them - sending only the primary's
+      // rules would be the same laundering `taskReposAllowlisted` refuses for consent.
+      const standing = await (this.deps.standingInstructions ?? standingInstructionsForLaunch)(
+        [wt.path, ...extras.map((entry) => entry.worktreePath).filter((p): p is string => !!p)],
+        task.agent,
+        runtime,
+      );
+      // EXACTLY ONE delivery. A pair with an out-of-band channel carries the block there and
+      // is NOT also prefixed; a pair without one is prefixed and sends nothing out of band.
+      // Both would have the agent read the same rule twice in its first turn, which for a
+      // rule phrased as a prohibition invites reading the repetition as emphasis about
+      // something the operator only said once. `standingInstructionsChannel` is the single
+      // reading of which case this is, via the mechanism the composer already recorded.
+      const standingPrefix = standing.mechanism === "prompt-prefix" ? standing.text : "";
+      const composeTurnOne = (standingBlock: string) =>
+        withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
+          planSkills: planSkills?.ok ? planSkills.commands : null,
+          workflowEvidence,
+        });
+      const intent = composeTurnOne(standingPrefix);
+      // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
+      // channel turns out to be unusable once the driver is already talking to its subprocess.
+      //
+      // Composed here rather than by the supervisor or the adapter because this is the only
+      // place that can: the ordering the operator's text belongs to - manifest, then rules,
+      // then request - is produced BY `intentWithRepoManifest`, not by wrapping a finished
+      // prompt, and wrapping one would put the rules above the manifest that names the
+      // checkouts they are about. Empty unless there is an out-of-band delivery to fall back
+      // FROM: `standingPrefix` is non-empty exactly when the block is already inside `intent`.
+      const standingFallbackTurnOne =
+        !standingPrefix && standing.text ? composeTurnOne(standing.text) : "";
       // Which of OUR tools this launch has to be able to call. A scout ALWAYS has to be able
       // to submit its report and a plan ALWAYS has to be able to ask its human and file the
       // phases it schedules, so the requirement is unioned in here rather than left to
@@ -464,6 +511,8 @@ export class Dispatcher {
           missionMcp,
           intent,
           extraDirs,
+          standing,
+          standingFallbackTurnOne,
         );
         return;
       }
@@ -508,7 +557,23 @@ export class Dispatcher {
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
-      const askArgs = await askChannelArgs(task.agent, missionMcp);
+      const askChannel = await askChannelContribution(task.agent, missionMcp);
+      // ONE `--append-system-prompt`, carrying every contributor to it. The flag is
+      // single-valued and repeating it is last-wins with no warning, so a second flag beside
+      // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
+      //
+      // The ask channel's redirect keeps its all-or-nothing tie to the MCP flags: an agent
+      // with `AskUserQuestion` removed and no replacement is worse than one with the
+      // built-in intact. The standing instruction does NOT acquire that tie - a missing MCP
+      // bundle has nothing to do with the operator's own words - so it still ships when
+      // `askChannelContribution` returns nothing at all.
+      const askArgs = [
+        ...askChannel.args,
+        ...systemPromptAppendArgs([
+          askChannel.redirect,
+          standing.mechanism === "claude-append-system-prompt" ? standing.text : null,
+        ]),
+      ];
       // Rendered by the harness that has to honour it, from a capability measured against a
       // real installation - Claude's `--add-dir`, Codex's writable-roots override. Read off
       // the spec the guard above already resolved rather than re-asking with a `?.` that
@@ -536,7 +601,8 @@ export class Dispatcher {
       // be unable to signal it is ready. Fail here, before the agent spawns, so the worktree is torn
       // down for a clean retry rather than left holding an agent that can never submit. A dispatch
       // that passes no `missionMcp` is unaffected - this is effectively ensemble-scoped.
-      const missionMcpRegistered = codexLaunch.missionMcp || askArgs.includes("--mcp-config");
+      const missionMcpRegistered =
+        codexLaunch.missionMcp || askChannel.args.includes("--mcp-config");
       if (missionMcp && !missionMcpRegistered) {
         throw new Error(
           `the launch could not carry the required Mission MCP tools ` +
@@ -634,6 +700,13 @@ export class Dispatcher {
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
       // Pi's launch marker was recorded before the spawn, under this exact key. Nothing to do
       // here - see the note at that call site for why the ordering is not deferred to now.
+
+      // The standing-instruction record on the terminal arm, under the key the session holds now. For
+      // Claude that is usually still the synthetic id - the hooks bind moments later - and
+      // the registry's rotation move carries the row to the native key, and to every key a
+      // later `/clear` rotates to. Pi has already bound its pre-minted conversation id
+      // above, so it records under that.
+      this.registry.recordStandingInstructions(session.id, standing);
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
@@ -942,6 +1015,10 @@ export class Dispatcher {
     intent: string,
     /** Secondary worktrees this session must be able to write to. Empty for single-repo. */
     extraDirs: string[],
+    /** What the operator's standing instructions resolved to for this launch. */
+    standing: StandingInstructionsDelivery,
+    /** `intent` recomposed with the block in its ordered slot, if the channel proves unusable. */
+    standingFallbackTurnOne: string,
   ): Promise<void> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -997,6 +1074,12 @@ export class Dispatcher {
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
       extraDirs,
+      // The WHOLE delivery, because the supervisor is the only place that learns what the
+      // driver actually did with it - Codex can find its channel unusable at launch and fall
+      // back to turn one - and it therefore owns this runtime's launch snapshot. On the pairs
+      // with no channel the block is already inside `intent` above, and the supervisor sends
+      // nothing out of band for them.
+      standingInstructions: { delivery: standing, fallbackPrompt: standingFallbackTurnOne },
       taskId,
       gitBranch: wt.branch,
       gitRoot: wt.path,
@@ -1008,6 +1091,9 @@ export class Dispatcher {
       await supervisor.stop(session.id).catch(() => {});
       return;
     }
+    // The launch snapshot for this runtime was written by `supervisor.start`, which is the
+    // only caller that sees what the driver reported back. See the terminal arm below for the
+    // same record on the path where the argv settles the question synchronously.
     this.patch(taskId, { status: "running", sessionId: session.id });
     // Both orders are covered on purpose. If the driver has already bound, the episode
     // exists and this binds it; if it has not, `applyDriverBinding` binds it when it does,
@@ -1981,9 +2067,9 @@ async function teardownOneWorktree(
  * delivered after provisioning, so an entry without one is a bug being reported to the
  * wrong audience.
  */
-export function intentWithRepoManifest(task: Task): string {
+export function intentWithRepoManifest(task: Task, standingBlock = ""): string {
   const attached = task.extraRepos.filter((entry) => entry.worktreePath !== null);
-  if (attached.length === 0) return task.intent;
+  if (attached.length === 0) return withStandingInstructions(standingBlock, task.intent);
   const branchOf = (branch: string | null): string => (branch ? `, on branch ${branch}` : "");
   // Whether the whole set really did land on one branch name. The Git fallback cuts
   // `harness/<slug>-<shortId>` in every repo, while a native lease is detached. A mixed set
@@ -2020,7 +2106,11 @@ export function intentWithRepoManifest(task: Task): string {
     "---",
     "",
   ];
-  return `${lines.join("\n")}${task.intent}`;
+  // Manifest, then standing instructions, then the intent - all three, in that order. The
+  // manifest names the checkouts these rules are ABOUT, so putting the instructions above it
+  // would invert the reason they are next to each other; putting them below the intent would
+  // bury the operator's own words under server-owned prose.
+  return `${lines.join("\n")}${withStandingInstructions(standingBlock, task.intent)}`;
 }
 
 /** A filesystem/git-safe slug from a task title - the branch and worktree name. */

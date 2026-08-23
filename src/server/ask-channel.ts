@@ -162,11 +162,35 @@ not fine is stopping to ask where no one can hear you.`;
  * `claude --help` documents the flag as "comma or space-separated", and one word cannot be
  * mistaken for the start of the next flag's value by a variadic parser.
  */
-export async function askChannelArgs(
+/**
+ * What the ask channel contributes to a launch, in its two separable halves.
+ *
+ * The SPLIT is the point, and it is not cosmetic. `--append-system-prompt` is a
+ * single-value flag with no self-repetition guard in the CLI, so a second one silently
+ * discards the first - measured against claude 2.1.239, where `--betas <betas...>` two
+ * lines below it in the same help output shows what a variadic flag looks like and this one
+ * is not that. Every contributor to the system prompt therefore has to be composed into ONE
+ * value, which means this function cannot be the thing that renders the flag.
+ *
+ * The all-or-nothing contract above applies to `args` and to `redirect` TOGETHER: they are
+ * the ask channel, and half of it is arm B. It does not extend to whatever else the caller
+ * composes into the same flag. A repository standing instruction has nothing to do with the
+ * MCP bundle, and an unbuilt `dist` must not silently drop the operator's own words.
+ */
+export interface AskChannelContribution {
+  /** The MCP registration, the allow rule and the disallow. Empty when the channel is off. */
+  args: string[];
+  /** The system-prompt text telling the agent where to ask instead, or null. */
+  redirect: string | null;
+}
+
+const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null };
+
+export async function askChannelContribution(
   agent: AgentType,
   require: MissionMcpRequirement | null = null,
-): Promise<string[]> {
-  if (agent !== "claude") return [];
+): Promise<AskChannelContribution> {
+  if (agent !== "claude") return { ...ASK_CHANNEL_OFF };
 
   try {
     const descriptor = await missionMcpDescriptor();
@@ -176,30 +200,62 @@ export async function askChannelArgs(
           `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
           `Disallowing it without a replacement would leave the agent no way to ask at all.`,
       );
-      return [];
+      return { ...ASK_CHANNEL_OFF };
     }
 
     // Deduplicated and ask-first, so the common case is byte-identical to what a dispatch
     // without a requirement passes.
     const allowed = [...new Set([ASK_TOOL, ...(require?.tools ?? []).map(missionMcpToolName)])];
 
-    return [
-      ...claudeMissionMcpArgs(descriptor),
-      "--allowed-tools",
-      allowed.join(","),
-      "--disallowed-tools",
-      DISALLOWED_TOOL,
-      "--append-system-prompt",
-      REDIRECT_PROMPT,
-    ];
+    return {
+      args: [
+        ...claudeMissionMcpArgs(descriptor),
+        "--allowed-tools",
+        allowed.join(","),
+        "--disallowed-tools",
+        DISALLOWED_TOOL,
+      ],
+      redirect: REDIRECT_PROMPT,
+    };
   } catch (err) {
     console.warn(
       `[mission-control] could not set up the ask channel (${err instanceof Error ? err.message : String(err)}) - ` +
         `dispatched sessions keep Claude's built-in ${DISALLOWED_TOOL} menu. The dispatch itself ` +
         `proceeds: failing to set this up is never a reason to fail a task.`,
     );
-    return [];
+    return { ...ASK_CHANNEL_OFF };
   }
+}
+
+/**
+ * Render ONE `--append-system-prompt` flag from every contributor to it, or no flag at all.
+ *
+ * The only place that flag is ever spelled. Contributors are joined into a single value in
+ * the order given, because the CLI would keep only the last of several flags and say
+ * nothing about the ones it dropped - and on Claude the appended text never appears in the
+ * transcript either, so a dropped standing instruction is indistinguishable from one that
+ * was never set.
+ *
+ * No contributors renders no flag, which is what keeps a launch with neither an ask channel
+ * nor a standing instruction byte-identical to what it always was.
+ */
+export function systemPromptAppendArgs(parts: readonly (string | null)[]): string[] {
+  const value = parts.filter((part): part is string => !!part).join("\n\n");
+  return value ? ["--append-system-prompt", value] : [];
+}
+
+/**
+ * The ask channel's whole argv, as it stands with no other contributor - the shape this
+ * function had before the system-prompt append became shared. Kept for callers and tests
+ * that ask only about the ask channel, and defined AS the composition so the two cannot
+ * drift.
+ */
+export async function askChannelArgs(
+  agent: AgentType,
+  require: MissionMcpRequirement | null = null,
+): Promise<string[]> {
+  const contribution = await askChannelContribution(agent, require);
+  return [...contribution.args, ...systemPromptAppendArgs([contribution.redirect])];
 }
 
 /**

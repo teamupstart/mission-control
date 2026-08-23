@@ -166,10 +166,33 @@ function launchOpts(over: Record<string, unknown> = {}) {
     permissionMode: null,
     mcp: null,
     extraDirs: [],
+    standingInstructions: "",
+    standingInstructionsPrompt: "",
     resume: null,
     ...over,
   } as Parameters<ReturnType<typeof claudeSdkSpec>["launch"]>[0];
 }
+
+test("standing instructions APPEND to the Claude Code preset, and are omitted when empty", async () => {
+  // The preset object is the only non-destructive form. A bare `systemPrompt: string`
+  // REPLACES Claude Code's own prompt, which would make an embedded session a different
+  // agent from the dispatched pane running the very same task.
+  const withText = fakeDeps();
+  await claudeSdkSpec(withText.deps).launch(
+    launchOpts({ standingInstructions: "Never run E2E locally." }),
+  );
+  assert.deepEqual((await withText.started).options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: "Never run E2E locally.",
+  });
+
+  // And with nothing to send the key is absent entirely - not an empty `append`. An
+  // ordinary session's options object stays exactly what it always was.
+  const without = fakeDeps();
+  await claudeSdkSpec(without.deps).launch(launchOpts());
+  assert.equal("systemPrompt" in (await without.started).options, false);
+});
 
 test("the launch pins the binary, seeds turn one, and binds on init", async () => {
   const { deps, started } = fakeDeps();

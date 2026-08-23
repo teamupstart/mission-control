@@ -31,6 +31,11 @@ import {
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
   FOREMAN_INSTRUCTIONS_MAX_LENGTH,
+  MAX_TASK_EXTRA_REPOS,
+  STANDING_INSTRUCTIONS_CONFLICT_CODE,
+  STANDING_INSTRUCTIONS_CONFLICT_MESSAGE,
+  StandingInstructionsUpdateSchema,
+  type StandingInstructionsConflict,
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
@@ -194,9 +199,23 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import {
   capabilitiesFor,
+  harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import {
+  STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
+  type StandingInstructionsDelivery,
+} from "@shared/standing-instructions.ts";
+import {
+  standingInstructionsConfig,
+  standingInstructionsView,
+  updateStandingInstructions,
+} from "./instructions/config.ts";
+import { composeStandingInstructions } from "./instructions/compose.ts";
+import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
@@ -421,6 +440,9 @@ const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1
  */
 const FOREMAN_INSTRUCTIONS_BODY_MAX_BYTES =
   FOREMAN_INSTRUCTIONS_MAX_LENGTH * 6 + 16 * 1024;
+/** The same ×6 escape headroom, over the standing-instruction ceiling and the key cap. */
+const STANDING_INSTRUCTIONS_BODY_MAX_BYTES =
+  STANDING_INSTRUCTIONS_MAX_LENGTH * 6 + STANDING_INSTRUCTIONS_MAX_KEY_LENGTH * 6 + 16 * 1024;
 /**
  * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
  * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
@@ -2911,6 +2933,141 @@ export function buildApp(
       current: result.current,
     } satisfies ForemanInstructionsConflict;
     return c.json(conflict, 409);
+  });
+
+
+  // Repository standing instructions - one box per repository, in the operator's own words,
+  // sent to every session Mission Control opens into that checkout.
+  //
+  // MACHINE-LOCAL and per-repository, which is the intersection nothing else here covers:
+  // `AGENTS.md` is per-repository and committed, so it reaches every teammate on every
+  // machine, and Foreman's instructions are machine-local but global and never reach a
+  // session at all.
+  app.get("/api/instructions", (c) => c.json(standingInstructionsView()));
+
+  // Compare-and-swap, from the exact view the caller read. `repositories` is a PATCH: an
+  // absent key is left alone, a string sets it, and `null` removes it - so a panel saving
+  // one repository sends that one key and cannot persist a neighbouring box's unsaved draft.
+  app.put(
+    "/api/instructions",
+    bodyLimit({
+      maxSize: STANDING_INSTRUCTIONS_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Standing instructions request is too large" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, StandingInstructionsUpdateSchema);
+      if (!parsed.ok) return parsed.res;
+
+      // Every repository key is canonicalized HERE, on the way in, and the stored key is
+      // `.path` and never `.repoRoot`. The two differ in exactly the way that breaks this
+      // feature: `resolveRepoRoot` is lossy by design, so `<root>/packages/api` would
+      // collapse to `<root>` - the package rule silently becomes the monorepo rule,
+      // overwrites whatever was there, and the longest-match behaviour the store advertises
+      // cannot be configured at all. `.path` still carries the guard that matters, re-rooting
+      // a pooled worktree onto its owning main checkout so a throwaway path never reaches
+      // durable config.
+      const repositories: Record<string, string | null> = {};
+      for (const [key, value] of Object.entries(parsed.data.repositories ?? {})) {
+        const repoPath = await canonicalRepoPath(key);
+        if (!repoPath) return c.json({ error: `not a git repository: ${key}` }, 400);
+        // Two spellings of one checkout in a single patch - a symlink and its target, a
+        // pool slot and its main checkout - would otherwise be last-wins in whatever order
+        // the object happened to iterate.
+        if (repoPath in repositories && repositories[repoPath] !== value) {
+          return c.json({ error: `listed twice, as the same repository: ${repoPath}` }, 400);
+        }
+        repositories[repoPath] = value;
+      }
+
+      const result = updateStandingInstructions({
+        expectedEtag: parsed.data.expectedEtag,
+        ...(parsed.data.default !== undefined ? { default: parsed.data.default } : {}),
+        ...(parsed.data.repositories !== undefined ? { repositories } : {}),
+      });
+      if (result.ok) return c.json(result.view);
+      if ("refusal" in result) return c.json({ error: result.refusal }, 400);
+      const conflict = {
+        error: STANDING_INSTRUCTIONS_CONFLICT_MESSAGE,
+        code: STANDING_INSTRUCTIONS_CONFLICT_CODE,
+        current: result.conflict,
+      } satisfies StandingInstructionsConflict;
+      return c.json(conflict, 409);
+    },
+  );
+
+  /**
+   * What a session launched into these checkouts WOULD be sent, from live configuration.
+   *
+   * `repoPath` repeats, once per attached repository in the launch manifest's order,
+   * because a launch composes a block for EVERY attached repository that has rules. A
+   * preview of one would tell a two-repo dispatch that nothing will be sent while the launch
+   * sends the second repository's rules - and a marker saying "nothing" is the reason an
+   * operator stops looking.
+   *
+   * `agent` and `runtime` are required and validated, because the MECHANISM is a property of
+   * the pair rather than of the repository: the same text is a system prompt on
+   * `claude · terminal`, developer instructions on `codex · sdk`, and turn-one prose on
+   * `pi · terminal`. An unknown agent, or a runtime the harness does not offer, is a refusal
+   * rather than a default - `resolveSessionRuntime` already owns that degradation and the
+   * answer must not be invented a second time here.
+   *
+   * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
+   * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
+   * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   */
+  app.get("/api/instructions/resolved", async (c) => {
+    const repoPaths = c.req.queries("repoPath") ?? [];
+    if (repoPaths.length === 0) return c.json({ error: "repoPath is required" }, 400);
+    // The launch manifest's own cap - primary plus the secondaries a dispatch may attach.
+    const maxPreview = MAX_TASK_EXTRA_REPOS + 1;
+    if (repoPaths.length > maxPreview) {
+      return c.json({ error: `at most ${maxPreview} repositories may be previewed` }, 400);
+    }
+    const agentParam = c.req.query("agent") ?? "";
+    const agent = AGENT_TYPES.find((a) => a === agentParam);
+    if (!agent) return c.json({ error: `unknown agent: ${agentParam}` }, 400);
+    const runtimeParam = c.req.query("runtime") ?? "";
+    const runtime = SESSION_RUNTIMES.find((r) => r === runtimeParam);
+    if (!runtime || !harnessOffersRuntime(agent, runtime)) {
+      return c.json({ error: `${agent} cannot be driven over runtime: ${runtimeParam}` }, 400);
+    }
+    // Canonicalized for the reason the PUT is, and one more: the browser hands this route a
+    // path it had lying around - a picker selection, a session's cwd - and sessions normally
+    // run in pooled worktrees. A raw `~/.treehouse/<pool>/16/mono/packages/api` matches no
+    // stored key, so an uncanonicalized preview would report that nothing will be sent while
+    // the launch from that very slot delivers the block.
+    const candidates: { repoPath: string }[] = [];
+    for (const raw of repoPaths) {
+      const repoPath = await canonicalRepoPath(raw);
+      if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
+      candidates.push({ repoPath });
+    }
+    return c.json(
+      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
+    );
+  });
+
+  /**
+   * What THIS session was actually sent at launch, or 404.
+   *
+   * Read back by identity and never re-resolved: a session outlives the setting that
+   * launched it, so live configuration would quote a running session a text it never saw the
+   * moment the operator edits the rule - or show nothing at all once the override is removed.
+   *
+   * A dedicated fetch rather than a field on the session wire type. The text runs to 8,000
+   * characters and `session_upsert` is broadcast over SSE for every session on every change,
+   * so a field would put the whole corpus on the wire repeatedly to serve one detail view.
+   */
+  app.get("/api/sessions/:id/standing-instructions", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const snapshot = registry.standingInstructionsFor(session.id);
+    if (!snapshot) return c.json({ error: "this session received no standing instructions" }, 404);
+    return c.json({
+      text: snapshot.text,
+      mechanism: snapshot.mechanism,
+      sources: snapshot.sources,
+    } satisfies StandingInstructionsDelivery);
   });
 
   // Diff of a session's worktree/branch vs its source branch (localhost read).

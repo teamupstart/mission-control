@@ -1120,6 +1120,22 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
+          // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
+          //
+          // The preset object is the only form that can do this. A bare `string` here
+          // REPLACES Claude Code's own system prompt, which would turn an embedded session
+          // into a different agent from the dispatched pane running the same task. Omitted
+          // entirely when there is nothing to send, so an ordinary session's options object
+          // is exactly what it always was.
+          ...(opts.standingInstructions
+            ? {
+                systemPrompt: {
+                  type: "preset" as const,
+                  preset: "claude_code" as const,
+                  append: opts.standingInstructions,
+                },
+              }
+            : {}),
           // The secondary worktrees of a multi-repo task. Spread conditionally so an
           // ordinary session's options object is exactly what it always was.
           //

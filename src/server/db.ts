@@ -9,6 +9,11 @@ import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
+  STANDING_INSTRUCTIONS_MECHANISMS,
+  type StandingInstructionsMechanism,
+  type StandingInstructionsSource,
+} from "@shared/standing-instructions.ts";
+import {
   isPipelineProviderId,
   type PipelineProviderId,
   type PipelineRun,
@@ -951,6 +956,53 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
       ON session_launch_turns(updated_at);
+
+    -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
+    --
+    -- A session outlives the setting that launched it. Reading live configuration back to a
+    -- session header would quote a running session text it never saw the moment the operator
+    -- edits the rule, or show nothing at all once the override is removed - and a marker that
+    -- lies is worse than no marker, because it sends the operator looking for the cause of a
+    -- behaviour in a rule that was not in effect. So this is a RECORD of something that
+    -- happened, which is also why it has no updated_at: a row that can be updated is a row
+    -- that can be made to disagree with the launch it describes.
+    --
+    -- text and sources are therefore immutable, and so is created_at. The ONE field that can
+    -- be corrected afterwards is mechanism, and only toward prompt-prefix: a resumed Codex
+    -- session can find developerInstructions unusable on the new connection and be sent the
+    -- same stored block as prose instead. That is not a disagreement with the launch, it is
+    -- the launch's own delivery being re-decided by the same rule start applies - and the
+    -- field is not decoration, because tasks.ts reads it to decide whether a later assignment
+    -- repeats the rule, and a prefix governs only the turn it rode in. Still no updated_at:
+    -- the correction says what happened, and re-aging the row would only hide it from the
+    -- prune window it belongs to.
+    --
+    -- text is the WHOLE composed block, multi-repo labelled parts included, byte for byte
+    -- as the agent read it - not one repository's resolution. One row rather than one per
+    -- repository, so nothing has to re-assemble the labelled blocks anywhere else; the
+    -- provenance that is still needed, which stored key produced each repository's part,
+    -- is the sources JSON beside it (session_goals.pending_prompts is the precedent for
+    -- a small ordered JSON column here).
+    --
+    -- mechanism is an APPEND-ONLY vocabulary from STANDING_INSTRUCTIONS_MECHANISMS,
+    -- queried back by exact value - see docs/agent-guides/change-contracts.md.
+    --
+    -- Keyed like session_notes, session_goals and foreman_invites (noteKeyFor = agentSessionId
+    -- ?? synthetic id). Its own table rather than a column on one of those for the reason
+    -- session_goals records: a second writer sharing another table's disposition and
+    -- updated_at corrupts both meanings.
+    --
+    -- An empty table is the shipped state of every existing installation, and a session with
+    -- no standing instruction writes no row at all.
+    CREATE TABLE IF NOT EXISTS session_standing_instructions (
+      note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      text       TEXT NOT NULL,      -- the composed block EXACTLY as delivered
+      mechanism  TEXT NOT NULL,      -- which channel carried it
+      sources    TEXT NOT NULL,      -- JSON, manifest order: [{repoPath, matchedKey|null}]
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_standing_instructions_age
+      ON session_standing_instructions(created_at);
 
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
@@ -8184,6 +8236,188 @@ export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: n
     .prepare(
       `DELETE FROM session_launch_turns
          WHERE updated_at < ? AND note_key NOT IN (${placeholders})`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- session standing instructions (what a launch actually delivered) ----
+
+/** One session's launch snapshot: what was delivered, how, and from which stored keys. */
+export interface StandingInstructionsSnapshot {
+  noteKey: string;
+  /** The composed block exactly as the agent received it. */
+  text: string;
+  mechanism: StandingInstructionsMechanism;
+  /** One entry per contributing repository, in the launch manifest's order. */
+  sources: StandingInstructionsSource[];
+  createdAt: number;
+}
+
+interface StandingInstructionsRow {
+  note_key: string;
+  text: string;
+  mechanism: string;
+  sources: string;
+  created_at: number;
+}
+
+/**
+ * Read a row back, tolerating anything a NEWER build could have written.
+ *
+ * An unreadable `sources` degrades to an empty array and an unknown `mechanism` degrades to
+ * `"prompt-prefix"` rather than dropping the row: the text is the part that matters here -
+ * it is what an assignment replays and what the header shows - and discarding a real
+ * delivery record because its provenance column could not be parsed would lose the only
+ * evidence of what a session was told.
+ */
+function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstructionsSnapshot {
+  let sources: StandingInstructionsSource[] = [];
+  try {
+    const parsed: unknown = JSON.parse(r.sources);
+    if (Array.isArray(parsed)) {
+      sources = parsed.flatMap((entry): StandingInstructionsSource[] => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const repoPath = (entry as { repoPath?: unknown }).repoPath;
+        const matchedKey = (entry as { matchedKey?: unknown }).matchedKey;
+        if (typeof repoPath !== "string") return [];
+        return [{ repoPath, matchedKey: typeof matchedKey === "string" ? matchedKey : null }];
+      });
+    }
+  } catch {
+    sources = [];
+  }
+  const mechanism = (STANDING_INSTRUCTIONS_MECHANISMS as readonly string[]).includes(r.mechanism)
+    ? (r.mechanism as StandingInstructionsMechanism)
+    : "prompt-prefix";
+  return {
+    noteKey: r.note_key,
+    text: r.text,
+    mechanism,
+    sources,
+    createdAt: r.created_at,
+  };
+}
+
+/**
+ * Record what a launch delivered, or correct the CHANNEL a recovery had to use.
+ *
+ * A row already under this key belongs to an earlier launch into the same pane and is
+ * replaced whole. The only in-place amendment is `Registry.markStandingInstructionsPrefixed`,
+ * which rewrites `mechanism` alone and preserves the text, sources and `created_at` - see the
+ * table comment for why there is still no `updated_at`.
+ */
+export function insertStandingInstructions(snapshot: StandingInstructionsSnapshot): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         text=excluded.text,
+         mechanism=excluded.mechanism,
+         sources=excluded.sources,
+         created_at=excluded.created_at`,
+    )
+    .run(
+      snapshot.noteKey,
+      snapshot.text,
+      snapshot.mechanism,
+      JSON.stringify(snapshot.sources),
+      snapshot.createdAt,
+    );
+}
+
+/** One session's snapshot, by note key. */
+export function getStandingInstructions(noteKey: string): StandingInstructionsSnapshot | undefined {
+  const row = openDb()
+    .prepare(
+      `SELECT note_key, text, mechanism, sources, created_at
+         FROM session_standing_instructions WHERE note_key = ?`,
+    )
+    .get(noteKey) as unknown as StandingInstructionsRow | undefined;
+  return row ? rowToStandingInstructions(row) : undefined;
+}
+
+/** All snapshots, reloaded into the registry on start - the notes/goals/invites boot pattern. */
+export function loadStandingInstructions(): StandingInstructionsSnapshot[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT note_key, text, mechanism, sources, created_at
+         FROM session_standing_instructions ORDER BY created_at DESC`,
+    )
+    .all() as unknown as StandingInstructionsRow[];
+  return rows.map(rowToStandingInstructions);
+}
+
+/** Drop a snapshot whose launch did not happen. */
+export function deleteStandingInstructions(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a snapshot across a note-key rotation - EVERY rotation, not only the first bind.
+ *
+ * `moveForemanInvite`'s policy, deliberately, and NOT `moveSessionLaunchTurn`'s. The launch
+ * turn is a projection into one conversation and must not be carried into the next, so it
+ * strands on a native-to-native rotation. This is a record of what governs the PROCESS -
+ * `--append-system-prompt` is a flag on the running CLI, and Codex's value lives on the
+ * mutated `LaunchConfig` that survives `clearContext` - and a `/clear` does not end the
+ * process. Attach this to the initial-bind policy instead and the header goes blank on the
+ * first `/clear` while the instruction it described is still in force.
+ *
+ * Last-write-wins on the destination, for `moveForemanInvite`'s reason: the moved row
+ * followed the process, and anything already under the target key is that process's own
+ * earlier state.
+ */
+export function moveStandingInstructions(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  const row = getStandingInstructions(fromKey);
+  if (!row) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         text=excluded.text,
+         mechanism=excluded.mechanism,
+         sources=excluded.sources,
+         created_at=excluded.created_at`,
+    ).run(toKey, row.text, row.mechanism, JSON.stringify(row.sources), row.createdAt);
+    d.prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete snapshots that belong to no live session and have gone stale. Returns how many.
+ *
+ * A row whose key still belongs to a session is never touched however old it is - that half
+ * is `pruneSessionLaunchTurns`' and it is the half that matters.
+ *
+ * The other half is DELIBERATELY different, and the difference is the whole comment. Its
+ * neighbours treat an empty `liveKeys` as "liveness unknown" and delete nothing, because
+ * they are reachable from callers that cannot prove the session map has been swept. This one
+ * is not: its only caller is `Registry.pruneStandingInstructions`, which returns early unless
+ * `sweptSessions` is true, so by the time the set arrives here an empty one MEANS nothing is
+ * live. Repeating the neighbours' guard would make the table unprunable in exactly the state
+ * that most needs it - a daemon whose sessions have all exited - and every completed launch
+ * that carried standing text would leave up to 8,000 characters behind for good.
+ *
+ * So liveness is proven by the CALLER and stated once, rather than inferred twice from the
+ * shape of the argument.
+ */
+export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_standing_instructions
+         WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
     )
     .run(olderThan, ...keys);
   return Number(r.changes);

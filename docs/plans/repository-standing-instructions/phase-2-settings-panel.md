@@ -197,9 +197,23 @@ Layout is specified by the mockups in [`plan.html`](plan.html); read them rather
 
 The **reach** block is a required part of this phase, not decoration. It states per harness and
 runtime which sessions get the text and by which mechanism, and it is the honest answer to the one
-question a standing instruction otherwise leaves an operator guessing at. Its "sessions started
-outside Mission Control - not reachable" line is a shipped, tested string, because decision `reach`
-made that a deliberate product boundary rather than a gap.
+question a standing instruction otherwise leaves an operator guessing at.
+
+It has **seven** rows, and the last two are as required as the first five. Both `✗` rows are shipped,
+tested strings, because each renders an approved decision that was a deliberate product boundary
+rather than a gap:
+
+| Row | Renders decision |
+|---|---|
+| `✗ sessions started outside Mission Control` - not reachable | `reach` - Mission-Control-launched sessions only |
+| `✗ Foreman / Inspector / Persona review prompts` - not in scope | `standards-bundle` - sessions only, for now |
+
+The second is the easier of the two to drop, and the more damaging to omit. Without it the panel
+reads as though a rule written here also governs the Inspector's review of the resulting pull
+request. An operator who writes "never run E2E tests locally" would then be entitled to expect the
+Inspector not to flag their absence, and would be wrong - which is precisely the "trusted and wrong"
+failure the reach block exists to prevent, aimed at Mission Control's own workflows instead of at a
+harness.
 
 Every interactive element wrapped in `<Tooltip>`; no `title=`. At least one `data-anchor`.
 
@@ -248,8 +262,11 @@ both the current registry and `docs/agent-guides/change-contracts.md:747-755`.
 
 - A panel render test, `test/standing-instructions-panel.test.ts`, modelled on
   `test/conductor-panel.test.ts` (487 lines) or `test/task-sources-panel.test.ts` (240):
-  `inherited` vs `override` chips, the counter, the disabled **Use global default**, the reach
-  block's rows, and the empty state.
+  `inherited` vs `override` chips, the counter, the disabled **Use global default**, and the empty
+  state. Assert the reach block **row by row**: five `✓` pairs with their mechanisms, and **both**
+  `✗` exclusions - externally started sessions, and Mission Control's own review prompts. A generic
+  "the reach block renders" assertion passes while an exclusion is missing, which is the case that
+  matters.
 - Additions to `test/settings-sidebar-render.test.ts` (~30 lines): the conventional pair that every
   recent category added - "Standing instructions is a category of its own: its panel shows, the
   others don't", and "with no answer from the daemon, the panel says so rather than showing an
@@ -324,7 +341,9 @@ Nothing depends on this phase - it is the last. Two things a later change should
 - The panel is the only editor. A per-session or one-shot override, if it is ever wanted, extends
   the same store rather than adding a second one.
 - An injection into adopted sessions was deliberately deferred, not forgotten. It would reuse this
-  store and `recordInjection`, and it would make the reach block's `✗` row into a control.
+  store and `recordInjection`, and it would turn the reach block's *externally started sessions* `✗`
+  row into a control. The *review prompts* row is a different decision (`standards-bundle`) and would
+  not move with it.
 
 ## Cross-phase audit record
 

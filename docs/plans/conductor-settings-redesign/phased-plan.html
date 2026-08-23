@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor settings redesign - implementation index</title>
+<style>
+  :root {
+    --page-bg: #ffffff; --page-fg: #1a1d23; --page-muted: #5b6472; --page-dim: #78818f;
+    --page-border: #dfe3e9; --page-soft: #f4f6f9; --page-accent: #1f7a52; --page-warn: #9a5b00;
+    --page-code: #f2f4f8; --page-bad: #b4434a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0f1216; --page-fg: #e4e8ee; --page-muted: #9aa4b2; --page-dim: #7f8896;
+      --page-border: #262d36; --page-soft: #161b21; --page-accent: #4ecf95; --page-warn: #e0a34a;
+      --page-code: #161b21; --page-bad: #f2757c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; padding: 0 20px 96px; background: var(--page-bg); color: var(--page-fg); font: 16px/1.65 var(--sans); overflow-wrap: break-word; }
+  main, header.doc { max-width: 900px; margin: 0 auto; }
+  header.doc { padding: 48px 0 18px; border-bottom: 1px solid var(--page-border); }
+  header.doc h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.15; letter-spacing: -0.02em; }
+  header.doc p { margin: 0; color: var(--page-muted); font-size: 15px; }
+  h2 { margin: 42px 0 12px; font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; padding-bottom: 7px; border-bottom: 1px solid var(--page-border); }
+  h3 { margin: 28px 0 8px; font-size: 16.5px; }
+  p, li, td, th { font-size: 15px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 640; }
+  a { color: var(--page-accent); }
+  code { font-family: var(--mono); font-size: 0.855em; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 5px; padding: 1px 5px; }
+  .lede { font-size: 16.5px; color: var(--page-muted); }
+  .tablewrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--page-border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-border); vertical-align: top; font-size: 14.5px; }
+  th { background: var(--page-soft); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--page-dim); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-family: var(--mono); white-space: nowrap; }
+  .figure { margin: 20px 0 26px; padding: 16px; border: 1px solid var(--page-border); border-radius: 11px; background: var(--page-soft); overflow-x: auto; }
+  .figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .figcap { margin: 10px 0 0; font-size: 13px; color: var(--page-dim); text-align: center; }
+  ol.findings > li { margin: 10px 0; }
+  .flag { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 5px; background: var(--page-warn); color: var(--page-bg); margin-right: 6px; vertical-align: 2px; }
+  .rejected div { border: 1px solid var(--page-border); border-left: 3px solid var(--page-bad); border-radius: 9px; padding: 12px 14px; background: var(--page-soft); font-size: 14.5px; margin: 10px 0; }
+  .rejected b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 4px; }
+  .phasecard { border: 1px solid var(--page-border); border-left: 3px solid var(--page-accent); border-radius: 10px; padding: 16px 18px; background: var(--page-soft); margin: 18px 0; }
+  .phasecard h3 { margin: 0 0 6px; }
+  .phasecard p { margin: 0 0 8px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <h1>Conductor settings redesign</h1>
+  <p>Implementation index &middot; <code>docs/plans/conductor-settings-redesign/phased-plan.md</code></p>
+</header>
+
+<main>
+
+<p class="lede">Source plan: <a href="plan.html">plan.html</a> (<code>plan.md</code>). The approved
+change gives the Conductor settings category the master-detail shape Task sources already uses,
+opens its directory on the repositories Conductor manages rather than on all 202 in the workspace,
+and lands three smaller drifts alongside it.</p>
+
+<h2>Incorporated decisions</h2>
+
+<p>These arrived from the plan review and are requirements here, not open questions:</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Decision</th><th>Chosen</th></tr></thead>
+  <tbody>
+    <tr><td>Page shape</td><td>Directory and detail - the master-detail shape Task sources uses</td></tr>
+    <tr><td>Default list contents</td><td>Managed repositories first; the rest one filter tile away</td></tr>
+    <tr><td>Rides along</td><td>Settings-search entries for all six anchors; a Conductor rail dot; dropping the borrowed and bespoke classes</td></tr>
+    <tr><td>Deferred</td><td>Trimming the lede, the commissioning ladder and the plugin prose</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Investigated findings</h2>
+
+<p>Everything below was read in this repository, and two of them contradict what the plan or a
+first reading assumed.</p>
+
+<ol class="findings">
+  <li><span class="flag">Corrected</span><strong>All six <code>conductor/*</code> anchors already
+    render.</strong> <code>ConductorPanel</code> has one unconditional <code>return</code>
+    (<code>ConductorPanel.tsx:385</code>), <code>.sc-controls</code> (<code>:438</code>) is not
+    behind a config guard, and <code>ConsoleCard</code> always emits
+    <code>data-anchor={anchor}</code> (<code>settings-console.tsx:77</code>). The five new search
+    entries can point at anchors that already exist. <em>An initial reading claimed only two anchors
+    render; it was checked against the source and rejected.</em></li>
+  <li><strong><code>renderToStaticMarkup</code> runs no effects.</strong>
+    <code>test/settings-search.test.ts:124-132</code> renders every category statically and fails
+    any indexed anchor that no panel renders, so new anchors stay unconditional.</li>
+  <li><span class="flag">Discrepancy</span><strong>A repo-scoped pipelines deep link does not
+    exist.</strong> The grammar has exactly two pipeline forms - <code>#/runs/pipeline</code> and
+    <code>#/runs/pipeline/:repoKey/:slug</code> (<code>useWorkflowRoute.ts:352-362</code>,
+    <code>:468-478</code>). There is no <code>:repoKey</code>-only form, and the panel holds no run
+    slug. This disagreed with the approved mockup's pipelines button; it is settled in the phase
+    file and carried back into the mockup, which now labels the action
+    <strong>Open Pipelines tab</strong>.</li>
+  <li><strong><code>settingsRailDot</code> already accepts <code>"conductor"</code></strong>
+    (<code>settings-dots.ts:59-61</code>). A <code>case</code> is enough, with no type widening.</li>
+  <li><strong><code>dotLabel</code> switches on tone before category</strong>
+    (<code>SettingsPage.tsx:81-108</code>). Reusing <code>armed</code> or <code>live</code> without a
+    <code>category === "conductor"</code> arm makes a screen reader announce "YOLO mode is armed" on
+    the Conductor row.</li>
+  <li><strong><code>risky</code> search entries are pinned by a deep-equal literal</strong>
+    (<code>test/settings-search.test.ts:296-302</code>). The new entries are <code>kind: "jump"</code>
+    and non-risky, so that literal is untouched.</li>
+  <li><strong><code>.sc-seg</code> has no CSS of its own</strong> - layout comes from
+    <code>.sc-field</code> and <code>.sc-seg-row</code>.
+    <code>InspectorSettingsPanel.tsx:307-326</code> is already a two-option instance and is the
+    closest model.</li>
+  <li><strong><code>ConsoleSwitch</code> replaces the borrowed <code>skill-switch</code></strong>
+    (<code>settings-console.tsx:96</code>). Its track is 38x22px against the old 15x15px checkbox, so
+    the row alignment needs a look.</li>
+  <li><strong>Selection is not addressable.</strong> Task sources holds it as local state keyed by
+    id, and the settings route grammar is category-only by design. Key by
+    <code>pipelineRepoKey(provider, repoRoot)</code>, and a hash form for the selection would be a
+    change to that grammar rather than a detail of this work.</li>
+  <li><strong>A bounded scroller is not a bound on the DOM.</strong> The directory needs the pager
+    as well as the height budget, or picking the <code>All</code> tile puts a row per repository
+    back in the document - 202 here - which is the defect the change exists to remove.
+    <code>consolePage</code> (<code>settings-console.tsx:324</code>) is the reusable half of the
+    ledger contract and clamps the page, which matters because this list is polled at 4s and
+    filtered by its own tiles; <code>ConsoleTable</code> itself is not reusable here, because it
+    owns its heading, columns and caption and has no notion of a selected row.
+    <code>docs/agent-guides/change-contracts.md</code> (&ldquo;Ledger tables&rdquo;) states both
+    sides.</li>
+  <li><strong>Test churn is smaller than the file sizes suggest.</strong> 9 of 23 tests in
+    <code>conductor-panel.test.ts</code> touch row markup, and 5 of 12 in the e2e spec.
+    <code>settings-sidebar-render.test.ts</code> fingerprints the panel by "Conductor commissioning
+    progress", which survives only because trimming the ladder was deferred.</li>
+</ol>
+
+<h2>Sizing</h2>
+
+<p><strong>Estimate: 660-820 gross non-test implementation lines</strong>, counting lines added or
+materially changed across every layer.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Surface</th><th>Est.</th><th>Assumption</th></tr></thead>
+  <tbody>
+    <tr><td><code>ConductorPanel.tsx</code> - directory, detail pane, filter fold, selection, pager</td><td class="num">~400</td><td>Mirrors <code>SourceDirectory</code> + helpers (~147 lines) plus a richer detail pane; replaces the 119-line list section. The pager adds ~40: <code>consolePage</code> and the <code>.sc-pager*</code> classes already exist, so it is the page state, its reset on filter change, and the focus handoff</td></tr>
+    <tr><td><code>styles.css</code> - master-detail, directory, tiles; minus old <code>.conductor-repo*</code></td><td class="num">~180</td><td>The <code>ts-*</code> directory and master-detail block is ~165 lines</td></tr>
+    <tr><td><code>settings-search.ts</code> - five new entries</td><td class="num">~50</td><td>Existing entries run 9-13 lines each</td></tr>
+    <tr><td><code>settings-dots.ts</code> + <code>dotLabel</code> branch</td><td class="num">~25</td><td>One <code>case</code> plus one tone arm</td></tr>
+    <tr><td><code>SettingsPage.tsx</code> + <code>App.tsx</code> - the pipelines callback</td><td class="num">~18</td><td>Mirrors the <code>onOpenRuns</code> precedent</td></tr>
+    <tr><td><code>sc-seg</code> swap for the Engineer host radios</td><td class="num">~30</td><td>Copy of <code>InspectorSettingsPanel.tsx:307-326</code></td></tr>
+    <tr><td><code>docs/pipelines.md</code> "five cards" section</td><td class="num">~40</td><td>The section is <code>:110-140</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Excluded from the estimate, and real: roughly 180 lines of unit-test rework and 220 of e2e
+rework and new coverage.</p>
+
+<h2>Phase count: one</h2>
+
+<p>Above the 200-line one-shot threshold, the rubric still defaults to one phase, and nothing here
+overturns that. The work is a single panel plus the two registries that describe it - a vertical
+slice that produces working behaviour, not a stack of layers.</p>
+
+<p>Three splits were considered and rejected:</p>
+
+<div class="rejected">
+  <div><b>Ride-alongs as a second phase</b> (~75 lines: the search entries and the rail dot). Strictly serial - the search entries must point at anchors this change finalizes, and <code>settings-search.test.ts</code> fails an anchor that renders nowhere - so it buys no parallelism, only a second pull request. A sub-100-line trailing phase is the balance-making cleanup phase the rubric forbids.</div>
+  <div><b>A layer split</b> (shared registries, then the component). An application-layer boundary is not by itself a phase boundary, and both <code>skill-switch</code> and the Engineer host radios sit <em>inside</em> the exact regions the restructure rewrites - splitting them out puts two agents in one file.</div>
+  <div><b>A behavioural split</b> ("bound the list" first, "add the detail pane" second). A real vertical boundary, but it restyles the repository list twice and, because every UI change here requires a Playwright spec, pays for two full e2e rewrites to ship one approved design.</div>
+</div>
+
+<h2>Phases</h2>
+
+<div class="phasecard">
+  <h3>Phase 1 - Directory and detail</h3>
+  <p><code>phase-1-directory-and-detail.md</code> &middot; repository <code>ai-harness</code> only
+  &middot; depends on this planning session's pull request.</p>
+  <p>The whole approved change: the master-detail restructure opening on managed repositories, the
+  three ride-alongs, the docs rewrite, and the reworked unit and e2e coverage including the bound
+  spec that fails today.</p>
+</div>
+
+<div class="figure">
+<svg viewBox="0 0 600 90" role="img" aria-labelledby="dg">
+  <title id="dg">The planning pull request releases Phase 1</title>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 z" fill="#8b94a3"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui, sans-serif" font-size="11.5">
+    <rect x="8" y="18" width="252" height="54" rx="8" fill="none" stroke="#8b94a3"/>
+    <text x="24" y="40" fill="currentColor" font-weight="640">Planning pull request</text>
+    <text x="24" y="56" fill="#8b94a3">publishes plan, index, phase-1</text>
+
+    <line x1="262" y1="45" x2="330" y2="45" stroke="#8b94a3" marker-end="url(#a)"/>
+    <text x="272" y="36" fill="#8b94a3" font-size="10">merge</text>
+
+    <rect x="340" y="18" width="252" height="54" rx="8" fill="none" stroke="#1f7a52" stroke-width="1.6"/>
+    <text x="356" y="40" fill="#1f7a52" font-weight="700">Phase 1</text>
+    <text x="356" y="56" fill="#8b94a3">Directory and detail</text>
+  </g>
+</svg>
+<p class="figcap">One phase, released by the planning pull request's merge.</p>
+</div>
+
+<h2>Cross-phase contracts</h2>
+
+<p>With one phase there is nothing to hand downstream, but three contracts are recorded because
+later work will meet them:</p>
+<ul>
+  <li><strong>The row switch keeps <code>aria-label="Observe pipelines in &lt;name&gt;"</code>.</strong>
+    <code>e2e/specs/settings-conductor.spec.ts:253-254</code> reaches rows through it.</li>
+  <li><strong>Anchors stay unconditional and keep their current six names.</strong> The search index
+    points at them and the render test requires each to appear inside the Conductor panel and
+    nowhere else.</li>
+  <li><strong>The selected repository is keyed by
+    <code>pipelineRepoKey(provider, repoRoot)</code></strong>, never by list index, because the view
+    is polled every four seconds. It is governed by the union rather than by what is on screen: the tile, the query and the page never clear an explicit selection, and only a repository leaving <code>offeredRepos</code> does. A selection outside the active filter is kept and signalled in the detail pane rather than dropped.</li>
+</ul>
+
+<h2>Final verification</h2>
+<ul>
+  <li><code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+  <li><code>npm test</code>, with <code>conductor-panel</code>, <code>settings-search</code>,
+    <code>settings-dots</code> and <code>settings-sidebar-render</code> all green.</li>
+  <li><code>npm run build</code>, then <code>npm run test:e2e</code> for
+    <code>e2e/specs/settings-conductor.spec.ts</code>, including the new bound spec that seeds many
+    repositories and asserts the page does not render all of them - including that the DOM row
+    count stays at or under <code>CONSOLE_PAGE_SIZE</code> after switching to the
+    <code>All</code> tile.</li>
+  <li><code>docs/pipelines.md</code> matches the shipped panel.</li>
+</ul>
+
+</main>
+</body>
+</html>

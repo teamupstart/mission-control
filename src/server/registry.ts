@@ -16,6 +16,7 @@ import type {
   RateLimitSource,
   PrChecks,
   PrState,
+  FileCommentReview,
   FileCommentThread,
   ReviewItem,
   ServerEvent,
@@ -140,6 +141,7 @@ import {
   loadRecentTerminalTasks,
   loadSessionGoals,
   loadSessionLaunchTurns,
+  loadFileCommentReviews,
   loadStandingInstructions,
   loadFileCommentThreads,
   pruneFileCommentThreads,
@@ -250,6 +252,20 @@ export interface PrOpened {
   sessionId: string;
   cwd: string | null;
   repoRoot: string | null;
+}
+
+/**
+ * One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`.
+ *
+ * It carries the turn's `id` rather than its text, because the only question a subscriber
+ * asks of it is "was this the turn I am waiting on" - and the id is the correlation every
+ * caller of `submit()` already holds. `pending_turns` gains no column for this.
+ */
+export interface TurnDelivered {
+  sessionId: string;
+  /** The `pending_turns` row id returned by `submit()`. */
+  turnId: string;
+  deliveredAt: number;
 }
 
 /** Daemon-minted authority for the interval before a managed Pipeline host is registered. */
@@ -703,6 +719,14 @@ export class Registry extends EventEmitter {
    */
   private fileCommentThreads = new Map<string, FileCommentThread>();
   /**
+   * Each session's walkthrough run state, keyed by session id.
+   *
+   * The same cache-and-notifier shape as `fileCommentThreads` above, and strictly smaller:
+   * one row per session that has ever started a review, deleted with that session's threads.
+   * `FileCommentWalkthrough` is the only writer; this holds the projection and emits.
+   */
+  private fileCommentReviews = new Map<string, FileCommentReview>();
+  /**
    * How a task finds out it is an ensemble member.
    *
    * Registered by the daemon rather than imported, so nothing in here has to know what an
@@ -940,6 +964,10 @@ export class Registry extends EventEmitter {
     // daemon was down are still here at this point and are settled by the
     // FileCommentManager's first-completed-sweep arm, not by this load.
     for (const t of loadFileCommentThreads()) this.fileCommentThreads.set(t.id, t);
+    // And the run state beside them, for the same reason: a review that was RUNNING when the
+    // daemon went down is resumed by `FileCommentWalkthrough.resume`, and a dashboard that
+    // reconnects first must already see it as running rather than as never started.
+    for (const r of loadFileCommentReviews()) this.fileCommentReviews.set(r.sessionId, r);
     this.hydrateTaskDependencyProvenance();
     this.cleanupDependencyProvenance();
   }
@@ -958,6 +986,7 @@ export class Registry extends EventEmitter {
     schedules: MissionSchedule[];
     pipelineRuns: PipelineRun[];
     fileCommentThreads: FileCommentThread[];
+    fileCommentReviews: FileCommentReview[];
     fleetCost: FleetCost | null;
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
@@ -983,6 +1012,7 @@ export class Registry extends EventEmitter {
       // after a restart must be handed the queue it was looking at, not a blank gutter
       // until something happens to move a thread.
       fileCommentThreads: [...this.fileCommentThreads.values()],
+      fileCommentReviews: [...this.fileCommentReviews.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -1287,6 +1317,35 @@ export class Registry extends EventEmitter {
   onPrMergesRecorded(fn: () => void): () => void {
     this.on("pr_merges_recorded", fn);
     return () => this.off("pr_merges_recorded", fn);
+  }
+
+  /**
+   * A pending turn POSITIVELY reached the agent.
+   *
+   * Raised from the one place that already knew it - `PendingTurnManager.journalDelivered`,
+   * whose two callers are the only sites that retire a CLAIMED row - so this is a second
+   * subscriber to an established fact rather than a second mechanism. `journalScoutPrompt`
+   * was the first, and it stays exactly where it was.
+   *
+   * **Submitting is not delivering, and a row leaving `pending_turns` is not proof of
+   * delivery either.** `submit()` only creates a `queued` row; `recallPendingTurn` and
+   * `dropQueuedPendingTurns` remove rows that never went anywhere. A consumer that needs to
+   * know a turn's bytes were taken keys off this and off nothing else.
+   *
+   * Emitted synchronously, with no `await` between the row's retirement and this call, so a
+   * poller can never observe the window in between - which is what lets the walkthrough read
+   * "the row is gone and this never fired" as a recall rather than as a race.
+   *
+   * Listeners must not throw; this runs inside a delivery.
+   */
+  onTurnDelivered(fn: (e: TurnDelivered) => void): () => void {
+    this.on("turn_delivered", fn);
+    return () => this.off("turn_delivered", fn);
+  }
+
+  /** Announce a confirmed delivery. `PendingTurnManager.journalDelivered` is the only caller. */
+  turnDelivered(e: TurnDelivered): void {
+    this.emit("turn_delivered", e);
   }
 
   /** Internal Inspector-to-workflow wakeup. This is deliberately not browser SSE. */
@@ -1594,6 +1653,44 @@ export class Registry extends EventEmitter {
    * `sessions` rather than `liveSessions()`, also for `pruneGoals`' reason: an exited card
    * is still on screen with its file open, and it keeps its threads until it is evicted.
    */
+  /** This session's review state, from the projection. Absent reads as `idle`, never null. */
+  fileCommentReview(sessionId: string): FileCommentReview {
+    return (
+      this.fileCommentReviews.get(sessionId) ?? {
+        sessionId,
+        state: "idle",
+        pauseReason: null,
+        startedAt: null,
+        updatedAt: 0,
+      }
+    );
+  }
+
+  /** Every session that has ever started a review. The walkthrough's restart-resume read. */
+  listFileCommentReviews(): FileCommentReview[] {
+    return [...this.fileCommentReviews.values()];
+  }
+
+  /** Adopt a review's new run state and tell every browser. */
+  upsertFileCommentReview(review: FileCommentReview): void {
+    this.fileCommentReviews.set(review.sessionId, review);
+    this.emitEvent({ type: "file_comment_review_upsert", review });
+  }
+
+  /**
+   * The session went away, so its review went with it.
+   *
+   * A DELETE rather than an orphan, unlike the threads beside it, and the asymmetry is the
+   * point: a comment is a record of what a person asked and is kept, while "we were three
+   * comments into walking through it" is a fact about a session that no longer exists.
+   * `orphanFileCommentThreadsForSession` already removes the row; this drops the projection.
+   */
+  removeFileCommentReview(sessionId: string): void {
+    if (this.fileCommentReviews.delete(sessionId)) {
+      this.emitEvent({ type: "file_comment_review_remove", sessionId });
+    }
+  }
+
   pruneFileComments(olderThan: number): number {
     if (!this.sweptSessions) return 0;
     const live = new Set(this.sessions.keys());

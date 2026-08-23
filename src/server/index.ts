@@ -85,6 +85,7 @@ import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
+import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
   ProductIssueService,
@@ -509,6 +510,10 @@ const productIssues = new ProductIssueService({
 // that it has exactly three.
 const fileComments = new FileCommentManager(registry);
 fileComments.start();
+// The walkthrough is a CALLER of the existing human outbox, never a peer to it: it renders one
+// comment, hands it to `pendingTurns.submit`, and waits for the confirmed-delivery signal that
+// outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
+const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 
 const app = buildApp(
   registry,
@@ -534,6 +539,7 @@ const app = buildApp(
   modelCatalogs,
   productIssues,
   fileComments,
+  fileCommentWalkthrough,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -556,6 +562,12 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // Adopt every review the store still believes is running, so a daemon restart RESUMES a
+  // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
+  // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
+  // the walkthrough's existing pause-and-confirm path. Ordered after `pendingTurns.start()` for
+  // exactly that reason.
+  fileCommentWalkthrough.resume(registry.listFileCommentReviews().map((r) => r.sessionId));
   reviews.startContinuationRecovery((review, text) =>
     pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
   );
@@ -649,6 +661,7 @@ async function shutdown(): Promise<void> {
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
   pendingTurns.stop();
+  fileCommentWalkthrough.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.

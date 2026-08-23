@@ -25,17 +25,21 @@ const {
   setFileCommentThreadStatus,
 } = await import("../src/server/db.ts");
 const { FILE_COMMENT_THREAD_MESSAGE_CAP } = await import("../src/shared/file-comments.ts");
+const { FileCommentWalkthrough } = await import("../src/server/file-comment-walkthrough.ts");
+const { loadFileCommentReview, setFileCommentReviewState } = await import("../src/server/db.ts");
 type Registry = import("../src/server/registry.ts").Registry;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 type FileCommentThread = import("../src/shared/types.ts").FileCommentThread;
+type FileCommentReview = import("../src/shared/types.ts").FileCommentReview;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const events: ServerEvent[] = [];
 const held = new Map<string, FileCommentThread>();
+const reviews = new Map<string, FileCommentReview>();
 const sessions = new Set(["live"]);
 
 const registry = {
@@ -60,9 +64,60 @@ const registry = {
     if (held.delete(id)) events.push({ type: "file_comment_thread_remove", id });
   },
   pruneFileComments: () => 0,
+  fileCommentReview: (sessionId: string) =>
+    reviews.get(sessionId) ?? {
+      sessionId,
+      state: "idle",
+      pauseReason: null,
+      startedAt: null,
+      updatedAt: 0,
+    },
+  upsertFileCommentReview: (review: FileCommentReview) => {
+    reviews.set(review.sessionId, review);
+    events.push({ type: "file_comment_review_upsert", review });
+  },
+  removeFileCommentReview: (sessionId: string) => {
+    if (reviews.delete(sessionId)) events.push({ type: "file_comment_review_remove", sessionId });
+  },
 } as unknown as Registry;
 
 const stub = <T,>() => ({}) as unknown as T;
+/**
+ * The real walkthrough over a port that submits nowhere.
+ *
+ * The state machine has its own file - `file-comment-walkthrough.test.ts` drives every branch
+ * of it with no database at all. What is at stake HERE is only the doors: that start, pause
+ * and resume reach it through `parseBody`, that the run state comes back on the wire, and that
+ * both answer 503 without it. So the port is the durable one for reads and a no-op for the
+ * outbox, which is what keeps this file about routes.
+ */
+const submitted: string[] = [];
+const walkthrough = new FileCommentWalkthrough({
+  now: () => Date.now(),
+  session: () => ({ id: "live", runtime: "sdk", state: "idle", terminals: [], lastActivity: 0, firstSeen: 0, pendingTurns: [] }) as never,
+  review: (sessionId) => loadFileCommentReview(sessionId),
+  setReviewState: (sessionId, state, pauseReason) => {
+    const review = setFileCommentReviewState(sessionId, state, pauseReason, Date.now());
+    registry.upsertFileCommentReview(review);
+    return review;
+  },
+  threads: (sessionId) => loadFileCommentThreadsForSession(sessionId),
+  threadWithHistory: (id) => loadFileCommentThreadWithFullHistory(id),
+  // No checkout behind this app, so nothing re-anchors. The pause that produces is a real
+  // outcome of this route pair and is asserted below rather than papered over.
+  readFile: () => Promise.reject(new Error("no checkout in this test")),
+  updateAnchor: () => null,
+  beginDelivery: () => null,
+  markDelivered: () => null,
+  markUnanswered: () => null,
+  returnToQueue: () => null,
+  requeueAtTail: () => null,
+  submit: (_id, text) => {
+    submitted.push(text);
+    return { ok: true, turnId: `turn-${submitted.length}`, error: null };
+  },
+  pendingTurn: () => null,
+});
 const app = buildApp(
   registry,
   stub<ReviewManager>(),
@@ -87,6 +142,7 @@ const app = buildApp(
   undefined,
   undefined,
   new FileCommentManager(registry),
+  walkthrough,
 );
 // The same construction with the manager LEFT OFF, which is what ~50 focused route tests do.
 const without = buildApp(registry, stub<ReviewManager>(), stub<TaskManager>(), stub<QueueManager>());
@@ -99,6 +155,8 @@ function reset(): void {
   db.exec("DELETE FROM file_comment_threads");
   db.exec("DELETE FROM file_comment_reviews");
   held.clear();
+  reviews.clear();
+  submitted.length = 0;
   events.length = 0;
 }
 
@@ -688,6 +746,8 @@ test("without the manager every route answers 503, never a route-built twin", as
     ["POST", "/api/file-comments/x/read"],
     ["POST", "/api/file-comments/x/status"],
     ["DELETE", "/api/file-comments/x"],
+    ["GET", "/api/sessions/live/file-comment-review"],
+    ["POST", "/api/sessions/live/file-comment-review"],
   ] as const) {
     const res = await without.request(path, {
       method,
@@ -703,4 +763,89 @@ test("the loopback guard applies to all of it", async () => {
     headers: { host: "evil.example.com" },
   });
   assert.equal(res.status, 403);
+});
+
+
+test("the walkthrough's three controls are one route with an action", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+
+  // Never started reads as `idle` rather than as a missing row: the toolbar has to draw
+  // something, and making every caller invent a default would give it two answers.
+  const before = (await (
+    await app.request("/api/sessions/live/file-comment-review", { headers: HEADERS })
+  ).json()) as { review: FileCommentReview; progress: { queued: number } };
+  assert.equal(before.review.state, "idle");
+  assert.equal(before.progress.queued, 1);
+
+  const started = await post("/api/sessions/live/file-comment-review", { action: "start" });
+  assert.equal(started.status, 200);
+  // This app has no checkout, so the re-anchor pass has no bytes and the review pauses with a
+  // reason rather than delivering blind. That IS the contract: a comment is never sent against
+  // a file the daemon could not read.
+  const after = loadFileCommentReview("live");
+  assert.equal(after.state, "paused");
+  assert.ok(after.pauseReason);
+  assert.equal(submitted.length, 0);
+  // And the run state reached the stream, which is the only way a second dashboard hears it.
+  assert.ok(events.some((e) => e.type === "file_comment_review_upsert"));
+
+  const paused = await post("/api/sessions/live/file-comment-review", {
+    action: "pause",
+    reason: "reading something else",
+  });
+  assert.equal(paused.status, 200);
+  assert.equal(loadFileCommentReview("live").pauseReason, "reading something else");
+});
+
+test("a reason is refused on anything but a pause, and an unknown action is refused", async () => {
+  reset();
+  // A reason attached to "running" would be a pause reason on a review that is not paused,
+  // which is the one state the column must never hold.
+  assert.equal(
+    (await post("/api/sessions/live/file-comment-review", { action: "start", reason: "why" })).status,
+    400,
+  );
+  assert.equal(
+    (await post("/api/sessions/live/file-comment-review", { action: "resume" })).status,
+    400,
+  );
+  assert.equal(
+    (await post("/api/sessions/gone/file-comment-review", { action: "start" })).status,
+    404,
+  );
+});
+
+test("a human reply requeues an unanswered thread at the TAIL, and never one in flight", async () => {
+  reset();
+  const first = await create();
+  const second = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${first.id}/queue`);
+  await post(`/api/file-comments/${second.id}/queue`);
+  assert.equal(loadFileCommentThread(first.id)!.queueSeq, 0);
+
+  // The walkthrough gave up on the first comment. A person writes a follow-up.
+  setFileCommentThreadStatus(first.id, "unanswered", Date.now());
+  const replied = await post(`/api/file-comments/${first.id}/messages`, {
+    author: "human",
+    body: "still not right",
+  });
+  assert.equal(replied.status, 200);
+  const back = loadFileCommentThread(first.id)!;
+  assert.equal(back.status, "queued");
+  assert.equal(back.queueSeq, 2, "at the END, behind everything queued since - not in its old slot");
+
+  // And a reply to the comment currently OUT WITH THE AGENT appends without moving it. Moving
+  // it would empty the outstanding set the single-flight index is built on while a turn is
+  // genuinely live, and the walkthrough would release the next comment on top of it.
+  setFileCommentThreadStatus(second.id, "awaiting", Date.now());
+  const during = await post(`/api/file-comments/${second.id}/messages`, {
+    author: "human",
+    body: "one more thing",
+  });
+  assert.equal(during.status, 200);
+  const outstanding = loadFileCommentThread(second.id)!;
+  assert.equal(outstanding.status, "awaiting", "appending is allowed; the status must not move");
+  assert.equal(outstanding.messageCount, 2);
 });

@@ -144,5 +144,35 @@ test("the shared diff reader routes the jump through the one open-a-file path", 
   assert.doesNotMatch(app, /closeDiff|setDiffSessionId/);
   // One destination, two entry points: prose hrefs still funnel through the exact-path
   // opener rather than duplicating the layout branching.
-  assert.match(app, /openSessionPath\(sessionId, target\.path\);/);
+  //
+  // The LINE rides along, and only from this side. `workspaceFileTarget` parses `path:12`
+  // out of a sentence a human wrote, so a prose href knows which line it meant; the diff's
+  // own path is exact and git-emitted, and reading a trailing `:12` out of it opened a file
+  // genuinely named `notes:12` - which is the case pinned above. Same opener, and only one
+  // of its two callers has a line to give it.
+  assert.match(app, /openSessionPath\(sessionId, target\.path, target\.line\);/);
+  assert.match(detail, /onOpenInFiles=\{\(path\) => view\.onOpenFilePath\(session\.id, path\)\}/);
+});
+
+test("a scroll request is spent once, not re-applied on every later edit", () => {
+  // A scroll request is a one-shot instruction to GO somewhere, never a position to hold the
+  // reader at. The effect depends on `value` - it must, because a deep link arrives before the
+  // document does and scrolling an empty buffer to line 84 lands on line 1 - so without a
+  // per-request guard every later keystroke scrolled again. A reader who followed a link,
+  // scrolled elsewhere and started typing was yanked back on each character, and an agent
+  // editing the file underneath them did the same thing.
+  //
+  // Pinned on the NONCE rather than on object identity, because `scrollTo` is rebuilt on most
+  // renders and identity therefore cannot tell a new request from the same one seen again.
+  const editor = readFileSync(
+    fileURLToPath(new URL("../src/web/components/FileEditor.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(editor, /scrolledNonce\.current === scrollTo\.nonce\) return;/);
+  assert.match(editor, /scrolledNonce\.current = scrollTo\.nonce;/);
+  // And still deferred until the document arrives, or the guard would spend the request on an
+  // empty buffer and never scroll at all.
+  const guard = editor.indexOf("scrolledNonce.current = scrollTo.nonce;");
+  const defer = editor.indexOf("if (!value) return;");
+  assert.ok(defer >= 0 && defer < guard, "the empty-document check must run BEFORE the nonce is spent");
 });

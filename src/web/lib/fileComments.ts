@@ -8,9 +8,13 @@
 // `readOnly` or `lineSeparator` change, and position-mapped decorations do not survive
 // either. Derived ones do not notice.
 
-import type { FileCommentThread, SessionFileDocument } from "@shared/types.ts";
+import type { FileCommentReview, FileCommentThread, SessionFileDocument } from "@shared/types.ts";
 import { boundQuote, normalizeQuote } from "@shared/file-comment-anchor.ts";
-import { isTerminalThreadStatus } from "@shared/file-comments.ts";
+import {
+  holdsQueuePosition,
+  isOutstandingThreadStatus,
+  isTerminalThreadStatus,
+} from "@shared/file-comments.ts";
 
 /**
  * Whether the Editor can anchor a comment in this document.
@@ -178,4 +182,104 @@ export function markerTone(threads: readonly FileCommentThread[]): string {
  */
 export function isPersistableBody(body: string): boolean {
   return body.trim().length > 0 && normalizeQuote(body).length > 0;
+}
+
+// ---- the review queue (phase 3's walkthrough) ----
+
+/**
+ * The comments a session's review still holds, in the order they will be delivered.
+ *
+ * Spans every FILE, unlike `threadsForFile` above, and that is the difference that matters:
+ * a review is a pass over a working tree, not over one document, so the queue panel has to
+ * name each comment's path. The threads arrive here already ordered by `queue_seq` from the
+ * daemon's own comparator, but the wire list is keyed by id and carries every session's
+ * threads, so the order is re-established rather than assumed.
+ *
+ * `sending` and `awaiting` keep their positions - they hold `queue_seq` and are what
+ * `QUEUE_POSITION_THREAD_STATUSES` names - so the comment currently out with the agent is
+ * still in this list, at the head, which is where a reader expects to find it.
+ */
+export function reviewQueue(
+  threads: readonly FileCommentThread[],
+  sessionId: string,
+): FileCommentThread[] {
+  return threads
+    .filter((thread) => thread.sessionId === sessionId && holdsQueuePosition(thread.status))
+    .sort((a, b) => (a.queueSeq ?? 0) - (b.queueSeq ?? 0) || a.createdAt - b.createdAt);
+}
+
+/** The comment out with the agent right now, or null between two turns. */
+export function outstandingThread(queue: readonly FileCommentThread[]): FileCommentThread | null {
+  return queue.find((thread) => isOutstandingThreadStatus(thread.status)) ?? null;
+}
+
+/**
+ * The message a queued comment would send next: its oldest human message not yet delivered.
+ *
+ * The same selection the daemon's payload renderer makes, and the reason edit-unsent edits
+ * this row rather than the thread's opening comment - a thread that timed out and was replied
+ * to would otherwise offer to edit a comment the agent has already read.
+ *
+ * Null when there is nothing left to send, and null is also what a truncated frame yields for
+ * a thread past the message cap: the wire list carries the NEWEST fifty, so an undelivered
+ * message older than those is not in it. Editing is refused rather than guessed at there,
+ * which is the safe direction - fifty replies deep on one line, the composer is not the
+ * problem.
+ */
+export function unsentMessage(thread: FileCommentThread): FileCommentThread["messages"][number] | null {
+  return thread.messages.find((m) => m.author === "human" && m.deliveredAt === null) ?? null;
+}
+
+/**
+ * The one line of text a queue row shows for a comment.
+ *
+ * The comment somebody WROTE, not the line they wrote it about. `unsentMessage` goes null the
+ * moment a comment is delivered, and falling back to the quote there made the head row - the
+ * one row a reader is actually watching - stop showing the sentence it just sent and start
+ * showing the source line instead, which reads as the queue having lost it. So the latest
+ * human message wins whether or not it has gone, and the quote is only the answer for a
+ * thread that somehow carries no human message at all.
+ */
+export function queueRowText(thread: FileCommentThread): string {
+  const written = [...thread.messages].reverse().find((m) => m.author === "human");
+  return written?.body ?? thread.quote;
+}
+
+/**
+ * Whether this comment can still be rewritten, reordered or dropped.
+ *
+ * False for the one in flight, INCLUDING during the `sending` window before delivery is
+ * confirmed: the bytes are already committed to the outbox, and the daemon refuses the edit
+ * outright, so offering the control would only produce a 409 the reader cannot act on.
+ */
+export function isEditableInQueue(thread: FileCommentThread): boolean {
+  return !isOutstandingThreadStatus(thread.status);
+}
+
+/**
+ * What the walkthrough is doing, in one sentence, for the queue panel's live region.
+ *
+ * Announced rather than merely drawn because the whole feature is a queue draining without
+ * anybody watching it: a sighted reader sees the head move, and without this a screen-reader
+ * user is left guessing whether their review is running at all.
+ */
+export function reviewAnnouncement(
+  review: FileCommentReview | null,
+  queue: readonly FileCommentThread[],
+): string {
+  const waiting = queue.filter((thread) => thread.status === "queued").length;
+  const out = outstandingThread(queue);
+  const remaining = `${waiting} comment${waiting === 1 ? "" : "s"} waiting`;
+  // Deliberately WITHOUT the pause reason. The reason is drawn beside this line in its own
+  // `role="alert"`, which a screen reader announces too, so carrying it here as well read as
+  // the same sentence twice - on screen, literally twice, one under the other.
+  if (review?.state === "paused") return `Review paused. ${remaining}.`;
+  if (review?.state !== "running") {
+    return waiting === 0
+      ? "No comments are queued for review."
+      : `Review not started. ${remaining}.`;
+  }
+  return out
+    ? `${out.shortId} on ${out.path} line ${out.startLine} is out with the agent. ${remaining}.`
+    : `Review running. ${remaining}.`;
 }

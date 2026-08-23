@@ -89,6 +89,7 @@ import {
   EditFileCommentMessageSchema,
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
+  FileCommentReviewControlSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
@@ -247,6 +248,7 @@ import {
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
+import { progressOf, type FileCommentWalkthrough } from "./file-comment-walkthrough.ts";
 import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
@@ -938,6 +940,8 @@ export function buildApp(
    * exactly three.
    */
   fileComments?: FileCommentManager,
+  /** The walkthrough. Optional for the same reason `fileComments` is; its routes answer 503. */
+  fileCommentWalkthrough?: FileCommentWalkthrough,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -2494,6 +2498,46 @@ export function buildApp(
     return c.json({ ok: true });
   });
 
+
+  // ---- the walkthrough: one comment at a time, with exactly one turn outstanding ----
+  //
+  // Session-scoped, because a review belongs to a session (decision 2) and there is exactly one
+  // per session - which is also why `file_comment_reviews` is keyed by `session_id` rather than
+  // by an id of its own. Reorder is NOT redeclared here: phase 1's
+  // `POST /api/sessions/:id/file-comments/reorder` is the queue's order, and a review that
+  // owned a second reordering door would be a second source of truth about the same column.
+  app.get("/api/sessions/:id/file-comment-review", (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json({
+      review: registry.fileCommentReview(session.id),
+      progress: progressOf(
+        fileComments!.list(session.id),
+        registry.fileCommentReview(session.id).startedAt,
+      ),
+    });
+  });
+
+  app.post("/api/sessions/:id/file-comment-review", async (c) => {
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    if (!fileCommentWalkthrough) {
+      return c.json({ error: "the review walkthrough is not available" }, 503);
+    }
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FileCommentReviewControlSchema);
+    if (!parsed.ok) return parsed.res;
+    // `start` covers resume: see the schema for why those are one action and not two.
+    const review =
+      parsed.data.action === "start"
+        ? fileCommentWalkthrough.start(session.id)
+        : fileCommentWalkthrough.pause(session.id, parsed.data.reason ?? null);
+    return c.json({ review });
+  });
+
   // The "Open in" menu: every registered target, and whether THIS machine can use it.
   // Availability is answered here rather than in the browser because it is a question
   // about the daemon's host - which is not the machine the dashboard is necessarily
@@ -3992,6 +4036,14 @@ export function buildApp(
     const parsed = await parseBody(c, PendingTurnRevisionSchema);
     if (!parsed.ok) return parsed.res;
     const turn = pendingTurns.retry(session.id, c.req.param("turnId"), parsed.data.revision);
+    // A retried turn is going out again, so a review paused behind THIS turn resumes - the
+    // walkthrough checks that for itself, because this route fires for every retried row in the
+    // session and most of them have nothing to do with a review. The THREAD needs no write:
+    // `retryPendingTurn` moves the existing row `uncertain` -> `queued` and leaves its id alone,
+    // so `delivery_id` still names the row about to be delivered, the thread stays `sending` -
+    // it never left the outstanding set - and `delivered_at` stays NULL, which is what makes the
+    // SAME message go rather than the next one.
+    if (turn) fileCommentWalkthrough?.onTurnRetried(session.id, c.req.param("turnId"));
     return turn
       ? c.json({ ok: true as const })
       : c.json({ ok: false as const, error: "that message can no longer be retried" }, 409);
@@ -4004,6 +4056,14 @@ export function buildApp(
     const parsed = await parseBody(c, PendingTurnRevisionSchema);
     if (!parsed.ok) return parsed.res;
     const resolved = pendingTurns.resolve(session.id, c.req.param("turnId"), parsed.data.revision);
+    // "Mark sent" is the human supplying the confirmation the daemon could not observe, so it
+    // performs the confirmed-delivery write on the correlated thread. Without it the thread
+    // would stay `sending` - outstanding, indexed - and the partial unique index would block
+    // every later delivery, leaving the review stuck behind a comment the human just dealt with.
+    // Correlated is the operative word, and the walkthrough decides it: this fires for every
+    // resolved row in the session, so an ordinary conversation turn marked sent by hand must
+    // not stamp a comment or restart a review somebody paused.
+    if (resolved) fileCommentWalkthrough?.onTurnMarkedSent(session.id, c.req.param("turnId"));
     return resolved
       ? c.json({ ok: true as const })
       : c.json({ ok: false as const, error: "that message can no longer be resolved" }, 409);

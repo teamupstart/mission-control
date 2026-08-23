@@ -916,23 +916,36 @@ export class PendingTurnManager {
   }
 
   /**
-   * Tell the scout prompt journal that this row positively reached the agent.
+   * Announce that this row positively reached the agent.
    *
    * Called from the two places that RETIRE a claimed row - an accepted SDK turn and a
    * proven terminal pickup - and from nowhere else, which is the whole contract. A queued
    * row is still editable, a recalled one was never delivered, a released one went back to
-   * the outbox, and an uncertain one is a question for the operator; archiving any of them
-   * would put words in the agent's ears it never heard.
+   * the outbox, and an uncertain one is a question for the operator; telling any of them to
+   * a subscriber would put words in the agent's ears it never heard.
    *
    * `PendingTurn.id` is the delivery id, so a row that went out, could not be confirmed and
-   * was retried is one prompt rather than two. Non-scout sessions write nothing.
+   * was retried is one delivery rather than two.
+   *
+   * **Two subscribers now, and the second was added rather than the fact re-derived.** The
+   * scout prompt journal was the first; the line-comment walkthrough is the second, and it
+   * needs exactly this fact - "the bytes were taken" - to stamp a comment delivered. It
+   * hears it through `Registry.onTurnDelivered` rather than through a hook on this class,
+   * because that is the shape every other durable subscriber in this daemon already has and
+   * because the walkthrough is constructed long after this manager is.
+   *
+   * Both calls are synchronous and neither may throw: `journalScoutPrompt` cannot, for the
+   * reason stated once on `prompt-journal.ts`, and the emit runs listeners that the
+   * Registry's own contract already forbids from throwing.
    */
   private journalDelivered(sessionId: string, turn: PendingTurn): void {
+    const now = this.deps.now();
     // No try/catch: `journalScoutPrompt` cannot throw, and the reason is stated once on
     // `prompt-journal.ts` rather than re-argued at each of its callers. A local guard here
     // would read as though this site were special, and the two sites that turned out to
     // need one had not copied it.
-    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, this.deps.now());
+    journalScoutPrompt(this.registry, sessionId, turn.text, "human", turn.id, now);
+    this.registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: now });
   }
 
   private armPickupTimeout(sessionId: string, turn: PendingTurn): void {

@@ -22,10 +22,13 @@ const {
   openDb,
   appendFileCommentMessage,
   queueFileCommentThread,
+  setFileCommentReviewState,
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { FILE_COMMENT_QUOTE_MAX } = await import("../src/shared/file-comment-anchor.ts");
-const { FILE_COMMENT_THREAD_MESSAGE_CAP } = await import("../src/shared/file-comments.ts");
+const { FILE_COMMENT_THREAD_MESSAGE_CAP, FILE_COMMENT_TEXT_LIMITS } = await import(
+  "../src/shared/file-comments.ts"
+);
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 type FileCommentThread = import("../src/shared/types.ts").FileCommentThread;
 
@@ -210,6 +213,14 @@ test("the browser handles both frames, keys them by id, and polls nothing", () =
   );
   assert.match(source, /case "file_comment_thread_upsert":/);
   assert.match(source, /case "file_comment_thread_remove":/);
+  // And the review's run state, which is a FACT of its own rather than one derived from the
+  // threads: "paused" and "never started" are the same set of rows.
+  assert.match(source, /case "file_comment_review_upsert":/);
+  assert.match(source, /case "file_comment_review_remove":/);
+  assert.match(
+    source,
+    /new Map\(\(msg\.fileCommentReviews \?\? \[\]\)\.map\(\(review\) => \[review\.sessionId, review\]\)\)/,
+  );
   assert.match(
     source,
     /setFileCommentThreads\(\(prev\) => new Map\(prev\)\.set\(msg\.thread\.id, msg\.thread\)\)/,
@@ -240,7 +251,40 @@ test("file-comment frames are deliberately not Line inputs", () => {
   assert.ok(block.length > 0, "LINE_INPUT_EVENTS should still be a literal Set");
   assert.equal(/"file_comment_thread_upsert"/.test(block), false);
   assert.equal(/"file_comment_thread_remove"/.test(block), false);
+  // The review's run state is not one either, and for a sharper version of the same reason:
+  // it moves once when a walkthrough starts and once when it stops, and the Line folds
+  // execution rather than what a person is doing with a document.
+  assert.equal(/"file_comment_review_upsert"/.test(block), false);
+  assert.equal(/"file_comment_review_remove"/.test(block), false);
   // And the decision is WRITTEN beside the set rather than merely acted on, which is what
   // `change-contracts.md` asks for.
   assert.match(block, /file_comment_thread_upsert/);
+});
+
+
+test("the review collection is bounded harder than the threads beside it", () => {
+  clear();
+  const db2 = openDb();
+  db2.exec("DELETE FROM file_comment_reviews");
+  const registry = new Registry();
+  // An untouched fleet carries `[]`, which is the shipped state on every installation where
+  // nobody has pressed Start review.
+  assert.deepEqual(registry.snapshot().fileCommentReviews, []);
+
+  // One row per session, five scalar fields wide, and a pause reason bounded by
+  // `FILE_COMMENT_TEXT_LIMITS.pauseReason`. Fifty sessions all mid-review is the arithmetic
+  // worth pinning, because that is a busier fleet than anyone runs.
+  const reason = "x".repeat(FILE_COMMENT_TEXT_LIMITS.pauseReason);
+  for (let i = 0; i < 50; i += 1) {
+    setFileCommentReviewState(`s${i}`, "paused", reason, 1_700_000_000_000);
+  }
+  const withFifty = new Registry();
+  assert.equal(withFifty.snapshot().fileCommentReviews.length, 50);
+  const bytes = Buffer.byteLength(JSON.stringify(withFifty.snapshot().fileCommentReviews));
+  assert.ok(
+    bytes < 32_768,
+    `fifty worst-case reviews are ${bytes} bytes on the wire; bound the pause reason rather ` +
+      `than widening the snapshot`,
+  );
+  db2.exec("DELETE FROM file_comment_reviews");
 });

@@ -1,4 +1,11 @@
-import type { BacklogPlan, FileCommentThread, ReviewItem, Session, Task } from "@shared/types.ts";
+import type {
+  BacklogPlan,
+  FileCommentReview,
+  FileCommentThread,
+  ReviewItem,
+  Session,
+  Task,
+} from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
@@ -110,6 +117,10 @@ export interface SessionViewProps {
    * empty list.
    */
   fileCommentThreads?: FileCommentThread[];
+  /** Each session's walkthrough run state. At most one row per session; empty until one starts. */
+  fileCommentReviews?: FileCommentReview[];
+  /** Which source line the reader deep-linked to, and how many times they asked. */
+  fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */
   onComplete: (id: string) => void;

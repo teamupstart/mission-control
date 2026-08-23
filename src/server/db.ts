@@ -11906,6 +11906,41 @@ export function markFileCommentMessageDelivered(id: string, at: number): FileCom
 }
 
 /**
+ * Put a `sending` thread back in the queue because its outbox row went away UNDELIVERED.
+ *
+ * `recallPendingTurn` and `dropQueuedPendingTurns` both remove rows that never reached the
+ * agent, so a row's absence is not proof of delivery - which is why delivery is stamped from
+ * the confirmed-delivery signal and never from here. This is the other side of that rule: the
+ * signal did not fire, the row is gone, so the comment did not go.
+ *
+ * **It keeps `queue_seq`, and that is the whole difference from `queueFileCommentThread`.**
+ * That operation refuses an outstanding thread and allocates a fresh TAIL position; neither
+ * is right for a recall. A recalled comment did not lose its place in the review, and pushing
+ * it behind everything queued since would silently reorder a review the operator arranged.
+ *
+ * `delivery_id` clears, `sent_at` is kept as the record that a send was attempted, and
+ * `delivered_at` on the message is untouched - it was never stamped, which is what makes the
+ * comment editable again.
+ *
+ * Refuses anything but `sending`: an `awaiting` thread's bytes provably reached the agent.
+ */
+export function returnFileCommentDeliveryToQueue(
+  threadId: string,
+  now: number,
+): FileCommentThread | null {
+  const d = openDb();
+  const changed = d
+    .prepare(
+      `UPDATE file_comment_threads
+          SET status = 'queued', delivery_id = NULL, updated_at = ?
+        WHERE id = ? AND status = 'sending'`,
+    )
+    .run(now, threadId);
+  if (!Number(changed.changes)) return null;
+  return loadFileCommentThread(threadId);
+}
+
+/**
  * The durable half of the re-anchor pass, and the ONLY writer of `start_line`, `end_line`,
  * `revision` and `outdated` after creation.
  *
@@ -12123,6 +12158,20 @@ export function loadFileCommentReview(sessionId: string): FileCommentReview {
   return row
     ? rowToFileCommentReview(row)
     : { sessionId, state: "idle", pauseReason: null, startedAt: null, updatedAt: 0 };
+}
+
+/**
+ * Every session's review state, for the registry's boot-time projection.
+ *
+ * Bounded by `file_comment_reviews`, which holds at most one row per session and is DELETED
+ * outright when a session's threads are orphaned - so it is bounded by live sessions in the
+ * strictest of the two senses the thread collection uses.
+ */
+export function loadFileCommentReviews(): FileCommentReview[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM file_comment_reviews`)
+    .all() as unknown as FileCommentReviewRow[];
+  return rows.map(rowToFileCommentReview);
 }
 
 export function setFileCommentReviewState(

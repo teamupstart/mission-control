@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  FileCommentReview,
   FileCommentThread,
   FleetCost,
   KeepAwakeStatus,
@@ -89,6 +90,17 @@ export interface MissionState {
    * EMPTY on every fleet where nobody has written a comment, which is the shipped state.
    */
   fileCommentThreads: FileCommentThread[];
+  /**
+   * Each session's walkthrough run state, on the same terms as the threads above.
+   *
+   * A frame of its own rather than something derived from the threads: "paused" and "never
+   * started" are the same set of rows - everything queued, nothing outstanding - and between
+   * two comments the outstanding set is briefly empty, so a derived "running" would flicker.
+   *
+   * Bounded by the same thing the threads are, and more tightly: at most one row per session,
+   * removed when that session goes away. EMPTY until somebody presses Start review.
+   */
+  fileCommentReviews: FileCommentReview[];
   /**
    * Fleet spend and the subscription's rate limits, for the topbar strip. A single
    * value rather than a per-session field because that is the shape of the fact: the
@@ -186,6 +198,10 @@ export function useEventStream(): MissionState {
   const [fileCommentThreads, setFileCommentThreads] = useState<Map<string, FileCommentThread>>(
     new Map(),
   );
+  /** Keyed by SESSION id, which is the review's whole identity - there is one per session. */
+  const [fileCommentReviews, setFileCommentReviews] = useState<Map<string, FileCommentReview>>(
+    new Map(),
+  );
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
@@ -270,6 +286,12 @@ export function useEventStream(): MissionState {
           // The `?? []` is the version-skew guard an older daemon needs.
           setFileCommentThreads(
             new Map((msg.fileCommentThreads ?? []).map((thread) => [thread.id, thread])),
+          );
+          // Replaced wholesale beside them, for their reason and with the same skew guard: a
+          // review whose session went away while this tab was disconnected must not be left
+          // saying "running" over a Files toolbar for a session that is gone.
+          setFileCommentReviews(
+            new Map((msg.fileCommentReviews ?? []).map((review) => [review.sessionId, review])),
           );
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
@@ -435,6 +457,18 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        // Whole, like the thread above: state and pause reason are read as one sentence about
+        // what the review is doing, and a merge could draw "paused" beside no reason at all.
+        case "file_comment_review_upsert":
+          setFileCommentReviews((prev) => new Map(prev).set(msg.review.sessionId, msg.review));
+          break;
+        case "file_comment_review_remove":
+          setFileCommentReviews((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.sessionId);
+            return next;
+          });
+          break;
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
@@ -506,6 +540,7 @@ export function useEventStream(): MissionState {
     schedules: [...schedules.values()],
     pipelineRuns: [...pipelineRuns.values()],
     fileCommentThreads: [...fileCommentThreads.values()],
+    fileCommentReviews: [...fileCommentReviews.values()],
     fleetCost,
     lineSummary,
     settingsStatus,

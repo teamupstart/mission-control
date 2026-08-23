@@ -329,7 +329,7 @@ export interface ResolvedStandingInstructions {
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td><code>StandingInstructionsView</code></td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code> → <code>200</code> view, <code>409</code> <code>{error, code, current}</code>, <code>413</code> over <code>bodyLimit</code></td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime. <strong>Live config: what a session <em>would</em> get</strong></td></tr>
 <tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>The immutable snapshot of what <em>that</em> session received at launch, or <code>404</code>. <strong>What a session <em>did</em> get</strong></td></tr>
 </tbody>
 </table>
@@ -346,8 +346,11 @@ leaves the stored value alone, a string sets it, and <code>null</code> removes i
 saves one repository by sending that one key, and <strong>must not</strong> send its whole draft map -
 doing so persists every other repository's unsaved text as though the operator had committed to
 it.</li>
-<li>Resolution is longest-path-match on the <strong>resolved repository root</strong>,
-boundary-matched.</li>
+<li>Resolution is longest-path-match on the <strong>canonical repo-rooted path</strong>,
+boundary-matched. Both the stored key and the lookup argument are
+<code>resolveRepoPath(...).path</code>, never <code>.repoRoot</code> - collapsing to the root on
+either side makes a monorepo package key unreachable, and on the write side silently overwrites the
+parent's rule with it.</li>
 <li>The PUT is compare-and-swap on <code>expectedEtag</code>; a stale caller gets <code>409</code>
 with the current view and performs no write.</li>
 <li><code>resolveStandingInstructions</code> is a pure function exported from shared code. Phase 2

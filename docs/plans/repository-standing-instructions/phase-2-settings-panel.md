@@ -51,7 +51,7 @@ From Phase 1, relied on and not changed:
 |---|---|
 | `GET /api/instructions` | `StandingInstructionsView` - default, repositories, one opaque ETag |
 | `PUT /api/instructions` | CAS on `expectedEtag`; `409` `{error, code, current}`; `413` oversize |
-| `GET /api/instructions/resolved?repoRoot=&agent=&runtime=` | effective text, matched key, and delivery mechanism - **live config, for the dispatch note only** |
+| `GET /api/instructions/resolved?repoPath=&agent=&runtime=` | effective text, matched key, and delivery mechanism - **live config, for the dispatch note only** |
 | `GET /api/sessions/:id/standing-instructions` | the immutable snapshot of what *that* session received, or `404` - **the only source the session chip may read** |
 | absent key | inherit the machine-wide default → renders the `inherited` chip |
 | key present, `""` | send nothing for this repository → still an `override` |
@@ -194,7 +194,11 @@ Layout is specified by the mockups in [`plan.html`](plan.html); read them rather
   `overridden ? "override" : "inherited"`, and its reset button at `:274-276` is a `btn btn-ghost`
   wrapped in a `Tooltip`, `disabled={!overridden}`, posting `null` for the key.
 - Adding a repository uses `RepoCombobox` and resolves through `resolveRepo` before staging, the
-  way `TrustPanel` and `CommandLibrary.tsx:560-585` already do. A subdirectory is a legitimate key.
+  way `TrustPanel` and `CommandLibrary.tsx:560-585` already do. **A subdirectory is a legitimate
+  key, so stage `resolved.path` and not `resolved.repoRoot`** - `POST /api/repos/resolve` returns
+  both and its own comment notes that existing callers read `repoRoot` and ignore the rest
+  (`routes.ts:2762-2770`). Reading it here would collapse `mono/packages/api` to `mono` before the
+  operator ever pressed Save.
 
 The **reach** block is a required part of this phase, not decoration. It states per harness and
 runtime which sessions get the text and by which mechanism, **and when a change to it takes effect**,

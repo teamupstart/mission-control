@@ -567,7 +567,7 @@ effect on the next session, not a running one.</strong></p></blockquote>
 sessions" - it is edits reaching them on two of the five pairs and not the other three, for the same
 feature. The panel says which it is.</p>
 
-<h3>Resolution is longest-path-match on the repository root</h3>
+<h3>Resolution is longest-path-match on the repo-rooted path</h3>
 
 <p><code>workflow_command_overrides</code> already stores <code>repo_root</code> as "a repository
 root OR a path beneath one - the monorepo override - and the longest match wins at resolution
@@ -580,13 +580,16 @@ so <code>/repo-backup</code> never matches <code>/repo</code>.</p>
 <p>Two consequences worth writing down:</p>
 
 <ul>
-<li><strong>The key is the repository root, resolved, not the checkout path.</strong> Every key
-is written through <code>POST /api/repos/resolve</code> → <code>resolveRepoPath</code>
-(<code>src/server/repos.ts:151</code>), which walks a linked worktree back to its owning main
-checkout. That is what keeps a <code>~/.treehouse/...</code> pool path out of durable config,
-and it means a session in a pool slot resolves the same rules as one in the main checkout.
-(Worktree policy keys on the <em>git common directory</em> instead, because it configures
-pools; this keys on the root, because it configures repositories, and it must support
+<li><strong>The key is resolved, not the raw checkout path - and it is <code>.path</code>, not
+<code>.repoRoot</code>.</strong> Every key is written through <code>POST /api/repos/resolve</code>
+→ <code>resolveRepoPath</code> (<code>src/server/repos.ts:146-177</code>), which walks a linked
+worktree back to its owning main checkout <em>and</em> re-roots the subdirectory onto it. That is
+what keeps a <code>~/.treehouse/...</code> pool path out of durable config, so a session in a pool
+slot resolves the same rules as one in the main checkout. It has to be <code>.path</code>:
+<code>resolveRepoRoot</code> collapses <code>mono/packages/api</code> to <code>mono</code>, which
+would store the package rule as the monorepo rule and leave the longest-match behaviour above
+impossible to configure. (Worktree policy keys on the <em>git common directory</em> instead, because
+it configures pools; this keys on the path, because it configures repositories and must support
 subdirectories.)</li>
 <li><strong>A multi-repo task gets a block per attached repository that has one.</strong>
 Dispatch already hands the agent write access to every attached repo and already emits a
@@ -639,7 +642,7 @@ export const StandingInstructionsConfigSchema = z
   .object({
     /** Applies to any repository with no block of its own. Empty means send nothing. */
     default: z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH).default(""),
-    /** Keyed by resolved repository root, or a path beneath one for a monorepo package. */
+    /** Keyed by a canonical repo-rooted path: a repository root, or a path beneath one. */
     repositories: z
       .record(z.string().min(1).max(4_096), z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH))
       .default({}),
@@ -674,7 +677,7 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>-</td><td>default, every override, one opaque ETag</td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code></td><td><code>200</code> view, <code>409</code> conflict with <code>current</code>, <code>413</code> too large</td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed text and mechanism for one repo, from live config</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoPath=&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed text and mechanism for one repo, from live config</td></tr>
 <tr><td><code>GET</code></td><td><code>/api/sessions/:id/standing-instructions</code></td><td>-</td><td>what one session actually received at launch, or <code>404</code></td></tr>
 </tbody>
 </table>
@@ -682,7 +685,7 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 
 <p>The resolved route exists so the <strong>Preview</strong> button, the dispatch chip and the
 composed prompt can never disagree: all three read one pure
-<code>resolveStandingInstructions(config, repoRoot)</code>, and the browser never reimplements
+<code>resolveStandingInstructions(config, repoPath)</code>, and the browser never reimplements
 the longest-match rule. <code>repositories</code> is a <strong>patch</strong>, the same
 convention <code>WorktreesConfigPatchSchema</code> uses: an absent key is untouched, a string
 sets it, and <code>null</code> removes that repository's block entirely. Saving one repository

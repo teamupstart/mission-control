@@ -230,7 +230,7 @@ export interface ResolvedStandingInstructions {
 |---|---|---|
 | `GET` | `/api/instructions` | `StandingInstructionsView` |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` → `200` view, `409` `{error, code, current}`, `413` over `bodyLimit` |
-| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime. **Live config: what a session *would* get** |
+| `GET` | `/api/instructions/resolved?repoPath=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime. **Live config: what a session *would* get** |
 | `GET` | `/api/sessions/:id/standing-instructions` | The immutable snapshot of what *that* session received at launch, or `404`. **What a session *did* get** |
 
 **Behavioural invariants Phase 2 may rely on and must not change:**
@@ -243,7 +243,10 @@ export interface ResolvedStandingInstructions {
    it, and `null` removes it. A caller therefore saves one repository by sending that one key, and
    **must not** send its whole draft map - doing so persists every other repository's unsaved text
    as though the operator had committed to it.
-2. Resolution is longest-path-match on the **resolved repository root**, boundary-matched.
+2. Resolution is longest-path-match on the **canonical repo-rooted path**, boundary-matched. Both
+   the stored key and the lookup argument are `resolveRepoPath(...).path`, never `.repoRoot` -
+   collapsing to the root on either side makes a monorepo package key unreachable, and on the write
+   side silently overwrites the parent's rule with it.
 3. The PUT is compare-and-swap on `expectedEtag`; a stale caller gets `409` with the current view
    and performs no write.
 4. `resolveStandingInstructions` is a pure function exported from shared code. Phase 2 calls the

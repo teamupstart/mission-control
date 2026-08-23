@@ -64,7 +64,8 @@ Add the constants and schemas named in the phased plan's cross-phase contracts s
 `.strict()` usage, and the `null`-removes-an-override convention. Follow the Foreman instructions
 block (`protocol.ts:1736-1790`) for the conflict message, conflict code and update schema.
 
-`repositories` is keyed by resolved repository root or a path beneath one, `max(4_096)` per key,
+`repositories` is keyed by a canonical repo-rooted path - a repository root, or a path beneath one
+for a monorepo package - `max(4_096)` per key,
 bounded by `STANDING_INSTRUCTIONS_MAX_REPOSITORIES`.
 
 Reading this file: the Bash grep wrapper misdetects it as binary and returns zero matches silently.
@@ -72,8 +73,23 @@ Use `command grep -a` or `sed -n`.
 
 ### 2. Resolution - a pure, shared function
 
-Export `resolveStandingInstructions(config, repoRoot)` returning `ResolvedStandingInstructions`.
+Export `resolveStandingInstructions(config, repoPath)` returning `ResolvedStandingInstructions`.
 
+- **`repoPath`, not `repoRoot`, and the name is load-bearing.** The argument is the *canonical
+  repo-rooted path* of the checkout being matched, which is a repository root only when the
+  operator named one. A session in `~/ws/mono/packages/api` must be matched as
+  `~/ws/mono/packages/api`; hand this function that session's repository root instead and
+  `~/ws/mono` is the only key that can ever match, which makes the longest-match rule below
+  decorative. Callers get the argument from `resolveRepoPath(cwd).path` (step 7), never from
+  `resolveRepoRoot`.
+- **The `cwd` is the session's, not the task's.** A task is always rooted at a repository's main
+  checkout, so resolving against `Task.repoRoot` would make every subdirectory key unreachable
+  even after step 7 stores it correctly. `src/server/workflows/checks.ts:217-231` already answers
+  this exact question for check commands, and its comment is the instruction here: it uses
+  `resolveRepoPath` *"so Settings and resolution agree about what 'inside the repository' means;
+  **they were two answers to one question before.**"* Take both `cwd` and `repoRoot` the way
+  `defaultCheckoutSubpath` does, discard a `cwd` whose repository is not the session's, and match
+  on the re-rooted path.
 - Longest matching key wins. `~/ws/mono/packages/api` beats `~/ws/mono`.
 - Match on the path **boundary**, not `startsWith`, so `/repo-backup` never matches `/repo`. Reuse
   the rule `src/shared/allowlist.ts` already defines rather than writing a second one.
@@ -233,22 +249,42 @@ The snapshot read route is step 8's, and sits with the session routes rather tha
 - `GET /api/instructions` → the view.
 - `PUT /api/instructions` under `bodyLimit` with a `413` handler; `409` with `{error, code, current}`
   on a stale `expectedEtag`.
-- `GET /api/instructions/resolved?repoRoot=&agent=&runtime=` → the resolved text, the matched key,
+- `GET /api/instructions/resolved?repoPath=&agent=&runtime=` → the resolved text, the matched key,
   and the delivery mechanism.
 
   **`agent` and `runtime` are required, and validated.** The mechanism is a property of the pair,
   not of the repository - the same text is a system prompt on `claude · terminal`, developer
   instructions on `codex · sdk`, and turn-one prose on `pi · terminal` - so a route that took only
-  `repoRoot` could not answer the question Phase 2's dispatch marker asks it. Reject an unknown
+  `repoPath` could not answer the question Phase 2's dispatch marker asks it. Reject an unknown
   `agent` with `400` rather than defaulting, and reject a `runtime` the harness does not offer:
   `resolveSessionRuntime` already owns that degradation and the answer must not be invented here.
   The mechanism comes from the same `StandingInstructionsSpec` the composer reads, so the marker
   and the delivery can never disagree.
 
-Every repository key written through the PUT must be resolved through the same door every other
-per-repo config uses: `resolveRepoPath` / `resolveRepoRoot` (`src/server/repos.ts:119-151`). That is
-what keeps a `~/.treehouse/...` pool path out of durable config. Refuse a key that does not resolve
-with a `400`, the way `PUT /api/pipelines/config` already does (`routes.ts:5087-5100`).
+**Every repository key written through the PUT is resolved through `resolveRepoPath`
+(`src/server/repos.ts:146-177`), and the stored key is its `.path`, never its `.repoRoot`.**
+
+This is one sentence and it is the whole of the rule, because the two functions differ in exactly
+the way that breaks this feature. `resolveRepoRoot` (`repos.ts:121`) is lossy by design and its
+sibling's docstring says so:
+
+> resolving to a repository is lossy in one direction that a caller may need back:
+> `/repo/packages/web` resolves to `/repo`, and a caller configuring a per-package command has no
+> way to recover the package from the root alone.
+
+Store `.repoRoot` and `~/ws/mono/packages/api` collapses to `~/ws/mono` on the way in - so the
+package-level rule silently becomes the monorepo rule, overwrites whatever was there, and the
+longest-match behaviour the store advertises cannot be configured at all. `POST /api/repos/resolve`
+(`routes.ts:2762-2770`) is the door Phase 2's picker already goes through, and its own comment
+records the trap: *"Existing callers read `repoRoot` and ignore the rest."* This caller must not.
+
+`.path` still carries the guard that matters: `resolveRepoPath` re-roots the subpath onto the
+**owning main checkout**, so a session standing in `~/.treehouse/<pool>/16/mono/packages/api`
+stores `<main>/packages/api` and a pool path never reaches durable config. The two answers are
+equal exactly when the operator named a repository root.
+
+Refuse a key that does not resolve with a `400`, the way `PUT /api/pipelines/config` already does
+(`routes.ts:5087-5100`).
 
 The resolved route is what Phase 2's preview and dispatch marker read, so that the browser never
 reimplements the matching rule. It answers *what will a session get*, and it is **not** an answer
@@ -274,13 +310,13 @@ table's `updated_at` and disposition corrupts both meanings.
 note_key   TEXT PRIMARY KEY   -- noteKeyFor(s)
 text       TEXT NOT NULL      -- the composed block EXACTLY as delivered, multi-repo included
 mechanism  TEXT NOT NULL      -- which channel carried it, from StandingInstructionsSpec
-sources    TEXT NOT NULL      -- JSON, manifest order: [{ repoRoot, matchedKey | null }, ...]
+sources    TEXT NOT NULL      -- JSON, manifest order: [{ repoPath, matchedKey | null }, ...]
 created_at INTEGER NOT NULL
 ```
 
 **`text` is the composed block, not one repository's resolution.** A multi-repo dispatch delivers
 one labelled block per attached repository that has rules, in the manifest's order (step 4), so a
-snapshot holding a single `repoRoot` and a single resolved text could not represent what the agent
+snapshot holding a single `repoPath` and a single resolved text could not represent what the agent
 actually read. Store the output of the composer, byte for byte.
 
 **One row, not one per repository.** Per-repository rows would leave the chip re-assembling the
@@ -352,6 +388,7 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 
 | Area | Cases |
 |---|---|
+| Keys | a PUT naming `<root>/packages/api` stores **that path**, not `<root>` - the case that makes longest-match configurable at all; a key inside a pool tree stores its main-checkout equivalent; a non-repository key is `400`; a session in `<root>/packages/api` matches the package key rather than the root's |
 | Resolution | longest match wins; `/repo-backup` does not match `/repo`; empty-string override beats the default; absent key inherits; the character cap |
 | Composition | the block is a prefix above the intent and below nothing; **a repo with no rules produces a byte-identical prompt to today**; multi-repo emits one labelled block per attached repo in manifest order |
 | Delivery | each of the five harness · runtime pairs carries the text by its declared mechanism; **exactly one `--append-system-prompt` flag is emitted**; the standing instruction still ships when `askChannelArgs` returns `[]`; Codex's merge preserves a configured value and arms without `opts.mcp` |
@@ -395,7 +432,8 @@ Phase 2 may rely on, and must not change:
 
 - The wire types and the four routes exactly as the cross-phase contract states them.
 - Absent-means-inherit, empty-means-send-nothing, `null`-in-a-patch-removes.
-- Longest-path-match on the resolved repository root, boundary-matched.
+- Longest-path-match on the canonical repo-rooted path, boundary-matched - `.path` from
+  `resolveRepoPath`, on both the write and the read side.
 - Compare-and-swap on `expectedEtag`, with `409` carrying the current view.
 - `resolveStandingInstructions` as the one matching implementation. Phase 2 calls the resolved
   route; it does not re-derive the match in the browser.

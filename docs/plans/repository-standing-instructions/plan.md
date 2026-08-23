@@ -291,7 +291,7 @@ A live process's system prompt cannot be rewritten, so the alternative is not "e
 sessions" - it is edits reaching them on two of the five pairs and not the other three, for the same
 feature. The panel says which it is.
 
-### Resolution is longest-path-match on the repository root
+### Resolution is longest-path-match on the repo-rooted path
 
 `workflow_command_overrides` already stores `repo_root` as "a repository root OR a path
 beneath one - the monorepo override - and the longest match wins at resolution time"
@@ -303,13 +303,16 @@ reusing the rule `src/shared/allowlist.ts` already defines so `/repo-backup` nev
 
 Two consequences worth writing down:
 
-- **The key is the repository root, resolved, not the checkout path.** Every key is written
-  through `POST /api/repos/resolve` → `resolveRepoPath` (`src/server/repos.ts:151`), which
-  walks a linked worktree back to its owning main checkout. That is what keeps a
-  `~/.treehouse/...` pool path out of durable config, and it means a session in a pool slot
-  resolves the same rules as one in the main checkout. (Worktree policy keys on the *git
-  common directory* instead, because it configures pools; this keys on the root, because it
-  configures repositories, and it must support subdirectories.)
+- **The key is resolved, not the raw checkout path - and it is `.path`, not `.repoRoot`.**
+  Every key is written through `POST /api/repos/resolve` → `resolveRepoPath`
+  (`src/server/repos.ts:146-177`), which walks a linked worktree back to its owning main
+  checkout *and* re-roots the subdirectory onto it. That is what keeps a `~/.treehouse/...`
+  pool path out of durable config, so a session in a pool slot resolves the same rules as one
+  in the main checkout. It has to be `.path`: `resolveRepoRoot` collapses
+  `mono/packages/api` to `mono`, which would store the package rule as the monorepo rule and
+  leave the longest-match behaviour above impossible to configure. (Worktree policy keys on
+  the *git common directory* instead, because it configures pools; this keys on the path,
+  because it configures repositories and must support subdirectories.)
 - **A multi-repo task gets a block per attached repository that has one.** Dispatch already
   hands the agent write access to every attached repo and already emits a manifest naming
   them (`dispatcher.ts:1984-2024`). Standing instructions for a secondary repo are composed
@@ -361,7 +364,7 @@ export const StandingInstructionsConfigSchema = z
   .object({
     /** Applies to any repository with no block of its own. Empty means send nothing. */
     default: z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH).default(""),
-    /** Keyed by resolved repository root, or a path beneath one for a monorepo package. */
+    /** Keyed by a canonical repo-rooted path: a repository root, or a path beneath one. */
     repositories: z
       .record(z.string().min(1).max(4_096), z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH))
       .default({}),
@@ -392,12 +395,12 @@ browser tab cannot silently clobber an edit:
 |---|---|---|---|
 | `GET` | `/api/instructions` | - | default, every override, one opaque ETag |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` | `200` view, `409` conflict with `current`, `413` too large |
-| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | - | the exact composed text and mechanism for one repo, from live config |
+| `GET` | `/api/instructions/resolved?repoPath=&agent=&runtime=` | - | the exact composed text and mechanism for one repo, from live config |
 | `GET` | `/api/sessions/:id/standing-instructions` | - | what one session actually received at launch, or `404` |
 
 The resolved route exists so the **Preview** button, the dispatch chip and the composed
 prompt can never disagree: all three read one pure
-`resolveStandingInstructions(config, repoRoot)`, and the browser never reimplements the
+`resolveStandingInstructions(config, repoPath)`, and the browser never reimplements the
 longest-match rule. `repositories` is a **patch**, the same convention
 `WorktreesConfigPatchSchema` uses: an absent key is untouched, a string sets it, and `null`
 removes that repository's block entirely. Saving one repository therefore sends one key, and

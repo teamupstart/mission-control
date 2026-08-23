@@ -547,7 +547,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>12 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>13 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -555,6 +555,7 @@ LIMIT 20;
                 <div class="table-row"><code>session_notes</code><p>Current Foreman-facing note state for a stable note key: purpose, brief, recommendation, disposition, and last handled marker.</p></div>
                 <div class="table-row"><code>session_goals</code><p>The durable objective and latest prompt reconciliation state shown as a session goal.</p></div>
                 <div class="table-row"><code>session_launch_turns</code><p>How the dashboard presents the turn that started a Mission Control-managed conversation, per stable note key: a fingerprint of the composed prompt that was delivered, plus the human task request captured at dispatch. Marker state only - the composed prompt itself stays in the harness transcript, which remains authoritative for every server-side consumer.</p></div>
+                <div class="table-row"><code>session_standing_instructions</code><p>What repository standing instructions one session actually received at launch, per stable note key: the whole composed block byte for byte, which channel carried it, and one provenance entry per contributing repository. The launch text and its provenance are written once and never amended - a session keeps the standing instructions it launched with, so this is what an assignment replays and what the session header reads, never a fresh resolution of live configuration. The one field that can be corrected afterwards is the mechanism, and only in one direction: a resumed Codex session that finds its developer-instructions channel unusable is sent the same stored block as prose instead, and the row is moved to <code>prompt-prefix</code> to say so - because that field is what decides whether a later assignment repeats the rule, and a prefix governs only the turn it rode in.</p></div>
                 <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, and whether a turn was interrupted.</p></div>
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
                 <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>

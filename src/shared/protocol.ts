@@ -18,6 +18,13 @@ import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
+import {
+  type StandingInstructionsDelivery,
+  STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
+  STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
+  STANDING_INSTRUCTIONS_MECHANISMS,
+} from "./standing-instructions.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import {
@@ -933,6 +940,17 @@ export const HarnessModelCatalogQuerySchema = z
   .object({ refresh: z.literal("1").optional() })
   .strict();
 
+
+/**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because a second
+ * surface now bounds the same list: the standing-instructions preview, which is asked about
+ * one launch's whole manifest and would otherwise carry its own copy of the number.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -948,7 +966,7 @@ export const DispatchSchema = z
      * The cap of 8 is a sanity bound on a request body, not a product limit on how many
      * repos a task may coordinate - nothing downstream reads it as a maximum.
      */
-    extraRepoRoots: z.array(z.string().min(1)).max(8).default([]),
+    extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
     intent: z.string().min(1),
     title: z.string().optional(),
     kind: z.enum(TASK_KINDS).default("ship"),
@@ -1187,7 +1205,7 @@ export const UpdateTaskSchema = z
      * naming this one makes the patch a provisioning change by construction and it stays
      * refused once the task has left the backlog. That is the behaviour we want, for free.
      */
-    extraRepoRoots: z.array(z.string().min(1)).max(8).optional(),
+    extraRepoRoots: z.array(z.string().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
     kind: z
@@ -1796,6 +1814,124 @@ export const ForemanInstructionsSchema = z.union([
   }).strict(),
 ]);
 export type ForemanInstructionsUpdate = z.infer<typeof ForemanInstructionsSchema>;
+
+// ---- repository standing instructions ----
+//
+// The operator's own words, per repository, held on THIS machine and sent to every session
+// Mission Control opens into that checkout. The constants and the matching rule live in
+// `src/shared/standing-instructions.ts`; only the wire shapes are here.
+
+const StandingInstructionsRepositoryKeySchema = z
+  .string()
+  .min(1)
+  .max(STANDING_INSTRUCTIONS_MAX_KEY_LENGTH);
+
+const StandingInstructionsTextSchema = z.string().max(STANDING_INSTRUCTIONS_MAX_LENGTH);
+
+/**
+ * The stored document.
+ *
+ * An `app_config` blob, so there is no migration: zod defaults apply on every read, and the
+ * shipped state - an empty default and no repositories - resolves to nothing everywhere.
+ */
+export const StandingInstructionsConfigSchema = z
+  .object({
+    default: StandingInstructionsTextSchema.default(""),
+    repositories: z
+      .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema)
+      .default({}),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (Object.keys(value.repositories).length > STANDING_INSTRUCTIONS_MAX_REPOSITORIES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repositories may carry standing instructions`,
+      });
+    }
+  });
+
+/** The whole document plus the opaque compare-and-swap token a mutation must echo. */
+export const StandingInstructionsViewSchema = z
+  .object({
+    default: z.string(),
+    repositories: z.record(z.string(), z.string()),
+    etag: z.string().min(1),
+  })
+  .strict();
+export type StandingInstructionsView = z.infer<typeof StandingInstructionsViewSchema>;
+
+/**
+ * A partial update, following `WorktreesConfigPatchSchema`.
+ *
+ * `repositories` is a PATCH: an absent key leaves the stored value alone, a string sets it,
+ * and `null` removes it. A caller therefore saves one repository by sending that one key and
+ * must not send its whole draft map - doing so would persist every other repository's
+ * unsaved text as though the operator had committed to it.
+ *
+ * The empty string is a real value here and is NOT a removal: it means "send nothing for
+ * this repository", which beats the machine-wide default. That is the whole reason the
+ * removal spelling is `null` rather than `""`.
+ */
+export const StandingInstructionsUpdateSchema = z
+  .object({
+    expectedEtag: z.string().min(1),
+    default: StandingInstructionsTextSchema.optional(),
+    repositories: z
+      .record(StandingInstructionsRepositoryKeySchema, StandingInstructionsTextSchema.nullable())
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.default !== undefined || value.repositories !== undefined,
+    "standing instructions update must change at least one field",
+  )
+  .superRefine((value, ctx) => {
+    if (
+      value.repositories &&
+      Object.keys(value.repositories).length > STANDING_INSTRUCTIONS_MAX_REPOSITORIES
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repositories"],
+        message: `at most ${STANDING_INSTRUCTIONS_MAX_REPOSITORIES} repository patches are allowed`,
+      });
+    }
+  });
+export type StandingInstructionsUpdate = z.infer<typeof StandingInstructionsUpdateSchema>;
+
+/** The stable conflict vocabulary, matching Foreman's standing-guidance editor. */
+export const STANDING_INSTRUCTIONS_CONFLICT_MESSAGE =
+  "Standing instructions changed in another window";
+export const STANDING_INSTRUCTIONS_CONFLICT_CODE = "standing_instructions_revision_conflict";
+
+export const StandingInstructionsConflictSchema = z
+  .object({
+    error: z.literal(STANDING_INSTRUCTIONS_CONFLICT_MESSAGE),
+    code: z.literal(STANDING_INSTRUCTIONS_CONFLICT_CODE),
+    current: StandingInstructionsViewSchema,
+  })
+  .strict();
+export type StandingInstructionsConflict = z.infer<typeof StandingInstructionsConflictSchema>;
+
+/**
+ * What a session gets, composed - the resolved route's answer and the snapshot's row.
+ *
+ * Annotated against the interface rather than inferred from the schema, so the two spellings
+ * of this one shape are pinned together by the checker: the composer and the snapshot are
+ * written against the interface in browser-safe code, and a field added to one without the
+ * other stops compiling here.
+ */
+export const StandingInstructionsDeliverySchema: z.ZodType<StandingInstructionsDelivery> = z
+  .object({
+    text: z.string(),
+    mechanism: z.enum(STANDING_INSTRUCTIONS_MECHANISMS),
+    sources: z.array(
+      z.object({ repoPath: z.string(), matchedKey: z.string().nullable() }).strict(),
+    ),
+  })
+  .strict();
 
 /** Partial update of the away config from the dashboard. */
 export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(

@@ -13,6 +13,7 @@ import type {
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
+import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
 import type {
   HarnessModelCatalogChoice,
   HarnessModelCatalogProblem,
@@ -706,6 +707,35 @@ export interface SdkLaunchOptions {
    * which is why `MultiRepoDispatchSpec.sdk` is a measured flag rather than an assumption.
    */
   extraDirs: readonly string[];
+  /**
+   * The operator's REPOSITORY STANDING INSTRUCTIONS, for the harnesses whose embedded
+   * driver has a channel for text that is not a conversation turn - Claude's
+   * `systemPrompt.append`, Codex's `developerInstructions`.
+   *
+   * `""` means send nothing, and it is the value every pair without such a channel gets:
+   * on those the text has already been composed into `prompt`, and delivering it here as
+   * well would have the agent read the same rule twice in its first turn. Which case a
+   * launch is in is decided once, by `standingInstructionsChannel`, and never re-derived
+   * inside an adapter.
+   */
+  standingInstructions: string;
+  /**
+   * What to SEND as prose when the out-of-band channel above turns out to be unusable.
+   *
+   * On a fresh launch this is turn one with the block already composed into it, in the same
+   * slot the channel-less pairs put it: below the repository manifest, which names the
+   * checkouts the rules are about, and above the request they govern. On a RESUME it is the
+   * block by itself, because the intent is already in the conversation being reopened and
+   * re-sending it would make the agent start its task over.
+   *
+   * Empty whenever there is nothing to fall back to: no standing instructions at all, or a
+   * pair with no out-of-band channel, where the block is already inside `prompt`.
+   *
+   * Composed by the CALLER rather than by the adapter, because only the caller knows which of
+   * those two cases this is and where in turn one the block belongs. An adapter prepending to
+   * `prompt` would invert that order at exactly the moment nobody is watching.
+   */
+  standingInstructionsPrompt: string;
   /** Harness-native session/thread id to continue, for a restart. Null starts fresh. */
   resume: string | null;
 }
@@ -771,6 +801,19 @@ export interface SdkSessionHandle {
   clearContext: (() => Promise<void>) | null;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */
   stop(): Promise<void>;
+  /**
+   * How this launch ACTUALLY carried the operator's standing instructions, when that is not
+   * what the caller asked for. Undefined means it did what was asked.
+   *
+   * A driver only learns at launch whether its out-of-band channel is usable - Codex has to
+   * read the operator's configured developer instructions before it can merge into them, and
+   * that read can fail - so "which channel carried this" is not fully answerable before the
+   * process exists. Reported rather than assumed, because the answer is written into the
+   * session's launch snapshot and an assignment later reads it to decide whether the rule is
+   * still installed on the process or has to be repeated. Recording the requested mechanism
+   * for a launch that fell back would make that decision on a fact that is not true.
+   */
+  readonly standingInstructionsMechanism?: StandingInstructionsMechanism;
 }
 
 /**

@@ -21,6 +21,8 @@ import {
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import { getStandingInstructions } from "../db.ts";
+import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import {
   listSdkSessions,
   recordSdkSessionBinding,
@@ -73,6 +75,30 @@ function missionMcpForSession(
         env: { ...descriptor.env, [MISSION_SESSION_ID_ENV]: sessionId },
       }
     : null;
+}
+
+/** The block a pair with an out-of-band channel carries there, or `""` for one without. */
+function outOfBandStandingText(delivery: StandingInstructionsDelivery | undefined): string {
+  if (!delivery || delivery.mechanism === "prompt-prefix" || delivery.mechanism === "none") {
+    return "";
+  }
+  return delivery.text;
+}
+
+/**
+ * What this session was sent at launch, for a resume to install again - or `""`.
+ *
+ * Only an out-of-band delivery is replayed. A session whose harness had no such channel
+ * received its standing instructions as turn-one prose, which is already in the transcript
+ * the resume reopens; re-sending it would be a second copy of a rule the operator wrote
+ * once.
+ */
+function standingInstructionsForResume(noteKey: string): string {
+  const snapshot = getStandingInstructions(noteKey);
+  if (!snapshot || snapshot.mechanism === "prompt-prefix" || snapshot.mechanism === "none") {
+    return "";
+  }
+  return snapshot.text;
 }
 
 /**
@@ -209,6 +235,31 @@ export class SdkSupervisor {
      * single-checkout session.
      */
     extraDirs?: readonly string[];
+    /**
+     * What the operator's repository standing instructions resolved to for this launch.
+     *
+     * The WHOLE delivery rather than the text, because this class is the only place that
+     * learns what the driver actually did with it: a pair with an out-of-band channel can
+     * still find that channel unusable at launch and fall back to turn one, and the launch
+     * snapshot has to record the channel that really carried the block. So the snapshot is
+     * written here rather than by the dispatcher.
+     *
+     * Optional, so every existing caller launches exactly as it did and records nothing.
+     */
+    standingInstructions?: {
+      /** What the operator's rules resolved to for these checkouts, and by which channel. */
+      delivery: StandingInstructionsDelivery;
+      /**
+       * Turn one with the block composed into its ordered slot, for a driver that finds its
+       * out-of-band channel unusable. `""` for a pair with no such channel, whose `prompt`
+       * already carries the block.
+       *
+       * Paired with the delivery in ONE field rather than sitting beside it, so a caller
+       * cannot hand over the delivery and forget the fallback - which would look like a
+       * working launch and deliver the operator's rules nowhere.
+       */
+      fallbackPrompt: string;
+    };
     taskId: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
@@ -217,6 +268,10 @@ export class SdkSupervisor {
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
     const id = input.sessionId ?? newSdkSessionId();
+    // Out of band only when this pair HAS a channel. A pair without one already carries the
+    // block inside `prompt`, and sending it here as well would have the agent read the same
+    // rule twice on its first turn.
+    const outOfBandStanding = outOfBandStandingText(input.standingInstructions?.delivery);
     const handle = await spec.launch({
       cwd: input.cwd,
       prompt: input.prompt,
@@ -225,9 +280,16 @@ export class SdkSupervisor {
       permissionMode: input.permissionMode,
       mcp: missionMcpForSession(input.mcp, id),
       extraDirs: input.extraDirs ?? [],
+      standingInstructions: outOfBandStanding,
+      // What to send instead if that channel turns out to be unusable. Composed by the
+      // DISPATCHER, which is the only place that can put the block in the same slot the
+      // channel-less pairs use - below the repository manifest and above the request - because
+      // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
+      // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
+      standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
       resume: null,
     });
-    return this.adopt({
+    const started = this.adopt({
       registration: {
         id,
         agent: input.agent,
@@ -250,6 +312,19 @@ export class SdkSupervisor {
         turnInProgress: input.prompt.length > 0,
       },
     });
+    // What this session was ACTUALLY sent, recorded once. The driver's
+    // own report wins over what was requested: a Codex launch whose `config/read` could not
+    // be used delivers the block in turn one instead, and a snapshot claiming the durable
+    // channel would later tell an assignment the rule was still installed on the process
+    // when it was only ever turn-one prose.
+    if (input.standingInstructions?.delivery.text) {
+      this.registry.recordStandingInstructions(started.id, {
+        ...input.standingInstructions.delivery,
+        mechanism:
+          handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+      });
+    }
+    return started;
   }
 
   /**
@@ -865,6 +940,9 @@ export class SdkSupervisor {
       );
       this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
     }
+    // Read once, here, because both the channel and its prose fallback below carry the same
+    // text and must not be able to disagree about what this session was launched under.
+    const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
@@ -883,6 +961,28 @@ export class SdkSupervisor {
         extraDirs: (task?.extraRepos ?? [])
           .map((entry) => entry.worktreePath)
           .filter((p): p is string => p !== null),
+        // Replayed from THIS session's launch snapshot, never re-resolved. A daemon restart
+        // ends the process that carried the operator's text, so a resume that omitted it
+        // would quietly drop a rule the session had been running under - but re-reading live
+        // configuration would be worse, because it would hand the session a rule it was
+        // never launched with. A session keeps the standing instructions it launched with.
+        //
+        // Read by note key rather than through the registry: `adopt` has not run yet, so
+        // this session has no card to ask.
+        standingInstructions: resumeStanding,
+        // The SAME text as prose, for a driver that finds its channel unusable on this path
+        // too. A resume has no turn one to compose the block into, but that is an argument
+        // about where it goes, not about whether it is sent: this session was launched under
+        // these rules, the restart is the daemon's doing and not the operator's, and coming
+        // back running under none of them is the one outcome the operator cannot see.
+        //
+        // The block ALONE, without the original intent, because the intent is already in the
+        // conversation being reopened - re-sending it would make the agent start the task
+        // over on top of work it had already done. And only ever the block a snapshot records
+        // as having ridden the durable channel: one that rode turn one is in the transcript
+        // this resume reopens, so `standingInstructionsForResume` already returns `""` for it
+        // and nothing is repeated.
+        standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
       });
       this.adopt({
@@ -910,6 +1010,18 @@ export class SdkSupervisor {
           acceptedTurns: 0,
         },
       });
+      // What the driver reported about the channel it could actually use THIS time, applied
+      // to the snapshot the same way a fresh launch applies it in `start`. A Codex resume can
+      // find `developerInstructions` unusable now and send the stored block as prose instead;
+      // the text is unchanged, so only the mechanism moves - but that field is what decides
+      // whether a later assignment repeats the rule, and a snapshot still naming the durable
+      // channel would tell it the rule was installed on a process that only heard it once.
+      //
+      // AFTER `adopt`, because the snapshot is keyed off the session card and there is none
+      // before it.
+      if (resumeStanding && handle.standingInstructionsMechanism === "prompt-prefix") {
+        this.registry.markStandingInstructionsPrefixed(row.id);
+      }
     } catch (error) {
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);

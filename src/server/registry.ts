@@ -140,6 +140,7 @@ import {
   loadRecentTerminalTasks,
   loadSessionGoals,
   loadSessionLaunchTurns,
+  loadStandingInstructions,
   loadFileCommentThreads,
   pruneFileCommentThreads,
   pruneSessionGoals,
@@ -212,6 +213,10 @@ import {
   upsertSessionLaunchTurn,
   deleteSessionLaunchTurn,
   moveSessionLaunchTurn,
+  insertStandingInstructions,
+  moveStandingInstructions,
+  pruneStandingInstructions as pruneStandingInstructionsDb,
+  type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   upsertUsageCell,
@@ -228,6 +233,7 @@ import {
   launchTextFingerprint,
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
+import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
@@ -725,6 +731,13 @@ export class Registry extends EventEmitter {
    * caches exist to avoid.
    */
   private launchTurns = new Map<string, LaunchTurnMarker>();
+  /**
+   * What each session was ACTUALLY sent as standing instructions at launch, keyed by the
+   * same note key. In memory for the reason the invites are: it is read on every assignment
+   * into a live session, and it is small - one row exists only for a session that received
+   * something.
+   */
+  private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
@@ -908,6 +921,7 @@ export class Registry extends EventEmitter {
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
     for (const i of loadForemanInvites()) this.invites.set(i.noteKey, i);
     for (const m of loadSessionLaunchTurns()) this.launchTurns.set(m.noteKey, m);
+    for (const r of loadStandingInstructions()) this.standingInstructions.set(r.noteKey, r);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
@@ -1932,6 +1946,7 @@ export class Registry extends EventEmitter {
     // session it just launched. Notes and goals accept that stranding; an invite is
     // policy, not prose, so it may not.
     if (prev) this.moveForemanInviteKey(noteKeyFor(prev), noteKeyFor(base));
+    if (prev) this.moveStandingInstructionsKey(noteKeyFor(prev), noteKeyFor(base));
     // And the launch marker, but only across a FIRST bind - see the method for why a
     // /clear's native-to-native rotation must strand it instead.
     if (prev) this.moveLaunchTurnOnInitialBind(prev, base);
@@ -2315,6 +2330,7 @@ export class Registry extends EventEmitter {
     // note and goal: stranding those costs stale prose, stranding this un-invites
     // Foreman from a session Mission Control launched. Move first, resolve after.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
     // The launch marker moves on the FIRST bind only. `evt.cleared` is a replacement
     // conversation, and the guard inside refuses it because the source key is already
     // native by then - so the projection cannot follow a /clear onto a real human turn.
@@ -2583,6 +2599,7 @@ export class Registry extends EventEmitter {
       // The invite moves with the rotation - see `applyDriverBound` for why it may not
       // strand the way the note and goal below are allowed to.
       this.moveForemanInviteKey(noteKeyFor(target), noteKeyFor(next));
+      this.moveStandingInstructionsKey(noteKeyFor(target), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(target, next);
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
@@ -2735,6 +2752,7 @@ export class Registry extends EventEmitter {
     // implicit grant catches a stranded row - missing this move silently un-invites
     // Foreman from a session Mission Control just dispatched.
     this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+    this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
     // Pi's turn one travelled in the argv, so its marker was written under the synthetic
     // key moments ago and this rebind is exactly the first bind the guard allows.
     this.moveLaunchTurnOnInitialBind(s, next);
@@ -4717,6 +4735,7 @@ export class Registry extends EventEmitter {
       // `report_status` can carry the first (or a new) agent session id, which rotates
       // the note key like any other binding - and the invite moves with the key.
       this.moveForemanInviteKey(noteKeyFor(s), noteKeyFor(next));
+      this.moveStandingInstructionsKey(noteKeyFor(s), noteKeyFor(next));
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
@@ -4814,6 +4833,7 @@ export class Registry extends EventEmitter {
       // Same rotation, same rule as `applyDriverBound`: the invite moves with the key.
       // Inside the rotation guard for the same per-render economy the cost re-read is.
       this.moveForemanInviteKey(noteKeyFor(s), key);
+      this.moveStandingInstructionsKey(noteKeyFor(s), key);
       this.moveLaunchTurnOnInitialBind(s, next);
       next.foremanInvite = this.foremanInviteFor(next);
       next.workCycle = dbWorkCycleFor(key) ?? undefined;
@@ -6555,6 +6575,111 @@ export class Registry extends EventEmitter {
     for (const [key, marker] of this.launchTurns) {
       if (liveKeys.has(key) || marker.updatedAt >= olderThan) continue;
       this.launchTurns.delete(key);
+    }
+    return removed;
+  }
+
+  // ---- standing instructions (what a launch actually delivered) ----
+
+  /**
+   * Record what this session was sent at launch. Called once, at the moment the delivery is
+   * composed, and only when the composed block is non-empty - a session with no standing
+   * instruction has no row and no marker.
+   *
+   * Keyed on whatever note key the session holds RIGHT NOW, which for a terminal launch is
+   * usually still the synthetic id: the agent has not reported its own session id yet. The
+   * rotation move below carries the row to the native key when the binding arrives, and to
+   * every key after that.
+   */
+  recordStandingInstructions(sessionId: string, delivery: StandingInstructionsDelivery): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !delivery.text) return;
+    const snapshot: StandingInstructionsSnapshot = {
+      noteKey: noteKeyFor(s),
+      text: delivery.text,
+      mechanism: delivery.mechanism,
+      sources: delivery.sources,
+      createdAt: Date.now(),
+    };
+    insertStandingInstructions(snapshot);
+    this.standingInstructions.set(snapshot.noteKey, snapshot);
+  }
+
+  /**
+   * Correct a snapshot to say the block rode PROSE after all, keeping everything else.
+   *
+   * A resumed Codex session can only discover at resume that `developerInstructions` is
+   * unusable now, and the adapter falls back to sending the stored block as a message. The
+   * text delivered is unchanged, so the row's text, sources and age are unchanged - but the
+   * CHANNEL is not what the launch recorded, and the mechanism is not decoration: `tasks.ts`
+   * reads it to decide whether a later assignment has to repeat the rule, because a prefix
+   * governs the turn it rode in and a durable channel governs every turn. Left saying
+   * `codex-developer-instructions`, this snapshot would tell that assignment the rule was
+   * still installed on a process that only ever heard it once.
+   *
+   * Idempotent, and never moves a snapshot the other way: a channel that worked cannot become
+   * a prefix retroactively, and a prefix that was corrected once stays corrected.
+   */
+  markStandingInstructionsPrefixed(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const key = noteKeyFor(s);
+    const existing = this.standingInstructions.get(key);
+    if (!existing || existing.mechanism === "prompt-prefix") return;
+    const snapshot: StandingInstructionsSnapshot = { ...existing, mechanism: "prompt-prefix" };
+    insertStandingInstructions(snapshot);
+    this.standingInstructions.set(key, snapshot);
+  }
+
+  /**
+   * What this session received at launch, or null.
+   *
+   * The ONLY source for "what was this session told". Never re-resolved from live
+   * configuration: an edit after the launch cannot reach a running process's system prompt,
+   * so re-resolving would answer with a rule that was never in effect for this session.
+   */
+  standingInstructionsFor(sessionId: string): StandingInstructionsSnapshot | null {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return this.standingInstructions.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Carry a snapshot across a note-key rotation - EVERY rotation.
+   *
+   * Public for `resetSession`, which rotates the key on its own path. See
+   * `moveStandingInstructions` in db.ts for why this follows `moveForemanInviteKey`'s policy
+   * and not `moveLaunchTurnOnInitialBind`'s: a `/clear` starts a new conversation but does
+   * not end the PROCESS, and the flag or developer instruction that carried this text is
+   * installed on the process.
+   */
+  moveStandingInstructionsKey(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return;
+    const row = this.standingInstructions.get(fromKey);
+    if (!row) return;
+    moveStandingInstructions(fromKey, toKey);
+    this.standingInstructions.delete(fromKey);
+    this.standingInstructions.set(toKey, { ...row, noteKey: toKey });
+  }
+
+  /**
+   * Drop snapshots belonging to no live session and older than `olderThan`. Returns how many.
+   *
+   * `pruneLaunchTurns`' twin, and the `sweptSessions` gate is where the whole liveness
+   * question is decided: an unswept session map is "liveness unknown" and nothing is dropped.
+   * Past that line the set below is AUTHORITATIVE even when it is empty - a daemon whose
+   * sessions have all exited has no live keys, and that is a fact rather than a gap. The db
+   * helper is written to that contract and deliberately does not re-guard on emptiness, which
+   * would leave these rows unprunable in precisely that state.
+   */
+  pruneStandingInstructions(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneStandingInstructionsDb(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, row] of this.standingInstructions) {
+      if (liveKeys.has(key) || row.createdAt >= olderThan) continue;
+      this.standingInstructions.delete(key);
     }
     return removed;
   }

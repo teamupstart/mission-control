@@ -120,7 +120,7 @@ export interface FileCommentWalkthroughPort {
 export const PAUSE_REASONS = {
   drained: "Every comment in this review has been sent.",
   outdated: (path: string, shortId: string) =>
-    `${shortId} quotes text that is no longer in ${path}, so it was held rather than sent. Rewrite it against the text that is there, or drop it. Resuming checks again and holds it again while the quote is missing.`,
+    `${shortId} quotes text that is no longer in ${path}, so it was held rather than sent. Editing the comment changes what it says, not the text it quotes, so the way past is to drop it and comment again on the text that is there. Resuming re-checks the file and releases it only if the quote comes back.`,
   missingFile: (path: string) =>
     `${path} is no longer in this checkout, so the comment anchored to it was held rather than sent.`,
   noPane: "This session has no pane to deliver a comment to.",
@@ -222,8 +222,11 @@ export class FileCommentWalkthrough {
    * What a resume DOES do that a first start does not is clear the pause reason, so the next
    * pass decides the question again from the file as it now stands rather than from a sentence
    * written a minute ago. For a held-outdated head that is a RE-CHECK and not a skip: if the
-   * quote is back - the agent restored it, or the person rewrote the comment against the text
-   * that is there - it goes, and if it is still missing it is held again with the same reason.
+   * quote is back - the agent restored the text, or a person put it back - it goes, and if it
+   * is still missing it is held again with the same reason. Note what resume canNOT do, and
+   * what the reason therefore must not offer: `quote` is fixed when the comment is written and
+   * the Edit control rewrites the message BODY, so editing a held comment cannot re-anchor it.
+   * Dropping it and commenting again on the text that is actually there is the way past.
    * Resume deliberately cannot wave a comment through to the agent about text that is not in
    * the file, because the quote is the only thing telling the agent what the comment is about.
    */

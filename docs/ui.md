@@ -805,15 +805,21 @@ are already committed, so the daemon refuses all three there rather than pretend
 **A comment whose quoted text the agent has since deleted is held rather than sent, and says
 why.** Before each send, every unsent comment is re-anchored against the file as it now stands.
 A comment whose text merely moved goes silently, at its new line. One whose text is gone is held
-at the head, the review pauses, and the reason names the comment and the file. **Rewrite it
-against the text that is there, or drop it** - those are the two ways past. **Resume** is not a
-third: it re-runs the check against the file as it stands, so a comment whose quote is still
-missing is held again with the same reason. That is deliberate. The quote is the only thing
-telling the agent which text a comment is about, so a comment quoting text that is not in the
-file is one the agent cannot act on, and sending it anyway would be worse than holding it.
-(Resume does clear the hold when the quote has come back - if the agent restored the text, or
-your rewrite matches what is there now, the comment simply goes.) A comment further down the
-queue is marked *moved* in place and you meet it when it reaches the head.
+at the head, the review pauses, and the reason names the comment and the file. **Drop it and
+comment again on the text that is actually there** - that is the way past. Note what does not
+work, because the queue offers it: **Edit** rewrites what a comment *says*, not the text it
+*quotes*, so editing a held comment leaves it held. A comment's quoted text is fixed when you
+write it.
+
+**Resume** is not a way past either. It re-runs the check against the file as it stands, so a
+comment whose quote is still missing is held again with the same reason. That is deliberate:
+the quote is the only thing telling the agent which text a comment is about, so a comment
+quoting text that is not in the file is one the agent cannot act on, and sending it anyway
+would be worse than holding it. Resume does clear the hold when the quote has come back - if
+the agent restored the text, or you put it back yourself, the comment simply goes.
+
+A comment further down the queue is marked *moved* in place and you meet it when it reaches the
+head.
 
 The review also pauses when the session cannot take a message at all, when the file a comment is
 anchored to has left the checkout, when there is nothing left to send, and when Mission Control

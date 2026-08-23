@@ -449,10 +449,23 @@ export function FileEditor({
    * of a file that has since been shortened. `value` is in the dependency list for the same
    * reason: a deep link arrives before the document does, and scrolling an empty buffer to
    * line 84 lands on line 1.
+   *
+   * ONCE PER REQUEST, tracked by nonce, and the nonce is what makes that possible - `scrollTo`
+   * is a fresh object on most renders, so identity cannot say whether this is a new request or
+   * the same one seen again. Depending on `value` without the guard turned every later
+   * keystroke into another scroll: a reader who followed a link to line 84, scrolled somewhere
+   * else and started typing was yanked back to line 84 on each character, and an agent editing
+   * the file underneath them did the same thing. A scroll request is a one-shot instruction to
+   * go somewhere, never a position to hold the reader at.
    */
+  const scrolledNonce = useRef<number | null>(null);
   useEffect(() => {
     const editor = view.current;
-    if (!editor || !scrollTo) return;
+    if (!editor || !scrollTo || scrolledNonce.current === scrollTo.nonce) return;
+    // Still deferred until the document arrives - an unanswered request stays unanswered, so
+    // the first render that HAS content is the one that spends it.
+    if (!value) return;
+    scrolledNonce.current = scrollTo.nonce;
     const line = editor.state.doc.line(
       Math.min(Math.max(1, scrollTo.line), editor.state.doc.lines),
     );

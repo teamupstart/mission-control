@@ -95,7 +95,7 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return sessions[0]!.cwd!;
 }
 
-async function openTheFile(page: Page): Promise<void> {
+async function openTheFile(page: Page, path: string = SOURCE): Promise<void> {
   await page
     .getByRole("navigation", { name: "Sessions" })
     .getByRole("button", { name: /Walk A Spec Review/i })
@@ -105,11 +105,16 @@ async function openTheFile(page: Page): Promise<void> {
     .getByRole("tab", { name: /Files$/ })
     .click();
   await expect(page.getByRole("listbox", { name: "Session files" })).toBeVisible();
+  await openAnotherFile(page, path);
+}
+
+/** Select a file in the already-open Files tab. */
+async function openAnotherFile(page: Page, path: string): Promise<void> {
   await page
     .getByRole("listbox", { name: "Session files" })
-    .getByRole("option", { name: SOURCE })
+    .getByRole("option", { name: path })
     .click();
-  await expect(page.getByLabel(`Preview of ${SOURCE}`)).toBeVisible();
+  await expect(page.getByLabel(`Preview of ${path}`)).toBeVisible();
 }
 
 function lineNumber(page: Page, line: number): Locator {
@@ -305,5 +310,63 @@ test.describe("the review walkthrough", () => {
       "a paused review still releases nothing",
     ).toBe(1);
     expect(outboxDepth(daemon)).toBe(0);
+  });
+  test("a review spanning two files takes the reader to the file each comment is in", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    // A review covers every file the session holds comments on, so the comment that just went
+    // out is frequently not in the file being looked at. Producing a scroll request only when
+    // the path already matched left the reader parked on the previous file with nothing to say
+    // anything had happened.
+    const OTHER = "docs/plans/other.md";
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+    writeFileSync(join(cwd, OTHER), ["# The other file", "", "This one has its own problem.", ""].join("\n"));
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    await comment(page, 3, FIRST);
+
+    // A second comment, in a DIFFERENT file.
+    await openAnotherFile(page, OTHER);
+    await expect(page.getByLabel(`Editor for ${OTHER}`)).toBeVisible();
+    await comment(page, 3, SECOND);
+
+    // Back to the first file, which is where the reader is when the review starts.
+    await openAnotherFile(page, SOURCE);
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+
+    const queueToggle = page.getByRole("button", { name: "Review queue" });
+    await expect(queueToggle).toHaveText(/Review \(2\)/);
+    await queueToggle.click();
+    const queue = page.getByRole("region", { name: "Review queue" });
+    await queue.getByRole("button", { name: "Start review" }).click();
+
+    // Comment one is in the file already open, so nothing moves.
+    await expect
+      .poll(() => storedQueue(daemon).filter((row) => row.status !== "queued").length, {
+        message: "Start review delivered nothing",
+        timeout: 20_000,
+      })
+      .toBe(1);
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+
+    // Comment two is in the other file. When it goes out, the reader goes with it.
+    // Counted rather than matched on the line, because both comments sit on line 3 - which is
+    // the point: only the FILE distinguishes them, and the file is what is under test.
+    await expect
+      .poll(() => storedQueue(daemon).filter((row) => row.status !== "queued").length, {
+        message: "the second comment never went out",
+        timeout: 30_000,
+      })
+      .toBe(2);
+    await expect(page.getByLabel(`Editor for ${OTHER}`)).toBeVisible({ timeout: 30_000 });
+    // And the comment it moved us to is the one that is actually out with the agent.
+    await expect(queue.getByRole("status")).toContainText(OTHER);
   });
 });

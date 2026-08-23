@@ -485,11 +485,28 @@ export function FileWorkspace({
    */
   const outstanding = useMemo(() => outstandingThread(queue), [queue]);
   const [followedOutstanding, setFollowedOutstanding] = useState<{ id: string; nonce: number } | null>(null);
+  /**
+   * The comment that just went out, followed ONCE - including into another file.
+   *
+   * A review spans every file the session holds comments on, so the comment that just went out
+   * is frequently not in the one being looked at. Producing a scroll request only when the
+   * path already matched left the reader parked on the previous file with no sign that anything
+   * had happened, which is not what "takes you to each comment as it goes out" says.
+   * Selecting the path is the same move `openQueued` makes for a click, and the scroll request
+   * lands afterwards against the rebuilt view.
+   *
+   * Once, by id, and that is the point of the ref: `selectedPath` is a dependency, so this
+   * re-runs when the reader navigates. Without the guard it would drag them straight back to
+   * the outstanding comment's file every time they tried to look at anything else for as long
+   * as that comment was out.
+   */
+  const followedId = useRef<string | null>(null);
   useEffect(() => {
-    if (!outstanding) return;
-    setFollowedOutstanding((prev) =>
-      prev?.id === outstanding.id ? prev : { id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 });
-  }, [outstanding]);
+    if (!outstanding || followedId.current === outstanding.id) return;
+    followedId.current = outstanding.id;
+    setFollowedOutstanding((prev) => ({ id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 }));
+    if (outstanding.path !== selectedPath) controller.select(session.id, outstanding.path);
+  }, [controller, outstanding, selectedPath, session.id]);
   const scrollTo = useMemo(() => {
     if (
       outstanding

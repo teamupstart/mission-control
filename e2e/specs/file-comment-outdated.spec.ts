@@ -228,12 +228,14 @@ test.describe("a comment whose text the agent deleted", () => {
       .not.toBe("idle");
     // Still held: resuming re-runs the pass, the quote is still gone, and holding is still the
     // right answer. What resuming does NOT do is deliver a comment about text that is not
-    // there - the way past is to rewrite it or drop it.
+    // there. Nor would editing it: Edit rewrites the message body and the quote is fixed, so
+    // the way past is to drop it and comment again on the text that is there - which is what
+    // the block below does.
     await expect
       .poll(() => storedQueue(daemon)[0]?.delivered, { timeout: 15_000 })
       .toBe(0);
 
-    // ---- rewriting it against the text that IS there lets the review carry on ----
+    // ---- dropping it lets the review carry on ----
     const head = queue.locator(".file-review-item").first();
     await head.getByRole("button", { name: /^Drop comment MC-/ }).click();
     await expect

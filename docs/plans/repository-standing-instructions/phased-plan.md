@@ -256,9 +256,10 @@ export interface ResolvedStandingInstructions {
 6. The resolved route requires `agent` and `runtime`, because the mechanism is a property of the
    pair rather than of the repository. An unknown `agent`, or a `runtime` the harness does not
    offer, is a `400` rather than a default.
-7. **What a session received is recorded, not re-resolved.** Phase 1 writes the delivered text, its
-   mechanism and its matched key to a per-session row at launch, keyed by `noteKeyFor(s)`, once and
-   never updated. Editing or removing the configuration afterwards does not change or delete any
+7. **What a session received is recorded, not re-resolved.** Phase 1 writes the **composed block
+   exactly as delivered** - every attached repository's labelled block, in manifest order - together
+   with its mechanism and one provenance entry per contributing repository, to a per-session row at
+   launch, keyed by `noteKeyFor(s)`, once and never updated. Editing or removing the configuration afterwards does not change or delete any
    existing session's row. The session header chip reads that snapshot and **only** that snapshot;
    the resolved route is for the pre-launch dispatch note, where live config is the right answer.
 8. A **save writes exactly one field**: one repository's key, or `default`. Combined with (7), the

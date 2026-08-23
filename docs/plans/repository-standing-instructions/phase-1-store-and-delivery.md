@@ -240,18 +240,31 @@ So the delivered text is **recorded at launch** and read back by identity, never
 table's `updated_at` and disposition corrupts both meanings.
 
 ```
-note_key    TEXT PRIMARY KEY   -- noteKeyFor(s)
-repo_root   TEXT NOT NULL      -- the resolved root the match ran against
-text        TEXT NOT NULL      -- the resolved text exactly as delivered
-mechanism   TEXT NOT NULL      -- which channel carried it, from StandingInstructionsSpec
-matched_key TEXT               -- the stored key that produced it, NULL when the default did
-created_at  INTEGER NOT NULL
+note_key   TEXT PRIMARY KEY   -- noteKeyFor(s)
+text       TEXT NOT NULL      -- the composed block EXACTLY as delivered, multi-repo included
+mechanism  TEXT NOT NULL      -- which channel carried it, from StandingInstructionsSpec
+sources    TEXT NOT NULL      -- JSON, manifest order: [{ repoRoot, matchedKey | null }, ...]
+created_at INTEGER NOT NULL
 ```
+
+**`text` is the composed block, not one repository's resolution.** A multi-repo dispatch delivers
+one labelled block per attached repository that has rules, in the manifest's order (step 4), so a
+snapshot holding a single `repoRoot` and a single resolved text could not represent what the agent
+actually read. Store the output of the composer, byte for byte.
+
+**One row, not one per repository.** Per-repository rows would leave the chip re-assembling the
+labelled blocks in the browser, which is a second implementation of `compose.ts` and free to drift
+from what was sent - the same reason the panel is forbidden from re-deriving the longest-path match.
+The provenance the operator still needs, *which stored key produced each repository's block*, is the
+`sources` array beside it; `session_goals.pending_prompts` (`src/server/db.ts:900`) is the existing
+precedent for a small ordered JSON column in this schema. Keeping it to one row also keeps the move
+and prune below identical to `session_launch_turns`', rather than a fan-out that has to stay
+consistent.
 
 **No `updated_at`, and no second write.** The row is a record of something that happened. A row
 that can be updated is a row that can be made to disagree with the launch it describes, which is
 the whole finding. Write it once, at the moment the delivery is composed, and only when the
-resolved text is non-empty - a session with no standing instruction has no row and no chip.
+composed block is non-empty - a session with no standing instruction has no row and no chip.
 
 **It must ride the key changing under it.** The row is written while argv is being composed, before
 the agent has reported its own session id, so it is keyed on `s.id`. When `agentSessionId` arrives,
@@ -300,7 +313,7 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 | **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
 | Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
-| **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and a native-to-native rotation**, and is reachable under the new key each time; a pruned session's row goes with it |
+| **Snapshot** | the row records exactly the text and mechanism the launch delivered, for each of the five pairs; **a multi-repo dispatch's row holds the whole composed block and one `sources` entry per contributing repository, in manifest order**; **editing the config afterwards does not change it, and removing the repository's override does not delete it**; a session with no standing instruction writes no row and the route is `404`; the row survives the first `agentSessionId` bind **and a native-to-native rotation**, and is reachable under the new key each time; a pruned session's row goes with it |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.
 
@@ -322,8 +335,9 @@ is no UI yet; Phase 2 owns the browser proof.
 - A repository with no standing instructions dispatches a byte-identical prompt and argv to `main`.
 - The configuration routes behave as the cross-phase contract states, including CAS and the size
   limit.
-- A launch snapshot records what was delivered, survives the first agent-session bind, and does not
-  move when the configuration is later edited or removed.
+- A launch snapshot records what was delivered - the whole composed block for a multi-repo dispatch,
+  not one repository's share - survives the first agent-session bind, and does not move when the
+  configuration is later edited or removed.
 - `docs/configuration.md` documents the `app_config` key and the cap.
 - Typecheck, lint, tests, build and smoke green; one reviewable pull request merged.
 

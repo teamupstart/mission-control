@@ -361,8 +361,9 @@ one place, so the composer, the resolved route and the dispatch marker cannot di
 a property of the pair rather than of the repository. An unknown <code>agent</code>, or a
 <code>runtime</code> the harness does not offer, is a <code>400</code> rather than a default.</li>
 <li><strong>What a session received is recorded, not re-resolved.</strong> Phase 1 writes the
-delivered text, its mechanism and its matched key to a per-session row at launch, keyed by
-<code>noteKeyFor(s)</code>, once and never updated. Editing or removing the configuration afterwards
+<strong>composed block exactly as delivered</strong> - every attached repository's labelled block, in
+manifest order - together with its mechanism and one provenance entry per contributing repository, to
+a per-session row at launch, keyed by <code>noteKeyFor(s)</code>, once and never updated. Editing or removing the configuration afterwards
 does not change or delete any existing session's row. The session header chip reads that snapshot and
 <strong>only</strong> that snapshot; the resolved route is for the pre-launch dispatch note, where
 live config is the right answer.</li>

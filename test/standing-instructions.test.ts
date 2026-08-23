@@ -39,6 +39,7 @@ const {
   composeStandingInstructions,
   withStandingInstructions,
   STANDING_INSTRUCTIONS_HEADING,
+  STANDING_INSTRUCTIONS_MULTI_HEADING,
 } = await import("../src/server/instructions/compose.ts");
 const { intentWithRepoManifest } = await import("../src/server/dispatcher.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
@@ -296,6 +297,62 @@ test("one repository renders one headed block; several render one labelled part 
     { repoPath: "/ws/b", matchedKey: "/ws/b" },
     { repoPath: "/ws/a", matchedKey: "/ws/a" },
   ]);
+});
+
+test("checkouts that resolve to the SAME text render one block, not one per checkout", () => {
+  // The machine-wide default is the ordinary case: a three-repo dispatch where no repository
+  // has an override resolves all three to the same words. One labelled part per checkout
+  // would put that rule in front of the agent three times, which is the failure exactly-once
+  // delivery exists to prevent - a prohibition repeated invites being read as emphasis about
+  // something the operator said once.
+  const config = StandingInstructionsConfigSchema.parse({ default: "never force-push" });
+  const all = composeStandingInstructions(
+    config,
+    [{ repoPath: "/ws/a" }, { repoPath: "/ws/b" }, { repoPath: "/ws/c" }],
+    "pi",
+    "terminal",
+  );
+  assert.equal(all.text, `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\nnever force-push`);
+  assert.equal(all.text.split("never force-push").length - 1, 1, "the rule appears ONCE");
+  assert.equal(all.text.includes("###"), false, "and no label implies a distinction");
+  // Provenance is still per checkout, so a marker can say which key each one inherited.
+  assert.deepEqual(all.sources, [
+    { repoPath: "/ws/a", matchedKey: null },
+    { repoPath: "/ws/b", matchedKey: null },
+    { repoPath: "/ws/c", matchedKey: null },
+  ]);
+
+  // Two different keys carrying identical words collapse too: the agent reads words, not
+  // keys, so a distinction it cannot see is not one worth drawing.
+  const sameWords = StandingInstructionsConfigSchema.parse({
+    repositories: { "/ws/a": "never force-push", "/ws/b": "never force-push" },
+  });
+  const collapsed = composeStandingInstructions(
+    sameWords,
+    [{ repoPath: "/ws/a" }, { repoPath: "/ws/b" }],
+    "pi",
+    "terminal",
+  );
+  assert.equal(collapsed.text, `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\nnever force-push`);
+
+  // And a group that is only PART of the set keeps its label, naming every checkout it
+  // governs - grouping must not erase which prohibition belongs to which tree.
+  const mixed = StandingInstructionsConfigSchema.parse({
+    default: "never force-push",
+    repositories: { "/ws/c": "this repo is read-only" },
+  });
+  const parts = composeStandingInstructions(
+    mixed,
+    [{ repoPath: "/ws/a" }, { repoPath: "/ws/b" }, { repoPath: "/ws/c" }],
+    "pi",
+    "terminal",
+  );
+  assert.equal(
+    parts.text,
+    `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n` +
+      `### /ws/a, /ws/b\n\nnever force-push\n\n` +
+      `### /ws/c\n\nthis repo is read-only`,
+  );
 });
 
 test("a two-repo launch where only the SECOND repository has rules still sends them", () => {

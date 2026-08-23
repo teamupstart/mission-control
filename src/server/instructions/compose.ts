@@ -63,15 +63,36 @@ export function composeStandingInstructions(
     return { text: "", mechanism: "none", sources: [] };
   }
 
-  // One heading when there is one contributor, and a labelled part per contributor when
-  // there is more than one. The label is the checkout the rule is ABOUT, so an agent
-  // holding three worktrees can tell which prohibition belongs to which tree.
+  // Grouped by the TEXT that was resolved, in manifest order, because several checkouts
+  // very often resolve to the same words - the machine-wide default is the ordinary case,
+  // and so is one key covering a monorepo's packages. Rendering one labelled part per
+  // CHECKOUT would then repeat a rule the operator wrote once, which is the same failure
+  // exactly-once delivery exists to prevent: a prohibition stated three times invites being
+  // read as emphasis about something that was said once. Grouping is on the resolved text
+  // rather than on the matched key, so two different keys that happen to carry identical
+  // words also collapse - the agent reads words, not keys.
+  //
+  // `sources` is deliberately NOT grouped: provenance stays one entry per contributing
+  // repository, so a marker can still say which stored key each checkout inherited.
+  const groups: { text: string; repoPaths: string[] }[] = [];
+  for (const entry of contributing) {
+    const existing = groups.find((group) => group.text === entry.text);
+    if (existing) existing.repoPaths.push(entry.repoPath);
+    else groups.push({ text: entry.text, repoPaths: [entry.repoPath] });
+  }
+
+  // One group is ONE rule, however many checkouts it covers, so it carries no labels - a
+  // label would imply a distinction that is not there. The heading still says which case it
+  // is, so a single repository reads "this repository" exactly as it did before this
+  // grouping existed. Several groups keep the labelled parts, and a label names every
+  // checkout its part governs, so an agent holding three worktrees can still tell which
+  // prohibition belongs to which tree.
   const text =
-    contributing.length === 1
-      ? `${STANDING_INSTRUCTIONS_HEADING}\n\n${contributing[0]!.text}`
+    groups.length === 1
+      ? `${contributing.length === 1 ? STANDING_INSTRUCTIONS_HEADING : STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n${groups[0]!.text}`
       : [
           STANDING_INSTRUCTIONS_MULTI_HEADING,
-          ...contributing.map((entry) => `### ${entry.repoPath}\n\n${entry.text}`),
+          ...groups.map((group) => `### ${group.repoPaths.join(", ")}\n\n${group.text}`),
         ].join("\n\n");
 
   return {

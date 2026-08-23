@@ -105,6 +105,11 @@ A repository is matched by its **longest** configured path, so a rule on
 means "send nothing here" and beats the machine-wide default; a repository you have not
 configured at all inherits it.
 
+A dispatch that attaches several repositories sends **all** of their rules, since it hands the
+agent write access to all of them. Checkouts that resolve to the same words - the machine-wide
+default is the ordinary case - share one block rather than repeating it once per checkout; where
+they differ, each block is labelled with the checkouts it governs.
+
 How the text reaches the agent depends on the harness and the runtime, and it is delivered
 exactly once either way:
 

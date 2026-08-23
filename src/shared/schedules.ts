@@ -227,7 +227,8 @@ export interface ScheduleTemplate {
   intent: string;
   repoRoot: string;
   kind: TaskKind;
-  agent: AgentType;
+  /** `null` inherits the kind's agent, resolved when each run files its task. */
+  agent: AgentType | null;
   priority: TaskPriority | null;
   labels: string[];
   model: string | null;

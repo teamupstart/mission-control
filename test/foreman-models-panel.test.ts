@@ -8,6 +8,7 @@ import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "../src/shared/foreman-
 import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
 import {
   ForemanConfigSchema,
+  HarnessesConfigSchema,
   InspectorConfigSchema,
   LlmConfigSchema,
 } from "../src/shared/protocol.ts";
@@ -120,6 +121,9 @@ function render({
   return renderToStaticMarkup(
     createElement(LlmSettingsPanel, {
       state: llmState,
+      // The task-kind grid is a different question on the same page; this file is about the
+      // Foreman and Inspector groups, so it renders with defaults and is not asserted on.
+      harnesses: { config: HarnessesConfigSchema.parse({}), update: async () => {}, error: null },
       foreman: foremanState,
       inspector: inspectorState,
     }),

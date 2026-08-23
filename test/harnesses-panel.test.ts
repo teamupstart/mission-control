@@ -6,6 +6,7 @@ import { HarnessesPanel } from "../src/web/components/HarnessesPanel.tsx";
 import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
+  emptyTaskKindDefaults,
   type HarnessesConfig,
 } from "../src/shared/protocol.ts";
 import {
@@ -72,6 +73,7 @@ function mkConfig(
     defaultModel: { ...fullRecord<string | null>(null), ...over.defaultModel },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), ...over.defaultEffort },
     sessionRuntime: { ...DEFAULT_HARNESSES_SESSION_RUNTIMES, ...over.sessionRuntime },
+    kindDefaults: emptyTaskKindDefaults(),
   };
 }
 

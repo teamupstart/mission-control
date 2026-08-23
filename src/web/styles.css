@@ -108,7 +108,7 @@
  * The amber stage frame and segmented header echo the Line's pipeline without inventing a
  * second visual language. Driver still owns positioning and spotlight geometry; this remains
  * a skin around its public popover DOM, with focus containment in the narrow React adapter. */
-.driver-popover.mc-see-work-tour {
+.driver-popover.mc-tour {
   box-sizing: border-box;
   width: min(410px, calc(100vw - 32px));
   max-width: 410px;
@@ -125,7 +125,7 @@
   -webkit-app-region: no-drag;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-head {
+.driver-popover.mc-tour .mc-tour-head {
   display: flex;
   align-items: end;
   justify-content: space-between;
@@ -134,18 +134,18 @@
   border-bottom: 1px solid var(--border);
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-identity {
+.driver-popover.mc-tour .mc-tour-identity {
   min-width: 0;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kicker,
-.driver-popover.mc-see-work-tour .driver-popover-progress-text {
+.driver-popover.mc-tour .mc-tour-kicker,
+.driver-popover.mc-tour .driver-popover-progress-text {
   margin: 0;
   font-family: var(--mono);
   text-transform: uppercase;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kicker {
+.driver-popover.mc-tour .mc-tour-kicker {
   display: block;
   color: var(--attention);
   font-size: 10px;
@@ -153,7 +153,7 @@
   letter-spacing: .14em;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-progress-text {
+.driver-popover.mc-tour .driver-popover-progress-text {
   display: block;
   margin-top: 5px;
   color: var(--dim);
@@ -162,7 +162,7 @@
   letter-spacing: .08em;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-progress-rail {
+.driver-popover.mc-tour .mc-tour-progress-rail {
   display: grid;
   grid-template-columns: repeat(14, 8px);
   gap: 3px;
@@ -170,23 +170,23 @@
   margin-bottom: 2px;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-progress-rail span {
+.driver-popover.mc-tour .mc-tour-progress-rail span {
   width: 8px;
   height: 3px;
   background: var(--border);
   border-radius: 999px;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-progress-rail span.is-past {
+.driver-popover.mc-tour .mc-tour-progress-rail span.is-past {
   background: color-mix(in srgb, var(--attention) 45%, var(--border));
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-progress-rail span.is-current {
+.driver-popover.mc-tour .mc-tour-progress-rail span.is-current {
   background: var(--attention);
   box-shadow: 0 0 8px color-mix(in srgb, var(--attention) 42%, transparent);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-title {
+.driver-popover.mc-tour .driver-popover-title {
   margin: 0;
   padding: 20px 20px 0;
   color: var(--fg);
@@ -196,7 +196,7 @@
   letter-spacing: -.01em;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-description {
+.driver-popover.mc-tour .driver-popover-description {
   margin: 0;
   padding: 9px 20px 22px;
   color: var(--muted);
@@ -204,17 +204,17 @@
   line-height: 1.58;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-copy {
+.driver-popover.mc-tour .mc-tour-copy {
   margin: 0;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kind-list {
+.driver-popover.mc-tour .mc-tour-kind-list {
   display: grid;
   gap: 4px;
   margin: 10px 0 0;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kind-list > div {
+.driver-popover.mc-tour .mc-tour-kind-list > div {
   display: grid;
   grid-template-columns: 48px 1fr;
   gap: 9px;
@@ -222,20 +222,20 @@
   border-top: 1px solid var(--border-soft);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-description:has(.mc-tour-kind-list) {
+.driver-popover.mc-tour .driver-popover-description:has(.mc-tour-kind-list) {
   padding-bottom: 14px;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kind-list dt {
+.driver-popover.mc-tour .mc-tour-kind-list dt {
   color: var(--fg);
   font-weight: 650;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-kind-list dd {
+.driver-popover.mc-tour .mc-tour-kind-list dd {
   margin: 0;
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-fallback {
+.driver-popover.mc-tour .mc-tour-fallback {
   margin: 0;
   padding: 10px 11px;
   color: color-mix(in srgb, var(--attention) 78%, var(--fg));
@@ -244,7 +244,7 @@
   font-size: 11.5px;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer {
+.driver-popover.mc-tour .driver-popover-footer {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -254,7 +254,7 @@
   background: color-mix(in srgb, var(--bg-2) 72%, transparent);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer button {
+.driver-popover.mc-tour .driver-popover-footer button {
   box-sizing: border-box;
   display: flex !important;
   align-items: center;
@@ -273,33 +273,33 @@
   white-space: nowrap;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer button[hidden] {
+.driver-popover.mc-tour .driver-popover-footer button[hidden] {
   display: none !important;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer button:hover {
+.driver-popover.mc-tour .driver-popover-footer button:hover {
   border-color: color-mix(in oklab, var(--working) 58%, var(--border));
   background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer button:disabled {
+.driver-popover.mc-tour .driver-popover-footer button:disabled {
   cursor: wait;
   opacity: 0.48;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer button:focus-visible {
+.driver-popover.mc-tour .driver-popover-footer button:focus-visible {
   outline: 2px solid var(--select);
   outline-offset: 2px;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-footer .driver-popover-next-btn {
+.driver-popover.mc-tour .driver-popover-footer .driver-popover-next-btn {
   min-width: 72px;
   border-color: color-mix(in oklab, var(--working) 60%, var(--border));
   background: color-mix(in oklab, var(--working) 18%, var(--panel));
   color: var(--fg);
 }
 
-.driver-popover.mc-see-work-tour .mc-tour-exit {
+.driver-popover.mc-tour .mc-tour-exit {
   margin-right: auto;
   border-color: transparent;
   background: transparent;
@@ -309,25 +309,25 @@
 /* Cleanup can fail after the operator's route has already been restored, leaving the old
  * spotlight target unmounted. Keep the retry explanation centered and independent of that
  * stale geometry until the server confirms every temporary session has closed. */
-.driver-popover.mc-see-work-tour[data-tour-cleanup-error="true"] {
+.driver-popover.mc-tour[data-tour-cleanup-error="true"] {
   position: fixed !important;
   inset: 50% auto auto 50% !important;
   transform: translate(-50%, -50%) !important;
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-arrow-side-top {
+.driver-popover.mc-tour .driver-popover-arrow-side-top {
   border-bottom-color: var(--panel-2);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-arrow-side-bottom {
+.driver-popover.mc-tour .driver-popover-arrow-side-bottom {
   border-top-color: var(--panel-2);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-arrow-side-left {
+.driver-popover.mc-tour .driver-popover-arrow-side-left {
   border-right-color: var(--panel-2);
 }
 
-.driver-popover.mc-see-work-tour .driver-popover-arrow-side-right {
+.driver-popover.mc-tour .driver-popover-arrow-side-right {
   border-left-color: var(--panel-2);
 }
 
@@ -390,8 +390,8 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .driver-popover.mc-see-work-tour,
-  .driver-popover.mc-see-work-tour .mc-tour-progress-rail span,
+  .driver-popover.mc-tour,
+  .driver-popover.mc-tour .mc-tour-progress-rail span,
   .driver-overlay,
   .driver-active-element {
     animation: none !important;
@@ -18555,6 +18555,42 @@ select.settings-matrix-provider {
   font-size: 10.5px;
   line-height: 1.5;
   color: color-mix(in oklab, var(--attention) 86%, var(--fg));
+}
+/* The task-kind grid is FOUR columns where its sibling is two, so the 40% slot column that
+   reads well beside one control leaves three of them fighting over the rest - and a select
+   narrower than its label draws that label under its own chevron. The row headings here are
+   one word plus a short purpose, so they need far less than 40%. Scoped by the group's own
+   anchor rather than by a prop on the shared table: this is a fact about how wide THIS grid's
+   headings are, not a new mode the component has to offer. */
+[data-anchor="models/task-kinds"] .settings-matrix-corner {
+  width: 26%;
+  min-width: 150px;
+}
+[data-anchor="models/task-kinds"] .settings-matrix select {
+  width: 100%;
+  max-width: none;
+  /* Narrows the collision the app-wide `appearance: base-select` note above describes; it
+     does not close it. A label longer than its track is clipped rather than wrapped either
+     way, and the copy is what keeps these inside their tracks. */
+  text-overflow: ellipsis;
+}
+
+/* An inherited row's cells are READINGS, not controls: they say what a row below falls back
+   to. Sized to sit on the same baseline as the select beside them in the rows underneath, so
+   the column still reads as one column rather than as a caption above a grid. */
+/* The inherited row's note: where these values come from. Muted, not the amber a dropped
+   value gets - an untouched installation must not look like it has a problem. */
+.settings-matrix-inherited-note {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.settings-matrix-inherited-value {
+  display: block;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--dim);
 }
 /* Inside a matrix cell the row heading beside it is already the field's name, so the card
    chrome and the label slot both come off and only the control is left. */

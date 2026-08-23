@@ -11,6 +11,8 @@ import type { ForemanState } from "../useForeman.ts";
 import type { InspectorState } from "../useInspector.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
+import type { HarnessesState } from "../useHarnesses.ts";
+import { TaskKindDefaultsGroup } from "./TaskKindDefaults.tsx";
 import { modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -57,19 +59,29 @@ function runnerNote(state: LlmState): string | null {
 
 export function LlmSettingsPanel({
   state,
+  harnesses,
   foreman,
   inspector,
 }: {
   state: LlmState;
   /**
-   * Foreman's own state, passed down rather than polled again here.
+   * The harnesses config, SHARED with the rest of Settings rather than polled again here.
+   *
+   * `SettingsPage` already holds one instance for the Harnesses panel, and a second poller
+   * over the same blob would be two optimistic writers racing each other's reads - the exact
+   * lost update `useHarnesses`'s edit counter exists to prevent, reintroduced one component
+   * over.
+   */
+  harnesses: HarnessesState;
+  /**
+   * Foreman's own state, passed down for the same reason.
    *
    * A second poller would be a second idea of the truth on one screen: this panel and the
    * Foreman panel would answer "what is Review running as?" from two reads taken seconds
    * apart, and the write path would have two optimistic caches to reconcile.
    */
   foreman: ForemanState;
-  /** The Inspector's, for the same reason. */
+  /** The Inspector's, for the same reason again. */
   inspector: InspectorState;
 }): React.JSX.Element {
   const { config, status, update, error } = state;
@@ -132,6 +144,11 @@ export function LlmSettingsPanel({
         agent in a card - which harness a session runs and which model judges it are
         independent choices, so the cheap jobs can run somewhere cheaper than whatever is in
         your cards. What is deliberately not a slot here is named at the bottom.
+      </p>
+      <p className="settings-hint">
+        The <strong>Task kinds</strong> grid further down is the other half of the page, and it
+        is about exactly the opposite: the agent in a card, and what a dispatched task of each
+        kind launches on.
       </p>
 
       {/* The daemon has not answered. Said out loud, because everything below falls back to
@@ -258,9 +275,19 @@ export function LlmSettingsPanel({
         </p>
       </div>
 
+      {/* The rest of what this app spends on its own account, in the order the page's copy
+          names them: the background jobs above, then Foreman's four roles, then the
+          Inspector's one review. */}
       <ForemanModelsGroup foreman={foreman} providers={runners} appWide={status?.runner} />
 
       <InspectorModelGroup inspector={inspector} providers={runners} appWide={status?.runner} />
+
+      {/* Not the app's own calls at all - the harness in a CARD, per task kind. It sits on this
+          page because the question a person arrives with is "which model runs my planning", and
+          being told that Mission Control's own titling calls live under Models while a plan
+          task's model lives somewhere else answers a question nobody asked. The groups stay
+          visibly separate, and the copy in each says which calls it is about. */}
+      <TaskKindDefaultsGroup state={harnesses} />
 
       <p className="settings-hint llm-elsewhere">
         A Persona's model, and an Ensemble judge's, stay on the Persona - there is one per row

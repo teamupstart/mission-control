@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ModelChoiceSpec } from "../src/shared/model-choice.ts";
 import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
+  emptyTaskKindDefaults,
   type HarnessModelCatalogChoice,
   type HarnessModelCatalogs,
   type HarnessesConfig,
@@ -242,6 +243,7 @@ test("settings and headless model fields consume the same live Pi snapshot", () 
     defaultModel: { ...fullRecord<string | null>(null), pi: selected },
     defaultEffort: fullRecord<ThinkingLevel | null>(null),
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
+    kindDefaults: emptyTaskKindDefaults(),
   };
   const spec: ModelChoiceSpec = {
     envVar: "MISSION_EXAMPLE_MODEL",
@@ -312,13 +314,14 @@ test("dispatch summaries resolve labels from the same browser catalog", () => {
     defaultModel: { ...fullRecord<string | null>(null), pi: LIVE_CHOICES[1].id },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), pi: "high" },
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
+    kindDefaults: emptyTaskKindDefaults(),
   };
 
   assert.equal(
-    defaultModelOptionLabel("pi", defaults.defaultModel, resolve),
+    defaultModelOptionLabel("pi", "ship", defaults, resolve),
     "Default - Claude Sonnet 5",
   );
-  assert.equal(harnessDefaultsLine("pi", defaults, resolve), "Claude Sonnet 5 · high");
+  assert.equal(harnessDefaultsLine("pi", "ship", defaults, resolve), "Claude Sonnet 5 · high");
 });
 
 test("every web model picker is wired through the browser catalog module", () => {

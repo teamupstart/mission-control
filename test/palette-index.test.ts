@@ -452,11 +452,14 @@ test("the fixed commands include the isolated tour spike beside existing afforda
     "route",
     "route",
     "route",
-    "start-see-work-tour",
+    "start-tour",
   ]);
   const tour = find(rows, "command:see-work-tour");
   assert.equal(tour.title, "Start See the work tour");
-  assert.equal(tour.target.kind, "start-see-work-tour");
+  assert.equal(tour.target.kind, "start-tour");
+  // The row is derived from the tour registry, so its target carries which tour to start
+  // rather than the palette holding a second name for the one tour that exists.
+  assert.equal(tour.target.kind === "start-tour" ? tour.target.tourId : null, "see-work");
   // Feedback is the second doorway onto the topbar glyph, and it opens THAT modal - App
   // routes both through one `openFeedback`, so there is one draft behind the two entries.
   const feedback = find(rows, "command:report-product-issue");

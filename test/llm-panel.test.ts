@@ -10,7 +10,9 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
 import { LLM_RUNNER_ENV_VAR, LLM_RUNNER_IDS } from "../src/shared/llm.ts";
 import { guardProviderModel, MODEL_CATALOG } from "../src/shared/model.ts";
 import { modelSurvivesProviderChange } from "../src/web/components/SettingsMatrix.tsx";
+import { HarnessesConfigSchema } from "../src/shared/protocol.ts";
 import type { LlmConfig } from "../src/shared/protocol.ts";
+import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import type { LlmStatus } from "../src/shared/types.ts";
 
 // What is at stake: this panel is the only place the app answers "what am I spending on my
@@ -111,7 +113,7 @@ const INSPECTOR: InspectorState = {
   error: null,
 };
 
-function render(over: Partial<LlmState> = {}): string {
+function render(over: Partial<LlmState> = {}, harnessesOver: Partial<HarnessesState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
     status: status(),
@@ -120,8 +122,19 @@ function render(over: Partial<LlmState> = {}): string {
     error: null,
     ...over,
   };
+  const harnesses: HarnessesState = {
+    config: HarnessesConfigSchema.parse({}),
+    update: async () => {},
+    error: null,
+    ...harnessesOver,
+  };
   return renderToStaticMarkup(
-    createElement(LlmSettingsPanel, { state, foreman: FOREMAN, inspector: INSPECTOR }),
+    createElement(LlmSettingsPanel, {
+      state,
+      harnesses,
+      foreman: FOREMAN,
+      inspector: INSPECTOR,
+    }),
   );
 }
 
@@ -133,20 +146,32 @@ test("every background job gets a field, labelled and explained", () => {
   }
 });
 
+/** Just the background-jobs group, so a count is about jobs rather than about the page. */
+function jobsGroup(html: string): string {
+  const at = html.indexOf('data-anchor="models/jobs"');
+  assert.ok(at > 0, "no background jobs group");
+  // Ends at whichever group comes next, because the page now carries four: the jobs, then
+  // Foreman's four roles, the Inspector's review, and the task-kind grid. A slice that named
+  // only the last of them would silently swallow the two in between and turn an assertion
+  // about the jobs into one about how many rows the whole page has.
+  const end = ["models/foreman", "models/inspector", "models/task-kinds"]
+    .map((anchor) => html.indexOf(`data-anchor="${anchor}"`, at))
+    .filter((index) => index > 0)
+    .sort((a, b) => a - b)[0];
+  return html.slice(at, end !== undefined ? end : undefined);
+}
+
 test("every blurb is still PRINTED, once per row, not left to a tooltip", () => {
   // The blurb moved from under the model field to the row heading when the group became a
   // matrix - the model select is now one of two controls in the row, so an explanation
   // hanging off it described the row from the wrong place. What must not change is that it
   // is VISIBLE: the assertion above would keep passing off the Tooltip's hidden portal copy
   // alone, which is exactly the regression this pins.
-  // Scoped to the background-jobs group. The page now carries Foreman's and the Inspector's
-  // grids too, and counting blurbs across all three would make this assertion move whenever
-  // a group is added rather than when a job's explanation goes missing.
-  const html = render();
-  const group = html.slice(
-    html.indexOf('data-anchor="models/jobs"'),
-    html.indexOf('data-anchor="models/foreman"'),
-  );
+  // Scoped to the background-jobs group, because the page now carries three more matrices -
+  // Foreman's roles, the Inspector's review, and the task-kind grid - whose rows print their
+  // own blurbs. Counting the whole document would make this assertion about how many groups
+  // exist rather than about a job's explanation going missing.
+  const group = jobsGroup(render());
   assert.equal(
     (group.match(/settings-matrix-slot-blurb/g) ?? []).length,
     LLM_JOB_IDS.length,
@@ -318,7 +343,10 @@ test("a stored provider this build cannot resolve is named as dropped", () => {
 });
 
 test("with no answer from the daemon, the panel says so rather than showing defaults as fact", () => {
-  const html = render({ config: null, status: null });
+  // Both configs, because the panel now draws two blobs and "the daemon has not answered"
+  // is a fact about the daemon rather than about one route: a task-kind row left editable
+  // while nothing is known would be exactly the claim this test refuses.
+  const html = render({ config: null, status: null }, { config: null });
   assert.match(html, /what these calls actually run as is unknown/);
   // ...and nothing is editable, because a disabled input is not a claim about what is running.
   const controls = html.match(/<(?:input|select)[^>]*>/g) ?? [];

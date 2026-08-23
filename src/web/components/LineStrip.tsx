@@ -121,7 +121,7 @@ export function LineStrip({
   stageRef?: (stage: LineStageId, button: HTMLButtonElement | null) => void;
   onStage: (stage: LineStageId) => void;
 }): React.JSX.Element {
-  const tourRef = useTourTargetRef<HTMLElement>("line");
+  const tourRef = useTourTargetRef<HTMLElement>("see-work:line");
   // Driven by LINE_STAGES rather than by what arrived, which is what makes the strip
   // survive a version skew in both directions: a daemon that predates a stage this build
   // draws leaves it blank, and one that has grown a seventh has it ignored rather than

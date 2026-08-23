@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
+  HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
 } from "./task.ts";
+import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
@@ -970,7 +972,16 @@ export const DispatchSchema = z
     intent: z.string().min(1),
     title: z.string().optional(),
     kind: z.enum(TASK_KINDS).default("ship"),
-    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * Which harness to file this on. OPTIONAL, and the absence is load-bearing: it used to
+     * carry `.default("claude")`, which meant that by the time a route saw a parsed body an
+     * omitted agent had already become an explicit Claude and nothing downstream could
+     * recover the difference - so no per-kind default could ever have been consulted by any
+     * caller, which is all of them. The default now lives at the single convergence point
+     * that can read the kind (`resolveTaskAgent`), and `kind` keeps its own `.default`, so
+     * the kind is always known when the agent is resolved.
+     */
+    agent: z.enum(AGENT_TYPES).optional(),
     /**
      * Run this agent on a specific model instead of the harness default. Omitted
      * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
@@ -994,7 +1005,11 @@ export const DispatchSchema = z
     dependencies: TaskDependenciesSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })
-  .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
+  // Only when the harness is NAMED. An effort sent with no agent is a level chosen against
+  // whichever harness the kind resolves to, and that harness is not knowable in a browser-safe
+  // schema - so the check moves to the one place that knows it, `TaskManager.create`, which
+  // refuses the same pair with the same sentence.
+  .refine((o) => o.effort === undefined || o.agent === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
   })
@@ -1033,16 +1048,16 @@ export const SEE_WORK_TOUR_PREVIEW_INTENT = [
 ].join("\n\n");
 
 /**
- * The comparison spike's one deliberately narrow dispatch input.
+ * A tour's one deliberately narrow dispatch input.
  *
  * The browser chooses an existing repository, while the daemon owns every other launch
  * property. Keeping model, prompt, tools, and outcome off this body prevents a temporary
  * product-tour route from becoming a second general-purpose dispatcher.
  */
-export const SeeWorkTourDispatchSchema = z.object({
+export const TourDispatchSchema = z.object({
   repoRoot: z.string().min(1),
 });
-export type SeeWorkTourDispatch = z.infer<typeof SeeWorkTourDispatchSchema>;
+export type TourDispatch = z.infer<typeof TourDispatchSchema>;
 
 /**
  * Resolve a typed path to a canonical git repo root, so the Foreman allowlist
@@ -2226,6 +2241,72 @@ export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
 } as const satisfies Record<AgentType, SessionRuntime>;
 
 /**
+ * One task kind's launch defaults: which harness files it, and what that harness launches on.
+ *
+ * All three nullable, and null means INHERIT - the per-harness default below for the model
+ * and the effort, and `"claude"` for the agent. The three are deliberately not symmetric
+ * in when they are read, which is the one thing an operator has to know about this row:
+ * `tasks.agent` is NOT NULL, so the agent is a SEED written at creation, while `model` and
+ * `effort` stay nullable on the row and resolve at LAUNCH. A change to the agent therefore
+ * reaches the next task filed; a change to the model reaches a task already shelved.
+ *
+ * `model` requires `agent`, and that rule is enforced on the way IN rather than here: a model
+ * id is agent-namespaced (`claude-opus-4-8` is not a thing Codex can run), so a model stored
+ * against no agent is a value that can never apply to anything. The patch schema below
+ * refuses the contradiction stated in one write, and `setHarnessesConfig` refuses the one
+ * only the MERGE can see - a model landing on a row whose stored agent is already null.
+ *
+ * The READ path stays tolerant, because it runs on the dispatch path: an entry a newer build
+ * persisted that breaks the rule drops its model and keeps its agent and effort, rather than
+ * throwing the whole blob away over a key the caller never asked about.
+ *
+ * `effort` carries no such constraint and is deliberately settable on a row that inherits
+ * its agent: the levels are one shared vocabulary (`THINKING_LEVELS`), so "plan with high"
+ * is meaningful whichever harness ends up running it. What narrows it is a capability check
+ * at launch (`resolveDispatchEffort`), against the model that launch actually resolved.
+ */
+const TaskKindDefaultSchema = z
+  .object({
+    agent: z.enum(AGENT_TYPES).nullable().default(null),
+    model: ModelIdSchema.nullable().default(null),
+    effort: EffortLevelSchema.nullable().default(null),
+  })
+  .transform((entry) => (entry.agent === null ? { ...entry, model: null } : entry));
+
+/** The same entry as a PATCH: every field optional, and the model rule enforced. */
+const TaskKindDefaultPatchSchema = z
+  .object({
+    agent: z.enum(AGENT_TYPES).nullable().optional(),
+    model: ModelIdSchema.nullable().optional(),
+    effort: EffortLevelSchema.nullable().optional(),
+  })
+  .refine((entry) => !entry.model || entry.agent !== null, {
+    path: ["model"],
+    message: "a task kind that inherits its agent cannot pin a model",
+  });
+
+/**
+ * The kind rows, keyed by the kinds THIS APP LAUNCHES (`HARNESS_LAUNCHED_TASK_KINDS`).
+ *
+ * Built from the registry rather than spelled out, the same construction
+ * `harnessModelCatalogShape` uses over `AGENT_TYPES`: `pipeline` has no row because
+ * Conductor owns its downstream launch, and a kind added later joins or stays out by
+ * answering `TASK_KIND_BEHAVIOR` alone.
+ *
+ * The cast is what keeps that runtime filter HONEST in the types rather than papering over
+ * it. `HarnessLaunchedTaskKind` is itself derived from `TASK_KIND_BEHAVIOR`'s literal types,
+ * so this record's keys are exactly the kinds that have a row - `kindDefaults.pipeline` does
+ * not type-check, instead of type-checking and being `undefined`. A `TaskKind` in hand goes
+ * through `taskKindDefaultFor` (`@shared/kind-defaults.ts`) to ask whether there is a row.
+ */
+const taskKindDefaultsShape = Object.fromEntries(
+  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultSchema.default({})]),
+) as Record<HarnessLaunchedTaskKind, z.ZodDefault<typeof TaskKindDefaultSchema>>;
+const taskKindDefaultsPatchShape = Object.fromEntries(
+  HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
+) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
+
+/**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
@@ -2293,8 +2374,32 @@ export const HarnessesConfigSchema = z.object({
       pi: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.pi),
     })
     .default(DEFAULT_HARNESSES_SESSION_RUNTIMES),
+  /**
+   * What a dispatched task of each KIND runs as, when the task itself did not say.
+   *
+   * Additive with a default, so an untouched installation resolves exactly as it did
+   * before this key existed, and a build that predates it simply ignores it and falls back
+   * to `defaultModel` / `defaultEffort`. `TASK_KINDS` is append-only, so a key here can be
+   * added but can never come to mean a different kind later.
+   */
+  kindDefaults: z.object(taskKindDefaultsShape).default({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+/** One task kind's stored launch defaults, as read. */
+export type TaskKindDefault = HarnessesConfig["kindDefaults"][HarnessLaunchedTaskKind];
+
+/**
+ * Every harness-launched kind inheriting everything - what an untouched installation holds.
+ *
+ * Exported so a fixture, and a panel rendering before the daemon has answered, describe the
+ * unset state the same way the schema does rather than each spelling out a row set that
+ * would go stale the moment a kind is added.
+ */
+export function emptyTaskKindDefaults(): HarnessesConfig["kindDefaults"] {
+  return Object.fromEntries(
+    HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, { agent: null, model: null, effort: null }]),
+  ) as HarnessesConfig["kindDefaults"];
+}
 
 /**
  * Bounds for daemon-owned worktree policy. Kept beside the schemas so a later Settings
@@ -2515,6 +2620,13 @@ export const HarnessesConfigPatchSchema = z
         pi: SessionRuntimeSchema.optional(),
       })
       .optional(),
+    /**
+     * Spelled out per kind for the reason the maps above are, and merged per KIND by
+     * `setHarnessesConfig`: a panel that moved the `plan` row must not clear the `ship` row
+     * it never showed. Within one row the fields merge too, so setting an effort cannot
+     * blank the agent beside it.
+     */
+    kindDefaults: z.object(taskKindDefaultsPatchShape).strict().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
@@ -5947,13 +6059,32 @@ const ScheduleTemplateSchema = z
       .enum(TASK_KINDS)
       .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
       .default("ship"),
-    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
+     * each run files its task.
+     *
+     * Nullable rather than defaulted, and for the same reason `DispatchSchema.agent` is:
+     * `.default("claude")` here turned "the operator never chose" into an explicit Claude
+     * pin before the store could tell the two apart, which made a recurring mission the one
+     * creator the kind default could never reach. An operator who DID choose still gets a
+     * pin - that is what choosing means - and a stored template that names an agent keeps
+     * it untouched, so nothing already scheduled changes behaviour.
+     */
+    agent: z.enum(AGENT_TYPES).nullable().default(null),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
     model: ModelIdSchema.nullable().default(null),
     effort: EffortLevelSchema.nullable().default(null),
   })
-  .refine((t) => t.effort === null || supportsEffort(t.agent, t.effort), {
+  // The same split the kind rows keep, because it is the same fact about the two fields: a
+  // model id is agent-namespaced, so an inheriting template cannot name one; an effort is
+  // one shared vocabulary, so it can, and is checked at launch against the harness the kind
+  // actually resolved.
+  .refine((t) => t.model === null || t.agent !== null, {
+    path: ["model"],
+    message: "a template that inherits its agent cannot pin a model",
+  })
+  .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
   });

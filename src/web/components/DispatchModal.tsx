@@ -10,6 +10,13 @@ import {
   type ThinkingLevel,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import {
+  launchEffortFor,
+  launchModelFor,
+  taskKindAgent,
+  taskKindEffort,
+  taskKindModel,
+} from "@shared/kind-defaults.ts";
 import { capabilitiesFor, supportsSdkSkillInvocation } from "@shared/harness-capabilities.ts";
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
@@ -335,22 +342,41 @@ type EditSlot = { id: string; seed: DispatchDraft; draft: DispatchDraft };
  */
 export function defaultModelOptionLabel(
   agent: AgentType,
-  defaults: HarnessesConfig["defaultModel"] | null,
+  kind: TaskKind,
+  defaults: HarnessesConfig | null,
   resolveModels: ResolveHarnessModelCatalog,
 ): string {
   if (!defaults) return "Default";
-  const id = defaults[agent];
+  // Which TIER the value came from, named, because there are now two of them and they can
+  // disagree. A form that says "Default - Sonnet" while a `plan` row is about to launch this
+  // on Opus is confidently stating the wrong source, and the operator's only way to find out
+  // is to dispatch and read the card.
+  const fromKind = taskKindModel(defaults, agent, kind);
+  if (fromKind) {
+    const label = resolveModels(agent, fromKind).choices.find((m) => m.id === fromKind)?.label ?? fromKind;
+    return `Default for ${TASK_KIND_INFO[kind].label} - ${label}`;
+  }
+  const id = defaults.defaultModel[agent];
   if (!id) return "Default - whatever the harness is set to";
   const label = resolveModels(agent, id).choices.find((m) => m.id === id)?.label ?? id;
   return `Default - ${label}`;
 }
 
-function defaultEffortOptionLabel(
+/**
+ * The same, for effort - and it has to be told which model, for the reason the resolver is:
+ * the kind's level applies only if the harness offers it ON THE MODEL this task will launch
+ * with, and `levelsFor` narrows per model.
+ */
+export function defaultEffortOptionLabel(
   agent: AgentType,
-  defaults: HarnessesConfig["defaultEffort"] | null,
+  kind: TaskKind,
+  model: string | null,
+  defaults: HarnessesConfig | null,
 ): string {
   if (!defaults) return "Default";
-  const level = defaults[agent];
+  const fromKind = taskKindEffort(defaults, agent, kind, model);
+  if (fromKind) return `Default for ${TASK_KIND_INFO[kind].label} - ${fromKind}`;
+  const level = defaults.defaultEffort[agent];
   return level ? `Default - ${level}` : "Default - whatever the harness is set to";
 }
 
@@ -377,15 +403,18 @@ const AFTER_WORK_FIELD_TIP =
  */
 export function harnessDefaultsLine(
   agent: AgentType,
+  kind: TaskKind,
   defaults: HarnessesConfig | null,
   resolveModels: ResolveHarnessModelCatalog,
 ): string | null {
   if (!defaults) return null;
-  const modelId = defaults.defaultModel[agent];
+  // Through the SAME ladder the daemon runs, so the line under a harness option in the guided
+  // pass is what that harness would actually launch this kind with - kind tier included.
+  const modelId = launchModelFor(defaults, agent, kind, null, null);
   const model = modelId
     ? resolveModels(agent, modelId).choices.find((m) => m.id === modelId)?.label ?? modelId
     : null;
-  const effort = defaults.defaultEffort[agent] || null;
+  const effort = launchEffortFor(defaults, agent, kind, null, modelId);
   const parts = [model, effort].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
@@ -879,11 +908,11 @@ function DispatchModal({
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const editing = mode.kind === "edit" ? mode.task : null;
-  const tourModalRef = useTourTargetRef<HTMLElement>("dispatch-modal");
-  const tourKindRef = useTourTargetRef<HTMLDivElement>("dispatch-kind");
-  const tourInputRef = useTourTargetRef<HTMLLabelElement>("dispatch-input");
-  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("dispatch-workflow");
-  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("dispatch-submit");
+  const tourModalRef = useTourTargetRef<HTMLElement>("see-work:dispatch-modal");
+  const tourKindRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-kind");
+  const tourInputRef = useTourTargetRef<HTMLLabelElement>("see-work:dispatch-input");
+  const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-workflow");
+  const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("see-work:dispatch-submit");
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const availableTaskKinds =
@@ -1338,6 +1367,37 @@ function DispatchModal({
     });
   }, [draft.agent, draft.kind, pipelineLaunchRuntime]);
 
+  /**
+   * The Agent select follows the KIND, until somebody moves it themselves.
+   *
+   * An effect rather than a line in `selectKind`, because the draft exists before the config
+   * does: the form opens on `ship` and the defaults land a fetch later, and a form that only
+   * moved on a kind CHANGE would sit there naming Claude while the daemon was about to file
+   * the task on Codex. The form must show what will actually happen.
+   *
+   * Guarded three ways, and each guard is a case where moving it would be wrong:
+   *  - `editing`, because a shelved task already HOLDS an agent. It was resolved when the
+   *    task was filed and is now an ordinary pin, and re-resolving it in the editor would
+   *    rewrite somebody's stored choice for them.
+   *  - `tourDemo`, whose draft is server-owned down to the harness.
+   *  - `draft.agentPinned`, the standing rule this form already follows for After work: a
+   *    choice made by hand is never reverted by a later kind switch. It lives on the DRAFT
+   *    rather than in a ref because closing this surface keeps the draft and reopening
+   *    resumes it - a ref dies with the unmount, and a resumed harness would then read as
+   *    "nobody has chosen" and be overwritten on sight.
+   *
+   * `pipeline` reaches here and moves nothing: it has no kind row at all, so `taskKindAgent`
+   * answers with the inherited agent and `pipelineAgentForKindTransition` above still owns
+   * that kind's harness.
+   */
+  useEffect(() => {
+    if (editing || tourDemo || draft.agentPinned || !defaults) return;
+    if (!usesHarness) return;
+    const wanted = taskKindAgent(defaults, draft.kind);
+    if (wanted === draft.agent || !selectableAgents.includes(wanted)) return;
+    update({ agent: wanted, ...overridesForAgent(wanted) });
+  }, [defaults, draft.agent, draft.agentPinned, draft.kind, editing, tourDemo, usesHarness]);
+
   // ---- the guided pass ----------------------------------------------------------------
   //
   // A phase of THIS dialog, not a second one: `OVERLAY_IDS.dispatch` keeps its single entry
@@ -1465,11 +1525,13 @@ function DispatchModal({
       value: a,
       label: AGENT_IDENTITY[a].label,
       accent: AGENT_IDENTITY[a].accent,
-      sub: harnessDefaultsLine(a, defaults, resolveModels),
+      sub: harnessDefaultsLine(a, draft.kind, defaults, resolveModels),
       hotkey: GUIDED_HARNESS_KEYS[a],
       // And identical to the Agent `<select>`'s, `overridesForAgent` and all - including its
       // guard, which is what keeps confirming the current harness from dropping anything.
-      commit: () => update({ agent: a, ...overridesForAgent(a) }),
+      commit: () => {
+        update({ agent: a, agentPinned: true, ...overridesForAgent(a) });
+      },
       ...(managedPipeline
         ? {
             advance: (current: GuidedPass) =>
@@ -2581,10 +2643,14 @@ function DispatchModal({
                       // per-agent and always right for the harness now chosen.
                       onChange={(e) => {
                         const agent = e.target.value as AgentType;
+                        // Chosen by hand, so a later kind switch must not move it back to
+                        // that kind's default underneath the operator - the same rule After
+                        // work follows with its stash. Set before the pass takes the value,
+                        // because the pass's own commit is this same choice by another route.
                         // While the pass is asking this question, using the control it is
                         // about answers it - the same write, and the pass moves on.
                         if (guidedTakeValue("harness", agent)) return;
-                        update({ agent, ...overridesForAgent(agent) });
+                        update({ agent, agentPinned: true, ...overridesForAgent(agent) });
                       }}
                     >
                     {/* Driven off the union, so a harness that exists cannot be one the
@@ -2652,11 +2718,7 @@ function DispatchModal({
                   onChange={(e) => update({ model: e.target.value })}
                 >
                   <option value="">
-                    {defaultModelOptionLabel(
-                      draft.agent,
-                      defaults?.defaultModel ?? null,
-                      resolveModels,
-                    )}
+                    {defaultModelOptionLabel(draft.agent, draft.kind, defaults, resolveModels)}
                   </option>
                   {/* The draft's own id is folded in, for the same reason the Settings picker
                       folds in the stored default: reopening a shelved task can seed this from a
@@ -2680,7 +2742,17 @@ function DispatchModal({
                   aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
                 >
                 <option value="">
-                  {defaultEffortOptionLabel(draft.agent, defaults?.defaultEffort ?? null)}
+                  {defaultEffortOptionLabel(
+                    draft.agent,
+                    draft.kind,
+                    // The model this task will actually launch on, resolved through the same
+                    // ladder the daemon uses - not `draft.model`, which is empty on the common
+                    // path where the kind or the harness default supplies it.
+                    defaults
+                      ? launchModelFor(defaults, draft.agent, draft.kind, draft.model || null, null)
+                      : draft.model || null,
+                    defaults,
+                  )}
                 </option>
                   {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
                     <option key={level} value={level}>
@@ -2693,7 +2765,7 @@ function DispatchModal({
           </div>
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
-              ? "Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides."
+              ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model and effort overrides."
               : draft.kind === "pipeline"
                 ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
                 : kindBehavior.constraint}

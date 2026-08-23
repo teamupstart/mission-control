@@ -519,6 +519,36 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     ],
     kind: "jump",
   },
+  // A third entry on this category, because the grid below the jobs answers a different
+  // question from either control above it: not "what does the app spend on itself" but "what
+  // does a dispatched plan run as". Someone searching "plan model" wants this row and nothing
+  // else on the page.
+  {
+    id: "task-kind-defaults",
+    label: "Agent, model and effort per task kind",
+    description: "What a dispatched plan, ship, scout or chat task is filed on and launches with.",
+    category: "models",
+    anchor: "models/task-kinds",
+    // Kind names appear only inside phrases ("plan model"), never as the bare ids. Listing
+    // them bare would restate the kind vocabulary outside its registry, which
+    // `task-kinds.test.ts` refuses precisely so a stale copy cannot silently drop a kind.
+    keywords: [
+      "task kind",
+      "plan model",
+      "plan agent",
+      "ship model",
+      "scout model",
+      "chat model",
+      "dispatch default",
+      "harness",
+      "agent",
+      "effort",
+      "reasoning",
+      "per kind",
+      "inherit",
+    ],
+    kind: "jump",
+  },
   // Re-pointed here from the Foreman and GitHub Inspector categories when their model
   // controls moved. The IDS are unchanged - `foreman-models` and `review-model` are the keys
   // a keybinding is stored under (`BINDABLE_CONTROL_IDS`), so renaming one to match its new

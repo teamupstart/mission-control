@@ -14,7 +14,7 @@ Mission Control's product reference is organized by feature below.
 - [Attention, alerts, and away mode](attention-and-alerts.md)
 - [The Library and the Line](library-and-line.md)
 - [Workflows, Personas, and session actions](workflows.md)
-- [Models](models.md)
+- [Models, and per task kind dispatch defaults](models.md)
 - [Foreman](foreman.md)
 - [Work queues and backlog autopilot](work-queues.md)
 - [Skills and settings](skills-and-settings.md)

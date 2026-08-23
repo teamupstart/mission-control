@@ -455,9 +455,21 @@ test("an ambiguous native acquisition never creates a disposable task or check t
   assert.equal(new CheckLeaseStore(db).get("check-unknown"), null);
 });
 
+/**
+ * How long the slot-independence test waits before it concludes the lock is broken.
+ *
+ * Chosen to be unreachable by an honest run rather than to be tight: the two operations it
+ * guards take under a second on an idle machine, and a few seconds on a loaded one. Nothing
+ * is asserted about this number - it only decides when to stop waiting and start blaming.
+ */
+const DEADLOCK_ESCAPE_MS = 60_000;
+
+// The deadline here is a deadlock backstop, not a speed limit. It sits far above
+// DEADLOCK_ESCAPE_MS so the escape hatch below always wins the race and reports the
+// meaningful assertion; only a hang that survives an opened gate ever reaches this.
 test(
   "a slow release fetch does not block another slot acquisition or release",
-  { timeout: 10_000 },
+  { timeout: 120_000 },
   async () => {
     const { clone, sha } = repository("mission-native-slot-concurrency-");
     let fetchCalls = 0;
@@ -501,16 +513,28 @@ test(
     // Awaited with NO deadline of their own, which is the point. The claim is that neither
     // of these waits on the first slot's gated fetch, and the honest proof is that both
     // finish while that gate is still shut - not that both finish inside some number of
-    // milliseconds. A wall-clock race reports a busy machine as a broken lock, which is
-    // exactly what it did here: this repository's own suite runs several files at once, and
-    // a release that does real work in a temp git repository can lose a one-second race
-    // while being perfectly independent.
+    // milliseconds. A wall-clock race reports a busy machine as a broken lock: this
+    // repository's own suite runs several files at once, and a release that does real work
+    // in a temp git repository can lose that race while being perfectly independent.
     //
-    // If the independence ever DOES break, these two awaits deadlock against a gate nobody
-    // will open, and the test's own `timeout` reports it. Slow and unambiguous beats fast
-    // and wrong: a regression cannot pass here, and a loaded machine cannot fail here.
-    const thirdResult = await thirdAcquire;
-    const secondReleased = await secondRelease;
+    // A broken lock would leave both awaits hanging on a gate nobody opens, so the escape
+    // hatch opens it for them after a delay no honest run needs. That converts the
+    // regression from a bare timeout - which a slow machine produces too, and which names
+    // neither the claim nor the cause - into the `gateOpen` assertion below, which says
+    // exactly what broke. The delay bounds only how long we wait before concluding deadlock;
+    // it is never the pass/fail boundary, because a run that takes longer than expected
+    // still finds the gate shut and still passes.
+    const escape = setTimeout(finishSlowFetch, DEADLOCK_ESCAPE_MS);
+    // Never let a pending backstop hold the worker open once the test is done with it.
+    escape.unref?.();
+    let thirdResult;
+    let secondReleased;
+    try {
+      thirdResult = await thirdAcquire;
+      secondReleased = await secondRelease;
+    } finally {
+      clearTimeout(escape);
+    }
     assert.equal(gateOpen, false, "both finished before the slow fetch was ever released");
 
     finishSlowFetch();

@@ -364,6 +364,39 @@ test("closing after merge records completion before it terminates the agent", as
   assert.match(outcomeAtClose ?? "", /merged/);
 });
 
+test("closing after merge waits for a working agent's later idle transition", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const closeAttempted = deferred();
+  const killed: string[] = [];
+  const f = fleet("s-close-after-idle", true, {
+    // Keep the fake checkout out of reclaim; this test is about the delayed close signal.
+    resetWouldDestroyWork: async () => "an untracked test file",
+    kill: async (session) => {
+      killed.push(session.id);
+      closeAttempted.resolve();
+      return { ok: true };
+    },
+  });
+
+  merge(f);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(killed, [], "the merge must not close a session mid-turn");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+
+  f.registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+  });
+  await closeAttempted.promise;
+
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.deepEqual(killed, [f.id]);
+});
+
 test("a merged session awaiting input is not killed as a substitute for completion", async () => {
   setShippingConfig({ closeSessionAfterMerge: true });
   const killed: string[] = [];

@@ -18,8 +18,10 @@ workflow, model, context, effort, permission mode, cost, branch, worktree, last 
 live preview card beside the checklist. The flags that ask for you stay on whatever you
 choose, and the defaults draw the card the previous release drew.
 
-The temporary **See the work** product tour starts from the **Help & tours** footer in the
-Settings rail or from **Start See the work tour** in the <kbd>⌘K</kbd> palette's **Do** group.
+Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
+per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
+One tour runs at a time. The temporary **See the work** product tour is the one registered
+today; **Start See the work tour** is its palette command.
 If the fleet is empty, the tour starts one temporary Chat conversation and uses its real Board
 drill-in to show the session desk. Its Dispatch sequence
 then fills the real task input, explains the **None** Workflow choice, and waits for the

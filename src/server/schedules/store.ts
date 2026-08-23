@@ -124,8 +124,13 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
   if (typeof t.repoRoot !== "string" || t.repoRoot === "") return null;
   const kind = readPersistedEnum(TASK_KINDS, typeof t.kind === "string" ? t.kind : null);
   if (kind === null || !taskKindAllowsBacklog(kind)) return null;
-  const agent = readPersistedEnum(AGENT_TYPES, typeof t.agent === "string" ? t.agent : null);
-  if (agent === null) return null;
+  // Absent or null is INHERIT - the kind's row decides when the run fires - so this takes the
+  // optional reader rather than the required one. Present-but-unknown still fails the template
+  // closed, exactly as an unreadable priority does: a harness this build has never heard of is
+  // a value from the future, and quietly resolving it from the kind would run the mission
+  // somewhere its author did not choose.
+  const agent = readOptionalEnum(AGENT_TYPES, t.agent);
+  if (agent === UNREADABLE) return null;
   // ABSENT and UNREADABLE are different answers, and collapsing them is a real data loss.
   // Null is a legitimate stored value for both of these - "nobody set a priority" - so a
   // template that has one at all can only have got it from a build that knew a value this

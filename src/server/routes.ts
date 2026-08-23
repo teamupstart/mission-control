@@ -24,9 +24,7 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
-  SEE_WORK_TOUR_DEMO_INTENT,
-  SEE_WORK_TOUR_PREVIEW_INTENT,
-  SeeWorkTourDispatchSchema,
+  TourDispatchSchema,
   EditWorkItemSchema,
   FOREMAN_INSTRUCTIONS_CONFLICT_CODE,
   FOREMAN_INSTRUCTIONS_CONFLICT_MESSAGE,
@@ -184,9 +182,11 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
+  TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
+import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
@@ -238,7 +238,12 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
-import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import {
+  getHarnessesConfig,
+  HarnessesConfigError,
+  resolveTaskAgent,
+  setHarnessesConfig,
+} from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -3310,7 +3315,9 @@ export function buildApp(
         title: parsed.data.title,
         intent: parsed.data.intent,
         kind: "ship",
-        agent: "claude",
+        // No agent: an agent filing work through MCP has no opinion about which harness
+        // runs it, so it takes whatever `ship` is configured to run on. Naming "claude"
+        // here was that opinion, expressed by accident.
         backlog: true,
         dependencies,
       });
@@ -5101,7 +5108,15 @@ export function buildApp(
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const next = setHarnessesConfig(parsed.data);
+    let next;
+    try {
+      next = setHarnessesConfig(parsed.data);
+    } catch (error) {
+      // A pair only the merge can judge - a model landing on a row that inherits its agent.
+      // A refusal the panel can print, not a 500.
+      if (error instanceof HarnessesConfigError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
     // Announced like every sibling settings route publishes its own change. Without this the
     // settings panel learned of another tab's edit only on its next poll, and an already-open
     // dispatch modal - which reads these defaults once, when it opens - never learned at all
@@ -5616,13 +5631,20 @@ export function buildApp(
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;
     const extraRepoRoots = resolved.extraRepoRoots;
+    // Resolved HERE rather than left to `TaskManager.create`, because the three checks below
+    // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
+    // are all questions about the harness this task will actually get, and an omitted agent
+    // is exactly the case where that is the kind's answer rather than Claude. Passed on
+    // explicitly, so the route and the task agree by construction rather than by both
+    // running the same resolution and hoping the config did not move between them.
+    const agent = resolveTaskAgent(parsed.data.kind, parsed.data.agent);
     // The harness has to be able to hold write access outside its cwd, or the secondary
     // worktrees would be provisioned and then be unreachable to the agent standing in the
     // primary. Refused here as well as hidden in the modal, so the capability gates the
     // API rather than only the button.
-    if (extraRepoRoots.length > 0 && !capabilitiesFor(parsed.data.agent).multiRepoDispatch) {
+    if (extraRepoRoots.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
       return c.json(
-        { error: `${parsed.data.agent} cannot be given write access to more than one repo` },
+        { error: `${agent} cannot be given write access to more than one repo` },
         400,
       );
     }
@@ -5631,7 +5653,7 @@ export function buildApp(
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
       const blocked = parsed.data.backlog
         ? manager.workflowSelectionBlock(workflowId)
-        : manager.dispatchWorkflowBlock(workflowId, parsed.data.agent, repoRoot);
+        : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
       if (blocked) return c.json({ error: blocked }, 409);
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
@@ -5640,108 +5662,79 @@ export function buildApp(
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
     if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock(parsed.data);
+      const planBlock = planDispatchBlock({ ...parsed.data, agent });
       if (planBlock) return c.json({ error: planBlock }, 409);
     }
     let task;
     try {
       task = tasks.create(
-        { ...parsed.data, repoRoot, extraRepoRoots, workflowId },
+        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
       );
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
+      // against the harness the kind turned out to resolve to. A refusal, not a 500.
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
     return c.json(task);
   });
 
-  // Temporary comparison-spike doorway for Chapter 1 of the product tour. This is not a
-  // second dispatch API: the body chooses only a repository, while this route fixes the
-  // harmless prompt, Codex Terra model, no-Workflow posture, and required review tool.
-  app.post("/api/tours/see-work/dispatch", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
+  // The tour route family. Not a second dispatch API: the body chooses only a repository,
+  // while `SERVER_TOURS` fixes the prompt, agent, model, kind, Workflow posture, and MCP tool
+  // list of every task a tour may create. An unknown tour, or an operation a tour does not
+  // declare, is refused here rather than falling through to general dispatch.
+  async function runTourRecipe(c: Context, operation: TourOperation) {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
+    const recipe = tour.operations[operation];
+    if (!recipe) {
+      return c.json({ ok: false, error: `that tour does not support ${operation}` }, 404);
+    }
+    const parsed = await parseBody(c, TourDispatchSchema);
     if (!parsed.ok) return parsed.res;
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
 
     const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour demo",
-        intent: SEE_WORK_TOUR_DEMO_INTENT,
-        kind: "ship",
-        agent: "codex",
-        model: "gpt-5.6-terra",
-        workflowId: null,
-        backlog: true,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo"],
-      },
+      { ...recipe.create, repoRoot: resolved.repoRoot, extraRepoRoots: [] },
       undefined,
       MANUAL_DISPATCH_TASK_CREATE,
     );
+    if (!recipe.dispatch) return c.json({ ok: true, task });
     const launched = await tasks.dispatch(task.id, {
-      overrideDisabled: true,
-      missionMcp: { tools: ["request_input"] },
+      overrideDisabled: recipe.dispatch.overrideDisabled,
+      missionMcp: recipe.dispatch.missionMcp,
     });
     if (!launched.ok) {
-      await tasks.complete(task.id, "Tour demo");
+      await tasks.complete(task.id, recipe.outcome);
       return c.json({ ok: false, error: launched.error, task: tasks.get(task.id) ?? task }, 409);
     }
     return c.json({ ok: true, task: launched.task ?? task });
-  });
+  }
 
-  // An empty fleet has no real desk for stop three to reveal. Create one fixed Chat task
-  // through the manual-dispatch capability, which is the only supported way Chat can launch.
-  // The browser still chooses only an existing repository; agent, prompt, kind, Workflow,
-  // and the no-MCP posture remain server-owned.
-  app.post("/api/tours/see-work/preview", async (c) => {
-    const parsed = await parseBody(c, SeeWorkTourDispatchSchema);
-    if (!parsed.ok) return parsed.res;
-    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+  app.post("/api/tours/:tourId/dispatch", (c) => runTourRecipe(c, "dispatch"));
 
-    const task = tasks.create(
-      {
-        repoRoot: resolved.repoRoot,
-        extraRepoRoots: [],
-        title: "Tour conversation",
-        intent: SEE_WORK_TOUR_PREVIEW_INTENT,
-        kind: "chat",
-        agent: "codex",
-        workflowId: null,
-        backlog: false,
-        dependencies: [],
-        priority: null,
-        labels: ["tour-demo", "tour-preview"],
-      },
-      undefined,
-      MANUAL_DISPATCH_TASK_CREATE,
-    );
-    return c.json({ ok: true, task });
-  });
+  // An empty fleet has no real desk for See the work's third stop to reveal. Its preview
+  // recipe creates one fixed Chat task through the manual-dispatch capability, which is the
+  // only supported way Chat can launch.
+  app.post("/api/tours/:tourId/preview", (c) => runTourRecipe(c, "preview"));
 
-  // The tour's single terminal path for both its Chat preview and live Ship task. A live demo
-  // follows CompleteModal's ordering: record the outcome, then stop the session. An Exit
-  // during provisioning has no session to stop, so cancellation first closes that race.
-  app.post("/api/tours/see-work/tasks/:id/complete", async (c) => {
+  // A tour's single terminal path for every task it created. A live demo follows
+  // CompleteModal's ordering: record the outcome, then stop the session. An Exit during
+  // provisioning has no session to stop, so cancellation first closes that race.
+  app.post("/api/tours/:tourId/tasks/:id/complete", async (c) => {
+    const tour = serverTour(c.req.param("tourId"));
+    if (!tour) return c.json({ ok: false, error: "no such tour" }, 404);
     const id = c.req.param("id");
     const task = tasks.get(id);
     if (!task) return c.json({ ok: false, error: "no such task" }, 404);
-    const isShipDemo =
-      task.title === "Tour demo" &&
-      task.labels.includes("tour-demo") &&
-      task.intent.startsWith("[Mission Control See the work tour demo]");
-    const isChatPreview =
-      task.title === "Tour conversation" &&
-      task.kind === "chat" &&
-      task.labels.includes("tour-preview") &&
-      task.intent.startsWith("[Mission Control See the work tour conversation]");
-    if (!isShipDemo && !isChatPreview) {
+    // The identity check is what keeps this route off a task the tour did not create. It
+    // reads the title, labels, and intent prefix the recipe itself wrote, never the caller.
+    const recipe = tourRecipeFor(tour, task);
+    if (!recipe) {
       return c.json({ ok: false, error: "that task does not belong to the tour" }, 409);
     }
 
@@ -5750,8 +5743,7 @@ export function buildApp(
       const cancelled = await tasks.cancel(id);
       if (!cancelled.ok) return c.json(cancelled, 500);
     }
-    const outcome = isChatPreview ? "Tour conversation" : "Tour demo";
-    const completed = await tasks.complete(id, outcome);
+    const completed = await tasks.complete(id, recipe.outcome);
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
     session ??= completed.sessionId ? registry.getSession(completed.sessionId) : null;
     if (session) {

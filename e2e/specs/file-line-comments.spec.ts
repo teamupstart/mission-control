@@ -1076,4 +1076,97 @@ test.describe("line comments in the Files editor", () => {
       .click();
     await expect(page.getByText(/could not be discarded/)).toBeHidden();
   });
+
+  test("a settling write that fails is reported, and a failed submit can be retried", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * Two failures on the way out of a composer.
+     *
+     * Leaving a file SETTLES the draft rather than discarding it, and that write is queued
+     * after the panel has already closed - so a refusal had no composer to land in and was
+     * dropped. The row keeps the older text, which means the newest sentence is gone with
+     * nothing said about it.
+     *
+     * And a submission that fails has to stay retryable: the composer is unfrozen on the
+     * error, so the same box and the same button have to work again.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+    writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+
+    // ---- a refused settle, with the panel already gone ----
+    await lineNumber(page, 3).click();
+    const box = page.getByRole("textbox", { name: "Comment on line 3" });
+    await box.fill(FIRST_DRAFT);
+    await expect
+      .poll(() => storedOpeningBodies(daemon).map((row) => row.body), {
+        message: "the draft was never written",
+      })
+      .toEqual([FIRST_DRAFT]);
+
+    await page.route("**/api/file-comment-messages/*", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the daemon refused this edit" }),
+      }));
+    await box.fill(COMMENT);
+    // Straight to another file: the panel closes and the settling write goes out behind it.
+    await page
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: OTHER })
+      .click();
+
+    await expect(
+      page.getByText(/could not be saved, so it still holds what was written before/),
+      "a settling write that failed must say so rather than losing the text in silence",
+    ).toBeVisible();
+    await expect(page.getByText(new RegExp(`${SOURCE.replace(/[.]/g, "\\.")} line 3`)))
+      .toBeVisible();
+    expect(storedOpeningBodies(daemon)[0]!.body, "the row does hold the older text").toBe(
+      FIRST_DRAFT,
+    );
+
+    // ---- and a refused submit stays retryable ----
+    await page.unroute("**/api/file-comment-messages/*");
+    await page
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: SOURCE })
+      .click();
+    await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
+    const reopened = page.getByRole("textbox", { name: "Comment on line 3" });
+    await expect(reopened).toHaveValue(FIRST_DRAFT);
+
+    await page.route("**/api/file-comments/*/queue", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "the daemon refused this queue" }),
+      }));
+    await reopened.fill(COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+
+    // The freeze is over with the submission, so the box takes an edit and the button works.
+    await expect(reopened).not.toHaveAttribute("readonly", "");
+    await reopened.fill(RETRY_REPLY);
+    await page.unroute("**/api/file-comments/*/queue");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+
+    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+      .toBeVisible();
+    await expect
+      .poll(() => storedOpeningBodies(daemon)[0]?.body, {
+        message: "the retry did not submit the corrected text",
+      })
+      .toBe(RETRY_REPLY);
+  });
 });

@@ -221,6 +221,22 @@ export function discardFailureMessage(
     + `so it is still there as a draft - ${error}`;
 }
 
+/**
+ * What a reader is told when a SAVE finished badly with no composer left to show it in.
+ *
+ * Closing a composer settles what was in it, deliberately - a draft is durable, so leaving a
+ * file writes the comment rather than discarding it. When that settling write is refused
+ * there is no panel to carry the error, and the row still holds the older text, so silence
+ * would mean the newest sentence is simply gone.
+ */
+export function writeFailureMessage(
+  composer: Pick<FileCommentComposerState, "path" | "startLine">,
+  error: string,
+): string {
+  return `That comment on ${composer.path} line ${composer.startLine} could not be saved, `
+    + `so it still holds what was written before - ${error}`;
+}
+
 export function useFileCommentDraft(input: {
   sessionId: string;
   path: string | null;
@@ -288,6 +304,25 @@ export function useFileCommentDraft(input: {
    * composer and persists what was in it - and by the time the queued job runs, the ref it
    * would otherwise read has already been cleared by that close.
    */
+  /**
+   * Put an error where it can be READ.
+   *
+   * The composer is the natural home, and a queued write can outlive it - `dismiss` closes
+   * the panel and settles what was in it, so by the time the daemon refuses, `patch` has
+   * nothing to patch and the refusal disappears. Anything detached goes to the workspace
+   * notice instead, naming the file and line, because the reader has moved on by then.
+   */
+  const report = useCallback((
+    owner: FileCommentComposerState,
+    error: string,
+  ): void => {
+    if (state.current?.instance === owner.instance) {
+      patch({ error });
+      return;
+    }
+    target.current.onDetachedError?.(writeFailureMessage(owner, error));
+  }, [patch]);
+
   const persist = useCallback(async (
     snapshot?: FileCommentComposerState | null,
   ): Promise<string | null> => {
@@ -301,7 +336,7 @@ export function useFileCommentDraft(input: {
       if (!request) return null;
       const created = await createFileComment(request.sessionId, request.body);
       if (!created.ok) {
-        patch({ error: created.error });
+        report(current, created.error);
         return null;
       }
       written.current = {
@@ -339,7 +374,7 @@ export function useFileCommentDraft(input: {
     if (body === null || !known.messageId) return known.threadId;
     const edited = await editFileCommentMessage(known.messageId, body);
     if (!edited.ok) {
-      patch({ error: edited.error });
+      report(current, edited.error);
       // NULL, not the thread id. The row exists but the daemon does not hold what the reader
       // is looking at, and the caller cannot tell those apart from an id alone: `submit`
       // read one as "saved" and queued the previous body - sending the agent text the
@@ -351,7 +386,7 @@ export function useFileCommentDraft(input: {
     written.current = { messageId: known.messageId, instance: current.instance, body };
     patch({ error: null });
     return known.threadId;
-  }, [patch]);
+  }, [patch, report]);
 
   flushOnUnmount.current = () => {
     if (!timer.current) return;
@@ -470,6 +505,14 @@ export function useFileCommentDraft(input: {
     // On the ref as well as in React: `change` and `cancel` are called from event handlers
     // that can run before this render lands, and both ask the ref whether the composer is
     // still the reader's to alter.
+    //
+    // Only the raising is done by hand. Clearing it is not, and does not need to be: the ref
+    // is reassigned from `composer` on EVERY render (see the top of this hook), so the
+    // `patch({ busy: false })` on each failure path below restores it as a matter of course,
+    // before any keystroke or click can reach a handler. Setting it back here too would read
+    // as though something depended on it. The retry that would break if this were wrong -
+    // fail the queue request, correct the text, submit again - is driven in
+    // `e2e/specs/file-line-comments.spec.ts`.
     state.current = { ...current, busy: true };
     void enqueue(async () => {
       const threadId = await persist(current);

@@ -1033,16 +1033,16 @@ export const SEE_WORK_TOUR_PREVIEW_INTENT = [
 ].join("\n\n");
 
 /**
- * The comparison spike's one deliberately narrow dispatch input.
+ * A tour's one deliberately narrow dispatch input.
  *
  * The browser chooses an existing repository, while the daemon owns every other launch
  * property. Keeping model, prompt, tools, and outcome off this body prevents a temporary
  * product-tour route from becoming a second general-purpose dispatcher.
  */
-export const SeeWorkTourDispatchSchema = z.object({
+export const TourDispatchSchema = z.object({
   repoRoot: z.string().min(1),
 });
-export type SeeWorkTourDispatch = z.infer<typeof SeeWorkTourDispatchSchema>;
+export type TourDispatch = z.infer<typeof TourDispatchSchema>;
 
 /**
  * Resolve a typed path to a canonical git repo root, so the Foreman allowlist

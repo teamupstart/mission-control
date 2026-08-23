@@ -138,7 +138,7 @@ export function ActionBar({
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>(
-    "session-actions",
+    "see-work:session-actions",
     session.task?.id,
   );
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

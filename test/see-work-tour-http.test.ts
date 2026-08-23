@@ -6,6 +6,7 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp } from "../src/server/routes.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
+import { SERVER_TOURS, serverTour, tourRecipeFor } from "../src/server/tours.ts";
 
 function tourTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -230,4 +231,95 @@ test("tour cleanup reconciles a registered SDK session after its driver is alrea
   assert.equal(response.status, 200);
   assert.equal(current.status, "done");
   assert.equal(registry.getSession(session.id)?.state, "exited");
+});
+
+test("an unknown tour id is refused before any task is created", async () => {
+  let created = 0;
+  const tasks = {
+    create(input: CreateTaskInput) {
+      created += 1;
+      return tourTask({ repoRoot: String(input.repoRoot) });
+    },
+    get() { return tourTask(); },
+  } as unknown as TaskManager;
+  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+
+  for (const path of [
+    "/api/tours/nope/dispatch",
+    "/api/tours/nope/preview",
+    "/api/tours/nope/tasks/tour-task/complete",
+  ]) {
+    const response = await app.request(path, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ repoRoot: process.cwd() }),
+    });
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { ok: false, error: "no such tour" });
+  }
+  // The generalized URL widened the shape of the route, never its authority: an unknown
+  // tour cannot fall through to general dispatch.
+  assert.equal(created, 0);
+});
+
+test("cleanup refuses a task the named tour did not create", async () => {
+  const stranger = tourTask({
+    id: "real-work",
+    title: "Ship the thing",
+    intent: "Do the actual work",
+    labels: [],
+  });
+  const calls: string[] = [];
+  const tasks = {
+    get(id: string) { return id === stranger.id ? stranger : undefined; },
+    async cancel() { calls.push("cancel"); return { ok: true as const }; },
+    async complete() { calls.push("complete"); return stranger; },
+  } as unknown as TaskManager;
+  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+
+  const response = await app.request(`/api/tours/see-work/tasks/${stranger.id}/complete`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317" },
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    error: "that task does not belong to the tour",
+  });
+  assert.deepEqual(calls, []);
+});
+
+test("the See the work recipes stay byte-for-byte what they were", () => {
+  const tour = serverTour("see-work")!;
+  assert.ok(tour);
+  assert.deepEqual(Object.keys(tour.operations).sort(), ["dispatch", "preview"]);
+  assert.equal(tour.operations.dispatch?.outcome, "Tour demo");
+  assert.equal(tour.operations.preview?.outcome, "Tour conversation");
+  assert.equal(tour.operations.dispatch?.create.title, "Tour demo");
+  assert.equal(tour.operations.dispatch?.create.model, "gpt-5.6-terra");
+  assert.deepEqual(tour.operations.dispatch?.dispatch, {
+    overrideDisabled: true,
+    missionMcp: { tools: ["request_input"] },
+  });
+  // The preview is created and left alone; only the demo recipe launches.
+  assert.equal(tour.operations.preview?.dispatch, undefined);
+  assert.equal(serverTour("nope"), null);
+  assert.equal(serverTour(undefined), null);
+});
+
+test("identity is matched per recipe, so cleanup names one outcome and only one", () => {
+  const tour = SERVER_TOURS["see-work"]!;
+  assert.equal(tourRecipeFor(tour, tourTask())?.outcome, "Tour demo");
+  assert.equal(
+    tourRecipeFor(tour, tourTask({
+      title: "Tour conversation",
+      kind: "chat",
+      labels: ["tour-demo", "tour-preview"],
+      intent: "[Mission Control See the work tour conversation]\n\nShow the desk.",
+    }))?.outcome,
+    "Tour conversation",
+  );
+  // A right-looking title with the wrong intent prefix is still not the tour's task.
+  assert.equal(tourRecipeFor(tour, tourTask({ intent: "Tour demo please" })), null);
+  assert.equal(tourRecipeFor(tour, tourTask({ labels: [] })), null);
 });

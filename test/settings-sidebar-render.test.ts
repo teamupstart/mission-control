@@ -16,6 +16,8 @@ import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import type { SettingsStatus } from "../src/shared/types.ts";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
+import type { TourId } from "../src/web/tour/contracts.ts";
+import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 
 // What is at stake: Settings is a page now, and the rail is the only inventory of what the
 // app can be told to do. A category that silently fails to render is one whose switches
@@ -61,7 +63,11 @@ const LLM: LlmState = {
 // exercise the Foreman dot (which is App-owned, not part of the status payload).
 function render(
   category: SettingsCategoryId = "display",
-  opts: { settingsStatus?: SettingsStatus | null; foreman?: ForemanState } = {},
+  opts: {
+    settingsStatus?: SettingsStatus | null;
+    foreman?: ForemanState;
+    onStartTour?: (tourId: TourId) => void;
+  } = {},
 ): string {
   return renderToStaticMarkup(
     createElement(SettingsPage, {
@@ -74,7 +80,7 @@ function render(
       layout: "console",
       onLayoutChange: () => {},
       settingsStatus: opts.settingsStatus ?? null,
-      onStartSeeWorkTour: () => {},
+      onStartTour: opts.onStartTour ?? (() => {}),
     }),
   );
 }
@@ -625,4 +631,19 @@ test("Foreman's dot follows its App-owned enabled state, not the status payload"
   assert.ok(railDot(html, "Foreman", "foreman"), "Foreman on should light the purple dot");
   const off = render("display", { settingsStatus: null, foreman: FOREMAN });
   assert.ok(!railDot(off, "Foreman", "foreman"), "Foreman off (or unknown) lights no dot");
+});
+
+test("the Help & tours footer draws one row per registered tour, from the registry", () => {
+  const html = render();
+  for (const tour of TOUR_ENTRIES) {
+    assert.ok(
+      html.includes(`aria-label="${tour.settings.ariaLabel}"`),
+      `no entry point for ${tour.id}`,
+    );
+    assert.ok(html.includes(`<strong>${tour.settings.heading}</strong>`));
+    assert.ok(html.includes(`<small>${tour.settings.hint}</small>`));
+  }
+  // One registered tour, one row: the footer is derived, not a list kept in parallel.
+  assert.equal(html.split('class="settings-tour-start"').length - 1, TOUR_ENTRIES.length);
+  assert.ok(html.includes('aria-label="Start See the work tour"'));
 });

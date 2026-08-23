@@ -86,8 +86,8 @@ interface PendingDrop {
  * overview is never lost: you use the board as the board, and the console as the desk.
  */
 export function BoardView(props: SessionViewProps): React.JSX.Element {
-  const boardTourRef = useTourTargetRef<HTMLElement>("board");
-  const detailTourRef = useTourTargetRef<HTMLElement>("session-detail");
+  const boardTourRef = useTourTargetRef<HTMLElement>("see-work:board");
+  const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
   // Empty columns the operator pulled back out of the stash. Deliberately local and
   // un-persisted: it's a "let me look at that for a second", not a setting, and it
   // should not still be in force tomorrow morning.

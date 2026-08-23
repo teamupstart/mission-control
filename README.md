@@ -35,12 +35,12 @@ retro.
 
 **Author what runs** teaches the authoring half, in dependency order: Personas, Actions,
 Commands, then the workflow that composes all three. It walks fifteen stops through the Library
-on shipped built-ins, ends on **No-Mistakes Review**, and then follows one finished run of that
-workflow into the Runs page and its session's **Workflows** tab. It writes nothing - no asset
-is saved, duplicated, published, or bound, no run is started, and no model is called - and a
-machine with no finished No-Mistakes run reads the same two stops against the built-in graph
-instead. Neither tour stores progress, and both restore the page, the asset, and the control
-you started from when you exit.
+on shipped built-ins, ends on **No-Mistakes Review**, and then follows one already-ended run of
+that workflow - completed, cancelled or failed alike - into the Runs page and its session's
+**Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
+run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
+same two stops against the built-in graph instead. Neither tour stores progress, and both
+restore the page, the asset, and the control you started from when you exit.
 
 Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
 and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press

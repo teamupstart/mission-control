@@ -476,21 +476,25 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
     Publish button - the draft-versus-published lesson without a draft existing.
 11. **No-Mistakes Review** walks the five stages on the authored pipeline strip.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
-13. **A run, moving** opens `#/runs/:id` on one finished run and spotlights its pipeline strip,
-    then its review worklist.
+13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
+    pipeline strip, then its review worklist.
 14. **Where a run is watched** returns to the fleet, opens that run's session and its
     **Workflows** tab, and spotlights the vertical stage ladder.
 15. **That is the authoring half** is a centered card that offers the other tour without
     starting it.
 
-**The run it opens is one that already happened.** The tour selects the newest FINISHED run of
-the built-in No-Mistakes Review whose session is still in the live collection, from the summaries
-the dashboard already holds over SSE - no second request, nothing created, and no model call.
-The workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a
-run of another workflow need not carry any of the five stages stop 11 just walked.
+**The run it opens is one that already happened.** The tour selects the newest **terminal**
+run of the built-in No-Mistakes Review whose session is still in the live collection, from the
+summaries the dashboard already holds over SSE - no second request, nothing created, and no
+model call. Terminal means any of the three ends a run can reach - `completed`, `cancelled` or
+`failed` - and not `completed` alone. The stops are about the shape of a run that has stopped
+moving, which all three share; a cancelled run draws the same pipeline strip, worklist and stage
+ladder that a completed one does, and the selector rejects only a run that is still open. The
+workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a run
+of another workflow need not carry any of the five stages stop 11 just walked.
 
 Both clauses matter. A run outlives the session it reviewed - the binding is orphaned and the
-summary keeps a durable `sessionName` for exactly that case - so a finished run with no session
+summary keeps a durable `sessionName` for exactly that case - so an ended run with no session
 left is the common case rather than the rare one, and stop 14 opens that session's Workflows
 tab. When no run qualifies, stops 13 and 14 stay real stops with Back, Next and Exit, and
 explain the same two surfaces against the built-in graph still on screen. When the session is

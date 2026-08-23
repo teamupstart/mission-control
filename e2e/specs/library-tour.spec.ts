@@ -223,6 +223,34 @@ async function expectInViewport(page: Page, coachmark: Locator): Promise<void> {
   expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
 }
 
+/**
+ * Every shelf term clears its own description.
+ *
+ * The term column used to be a flat 48px, which fits a short word and silently runs a longer
+ * one straight through the text beside it - "Missions - Sources" wrapped to three lines inside
+ * the track while its description stayed on the first. Markup assertions cannot see that: the
+ * words are all present and correctly ordered in the DOM while being drawn on top of each
+ * other, so this measures boxes.
+ */
+async function expectDetailRowsReadable(dialog: Locator): Promise<void> {
+  const rows = dialog.locator(".mc-tour-kind-list > div");
+  const count = await rows.count();
+  expect(count, "the shelves index drew no rows").toBeGreaterThan(0);
+  for (let index = 0; index < count; index++) {
+    const row = rows.nth(index);
+    const [term, description] = await Promise.all([
+      row.locator("dt").boundingBox(),
+      row.locator("dd").boundingBox(),
+    ]);
+    if (!term || !description) throw new Error("a shelf row did not finish laying out");
+    const label = await row.locator("dt").innerText();
+    expect(
+      term.x + term.width,
+      `the shelf term "${label}" overlaps the question beside it`,
+    ).toBeLessThanOrEqual(description.x + 1);
+  }
+}
+
 test("the palette starts the tour, and it walks the Library's four authoring surfaces", async ({
   dashboard,
   daemon,
@@ -243,6 +271,9 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   // The six shelves are named from the shelf registry, so this reads the product's own words.
   await expect(dialog).toContainText("Who does the reviewing?");
   await expect(dialog).toContainText("What counts as done?");
+  // And they are readable, not merely present: the longest shelf name is two words and a
+  // separator, which a fixed-width term column draws straight through its own question.
+  await expectDetailRowsReadable(dialog);
   await expect.poll(() => hash(dashboard)).toBe("#/library");
   await expect(dashboard.getByRole("heading", { name: "Library", exact: true })).toBeVisible();
   await shoot(dashboard, "01-library");
@@ -407,6 +438,10 @@ test("a finished tour starts again from stop one, carrying nothing over from the
   await expect.poll(() => hash(dashboard)).toBe("#/library");
   // One coachmark, not two: the finished run left none parked in the DOM behind this one.
   await expect(dashboard.locator(".driver-popover")).toHaveCount(1);
+  // Pixels for the rerun state, since "no stale UI left behind" is a claim about what is drawn.
+  // Measured before it is captured, so the screenshot cannot quietly become proof of a defect.
+  await expectDetailRowsReadable(dialog);
+  await shoot(dashboard, "10-rerun-stop-one");
 
   // Genuinely at the beginning rather than resumed near the end: one Next reaches stop two,
   // which a cursor still sitting on the close stop could not do.

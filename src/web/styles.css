@@ -208,16 +208,25 @@
   margin: 0;
 }
 
+/* The term column is sized by the widest term, not by a number.
+
+   It was a flat 48px, which fit the short labels the first tour happened to use and silently
+   overlapped every longer one: "Missions · Sources" wrapped to three lines inside a 48px
+   track while its description stayed on the first, so the two collided. The rows share one
+   track through `subgrid` rather than each sizing independently, which is what keeps the
+   descriptions aligned down the card while still letting the row own its divider. */
 .driver-popover.mc-tour .mc-tour-kind-list {
   display: grid;
+  grid-template-columns: minmax(48px, max-content) 1fr;
   gap: 4px;
   margin: 10px 0 0;
 }
 
 .driver-popover.mc-tour .mc-tour-kind-list > div {
   display: grid;
-  grid-template-columns: 48px 1fr;
-  gap: 9px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  column-gap: 9px;
   padding-top: 5px;
   border-top: 1px solid var(--border-soft);
 }

@@ -796,6 +796,8 @@ export function ConsoleDetail({
                 session={session}
                 controller={view.files}
                 fileCommentThreads={view.fileCommentThreads}
+                fileCommentReviews={view.fileCommentReviews}
+                fileLineRequest={view.fileLineRequest}
                 onExtract={() => view.onOpenFiles(session.id)}
                 isOverlayOpen={view.isOverlayOpen}
               />

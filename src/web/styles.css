@@ -4789,6 +4789,8 @@ body {
 .file-comment-state.is-answered { color: var(--idle); }
 .file-comment-state.is-resolved { color: var(--dim); }
 .file-comment-stale { flex: none; color: var(--attention); font-size: 10.5px; }
+/* Inside a queue row it is a line of its own under the comment, indented to the body. */
+.file-review-item > .file-comment-stale { margin: 2px 0 0 22px; }
 .file-comment-quote {
   margin: 0;
   overflow: hidden;
@@ -4847,6 +4849,93 @@ body {
   outline: 2px solid var(--working);
   outline-offset: -2px;
 }
+/* The review queue: a strip under the file, not an overlay.
+   In FLOW rather than floating for the same reason the thread panel is: it is part of
+   reading the file, it must not cover the document, and it must not lift above the topbar's
+   z-index where the desktop shell's drag region lives. Bounded in height so a
+   two-hundred-comment review scrolls inside its strip instead of pushing the editor off. */
+.file-review {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  /* Enough to scan a review, not enough to take the file away.
+     38% showed one and a half rows of three, which is the one thing this panel exists NOT to
+     do - a queue you cannot see is a queue you cannot steer. With single-line rows this is
+     about seven comments, and the list scrolls past that. */
+  max-height: 45%;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.file-review-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.file-review-title { margin: 0; font: 600 11.5px var(--sans); color: var(--fg); }
+.file-review-depth { color: var(--muted); font-size: 10.5px; }
+.file-review-status { margin: 0; padding: 5px 10px; color: var(--muted); font-size: 10.5px; }
+.file-review-paused,
+.file-review-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+  font-size: 11px;
+}
+.file-review-error { color: var(--danger); background: color-mix(in oklab, var(--danger) 8%, var(--panel)); }
+.file-review-empty { margin: 0; padding: 10px; color: var(--dim); font-size: 11px; }
+.file-review-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.file-review-item { padding: 5px 10px; border-bottom: 1px solid var(--border); }
+/* The comment out with the agent, marked so the head of the queue is findable at a glance. */
+.file-review-item.is-outstanding { background: color-mix(in oklab, var(--working) 10%, transparent); }
+.file-review-row { display: flex; align-items: center; gap: 6px; }
+.file-review-index { flex: none; min-width: 16px; color: var(--dim); font: 10.5px var(--mono); }
+.file-review-open {
+  flex: none;
+  max-width: 32%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-review-open:hover { color: var(--fg); text-decoration: underline; }
+/* The comment itself, sharing the row with its location: it takes the slack and gives it back
+   to the controls, so a long comment truncates rather than pushing Edit and Drop off the end. */
+.file-review-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-review-edit { margin: 6px 0 2px 22px; display: flex; flex-direction: column; gap: 5px; }
+.file-review-edit textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  font: 11.5px/1.5 var(--sans);
+}
+.file-review-edit-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
 .file-notice {
   flex: none;
   display: flex;

@@ -13,6 +13,15 @@ that submission as unverified rather than retrying on evidence Codex cannot prov
 session started without reporting hooks is refused at the composer with instructions to
 launch it through Mission Control, rather than accepting a batch it cannot verify.
 
+**This is not the Files tab's review queue.** Both hand a session one item at a time, and they
+are otherwise different mechanisms with different owners. A work queue is *work*: Foreman
+authors the prompt, a mandatory verifier decides whether each item landed before releasing the
+next, and draining the batch fires a wrap-up. A [review queue](./ui.md#walk-the-agent-through-your-review)
+is *your sentences about lines of a file*, delivered verbatim, released when the agent has
+finished with the previous one, and steerable while it drains. Neither drives the other, and a
+session can legitimately have both - they share the same outbox, so they take their turns in it
+like anything else you send.
+
 The **Work queue** is a tab in the shared Console and Board detail. Select a session and
 choose **Work queue**, or press <kbd>q</kbd>; pressing <kbd>q</kbd> again returns to the
 Conversation tab. The tab carries the open-item count, so a waiting batch remains visible

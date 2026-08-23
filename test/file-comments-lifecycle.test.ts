@@ -18,8 +18,10 @@ const { FileCommentManager } = await import("../src/server/file-comments.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const {
   createFileCommentThread,
+  loadFileCommentReview,
   loadFileCommentThread,
   openDb,
+  setFileCommentReviewState,
   pruneFileCommentThreads,
   queueFileCommentThread,
 } = await import("../src/server/db.ts");
@@ -36,6 +38,8 @@ after(() => rmSync(home, { recursive: true, force: true }));
  */
 function harness() {
   const held = new Map<string, FileCommentThread>();
+  /** The walkthrough's run state, keyed by session - the third thing a removed session drops. */
+  const reviews = new Map<string, unknown>();
   const sessions = new Set<string>();
   const events: ServerEvent[] = [];
   let onEvent: ((e: ServerEvent) => void) | null = null;
@@ -62,12 +66,18 @@ function harness() {
       if (held.delete(id)) events.push({ type: "file_comment_thread_remove", id });
     },
     pruneFileComments: () => 0,
+    // The review's run state goes with the threads: `orphanFileCommentThreadsForSession`
+    // deletes the row in the same transaction, and this is the live projection catching up.
+    removeFileCommentReview: (sessionId: string) => {
+      if (reviews.delete(sessionId)) events.push({ type: "file_comment_review_remove", sessionId });
+    },
   } as unknown as Registry;
   const manager = new FileCommentManager(registry);
   return {
     manager,
     events,
     held,
+    reviews,
     live: (id: string) => sessions.add(id),
     emit: (e: ServerEvent) => onEvent?.(e),
     observe: () => onObserved?.(),
@@ -107,7 +117,22 @@ test("session_remove orphans that session's threads, by UPDATE, and leaves other
   const h = harness();
   const mine = seed("gone", h.held);
   const yours = seed("staying", h.held);
+  // Both sessions were mid-review, so this also covers the run state - a row left `running`
+  // would resume a walkthrough for a session that no longer exists.
+  setFileCommentReviewState("gone", "running", null, Date.now());
+  setFileCommentReviewState("staying", "running", null, Date.now());
+  h.reviews.set("gone", true);
+  h.reviews.set("staying", true);
 
+  h.emit({ type: "session_remove", id: "gone" });
+
+  assert.equal(loadFileCommentReview("gone").state, "idle", "the review row went with them");
+  assert.equal(loadFileCommentReview("staying").state, "running", "and the other is untouched");
+  assert.equal(h.reviews.has("gone"), false);
+  assert.ok(h.events.some((e) => e.type === "file_comment_review_remove"));
+  h.events.length = 0;
+  h.emit({ type: "session_remove", id: "gone" });
+  h.events.length = 0;
   h.emit({ type: "session_remove", id: "gone" });
 
   const settled = loadFileCommentThread(mine.id);
@@ -116,11 +141,9 @@ test("session_remove orphans that session's threads, by UPDATE, and leaves other
   // Not a DELETE: the comment a human wrote is a record of what was asked.
   assert.equal(settled?.messages[0]?.body, "a comment a human wrote");
   assert.equal(loadFileCommentThread(yours.id)?.status, "queued");
-  // It leaves the LIVE collection, because there is nothing left to act on.
-  assert.deepEqual(
-    h.events.map((e) => [e.type, e.type === "file_comment_thread_remove" ? e.id : ""]),
-    [["file_comment_thread_remove", mine.id]],
-  );
+  // It leaves the LIVE collection, because there is nothing left to act on. A repeat of the
+  // same removal emits nothing at all, which is what the `events.length = 0` above measures.
+  assert.deepEqual(h.events, []);
   assert.equal(h.held.has(mine.id), false);
 });
 

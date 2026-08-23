@@ -726,10 +726,70 @@ brings them back, where each offers **Reopen**. That control appears only while 
 is on and the file has at least one closed thread - it is part of deciding what you are
 looking at, not a permanent fixture of the toolbar.
 
-Two things comment mode is not, yet. Nothing is sent to any agent: the queue accumulates and is
-delivered separately. And a marker is drawn on the *source*, not yet on the rendered document
-beside it, so in Preview you click a line in the source column rather than a paragraph in the
-preview.
+One thing comment mode is not, yet: a marker is drawn on the *source*, not yet on the rendered
+document beside it, so in Preview you click a line in the source column rather than a paragraph
+in the preview.
+
+### Walk the agent through your review
+
+**Review (N)** in the Files toolbar opens the queue: every comment this session holds, in the
+order it will be delivered, across every file. **Start review** sends the first as its own turn.
+The next goes when the agent has finished with it - a reply, or, failing that, the session
+settling idle for long enough that it has clearly moved on. One comment is ever outstanding, and
+that is the whole design: you see each answer before the next comment goes.
+
+Each comment arrives carrying its file, its line range, the text it quotes, and **which comment
+of how many it is**. That last part is not decoration. An agent told "comment 3 of 12, answer
+this one only, the remaining 9 follow" does not restructure the whole document on comment three,
+which is the one thing a single batched message does better and the only thing this design has
+to buy back.
+
+**The queue stays yours while it drains.** Reorder it with the arrows, rewrite a comment that
+has not gone yet, drop one, or **Pause**. Pause takes effect after the comment currently out
+with the agent resolves; nothing already sent is recalled, because the agent has read it. That
+comment still finishes on its own - a pause stops the queue, it does not freeze the one turn
+already in flight - and only you resume the rest.
+
+"One comment outstanding" is really one turn in the session's *whole* outbox, not one review
+comment. Type an ordinary message into the conversation mid-review and the next comment waits
+behind it rather than joining it in the queue. Nothing is asked of you: it goes as soon as your
+message has been delivered. The exception is a message Mission Control could not confirm - that
+one waits for you, so the review pauses and says where to go rather than sitting silently.
+
+Those three controls are offered on a queued comment and never on the one in flight - its bytes
+are already committed, so the daemon refuses all three there rather than pretend otherwise.
+
+**A comment whose quoted text the agent has since deleted is held rather than sent, and says
+why.** Before each send, every unsent comment is re-anchored against the file as it now stands.
+A comment whose text merely moved goes silently, at its new line. One whose text is gone is held
+at the head, the review pauses, and the reason names the comment and the file. **Rewrite it
+against the text that is there, or drop it** - those are the two ways past. **Resume** is not a
+third: it re-runs the check against the file as it stands, so a comment whose quote is still
+missing is held again with the same reason. That is deliberate. The quote is the only thing
+telling the agent which text a comment is about, so a comment quoting text that is not in the
+file is one the agent cannot act on, and sending it anyway would be worse than holding it.
+(Resume does clear the hold when the quote has come back - if the agent restored the text, or
+your rewrite matches what is there now, the comment simply goes.) A comment further down the
+queue is marked *moved* in place and you meet it when it reaches the head.
+
+The review also pauses when the session cannot take a message at all, when the file a comment is
+anchored to has left the checkout, when there is nothing left to send, and when Mission Control
+could not confirm a comment reached the agent - that last one is the ordinary **Retry** and
+**Mark sent** pair in the conversation, and choosing either on *that comment's* turn resumes the
+review. Resolving some other message you had queued does not, and neither lifts a pause you
+pressed yourself.
+
+Nothing here lives in the browser. A daemon restart mid-review resumes rather than re-sends: a
+comment that was in flight when the daemon went down surfaces as a paused review awaiting one
+confirmation, rather than being recorded as delivered when it may never have been read.
+
+The agent cannot yet answer *in the thread* - that arrives with the reply tool. For now it
+answers in the conversation, and the comment is marked as having gone unanswered in the thread
+so the queue keeps moving.
+
+**Opening a file at a line works now.** A `path:line` link from a conversation, a diff, or a
+review finding scrolls the editor to that line rather than opening the file at the top, and the
+walkthrough uses the same route to take you to each comment as it goes out.
 
 Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
 `mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,

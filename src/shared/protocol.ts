@@ -6021,3 +6021,27 @@ export const SetFileCommentStatusSchema = z.object({
   status: z.enum(HUMAN_SETTABLE_THREAD_STATUSES),
 });
 export type SetFileCommentStatusBody = z.infer<typeof SetFileCommentStatusSchema>;
+
+/**
+ * Start, pause or resume a session's walkthrough.
+ *
+ * ONE route with an action rather than three, because "resume" and "start" differ in nothing
+ * the machine can see - `started_at` is kept by the store on a resume rather than rewritten -
+ * and splitting them into two doors would invite a caller to pick the wrong one and restart a
+ * review's numbering halfway through it. The distinction that IS real is start-or-resume
+ * against pause, and the enum states it.
+ *
+ * `reason` is the operator's own note on a pause, and is refused on the other two: a reason
+ * attached to "running" would be a pause reason on a review that is not paused, which is the
+ * one state `pause_reason` must never hold.
+ */
+export const FileCommentReviewControlSchema = z
+  .object({
+    action: z.enum(["start", "pause"]),
+    reason: z.string().trim().max(FILE_COMMENT_TEXT_LIMITS.pauseReason).optional(),
+  })
+  .refine((body) => body.action === "pause" || body.reason === undefined, {
+    message: "only a pause carries a reason",
+    path: ["reason"],
+  });
+export type FileCommentReviewControlBody = z.infer<typeof FileCommentReviewControlSchema>;

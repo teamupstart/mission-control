@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { FileCommentThread, Session } from "@shared/types.ts";
+import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { FileWorkspace } from "./FileWorkspace.tsx";
@@ -17,11 +17,15 @@ export function FileWindow({
   session,
   controller,
   fileCommentThreads,
+  fileCommentReviews,
+  fileLineRequest,
   onClose,
 }: {
   session: Session;
   controller: SessionFilesController;
   fileCommentThreads: FileCommentThread[];
+  fileCommentReviews: FileCommentReview[];
+  fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   onClose: () => void;
 }): React.JSX.Element {
   const [rect, setRect] = useState(initialRect);
@@ -76,6 +80,8 @@ export function FileWindow({
           session={session}
           controller={controller}
           fileCommentThreads={fileCommentThreads}
+          fileCommentReviews={fileCommentReviews}
+          fileLineRequest={fileLineRequest}
           extracted
         />
         {!maximized && <div className="file-window-resize" onPointerDown={resize} aria-hidden />}

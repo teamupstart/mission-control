@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import type { FileCommentThread, Session } from "@shared/types.ts";
+import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
   hasUnwrittenEdits,
@@ -14,10 +14,20 @@ import {
   isCommentableDocument,
   markerLabel,
   markerTone,
+  outstandingThread,
+  reviewQueue,
   threadsByLine,
   threadsForFile,
 } from "../lib/fileComments.ts";
-import { appendFileCommentMessage, setFileCommentStatus } from "../lib/api.ts";
+import { FileCommentQueue } from "./FileCommentQueue.tsx";
+import {
+  appendFileCommentMessage,
+  controlFileCommentReview,
+  deleteFileComment,
+  editFileCommentMessage,
+  reorderFileComments,
+  setFileCommentStatus,
+} from "../lib/api.ts";
 import { Markdown } from "./Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
@@ -102,6 +112,8 @@ export function FileWorkspace({
   session,
   controller,
   fileCommentThreads = [],
+  fileCommentReviews = [],
+  fileLineRequest = null,
   onExtract,
   extracted = false,
   isOverlayOpen,
@@ -119,6 +131,16 @@ export function FileWorkspace({
    * frames are the entire read path, so a poll would be a second answer that drifts.
    */
   fileCommentThreads?: readonly FileCommentThread[];
+  /**
+   * Every session's walkthrough run state, narrowed here for `fileCommentThreads`' reason.
+   *
+   * Needed as its own fact rather than derived from the threads: "paused" and "never started"
+   * are the same set of threads, and between two comments the outstanding set is briefly
+   * empty, so a derived "running" would flicker on every advance.
+   */
+  fileCommentReviews?: readonly FileCommentReview[];
+  /** A source line the reader deep-linked to. See `FileEditor`'s `scrollTo` for the nonce. */
+  fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   onExtract?: () => void;
   extracted?: boolean;
   isOverlayOpen?: () => boolean;
@@ -133,6 +155,8 @@ export function FileWorkspace({
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<{ path: string; target: OpenTargetId } | null>(null);
   const focusSelectedFile = useRef(false);
+  /** A thread to open once the selection has landed on the file it belongs to. */
+  const pendingThreadOpen = useRef<string | null>(null);
   const [showKeybindingHints] = useKeybindingHints();
 
   useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
@@ -156,6 +180,9 @@ export function FileWorkspace({
   const commentable = buffer ? isCommentableDocument(buffer.document) : false;
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadBusy, setThreadBusy] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
@@ -377,6 +404,118 @@ export function FileWorkspace({
   );
   const openThread = fileThreads.find((thread) => thread.id === openThreadId) ?? null;
 
+  // ---- the review queue ----
+  const queue = useMemo(
+    () => reviewQueue(fileCommentThreads, session.id),
+    [fileCommentThreads, session.id],
+  );
+  const review = useMemo(
+    () => fileCommentReviews.find((r) => r.sessionId === session.id) ?? null,
+    [fileCommentReviews, session.id],
+  );
+  /*
+   * The queue opens itself when a review starts, and never closes itself again.
+   *
+   * Opening is what makes "Start review" show its own effect - the comment that just went is
+   * at the head of a list the reader can now steer. Closing on `running` going false would be
+   * the wrong half of the pair: a review PAUSES because something needs a person, and taking
+   * the panel away at exactly that moment hides the reason and the controls together.
+   */
+  const running = review?.state === "running";
+  useEffect(() => {
+    if (running) setShowQueue(true);
+  }, [running]);
+
+  const controlReview = useCallback(async (action: "start" | "pause"): Promise<void> => {
+    setReviewBusy(true);
+    const result = await controlFileCommentReview(session.id, action);
+    setReviewBusy(false);
+    setReviewError(result.ok ? null : result.error);
+  }, [session.id]);
+
+  /**
+   * Move one comment one place, by rewriting the whole order.
+   *
+   * The reorder route takes a list rather than a delta on purpose - it rewrites `queue_seq`
+   * in two passes so nothing reads a half-applied order - so a one-place move is expressed as
+   * the list it produces. The swap happens here, against the order currently on screen, which
+   * is the order the reader is looking at.
+   */
+  const moveInQueue = useCallback(async (threadId: string, direction: -1 | 1): Promise<void> => {
+    const order = queue.map((thread) => thread.id);
+    const at = order.indexOf(threadId);
+    const to = at + direction;
+    if (at < 0 || to < 0 || to >= order.length) return;
+    [order[at], order[to]] = [order[to]!, order[at]!];
+    setReviewBusy(true);
+    const result = await reorderFileComments(session.id, order);
+    setReviewBusy(false);
+    setReviewError(result.ok ? null : result.error);
+  }, [queue, session.id]);
+
+  const editQueued = useCallback(async (messageId: string, body: string): Promise<boolean> => {
+    setReviewBusy(true);
+    const result = await editFileCommentMessage(messageId, body);
+    setReviewBusy(false);
+    setReviewError(result.ok ? null : result.error);
+    return result.ok;
+  }, []);
+
+  const dropFromQueue = useCallback(async (threadId: string): Promise<void> => {
+    setReviewBusy(true);
+    const result = await deleteFileComment(threadId);
+    setReviewBusy(false);
+    setReviewError(result.ok ? null : result.error);
+    if (result.ok && openThreadId === threadId) setOpenThreadId(null);
+  }, [openThreadId]);
+
+  /** Take the reader to a queued comment, in the file it is about. */
+  /*
+   * Where the viewer should be looking, from the two things that can ask.
+   *
+   * A deep link (`plan.md:84`), and the walkthrough moving the reader to the comment it just
+   * sent. Both are one-shot requests carrying their own nonce, and both are answered by the
+   * same effect in `FileEditor`, which reads the line off the live document rather than
+   * remembering a position - the view is destroyed outright on a path change, so a remembered
+   * one would be wrong exactly when it was needed.
+   *
+   * The outstanding comment wins when both are live, because it is the more recent request by
+   * construction: a deep link is a click that already happened, and the walkthrough only asks
+   * when a comment has actually gone out.
+   */
+  const outstanding = useMemo(() => outstandingThread(queue), [queue]);
+  const [followedOutstanding, setFollowedOutstanding] = useState<{ id: string; nonce: number } | null>(null);
+  useEffect(() => {
+    if (!outstanding) return;
+    setFollowedOutstanding((prev) =>
+      prev?.id === outstanding.id ? prev : { id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 });
+  }, [outstanding]);
+  const scrollTo = useMemo(() => {
+    if (
+      outstanding
+      && followedOutstanding?.id === outstanding.id
+      && outstanding.path === selectedPath
+    ) {
+      return { line: outstanding.startLine, nonce: followedOutstanding.nonce };
+    }
+    if (
+      fileLineRequest
+      && fileLineRequest.sessionId === session.id
+      && fileLineRequest.path === selectedPath
+    ) {
+      return { line: fileLineRequest.line, nonce: fileLineRequest.nonce };
+    }
+    return null;
+  }, [fileLineRequest, followedOutstanding, outstanding, selectedPath, session.id]);
+
+  const openQueued = useCallback((thread: FileCommentThread): void => {
+    setReviewError(null);
+    setCommentMode(true);
+    pendingThreadOpen.current = thread.id;
+    if (thread.path !== selectedPath) controller.select(session.id, thread.path);
+    else setOpenThreadId(thread.id);
+  }, [controller, selectedPath, session.id]);
+
   /*
    * A comment belongs to the file and the session it was written on.
    *
@@ -392,7 +531,13 @@ export function FileWorkspace({
    */
   const dismissDraft = draft.dismiss;
   useEffect(() => {
-    setOpenThreadId(null);
+    // A thread the reader asked for BY NAME survives the move that was made to reach it.
+    // Opening a queued comment on another file selects that file, and this effect runs on the
+    // selection - so without the handoff the walkthrough's own "take me to comment 3" would
+    // close the panel it had just opened, every time the comment was not already on screen.
+    const requested = pendingThreadOpen.current;
+    pendingThreadOpen.current = null;
+    setOpenThreadId(requested);
     setThreadError(null);
     dismissDraft();
   }, [dismissDraft, selectedPath, session.id]);
@@ -726,6 +871,30 @@ export function FileWorkspace({
                   {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
                 </button>
               </Tooltip>
+              {/*
+                The review's own control, beside the mode toggle rather than inside it: comment
+                mode is "what a click on a line does", and this is "what happens to what you
+                have already written". It is drawn whenever the session HAS a review to look
+                at, not only in comment mode - a review drains while you read another file, and
+                a control that vanished when you left the file you were commenting on would be
+                the one control you cannot find when it pauses.
+              */}
+              {(queue.length > 0 || review !== null) && (
+                <Tooltip
+                  label={showQueue
+                    ? "Hide the review queue"
+                    : `Show the ${queue.length} comment${queue.length === 1 ? "" : "s"} in this session's review`}
+                >
+                  <button
+                    className={`file-comment-toggle${showQueue ? " on" : ""}`}
+                    aria-label="Review queue"
+                    aria-pressed={showQueue}
+                    onClick={() => setShowQueue((value) => !value)}
+                  >
+                    Review ({queue.length})
+                  </button>
+                </Tooltip>
+              )}
               {commentsActive && resolvedCount > 0 && (
                 <Tooltip
                   label={showResolved
@@ -783,6 +952,7 @@ export function FileWorkspace({
               readOnly={commentSourceShowing || !buffer.document.editable || buffer.saveState === "conflict"}
               wrap={commentSourceShowing}
               comments={editorComments}
+              scrollTo={scrollTo}
               onChange={(text) => controller.edit(session.id, buffer.document.path, text)}
               onBlur={() => controller.flush(session.id, buffer.document.path)}
             />
@@ -794,6 +964,22 @@ export function FileWorkspace({
             </div>
           )}
         </div>
+
+        {showQueue && (
+          <FileCommentQueue
+            queue={queue}
+            review={review}
+            busy={reviewBusy}
+            error={reviewError}
+            onStart={() => { void controlReview("start"); }}
+            onPause={() => { void controlReview("pause"); }}
+            onMove={(threadId, direction) => { void moveInQueue(threadId, direction); }}
+            onEdit={editQueued}
+            onDrop={(threadId) => { void dropFromQueue(threadId); }}
+            onOpen={openQueued}
+            onDismissError={() => setReviewError(null)}
+          />
+        )}
 
         {/* A comment refusal with no panel to carry it - a blank line at the end of a file
             has nothing to anchor to, and the click that found that out has nowhere else to

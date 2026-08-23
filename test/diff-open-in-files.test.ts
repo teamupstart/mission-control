@@ -144,5 +144,12 @@ test("the shared diff reader routes the jump through the one open-a-file path", 
   assert.doesNotMatch(app, /closeDiff|setDiffSessionId/);
   // One destination, two entry points: prose hrefs still funnel through the exact-path
   // opener rather than duplicating the layout branching.
-  assert.match(app, /openSessionPath\(sessionId, target\.path\);/);
+  //
+  // The LINE rides along, and only from this side. `workspaceFileTarget` parses `path:12`
+  // out of a sentence a human wrote, so a prose href knows which line it meant; the diff's
+  // own path is exact and git-emitted, and reading a trailing `:12` out of it opened a file
+  // genuinely named `notes:12` - which is the case pinned above. Same opener, and only one
+  // of its two callers has a line to give it.
+  assert.match(app, /openSessionPath\(sessionId, target\.path, target\.line\);/);
+  assert.match(detail, /onOpenInFiles=\{\(path\) => view\.onOpenFilePath\(session\.id, path\)\}/);
 });

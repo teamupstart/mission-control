@@ -2815,6 +2815,19 @@ export type ServerEvent =
        */
       fileCommentThreads: FileCommentThread[];
       /**
+       * One walkthrough run-state row per session that has ever started a review.
+       *
+       * STRICTLY SMALLER than `fileCommentThreads` above and bounded the same way: at most one
+       * row per session, deleted outright when that session's threads are orphaned, and five
+       * scalar fields wide. A fleet of fifty sessions all mid-review carries well under two
+       * kilobytes here, and the ordinary installation carries one `[]`.
+       *
+       * Carried in the snapshot rather than waited for, for `fleetCost`'s reason: the Files
+       * toolbar draws Start review / Pause from this, so a dashboard that had to wait for the
+       * next change would open on a control that could not say what it does.
+       */
+      fileCommentReviews: FileCommentReview[];
+      /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
@@ -2916,6 +2929,17 @@ export type ServerEvent =
    * the browser should stop holding it.
    */
   | { type: "file_comment_thread_remove"; id: string }
+  /**
+   * A session's review started, paused, or resumed.
+   *
+   * A frame of its own rather than something derived from the threads, for the reason
+   * `FILE_COMMENT_REVIEW_STATES` states: "paused" and "never started" are the same set of
+   * rows - everything queued, nothing outstanding - and between two comments the outstanding
+   * set is briefly empty, so a derived "running" would flicker on every advance.
+   */
+  | { type: "file_comment_review_upsert"; review: FileCommentReview }
+  /** Its session went away, so the row was deleted with the threads it walked through. */
+  | { type: "file_comment_review_remove"; sessionId: string }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

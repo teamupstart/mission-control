@@ -256,6 +256,7 @@ export function App(): React.JSX.Element {
     ensembleSummaries,
     pipelineRuns,
     fileCommentThreads,
+    fileCommentReviews,
     fleetCost,
     lineSummary,
     settingsStatus,
@@ -422,6 +423,21 @@ export function App(): React.JSX.Element {
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
   const [fileTabRequest, setFileTabRequest] = useState<{
     sessionId: string;
+    nonce: number;
+  } | null>(null);
+  /**
+   * Deep-linking's last mile: which line the reader asked for, and how many times.
+   *
+   * `workspaceFileTarget` has always parsed `path:line`, and until now `openSessionPath` took
+   * only a path, so the line was parsed and then dropped - "open plan.md line 84" opened
+   * plan.md at the top. This is the channel that was missing, shaped like `fileTabRequest`
+   * beside it: a NONCE, because asking for the same line twice is an ordinary thing to do and
+   * a bare line would fire only on a change.
+   */
+  const [fileLineRequest, setFileLineRequest] = useState<{
+    sessionId: string;
+    path: string;
+    line: number;
     nonce: number;
   } | null>(null);
   const [conversationTabRequest, setConversationTabRequest] = useState<{
@@ -1338,12 +1354,27 @@ export function App(): React.JSX.Element {
    * it - correct for a path a human typed in a sentence, wrong for a file genuinely
    * named `notes:12`, which would silently open `notes` instead.
    */
-  const openSessionPath = useCallback((sessionId: string, path: string): void => {
+  const openSessionPath = useCallback((
+    sessionId: string,
+    path: string,
+    line?: number | null,
+  ): void => {
     files.ensure(sessionId);
     files.select(sessionId, path);
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
     requestFilesTab(sessionId);
+    // Carried beside the selection rather than through it: `files.select` is the file
+    // controller's business and a scroll position is the viewer's, so folding a line into
+    // `SessionFilesState` would put a transient request in durable per-session state.
+    if (typeof line === "number" && line > 0) {
+      setFileLineRequest((request) => ({
+        sessionId,
+        path,
+        line,
+        nonce: (request?.nonce ?? 0) + 1,
+      }));
+    }
   }, [files.ensure, files.select, layout, requestFilesTab]);
 
   const openSessionFile = useCallback((
@@ -1359,7 +1390,7 @@ export function App(): React.JSX.Element {
     }) : null;
     if (!target) return false;
     if (probe) return ambiguousRoot ? files.probe(sessionId, target.path) : true;
-    openSessionPath(sessionId, target.path);
+    openSessionPath(sessionId, target.path, target.line);
     return true;
   }, [files.probe, openSessionPath, sessions]);
 
@@ -1747,6 +1778,8 @@ export function App(): React.JSX.Element {
     workflowsTabRequest,
     files,
     fileCommentThreads,
+    fileCommentReviews,
+    fileLineRequest,
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
     onKill: setKillSessionId,
@@ -3156,6 +3189,8 @@ export function App(): React.JSX.Element {
             session={filesSession}
             controller={files}
             fileCommentThreads={fileCommentThreads}
+            fileCommentReviews={fileCommentReviews}
+            fileLineRequest={fileLineRequest}
             onClose={closeFiles}
           />
         )}

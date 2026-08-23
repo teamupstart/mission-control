@@ -2,6 +2,7 @@ import type {
   AgentType,
   AssignResetConfirm,
   BacklogPlan,
+  FileCommentReview,
   FileCommentThread,
   ForemanEpisode,
   ForemanEpisodeSummary,
@@ -1921,6 +1922,38 @@ export async function reorderFileComments(
     };
     if (!res.ok || !data.threads) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     return { ok: true, threads: data.threads };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Start, resume, or pause a session's walkthrough.
+ *
+ * `start` covers resume, because the daemon treats them as one transition - `started_at` is
+ * kept on a resume rather than rewritten, so a review that pauses and continues stays "comment
+ * 4 of 12" instead of restarting its numbering. See `FileCommentReviewControlSchema`.
+ */
+export async function controlFileCommentReview(
+  sessionId: string,
+  action: "start" | "pause",
+  reason?: string,
+): Promise<{ ok: true; review: FileCommentReview } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/file-comment-review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reason === undefined ? { action } : { action, reason }),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      review?: FileCommentReview;
+      error?: string;
+    };
+    if (!res.ok || !data.review) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, review: data.review };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }

@@ -207,45 +207,54 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
 });
 
 /**
- * The fastest of `runs` samples of EACH of two workloads, in milliseconds, measured
- * alternately.
+ * The fastest of `runs` samples of EACH of two workloads, in milliseconds of CPU THIS PROCESS
+ * actually spent, measured alternately.
  *
- * The MINIMUM rather than a mean, because the noise being rejected is one-sided: the scheduler
- * can steal a sample and inflate it without bound, but nothing makes the work finish faster
- * than it is. On a contended machine the mean tracks the contention and the minimum tracks the
- * algorithm, and the algorithm is what is under test.
- *
- * ALTERNATELY, rather than all of one and then all of the other, because the caller divides
- * these two numbers and contention does not divide out of a ratio unless both sides met the
- * same contention. Run in blocks, they do not: the larger workload occupies a longer window,
+ * **`process.cpuUsage()` rather than `performance.now()`, and that is the whole point.** This
+ * test asks a question about an algorithm - does four times the input cost about four times the
+ * work, or about sixteen - and a wall clock cannot answer it on a machine doing anything else,
+ * because it measures the workload plus every interruption the scheduler chose to insert. Two
+ * previous attempts here tried to sample around that: first a deadline, which a busy box broke;
+ * then the minimum of many interleaved wall-clock samples, which is what this replaces. The
+ * minimum is the right statistic and interleaving is the right shape, and it still failed at
+ * 9.3x during a full-suite run, because a minimum over wall time is not an unbiased estimator
+ * when the samples can be preempted: the larger workload occupies a window four times as wide,
  * so it is likelier to be interrupted in EVERY one of its samples while the smaller one still
- * catches a clean slot between interruptions. That bias is systematic and it only ever points
- * one way - it inflates the numerator - which is exactly how a linear matcher reported 9.5x
- * growth (155ms -> 1470ms, against ~80ms and ~300ms idle) on a box running the whole suite
- * beside a stuck load generator. Interleaving costs nothing and puts both sides in the same
- * weather.
+ * catches a clean slot. More samples raise the odds of a clean window; they never guarantee one.
  *
- * `runs` carries the rest of the load: a minimum is only as good as its cleanest sample, and
- * the longer workload needs an uninterrupted window four times as wide to produce one. More
- * samples is more chances at that window, which is why the caller pays for twelve rather than
- * the five that were enough on an idle machine. Interleaved twelve held 8/8 under eight
- * competing spinners; interleaved five still lost one in six there, and blocked five lost
- * one in one.
+ * CPU time removes the bias at the source instead of sampling against it. `process.cpuUsage()`
+ * counts only the user and system time THIS process was actually on a core, so time spent
+ * descheduled while five other test workers run is not counted at all - a sample that was
+ * interrupted ten times reports the same figure as one that was never interrupted. There is no
+ * clean window to wait for, because every window is clean. The workload is pure CPU-bound regex
+ * matching in-process, which is exactly what this instrument measures well.
+ *
+ * The minimum is kept, and it still earns its place: it rejects the occasional sample that
+ * catches a GC pause INSIDE this process, which is our own time and does count against us.
+ * `runs` came down from twelve to five with the instrument change, because twelve existed to
+ * buy enough chances at an uninterrupted wall-clock window and there is no such thing to wait
+ * for any more. Measured across 3, 5 and 12 runs the ratio moved between 4.04 and 4.14 on an
+ * idle box and between 3.91 and 4.35 under eight competing spinners - flat in both directions -
+ * while the wall-clock cost of the test scaled straight down with the sample count.
  */
-function fastestPairMs(
+function fastestPairCpuMs(
   runs: number,
   first: () => void,
   second: () => void,
 ): { first: number; second: number } {
+  const cpuMsSince = (mark: NodeJS.CpuUsage): number => {
+    const spent = process.cpuUsage(mark);
+    return (spent.user + spent.system) / 1000;
+  };
   let bestFirst = Infinity;
   let bestSecond = Infinity;
   for (let index = 0; index < runs; index += 1) {
-    const startedFirst = performance.now();
+    const startedFirst = process.cpuUsage();
     first();
-    bestFirst = Math.min(bestFirst, performance.now() - startedFirst);
-    const startedSecond = performance.now();
+    bestFirst = Math.min(bestFirst, cpuMsSince(startedFirst));
+    const startedSecond = process.cpuUsage();
     second();
-    bestSecond = Math.min(bestSecond, performance.now() - startedSecond);
+    bestSecond = Math.min(bestSecond, cpuMsSince(startedSecond));
   }
   return { first: bestFirst, second: bestSecond };
 }
@@ -267,13 +276,15 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
   // four times as long if the matcher is linear and about sixteen if it is quadratic - measured
   // here across eight trials the ratio sat between 3.4 and 4.5, so 8 splits the two cleanly.
   //
-  // The threshold survived contact with contention; the MEASUREMENT did not. Sampling the two
-  // sizes in blocks let the larger one absorb more interruptions than the smaller, which
-  // inflates this ratio without anything about the matcher changing - see `fastestPairMs`,
-  // which now interleaves them. Neither bound below moved: a quadratic matcher still fails
-  // both, and that is the point of leaving them where the measurements put them.
-  const { first: small, second: large } = fastestPairMs(
-    12,
+  // The threshold survived contact with contention; the MEASUREMENT did not, twice. Wall-clock
+  // sampling inflates the larger workload's figure more than the smaller one's, because a wider
+  // window is likelier to be interrupted - which is how a linear matcher reported 9.3x growth
+  // during a full-suite run. The fix was to stop measuring the scheduler: `fastestPairCpuMs`
+  // reads CPU time this process actually spent, so an interrupted sample and a clean one report
+  // the same figure. Neither bound below moved: a quadratic matcher still fails both, and that
+  // is the point of leaving them where the measurements put them.
+  const { first: small, second: large } = fastestPairCpuMs(
+    5,
     () => stripPrefsMarkers("-".repeat(15_000)),
     () => stripPrefsMarkers("-".repeat(60_000)),
   );
@@ -284,9 +295,10 @@ test("a long rule cannot stall the worker - the matcher stays linear", () => {
       `(${small.toFixed(0)}ms -> ${large.toFixed(0)}ms) - quadratic?`,
   );
   // The backstop a ratio cannot provide: something uniformly pathological, or an outright
-  // hang, keeps its shape while growing. An order of magnitude above the ~300ms this really
-  // costs, and still below the ~12s the old quadratic pattern would reach at this size.
-  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms - stalled?`);
+  // hang, keeps its shape while growing. An order of magnitude above the ~300ms of CPU this
+  // really costs, and still below the ~12s the old quadratic pattern would reach at this size.
+  // Also CPU time, so a busy machine cannot trip it either.
+  assert.ok(large < 10_000, `60k rule characters took ${large.toFixed(0)}ms of CPU - stalled?`);
 
   // And bounding the run did not cost coverage: a rule longer than the bound still reads as a
   // frame, because the flank swallows whatever the quantifier does not.

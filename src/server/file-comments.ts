@@ -250,6 +250,34 @@ export class FileCommentManager {
         now: Date.now(),
       });
       if (!message) throw new FileCommentError("no such comment thread", 404);
+      // A human reply re-enters the review at the END, and is delivered in its turn exactly
+      // like a new comment. What goes is THE REPLY, not the comment that opened the thread:
+      // the payload always carries the thread's oldest human message with `delivered_at` NULL,
+      // so a requeued thread sends what was just written rather than resending its first
+      // message.
+      //
+      // **Scoped to the two statuses a reply may move, and that scope is load-bearing.**
+      // Appending to the comment currently in flight is always allowed - a person may answer
+      // the comment they are reading - but the STATUS must not move, because `sending` and
+      // `awaiting` are the two statuses the single-flight index is built on. Requeueing one of
+      // those would empty the outstanding set while a turn is genuinely live in
+      // `pending_turns`, and the walkthrough would release the next comment on top of it. That
+      // message simply waits: when the turn resolves with an undelivered human message left,
+      // the walkthrough requeues the thread for it.
+      //
+      // A `draft` is left alone too, for a different reason: it is submitted by a person
+      // pressing Comment, and auto-queueing on the first keystroke would put every abandoned
+      // half-sentence into the review.
+      if (
+        author === "human" &&
+        (thread.status === "answered" || thread.status === "unanswered")
+      ) {
+        // Phase 1's tail-allocating writer, never a status write plus a reorder: it refuses an
+        // outstanding thread and a terminal one in the one place, where it cannot be forgotten.
+        const requeued = queueFileCommentThread(threadId, Date.now());
+        if (requeued) this.registry.upsertFileCommentThread(requeued);
+        return message;
+      }
       this.publish(threadId);
       return message;
     } catch (err) {
@@ -408,6 +436,12 @@ export class FileCommentManager {
     for (const id of orphanFileCommentThreadsForSession(sessionId, Date.now())) {
       this.registry.removeFileCommentThread(id);
     }
+    // The store deletes the review row in the same transaction, because there is nothing left
+    // to walk through and a row left `running` would resume a review for a session that no
+    // longer exists. This drops the live projection to match. Unconditional rather than
+    // guarded on the loop above: a review can outlive its last thread - every comment
+    // resolved, the review still paused - and that row must go too.
+    this.registry.removeFileCommentReview(sessionId);
   }
 
   /**

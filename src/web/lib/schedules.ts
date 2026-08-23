@@ -550,7 +550,7 @@ export function scheduleDefinitionFingerprint(def: {
     intent: string;
     repoRoot: string;
     kind: string;
-    agent: string;
+    agent: string | null;
     priority: string | null;
     labels: string[];
     model: string | null;

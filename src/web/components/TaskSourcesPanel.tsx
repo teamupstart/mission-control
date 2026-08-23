@@ -606,17 +606,22 @@ export function SourceCard({
         <div className="ts-fields">
           <label className="ts-field">
             <span className="ts-field-label">Agent</span>
-            <Tooltip label="Which harness a task swept by this source is dispatched to">
+            <Tooltip label="Which harness a task swept by this source is dispatched to. Inherit follows this kind's row on Settings - Models, read as each row is filed.">
               <select
                 className="harnesses-select"
-                value={src.defaults.agent}
+                aria-label="Agent for tasks this source files"
+                value={src.defaults.agent ?? ""}
                 onChange={(e) =>
                   onChange({
                     ...src,
-                    defaults: { ...src.defaults, agent: e.target.value as AgentType },
+                    defaults: {
+                      ...src.defaults,
+                      agent: (e.target.value || null) as AgentType | null,
+                    },
                   })
                 }
               >
+                <option value="">Inherit - this kind's agent</option>
                 {AGENT_TYPES.map((a) => (
                   <option key={a} value={a}>
                     {AGENT_IDENTITY[a].label}
@@ -988,7 +993,9 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       intervalMs: DEFAULT_SWEEP_INTERVAL_MS,
       defaults: {
         kind: "ship",
-        agent: "claude",
+        // Inherit, not Claude. A source the operator never opened a picker on has not chosen
+        // a harness, and saying otherwise is what kept the kind default from reaching here.
+        agent: null,
         priority: null,
         labels: [],
         enabled: true,

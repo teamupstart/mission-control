@@ -121,7 +121,18 @@ export function launchModelFor(
   );
 }
 
-/** The whole effort ladder: the task's pin, the kind's offered level, the harness default. */
+/**
+ * The whole effort ladder: the task's pin, the kind's offered level, the harness default.
+ *
+ * EVERY tier is capability-checked, not just the kind's. A stored effort is a level chosen
+ * against some harness at some earlier moment, and neither of those need still be true when
+ * the task launches: a task filed with an inherited agent had no harness to be checked
+ * against at all, and a task that has one can still resolve a model that narrows the levels
+ * (Codex drops `max` on every model but its newest two). An unchecked pin therefore reaches
+ * the CLI as a flag it rejects, which is the exact failure the kind tier was already written
+ * to avoid - so a pin the target cannot offer falls through to the tier below it rather than
+ * being passed on the strength of having been chosen once.
+ */
 export function launchEffortFor(
   config: HarnessesConfig,
   agent: AgentType,
@@ -129,8 +140,10 @@ export function launchEffortFor(
   taskEffort: ThinkingLevel | null,
   model: string | null,
 ): ThinkingLevel | null {
+  const offered = launchEffortLevels(agent, model);
+  const pinned = taskEffort && offered.includes(taskEffort) ? taskEffort : null;
   return (
-    taskEffort ??
+    pinned ??
     (kind ? taskKindEffort(config, agent, kind, model) : null) ??
     config.defaultEffort[agent]
   );

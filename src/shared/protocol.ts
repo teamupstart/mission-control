@@ -6004,13 +6004,32 @@ const ScheduleTemplateSchema = z
       .enum(TASK_KINDS)
       .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
       .default("ship"),
-    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
+     * each run files its task.
+     *
+     * Nullable rather than defaulted, and for the same reason `DispatchSchema.agent` is:
+     * `.default("claude")` here turned "the operator never chose" into an explicit Claude
+     * pin before the store could tell the two apart, which made a recurring mission the one
+     * creator the kind default could never reach. An operator who DID choose still gets a
+     * pin - that is what choosing means - and a stored template that names an agent keeps
+     * it untouched, so nothing already scheduled changes behaviour.
+     */
+    agent: z.enum(AGENT_TYPES).nullable().default(null),
     priority: z.enum(TASK_PRIORITIES).nullable().default(null),
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
     model: ModelIdSchema.nullable().default(null),
     effort: EffortLevelSchema.nullable().default(null),
   })
-  .refine((t) => t.effort === null || supportsEffort(t.agent, t.effort), {
+  // The same split the kind rows keep, because it is the same fact about the two fields: a
+  // model id is agent-namespaced, so an inheriting template cannot name one; an effort is
+  // one shared vocabulary, so it can, and is checked at launch against the harness the kind
+  // actually resolved.
+  .refine((t) => t.model === null || t.agent !== null, {
+    path: ["model"],
+    message: "a template that inherits its agent cannot pin a model",
+  })
+  .refine((t) => t.effort === null || t.agent === null || supportsEffort(t.agent, t.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
   });

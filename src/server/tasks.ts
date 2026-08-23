@@ -1931,11 +1931,16 @@ export class TaskManager {
     // follow-up, an ensemble member - inherits the kind default without any of them
     // learning that kind defaults exist. A caller that named an agent keeps it verbatim.
     const agent = resolveTaskAgent(input.kind, input.agent);
-    // The half of `DispatchSchema`'s effort refinement that a browser-safe schema cannot
-    // run: with the agent omitted there, the harness the level was chosen for is not known
-    // until this line. A caller that named both is already refused at the door and never
-    // reaches here; this catches the pair that only becomes contradictory once the kind has
-    // answered.
+    // The half of `DispatchSchema`'s effort refinement that a browser-safe schema cannot run:
+    // with the agent omitted there, the harness the level was chosen for is not known until
+    // this line.
+    //
+    // Applied to EVERY caller, including one whose agent was inherited. An earlier draft let
+    // an inheriting creator through on the reasoning that its author never made the
+    // resolution - but the task row it writes is a PIN, and a stored pin is the one thing the
+    // launch ladder used to pass on without checking. Refusing here is where the operator can
+    // still act on it: `PUT /api/schedules` and the task-source save answer 400, naming the
+    // level and the harness, instead of a mission that files silently and launches wrong.
     if (input.effort && !supportsEffort(agent, input.effort)) {
       throw new TaskEffortUnsupportedError(
         `reasoning effort ${input.effort} is not supported by ${agent}`,

@@ -183,6 +183,26 @@ test("the kind's effort is taken only where the harness offers it at launch", as
 
 // ---- what may be written ----
 
+test("a task's OWN effort is capability-checked too, not passed on for having been chosen", () => {
+  // The tier everything else was already careful about, and the one that was not. A stored
+  // effort is a level chosen against some harness at some earlier moment, and neither of those
+  // need still be true at launch: a task filed with an inherited agent had no harness to be
+  // checked against, and one that has a harness can still resolve a model that narrows the
+  // levels. Passed on unchecked, it reaches the CLI as a flag it rejects.
+  setHarnessesConfig({ kindDefaults: { plan: { agent: "codex", effort: "high" } } });
+
+  // `max` is a level Codex does not offer at all. The pin loses to the tier below it rather
+  // than being handed to the harness.
+  assert.equal(resolveDispatchEffort("codex", "max", "plan", null), "high");
+
+  // ...and with no kind row to fall to, to the harness default rather than to the pin.
+  assert.equal(resolveDispatchEffort("codex", "max", "ship", null), null);
+
+  // A pin the harness DOES offer still wins every tier above it - this is a capability check,
+  // not a demotion of the operator's choice.
+  assert.equal(resolveDispatchEffort("codex", "low", "plan", null), "low");
+});
+
 test("a row that inherits its agent may set an effort but never a model", () => {
   assert.equal(
     HarnessesConfigPatchSchema.safeParse({ kindDefaults: { plan: { effort: "high" } } }).success,
@@ -284,7 +304,9 @@ test("an effort is still refused at the door when the harness is named", () => {
     false,
   );
   // With no agent named the harness is not knowable in a browser-safe schema, so the body
-  // parses and `TaskManager.create` refuses the pair once the kind has answered.
+  // parses. `TaskManager.create` does NOT refuse it once the kind has answered either: the
+  // level was chosen without knowing which harness would answer, so it takes the ladder's
+  // ordinary rule and falls back to the harness default at launch.
   assert.equal(
     DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", effort: "max" }).success,
     true,

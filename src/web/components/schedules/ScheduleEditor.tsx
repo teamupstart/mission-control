@@ -9,7 +9,7 @@ import type {
 import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, portableEffortLevels } from "@shared/harness-capabilities.ts";
 import {
   BACKLOG_TASK_KINDS,
   MAX_LABELS,
@@ -66,7 +66,8 @@ interface EditorDraft {
   title: string;
   repoRoot: string;
   kind: TaskKind;
-  agent: AgentType;
+  /** `""` is Inherit - the kind's row on Settings -> Models decides, when each run fires. */
+  agent: AgentType | "";
   priority: TaskPriority | "";
   labels: string;
   model: string;
@@ -84,7 +85,7 @@ function emptyDraft(): EditorDraft {
     title: "",
     repoRoot: "",
     kind: "ship",
-    agent: "claude",
+    agent: "",
     priority: "",
     labels: "",
     model: "",
@@ -105,7 +106,7 @@ function draftFromSchedule(schedule: MissionSchedule): EditorDraft {
     title: template?.title ?? "",
     repoRoot: template?.repoRoot ?? "",
     kind: template?.kind ?? "ship",
-    agent: template?.agent ?? "claude",
+    agent: template?.agent ?? "",
     priority: template?.priority ?? "",
     labels: (template?.labels ?? []).join(", "),
     model: template?.model ?? "",
@@ -129,7 +130,7 @@ function draftToDefinition(draft: EditorDraft): ScheduleDefinitionPayload {
       intent: draft.intent.trim(),
       repoRoot: draft.repoRoot.trim(),
       kind: draft.kind,
-      agent: draft.agent,
+      agent: draft.agent || null,
       priority: draft.priority || null,
       labels: parseLabelInput(draft.labels),
       model: draft.model || null,
@@ -203,7 +204,16 @@ export function ScheduleEditor({
   const previewFresh = previewedOk === fingerprint;
 
   const labels = parseLabelInput(draft.labels);
-  const effortLevels = capabilitiesFor(draft.agent).effort?.levels ?? [];
+  // With no agent chosen the harness is not known until the run fires, so only the levels
+  // every harness offers are selectable - see `portableEffortLevels`.
+  const effortLevels = draft.agent
+    ? capabilitiesFor(draft.agent).effort?.levels ?? []
+    : portableEffortLevels();
+  // A model id belongs to one harness, so an inheriting template cannot name one. Said here,
+  // on the control, rather than left to the save route to refuse.
+  const modelWhy = draft.agent
+    ? null
+    : "Choose an agent first - a model belongs to one harness, so a mission that inherits its agent can't pin one.";
 
   /** Local required-field guard. Server validation stays authoritative; this improves UX. */
   function localValidation(): Partial<Record<ScheduleValidationField, string>> {
@@ -355,14 +365,19 @@ export function ScheduleEditor({
           </Field>
           <div className="rm-field-row">
             <Field label="Agent">
-              <Tooltip label="Which harness each generated task is dispatched to">
+              <Tooltip label="Which harness each generated task is dispatched to. Inherit follows this kind's row on Settings - Models, read when each run files its task.">
                 <select
                   className="field-input"
                   value={draft.agent}
                   onChange={(event) =>
-                    update({ agent: event.target.value as AgentType, model: "", effort: "" })
+                    update({
+                      agent: event.target.value as AgentType | "",
+                      model: "",
+                      effort: "",
+                    })
                   }
                 >
+                  <option value="">Inherit - this kind's agent</option>
                   {AGENT_TYPES.map((agent) => (
                     <option key={agent} value={agent}>
                       {AGENT_IDENTITY[agent].label}
@@ -431,14 +446,22 @@ export function ScheduleEditor({
           </div>
           <div className="rm-field-row">
             <Field label="Model" hint={draft.model ? "overriding harness default" : "harness default"}>
-              <Tooltip label="Pin the model each run launches with, overriding the harness default">
+              <Tooltip
+                label={
+                  modelWhy
+                  ?? "Pin the model each run launches with, overriding the harness default"
+                }
+              >
                 <select
                   className="field-input"
                   value={draft.model}
+                  disabled={modelWhy !== null}
                   onChange={(event) => update({ model: event.target.value })}
                 >
                   <option value="">harness default</option>
-                  <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
+                  {draft.agent && (
+                    <ModelCatalogOptions catalog={resolveModels(draft.agent, draft.model)} />
+                  )}
                 </select>
               </Tooltip>
             </Field>
@@ -460,7 +483,7 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
           </div>
-          <ModelCatalogNotice agent={draft.agent} />
+          {draft.agent && <ModelCatalogNotice agent={draft.agent} />}
         </FormSection>
 
         <FormSection

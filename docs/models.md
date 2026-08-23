@@ -117,6 +117,14 @@ that harness's own default (*Settings → Harnesses*) rather than being handed a
 Changing a row's Agent sends its Model back to *Inherit* unless the new harness offers the same id
 - the same rule the dispatch form has always followed.
 
+**Every effort tier is checked, including a task's own pin.** A stored effort was chosen against
+some harness at some earlier moment, and neither need still be true when the task launches - a
+task filed with an inherited agent had no harness to be checked against at all. A level the
+target cannot offer therefore falls to the tier below it rather than being passed on the strength
+of having been chosen once. A creator that names an unsupported level is refused at the door
+instead, so a recurring mission set to a level its kind's harness lacks fails its run visibly
+rather than filing work that launches wrong.
+
 **An effort is portable, and checked rather than matched.** The levels are one shared vocabulary,
 so `high` chosen for planning means something on any harness, and a row may set an effort while
 inheriting its agent. What narrows it is a capability check at launch: the level has to be one the
@@ -135,3 +143,12 @@ harness - and never over a harness you picked by hand.
 
 A task filed with no agent named at all - an agent's own `create_task`, for instance - takes the
 kind's agent rather than a hardcoded Claude.
+
+**The durable creators inherit too.** A **Recurring Mission** and a **task source** each carry
+their own Agent, and both now offer *Inherit* alongside the harnesses. Left on *Inherit*, every
+task they file takes the kind's agent **as each run fires** - so repointing a kind moves work
+that was scheduled months earlier, without editing the mission. Naming a harness there is a pin
+and still wins, and a mission or source saved before this existed keeps the harness it names, so
+nothing already scheduled moves on upgrade. The same two rules as a kind row apply: an inheriting
+template cannot pin a model (a model id belongs to one harness), and it may set an effort, drawn
+from the levels every harness offers, because the harness it will get is not known until the run.

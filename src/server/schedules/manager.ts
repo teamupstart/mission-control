@@ -1072,7 +1072,11 @@ export class ScheduleManager implements ScheduleService {
           intent: revision.template.intent,
           title: revision.template.title,
           kind: revision.template.kind,
-          agent: revision.template.agent,
+          // Omitted rather than passed as null when the template inherits: `create` reads an
+          // ABSENT agent as "resolve from the kind", and `tasks.agent` is NOT NULL, so there
+          // is no null to hand it. A run therefore takes whatever the kind's row says at the
+          // moment it fires, not what it said when the mission was written.
+          ...(revision.template.agent !== null ? { agent: revision.template.agent } : {}),
           priority: revision.template.priority,
           labels: revision.template.labels,
           ...(revision.template.model !== null

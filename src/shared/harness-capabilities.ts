@@ -812,6 +812,25 @@ export function launchEffortLevels(
   return HARNESS_CAPABILITIES[agent].effort?.levelsFor(modelId) ?? [];
 }
 
+/**
+ * The effort levels EVERY harness offers at launch, for a caller that does not yet know
+ * which one it will get.
+ *
+ * A recurring mission or a task source may inherit its agent from the task kind, and the kind
+ * can be repointed after the mission is written - so the harness is genuinely unknown until
+ * the run fires. Offering one harness's levels there would offer a level that silently falls
+ * back on another, and offering the whole vocabulary would do it more often. The intersection
+ * is the set that survives whichever harness the kind resolves to.
+ */
+export function portableEffortLevels(): readonly ThinkingLevel[] {
+  const agents = Object.keys(HARNESS_CAPABILITIES) as AgentType[];
+  const [first, ...rest] = agents;
+  if (!first) return [];
+  return launchEffortLevels(first, null).filter((level) =>
+    rest.every((agent) => launchEffortLevels(agent, null).includes(level)),
+  );
+}
+
 export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
   return HARNESS_CAPABILITIES[agent].effort?.levels.includes(level) ?? false;
 }

@@ -361,7 +361,7 @@ browser tab cannot silently clobber an edit:
 |---|---|---|---|
 | `GET` | `/api/instructions` | - | default, every override, one opaque ETag |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` | `200` view, `409` conflict with `current`, `413` too large |
-| `GET` | `/api/instructions/resolved?repoRoot=` | - | the exact composed text and mechanism for one repo |
+| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | - | the exact composed text and mechanism for one repo |
 
 The resolved route exists so the **Preview** button, the dispatch chip and the composed
 prompt can never disagree: all three read one pure

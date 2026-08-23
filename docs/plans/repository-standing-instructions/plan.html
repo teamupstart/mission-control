@@ -637,7 +637,7 @@ app - including its compare-and-swap ETag, its <code>bodyLimit</code> <code>413<
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td>-</td><td>default, every override, one opaque ETag</td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code></td><td><code>200</code> view, <code>409</code> conflict with <code>current</code>, <code>413</code> too large</td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=</code></td><td>-</td><td>the exact composed text and mechanism for one repo</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td>-</td><td>the exact composed text and mechanism for one repo</td></tr>
 </tbody>
 </table>
 </div>

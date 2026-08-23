@@ -228,7 +228,7 @@ export interface ResolvedStandingInstructions {
 |---|---|---|
 | `GET` | `/api/instructions` | `StandingInstructionsView` |
 | `PUT` | `/api/instructions` | `{ expectedEtag, default?, repositories? }` → `200` view, `409` `{error, code, current}`, `413` over `bodyLimit` |
-| `GET` | `/api/instructions/resolved?repoRoot=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime |
+| `GET` | `/api/instructions/resolved?repoRoot=&agent=&runtime=` | `ResolvedStandingInstructions` plus the delivery mechanism for a given agent and runtime |
 
 **Behavioural invariants Phase 2 may rely on and must not change:**
 
@@ -239,6 +239,14 @@ export interface ResolvedStandingInstructions {
    and performs no write.
 4. `resolveStandingInstructions` is a pure function exported from shared code. Phase 2 calls the
    route, never reimplements the matching.
+5. **Exactly one delivery per session.** A harness · runtime pair with an out-of-band channel gets
+   the block there and is **not** also prefixed into turn one; a pair without one is prefixed and
+   has no out-of-band send. Never both - the agent would read the same rule twice in its first
+   turn. Whether a pair has a channel is read from `StandingInstructionsSpec` in one place, so the
+   composer, the resolved route and the dispatch marker cannot disagree.
+6. The resolved route requires `agent` and `runtime`, because the mechanism is a property of the
+   pair rather than of the repository. An unknown `agent`, or a `runtime` the harness does not
+   offer, is a `400` rather than a default.
 
 ---
 

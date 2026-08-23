@@ -109,17 +109,38 @@ multi-repo case.
 - Empty resolved text renders nothing at all - not an empty heading. A repository with no rules
   must produce a byte-identical prompt to today.
 
-### 5. Composition into the prompt seam
+### 5. Composition into the prompt seam - the fallback path only
+
+> **Exactly one delivery per session.** The block reaches an agent either out of band (step 6) or
+> as a turn-one prefix (this step), **never both**. A pair with an out-of-band channel must not
+> also be prefixed: the agent would read the same rule twice in its first turn, which is noise at
+> best and, for a rule phrased as a prohibition, an invitation to treat the repetition as emphasis
+> about something the operator only said once.
 
 `withTaskKindContract` (`src/server/task-contract.ts:133`) is the single seam, reached from
 `dispatcher.ts:417` and `tasks.ts:2970`. Every `TaskKind` passes through it.
 
-The standing-instruction block is a **prefix above the intent**, in the same position and for the
-same reason as the repo manifest: `task-contract.ts:127-133` states that the operator's own words
-stay the exact prefix and server-owned material follows. This text *is* the operator's words.
+So the composition is **conditional on the resolved harness and runtime**:
 
-Order within the prefix: repo manifest, then standing instructions, then the intent. The manifest
-tells the agent which checkouts exist; the instructions are about them.
+- The pair **has** an out-of-band channel (claude terminal, claude sdk, codex sdk) - compose
+  nothing here. Step 6 carries it.
+- The pair has **none** (codex terminal, pi terminal) - the block is a **prefix above the intent**,
+  in the same position and for the same reason as the repo manifest: `task-contract.ts:127-133`
+  states that the operator's own words stay the exact prefix and server-owned material follows.
+  This text *is* the operator's words.
+
+Order within the prefix, when it applies: repo manifest, then standing instructions, then the
+intent. The manifest tells the agent which checkouts exist; the instructions are about them.
+
+**One decision, read once.** Whether a pair has a channel is `StandingInstructionsSpec` (step 6),
+so this step must ask that spec rather than re-deriving the answer from an agent name or a runtime
+string. Two independent readings of "does this pair have a channel" are exactly how a future
+harness ends up either double-delivered or silently undelivered - the same drift
+`dispatcher.ts:490-506` already warns about for Pi's text, and the reason
+`extraDirArgs` reads its spec once instead of asking twice.
+
+The runtime is known before this runs: `dispatcher.ts` resolves it before provisioning and forks to
+`dispatchEmbedded` at `:458-469`, so both arms can pass the resolved pair into composition.
 
 ### 6. Delivery - the harness capability
 
@@ -179,8 +200,17 @@ Three routes, modelled on `/api/foreman/instructions` (`routes.ts:2895-2915`):
 - `GET /api/instructions` → the view.
 - `PUT /api/instructions` under `bodyLimit` with a `413` handler; `409` with `{error, code, current}`
   on a stale `expectedEtag`.
-- `GET /api/instructions/resolved?repoRoot=` → the resolved text, the matched key, and the delivery
-  mechanism for a given agent and runtime.
+- `GET /api/instructions/resolved?repoRoot=&agent=&runtime=` → the resolved text, the matched key,
+  and the delivery mechanism.
+
+  **`agent` and `runtime` are required, and validated.** The mechanism is a property of the pair,
+  not of the repository - the same text is a system prompt on `claude · terminal`, developer
+  instructions on `codex · sdk`, and turn-one prose on `pi · terminal` - so a route that took only
+  `repoRoot` could not answer the question Phase 2's dispatch marker asks it. Reject an unknown
+  `agent` with `400` rather than defaulting, and reject a `runtime` the harness does not offer:
+  `resolveSessionRuntime` already owns that degradation and the answer must not be invented here.
+  The mechanism comes from the same `StandingInstructionsSpec` the composer reads, so the marker
+  and the delivery can never disagree.
 
 Every repository key written through the PUT must be resolved through the same door every other
 per-repo config uses: `resolveRepoPath` / `resolveRepoRoot` (`src/server/repos.ts:119-151`). That is
@@ -206,8 +236,9 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 | Resolution | longest match wins; `/repo-backup` does not match `/repo`; empty-string override beats the default; absent key inherits; the character cap |
 | Composition | the block is a prefix above the intent and below nothing; **a repo with no rules produces a byte-identical prompt to today**; multi-repo emits one labelled block per attached repo in manifest order |
 | Delivery | each of the five harness · runtime pairs carries the text by its declared mechanism; **exactly one `--append-system-prompt` flag is emitted**; the standing instruction still ships when `askChannelArgs` returns `[]`; Codex's merge preserves a configured value and arms without `opts.mcp` |
+| **Exactly-once** | for every one of the five pairs, the block appears in **exactly one** channel: a pair with an out-of-band channel has it there and **not** in turn one, a pair without has it in turn one and nowhere else. Assert on the composed prompt and the launch payload together, so neither a double send nor a silent drop can pass |
 | Store | ETag changes with the document; a stale `expectedEtag` performs no write; empty-vs-absent round-trips |
-| Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; the resolved route agrees with what the composer produced |
+| Routes | `409` carries the current view; oversize body is `413`; an unresolvable repo key is `400`; an unknown `agent` or an unsupported `runtime` is `400`; the resolved route's reported mechanism matches what the composer actually did for that same pair |
 
 The byte-identical case is the decisive regression guard for the whole feature. Write it first.
 

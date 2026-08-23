@@ -328,7 +328,7 @@ export interface ResolvedStandingInstructions {
 <tbody>
 <tr><td><code>GET</code></td><td><code>/api/instructions</code></td><td><code>StandingInstructionsView</code></td></tr>
 <tr><td><code>PUT</code></td><td><code>/api/instructions</code></td><td><code>{ expectedEtag, default?, repositories? }</code> → <code>200</code> view, <code>409</code> <code>{error, code, current}</code>, <code>413</code> over <code>bodyLimit</code></td></tr>
-<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/instructions/resolved?repoRoot=&amp;agent=&amp;runtime=</code></td><td><code>ResolvedStandingInstructions</code> plus the delivery mechanism for a given agent and runtime</td></tr>
 </tbody>
 </table>
 </div>
@@ -345,6 +345,14 @@ boundary-matched.</li>
 with the current view and performs no write.</li>
 <li><code>resolveStandingInstructions</code> is a pure function exported from shared code. Phase 2
 calls the route, never reimplements the matching.</li>
+<li><strong>Exactly one delivery per session.</strong> A harness · runtime pair with an out-of-band
+channel gets the block there and is <strong>not</strong> also prefixed into turn one; a pair without
+one is prefixed and has no out-of-band send. Never both - the agent would read the same rule twice
+in its first turn. Whether a pair has a channel is read from <code>StandingInstructionsSpec</code> in
+one place, so the composer, the resolved route and the dispatch marker cannot disagree.</li>
+<li>The resolved route requires <code>agent</code> and <code>runtime</code>, because the mechanism is
+a property of the pair rather than of the repository. An unknown <code>agent</code>, or a
+<code>runtime</code> the harness does not offer, is a <code>400</code> rather than a default.</li>
 </ol>
 
 <h2>Final verification strategy</h2>

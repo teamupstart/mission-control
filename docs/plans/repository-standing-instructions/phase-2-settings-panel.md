@@ -48,7 +48,7 @@ From Phase 1, relied on and not changed:
 |---|---|
 | `GET /api/instructions` | `StandingInstructionsView` - default, repositories, one opaque ETag |
 | `PUT /api/instructions` | CAS on `expectedEtag`; `409` `{error, code, current}`; `413` oversize |
-| `GET /api/instructions/resolved?repoRoot=` | effective text, matched key, and delivery mechanism |
+| `GET /api/instructions/resolved?repoRoot=&agent=&runtime=` | effective text, matched key, and delivery mechanism |
 | absent key | inherit the machine-wide default → renders the `inherited` chip |
 | key present, `""` | send nothing for this repository → still an `override` |
 | `null` in a patch | remove the key → what **Use global default** sends |

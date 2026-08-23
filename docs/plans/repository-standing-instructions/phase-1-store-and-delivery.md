@@ -17,8 +17,8 @@ adds the editor.
 
 - Direct phase dependencies: **none**. This is the first phase.
 - `npm install` in the worktree (`node_modules` is not checked in).
-- Read [`plan.md`](plan.md) for the approved goal and [`phased-plan.md`](phased-plan.md) for the
-  three repository findings that correct it. Findings 1, 2 and 3 are owned here.
+- The approved goal is in [`plan.md`](plan.md); the three repository findings that correct it are
+  in [`phased-plan.md`](phased-plan.md). Findings 1, 2 and 3 are owned here.
 
 ## Scope
 

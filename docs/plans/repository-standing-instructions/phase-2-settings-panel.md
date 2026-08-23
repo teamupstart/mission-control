@@ -16,9 +16,9 @@ in the product surfaces it until this merges.
 - **Direct phase dependency: Phase 1.** Its routes, wire types and ETag semantics are consumed
   here as given.
 - `npm install`, plus `npx playwright install chromium` once per machine for the e2e suite.
-- Read [`plan.md`](plan.md) for the approved goal, [`phased-plan.md`](phased-plan.md) for the
-  cross-phase contract, and [`phase-1-store-and-delivery.md`](phase-1-store-and-delivery.md) for
-  what is already built.
+- The approved goal is in [`plan.md`](plan.md), the cross-phase contract in
+  [`phased-plan.md`](phased-plan.md), and what is already built in
+  [`phase-1-store-and-delivery.md`](phase-1-store-and-delivery.md).
 
 ## Scope
 

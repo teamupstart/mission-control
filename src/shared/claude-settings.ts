@@ -84,6 +84,11 @@ function readSettings(path: string): { text: string; parsed: Record<string, unkn
   return { text: original, parsed: parsed && typeof parsed === "object" ? parsed : {} };
 }
 
+/** Validate the settings file a later OTel reconcile would edit, without changing it. */
+export function preflightOtelEnvWrite(): void {
+  readSettings(claudeSettingsPath());
+}
+
 /** The `env` object as it stands, or `{}` when absent or malformed. */
 function currentEnv(parsed: Record<string, unknown>): Record<string, unknown> {
   const env = parsed.env;

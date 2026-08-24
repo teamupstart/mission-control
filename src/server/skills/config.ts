@@ -117,6 +117,11 @@ export function reconcileSkills(now = Date.now()): SkillsSyncResult {
   return { ...result, config: persist(cfg, true, now), refused: [] };
 }
 
+/** Known restore blockers, computed without touching the filesystem. */
+export function preflightSkillsReconcile(config: SkillsConfig): string[] {
+  return [...skillBlockers(config, readCatalog()).values()];
+}
+
 /**
  * The dashboard's write: refuse what can't work, then reconcile the disk, then persist.
  *

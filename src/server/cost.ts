@@ -11,6 +11,7 @@ import {
 import {
   claudeSettingsPath,
   otelEnvFlags,
+  preflightOtelEnvWrite,
   sessionIdAttributionDisabled,
   writeOtelEnv,
 } from "@shared/claude-settings.ts";
@@ -86,6 +87,29 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
   if (next.enabled && !previous.enabled) setAppConfig(ENABLED_AT_ENTRY, now);
   if (!next.enabled) setAppConfig(ENABLED_AT_ENTRY, null);
   return next;
+}
+
+/** Read-only restore preflight for the one external file Cost owns. */
+export function preflightCostReconcile(): void {
+  preflightOtelEnvWrite();
+}
+
+/**
+ * Make Claude's telemetry block match persisted intent without changing that intent.
+ * Safe on startup and after restore; the underlying editor is idempotent.
+ */
+export function reconcileCostTelemetry(
+  config: CostConfig = getCostConfig(),
+): ReturnType<typeof writeOtelEnv> {
+  return writeOtelEnv(
+    config.enabled
+      ? {
+          endpoint: `http://127.0.0.1:${PORT}`,
+          token: ensureToken(),
+          intervalMs: config.exportIntervalMs,
+        }
+      : null,
+  );
 }
 
 /** When the grace period started, or null if telemetry is not installed or has none yet. */

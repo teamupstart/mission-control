@@ -16,6 +16,7 @@ export const SETTINGS_BACKUP_LIMITS = {
   domains: 32,
   entriesPerCatalog: 5_000,
   errorCharacters: 500,
+  previewItems: 64,
 } as const;
 
 export const SETTINGS_BACKUP_RETENTION = {
@@ -120,6 +121,69 @@ export const SettingsBackupEnvelopeV1Schema = SettingsBackupEnvelopeV1BaseSchema
 
 export type SettingsBackupEnvelopeBodyV1 = z.infer<typeof SettingsBackupEnvelopeBodyV1Schema>;
 export type SettingsBackupEnvelopeV1 = z.infer<typeof SettingsBackupEnvelopeV1Schema>;
+
+export const SettingsRestoreCatalogChangesSchema = z.object({
+  added: z.number().int().nonnegative(),
+  changed: z.number().int().nonnegative(),
+  archived: z.number().int().nonnegative(),
+  reactivated: z.number().int().nonnegative(),
+}).strict();
+
+export const SettingsRestoreVersionChangesSchema = z.object({
+  inserted: z.number().int().nonnegative(),
+  retained: z.number().int().nonnegative(),
+}).strict();
+
+export const SettingsRestorePreviewSchema = z.object({
+  snapshotId: SettingsBackupIdSchema,
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  settingsDomains: z.array(z.enum(domainIds)).max(SETTINGS_BACKUP_LIMITS.domains),
+  personas: SettingsRestoreCatalogChangesSchema,
+  sessionActions: SettingsRestoreCatalogChangesSchema,
+  workflowCommandsChanged: z.number().int().nonnegative(),
+  workflows: SettingsRestoreCatalogChangesSchema,
+  workflowVersions: SettingsRestoreVersionChangesSchema,
+  externalEffects: z.array(z.enum(["skills", "cost"])).max(2),
+  exclusions: z.array(z.string().max(200)).max(SETTINGS_BACKUP_LIMITS.previewItems),
+  warnings: z.array(z.string().max(SETTINGS_BACKUP_LIMITS.errorCharacters))
+    .max(SETTINGS_BACKUP_LIMITS.previewItems),
+  blockers: z.array(z.string().max(SETTINGS_BACKUP_LIMITS.errorCharacters))
+    .max(SETTINGS_BACKUP_LIMITS.previewItems),
+}).strict();
+export type SettingsRestorePreview = z.infer<typeof SettingsRestorePreviewSchema>;
+
+const SettingsRestoreFailureSchema = z.object({
+  reason: z.string().min(1).max(SETTINGS_BACKUP_LIMITS.errorCharacters),
+}).strict();
+
+export const SettingsRestorePreviewResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ready"), preview: SettingsRestorePreviewSchema }).strict(),
+  z.object({ status: z.literal("preflight_blocked"), preview: SettingsRestorePreviewSchema }).strict(),
+  z.object({ status: z.literal("not_found") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("incompatible") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("io_error") }).merge(SettingsRestoreFailureSchema),
+]);
+export type SettingsRestorePreviewResult = z.infer<typeof SettingsRestorePreviewResultSchema>;
+
+export const SettingsRestoreResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("restored"),
+    snapshotId: SettingsBackupIdSchema,
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+    restoredAt: z.string().datetime({ offset: true }),
+    safetySnapshotId: SettingsBackupSafetyIdSchema,
+    warnings: z.array(z.string().max(SETTINGS_BACKUP_LIMITS.errorCharacters))
+      .max(SETTINGS_BACKUP_LIMITS.previewItems),
+  }).strict(),
+  z.object({ status: z.literal("in_progress") }).strict(),
+  z.object({ status: z.literal("stale_digest") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("preflight_blocked"), preview: SettingsRestorePreviewSchema }).strict(),
+  z.object({ status: z.literal("not_found") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("incompatible") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("io_error") }).merge(SettingsRestoreFailureSchema),
+  z.object({ status: z.literal("restore_failed") }).merge(SettingsRestoreFailureSchema),
+]);
+export type SettingsRestoreResult = z.infer<typeof SettingsRestoreResultSchema>;
 
 export type SettingsBackupCompatibility =
   | { status: "ready"; snapshot: SettingsBackupEnvelopeV1 }

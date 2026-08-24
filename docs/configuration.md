@@ -148,6 +148,11 @@ must stay true, because with it false every datapoint arrives with no session id
 of it can be attributed. If you have set it to `false` yourself, the daemon says so at
 startup and the Cost panel says so on screen.
 
+On every daemon start, Mission Control also reconciles this owned telemetry block from the
+persisted Cost intent. The edit is idempotent and best-effort. This repairs a file that drifted or
+was copied with the state database, while an unreadable settings file is left untouched and logged
+for the operator to fix.
+
 > **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
 > Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
 > one is set - so a hook or MCP server installed under an older name keeps reporting without
@@ -192,8 +197,9 @@ derived reload generations, credentials, tokens, and environment secrets.
 
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
-`pre_restore` safety files. The safety writer is reserved for the restore workflow in the next
-phase; this phase does not expose restore routes or a restore UI.
+`pre_restore` safety files. The daemon now contains the internal transactional restore engine that
+uses the safety writer, but it remains dormant: there is still no restore route, event, or UI until
+the final exposure phase.
 
 ## Commands
 

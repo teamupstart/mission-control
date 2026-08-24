@@ -58,7 +58,7 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
-import { warnIfSessionAttributionDisabled } from "./cost.ts";
+import { reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
@@ -113,6 +113,11 @@ try {
   reconcileSkills();
 } catch (err) {
   console.error("[skills] could not reconcile ~/.claude/skills:", err);
+}
+try {
+  reconcileCostTelemetry();
+} catch (err) {
+  console.error("[cost] could not reconcile Claude telemetry settings:", err);
 }
 // Say it out loud at boot rather than letting someone find an empty ledger later: with
 // OTEL_METRICS_INCLUDE_SESSION_ID false, Claude Code exports cost metrics that carry no
@@ -305,7 +310,7 @@ tasks.registerWorkflowEvidenceEligibility((task) =>
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.
-const settingsBackups = new SettingsBackupService(personas.store);
+const settingsBackups = new SettingsBackupService(personas.store, { registry });
 let stopSettingsBackups = () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the

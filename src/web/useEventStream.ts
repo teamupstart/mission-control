@@ -27,6 +27,11 @@ import { dropSessionDrafts } from "./lib/drafts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
+import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
+import {
+  observeSettingsRestored,
+  settingsRestoreMarkerChanged,
+} from "./lib/settings-restore-coordinator.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -163,6 +168,8 @@ export interface MissionState {
    * skew waiting to happen; carrying the number costs nothing and starts no polling.
    */
   archivesRevision: number;
+  /** Latest restore committed by another window. Notice only, never an automatic mutation. */
+  settingsRestoreNotice: SettingsRestoredEvent | null;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -209,9 +216,12 @@ export function useEventStream(): MissionState {
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
+  const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const hasReceivedSnapshotRef = useRef(false);
+  const latestSettingsRestoreRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const es = new EventSource("/events");
@@ -307,6 +317,21 @@ export function useEventStream(): MissionState {
           // development this build can connect to an older daemon whose snapshot has no
           // such field, and `undefined` must read as unknown - never as on.
           setKeepAwakeStatus(msg.keepAwake ?? null);
+          // A fresh window loaded current settings before this first snapshot, so the marker
+          // is only its baseline. On reconnect, a changed marker means the one-shot event
+          // landed during the gap. Reuse the same ownership check as the live event so an
+          // ambiguous initiating request still hydrates and reloads instead of showing a
+          // peer-window notice.
+          const latestSettingsRestore = msg.latestSettingsRestore ?? null;
+          if (settingsRestoreMarkerChanged(
+            latestSettingsRestore,
+            latestSettingsRestoreRequestIdRef.current,
+            hasReceivedSnapshotRef.current,
+          ) && observeSettingsRestored(latestSettingsRestore) === "external") {
+            setSettingsRestoreNotice(latestSettingsRestore);
+          }
+          latestSettingsRestoreRequestIdRef.current = latestSettingsRestore?.requestId ?? null;
+          hasReceivedSnapshotRef.current = true;
           setConnected(true);
           setHasSnapshot(true);
           break;
@@ -500,6 +525,10 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        case "settings_restored":
+          latestSettingsRestoreRequestIdRef.current = msg.requestId;
+          if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
+          break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
           // grows a variant this switch doesn't handle. Without it the new variant
@@ -548,6 +577,7 @@ export function useEventStream(): MissionState {
     harnessesRevision,
     worktreesRevision,
     archivesRevision,
+    settingsRestoreNotice,
     connected,
     hasSnapshot,
   };

@@ -181,8 +181,8 @@ local calendar date. It rechecks through the day and writes no second generation
 A date when the daemon never runs has no fabricated backup; the next launch captures the current
 date and current settings.
 
-Snapshots live at `$MISSION_HOME/backups/settings`, which is
-`~/.mission-control/backups/settings` by default. An isolated `MISSION_HOME` therefore gets an
+Snapshots live at `$MISSION_HOME/backups/settings/`, which is
+`~/.mission-control/backups/settings/` by default. An isolated `MISSION_HOME` therefore gets an
 isolated snapshot library and never reads or writes the default one. The directory is mode `0700`
 and each JSON file is mode `0600`. The files contain private machine configuration, including
 absolute repository paths and imported Persona provenance, so treat copies with the same care as
@@ -197,9 +197,25 @@ derived reload generations, credentials, tokens, and environment secrets.
 
 The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
 then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
-`pre_restore` safety files. The daemon now contains the internal transactional restore engine that
-uses the safety writer, but it remains dormant: there is still no restore route, event, or UI until
-the final exposure phase.
+`pre_restore` safety files.
+
+Open **Settings → Restore** to see the owner-only history. The browser receives bounded metadata,
+compatibility, catalog counts, and a redacted preview. It never receives a resolved filesystem
+path, a snapshot envelope, or raw setting and catalog values. Corrupt, unreadable, and newer-format
+files stay visible with an explanation but cannot be selected.
+
+A restore requires selecting a verified snapshot, previewing it, and typing
+`RESTORE SETTINGS` in the final dialog. Immediately before the transactional commit, Mission
+Control captures a `pre_restore` safety snapshot of the current settings. The restore then replaces
+registered configuration and reconciles the reusable Library catalogs. Immutable Workflow versions
+already present are retained. Operational state remains untouched, including tasks, queues,
+schedules, sessions, bindings and runs, reviews, repository and worktree state, archives, telemetry
+history, credentials, tokens, and environment secrets.
+
+The window that confirmed the restore hydrates its browser cache from the daemon and reloads, so
+daemon-backed settings and first-paint preferences restart from one source. Other open windows do
+not reload automatically. They keep unsaved drafts and show a persistent **Reload now** notice so
+the operator chooses when to adopt the restored state.
 
 ## Commands
 

@@ -551,6 +551,7 @@ const app = buildApp(
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  settingsBackups,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

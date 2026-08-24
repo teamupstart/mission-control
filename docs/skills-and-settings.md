@@ -203,14 +203,20 @@ focus is not in a text field.
 For the authoritative snapshot contract for settings configured from this page, see
 [Automatic settings snapshots](configuration.md#automatic-settings-snapshots).
 
+**Restore** is the final category in the Sessions group. It lists automatic daily and
+pre-restore safety snapshots, shows incompatible files without enabling them, and requires a
+verified preview plus the exact final confirmation text. A successful restore reloads only the
+window that submitted it. Every other open window keeps its unsaved drafts and offers
+**Reload now** in a persistent notice.
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
-settings reach. That is the question a flat list of thirteen peers could not answer: which of
+settings reach. That is the question a flat list of peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
+| **Sessions** | This machine | **Harnesses**, **Worktrees**, **Skills** (writes `~/`), **Standing instructions**, **Cost** (writes `~/`), **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 

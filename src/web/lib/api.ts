@@ -31,6 +31,15 @@ import type {
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HumanSettableThreadStatus } from "@shared/file-comments.ts";
+import {
+  SettingsBackupsListResponseSchema,
+  SettingsRestorePreviewResultSchema,
+  SettingsRestoreResultSchema,
+  type SettingsBackupsListResponse,
+  type SettingsRestorePreviewResult,
+  type SettingsRestoreRequest,
+  type SettingsRestoreResult,
+} from "@shared/settings-backups.ts";
 import type {
   AwayConfig,
   AwayConfigPatch,
@@ -597,6 +606,71 @@ export const fetchAwayBuffer = () => fetchJson<AwayBufferSummary>("/api/away/buf
  * SSE change comparison, so the session stream cannot carry the signal.
  */
 export const fetchAwayStalls = () => fetchJson<Stall[]>("/api/away/stalls");
+
+export type SettingsRestoreApiResult<T> =
+  | { ok: true; status: number; value: T }
+  | { ok: false; status: number; error: string; value?: T };
+
+async function settingsRestoreJson<T>(
+  path: string,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  init?: RequestInit,
+): Promise<SettingsRestoreApiResult<T>> {
+  try {
+    const response = await fetch(path, init);
+    const body = await response.json().catch(() => null) as unknown;
+    const parsed = schema.safeParse(body);
+    if (response.ok && parsed.success) {
+      return { ok: true, status: response.status, value: parsed.data };
+    }
+    const routeError = body && typeof body === "object"
+      ? body as { message?: unknown; reason?: unknown; error?: unknown }
+      : {};
+    const error = [routeError.message, routeError.reason, routeError.error]
+      .find((value): value is string => typeof value === "string")
+      ?? `Request failed (HTTP ${response.status})`;
+    return {
+      ok: false,
+      status: response.status,
+      error,
+      ...(parsed.success ? { value: parsed.data } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function fetchSettingsBackups(): Promise<SettingsRestoreApiResult<SettingsBackupsListResponse>> {
+  return settingsRestoreJson("/api/settings-backups", SettingsBackupsListResponseSchema);
+}
+
+export function previewSettingsRestore(
+  snapshotId: string,
+): Promise<SettingsRestoreApiResult<SettingsRestorePreviewResult>> {
+  return settingsRestoreJson(
+    `/api/settings-backups/${encodeURIComponent(snapshotId)}/preview`,
+    SettingsRestorePreviewResultSchema,
+  );
+}
+
+export function submitSettingsRestore(
+  snapshotId: string,
+  body: SettingsRestoreRequest,
+): Promise<SettingsRestoreApiResult<SettingsRestoreResult>> {
+  return settingsRestoreJson(
+    `/api/settings-backups/${encodeURIComponent(snapshotId)}/restore`,
+    SettingsRestoreResultSchema,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 

@@ -185,6 +185,74 @@ export const SettingsRestoreResultSchema = z.discriminatedUnion("status", [
 ]);
 export type SettingsRestoreResult = z.infer<typeof SettingsRestoreResultSchema>;
 
+/** The deliberate speed bump shared by the route and confirmation dialog. */
+export const SETTINGS_RESTORE_CONFIRMATION = "RESTORE SETTINGS" as const;
+
+export const SettingsRestoreRequestSchema = z.object({
+  expectedDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  requestId: z.string().uuid(),
+  confirmation: z.literal(SETTINGS_RESTORE_CONFIRMATION),
+}).strict();
+export type SettingsRestoreRequest = z.infer<typeof SettingsRestoreRequestSchema>;
+
+export const SettingsBackupPublicReadySchema = z.object({
+  status: z.literal("ready"),
+  id: SettingsBackupIdSchema,
+  size: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.fileBytes),
+  modifiedAt: z.string().datetime({ offset: true }),
+  kind: SettingsBackupKindSchema,
+  createdAt: z.string().datetime({ offset: true }),
+  localDate: SettingsBackupLocalDateSchema,
+  appVersion: z.string().min(1).max(100),
+  counts: SettingsBackupCountsSchema,
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type SettingsBackupPublicReady = z.infer<typeof SettingsBackupPublicReadySchema>;
+
+export const SettingsBackupPublicUnavailableSchema = z.object({
+  status: z.enum(["produced_by_newer_build", "corrupt", "unreadable"]),
+  id: SettingsBackupIdSchema,
+  size: z.number().int().nonnegative().nullable(),
+  modifiedAt: z.string().datetime({ offset: true }).nullable(),
+  reason: z.string().min(1).max(SETTINGS_BACKUP_LIMITS.errorCharacters),
+}).strict();
+export type SettingsBackupPublicUnavailable = z.infer<typeof SettingsBackupPublicUnavailableSchema>;
+
+export const SettingsBackupPublicItemSchema = z.discriminatedUnion("status", [
+  SettingsBackupPublicReadySchema,
+  SettingsBackupPublicUnavailableSchema,
+]);
+export type SettingsBackupPublicItem = z.infer<typeof SettingsBackupPublicItemSchema>;
+
+export const SettingsBackupsListResponseSchema = z.object({
+  status: z.literal("available"),
+  snapshots: z.array(SettingsBackupPublicItemSchema).max(SETTINGS_BACKUP_LIMITS.listResults),
+  retention: z.object({
+    daily: z.number().int().positive(),
+    preRestore: z.number().int().positive(),
+  }).strict(),
+  lastSuccessfulSnapshot: SettingsBackupPublicReadySchema.nullable(),
+  lastError: z.object({
+    at: z.string().datetime({ offset: true }),
+    message: z.string().min(1).max(SETTINGS_BACKUP_LIMITS.errorCharacters),
+  }).strict().nullable(),
+}).strict();
+export type SettingsBackupsListResponse = z.infer<typeof SettingsBackupsListResponseSchema>;
+
+export const SettingsRestoredEventSchema = z.object({
+  type: z.literal("settings_restored"),
+  snapshotId: SettingsBackupIdSchema,
+  restoredAt: z.string().datetime({ offset: true }),
+  requestId: z.string().uuid(),
+}).strict();
+export type SettingsRestoredEvent = z.infer<typeof SettingsRestoredEventSchema>;
+
+export const SettingsBackupRouteErrorSchema = z.object({
+  error: z.enum(["invalid_request", "service_unavailable", "service_error"]),
+  message: z.string().min(1).max(SETTINGS_BACKUP_LIMITS.errorCharacters),
+}).strict();
+export type SettingsBackupRouteError = z.infer<typeof SettingsBackupRouteErrorSchema>;
+
 export type SettingsBackupCompatibility =
   | { status: "ready"; snapshot: SettingsBackupEnvelopeV1 }
   | { status: "produced_by_newer_build"; reason: string }

@@ -140,6 +140,11 @@ focused hook or reducer that owns:
 - restore in progress, success, safety snapshot id, warnings, and bounded errors;
 - cancellation or invalidation when a refreshed list changes the selected digest.
 
+Bind each preview completion to both the snapshot id and a client request token. Discard a
+completion when either no longer owns the current selection, and require both the preview snapshot
+id and digest to match before enabling restore. This also protects a same-digest selection and an
+A-to-B-to-A request race from authorizing stale preview state.
+
 Do not optimistically edit settings or Library state. The daemon completes the forward restore
 first. Disable selection, confirmation, and duplicate submission according to explicit reducer
 states, and preserve the selected row when a recoverable request fails.
@@ -149,6 +154,10 @@ before POST. On success, call `hydrateUiConfig()` and then reload the initiating
 daemon-backed and browser-cached setting is rebuilt from one startup path. Clear pending request
 state on failure. Do not treat an HTTP timeout as proof that the daemon did not commit; a later
 matching event or refreshed list remains authoritative.
+
+Keep definite failures out of the request registry. Retain at most 32 recent ambiguous request ids
+so a late matching event still owns the initiating window without letting repeated offline retries
+grow page memory for its entire lifetime.
 
 ### 4. Coordinate other open windows without discarding drafts
 
@@ -160,6 +169,11 @@ When `useEventStream` receives `settings_restored`:
   restore time and offers **Reload now**;
 - keep the notice across navigation until the user reloads;
 - never automatically reload or replace client draft state.
+
+Keep the latest event's three public scalar fields as a bounded reconnect marker. The first
+snapshot establishes a window's baseline without showing a notice. A later snapshot with a new
+marker recovers an event missed while the stream was disconnected and follows the same initiating
+versus external request-id behavior above.
 
 Place the notice at the application shell so it is visible from Settings and Library. Reuse the
 existing app-banner visual language and expose a reachable Reload now button with an accessible

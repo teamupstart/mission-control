@@ -126,6 +126,7 @@ import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
+import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import { GuidedTourController } from "./tour/GuidedTourController.tsx";
@@ -309,6 +310,7 @@ export function App(): React.JSX.Element {
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
     archivesRevision,
+    settingsRestoreNotice,
     schedules,
     connected,
     hasSnapshot,
@@ -3157,6 +3159,10 @@ export function App(): React.JSX.Element {
           onDefer={desktopUpdates.defer}
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
+        />
+        <SettingsRestoredBanner
+          event={settingsRestoreNotice}
+          onReload={() => window.location.reload()}
         />
 
         <AppPageShell

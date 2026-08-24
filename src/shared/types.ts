@@ -2869,6 +2869,7 @@ export interface KeepAwakeStatus {
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
+  | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
       sessions: Session[];
@@ -2980,6 +2981,12 @@ export type ServerEvent =
        * any stale `on` it was drawing before the drop.
        */
       keepAwake: KeepAwakeStatus;
+      /**
+       * The latest committed restore marker, or null when this daemon has restored nothing.
+       * Bounded to the same three public scalars as the incremental event. A fresh browser
+       * baselines it; a reconnect compares it with the marker seen before the stream gap.
+       */
+      latestSettingsRestore: import("./settings-backups.ts").SettingsRestoredEvent | null;
     }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }

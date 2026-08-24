@@ -9715,12 +9715,34 @@ function toPromptedDecision(r: QueueRow): PromptedCompletionDecision | null {
   if (!reason.success) {
     return reject(`invalid reason: ${reason.error.issues[0]?.message ?? "unreadable"}`);
   }
+  const hasEpisodeKey = Object.prototype.hasOwnProperty.call(d, "episodeKey");
+  if (
+    hasEpisodeKey
+    && d.episodeKey !== null
+    && (typeof d.episodeKey !== "string" || d.episodeKey.length < 1 || d.episodeKey.length > 200)
+  ) {
+    return reject("invalid episode key");
+  }
+  const hasHeldRound = Object.prototype.hasOwnProperty.call(d, "heldRound");
+  if (
+    hasHeldRound
+    && (
+      d.outcome !== "held"
+      || typeof d.episodeKey !== "string"
+      || !Number.isSafeInteger(d.heldRound)
+      || (d.heldRound as number) < 1
+    )
+  ) {
+    return reject("invalid held round");
+  }
   return {
     logicalKey: r.note_key,
     generation: d.generation,
+    ...(hasEpisodeKey ? { episodeKey: d.episodeKey as string | null } : {}),
     outcome: reason.data.outcome,
     summary: reason.data.summary,
     gaps: reason.data.gaps,
+    ...(hasHeldRound ? { heldRound: d.heldRound as number } : {}),
     decidedAt: d.decidedAt,
   };
 }
@@ -9984,6 +10006,8 @@ export interface ConsumePromptedGenerationInput {
   noteKey: string;
   sessionCwd: string | null;
   generation: number;
+  /** Daemon-verified intent episode. Absent only for legacy in-process callers. */
+  episodeKey?: string | null;
   ask: boolean;
   /**
    * Record a prompted handoff in the SAME statement that consumes the generation, or
@@ -10032,6 +10056,17 @@ export function consumePromptedGeneration(
   const ask = input.ask ? 1 : 0;
   const handoffKind = input.directHandoff?.kind ?? null;
   const handoffEpisode = input.directHandoff?.episodeKey ?? null;
+  const currentRow = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
+    .get(input.noteKey) as unknown as QueueRow | undefined;
+  const previousDecision = currentRow ? toPromptedDecision(currentRow) : null;
+  const previousRecovery = currentRow ? toPromptedRecovery(currentRow) : null;
+  const heldRound = input.decision?.outcome === "held" && typeof input.episodeKey === "string"
+    ? previousDecision?.outcome === "held"
+        && previousDecision.episodeKey === input.episodeKey
+        && previousDecision.heldRound !== undefined
+      ? previousDecision.heldRound + 1
+      : 1
+    : undefined;
   // Composed from the arguments this statement is ABOUT to compare, not from anything the
   // caller labelled it with: the stored key and generation are therefore the ones actually
   // spent, which is what lets every reader treat placement as proof.
@@ -10039,11 +10074,17 @@ export function consumePromptedGeneration(
     ? serializePromptedDecision({
       logicalKey: input.noteKey,
       generation: input.generation,
+      ...(input.episodeKey !== undefined ? { episodeKey: input.episodeKey } : {}),
       outcome: input.decision.outcome,
       summary: input.decision.summary,
       gaps: input.decision.gaps,
+      ...(heldRound !== undefined ? { heldRound } : {}),
       decidedAt: input.now,
     })
+    : null;
+  const recovery = typeof input.episodeKey === "string"
+      && previousRecovery?.episodeKey === input.episodeKey
+    ? serializePromptedRecovery(previousRecovery)
     : null;
   const result = d.prepare(
     `INSERT INTO foreman_queues (
@@ -10057,7 +10098,7 @@ export function consumePromptedGeneration(
             CASE WHEN ? = 1 THEN ? ELSE NULL END,
             NULL, NULL, NULL, NULL, NULL, generation,
             ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE generation END,
-            ?, NULL, ?
+            ?, ?, ?
        FROM session_work_cycles
       WHERE logical_key = ?
         AND generation = ?
@@ -10077,9 +10118,10 @@ export function consumePromptedGeneration(
        -- Phase 2 would send its gaps back into a session that already addressed them.
        -- Clearing on a null decision is the same rule, applied to a caller that gave none.
        prompted_decision = excluded.prompted_decision,
-       -- A newly consumed completion generation owns a new recovery sequence. Clear the
-       -- prior current projection in the same statement so its attempt cannot carry over.
-       prompted_recovery = NULL,
+       -- Recovery attempts are one budget per intent episode. Preserve only a validated
+       -- projection carrying this daemon-verified episode key; legacy state and a changed
+       -- human intent retain the old clear-on-generation behavior.
+       prompted_recovery = excluded.prompted_recovery,
        -- COALESCE, not assignment: a consumption that makes no handoff must not ERASE
        -- one. It would be erasing the record of an instruction that was already typed,
        -- and the next tick would type it again. Preserving is safe because eligibility
@@ -10115,6 +10157,7 @@ export function consumePromptedGeneration(
     handoffEpisode,
     handoffKind,
     decision,
+    recovery,
     input.now,
     input.noteKey,
     input.generation,
@@ -10179,13 +10222,19 @@ export function claimPromptedRecovery(
       d.exec("ROLLBACK");
       return null;
     }
+    const sameEpisodeSequence = previous !== null
+      && typeof previous.episodeKey === "string"
+      && previous.episodeKey === input.episodeKey;
+    const sameLegacySequence = previous !== null
+      && typeof previous.episodeKey !== "string"
+      && previous.generation === input.generation
+      && previous.decisionGeneration === input.decisionGeneration
+      && previous.decisionOutcome === input.decisionOutcome;
     const sameSequence = previous !== null
       && previous.taskId === input.taskId
       && previous.logicalKey === input.logicalKey
-      && previous.generation === input.generation
       && previous.reason === input.reason
-      && previous.decisionGeneration === input.decisionGeneration
-      && previous.decisionOutcome === input.decisionOutcome;
+      && (sameEpisodeSequence || sameLegacySequence);
     let allowed = false;
     if (!sameSequence) {
       allowed = input.attempt === 1
@@ -10214,6 +10263,7 @@ export function claimPromptedRecovery(
       taskId: input.taskId,
       logicalKey: input.logicalKey,
       generation: input.generation,
+      ...(input.episodeKey !== undefined ? { episodeKey: input.episodeKey } : {}),
       decisionGeneration: input.decisionGeneration,
       decisionOutcome: input.decisionOutcome,
       reason: input.reason,
@@ -10260,6 +10310,7 @@ export function resolvePromptedRecoveryDelivery(
       || current.taskId !== input.taskId
       || current.logicalKey !== input.logicalKey
       || current.generation !== input.generation
+      || current.episodeKey !== input.episodeKey
       || current.decisionGeneration !== input.decisionGeneration
       || current.decisionOutcome !== input.decisionOutcome
       || current.reason !== input.reason

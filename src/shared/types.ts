@@ -1390,10 +1390,15 @@ export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[nu
 export interface PromptedCompletionGap {
   /** The verifier's stable slug for the problem. */
   id: string;
+  /** Additive verifier detail used to carry the same gap across completion cycles. */
+  severity?: GapSeverity;
+  kind?: GapKind;
   /** Repo-relative path the gap is about, or "" when the verifier named none. */
   path: string;
   /** What is missing, concretely. Bounded at the schema, because it may later be typed. */
   detail: string;
+  /** How many later held verdicts have repeated this gap. */
+  strikes?: number;
 }
 
 /**
@@ -1408,11 +1413,15 @@ export interface PromptedCompletionGap {
 export interface PromptedCompletionDecision {
   logicalKey: string;
   generation: number;
+  /** Intent episode this decision judged. Absent on legacy projections. */
+  episodeKey?: string | null;
   outcome: PromptedCompletionOutcome;
   /** Bounded human-readable reason: the verifier's summary, or why no verdict exists. */
   summary: string;
   /** Blocking gaps, non-empty only for `held`. Bounded in count and length. */
   gaps: PromptedCompletionGap[];
+  /** Consecutive held decisions in this episode, including this one. */
+  heldRound?: number;
   decidedAt: number;
 }
 
@@ -1450,6 +1459,8 @@ export interface PromptedRecoveryState {
   taskId: string;
   logicalKey: string;
   generation: number;
+  /** Intent episode owning the attempt budget. Absent on legacy projections. */
+  episodeKey?: string | null;
   /** Phase 1 decision identity, or null for a legacy consumed generation. */
   decisionGeneration: number | null;
   decisionOutcome: PromptedCompletionOutcome | null;
@@ -2858,6 +2869,7 @@ export interface KeepAwakeStatus {
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
+  | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
       sessions: Session[];
@@ -2969,6 +2981,12 @@ export type ServerEvent =
        * any stale `on` it was drawing before the drop.
        */
       keepAwake: KeepAwakeStatus;
+      /**
+       * The latest committed restore marker, or null when this daemon has restored nothing.
+       * Bounded to the same three public scalars as the incremental event. A fresh browser
+       * baselines it; a reconnect compares it with the marker seen before the stream gap.
+       */
+      latestSettingsRestore: import("./settings-backups.ts").SettingsRestoredEvent | null;
     }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }

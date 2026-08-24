@@ -236,6 +236,7 @@ import {
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
@@ -476,6 +477,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  *
  * A new event type is NOT automatically a member. Adding one means asking whether it names
  * a store the strip reads; if it does, it belongs here and in `LineFoldInput`.
+ * `settings_restored` is deliberately absent: it invalidates browser configuration and
+ * catalogs, none of which is a Line fold input.
  */
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
@@ -901,6 +904,12 @@ export class Registry extends EventEmitter {
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
+   * One bounded reconnect marker for the latest restore completed by this daemon.
+   * It is set before the single incremental event is emitted, so a dashboard that was
+   * disconnected for that event can compare the next snapshot with its prior marker.
+   */
+  private latestSettingsRestore: SettingsRestoredEvent | null = null;
+  /**
    * The current Keep Awake observation, held for the snapshot and emitted on change.
    *
    * Held rather than computed: the manager owns the child process and pushes every
@@ -991,6 +1000,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
       sessions: [...this.sessions.values()],
@@ -1028,6 +1038,7 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      latestSettingsRestore: this.latestSettingsRestore,
     };
   }
 
@@ -1114,6 +1125,17 @@ export class Registry extends EventEmitter {
    */
   emitArchiveChanged(): void {
     this.emitEvent({ type: "archive_changed" });
+  }
+
+  /** Announce one fully committed, reconciled settings restore to every open dashboard. */
+  emitSettingsRestored(event: {
+    snapshotId: string;
+    restoredAt: string;
+    requestId: string;
+  }): void {
+    const restored: SettingsRestoredEvent = { type: "settings_restored", ...event };
+    this.latestSettingsRestore = restored;
+    this.emitEvent(restored);
   }
 
   getSession(id: string): Session | undefined {
@@ -7714,6 +7736,7 @@ export class Registry extends EventEmitter {
       noteKey: input.logicalKey,
       sessionCwd: session.cwd,
       generation: input.generation,
+      episodeKey: input.expectedIntent.episodeKey,
       ask: input.ask,
       // The authorizing episode is the one this boundary just RE-VERIFIED against the
       // live goal, not the one the caller sent. `sessionIntentMatches` above already

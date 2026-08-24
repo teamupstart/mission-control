@@ -191,7 +191,8 @@ See [Skills and settings](docs/skills-and-settings.md).
 ## Keep local settings recoverable
 
 Mission Control automatically keeps versioned logical snapshots of the settings and reusable
-Library definitions that shape local behavior.
+Library definitions that shape local behavior. **Settings → Restore** provides a redacted preview,
+exact confirmation, an automatic safety snapshot, and a draft-preserving notice in other windows.
 
 See [Automatic settings snapshots](docs/configuration.md#automatic-settings-snapshots) for the
 authoritative format, lifecycle, storage, scope, exclusions, and retention contract.
@@ -234,6 +235,15 @@ With **Settings → Foreman → Safety → Keep pre-PR ship tasks moving** enabl
 invited managed ship task that completion review holds receives its reviewed blocking gaps in
 the same Foreman worker pass. The existing quiet-window shepherd remains the backstop under the
 same setting. Human-driven and task-less sessions keep their silent hold and are not nudged.
+
+Foreman durably carries each held verifier gap, including its kind, severity, and strike count,
+into the next completed work cycle of the same accepted prompt. Recovery delivery has a
+three-send budget for that intent episode even when the work-cycle generation advances: repeated
+holds move through attempts two and three, and the next due pass escalates to the human without
+sending again. A newly accepted human prompt begins a new episode and resets both the gap history
+and recovery budget. Existing persisted rows without episode metadata keep their former
+generation-scoped behavior. Delivery markers still identify individual attempts, preserving
+idempotency across restarts.
 
 **Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
 Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts

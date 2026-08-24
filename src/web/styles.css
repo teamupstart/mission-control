@@ -5321,6 +5321,206 @@ a.btn {
 .btn-danger:hover {
   background: #d94840 !important;
 }
+
+/* ---- Settings restore ---- */
+.restore-settings {
+  display: grid;
+  gap: 18px;
+}
+.restore-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.restore-status-grid article {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.restore-status-grid span,
+.restore-status-grid strong,
+.restore-list-head span,
+.restore-primary-action span,
+.restore-confirm-row span {
+  display: block;
+}
+.restore-status-grid span,
+.restore-primary-action span,
+.restore-confirm-row span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+.restore-status-grid strong { font-size: 14px; }
+.restore-list-head,
+.restore-primary-action,
+.restore-confirm-row,
+.restore-preview-head,
+.restore-retry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.restore-list-head h3,
+.restore-preview h3 { margin: 3px 0 0; }
+.restore-eyebrow {
+  color: var(--select);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.restore-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.restore-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.restore-table caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.restore-table th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.restore-table th,
+.restore-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.restore-table tr:last-child td { border-bottom: 0; }
+.restore-table tr.selected { background: color-mix(in srgb, var(--select) 8%, transparent); }
+.restore-table td strong,
+.restore-table td small { display: block; }
+.restore-table td small { color: var(--muted); margin-top: 3px; }
+.restore-table input[type="radio"] { accent-color: var(--select); }
+.restore-badge {
+  display: inline-flex;
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.restore-badge.ready { color: var(--idle); }
+.restore-badge.blocked { color: var(--danger); }
+.restore-primary-action,
+.restore-confirm-row,
+.restore-preview,
+.restore-alert,
+.restore-success,
+.restore-empty,
+.restore-unavailable {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+}
+.restore-alert { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
+.restore-success { border-color: color-mix(in srgb, var(--idle) 55%, var(--border)); }
+.restore-alert p,
+.restore-success p,
+.restore-note p { margin: 5px 0 0; color: var(--muted); }
+.restore-preview { display: grid; gap: 15px; }
+.restore-sequence {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.restore-sequence li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px;
+  background: var(--panel);
+  font-size: 11px;
+}
+.restore-sequence li > span {
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  flex: 0 0 auto;
+  border: 1px solid var(--select);
+  border-radius: 50%;
+  color: var(--select);
+}
+.restore-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+.restore-preview h4 { margin: 0 0 8px; font-size: 12px; }
+.restore-tag-list,
+.restore-count-list { margin: 0; padding: 0; list-style: none; }
+.restore-tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.restore-tag-list li {
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--select) 10%, var(--panel));
+  color: var(--muted);
+  font-size: 11px;
+}
+.restore-count-list li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.restore-note { padding-left: 12px; border-left: 2px solid var(--select); }
+.restore-note ul,
+.restore-alert ul { margin: 7px 0 0; padding-left: 18px; color: var(--muted); }
+.restore-unavailable summary { cursor: pointer; }
+.restore-unavailable ul { margin-bottom: 0; padding-left: 18px; color: var(--muted); }
+.restore-confirm-modal { width: min(560px, calc(100vw - 28px)); }
+.restore-confirm-label { display: block; margin: 18px 0 7px; font-weight: 650; }
+.restore-confirm-modal input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--fg);
+  font: inherit;
+}
+.restore-confirm-modal input:focus { border-color: var(--select); outline: 2px solid color-mix(in srgb, var(--select) 28%, transparent); }
+.app-banner-restore { border-color: color-mix(in srgb, var(--select) 48%, var(--border)); }
+
+@media (max-width: 760px) {
+  .restore-status-grid,
+  .restore-preview-grid,
+  .restore-sequence { grid-template-columns: 1fr; }
+  .restore-list-head,
+  .restore-primary-action,
+  .restore-confirm-row,
+  .restore-preview-head,
+  .restore-retry { align-items: stretch; flex-direction: column; }
+  .restore-primary-action .btn,
+  .restore-confirm-row .btn,
+  .restore-retry .btn { width: 100%; }
+  .app-banner-restore { align-items: stretch; }
+}
 /* Queue is a disclosure, not a command: it stays a plain button until the drawer is
    open, then holds the pressed tint for as long as the panel below it is showing -
    so the one control and the thing it opened read as the same object. */

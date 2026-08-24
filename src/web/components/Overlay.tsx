@@ -62,6 +62,7 @@ export const OVERLAY_IDS = {
   tour: "tour",
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
+  restoreSettings: "restore-settings",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -217,6 +218,7 @@ export function Overlay({
   as: Tag = "div",
   role,
   ariaLabel,
+  ariaModal,
   closable = true,
   onEscape,
   onKeyDown,
@@ -234,6 +236,7 @@ export function Overlay({
   as?: "div" | "aside";
   role?: string;
   ariaLabel?: string;
+  ariaModal?: boolean;
   /**
    * Whether the overlay may be dismissed right now. Gates the backdrop click AND Escape
    * together - a half-finished reset must not be abandoned by either route, and having
@@ -283,6 +286,7 @@ export function Overlay({
         className={className}
         role={role}
         aria-label={ariaLabel}
+        aria-modal={ariaModal}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

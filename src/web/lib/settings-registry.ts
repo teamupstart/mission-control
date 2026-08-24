@@ -179,6 +179,15 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["telemetry", "otel", "usage", "spend", "estimate", "interval"],
   },
   {
+    id: "restore",
+    label: "Restore",
+    icon: "↶",
+    blurb: "Preview and restore automatic settings snapshots",
+    group: "sessions",
+    scope: "home",
+    keywords: ["backup", "snapshot", "recovery", "rollback", "safety"],
+  },
+  {
     id: "foreman",
     label: "Foreman",
     icon: "●",

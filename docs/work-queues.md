@@ -174,13 +174,16 @@ CI follow-through path owns later idle periods. It never adds a second PR poller
 
 The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
 quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
-logical key, current work-cycle generation, reason, and attempt. The worker must claim that exact
-identity through the daemon before injection. A positive non-delivery releases only that identity;
+logical key, intent episode, reason, and attempt budget. The current work-cycle generation remains
+in each delivery marker, so the worker must claim that exact per-delivery identity through the
+daemon before injection. A positive non-delivery releases only that identity;
 an unknown result remains claimed. Attempts are capped at three sends: the configured first quiet
 window for ordinary shepherd recovery or immediate delivery for a held verdict, then fixed waits
-of 40 and 80 minutes, followed by one no-send escalation. A new completed
-generation begins a new reason-specific sequence and returns through ordinary prompted completion
-before it can be recovered.
+of 40 and 80 minutes, followed by one no-send escalation. A later completed generation returns
+through ordinary prompted completion and advances the same reason-specific episode budget. Its
+same-episode held decision also carries the prior blocking gaps and their strike counts into the
+next verifier call. A newly accepted human prompt starts a new episode and resets both histories;
+legacy rows without episode metadata keep their previous generation-scoped behavior.
 
 The action is the same whichever trigger fired:
 

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Cross-repository task spawning from Mission MCP</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#edf1ee;--paper:#fffefa;--paper2:#f3f7f4;--ink:#17211c;--muted:#627068;--line:#d2dbd5;--green:#216b50;--green2:#dff0e7;--blue:#2f6580;--blue2:#e1eef4;--amber:#a86618;--amber2:#f7e8ca;--purple:#765aa3;--code:#e8f1eb;--shadow:0 18px 50px rgba(24,44,35,.11);--sans:"Avenir Next",Avenir,"Segoe UI",sans-serif;--serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+    @media(prefers-color-scheme:dark){:root{--bg:#0c1210;--paper:#151e19;--paper2:#111914;--ink:#e8f0eb;--muted:#a4b2aa;--line:#34453c;--green:#6ec29a;--green2:#223c30;--blue:#86b8d0;--blue2:#203743;--amber:#edb260;--amber2:#42331e;--purple:#bca3e7;--code:#1d2d24;--shadow:0 20px 58px rgba(0,0,0,.38)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{margin:0;min-width:0;background:radial-gradient(900px 520px at 92% -8%,color-mix(in srgb,var(--green) 15%,transparent),transparent 64%),var(--bg);color:var(--ink);font:15.5px/1.68 var(--sans)}a{color:var(--blue);text-underline-offset:3px}.mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 92%,transparent)}.mast-inner{max-width:1320px;margin:auto;padding:42px clamp(20px,5vw,66px) 36px}.kicker{margin:0 0 9px;color:var(--green);font:800 11px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase}.mast h1{max-width:980px;margin:0;font:600 clamp(37px,5.2vw,64px)/1.02 var(--serif);letter-spacing:-.045em}.mast-copy{max-width:920px;margin:16px 0 0;color:var(--muted);font-size:17px}.finding{max-width:950px;margin:23px 0 0;padding:17px 19px;border-left:5px solid var(--amber);background:var(--amber2);font-size:16px}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:20px}.badge{padding:5px 10px;border:1px solid color-mix(in srgb,var(--green) 38%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--green) 7%,var(--paper));color:var(--green);font:700 11px var(--mono)}.layout{display:grid;grid-template-columns:240px minmax(0,960px);gap:32px;max-width:1280px;margin:auto;padding:30px 18px 90px}nav{position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font:800 10px var(--mono);letter-spacing:.12em;text-transform:uppercase}nav a{display:block;padding:6px 8px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}article{min-width:0;padding:10px clamp(18px,4vw,52px) 58px;border:1px solid var(--line);border-radius:17px;background:var(--paper);box-shadow:var(--shadow)}h2{margin:48px 0 13px;padding-top:7px;border-top:1px solid var(--line);font:600 27px/1.2 var(--serif);letter-spacing:-.02em}h2:first-child{margin-top:22px;border-top:0}h3{margin:30px 0 9px;font:600 20px/1.3 var(--serif)}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:6px 0}code{padding:2px 5px;border:1px solid var(--line);border-radius:5px;background:var(--code);color:var(--green);font:12.5px/1.45 var(--mono);overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;margin:17px 0;padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:var(--paper2)}pre code{padding:0;border:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;margin:18px 0;border-collapse:collapse;font-size:13px}th,td{min-width:155px;padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2);font:800 11px var(--mono);letter-spacing:.03em}.callout{margin:20px 0;padding:17px 19px;border-left:5px solid var(--green);background:var(--green2)}.callout.amber{border-color:var(--amber);background:var(--amber2)}.flow{max-width:100%;margin:23px 0;padding:17px;overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--paper2)}.flow figcaption{margin-bottom:12px;font-weight:780}.flow svg{display:block;width:100%;height:auto;min-width:820px}.flow .edge{fill:none;stroke:var(--muted);stroke-width:2;marker-end:url(#arrow)}.flow .dash{stroke:var(--amber);stroke-dasharray:7 6}.flow rect{fill:var(--paper);stroke:var(--line);stroke-width:1.6}.flow .agent rect{fill:color-mix(in srgb,var(--purple) 9%,var(--paper));stroke:var(--purple)}.flow .service rect{fill:var(--blue2);stroke:var(--blue)}.flow .task rect{fill:var(--green2);stroke:var(--green)}.flow .blocked rect{fill:var(--amber2);stroke:var(--amber)}.flow text{fill:var(--ink);font:650 13px var(--sans);text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:500}.decision{margin:18px 0;padding:18px;border:1px solid color-mix(in srgb,var(--amber) 45%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--amber2) 72%,var(--paper))}.decision strong{color:var(--amber)}footer{max-width:1280px;margin:0 auto 36px;padding:0 18px;color:var(--muted);font:11px var(--mono)}
+    @media(max-width:880px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;max-height:none;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:20px}}@media(max-width:560px){.mast-inner{padding-top:28px}.layout{padding-inline:8px}article{border-radius:13px}th,td{min-width:135px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav,footer{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner">
+    <p class="kicker">Mission Control · approved product and engineering plan</p>
+    <h1>Cross-repository task spawning from Mission MCP</h1>
+    <p class="mast-copy">Let an agent in repo A create a backlog task in repo B, or one coordinated task across both, using the repository-aware task model Mission Control already has.</p>
+    <p class="finding"><strong>Approved shape:</strong> add optional target and attachment selectors to <code>create_task</code>, accept a valid local main checkout without a new MC grant, preserve current-repo behavior by default, and keep Foreman's separate unattended-launch allowlist.</p>
+    <div class="badges"><span class="badge">additive MCP schema</span><span class="badge">no database migration</span><span class="badge">existing task_repos</span><span class="badge">push checked at ship time</span><span class="badge">Playwright proof</span></div>
+  </div></header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#decisions">Approved decisions</a><a href="#findings">Findings</a><a href="#behavior">Product behavior</a><a href="#resolution">Resolution</a><a href="#server">Server convergence</a><a href="#phased">Phased planning</a><a href="#flow">Request flow</a><a href="#foreman">Foreman policy</a><a href="#scope">Multi-repo scope</a><a href="#implementation">Implementation</a><a href="#tests">Tests</a><a href="#compatibility">Compatibility</a><a href="#acceptance">Acceptance</a><a href="#non-goals">Non-goals</a></nav>
+    <article>
+      <h2 id="outcome">Outcome</h2>
+      <p>An agent in repository A can call <code>create_task</code> and place a task in repository B, or create one task spanning A and B, without attaching them to the planning task or obtaining another Mission Control repository grant.</p>
+      <p>Omitting the selector preserves today's current-repo behavior. A supplied target must be a valid local main checkout. The repository host enforces push and pull-request authority later. Mission Control adds no push probe, token cache, or permission table.</p>
+      <div class="callout"><strong>Boundary being removed:</strong> the tool's hardcoded current working directory. The durable backlog, dependency graph, and multi-repo task model already support the result.</div>
+
+      <h2 id="decisions">Approved decisions</h2>
+      <ul><li>Keep Foreman's repository allowlist for unattended backlog launches while allowing creation and manual dispatch in any valid target.</li><li>Expose both an alternate primary and attached repositories through <code>create_task</code>.</li><li>Continue into a repository-verified phased implementation plan and dependency-linked tasks.</li></ul>
+
+      <h2 id="findings">Repository findings</h2>
+      <ol><li><code>src/mcp/server.ts:317-360</code> exposes no selector and submits <code>process.cwd()</code>.</li><li><code>src/shared/protocol.ts:727-743</code> has an additive internal transport seam.</li><li><code>src/server/routes.ts:3373-3413</code> is the authenticated MCP creation boundary.</li><li><code>src/server/repos.ts:207-289</code> already canonicalizes and validates a whole repo set.</li><li><code>src/server/routes.ts:5774-5830</code> owns the mature dashboard full-set and harness checks.</li><li><code>src/server/tasks.ts:1975-2048</code> already persists the result with no migration.</li><li><code>src/server/dispatcher.ts:316-340</code> provides the final capability backstop.</li><li><code>skills/phased-plan/SKILL.md:85-105</code> is the current procedural stop.</li><li><code>src/server/foreman/backlog-machine.ts:331-351</code> applies a separate launch-time allowlist.</li></ol>
+
+      <h2 id="behavior">Proposed product behavior</h2>
+      <p>The existing tool gains <code>repository?</code> and <code>additionalRepositories?</code>. Each accepts an absolute checkout path or a unique repository directory name. The result echoes canonical primary and secondary paths.</p>
+      <pre><code>create_task({
+  title: "Implement the consumer migration",
+  intent: "...",
+  repository: "web-client",
+  additionalRepositories: ["/workspace/contracts"],
+  dependsOnCurrentSession: true
+})</code></pre>
+
+      <h3 id="resolution">Repository selector resolution</h3>
+      <ol><li>Omitted target uses the calling checkout and walks it back to its owner.</li><li>An absolute path goes through <code>resolveTaskRepoRoot</code>, including valid paths outside workspace scans.</li><li>A short name must uniquely match a <code>listRepos()</code> basename. Zero or multiple matches refuse with a corrective message.</li><li>The full primary and secondary set passes through <code>resolveTaskRepoSet</code>.</li></ol>
+      <p>This is addressing, not authorization. It creates no durable trust grant and performs no remote write.</p>
+
+      <h3>Transport compatibility</h3>
+      <p>Keep <code>McpCreateTaskSchema</code> and legacy <code>POST /mcp/tasks</code> selector-free for older bundles. Add <code>McpCreateTaskV2Schema</code> with optional <code>targetRepository</code> and <code>additionalRepositories</code>. Both preserve internal <code>repoRoot</code> as the caller checkout. Old clients keep current-repo behavior.</p>
+      <p>A selector-bearing call uses a new token-authenticated versioned creation endpoint. This is necessary because the older Zod object strips unknown fields instead of rejecting them. An older daemon has no versioned route and returns 404 without creating anything, so the daemon accepting the request validates and stores the repository set atomically. Current-repository calls keep the legacy route.</p>
+
+      <h3 id="server">Server convergence</h3>
+      <p>Extract the dashboard route's full-set, effective-harness, and multi-repo capability preparation into one helper used by dashboard, legacy MCP, and versioned MCP creation. The MCP handlers retain current-session dependency attribution, then call <code>TaskManager.create</code> with <code>backlog: true</code>, the server-resolved effective agent, and no caller-supplied model or effort opinion.</p>
+
+      <h3 id="phased">Phased-plan behavior</h3>
+      <ul><li>Same-repo phases omit the selector.</li><li>A repo B phase makes B primary and attaches source repo A when its phase file remains in A. A is marked context-only.</li><li>An inseparable A plus B phase becomes one multi-repo task with one PR per changed repo.</li><li>Every phase keeps <code>dependsOnCurrentSession: true</code>, so the planning PR merges before checkout provisioning.</li><li>Resolution or capability failure stops dependent task creation and reports every id already created.</li></ul>
+      <p>The design preserves path-based instructions and goal-level intents. It does not paste phase Markdown or add a duplicate task-brief store.</p>
+
+      <h2 id="flow">Request-flow change</h2>
+      <figure class="flow"><figcaption>Before and after repository targeting</figcaption>
+        <svg viewBox="0 0 1100 410" role="img" aria-label="Before, a plan in A can create only an A task and B requires the dashboard. After, explicit repository selectors flow through a shared server resolver into TaskManager, producing A, B, or A plus B tasks before Foreman applies its selected policy.">
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="context-stroke"/></marker></defs>
+          <text x="38" y="28" text-anchor="start" font-size="12" font-weight="800">BEFORE</text>
+          <path class="edge" d="M210 88H300"/><path class="edge" d="M485 88H575"/><path class="edge dash" d="M210 120C320 180 460 180 575 158"/>
+          <g class="agent"><rect x="30" y="56" width="180" height="68" rx="12"/><text x="120" y="84">Plan session</text><text class="sub" x="120" y="104">repo A cwd</text></g>
+          <g class="service"><rect x="300" y="56" width="185" height="68" rx="12"/><text x="392" y="84">create_task</text><text class="sub" x="392" y="104">cwd hardcoded</text></g>
+          <g class="task"><rect x="575" y="40" width="190" height="68" rx="12"/><text x="670" y="68">Repo A task</text><text class="sub" x="670" y="88">automatic</text></g>
+          <g class="blocked"><rect x="575" y="125" width="190" height="68" rx="12"/><text x="670" y="153">Repo B task</text><text class="sub" x="670" y="173">dashboard only</text></g>
+          <text x="38" y="239" text-anchor="start" font-size="12" font-weight="800">AFTER</text>
+          <path class="edge" d="M210 310H285"/><path class="edge" d="M470 310H545"/><path class="edge" d="M735 310H810"/>
+          <g class="agent"><rect x="30" y="278" width="180" height="68" rx="12"/><text x="120" y="306">Plan session</text><text class="sub" x="120" y="326">repo A identity retained</text></g>
+          <g class="service"><rect x="285" y="278" width="185" height="68" rx="12"/><text x="377" y="306">MCP request</text><text class="sub" x="377" y="326">versioned if explicit</text></g>
+          <g class="service"><rect x="545" y="278" width="190" height="68" rx="12"/><text x="640" y="306">Shared resolver</text><text class="sub" x="640" y="326">canonical + capability</text></g>
+          <g class="task"><rect x="810" y="252" width="250" height="118" rx="12"/><text x="935" y="282">TaskManager</text><text class="sub" x="935" y="304">repo A · repo B · A + B</text><text class="sub" x="935" y="326">existing persistence</text><text class="sub" x="935" y="348">then Foreman policy</text></g>
+        </svg>
+      </figure>
+
+      <h2 id="foreman">Foreman policy</h2>
+      <div class="decision"><strong>Approved: keep the allowlist for unattended launches.</strong> Cross-repo creation and manual dispatch work without a repository grant. Foreman still auto-launches only where every target is trusted, preserving the separate boundary for local command execution before a push. No Foreman code or configuration migration is needed.</div>
+
+      <h2 id="scope">Multi-repo scope</h2>
+      <div class="decision"><strong>Approved: expose the full repository set.</strong> Add primary targeting and attachments so phased planning can schedule inseparable work and retain access to source-plan files. The larger schema and capability surface closes the whole dashboard-only MCP gap without new persistence.</div>
+
+      <h2 id="implementation">Implementation surfaces</h2>
+      <h3>Contracts and MCP</h3><ul><li>Add a bounded selector-bearing <code>McpCreateTaskV2Schema</code> while preserving the legacy schema and reusing <code>MAX_TASK_EXTRA_REPOS</code>.</li><li>Extend the existing tool schema and result. Keep the tool name and required-tool registry unchanged.</li></ul>
+      <h3>Daemon</h3><ul><li>Add one selector resolver and share full-set plus capability preparation with dashboard creation.</li><li>Preserve caller-session attribution while targeting another repo.</li><li>Handle explicit selectors through a token-authenticated versioned creation route that old daemons cannot accept.</li><li>Return typed 400 and 409 refusals before any task exists.</li></ul>
+      <h3>Procedure and docs</h3><ul><li>Replace the phased-plan manual stop with target-set scheduling and context-repo rules.</li><li>Update <code>docs/sessions.md</code>, <code>docs/dispatch-and-backlog.md</code>, and <code>docs/skills-and-settings.md</code>.</li><li>Leave historical plan documents unchanged.</li></ul>
+
+      <h2 id="tests">Test and verification contract</h2>
+      <ul><li><code>test/mcp-create-task.test.ts</code>: default, absolute target, unique and ambiguous names, canonical echo, invalid path, and cross-repo dependency.</li><li><code>test/multi-repo-policy.test.ts</code>: secondary validation, cap, collision, dedupe, and unsupported harness.</li><li><code>test/task-repo-root.test.ts</code>: owner walk-back and typed paths outside scan roots.</li><li><code>test/skills-catalog.test.ts</code>: new phased-plan contract.</li><li><code>test/phased-plan-task-intent.test.ts</code>: repo B primary, A attached, publication dependency, and path resolution after merge.</li><li><code>test/mission-mcp.test.ts</code> plus smoke: source-to-bundle schema parity.</li><li>New Playwright spec: fake plan session in A creates B and A+B backlog cards, with dependency wait and actionable refusal proof.</li></ul>
+      <pre><code>node --test --import ./test/setup-state.mjs --import tsx test/mcp-create-task.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/task-repo-root.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/multi-repo-policy.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/skills-catalog.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/phased-plan-task-intent.test.ts
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run smoke
+npm run test:e2e -- e2e/specs/cross-repo-plan-tasks.spec.ts</code></pre>
+
+      <h2 id="compatibility">Compatibility and failure behavior</h2>
+      <ul><li>Omitted selectors remain equivalent at the task-manager boundary.</li><li>The MCP transport is additive and keeps the old caller <code>repoRoot</code>.</li><li>Selector-bearing calls use an atomic versioned creation route; current-repo calls keep the legacy route.</li><li>No database or Task wire migration is required.</li><li>The whole repo set and effective harness resolve before creation.</li><li>Task creation failure returns no id; phased planning stops before dependents.</li><li>Existing all-or-nothing provisioning, per-repo PR tracking, and completion remain authoritative.</li><li>Push failure stays ordinary task evidence. No speculative retry or permission inference is added.</li></ul>
+
+      <h2 id="acceptance">Acceptance criteria</h2>
+      <ol><li>An agent in A creates exactly one B task using a unique name or absolute path.</li><li>Omission still targets A.</li><li>Invalid, orphaned, duplicate, and ambiguous targets fail before storage.</li><li>An old daemon has no versioned route, creates no legacy task, and cannot race support validation against storage.</li><li>A B task can depend on the A planning session or task.</li><li>One call creates B primary plus A attached under existing capability rules.</li><li>Phased planning schedules other-repo work without pasting phase Markdown.</li><li>Plan paths resolve only after the planning PR merge releases the task.</li><li>The Board visibly names the selected repo set through Playwright.</li><li>Git and GitHub enforce push authority at ship time; MC adds no grant table.</li><li>Foreman keeps its submitted allowlist policy.</li></ol>
+
+      <h2 id="non-goals">Non-goals</h2>
+      <ul><li>No remote-only target or automatic clone.</li><li>No stored GitHub token or permission cache.</li><li>No push, role, or branch-protection preflight.</li><li>No new task model, worktree path, or completion rule.</li><li>No new Pi multi-repo capability.</li></ul>
+      <div class="callout amber"><strong>Selected follow-up:</strong> publish a repository-verified phased implementation plan, then schedule its implementation tasks behind the planning-session merge.</div>
+    </article>
+  </div>
+  <footer>Source: <a href="plan.md">docs/plans/cross-repository-task-spawning/plan.md</a> · Rendered 2026-08-24 · Self-contained, static, no external requests</footer>
+</body>
+</html>

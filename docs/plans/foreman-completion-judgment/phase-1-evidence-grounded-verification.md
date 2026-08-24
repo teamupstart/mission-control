@@ -130,10 +130,16 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
      step 3.
    - After the verdict and the existing `refreshPromptedCandidate` re-check
      (`worker.ts:2055`): if the verdict is claimable as today (`complete` and no blocking
-     gaps), behavior is unchanged. New branch: if `complete === true` and every blocking
-     gap has kind `unverified`, build the claim with a summary prefixed
-     `verification-evidence fallback:` plus the verifier's summary, and submit it through
-     `tryWorkflowCompletionClaim`. Outcome handling mirrors the existing branch:
+     gaps), behavior is unchanged. New branch: if at least one same-episode evidence item
+     was admitted, `complete === true`, and every blocking gap has kind `unverified`,
+     build the claim with a summary prefixed `verification-evidence fallback:` plus the
+     verifier's summary, and submit it through `tryWorkflowCompletionClaim`. The admitted
+     count is a structural precondition, checked in the worker and not delegated to the
+     verdict: the fallback's entire justification is that registered evidence covers the
+     verification and only transcript proof is missing, so with zero admitted items the
+     registration clause is structurally unsatisfied and no model classification of the
+     gaps can waive it - an `unverified`-only verdict then holds exactly as any other
+     hold. Outcome handling mirrors the existing branch:
      `claimed` starts the run; `manual_trigger` consumes as `asked` (Ship it? card);
      `no_binding` falls through to today's hold; `failed` holds without consuming.
      `complete === false` always holds, whatever the gap kinds - "implementation not
@@ -178,6 +184,9 @@ Extend the existing suites rather than creating parallel ones:
   items, the count, and the fallback (a session with only other-episode evidence renders
   the zero-items statement); legacy unstamped rows are likewise excluded; staging stamps
   the current resolved episode key.
+- Fallback floor: with zero admitted evidence items, a `complete: true` verdict whose
+  blocking gaps are all `unverified` holds and does not claim - the structurally
+  unsatisfied registration clause cannot be waived by the model's gap classification.
 
 Run:
 
@@ -221,3 +230,8 @@ or redefine the kind.
   instruction in a re-purposed session can no longer support the fallback. Legacy
   unstamped rows are excluded conservatively. Phase 3's decision `episodeKey` uses the
   same resolved key, so the two fields cannot drift.
+- 2026-08-24 (Inspector round 3): the fallback gained a structural floor - at least one
+  admitted same-episode evidence item, checked in the worker. Without it, a verdict whose
+  blocking gaps are all `unverified` could have claimed past a registration clause the
+  prompt itself had just declared unsatisfied, letting the model's gap classification
+  waive a structurally known contract failure.

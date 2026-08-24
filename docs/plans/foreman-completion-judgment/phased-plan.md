@@ -138,3 +138,7 @@ source plan's success criteria, spread across the phases that introduce them.
   the daemon's single write point, because the overwritten decision row cannot reconstruct
   consecutive-held history. Both keys derive from the same resolved intent episode, noted
   in C1.
+- 2026-08-24 (Inspector round 3 on the plan PR): Phase 1's fallback gained a structural
+  floor - at least one admitted same-episode evidence item, checked in the worker - so an
+  `unverified`-only verdict cannot claim past a registration clause the prompt itself
+  declared unsatisfied. Phases 2-3 unaffected.

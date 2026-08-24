@@ -96,11 +96,14 @@ standing-instruction contradiction without touching the instruction).
 2026-08-24)*. The gap vocabulary gains an explicit evidence-class marker (an additive
 `kind` value in `GapSchema`, `queue-prompt.ts`/`queue-verify.ts`, prompted by the POLICY as
 "the change itself looks done; only proof of verification is missing"). When a
-`foreman_complete` binding exists and a verdict is otherwise complete but every blocking
-gap carries that marker, the worker claims the workflow instead of holding: the bound
-workflow runs the real suite, so submitting is strictly safer than stalling. With no
-binding to run the tests, the hold stands as today. The claim summary records that the
-fallback fired, so the audit trail distinguishes it from a clean complete verdict.
+`foreman_complete` binding exists, at least one same-episode evidence item is registered,
+and a verdict is otherwise complete but every blocking gap carries that marker, the worker
+claims the workflow instead of holding: the bound workflow runs the real suite, so
+submitting is strictly safer than stalling. The evidence floor is structural, checked in
+the worker - with zero admitted items the registration clause is known unsatisfied and no
+gap classification can waive it. With no binding to run the tests, the hold stands as
+today. The claim summary records that the fallback fired, so the audit trail
+distinguishes it from a clean complete verdict.
 
 Touches: `src/server/foreman/queue-prompt.ts`, `src/server/foreman/queue-verify.ts`,
 `src/server/foreman/worker.ts`, `src/server/foreman/client.ts`. Tests in `test/` (prompt
@@ -201,7 +204,8 @@ attempt accounting is what Phase 3 re-keys.
   intent alone and can hold.
 - A worker test proves: a verdict whose blocking gaps are all evidence-class claims the
   bound workflow (with the fallback recorded in the claim summary); one carrying any other
-  blocking gap holds; with no binding, the evidence-class hold stands.
+  blocking gap holds; with no binding, the evidence-class hold stands; with zero admitted
+  same-episode evidence items, the evidence-class verdict holds too.
 - A worker test proves: a held managed ship completion receives gap text in the same pass;
   a held human-driven session receives nothing.
 - A policy test proves: three held cycles across three generations of one intent episode

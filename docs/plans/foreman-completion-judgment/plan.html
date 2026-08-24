@@ -131,10 +131,13 @@
     <p><strong>Auto-submit fallback for verification-evidence-only holds</strong>
     <span class="muted">(adopted decision, 2026-08-24)</span>. The gap vocabulary gains an explicit
     evidence-class marker (an additive <code>kind</code> value in <code>GapSchema</code>). When a
-    <code>foreman_complete</code> binding exists and a verdict is otherwise complete but every
-    blocking gap carries that marker, the worker claims the workflow instead of holding - the bound
-    workflow runs the real suite, so submitting is strictly safer than stalling. With no binding, the
-    hold stands. The claim summary records that the fallback fired.</p>
+    <code>foreman_complete</code> binding exists, at least one same-episode evidence item is
+    registered, and a verdict is otherwise complete but every blocking gap carries that marker, the
+    worker claims the workflow instead of holding - the bound workflow runs the real suite, so
+    submitting is strictly safer than stalling. The evidence floor is structural, checked in the
+    worker: with zero admitted items the registration clause is known unsatisfied and no gap
+    classification can waive it. With no binding, the hold stands. The claim summary records that
+    the fallback fired.</p>
     <p class="muted">Touches <code>queue-prompt.ts</code>, <code>queue-verify.ts</code>,
     <code>worker.ts</code>, <code>client.ts</code>. Tests in <code>test/</code>. No UI change.</p>
   </div>
@@ -246,7 +249,8 @@
     first verify; without evidence rows it still verifies on intent alone and can hold.</li>
     <li>Worker test: a verdict whose blocking gaps are all evidence-class claims the bound workflow
     (fallback recorded in the claim summary); any other blocking gap holds; with no binding, the
-    evidence-class hold stands.</li>
+    evidence-class hold stands; with zero admitted same-episode evidence items, the evidence-class
+    verdict holds too.</li>
     <li>Worker test: a held managed ship completion receives gap text in the same pass; a held
     human-driven session receives nothing.</li>
     <li>Policy test: three held cycles across three generations of one intent episode escalate; a new

@@ -438,10 +438,13 @@
       the problem the design exists to solve. The captured sha is always in hand; use it. The parent
       assertion on the snapshot commit does <strong>not</strong> detect this, because the parent is
       passed explicitly.</li>
-    <li><strong>Fixing a content leak in one op and leaving its sibling</strong> -
-      <code>git_diff</code> then <code>git_show</code> (items 12 and 13). This is why output class is
-      now a total <code>Record</code> over the op list and the adversarial suite is table-driven over
-      it: the class rule and the test shape are the fix, not the two individual patches.</li>
+    <li><strong>Fixing a leak in one op and leaving its sibling</strong> -
+      <code>git_diff</code> then <code>git_show</code> (items 12 and 13), then <code>git_log</code>
+      filed under a class whose safety argument did not apply to it (15). This is why output class is
+      a total <code>Record</code> over the op list, why input validation is stated as universal rather
+      than per-class, and why the adversarial suites are table-driven over the op list: the class
+      rules and the test shape are the fix, not the three individual patches. When reviewing a new
+      op, check <strong>both</strong> axes - what it is handed, and what its output can carry.</li>
   </ul>
   <ol start="6">
     <li><strong>Every caller-supplied revision is ancestry-constrained, not just
@@ -502,6 +505,18 @@
       <code>git_show</code> also fetches its commit message separately from its patch, because a
       message is attacker-controlled text that can contain a forged <code>diff --git</code> line
       (verified).</li>
+    <li><strong>Input validation and output class are separate axes</strong> (Phase 2).
+      <code>git_log</code> was filed in the <code>path</code> output class, whose safety is
+      post-filtering paths out of a result - but its output has no paths to filter, and its own prose
+      called it metadata. The concrete consequence was that nothing validated the <code>path</code>
+      argument it accepts, so <code>git log --format=&hellip; -- .env</code> was permitted, confirming
+      a denied path's existence, change times and commit subjects. Input validation is now stated as
+      <strong>universal</strong> for any op given a path or glob, independent of output class, and the
+      output axis gains a <code>metadata</code> class with a real policy: a fixed no-path no-content
+      <code>--format</code> and <code>-p</code>/<code>--name-only</code>/<code>--name-status</code>/<code>--stat</code>
+      forbidden rather than merely omitted. Not claimed: a commit <em>subject</em> is authored prose
+      and can name a denied path, which no path-shaped rule filters - the same boundary already
+      recorded for renames.</li>
     <li><strong>The reader carries per-attempt audit identity</strong> (Phases 2 and 3). The factory
       took only <code>{ repoRoot, snapshotOid, headSha, budget }</code> while the same phase required
       it to write a row per operation under a unique

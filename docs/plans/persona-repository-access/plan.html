@@ -519,7 +519,7 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshot&gt;</code> plus the captured porcelain status</td></tr>
       <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff</code> between the snapshot and <code>base</code>, defaulting to the captured <code>headSha</code> and never live <code>HEAD</code>; an explicit <code>base</code> must be an ancestor of the snapshot; allowlisted before generation</td></tr>
       <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show</code>; <code>rev</code> must be an ancestor of the snapshot; allowlisted before generation, with the commit message fetched separately from the patch</td></tr>
-      <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log --max-count=N --format=&lt;NUL-separated&gt;</code></td></tr>
+      <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log --max-count=N --format=&lt;NUL-separated&gt;</code>; a supplied <code>path</code> is validated and denied like any other; no <code>-p</code>, <code>--name-only</code>, <code>--name-status</code> or <code>--stat</code></td></tr>
       <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --porcelain &lt;snapshot&gt; -- &lt;path&gt;</code></td></tr>
     </tbody>
   </table>
@@ -657,11 +657,14 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
     <li><strong>No filesystem access at all.</strong> Every read is a git object read against one
       immutable commit. Traversal, absolute paths, host files and <code>.git</code> internals are
       structurally absent - verified at the git layer, not asserted.</li>
-    <li><strong>Path validation before git is invoked.</strong> Reject empty, absolute, NUL-bearing,
-      and any path with a <code>.</code> or <code>..</code> segment; reject <code>.git</code> as a
-      leading segment. Paths are matched as bytes against the tree listing and never normalized,
-      because git paths are bytes and a normalization step would make two spellings resolve to one
-      object.</li>
+    <li><strong>Path validation before git is invoked, for every op that is given a path.</strong>
+      Reject empty, absolute, NUL-bearing, and any path with a <code>.</code> or <code>..</code>
+      segment; reject <code>.git</code> as a leading segment. Paths are matched as bytes against the
+      tree listing and never normalized, because git paths are bytes and a normalization step would
+      make two spellings resolve to one object. This is <strong>universal and independent of what the
+      op's output looks like</strong> - the two are separate axes, and treating them as one is what
+      once let <code>git_log -- .env</code> through: it was filed under an output class that filters
+      paths out of results, so nothing checked the path it was handed.</li>
     <li><strong>A sensitive-path denylist</strong>, seeded from the repository-relative half of the
       Inspector's <code>DENY_PATHS</code> and <strong>strengthened</strong>: the Inspector denies
       <code>**/.git/config</code>, this denies <code>.git/**</code> outright, and the list is applied

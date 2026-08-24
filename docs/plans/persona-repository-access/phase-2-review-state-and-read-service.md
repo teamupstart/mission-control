@@ -107,12 +107,15 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
 
 - `REPOSITORY_QUERY_OPS = ["read_file", "search_text", "list_paths", "git_status", "git_diff", "git_show", "git_log", "git_blame"] as const`
   and `RepositoryQuery`, a discriminated union on `op` with the arguments the plan's table names.
-- `REPOSITORY_OP_OUTPUT: Record<RepositoryQueryOp, "content" | "path" | "single-path">` - the
-  output class of every op, as a total `Record` so a new op **cannot compile** without stating its
-  class. This is the same enforcement idiom `LLM_RUNNERS` uses on `LlmRunnerId` and
+- `REPOSITORY_OP_OUTPUT: Record<RepositoryQueryOp, "content" | "path" | "metadata">` - what an op's
+  **output** may carry, as a total `Record` so a new op **cannot compile** without stating it. This
+  is the same enforcement idiom `LLM_RUNNERS` uses on `LlmRunnerId` and
   `SESSION_FIELD_COMPARATORS` uses on a new `Session` field, and it is here for a demonstrated
-  reason rather than a stylistic one: the per-op version of this rule failed twice in review, once
-  for `git_diff` and then again for `git_show`. A `Record` makes the omission a type error.
+  reason rather than a stylistic one: the per-op version of this rule failed three times in review -
+  `git_diff`, then `git_show` with the identical content hole, then `git_log` filed under a class
+  whose safety argument did not apply to it. A `Record` makes the omission a type error.
+  It describes **output only**. Validation of a supplied path is universal and independent of it -
+  see *Two axes* below, and note that conflating the two is what produced the `git_log` hole.
 - `REPOSITORY_DENIAL_CODES = ["not_found", "not_a_file", "sensitive_path", "path_invalid", "symlink", "submodule", "binary", "too_large", "unsupported_rev", "invalid_argument", "budget_exhausted", "unavailable", "cancelled"] as const`.
   Appended-only; the strings reach durable audit rows.
 - `RepositoryQueryResult`: `{ ok: true; op; ...payload; bytes; truncated; omittedBytes }` or
@@ -297,18 +300,24 @@ Order of checks per query, and the order is the contract:
    `.git` segment, and anything over a path-length bound. Match as **bytes**; never normalize,
    because git paths are bytes and normalizing would let two spellings resolve to one object.
 3. **Denylist** - `REPOSITORY_DENY_GLOBS` against the path. Refuse as `sensitive_path`.
+   **Steps 2 and 3 run for every op that was given a path or glob, with no exceptions and
+   regardless of output class.** That is `read_file`, `git_blame`, `git_log`, `git_diff`'s `path`,
+   and the globs on `search_text` and `list_paths`. Stating it as universal rather than per-class is
+   the fix for a real hole: `git_log` was filed under an output class that post-filters results, its
+   `path` argument was consequently never checked, and `git log --format=… -- .env` was permitted.
 4. **Mode classification** - from the cached tree listing: `120000` is `symlink`, `160000` is
    `submodule`, a tree is `not_a_file`, absent is `not_found`.
 5. **Size pre-flight** - `cat-file --batch-check` for the byte count; refuse `too_large` before
    reading.
 6. **Execute** - the argv from the plan's table, through `run` with a per-operation timeout.
 7. **Post-filter** - re-apply the path validator and the denylist to every path in the **result**
-   of every `path`-class op (see the classification below). This is the step that makes the
-   denylist real; `claude-grant.ts` already documents why a rule that guards only arguments
-   protects nothing it names. It is sufficient for that class and **only** that class, because
-   each of those ops emits a path beside its own content or no content at all, so dropping the
-   line drops the content with it. A `content`-class op does not come through here at all - it
-   goes through the allowlisted pipeline below.
+   of every `path`-class op, and only those. This is what makes the denylist real for that class;
+   `claude-grant.ts` already documents why a rule that guards only arguments protects nothing it
+   names. It is sufficient for `path` and **only** `path`, because each of those ops emits a path
+   beside its own content or no content at all, so dropping the line drops the content with it.
+   A `content`-class op never comes through here - it goes through the allowlisted pipeline below.
+   A `metadata`-class op never comes through here either, and it is not exempt: its safety is a
+   fixed no-path no-content format plus the forbidden-flag list, described with the classes.
 8. **Bound and mark** - clip to the per-query, per-round and per-attempt budgets, set
    `truncated` and `omittedBytes`. Never clip silently.
 9. **Scrub** - `scrubSecrets` over the response text.
@@ -324,20 +333,48 @@ reference into the whole object database - another branch, another task's work, 
 repository happens to hold - and a diff taken against one returns files that were never in the
 submitted state, which defeats the exact-submitted-state boundary this phase exists to draw.
 
-### Output classes, and one allowlisted pipeline for the content-bearing ones
+### Two axes: what an op is *given*, and what its output *is*
 
-Every op declares an **output class** in the registry, and the class - not the op - decides how its
-result is made safe. This is a class rule rather than a per-op rule because the per-op version
-already failed twice in review: `git_diff` was specified with a path-list filter that cannot work on
-a patch, and once that was fixed `git_show` was left with the identical hole. A registry that makes
-each op state its class turns "the next content-bearing op forgets" into a missing declaration
-rather than a silent leak.
+The first version of this section had one axis and got an op wrong because of it. It listed a
+`single-path` class - meaning "the path is an argument, so it is validated up front" - beside output
+classes, which quietly implied that an op was either argument-validated *or* output-filtered.
+`git_log` then landed in the `path` class, whose safety comes from filtering paths out of the
+result, while its prose justified it as metadata; and because it was not in `single-path`, nothing
+validated the `path` argument it accepts. `git log --format=… -- .env` was therefore permitted.
+
+The two properties are **orthogonal** and are now stated separately.
+
+**Input axis - universal.** Every op that accepts a `path` or `pathGlob` has it validated and
+denied at steps 2 and 3, before anything runs, whatever its output class. That is `read_file`,
+`git_blame`, `git_log`, `git_diff`'s `path`, and the globs on `search_text` and `list_paths`. There
+is no op for which a supplied path is exempt, and no output class that excuses one.
+
+**Output axis - `REPOSITORY_OP_OUTPUT`.** What the result may carry, and therefore how it is made
+safe:
 
 | Class | Ops | How its result is made safe |
 |---|---|---|
 | `content` | `git_diff`, `git_show` | The allowlisted pipeline below. Nothing denied is ever generated. |
-| `path` | `search_text`, `list_paths`, `git_status`, `git_log` | Step 7's post-filter. Each emits a path beside its own content, or no content, so dropping the line drops the content. |
-| `single-path` | `read_file`, `git_blame` | The path is an argument, validated and denied at steps 2 and 3 before anything runs. |
+| `path` | `search_text`, `list_paths`, `git_status` | Step 7's post-filter. Each emits a path beside its own content, or no content, so dropping the line drops the content. |
+| `metadata` | `git_log` | A fixed server-chosen `--format` carrying no path and no file content. See below. |
+
+A total `Record` over the op list still forces every op to declare its class, and that enforcement
+is why this is a class rule rather than a per-op one: the per-op version failed three times in
+review - `git_diff`, then `git_show` with the identical content hole, then `git_log` misfiled here.
+
+**The `metadata` policy, since "post-filter handles it" was never true for it.** `git_log` emits
+`%H`, author, commit time and subject, NUL-separated - verified to contain no path field and no diff
+lines. The flags that would change that are **forbidden explicitly rather than merely omitted**,
+for the same reason `--no-renames` is explicit: verified, `-p` emits file content and `--name-only`
+emits paths, so `-p`, `--patch`, `--name-only`, `--name-status` and `--stat` are refused if they
+ever reach the argv builder. Scrubbing applies to the subject like every other response.
+
+**One exposure a path rule cannot close, stated rather than implied away.** A commit *subject* is
+prose the author wrote, and it can name a denied path - the fixture's real subject is
+`add .env with the prod credentials`. No path-shaped denylist can filter an author's sentence, and
+this is the same documented boundary as the rename case below. What the fix does close is the sharp
+part: a log **scoped to** a denied path, which confirmed that path's existence, its change times and
+its commit subjects, and which is now refused at step 3 like any other denied path argument.
 
 A unified diff is **one blob that carries file content**, not a list of paths beside content, so
 filtering paths out of a finished patch is not the same operation as filtering a path list. Measured
@@ -481,6 +518,16 @@ look viable.
   `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
   that file's content or path. A test that only checks the code would still pass if the
   implementation refused after running the diff.
+- **The universal input-validation test, table-driven over every op that accepts a path or glob.**
+  Feed each one a denied path (`.env`, `k/id_rsa`, `.git/config`) and assert `sensitive_path`, and
+  feed each one a traversal (`../etc/passwd`) and assert `path_invalid`. Driven off the op list
+  rather than written per op, so an op added without argument validation fails here. This is the
+  regression for `git_log --  .env`, which the per-class version of the rule permitted.
+- **The `metadata` class tests.** `git_log`'s output carries no path field and no diff line, on a
+  fixture whose history includes a commit touching a denied path; and `-p`, `--patch`,
+  `--name-only`, `--name-status` and `--stat` are refused if they reach the argv builder - verified
+  that the first emits file content and the third emits paths, so omitting them is not the same as
+  forbidding them.
 - **The adversarial content-class tests, which are their own group because path-shaped assertions do
   not cover a content-bearing response.** Run **the whole group against every `content` op** -
   table-driven over `REPOSITORY_OP_OUTPUT`, so adding a third content op inherits the suite instead
@@ -660,3 +707,18 @@ Phase 3 may rely on, and must not change:
   to all of it, because `commit-tree -p <headSha>` sets the parent correctly however the index was
   seeded. Recording that explicitly, because "we already assert the parent" is exactly the reasoning
   that would let this back in.
+- **Reconciliation record, review round 9.** `git_log` was filed in the `path` output class, whose
+  safety is post-filtering paths out of the result - but its output has no paths to filter, and its
+  own prose called it metadata. Two different safety arguments, and the wrong one was assigned. The
+  consequence was concrete: nothing validated the `path` argument `git_log` accepts, so
+  `git log --format=… -- .env` was permitted, confirming a denied path's existence, change times and
+  commit subjects. Fixed by separating the two axes the single class list had conflated - **input**
+  validation is now stated as universal for any op given a path or glob, regardless of class, and the
+  **output** axis gains a `metadata` class for `git_log` with a real policy: a fixed no-path
+  no-content `--format`, and `-p`/`--patch`/`--name-only`/`--name-status`/`--stat` forbidden rather
+  than merely omitted (verified: the first emits content, the third emits paths).
+  What is **not** claimed: the pathless log is verified to carry no path field and no diff line, but
+  a commit *subject* is prose the author wrote and can name a denied path - the fixture's real
+  subject is `add .env with the prod credentials`. No path-shaped rule filters an author's sentence,
+  and that is the same boundary already recorded for the rename case, so the finding's broader
+  framing is answered by stating the limit rather than by claiming to have closed it.

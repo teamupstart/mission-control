@@ -288,10 +288,12 @@ reintroduce and neither is caught by the guards that look like they should catch
   git for `HEAD` after capture has reintroduced the problem the design exists to solve. The captured
   sha is always in hand; use it. Note that the parent assertion on the snapshot commit does **not**
   detect this, because the parent is passed explicitly.
-- **Fixing a content leak in one op and leaving its sibling.** `git_diff` then `git_show`
-  (reconciliations 12 and 13). This is why output class is now a total `Record` over the op list and
-  the adversarial suite is table-driven over it: the class rule and the test shape are the fix, not
-  the two individual patches.
+- **Fixing a leak in one op and leaving its sibling.** `git_diff` then `git_show`
+  (reconciliations 12 and 13), then `git_log` filed under a class whose safety argument did not apply
+  to it (15). This is why output class is a total `Record` over the op list, why input validation is
+  stated as universal rather than per-class, and why the adversarial suites are table-driven over the
+  op list: the class rules and the test shape are the fix, not the three individual patches. When
+  reviewing a new op, check **both** axes - what it is handed, and what its output can carry.
 
 6. **Every caller-supplied revision is ancestry-constrained, not just `git_show`'s** (Phase 2).
    `git_diff`'s `base` was left free, which would let an access-enabled Persona name another branch
@@ -351,7 +353,17 @@ reintroduce and neither is caught by the guards that look like they should catch
     tracking, so a tree verification now compares paths tracked at capture against the written tree
     and requires any absentee to be absent from disk too. The pre-existing parent assertion is blind
     to all of it - `commit-tree -p <headSha>` sets the parent correctly however the index was seeded.
-15. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
+15. **Input validation and output class are separate axes** (Phase 2). `git_log` was filed in the
+    `path` output class, whose safety is post-filtering paths out of a result - but its output has no
+    paths to filter, and its own prose called it metadata. The concrete consequence was that nothing
+    validated the `path` argument it accepts, so `git log --format=… -- .env` was permitted,
+    confirming a denied path's existence, change times and commit subjects. Input validation is now
+    stated as **universal** for any op given a path or glob, independent of output class, and the
+    output axis gains a `metadata` class with a real policy: a fixed no-path no-content `--format`
+    and `-p`/`--name-only`/`--name-status`/`--stat` forbidden rather than merely omitted. Not
+    claimed: a commit *subject* is authored prose and can name a denied path, which no path-shaped
+    rule filters - the same boundary already recorded for renames.
+16. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
     `{ repoRoot, snapshotOid, headSha, budget }` while the same phase required it to write a row per
     operation under a unique `(node_attempt_id, round, ordinal)`, and Phase 3 was forbidden from
     writing rows - so as written, nothing could persist a brokered query. The reader is now built

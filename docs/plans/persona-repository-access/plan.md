@@ -359,7 +359,7 @@ else:
 | `git_status` | - | `git diff --name-status <headSha> <snapshot>` plus the captured porcelain status |
 | `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base`, defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of the snapshot; allowlisted before generation |
 | `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot; allowlisted before generation, with the commit message fetched separately from the patch |
-| `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>` |
+| `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>`; a supplied `path` is validated and denied like any other; no `-p`, `--name-only`, `--name-status` or `--stat` |
 | `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshot> -- <path>` |
 
 Every result is `{ ok: true, ... , truncated: boolean }` or
@@ -435,10 +435,13 @@ defences on what remains.
 1. **No filesystem access at all.** Every read is a git object read against one immutable
    commit. Traversal, absolute paths, host files and `.git` internals are structurally absent -
    verified at the git layer, not asserted.
-2. **Path validation before git is invoked.** Reject empty, absolute, NUL-bearing, and any path
-   with a `.` or `..` segment; reject `.git` as a leading segment. Paths are matched as bytes
-   against the tree listing and never normalized, because git paths are bytes and a
-   normalization step would make two spellings resolve to one object.
+2. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
+   absolute, NUL-bearing, and any path with a `.` or `..` segment; reject `.git` as a leading
+   segment. Paths are matched as bytes against the tree listing and never normalized, because git
+   paths are bytes and a normalization step would make two spellings resolve to one object.
+   This is **universal and independent of what the op's output looks like** - the two are separate
+   axes, and treating them as one is what once let `git_log -- .env` through: it was filed under an
+   output class that filters paths out of results, so nothing checked the path it was handed.
 3. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
    `DENY_PATHS` (`src/server/inspector/worker.ts:295`) and **strengthened**: the Inspector
    denies `**/.git/config`, this denies `.git/**` outright, and the list is applied to the

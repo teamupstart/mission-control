@@ -140,6 +140,11 @@ focused hook or reducer that owns:
 - restore in progress, success, safety snapshot id, warnings, and bounded errors;
 - cancellation or invalidation when a refreshed list changes the selected digest.
 
+Bind each preview completion to both the snapshot id and a client request token. Discard a
+completion when either no longer owns the current selection, and require both the preview snapshot
+id and digest to match before enabling restore. This also protects a same-digest selection and an
+A-to-B-to-A request race from authorizing stale preview state.
+
 Do not optimistically edit settings or Library state. The daemon completes the forward restore
 first. Disable selection, confirmation, and duplicate submission according to explicit reducer
 states, and preserve the selected row when a recoverable request fails.

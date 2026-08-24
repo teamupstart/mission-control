@@ -117,7 +117,17 @@ test("restore panel renders bounded metadata, compatibility, preview, and exact 
 test("restore reducer binds confirmation to the selected digest and invalidates changed rows", () => {
   let state = settingsRestoreReducer(initialSettingsRestoreState, { type: "load_success", value: list });
   state = settingsRestoreReducer(state, { type: "select", id: "daily-2026-08-24" });
-  state = settingsRestoreReducer(state, { type: "preview_done", value: { status: "ready", preview } });
+  state = settingsRestoreReducer(state, {
+    type: "preview_start",
+    snapshotId: "daily-2026-08-24",
+    requestId: "preview-1",
+  });
+  state = settingsRestoreReducer(state, {
+    type: "preview_done",
+    snapshotId: "daily-2026-08-24",
+    requestId: "preview-1",
+    value: { status: "ready", preview },
+  });
   state = settingsRestoreReducer(state, { type: "open_dialog" });
   state = settingsRestoreReducer(state, { type: "confirmation", value: "restore settings" });
   assert.equal(canSubmitSettingsRestore(state), false);
@@ -132,6 +142,83 @@ test("restore reducer binds confirmation to the selected digest and invalidates 
   assert.equal(state.selectedId, null);
   assert.equal(state.preview, null);
   assert.equal(state.dialogOpen, false);
+});
+
+test("restore reducer discards stale preview completions when selection changes", () => {
+  const secondId = "daily-2026-08-22";
+  const ready = list.snapshots[0];
+  assert.equal(ready?.status, "ready");
+  if (!ready || ready.status !== "ready") return;
+  const twoReady = {
+    ...list,
+    snapshots: [
+      ready,
+      {
+        ...ready,
+        id: secondId,
+        createdAt: "2026-08-22T12:00:00.000Z",
+        modifiedAt: "2026-08-22T12:00:00.000Z",
+        localDate: "2026-08-22",
+      },
+    ],
+  } satisfies SettingsBackupsListResponse;
+
+  let state = settingsRestoreReducer(initialSettingsRestoreState, {
+    type: "load_success",
+    value: twoReady,
+  });
+  state = settingsRestoreReducer(state, { type: "select", id: preview.snapshotId });
+  state = settingsRestoreReducer(state, {
+    type: "preview_start",
+    snapshotId: preview.snapshotId,
+    requestId: "preview-a-old",
+  });
+  state = settingsRestoreReducer(state, { type: "select", id: secondId });
+  state = settingsRestoreReducer(state, {
+    type: "preview_start",
+    snapshotId: secondId,
+    requestId: "preview-b",
+  });
+  state = settingsRestoreReducer(state, {
+    type: "preview_done",
+    snapshotId: preview.snapshotId,
+    requestId: "preview-a-old",
+    value: { status: "ready", preview },
+  });
+  assert.equal(state.preview, null);
+  assert.equal(state.previewing, true);
+
+  const secondPreview = { ...preview, snapshotId: secondId };
+  state = settingsRestoreReducer(state, {
+    type: "preview_done",
+    snapshotId: secondId,
+    requestId: "preview-b",
+    value: { status: "ready", preview: secondPreview },
+  });
+  state = settingsRestoreReducer(state, { type: "open_dialog" });
+  state = settingsRestoreReducer(state, { type: "confirmation", value: "RESTORE SETTINGS" });
+  assert.equal(canSubmitSettingsRestore(state), true);
+
+  assert.equal(canSubmitSettingsRestore({
+    ...state,
+    preview: { status: "ready", preview },
+  }), false);
+
+  state = settingsRestoreReducer(state, { type: "select", id: preview.snapshotId });
+  state = settingsRestoreReducer(state, {
+    type: "preview_start",
+    snapshotId: preview.snapshotId,
+    requestId: "preview-a-new",
+  });
+  state = settingsRestoreReducer(state, {
+    type: "preview_done",
+    snapshotId: preview.snapshotId,
+    requestId: "preview-a-old",
+    value: { status: "ready", preview },
+  });
+  assert.equal(state.preview, null);
+  assert.equal(state.previewing, true);
+  assert.equal(state.previewRequestId, "preview-a-new");
 });
 
 test("restore events distinguish the initiating window and preserve external-window choice", () => {

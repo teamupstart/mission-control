@@ -26,6 +26,7 @@ export interface SettingsRestoreState {
   selectedId: string | null;
   preview: SettingsRestorePreviewResult | null;
   previewing: boolean;
+  previewRequestId: string | null;
   dialogOpen: boolean;
   confirmation: string;
   restoring: boolean;
@@ -40,6 +41,7 @@ export const initialSettingsRestoreState: SettingsRestoreState = {
   selectedId: null,
   preview: null,
   previewing: false,
+  previewRequestId: null,
   dialogOpen: false,
   confirmation: "",
   restoring: false,
@@ -52,8 +54,14 @@ type Action =
   | { type: "load_success"; value: SettingsBackupsListResponse }
   | { type: "load_error"; error: string }
   | { type: "select"; id: string }
-  | { type: "preview_start" }
-  | { type: "preview_done"; value: SettingsRestorePreviewResult }
+  | { type: "preview_start"; snapshotId: string; requestId: string }
+  | { type: "preview_done"; snapshotId: string; requestId: string; value: SettingsRestorePreviewResult }
+  | { type: "preview_error"; snapshotId: string; requestId: string; error: string }
+  | {
+      type: "restore_preflight_blocked";
+      snapshotId: string;
+      value: Extract<SettingsRestoreResult, { status: "preflight_blocked" }>;
+    }
   | { type: "error"; error: string }
   | { type: "open_dialog" }
   | { type: "close_dialog" }
@@ -88,6 +96,8 @@ export function settingsRestoreReducer(
         ...(invalidated ? {
           selectedId: null,
           preview: null,
+          previewing: false,
+          previewRequestId: null,
           dialogOpen: false,
           confirmation: "",
         } : {}),
@@ -98,14 +108,51 @@ export function settingsRestoreReducer(
       ...state,
       selectedId: action.id,
       preview: null,
+      previewing: false,
+      previewRequestId: null,
       result: null,
       error: null,
       confirmation: "",
       dialogOpen: false,
     };
-    case "preview_start": return { ...state, previewing: true, error: null, result: null };
-    case "preview_done": return { ...state, previewing: false, preview: action.value, error: null };
-    case "error": return { ...state, previewing: false, restoring: false, error: action.error };
+    case "preview_start": return state.selectedId === action.snapshotId
+      ? {
+          ...state,
+          previewing: true,
+          previewRequestId: action.requestId,
+          error: null,
+          result: null,
+        }
+      : state;
+    case "preview_done": return state.selectedId === action.snapshotId
+        && state.previewRequestId === action.requestId
+      ? {
+          ...state,
+          previewing: false,
+          previewRequestId: null,
+          preview: action.value,
+          error: null,
+        }
+      : state;
+    case "preview_error": return state.selectedId === action.snapshotId
+        && state.previewRequestId === action.requestId
+      ? {
+          ...state,
+          previewing: false,
+          previewRequestId: null,
+          error: action.error,
+        }
+      : state;
+    case "restore_preflight_blocked": return state.selectedId === action.snapshotId
+      ? { ...state, preview: action.value }
+      : state;
+    case "error": return {
+      ...state,
+      previewing: false,
+      previewRequestId: null,
+      restoring: false,
+      error: action.error,
+    };
     case "open_dialog": return { ...state, dialogOpen: true, confirmation: "", error: null };
     case "close_dialog": return state.restoring
       ? state
@@ -128,6 +175,7 @@ export function canSubmitSettingsRestore(state: SettingsRestoreState): boolean {
     && !state.restoring
     && state.confirmation === SETTINGS_RESTORE_CONFIRMATION
     && state.preview?.status === "ready"
+    && state.preview.preview.snapshotId === state.selectedId
     && selectedReady(state.list, state.selectedId)?.digest === state.preview.preview.digest;
 }
 
@@ -158,11 +206,16 @@ export function useSettingsRestore(): {
 
   const preview = useCallback(() => {
     if (!state.selectedId || state.previewing || state.restoring) return;
-    dispatch({ type: "preview_start" });
-    void previewSettingsRestore(state.selectedId).then((result) => {
-      if (result.ok) dispatch({ type: "preview_done", value: result.value });
-      else if (result.value) dispatch({ type: "preview_done", value: result.value });
-      else dispatch({ type: "error", error: result.error });
+    const snapshotId = state.selectedId;
+    const requestId = crypto.randomUUID();
+    dispatch({ type: "preview_start", snapshotId, requestId });
+    void previewSettingsRestore(snapshotId).then((result) => {
+      if (result.ok) dispatch({ type: "preview_done", snapshotId, requestId, value: result.value });
+      else if (result.value) {
+        dispatch({ type: "preview_done", snapshotId, requestId, value: result.value });
+      } else {
+        dispatch({ type: "preview_error", snapshotId, requestId, error: result.error });
+      }
     });
   }, [state.selectedId, state.previewing, state.restoring]);
 
@@ -191,7 +244,7 @@ export function useSettingsRestore(): {
       }
       if (response.status !== 0) abandonSettingsRestore(requestId);
       if (response.value?.status === "preflight_blocked") {
-        dispatch({ type: "preview_done", value: response.value });
+        dispatch({ type: "restore_preflight_blocked", snapshotId, value: response.value });
       }
       dispatch({ type: "error", error: response.error });
     });

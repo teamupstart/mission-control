@@ -138,7 +138,7 @@ Implement:
 - `glob`: manifest-backed path enumeration with type/classification metadata and cursor;
 - `git_status`: manifest-backed exact captured classification, never live `git status`;
 - `git_diff`: only the four approved layer pairs, optional validated scope, explicit literal allowlist before content generation;
-- `git_show`: captured HEAD or a revision in the descriptor's retained set, fixed metadata format plus an allowlisted first-parent patch; reject outside revisions as `revision_out_of_range`, compare a true root with the empty tree, and return `history_boundary` instead of a root-style patch when a non-root retained frontier commit lacks its first parent;
+- `git_show`: captured HEAD or a revision in the descriptor's retained set with fixed metadata format; patch mode has exactly three cases: compare a true root with the empty tree, compare a non-root only when its recorded first parent is retained, or return `history_boundary` with no patch when that first parent is omitted; reject outside revisions as `revision_out_of_range`;
 - `git_log`: descriptor-retained ancestry only, fixed metadata-only format, optional validated allowed path, no patch/stat/name flags, and explicit terminal boundary metadata;
 - `git_blame`: bounded allowed regular file/range against the retained view, with boundary attribution and `historyTruncated`, and with any emitted filename/previous path revalidated.
 
@@ -210,7 +210,7 @@ Add or extend focused tests such as:
 - `test/inspector-scrub.test.ts` and Inspector grant equality regressions
 - `test/keep-awake-native-build.test.ts` or the current bundle/build contract suite where new entrypoint enumeration belongs
 
-Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, boundary show/log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, evidence handles for exact returned ranges, absence of handles on non-success outcomes, body-free audit events, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
+Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, all three `git_show` patch cases including a merge frontier whose first parent remains retained, boundary log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, evidence handles for exact returned ranges, absence of handles on non-success outcomes, body-free audit events, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
 
 Provider contract fixtures prove multiple repository calls and one verdict for Claude and Codex without real tokens. They assert image preservation and exact capability parity.
 

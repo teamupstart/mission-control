@@ -61,7 +61,7 @@ The implementation will use a versioned sparse Git object artifact instead of a 
 4. Materialize an object database and allowed worktree view in an isolated workload. Git operations are always pre-scoped to validated allowed literal paths, with external diff, text conversion, filters, hooks, and network disabled.
 5. Derive status from the captured manifest. Never run an unrestricted diff or show and filter its output afterwards.
 
-This preserves original Git identities for log, show, and blame on an explicit bounded range while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Revisions outside the retained manifest set are denied as `revision_out_of_range`; frontier patch requests return `history_boundary`, and frontier log/blame results carry explicit truncation without consulting the original checkout. Phase 1 proves that the MCP operates safely over a sparse object database and establishes the history policy; Phase 2 owns producing and validating that exact artifact set.
+This preserves original Git identities for log, show, and blame on an explicit bounded range while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Revisions outside the retained manifest set are denied as `revision_out_of_range`. For a retained commit, `git_show` patch mode compares a true root with the empty tree, compares a non-root only when its recorded first parent is retained, and otherwise returns `history_boundary` with no patch. Frontier log/blame results carry explicit truncation without consulting the original checkout. Phase 1 proves that the MCP operates safely over a sparse object database and establishes the history policy; Phase 2 owns producing and validating that exact artifact set.
 
 ## Sizing and phase count
 
@@ -232,6 +232,6 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 3. Claude and Codex expose the same eight operations and use the same security and audit path.
 4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
-6. History selection is deterministic at both ceilings; in-range show/log/blame works after source removal, while boundary and `revision_out_of_range` behavior is identical for Claude and Codex.
+6. History selection is deterministic at both ceilings; the three `git_show` patch cases, frontier log/blame behavior, and `revision_out_of_range` denial work after source removal and are identical for Claude and Codex.
 7. Repository evidence handles validate one same-attempt returned item and exact range without any response body, excerpt, quote, or provider-supplied path entering daemon state.
 8. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.

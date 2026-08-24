@@ -223,7 +223,7 @@
         <li>Pre-authorize literal paths before every content-producing Git invocation.</li>
         <li>Disable external diff, text conversion, filters, hooks, fetching, and network.</li>
         <li>Own shared bytes by digest and delete them only after atomically releasing and rechecking the last submission claim.</li>
-        <li>Digest the ordered retained revisions and frontier metadata; deny outside revisions as <code>revision_out_of_range</code>, return <code>history_boundary</code> for unavailable frontier patches, and mark frontier log/blame truncation.</li>
+        <li>Digest the ordered retained revisions and frontier metadata; deny outside revisions as <code>revision_out_of_range</code>. For retained revisions, patch a true root against the empty tree, patch a non-root only against a retained recorded first parent, and otherwise return <code>history_boundary</code> with no patch. Mark frontier log/blame truncation.</li>
       </ol>
     </section>
 

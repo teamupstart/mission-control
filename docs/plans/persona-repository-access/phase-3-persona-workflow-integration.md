@@ -331,7 +331,7 @@ Cover:
 - exact dirty capture only when at least one frozen Persona needs access;
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;
-- retained-history boundary and out-of-range recovery within the same provider session, with the same result and audit semantics for Claude and Codex;
+- retained-history recovery within the same provider session, covering the true-root patch, retained-first-parent patch, omitted-first-parent `history_boundary` with no patch, frontier log/blame truncation, and out-of-range denial with the same result and audit semantics for Claude and Codex;
 - same-attempt metadata-only evidence validation, including a successful handle, exact truncated range, fabricated id, cross-attempt reuse, operation mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
 - Claude/Codex parity and image preservation;
 - missing/corrupt artifact, failed materialization, MCP crash, provider crash, malformed verdict, audit failure, event duplicate/gap, timeout, cumulative budget, cancellation, late result, daemon restart, executor loss, retry exhaustion, and manual resubmit;

@@ -104,6 +104,44 @@ test("the comment bridge reports a structural path and never any text", () => {
   assert.doesNotMatch(bridge, /fetch|XMLHttpRequest|location|localStorage|sessionStorage|cookie/);
 });
 
+test("what counts as a block is computed, not enumerated", () => {
+  // A tag allowlist is never finished. The one this replaced was missing `form`, `fieldset`,
+  // `address` and `dialog`, and no list can see a `span` a stylesheet made `display:block` -
+  // which reads to a person as a block and is a fair thing to point at. The preview renders
+  // arbitrary checkout HTML, so "anything I enumerated" is the wrong set.
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /getComputedStyle\(el\)\.display/);
+  assert.match(bridge, /shown!=="inline"&&shown!=="contents"&&shown!=="none"/);
+  // The elements the old list happened to name must not reappear as a list anywhere.
+  assert.doesNotMatch(
+    bridge,
+    /blockquote|figcaption|thead|tbody/,
+    "the bridge must not carry a tag allowlist",
+  );
+  // SVG is decided by tag on purpose: an `svg` computes to `inline`, and its internals are
+  // not CSS blocks at all, so display alone would skip the diagram or offer its strokes.
+  assert.match(bridge, /tagName\.toLowerCase\(\)==="svg"/);
+  // `body` bounds the walk - the whole document is not a block to comment on.
+  assert.match(bridge, /el!==document\.body/);
+});
+
+test("the hover outline sits on the one element a click would take", () => {
+  // The bridge marks that element itself. A CSS rule that restated the block definition in a
+  // selector could outline a different box from the one a click resolves to, and both halves
+  // would still "work" - the quiet kind of wrong. Computed display cannot be a selector at
+  // all, so there is nothing to restate.
+  const source = htmlPreviewSource("ok");
+  const styles = [...source.matchAll(/<style>([^<]+)<\/style>/g)].map((match) => match[1]!);
+  const style = styles.find((candidate) => candidate.includes("mission-comment-mode"))!;
+  assert.match(style, /html\.mission-comment-mode \.mission-comment-block\{/);
+  assert.doesNotMatch(style, /:has\(/, "no selector may restate which element is the block");
+  assert.doesNotMatch(style, /blockquote|figcaption|thead|tbody/);
+  // And the class it keys on is set by the bridge and nothing else.
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /classList\.add\("mission-comment-block"\)/);
+  assert.match(bridge, /classList\.remove\("mission-comment-block"\)/);
+});
+
 test("the comment bridge takes the click before the link bridge can navigate it", () => {
   // Both listen on `document` in the capture phase, so registration order IS the behaviour:
   // `stopImmediatePropagation` only reaches listeners registered after this one. A paragraph

@@ -97,6 +97,47 @@ test("the revision is the one the daemon just read, so an anchor is not stamped 
   writeFileSync(join(checkout, "docs/page.html"), PAGE);
 });
 
+test("an edit that keeps the shape is still refused, because the words changed", async () => {
+  // The staleness the tree walk CANNOT see, and the one that looks like success. Rewriting a
+  // paragraph in place leaves the tag and the index exactly where they were, so the path from
+  // the old render resolves perfectly - against words the reader never saw. Without the
+  // revision check this returns 200 and the composer quotes the new sentence.
+  const opened = await resolve("live", { path: "docs/page.html", blockPath: PARAGRAPH });
+  const rendered = String(opened.data.revision);
+  writeFileSync(
+    join(checkout, "docs/page.html"),
+    PAGE.replace(
+      "<p>Read <strong>this</strong> &amp; then the table.</p>",
+      "<p>Read <strong>that</strong> &amp; skip the table.</p>",
+    ),
+  );
+  const stale = await resolve("live", {
+    path: "docs/page.html",
+    blockPath: PARAGRAPH,
+    revision: rendered,
+  });
+  assert.equal(stale.status, 409);
+  // The SAME sentence a path that no longer walks gets: same fact, same remedy.
+  assert.match(String(stale.data.error), /Reload the preview/);
+  // And a caller sending the revision the file actually holds is answered as before.
+  const current = await resolve("live", { path: "docs/page.html", blockPath: PARAGRAPH });
+  const fresh = await resolve("live", {
+    path: "docs/page.html",
+    blockPath: PARAGRAPH,
+    revision: String(current.data.revision),
+  });
+  assert.equal(fresh.status, 200);
+  assert.equal(fresh.data.quote, "<p>Read <strong>that</strong> &amp; skip the table.</p>");
+  writeFileSync(join(checkout, "docs/page.html"), PAGE);
+});
+
+test("omitting the revision keeps meaning do not check", async () => {
+  // The field is optional so that a caller which has no revision to offer - a file that has
+  // never been written, or anything not yet taught to send it - is not locked out.
+  const { status } = await resolve("live", { path: "docs/page.html", blockPath: PARAGRAPH });
+  assert.equal(status, 200);
+});
+
 test("a row inside an implicit tbody resolves, which a tag walk could not do", async () => {
   const { status, data } = await resolve("live", { path: "docs/page.html", blockPath: ROW });
   assert.equal(status, 200);

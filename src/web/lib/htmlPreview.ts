@@ -33,19 +33,32 @@ const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
 const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
 const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
 /**
- * The block-level selector a comment click resolves to, shared by the bridge and the
- * hover affordance beside it so the thing you see highlighted is the thing you comment on.
+ * What counts as a block, decided by the layout the browser actually produced.
  *
- * Deliberately generous. A checkout's HTML is a mockup, a report, a rendered plan - not a
- * document class this module gets to assume - so anything that reads as a block on screen
- * is a legitimate thing to point at. `closest()` matches the element itself first, so a
- * click inside a `<td>` anchors to its row and a click in a nested `<p>` anchors to that
- * paragraph rather than to the section around it.
+ * This used to be a list of tag names, and a list is the wrong shape for the question. It
+ * is never finished - `form`, `fieldset`, `address` and `dialog` were all missing from it,
+ * and any list would keep missing whatever it had not thought of. Worse, it cannot see a
+ * `span` the document styled `display:block`, which reads to a person as a block and is a
+ * perfectly reasonable thing to point at. The preview renders arbitrary checkout HTML,
+ * including hand-written documents and whatever a generator emitted, so "anything I
+ * enumerated" and "anything that reads as a block on screen" are not the same set.
+ *
+ * `getComputedStyle().display` answers the real question. Anything that is not `inline`,
+ * `contents` or `none` establishes a box a reader can see and aim at - which takes in
+ * `block`, `flex`, `grid`, `list-item`, `table-cell`, `table-row`, every `inline-block`
+ * variant, and every element a stylesheet made into one of those. `none` is excluded
+ * because a block nobody can see is not a block anybody can hover.
+ *
+ * The walk stops at the innermost such ancestor, so a click inside a `td` anchors to the
+ * cell and a click in a nested `p` anchors to that paragraph rather than the section
+ * around it. `body` bounds it: the whole document is not a block to comment on.
+ *
+ * SVG is the one case decided by tag rather than by display, deliberately. An `svg` element
+ * computes to `inline`, and its internals - `path`, `g`, `rect` - are not blocks in the CSS
+ * sense at all, so display alone would either skip the diagram entirely or offer its
+ * individual strokes as targets. A diagram is one thing a person points at, so anything
+ * inside one resolves to the `svg` itself.
  */
-const PREVIEW_BLOCK_SELECTOR =
-  "p,h1,h2,h3,h4,h5,h6,blockquote,pre,li,tr,table,thead,tbody,ul,ol,dl,dt,dd,figure,"
-  + "figcaption,section,article,aside,header,footer,main,nav,div,details,summary,svg,hr";
-
 /**
  * The third bridge: while the parent has comment mode ON, a click reports which BLOCK was
  * clicked, as a structural path through the tree the browser built.
@@ -86,6 +99,13 @@ const PREVIEW_BLOCK_SELECTOR =
  * the link bridge, which is registered after this one for exactly that reason. Clicking a
  * paragraph that happens to contain a link is a comment on the paragraph, not navigation.
  *
+ * **It marks the hovered block itself rather than leaving that to a CSS rule.** The rule it
+ * replaced restated the block definition a second time, in a selector, and the two had to
+ * agree or the outline would sit on a different element from the one a click would take -
+ * silently, since both halves still work. Now `missionBlock` is the only answer to "which
+ * block is this", and the hover and the click ask it the same way. It also lets the
+ * affordance follow a definition a selector cannot express at all: computed display.
+ *
  * NO LITERAL `<` ANYWHERE IN THIS BODY. `test/html-preview.test.ts` extracts each script
  * with `/<script>([^<]+)<\/script>/g` to recompute its hash, so one comparison operator
  * would truncate this script's body and fail there - which is the loud version. The quiet
@@ -94,22 +114,24 @@ const PREVIEW_BLOCK_SELECTOR =
 const PREVIEW_COMMENT_MESSAGE = "mission:file-preview-comment";
 const PREVIEW_BLOCK_MESSAGE = "mission:file-preview-block";
 const PREVIEW_READY_MESSAGE = "mission:file-preview-ready";
-const PREVIEW_COMMENT_SCRIPT = `let missionCommenting=false;addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_COMMENT_MESSAGE}")return;missionCommenting=event.data.enabled===true;document.documentElement.classList.toggle("mission-comment-mode",missionCommenting)});document.addEventListener("click",event=>{if(!missionCommenting)return;event.preventDefault();event.stopImmediatePropagation();const origin=event.composedPath()[0];const block=origin instanceof Element?origin.closest("${PREVIEW_BLOCK_SELECTOR}"):null;if(!block||!document.body.contains(block))return;const path=[];let node=block;while(node!==document.body){const owner=node.parentElement;if(!owner)return;path.unshift({index:[...owner.children].indexOf(node),tag:node.tagName.toLowerCase()});node=owner}parent.postMessage({type:"${PREVIEW_BLOCK_MESSAGE}",path},"*")},true);parent.postMessage({type:"${PREVIEW_READY_MESSAGE}"},"*")`;
-const PREVIEW_COMMENT_SCRIPT_HASH = "f5hT4Wegc47zmW/z4mO8eplZX/mWfzE0FnKJIKWMCwM=";
+const PREVIEW_COMMENT_SCRIPT = `let missionCommenting=false;let missionMarked=null;function missionBlock(node){let el=node instanceof Element?node:null;while(el&&el!==document.body){if(el.tagName.toLowerCase()==="svg")return el;if(el.namespaceURI!=="http://www.w3.org/2000/svg"){const shown=getComputedStyle(el).display;if(shown!=="inline"&&shown!=="contents"&&shown!=="none")return el}el=el.parentElement}return null}function missionMark(el){if(missionMarked===el)return;if(missionMarked)missionMarked.classList.remove("mission-comment-block");missionMarked=el;if(el)el.classList.add("mission-comment-block")}addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_COMMENT_MESSAGE}")return;missionCommenting=event.data.enabled===true;document.documentElement.classList.toggle("mission-comment-mode",missionCommenting);if(!missionCommenting)missionMark(null)});document.addEventListener("mouseover",event=>{if(!missionCommenting)return;missionMark(missionBlock(event.composedPath()[0]))},true);document.addEventListener("mouseout",event=>{if(!event.relatedTarget)missionMark(null)},true);document.addEventListener("click",event=>{if(!missionCommenting)return;event.preventDefault();event.stopImmediatePropagation();const block=missionBlock(event.composedPath()[0]);if(!block||!document.body.contains(block))return;const path=[];let node=block;while(node!==document.body){const owner=node.parentElement;if(!owner)return;path.unshift({index:[...owner.children].indexOf(node),tag:node.tagName.toLowerCase()});node=owner}parent.postMessage({type:"${PREVIEW_BLOCK_MESSAGE}",path},"*")},true);parent.postMessage({type:"${PREVIEW_READY_MESSAGE}"},"*")`;
+const PREVIEW_COMMENT_SCRIPT_HASH = "E9uJHE7aVw0AWiMsFk0PxXrh8C4oaVMrpGEYB7ux98Y=";
 
 /**
- * The hover affordance, gated on the class only the bridge above ever sets.
+ * The hover affordance, gated on the two classes only the bridge above ever sets.
  *
  * Inside the frame because that is the only place it can be: the parent cannot draw on a
  * document it has no origin for. `style-src 'unsafe-inline'` already permits it, so this
- * adds no policy, and with comment mode off the class is absent and every rule here is
+ * adds no policy, and with comment mode off both classes are absent and every rule here is
  * dead weight a previewed document never notices.
  *
- * `:not(:has(...))` is what keeps a click target honest on nested blocks. Without it a
- * paragraph inside a section inside a div outlines three boxes at once, and none of them
- * is the one `closest()` will actually pick.
+ * There is no block selector here on purpose. The bridge decides which element is the block
+ * and puts `mission-comment-block` on that one element, so exactly one box is ever outlined
+ * and it is always the one a click would take. Expressing that in CSS would mean repeating
+ * the definition and then keeping `:hover:not(:has(...))` in step with it - and computed
+ * display, which is what the definition now rests on, cannot be written as a selector.
  */
-const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode :is(${PREVIEW_BLOCK_SELECTOR}):hover:not(:has(:is(${PREVIEW_BLOCK_SELECTOR}):hover)){outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}`;
+const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode .mission-comment-block{outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}`;
 
 /**
  * Every anchor click leaves the document through the parent, or not at all.

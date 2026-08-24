@@ -777,8 +777,12 @@ so a paragraph inside a quote is one target, not three.
 - In **Markdown Preview** - a paragraph, heading, table, list, code block or Mermaid diagram -
   a small **+** appears in the margin beside it. Its name says which lines it covers ("Comment
   on lines 7 to 9").
-- In **HTML Preview** the block itself is the target: click anywhere in it. A link inside a
-  block you are commenting on does not navigate while comment mode is on.
+- In **HTML Preview** the block itself is the target: click anywhere in it. What counts as a
+  block is whatever the browser laid out as one - a paragraph, a table cell, a form, a
+  fieldset, an address, an open dialog, and equally a `span` the document styled into a block.
+  A diagram is one target rather than each of its strokes, and anything hidden is not a target
+  at all. A link inside a block you are commenting on does not navigate while comment mode is
+  on.
 
 Either way it opens the same box, in the source column beside the preview, at the line that
 block was written on - and the comment anchors to **source lines** and quotes **source text**,

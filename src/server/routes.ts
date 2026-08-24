@@ -249,7 +249,7 @@ import {
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
-import { resolveHtmlBlockAnchor } from "./html-block-anchor.ts";
+import { HTML_BLOCK_STALE_REASON, resolveHtmlBlockAnchor } from "./html-block-anchor.ts";
 import { progressOf, type FileCommentWalkthrough } from "./file-comment-walkthrough.ts";
 import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
@@ -2378,6 +2378,15 @@ export function buildApp(
     }
     if (document.text === null) {
       return c.json({ error: document.error ?? "this file has no source to anchor to" }, 400);
+    }
+    // A resolvable path is NOT proof the render is current, and this is the case that looks
+    // like success: an edit that rewrites a paragraph in place leaves the tree the same
+    // shape, so the stale path still walks to an element - a different one than the reader
+    // clicked, quoting words they never saw. The revision the preview was built from settles
+    // it, because only the daemon knows which one it just read. Same refusal as a path that
+    // no longer walks: the remedy is the same reload.
+    if (parsed.data.revision !== undefined && parsed.data.revision !== document.revision) {
+      return c.json({ error: HTML_BLOCK_STALE_REASON }, 409);
     }
     const resolved = resolveHtmlBlockAnchor(document.text, parsed.data.blockPath);
     // 409, not 400: the request was well formed and the answer is that the file moved under

@@ -6318,6 +6318,18 @@ export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
 export const HtmlBlockAnchorSchema = z.object({
   path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
   blockPath: z.array(HtmlBlockPathStepSchema).min(1).max(HTML_BLOCK_PATH_LIMITS.depth),
+  /**
+   * The revision the render being clicked was built from, when the caller knows it.
+   *
+   * The daemon refuses if the file it reads is not that one. A path resolving is not enough
+   * on its own: an edit that rewrites a block in place leaves the tree the same shape, so
+   * the stale path walks to an element that now holds words the reader never saw.
+   *
+   * Nullable and optional because a file with no revision yet is a legitimate caller, and
+   * because omitting it has to keep meaning "do not check" for anything that has not been
+   * taught to send it.
+   */
+  revision: z.string().max(FILE_COMMENT_TEXT_LIMITS.path).nullable().optional(),
 });
 export type HtmlBlockAnchorBody = z.infer<typeof HtmlBlockAnchorSchema>;
 

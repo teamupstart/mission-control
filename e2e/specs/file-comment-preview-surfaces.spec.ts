@@ -80,6 +80,51 @@ const HTML_SOURCE = [
   "</html>",                                                    // 13
 ].join("\n");
 
+const HTML_BLOCKS = "docs/plans/blocks.html";
+/**
+ * Blocks a tag allowlist did not name, which is the point of this document.
+ *
+ * `form`, `fieldset` and `address` are ordinary blocks that the selector this bridge used to
+ * carry simply had not thought of, and the last one here is the case no list could ever
+ * cover: a `span` the document itself styles into a block. What decides is the layout the
+ * browser produced, so all of them are hoverable and all of them anchor.
+ *
+ * A closed `dialog` is deliberately present too. It computes to `display:none`, so it is NOT
+ * a block anybody can point at, and nothing may anchor to it.
+ */
+const HTML_BLOCKS_SOURCE = [
+  "<html>",                                                                 // 1
+  "<head><title>Blocks</title><style>.card{display:block}</style></head>",  // 2
+  "<body>",                                                                 // 3
+  "<address>Written by the platform team.</address>",                       // 4
+  "<form>",                                                                 // 5
+  "<fieldset>Retry budget, in seconds.</fieldset>",                         // 6
+  "</form>",                                                                // 7
+  "<span class=\"card\">Styled into a block by the document itself.</span>", // 8
+  "<dialog>Never shown, never commentable.</dialog>",                       // 9
+  "</body>",                                                                // 10
+  "</html>",                                                                // 11
+].join("\n");
+
+const HTML_DIALOG = "docs/plans/dialog.html";
+/**
+ * An open `dialog`, alone in its own document, and the reason it is not in the one above.
+ *
+ * A non-modal `dialog[open]` is `position:absolute` in the UA stylesheet, so it lays itself
+ * over whatever precedes it and intercepts their pointer events. That is real browser
+ * behavior rather than anything this feature does, and the honest way to cover the element
+ * is to give it a document where it covers nothing - not to restyle it until the test is
+ * comfortable.
+ */
+const HTML_DIALOG_SOURCE = [
+  "<html>",                                                // 1
+  "<head><title>Dialog</title></head>",                    // 2
+  "<body>",                                                // 3
+  "<dialog open>The deploy is still running.</dialog>",     // 4
+  "</body>",                                               // 5
+  "</html>",                                               // 6
+].join("\n");
+
 const MARKDOWN_COMMENT = "Thirty seconds contradicts the table below.";
 const TABLE_COMMENT = "This table is missing a units column.";
 const HTML_COMMENT = "This paragraph says the opposite of the heading.";
@@ -347,6 +392,65 @@ test.describe("commenting on a rendered document", () => {
 
     await expectMarkerOnLine(page, 4);
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
+  });
+
+  test("a block is whatever the browser laid out as one, not whatever a list named", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_BLOCKS, HTML_BLOCKS_SOURCE);
+    write(cwd, HTML_DIALOG, HTML_DIALOG_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_BLOCKS);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+
+    // Three elements a tag allowlist had not thought of, and one the document styled into a
+    // block, which no list can see at all.
+    const blocks: [string, number, string][] = [
+      ["Written by the platform team.", 4, "An address is a block."],
+      ["Retry budget, in seconds.", 6, "A fieldset is a block."],
+      ["Styled into a block by the document itself.", 8, "A styled span is a block."],
+    ];
+    for (const [text, line, body] of blocks) {
+      const target = frame.getByText(text);
+      // Hover first: the affordance and the click have to agree about which element this is,
+      // which they now do by construction - the bridge marks the element it would resolve.
+      await target.hover();
+      await target.click();
+      await writeComment(page, `line ${line}`, body);
+    }
+
+    // A `dialog` with no `open` computes to `display:none`. It is in the source and in the
+    // tree, and it is not a block anybody can see, so it is not a target.
+    await expect(frame.getByText("Never shown, never commentable.")).toBeHidden();
+
+    // An OPEN dialog is a block, in its own document for the reason recorded on the fixture.
+    await choose(page, HTML_DIALOG);
+    const dialogFrame = page.frameLocator("iframe.html-preview");
+    await dialogFrame.getByText("The deploy is still running.").click();
+    await writeComment(page, "line 4", "An open dialog is a block.");
+
+    await expect
+      .poll(() => storedThreads(daemon).length, { message: "every block anchored" })
+      .toBe(4);
+    const stored = storedThreads(daemon);
+    expect(stored.map((row) => [row.path, row.start_line, row.surface])).toEqual([
+      [HTML_BLOCKS, 4, "html"],
+      [HTML_BLOCKS, 6, "html"],
+      [HTML_BLOCKS, 8, "html"],
+      [HTML_DIALOG, 4, "html"],
+    ]);
+    // Each quote is the SOURCE line, which is what a later re-anchor searches for.
+    expect(stored[0]!.quote).toBe("<address>Written by the platform team.</address>");
+    expect(stored[2]!.quote).toBe(
+      '<span class="card">Styled into a block by the document itself.</span>',
+    );
+    expect(stored[3]!.quote).toBe("<dialog open>The deploy is still running.</dialog>");
   });
 
   test("two blocks with identical text take their own lines, and an entity survives", async ({

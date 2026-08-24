@@ -71,10 +71,16 @@ export type HtmlBlockAnchorResult = HtmlBlockAnchorResolution | HtmlBlockAnchorR
  * One sentence a person can act on, and it is the same sentence for every way the walk can
  * fail, because they are all the same fact: the document changed under a render still on
  * screen.
+ *
+ * Exported because the route says it too, for the one staleness this walk cannot detect: an
+ * edit that rewrote a block in place, leaving a tree of the same shape that a stale path
+ * resolves against perfectly well. Same fact, same remedy, so it has to be the same sentence
+ * rather than a second one that means it.
  */
-const STALE =
+export const HTML_BLOCK_STALE_REASON =
   "This preview is showing an older version of the file, so that block could not be "
   + "matched to a line. Reload the preview and try again.";
+const STALE = HTML_BLOCK_STALE_REASON;
 
 function isElement(node: ParsedNode): node is ParsedElement {
   return "tagName" in node;

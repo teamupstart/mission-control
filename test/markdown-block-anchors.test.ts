@@ -237,3 +237,37 @@ test("a Markdown block's quote and revision describe the same snapshot", () => {
     "previewRevision must come from the SAME prepared snapshot previewText does",
   );
 });
+
+test("a stale block answer cannot overwrite the composer a newer click opened", () => {
+  // Two clicks are two round trips with no ordering between the answers. The older one
+  // arriving second used to win outright - it dismissed the composer the newer click had
+  // already opened and put up its own - so the reader wrote about a block they had moved on
+  // from, with nothing on screen saying so. Every click takes a number; an answer is applied
+  // only while its number is still the current one.
+  assert.match(
+    WORKSPACE,
+    /blockRequests\.current \+= 1;\s*const request = blockRequests\.current;/,
+    "each click must claim a request number before the round trip",
+  );
+  assert.match(
+    WORKSPACE,
+    /if \(!live \|\| request !== blockRequests\.current\) return;/,
+    "an answer must be dropped unless it is still the click the reader is waiting on",
+  );
+});
+
+test("an HTML block click carries the revision its render was built from", () => {
+  // A resolvable path is not proof the render is current. An edit that rewrites a block in
+  // place leaves the tree the same shape, so a stale path walks to an element holding words
+  // the reader never saw - and the route answers 200. Only the revision separates them.
+  assert.match(
+    WORKSPACE,
+    /revision: previewRevisionRef\.current,/,
+    "the request must carry the revision the iframe document was built from",
+  );
+  assert.match(
+    WORKSPACE,
+    /previewRevisionRef\.current = previewRevision;/,
+    "and that ref has to be refreshed during render, like the click handler's",
+  );
+});

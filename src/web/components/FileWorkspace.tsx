@@ -793,6 +793,23 @@ export function FileWorkspace({
    */
   const blockClickRef = useRef(commentOnBlock);
   blockClickRef.current = commentOnBlock;
+  /*
+   * Which click the reader is still waiting on.
+   *
+   * Resolving a block is a round trip, and two clicks in quick succession are two of them
+   * with no ordering between the answers. The older one arriving second used to win: it
+   * dismissed the composer the newer click had already opened and put up its own, so the
+   * reader ended up writing about a block they had moved on from - and nothing on screen
+   * said so. Every click takes the next number, and an answer is applied only if its number
+   * is still the current one.
+   *
+   * A counter rather than an `AbortController` because the stale answer must be dropped even
+   * when it has already arrived, and abandoning it here is the same thing to the daemon: the
+   * route only reads.
+   */
+  const blockRequests = useRef(0);
+  const previewRevisionRef = useRef(previewRevision);
+  previewRevisionRef.current = previewRevision;
   useEffect(() => {
     if (!htmlCommenting || !previewPath) return;
     let live = true;
@@ -804,10 +821,19 @@ export function FileWorkspace({
       );
       if (!frame || event.source !== frame.contentWindow) return;
       const blockPath = data.path as HtmlBlockPathStep[];
-      void resolveHtmlBlockAnchor(session.id, { path: previewPath, blockPath }).then((result) => {
+      blockRequests.current += 1;
+      const request = blockRequests.current;
+      void resolveHtmlBlockAnchor(session.id, {
+        path: previewPath,
+        blockPath,
+        // The revision the iframe's document was built from. The daemon refuses if the file
+        // it reads is not that one, because a path can still resolve against a file whose
+        // TEXT has changed underneath it - same tags, same positions, different words.
+        revision: previewRevisionRef.current,
+      }).then((result) => {
         // Now only false when the reader really has left this file or turned the mode off,
         // which is the one case where an answer is genuinely no longer wanted.
-        if (!live) return;
+        if (!live || request !== blockRequests.current) return;
         if (!result.ok) {
           setThreadError(result.error);
           return;

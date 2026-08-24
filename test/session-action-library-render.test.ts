@@ -298,6 +298,26 @@ test("the contract is two chips and the sentence they form, not two selects in a
   assert.match(html, /Revision 2/);
 });
 
+test("the chips and the sentence they form sit in ONE labelled contract region", () => {
+  const html = editor(action({ requiredSkillId: "pull-request" }));
+  // One lesson, one region. The chips and the sentence were three siblings of the editor
+  // column saying one thing between them, and nothing named that thing - so a reader jumping
+  // by landmark, and a guided tour spotlighting "the contract", could only reach half of it.
+  const region = html.match(
+    /<section class="wf-action-contract-group" aria-label="Session action contract">([\s\S]*?)<\/section>/,
+  );
+  assert.ok(region, "the contract region is missing");
+  const inside = region[1] ?? "";
+  assert.match(inside, /<div class="lib-props">/);
+  assert.match(inside, /<span class="lib-chip-k">requires skill<\/span>/);
+  assert.match(inside, /<span class="lib-chip-k">completes when<\/span>/);
+  assert.match(inside, /<p class="wf-action-contract">/);
+  // The instruction is deliberately OUTSIDE it: what an action requires and what it says are
+  // two stops, and the region is the first one.
+  assert.doesNotMatch(inside, /aria-label="Session action instruction"/);
+  assert.match(html, /<section class="wf-action-prompt" aria-label="Session action instruction">/);
+});
+
 test("the contract line states the sentence the two chips form, in the shared words", () => {
   const html = editor(action({ requiredSkillId: "pull-request" }));
   // What the stage sends, what the session must have, and what Mission Control observes -

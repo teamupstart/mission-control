@@ -19,6 +19,7 @@ import {
   type SessionActionDraftSeed,
 } from "./SessionActionEditor.tsx";
 import { sessionActionRequest, useSessionActionCapabilities } from "./sessionActionApi.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -138,6 +139,8 @@ export function SessionActionLibrary({
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [editorKey, setEditorKey] = useState(0);
+  /** The guided tour's semantic handle on this rail. Inert unless a tour is running. */
+  const tourRailRef = useTourTargetRef<HTMLElement>("library:action-rail");
   const [skills, setSkills] = useState<readonly SkillCatalogEntry[]>([]);
   const capabilities = useSessionActionCapabilities();
 
@@ -287,7 +290,7 @@ export function SessionActionLibrary({
 
   return (
     <section className="wf-action-library">
-      <aside className="wf-action-sidebar" aria-label="Session action library">
+      <aside className="wf-action-sidebar" aria-label="Session action library" ref={tourRailRef}>
         <LibraryBackRow onLeave={onLeave} />
         <div className="wf-action-sidebar-head">
           <div>

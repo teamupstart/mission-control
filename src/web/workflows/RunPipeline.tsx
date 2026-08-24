@@ -37,6 +37,7 @@ import {
   type InheritedPass,
 } from "./run-model.ts";
 import { moveWorkflowStageSelection } from "./run-navigation.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /** A reviewer or Command whose current attempt has settled and has worklist data to inspect. */
 function opensReviewWorklist(raw: string | undefined): boolean {
@@ -201,6 +202,8 @@ export function RunPipeline({
   // Memoised for the reason `WorkflowLibrary` memoises its own: the canvas lists this in the
   // dependency array of the projection it syncs into React Flow's store from an effect, so a
   // fresh closure per render re-runs that sync per render.
+  /** The guided tour's handle on THIS strip - one run's real state, not the authored graph. */
+  const tourStripRef = useTourTargetRef<HTMLDivElement>("library:run-pipeline-strip");
   const labelFor = useCallback(
     (node: StageNode): string => nodeLabel(graph, node, []),
     [graph],
@@ -295,7 +298,7 @@ export function RunPipeline({
   };
 
   return (
-    <PipelineFrame ariaLabel="Workflow run pipeline" repair={repair}>
+    <PipelineFrame ariaLabel="Workflow run pipeline" repair={repair} stripRef={tourStripRef}>
       <TerminusCard
         kind="session"
         name="Session"

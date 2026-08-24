@@ -15,6 +15,12 @@ captures of both the wide and narrow shelf layouts.
 executable argvs. Saving one executes nothing; a workflow reaching that slot, later, in a
 repository granted the Workflows cell in Trust, is what runs it.
 
+The **Author what runs** guided tour is the fastest way through everything below. It walks
+fifteen stops - the shelves, then Personas, Actions, Commands, and the built-in No-Mistakes
+Review workflow that composes all three - on shipped built-ins, and writes nothing. Start it
+from the Settings rail's **Help & tours** footer or the ⌘K palette; see
+[guided tours](ui.md#guided-tours).
+
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Console or Board selection stay mounted, so returning to **Fleet**
 does not reconnect or discard the fleet view.

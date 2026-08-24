@@ -10,6 +10,7 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   FOREMAN_PROFILE_DESCRIPTION,
   FOREMAN_PROFILE_ID,
@@ -225,9 +226,10 @@ export function LibraryPage({
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);
   const commands = commandCards(workflowCommands, hasSnapshot);
+  const tourRef = useTourTargetRef<HTMLElement>("library:library-page");
 
   return (
-    <main className="lib-page">
+    <main className="lib-page" ref={tourRef}>
       <header className="lib-head">
         <div>
           <p className="workflow-eyebrow">Authoring</p>

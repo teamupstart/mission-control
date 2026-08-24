@@ -262,6 +262,38 @@ test("an unknown tour id is refused before any task is created", async () => {
   assert.equal(created, 0);
 });
 
+test("the Library tour has no server recipe, so every tour route refuses it", async () => {
+  let created = 0;
+  const tasks = {
+    create(input: CreateTaskInput) {
+      created += 1;
+      return tourTask({ repoRoot: String(input.repoRoot) });
+    },
+    get() { return tourTask(); },
+  } as unknown as TaskManager;
+  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+
+  // A registered BROWSER tour is not a registered server tour. The Library tour creates
+  // nothing - no task, no session, no binding - so it declares no operation, and asking for
+  // one on its behalf is refused with the same answer an invented id gets rather than
+  // falling through to general dispatch.
+  assert.equal(serverTour("library"), null);
+  for (const path of [
+    "/api/tours/library/dispatch",
+    "/api/tours/library/preview",
+    "/api/tours/library/tasks/tour-task/complete",
+  ]) {
+    const response = await app.request(path, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ repoRoot: process.cwd() }),
+    });
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { ok: false, error: "no such tour" });
+  }
+  assert.equal(created, 0);
+});
+
 test("cleanup refuses a task the named tour did not create", async () => {
   const stranger = tourTask({
     id: "real-work",

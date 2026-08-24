@@ -45,12 +45,14 @@ test("both entry points are drawn from the tour registry, and start the same one
   await dashboard.emulateMedia({ reducedMotion: "reduce" });
   await dashboard.goto(`${daemon.baseURL}/#/settings/keyboard`);
 
-  // The Settings footer draws one row per registered tour. One tour is registered, so the
-  // footer has exactly one row - not a hardcoded button that happens to look the same.
+  // The Settings footer draws one row per registered tour - a LIST, not two hardcoded buttons
+  // that happen to look alike. Two tours are registered, and each has exactly one row.
   const helpAndTours = dashboard.getByRole("group", { name: "Help & tours" });
-  await expect(helpAndTours.getByRole("button")).toHaveCount(1);
+  await expect(helpAndTours.getByRole("button")).toHaveCount(2);
   await expect(helpAndTours.getByRole("button", { name: "Start See the work tour" }))
-    .toBeVisible();
+    .toHaveCount(1);
+  await expect(helpAndTours.getByRole("button", { name: "Start Author what runs tour" }))
+    .toHaveCount(1);
 
   // The palette's Do group draws one command row per registered tour, from the same registry.
   const palette = dashboard.getByRole("dialog", { name: "Search everything" });
@@ -58,6 +60,9 @@ test("both entry points are drawn from the tour registry, and start the same one
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
   await expect(palette.getByRole("option", { name: TOUR_COMMAND })).toHaveCount(1);
+  // Naming one tour finds one row: the palette rows are per tour, not a single "tour" entry.
+  await expect(palette.getByRole("option", { name: /Start Author what runs tour, command/ }))
+    .toHaveCount(0);
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
 
   const first = step(dashboard, "Fleet and the Line");

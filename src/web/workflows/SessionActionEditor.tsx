@@ -24,6 +24,7 @@ import {
   type LibraryPrimaryAction,
 } from "../library/LibraryWorkspaceHeader.tsx";
 import { sessionActionConflict, sessionActionRequest } from "./sessionActionApi.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Authoring one SessionAction: a name, a description, the EXACT instruction a bound session
@@ -1000,6 +1001,13 @@ export function SessionActionEditor({
     },
   });
   const updated = sessionActionUpdatedLine(action);
+  /*
+   * The guided tour's two semantic handles on this screen. The contract is the chips AND the
+   * sentence they form - one lesson with no single element to point at before now - so the
+   * two get the labelled region below rather than the tour spotlighting half of it.
+   */
+  const tourContractRef = useTourTargetRef<HTMLElement>("library:action-contract");
+  const tourInstructionRef = useTourTargetRef<HTMLElement>("library:action-instruction");
 
   return (
     <article
@@ -1078,76 +1086,91 @@ export function SessionActionEditor({
         </p>
       )}
 
-      <LibraryPropertyChips>
-        <LibraryPropertyChip
-          name="requires skill"
-          value={draft.requiredSkillId ?? "none"}
-          mono={draft.requiredSkillId !== null}
-          // Quiet when this action asks for nothing, solid when it does: an action with no
-          // required skill is not inheriting a default, it is asserting nothing, and the row
-          // reads the same way either way - solid means "this asset says something".
-          state={draft.requiredSkillId === null ? "inherited" : "overridden"}
-          tooltip={draft.requiredSkillId === null
-            ? "This action requires no skill - open to require one before it is sent"
-            : "The bound session must be able to invoke this skill before the instruction is sent"}
-          controlLabel="Required skill"
-        >
-          <SessionActionSkillControl
-            skills={skills}
-            value={draft.requiredSkillId}
-            unlisted={skillUnlisted}
-            disabled={readOnly}
-            onChange={(requiredSkillId) => edit({ requiredSkillId })}
+      {/* One region for one lesson: what this action REQUIRES and what proves it done. The
+          chips, the retained-completion note, and the sentence they form were three siblings
+          saying one thing, and the region gives that thing a name a reader and a guided tour
+          can both address. Its own gap matches the editor column's, so the layout is
+          unchanged. */}
+      <section
+        className="wf-action-contract-group"
+        aria-label="Session action contract"
+        ref={tourContractRef}
+      >
+        <LibraryPropertyChips>
+          <LibraryPropertyChip
+            name="requires skill"
+            value={draft.requiredSkillId ?? "none"}
+            mono={draft.requiredSkillId !== null}
+            // Quiet when this action asks for nothing, solid when it does: an action with no
+            // required skill is not inheriting a default, it is asserting nothing, and the row
+            // reads the same way either way - solid means "this asset says something".
+            state={draft.requiredSkillId === null ? "inherited" : "overridden"}
+            tooltip={draft.requiredSkillId === null
+              ? "This action requires no skill - open to require one before it is sent"
+              : "The bound session must be able to invoke this skill before the instruction is sent"}
+            controlLabel="Required skill"
+          >
+            <SessionActionSkillControl
+              skills={skills}
+              value={draft.requiredSkillId}
+              unlisted={skillUnlisted}
+              disabled={readOnly}
+              onChange={(requiredSkillId) => edit({ requiredSkillId })}
+            />
+          </LibraryPropertyChip>
+          <LibraryPropertyChip
+            name="completes when"
+            value={completionValue}
+            // Always solid: every action names a completion, and none of them inherits one.
+            state="overridden"
+            // Marked, and readable while shut, rather than a disabled option inside a closed
+            // dropdown. A stored completion this build cannot prove is the one fact on this row
+            // that is waiting on somebody, and it was previously invisible until you opened the
+            // select that could not offer it.
+            tone={retainedCompletion ? "attention" : undefined}
+            tooltip={retainedCompletion
+              ? "This build cannot prove the completion this action names - it is kept, not offered"
+              : "What Mission Control must observe before the stages after this action run"}
+            controlLabel="Completes when"
+          >
+            <SessionActionCompletionControl
+              choices={choices}
+              value={draft.completionKind}
+              disabled={readOnly}
+              onChange={(completionKind) => edit({ completionKind })}
+            />
+          </LibraryPropertyChip>
+          {/* The instruction's exact size, as a property of the asset rather than a span in the
+              file toolbar - where it was the one toolbar in the app carrying one. */}
+          <LibraryPropertyChip
+            name="utf-8 bytes"
+            value={`${promptBytes.toLocaleString()} / ${WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()}`}
+            mono
+            align="end"
+            tone={promptOverLimit ? "danger" : undefined}
+            tooltip={promptOverLimit
+              ? "The instruction is over the byte limit and cannot be saved until it is shorter"
+              : "Exact UTF-8 size of the instruction, against the ceiling a delivery packet can carry"}
           />
-        </LibraryPropertyChip>
-        <LibraryPropertyChip
-          name="completes when"
-          value={completionValue}
-          // Always solid: every action names a completion, and none of them inherits one.
-          state="overridden"
-          // Marked, and readable while shut, rather than a disabled option inside a closed
-          // dropdown. A stored completion this build cannot prove is the one fact on this row
-          // that is waiting on somebody, and it was previously invisible until you opened the
-          // select that could not offer it.
-          tone={retainedCompletion ? "attention" : undefined}
-          tooltip={retainedCompletion
-            ? "This build cannot prove the completion this action names - it is kept, not offered"
-            : "What Mission Control must observe before the stages after this action run"}
-          controlLabel="Completes when"
-        >
-          <SessionActionCompletionControl
-            choices={choices}
-            value={draft.completionKind}
-            disabled={readOnly}
-            onChange={(completionKind) => edit({ completionKind })}
-          />
-        </LibraryPropertyChip>
-        {/* The instruction's exact size, as a property of the asset rather than a span in the
-            file toolbar - where it was the one toolbar in the app carrying one. */}
-        <LibraryPropertyChip
-          name="utf-8 bytes"
-          value={`${promptBytes.toLocaleString()} / ${WORKFLOW_LIMITS.sessionActionPromptBytes.toLocaleString()}`}
-          mono
-          align="end"
-          tone={promptOverLimit ? "danger" : undefined}
-          tooltip={promptOverLimit
-            ? "The instruction is over the byte limit and cannot be saved until it is shorter"
-            : "Exact UTF-8 size of the instruction, against the ceiling a delivery packet can carry"}
+        </LibraryPropertyChips>
+        {/* Kept on the face rather than inside the chip's popover: a completion this build
+            cannot prove is something to act on, and a closed chip that read as an ordinary
+            choice would report a guarantee nothing here can keep. */}
+        {retainedCompletion?.note && (
+          <p className="lib-props-note">{retainedCompletion.note}</p>
+        )}
+
+        <SessionActionContractLine
+          requiredSkillId={draft.requiredSkillId}
+          completion={{ kind: draft.completionKind }}
         />
-      </LibraryPropertyChips>
-      {/* Kept on the face rather than inside the chip's popover: a completion this build
-          cannot prove is something to act on, and a closed chip that read as an ordinary
-          choice would report a guarantee nothing here can keep. */}
-      {retainedCompletion?.note && (
-        <p className="lib-props-note">{retainedCompletion.note}</p>
-      )}
+      </section>
 
-      <SessionActionContractLine
-        requiredSkillId={draft.requiredSkillId}
-        completion={{ kind: draft.completionKind }}
-      />
-
-      <section className="wf-action-prompt" aria-label="Session action instruction">
+      <section
+        className="wf-action-prompt"
+        aria-label="Session action instruction"
+        ref={tourInstructionRef}
+      >
         <header className="file-toolbar wf-action-prompt-toolbar">
           <span className="file-path mono">{promptPath}</span>
           <span className="file-language">Markdown</span>

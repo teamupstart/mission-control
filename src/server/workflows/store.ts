@@ -4987,6 +4987,7 @@ export class WorkflowStore {
               binding.noteKey,
               input.guardCwd === undefined ? binding.sessionCwd : input.guardCwd,
               input.expectedWorkCycle!,
+              input.expectedIntent!.episodeKey,
               input.summary,
               input.now,
             );
@@ -7955,6 +7956,7 @@ export class WorkflowStore {
     noteKey: string,
     sessionCwd: string | null,
     expectedWorkCycle: { logicalKey: string; generation: number },
+    episodeKey: string,
     summary: string,
     now: number,
   ): boolean {
@@ -7963,6 +7965,7 @@ export class WorkflowStore {
       noteKey,
       sessionCwd,
       generation: expectedWorkCycle.generation,
+      episodeKey,
       ask: false,
       // The claim's own reason, written by the SAME statement that spends the generation
       // and inside this transaction - so a claim that later throws rolls the reason back

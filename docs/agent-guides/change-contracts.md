@@ -664,16 +664,19 @@ not add a second decision ledger, and do not carry a decision across logical key
 
 ## Pre-PR ship recovery: claim before inject
 
-A ship recovery instruction is claimed durably before it reaches a pane. The identity is the exact
-task id, logical key, completed work-cycle generation, reason, and attempt. The daemon must rebuild
-all live eligibility at the claim boundary; a worker-provided boolean is never write authority.
+A ship recovery instruction is claimed durably before it reaches a pane. Its attempt budget is
+keyed by task id, logical key, intent episode, and reason. Its per-delivery idempotency marker still
+includes the exact completed work-cycle generation and attempt. The daemon must rebuild all live
+eligibility at the claim boundary; a worker-provided boolean is never write authority.
 Only a positively confirmed non-delivery releases that same identity. A success and an unknown
 outcome remain spent, because retrying uncertainty is a duplicate-send bug.
 
 The recovery reason and delivery-state vocabularies are append-only persisted identifiers. Three
 attempts are the fixed send budget. Attempt four is a terminal escalation projection and can never
-be resolved as delivered. A new task binding, logical key, work-cycle generation, prompted decision,
-or observed task-owned pull request makes an older projection inert rather than rewriting history.
+be resolved as delivered. A new task binding, logical key, intent episode, recovery reason, or
+observed task-owned pull request makes an older budget inert rather than rewriting history. A new
+generation in the same episode advances that budget but receives a new delivery marker. Legacy
+recovery state without an episode key retains the old generation and decision identity checks.
 
 PR absence means absence across every repository attached to the task. Read the existing task and
 work-episode PR projections; do not infer it from only the session's primary `prState`, and do not

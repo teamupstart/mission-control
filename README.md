@@ -235,6 +235,15 @@ invited managed ship task that completion review holds receives its reviewed blo
 the same Foreman worker pass. The existing quiet-window shepherd remains the backstop under the
 same setting. Human-driven and task-less sessions keep their silent hold and are not nudged.
 
+Foreman durably carries each held verifier gap, including its kind, severity, and strike count,
+into the next completed work cycle of the same accepted prompt. Recovery delivery has a
+three-send budget for that intent episode even when the work-cycle generation advances: repeated
+holds move through attempts two and three, and the next due pass escalates to the human without
+sending again. A newly accepted human prompt begins a new episode and resets both the gap history
+and recovery budget. Existing persisted rows without episode metadata keep their former
+generation-scoped behavior. Delivery markers still identify individual attempts, preserving
+idempotency across restarts.
+
 **Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
 Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts
 a worktree, or types into a session. What it files arrives **parked**, with that source's

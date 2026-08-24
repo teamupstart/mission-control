@@ -20,6 +20,7 @@ import type {
   Session,
   SessionDiff,
   SessionQueue,
+  TrackedGap,
   WorkItem,
 } from "@shared/types.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
@@ -66,13 +67,15 @@ import {
   hasPane,
   inFlightItem,
   planFromVerify,
+  reconcileGaps,
   tickTargets,
 } from "./queue-machine.ts";
-import type { QueueConfig, QueueVerdict } from "./queue-machine.ts";
+import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
   decidePromptedWrapup,
   planPromptedWrapup,
+  promptedVerificationHistory,
 } from "./prompted-wrapup.ts";
 import type { PromptedCandidate, PromptedConfig } from "./prompted-wrapup.ts";
 import {
@@ -1094,9 +1097,10 @@ async function resolveShipRecoveryCandidate(
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
-  const [queue, workflowRuns] = await Promise.all([
+  const [queue, workflowRuns, goal] = await Promise.all([
     client.queue(session.id).catch(() => undefined),
     client.workflowRuns(noteKeyOf(session)).catch(() => undefined),
+    client.goal(session.id).catch(() => null),
   ]);
   if (queue === undefined || queue === null || workflowRuns === undefined) return null;
 
@@ -1109,6 +1113,7 @@ async function resolveShipRecoveryCandidate(
   const input = {
     session,
     queue,
+    episodeKey: resolvedSessionIntent(goal)?.episodeKey ?? null,
     humanOwnsSession:
       reportBucket(session, sessions) === "needs-you"
       || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
@@ -1452,6 +1457,7 @@ function terminalRecoveryDecision(
     kind: "escalate",
     reason: decision.reason,
     generation: decision.generation,
+    episodeKey: decision.episodeKey,
     attempt: 4,
     marker: shipRecoveryMarker({
       taskId,
@@ -1478,6 +1484,7 @@ function recoveryClaim(
     // The recovery generation belongs to the current completed work cycle, not necessarily
     // the prompted decision: direct handoff intentionally recovers a later settled cycle.
     generation: decision.generation,
+    episodeKey: decision.episodeKey,
     decisionGeneration: decision.decision?.generation ?? null,
     decisionOutcome: decision.decision?.outcome ?? null,
     reason: decision.reason,
@@ -2118,6 +2125,7 @@ async function processPromptedWrapup(
   }
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
+  const verificationHistory = promptedVerificationHistory(queue, candidate);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
   // objective, in light of the latest focus?" is one question, and a second prompt for it
@@ -2126,7 +2134,7 @@ async function processPromptedWrapup(
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
     focus: candidate.focus,
-    round: 0,
+    round: verificationHistory.round,
     diff: diff.patch,
     diffTruncated: diff.truncated,
     // Always true here: with no per-item base sha the diff is the whole branch, which
@@ -2138,7 +2146,7 @@ async function processPromptedWrapup(
     standards: standards.docs,
     standardsTruncated: standards.truncated,
     instructions,
-    priorGaps: [],
+    priorGaps: verificationHistory.priorGaps,
     // The trusted boundary this session's task was actually delivered, resolved
     // STRUCTURALLY from the durable task kind on the live session Foreman just re-read -
     // never from transcript prose, which is evidence being judged.
@@ -2191,6 +2199,11 @@ async function processPromptedWrapup(
   if (!current || current.candidate.kind !== "check") return false;
 
   const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
+  const trackedDecisionGaps = reconcileGaps(
+    verificationHistory.priorGaps,
+    result.verdict,
+    verificationHistory.round,
+  );
   const verificationEvidenceFallback = Boolean(
     result.verdict.complete
     && registeredEvidence
@@ -2297,7 +2310,7 @@ async function processPromptedWrapup(
         // The hold's reason, stored rather than only logged. `plan.why` is the verifier's
         // own words for what is missing, and the blocking gaps beside it are what Phase 2
         // sends back - so this is the one outcome that carries them.
-        : { outcome: "held", summary: plan.why, gaps: blockingDecisionGaps(result.verdict) },
+        : { outcome: "held", summary: plan.why, gaps: blockingDecisionGaps(trackedDecisionGaps) },
       plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" } : undefined,
     ))
   ) return false;
@@ -2393,8 +2406,11 @@ function boundedDecision(decision: PromptedCompletionDisposition): PromptedCompl
     summary: clamp(decision.summary, PROMPTED_DECISION_SUMMARY_MAX),
     gaps: decision.gaps.slice(0, PROMPTED_DECISION_GAPS_MAX).map((gap) => ({
       id: clamp(gap.id, PROMPTED_DECISION_GAP_ID_MAX),
+      severity: gap.severity,
+      kind: gap.kind,
       path: clamp(gap.path, PROMPTED_DECISION_GAP_PATH_MAX),
       detail: clamp(gap.detail, PROMPTED_DECISION_GAP_DETAIL_MAX),
+      strikes: gap.strikes,
     })),
   };
 }
@@ -2408,11 +2424,18 @@ function boundedDecision(decision: PromptedCompletionDisposition): PromptedCompl
  * `PromptedCompletionDispositionSchema` refuses anything past them at the write boundary,
  * and the verifier has already clamped each field to the same lengths.
  */
-function blockingDecisionGaps(verdict: QueueVerdict): PromptedCompletionGap[] {
-  return verdict.gaps
+function blockingDecisionGaps(gaps: TrackedGap[]): PromptedCompletionGap[] {
+  return gaps
     .filter((gap) => gap.severity === "blocking")
     .slice(0, PROMPTED_DECISION_GAPS_MAX)
-    .map((gap) => ({ id: gap.id, path: gap.path, detail: gap.detail }));
+    .map((gap) => ({
+      id: gap.id,
+      severity: gap.severity,
+      kind: gap.kind,
+      path: gap.path,
+      detail: gap.detail,
+      strikes: gap.strikes,
+    }));
 }
 
 /** What triage needs to know about the item Foreman commissioned, if any. */

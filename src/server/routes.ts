@@ -202,6 +202,7 @@ import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
+import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   capabilitiesFor,
   harnessOffersRuntime,
@@ -4763,6 +4764,7 @@ export function buildApp(
     const recoveryInput = {
       session,
       queue,
+      episodeKey: resolvedSessionIntent(registry.getGoal(session.id))?.episodeKey ?? null,
       humanOwnsSession:
         reportBucket(session, registry.snapshot().sessions) === "needs-you"
         || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
@@ -4782,6 +4784,8 @@ export function buildApp(
       || decision.reason !== parsed.data.reason
       || decision.attempt !== parsed.data.attempt
       || decision.marker !== parsed.data.marker
+      || (parsed.data.episodeKey !== undefined
+        && decision.episodeKey !== parsed.data.episodeKey)
       || (decision.decision?.generation ?? null) !== parsed.data.decisionGeneration
       || (decision.decision?.outcome ?? null) !== parsed.data.decisionOutcome
     ) {

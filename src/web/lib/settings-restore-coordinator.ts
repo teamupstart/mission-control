@@ -5,37 +5,38 @@ interface PendingRestore {
   onCommitted: () => void;
 }
 
-let pending: PendingRestore | null = null;
+const pending = new Map<string, PendingRestore>();
 
 /** Register before POST so a fast SSE event cannot be misidentified as another window's. */
 export function beginSettingsRestore(requestId: string, onCommitted: () => void): void {
-  pending = { requestId, onCommitted };
+  pending.set(requestId, { requestId, onCommitted });
 }
 
 export function observeSettingsRestored(
   event: SettingsRestoredEvent,
 ): "initiating" | "external" {
-  if (pending?.requestId !== event.requestId) return "external";
-  const complete = pending.onCommitted;
-  pending = null;
+  const restore = pending.get(event.requestId);
+  if (!restore) return "external";
+  pending.delete(event.requestId);
+  const complete = restore.onCommitted;
   complete();
   return "initiating";
 }
 
 /** Resolve the HTTP leg. A transport failure keeps the request registered for a later event. */
 export function finishSettingsRestore(requestId: string, committed: boolean): void {
-  if (pending?.requestId !== requestId) return;
+  const restore = pending.get(requestId);
+  if (!restore) return;
+  pending.delete(requestId);
   if (!committed) {
-    pending = null;
     return;
   }
-  const complete = pending.onCommitted;
-  pending = null;
+  const complete = restore.onCommitted;
   complete();
 }
 
 export function abandonSettingsRestore(requestId: string): void {
-  if (pending?.requestId === requestId) pending = null;
+  pending.delete(requestId);
 }
 
 /** Rebuild the first-paint cache before taking the initiating window through startup again. */

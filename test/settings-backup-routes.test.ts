@@ -151,6 +151,59 @@ test("preview maps Phase 2 results without reimplementing validation", async () 
   assert.equal(malformed.status, 404);
 });
 
+test("public restore results consume complete local paths including spaces and platform forms", async () => {
+  const unsafePreview = {
+    ...preview,
+    exclusions: ["Excluded /Users/operator/My Project/private.json after validation"],
+    warnings: [
+      "Warning C:\\Users\\operator\\My Project\\private.json after validation",
+      "Warning ~/My Project/private.json after validation",
+    ],
+    blockers: ["Blocked \\\\server\\share\\My Project\\private.json after validation"],
+  };
+  const previewResponse = await appWith(new Registry(), serviceStub({
+    previewRestore: () => ({ status: "preflight_blocked", preview: unsafePreview }),
+  })).request(`/api/settings-backups/${snapshotId}/preview`, { headers });
+  assert.equal(previewResponse.status, 409);
+  assert.deepEqual((await previewResponse.json()).preview, {
+    ...unsafePreview,
+    exclusions: ["Excluded [local path]"],
+    warnings: ["Warning [local path]", "Warning [local path]"],
+    blockers: ["Blocked [local path]"],
+  });
+
+  const incompatibleResponse = await appWith(new Registry(), serviceStub({
+    previewRestore: () => ({
+      status: "incompatible",
+      reason: "Incompatible source file:///Users/operator/My Project/private.json after validation",
+    }),
+  })).request(`/api/settings-backups/${snapshotId}/preview`, { headers });
+  assert.equal(incompatibleResponse.status, 422);
+  assert.deepEqual(await incompatibleResponse.json(), {
+    status: "incompatible",
+    reason: "Incompatible source [local path]",
+  });
+
+  const restoreResponse = await appWith(new Registry(), serviceStub({
+    restore: async () => ({
+      status: "restored",
+      snapshotId,
+      digest,
+      restoredAt: "2026-08-24T12:05:00.000Z",
+      safetySnapshotId: "pre-restore-20260824T120459.000Z-abcdef123456",
+      warnings: ["Reconcile warning /Users/operator/My Project/private.json after validation"],
+    }),
+  })).request(`/api/settings-backups/${snapshotId}/restore`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedDigest: digest, requestId, confirmation: "RESTORE SETTINGS" }),
+  });
+  assert.equal(restoreResponse.status, 200);
+  const restoreText = await restoreResponse.text();
+  assert.match(restoreText, /Reconcile warning \[local path\]/);
+  assert.doesNotMatch(restoreText, /Users|operator|Project|private|server|share/);
+});
+
 test("restore requires the exact confirmation and emits once only after reconciliation", async () => {
   const registry = new Registry();
   const order: string[] = [];

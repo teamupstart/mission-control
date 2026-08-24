@@ -162,6 +162,27 @@ test("restore events distinguish the initiating window and preserve external-win
   assert.match(banner, />Reload now<\/button>/);
 });
 
+test("a retry cannot orphan an earlier restore with an ambiguous transport result", () => {
+  const first = {
+    type: "settings_restored" as const,
+    snapshotId: "daily-2026-08-24" as const,
+    restoredAt: "2026-08-24T12:05:00.000Z",
+    requestId: "00000000-0000-4000-8000-000000000011",
+  };
+  const retryId = "00000000-0000-4000-8000-000000000012";
+  let reloads = 0;
+  beginSettingsRestore(first.requestId, () => { reloads += 1; });
+  beginSettingsRestore(retryId, () => { reloads += 1; });
+
+  // The retry receives a definite refusal after the first request's HTTP leg was ambiguous.
+  abandonSettingsRestore(retryId);
+  assert.equal(observeSettingsRestored(first), "initiating");
+  assert.equal(reloads, 1);
+
+  assert.equal(observeSettingsRestored({ ...first, requestId: retryId }), "external");
+  assert.equal(reloads, 1);
+});
+
 test("settings restore event stays strict, invalidation-only, and outside Line inputs", () => {
   assert.equal(SettingsRestoredEventSchema.safeParse({
     type: "settings_restored",

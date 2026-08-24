@@ -2942,10 +2942,16 @@ export function buildApp(
     error: "service_error" as const,
     message: "Settings backup operation failed",
   }, 500);
-  const redactLocalPaths = (message: string): string => message.replace(
-    /(^|[\s("'`])((?:[A-Za-z]:\\|~\/|\/)[^\s"'`<>]*)/g,
-    "$1[local path]",
-  ).slice(0, SETTINGS_BACKUP_LIMITS.errorCharacters);
+  const localPathStart = /(^|[\s("'`=[{])(?:file:\/\/\/|\\\\|[A-Za-z]:[\\/]|~[\\/]|\/)/i;
+  const redactLocalPaths = (message: string): string => {
+    const match = localPathStart.exec(message);
+    if (!match) return message.slice(0, SETTINGS_BACKUP_LIMITS.errorCharacters);
+    // An unquoted path may contain spaces, so no suffix after the path start is safe to retain.
+    // This intentionally gives up trailing diagnostic detail instead of guessing at a boundary.
+    const pathStart = match.index + (match[1]?.length ?? 0);
+    return `${message.slice(0, pathStart)}[local path]`
+      .slice(0, SETTINGS_BACKUP_LIMITS.errorCharacters);
+  };
   const publicPreview = (preview: SettingsRestorePreview): SettingsRestorePreview => ({
     ...preview,
     exclusions: preview.exclusions.map(redactLocalPaths),

@@ -3,9 +3,10 @@ import { StoredWorkflowPolicySchema, WorkflowPolicySchema } from "@shared/protoc
 import type { WorkflowCheckSlot, WorkflowPolicy } from "@shared/workflow.ts";
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
 import { WorkflowCheckCommandSchema } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
-const CONFIG_KEY = "workflows";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.workflows;
 
 /**
  * Machine-wide consent for workflow prompt delivery and for running Commands, plus the
@@ -19,7 +20,7 @@ const CONFIG_KEY = "workflows";
  * write, so the only way to reach the fallback is a blob some other build wrote.
  */
 export function getWorkflowPolicy(): WorkflowPolicy {
-  return StoredWorkflowPolicySchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return StoredWorkflowPolicySchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 export function resolveTaskWorkflowId(workflowId: string | null | undefined): string | null {
@@ -35,7 +36,7 @@ export function resolveTaskWorkflowId(workflowId: string | null | undefined): st
  */
 export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
   const next = WorkflowPolicySchema.parse(input);
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 
@@ -60,7 +61,7 @@ export interface LegacyCheckCommand {
  * operator's next save through Settings writes what they can see.
  */
 export function legacyCheckCommandsToImport(
-  blob: unknown = getAppConfig<unknown>(CONFIG_KEY),
+  blob: unknown = getAppConfig(CONFIG_ENTRY),
 ): LegacyCheckCommand[] {
   if (!blob || typeof blob !== "object" || Array.isArray(blob)) return [];
   const raw = (blob as { checkCommands?: unknown }).checkCommands;
@@ -91,9 +92,11 @@ export function legacyCheckCommandsToImport(
  * how an operator's settings get destroyed by a migration.
  */
 export function dropLegacyCheckCommands(): void {
-  const blob = getAppConfig<unknown>(CONFIG_KEY);
+  const blob = getAppConfig(CONFIG_ENTRY);
   if (!blob || typeof blob !== "object" || Array.isArray(blob)) return;
   if (!("checkCommands" in blob)) return;
   const { checkCommands: _dropped, ...rest } = blob as Record<string, unknown>;
-  setAppConfig(CONFIG_KEY, rest);
+  // This compatibility rewrite intentionally preserves a partially unreadable older blob.
+  // The descriptor still closes the key space; the value cast is local to this migration.
+  setAppConfig(CONFIG_ENTRY, rest as never);
 }

@@ -13,6 +13,7 @@ import {
 import type { TaskKindDefault } from "@shared/protocol.ts";
 import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
@@ -26,7 +27,7 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 // at dispatch time (not construction), so a toggle mid-batch is honoured by the next
 // session it launches without a restart.
 
-const CONFIG_KEY = "harnesses";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.harnesses;
 const LEGACY_SESSION_RUNTIMES: HarnessesConfig["sessionRuntime"] = {
   claude: "terminal",
   codex: "terminal",
@@ -44,7 +45,7 @@ function isPreRuntimeHarnessesConfig(value: unknown): value is Record<string, un
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getHarnessesConfig(): HarnessesConfig {
-  const stored = getAppConfig<unknown>(CONFIG_KEY);
+  const stored = getAppConfig(CONFIG_ENTRY);
   // A config row without this key predates runtime selection. It was created while terminal
   // was the only shipped behavior, so preserve that behavior for upgrades. An absent row is a
   // new installation and receives the schema's current Agent SDK defaults.
@@ -102,7 +103,7 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
     sessionRuntime: { ...cur.sessionRuntime, ...(patch.sessionRuntime ?? {}) },
     kindDefaults: merged,
   });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 

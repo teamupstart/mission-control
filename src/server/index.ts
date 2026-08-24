@@ -90,6 +90,8 @@ import {
   PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
   ProductIssueService,
 } from "./product-issues.ts";
+import { SettingsBackupService } from "./settings-backups/service.ts";
+import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 
 openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
@@ -301,6 +303,10 @@ tasks.registerWorkflowEvidenceEligibility((task) =>
   && Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
 workflows.start();
+// One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
+// It starts only after the port is won, so the daemon remains the sole durable writer.
+const settingsBackups = new SettingsBackupService(personas.store);
+let stopSettingsBackups = () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -562,6 +568,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -633,6 +640,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 });
 
 async function shutdown(): Promise<void> {
+  stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();
   stopPrPoller();

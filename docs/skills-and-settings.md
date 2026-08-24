@@ -198,6 +198,11 @@ While the page is up the session and panel shortcuts stand down, so nothing you 
 drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain available when
 focus is not in a text field.
 
+### Automatic settings snapshots
+
+For the authoritative snapshot contract for settings configured from this page, see
+[Automatic settings snapshots](configuration.md#automatic-settings-snapshots).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of thirteen peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.

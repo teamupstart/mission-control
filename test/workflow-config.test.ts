@@ -8,6 +8,7 @@ import { repoAllowlisted } from "../src/shared/allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG, DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
 process.env.MISSION_HOME = home;
@@ -46,11 +47,11 @@ test("an operator who explicitly turned live delivery off keeps it off across th
   // `app_config` blob, so it is only consulted when the key is ABSENT. A stored `false` is an
   // answered question and must survive, or the flip silently re-authorises terminal writes for
   // the one operator who said no.
-  setAppConfig("workflows", { liveEnabled: false, repoAllowlist: ["/repo"] });
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, { liveEnabled: false, repoAllowlist: ["/repo"] });
   assert.equal(getWorkflowPolicy().liveEnabled, false);
 
   // And the never-opened case, which is the flip's whole point: no key at all reads as ON.
-  setAppConfig("workflows", { repoAllowlist: ["/repo"] });
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, { repoAllowlist: ["/repo"] });
   assert.equal(getWorkflowPolicy().liveEnabled, true);
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
@@ -206,7 +207,7 @@ test("check consent defaults off, and the policy blob no longer carries commands
   assert.equal("checkCommands" in saved, false);
   assert.deepEqual(getWorkflowPolicy(), saved);
   assert.equal(
-    "checkCommands" in (getAppConfig<Record<string, unknown>>("workflows") ?? {}),
+    "checkCommands" in (getAppConfig(APP_CONFIG_ENTRIES.workflows) ?? {}),
     false,
     "nothing may write a command list back into app_config after the cutover",
   );
@@ -218,7 +219,7 @@ test("check consent defaults off, and the policy blob no longer carries commands
 test("a config written before checks existed still reads, with consent defaulted off", () => {
   // The upgrade path: `.default()` covers a blob that simply lacks the fields, and it must
   // land on the SAFE side rather than inheriting anything from the fields around it.
-  setAppConfig("workflows", { liveEnabled: true, repoAllowlist: ["/repo"] });
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, { liveEnabled: true, repoAllowlist: ["/repo"] });
   const read = getWorkflowPolicy();
   assert.equal(read.liveEnabled, true);
   assert.equal(read.checksEnabled, false);
@@ -236,7 +237,7 @@ test("an unreadable stored policy falls back to defaults rather than throwing", 
     "not even an object",
     [1, 2, 3],
   ]) {
-    setAppConfig("workflows", blob);
+    setAppConfig(APP_CONFIG_ENTRIES.workflows, blob as never);
     // The whole default, not a field-by-field salvage. What makes that safe is the ALLOWLIST
     // coming back empty, not the consent boolean coming back off - `liveEnabled` now defaults
     // on, and an argument resting on the boolean would already be wrong. A field-by-field
@@ -256,7 +257,10 @@ test("an unreadable POLICY no longer takes an operator's commands down with it",
   // The consequence of the split, stated as its own case. A preference this build cannot
   // parse says nothing about the commands: those are rows with their own revisions, and the
   // old whole-blob fallback used to silently empty them alongside the allowlist.
-  setAppConfig("workflows", { liveEnabled: "yes", checkCommands: "not a list" });
+  setAppConfig(
+    APP_CONFIG_ENTRIES.workflows,
+    { liveEnabled: "yes", checkCommands: "not a list" } as never,
+  );
   assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
   // And the migration parser refuses the same blob's command field without throwing.
   assert.deepEqual(legacyCheckCommandsToImport(), []);
@@ -296,7 +300,7 @@ test("the migration parser keeps every valid legacy row and drops only the inval
   // Deliberately NOT the tolerant whole-blob read. That answers "is this readable?" and would
   // report an otherwise fine config with one bad row as having no commands at all, silently
   // dropping every good row beside it.
-  setAppConfig("workflows", {
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, {
     liveEnabled: true,
     repoAllowlist: ["/repo"],
     checkCommands: [
@@ -305,7 +309,7 @@ test("the migration parser keeps every valid legacy row and drops only the inval
       { repoRoot: "/repo", slot: "lint", command: [] },
       { repoRoot: "/repo/pkg", slot: "test", command: ["pnpm", "test"] },
     ],
-  });
+  } as never);
   assert.deepEqual(legacyCheckCommandsToImport(), [
     { slot: "test", repoRoot: "/repo", command: ["npm", "test"] },
     { slot: "test", repoRoot: "/repo/pkg", command: ["pnpm", "test"] },

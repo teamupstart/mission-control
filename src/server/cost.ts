@@ -1,5 +1,6 @@
 import { CostConfigSchema } from "@shared/protocol.ts";
 import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   getAppConfig,
   hasClaudeSessionUsageSince,
@@ -31,7 +32,7 @@ import { ensureToken } from "./auth.ts";
 // is passive discovery - it sees sessions it did not start - and only a settings-level
 // `env` reaches those.
 
-const CONFIG_KEY = "cost";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.cost;
 
 /**
  * When the grace period before exporter silence counts as a fault last started.
@@ -45,11 +46,11 @@ const CONFIG_KEY = "cost";
  * grace period that only the UI can start would stay unset - and therefore silent - forever
  * for every one of them. See the self-healing backfill in `costTelemetryStatus`.
  */
-const ENABLED_AT_KEY = "costTelemetryEnabledAt";
+const ENABLED_AT_ENTRY = APP_CONFIG_ENTRIES.costTelemetryEnabledAt;
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getCostConfig(): CostConfig {
-  return CostConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return CostConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /**
@@ -72,7 +73,7 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
         }
       : null,
   );
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   // When telemetry is switched ON, start its grace period. The exporter cannot report before it
   // has been asked to, and the `env` block only reaches sessions started AFTER it is written, so
   // there is a stretch where no export has arrived and nothing is wrong. Without this stamp the
@@ -82,14 +83,14 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
   // Re-stamped on every off->on transition rather than written once, so switching telemetry off
   // and on again earns a fresh grace period instead of inheriting a stale one. Cleared on the way
   // off, because a stamp for a feature that is not running would silently shorten the next one.
-  if (next.enabled && !previous.enabled) setAppConfig(ENABLED_AT_KEY, now);
-  if (!next.enabled) setAppConfig(ENABLED_AT_KEY, null);
+  if (next.enabled && !previous.enabled) setAppConfig(ENABLED_AT_ENTRY, now);
+  if (!next.enabled) setAppConfig(ENABLED_AT_ENTRY, null);
   return next;
 }
 
 /** When the grace period started, or null if telemetry is not installed or has none yet. */
 function telemetryEnabledAt(): number | null {
-  const stored = getAppConfig<number | null>(ENABLED_AT_KEY);
+  const stored = getAppConfig(ENABLED_AT_ENTRY);
   return typeof stored === "number" ? stored : null;
 }
 
@@ -103,7 +104,7 @@ function telemetryEnabledAt(): number | null {
  * is never called again for it.
  */
 function backfillEnabledAt(now: number): void {
-  setAppConfig(ENABLED_AT_KEY, now);
+  setAppConfig(ENABLED_AT_ENTRY, now);
 }
 
 /**
@@ -161,7 +162,7 @@ export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
   const flags = otelEnvFlags();
   let enabledAt = telemetryEnabledAt();
   // Backfilled here, not in `setCostConfig`, because `installed` can become true without that
-  // function ever running - see `ENABLED_AT_KEY`'s doc. This is the read path everyone shares.
+  // function ever running - see `ENABLED_AT_ENTRY`'s doc. This is the read path everyone shares.
   if (flags.installed && enabledAt === null) {
     backfillEnabledAt(now);
     enabledAt = now;

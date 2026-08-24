@@ -20,6 +20,11 @@ import type { SettingsCategoryId } from "./settings-registry.ts";
 import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import {
+  backupDomains,
+  backupNotApplicable,
+  type SettingsBackupCoverage,
+} from "@shared/settings-backup-domains.ts";
 
 /**
  * One searchable control.
@@ -46,6 +51,7 @@ export interface SettingsControl {
   keywords: readonly string[];
   kind: "toggle" | "jump";
   risky?: true;
+  backup: SettingsBackupCoverage;
 }
 
 /**
@@ -61,6 +67,7 @@ const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
   anchor: `harnesses/${agent}`,
   keywords: ["model", "effort", "dispatch", "default", AGENT_IDENTITY[agent].label.toLowerCase()],
   kind: "jump",
+  backup: backupDomains("harnesses"),
 }));
 
 /**
@@ -80,6 +87,7 @@ const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
   anchor: `keyboard/${a.id}`,
   keywords: ["shortcut", "keybinding", "chord", "hotkey", "rebind", "key"],
   kind: "jump",
+  backup: backupDomains("ui"),
 }));
 
 /**
@@ -98,6 +106,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "display/layout",
     keywords: ["console", "board", "arrangement", "view"],
     kind: "jump",
+    backup: backupDomains("ui"),
   },
   {
     id: "conversation-view",
@@ -107,6 +116,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "display/conversation-view",
     keywords: ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat", "stream"],
     kind: "jump",
+    backup: backupDomains("ui"),
   },
   {
     id: "format-messages",
@@ -116,6 +126,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "display/format-messages",
     keywords: ["rich text", "markdown", "appearance", "code blocks", "syntax"],
     kind: "toggle",
+    backup: backupDomains("ui"),
   },
   {
     id: "board-card",
@@ -142,6 +153,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "goal",
     ],
     kind: "jump",
+    backup: backupDomains("ui"),
   },
   {
     // Same panel, same anchor, second subject. An operator who wants the path gone from
@@ -169,6 +181,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "show",
     ],
     kind: "jump",
+    backup: backupDomains("ui"),
   },
   ...KEYBOARD_CONTROLS,
   {
@@ -183,6 +196,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // operator who met the pass and wants it gone will actually remember about it.
     keywords: ["guided", "wizard", "walkthrough", "steps", "questions", "kind", "harness", "after work"],
     kind: "toggle",
+    backup: backupDomains("ui"),
   },
   {
     id: "auto-mode",
@@ -192,6 +206,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "harnesses/auto-mode",
     keywords: ["permission", "bypass", "autonomous", "yolo", "accept edits"],
     kind: "toggle",
+    backup: backupDomains("harnesses"),
   },
   ...HARNESS_CONTROLS,
   {
@@ -202,6 +217,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "worktrees/policy",
     keywords: ["pool", "capacity", "setup", "argv", "repository", "disable"],
     kind: "jump",
+    backup: backupDomains("worktrees"),
   },
   {
     id: "native-worktree-pools",
@@ -211,6 +227,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "worktrees/native-pools",
     keywords: ["slot", "lease", "dirty", "occupied", "quarantine", "cleanup"],
     kind: "jump",
+    backup: backupNotApplicable("operational-action"),
   },
   {
     id: "legacy-worktree-drain",
@@ -220,6 +237,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "worktrees/legacy-drain",
     keywords: ["treehouse", "legacy", "return", "foreign", "unreadable"],
     kind: "jump",
+    backup: backupNotApplicable("operational-action"),
   },
   {
     id: "skills-enabled",
@@ -229,6 +247,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "skills/enabled",
     keywords: ["skill", "slash command", "symlink", "master"],
     kind: "toggle",
+    backup: backupDomains("skills"),
   },
   {
     id: "skills-catalog",
@@ -238,6 +257,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "skills/catalog",
     keywords: ["skill", "catalog", "slash command"],
     kind: "jump",
+    backup: backupDomains("skills"),
   },
   {
     id: "standing-instructions-default",
@@ -247,6 +267,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "standing-instructions/default",
     keywords: ["instruction", "prompt", "default", "global", "preamble", "always"],
     kind: "jump",
+    backup: backupDomains("standing-instructions"),
   },
   {
     id: "standing-instructions-repositories",
@@ -256,6 +277,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "standing-instructions/repositories",
     keywords: ["instruction", "repository", "override", "inherited", "per-repo", "rule"],
     kind: "jump",
+    backup: backupDomains("standing-instructions"),
   },
   {
     id: "cost-track",
@@ -265,6 +287,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "cost/track",
     keywords: ["telemetry", "otel", "usage", "spend", "money", "estimate"],
     kind: "toggle",
+    backup: backupDomains("cost"),
   },
   {
     id: "cost-interval",
@@ -274,6 +297,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "cost/interval",
     keywords: ["telemetry", "frequency", "seconds", "interval"],
     kind: "jump",
+    backup: backupDomains("cost"),
   },
   {
     id: "cost-view",
@@ -283,6 +307,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "cost/view",
     keywords: ["topbar", "usd", "dollars", "plan", "tokens", "strip"],
     kind: "jump",
+    backup: backupDomains("cost"),
   },
   {
     id: "foreman-tier",
@@ -292,6 +317,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "foreman/cheap-tier",
     keywords: ["triage", "shadow", "router", "auto-responder"],
     kind: "jump",
+    backup: backupDomains("foreman", "foreman-instructions"),
   },
   {
     id: "foreman-skip-scout-wrapup",
@@ -301,6 +327,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "foreman/skip-scout-wrapup",
     keywords: ["scout", "kind", "wrap up", "workflow", "pull request", "ship it"],
     kind: "jump",
+    backup: backupDomains("foreman"),
   },
   {
     id: "foreman-skip-review-artifact-wrapup",
@@ -319,6 +346,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "pull request",
     ],
     kind: "jump",
+    backup: backupDomains("foreman"),
   },
   {
     id: "foreman-ship-recovery-minutes",
@@ -328,6 +356,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "foreman/ship-recovery-minutes",
     keywords: ["ship", "recovery", "idle", "quiet", "minutes", "pull request", "escalation"],
     kind: "jump",
+    backup: backupDomains("foreman"),
   },
   {
     id: "foreman-episodes",
@@ -337,6 +366,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "foreman/episodes",
     keywords: ["episode", "decision", "answered", "escalated", "shadow", "ledger", "history"],
     kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "workflow-dispatch-default",
@@ -346,6 +376,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "workflows/dispatch-default",
     keywords: ["default", "dispatch", "after work", "workflow", "agent", "task"],
     kind: "jump",
+    backup: backupDomains("workflow-policy"),
   },
   {
     id: "workflow-live-delivery",
@@ -355,6 +386,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "workflows/live-delivery",
     keywords: ["live delivery", "workflow", "repair", "paste", "preview", "persona"],
     kind: "toggle",
+    backup: backupDomains("workflow-policy"),
     // Risky for the Inspector master switch's reason in a local key: flipping it anonymously
     // from a search row would arm a paste into somebody's live session with the consent copy
     // off screen. It always jumps to the panel.
@@ -372,6 +404,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "workflows/allowlist",
     keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant", "trust"],
     kind: "jump",
+    backup: backupDomains("workflow-policy"),
   },
   {
     id: "workflow-test-evidence",
@@ -385,6 +418,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "artifact", "evidence", "overreach", "telemetry",
     ],
     kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "workflow-checks",
@@ -399,6 +433,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "pause",
     ],
     kind: "toggle",
+    backup: backupDomains("workflow-policy"),
     // Risky for the same reason Live delivery is, and more so: this one authorizes running
     // code the reviewed branch supplies, with the daemon's filesystem authority.
     risky: true,
@@ -417,6 +452,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "override", "default", "library",
     ],
     kind: "jump",
+    backup: backupDomains("workflow-commands"),
   },
   {
     id: "workflow-retention",
@@ -426,6 +462,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "workflows/retention",
     keywords: ["retention", "history", "evidence", "prune", "sweep", "compact", "delete"],
     kind: "jump",
+    backup: backupDomains("workflow-policy"),
   },
   {
     id: "workflow-health",
@@ -435,6 +472,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "workflows/health",
     keywords: ["health", "queue", "deliveries", "recovery", "sweep", "counters"],
     kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "task-sources",
@@ -444,6 +482,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "task-sources/sources",
     keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
     kind: "jump",
+    backup: backupDomains("task-sources"),
   },
   {
     id: "conductor-repos",
@@ -453,6 +492,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/repos",
     keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe", "directory"],
     kind: "jump",
+    backup: backupDomains("pipelines"),
   },
   // The other five anchors this panel renders. It drew six and indexed one, so the engine,
   // the master switch, the Engineer host and Foreman triage were reachable only by opening
@@ -467,6 +507,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/pipelines",
     keywords: ["ai-conductor", "pipeline", "sdlc", "commissioning", "setup", "register", "overview"],
     kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "conductor-detection",
@@ -476,6 +517,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/detection",
     keywords: ["conduct-ts", "engine", "install", "installer", "version", "registry", "probe", "path"],
     kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "conductor-enabled",
@@ -485,6 +527,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/enabled",
     keywords: ["observe", "consent", "master switch", "pipeline", "ai-conductor", "read"],
     kind: "jump",
+    backup: backupDomains("pipelines"),
   },
   {
     id: "conductor-launch-runtime",
@@ -494,6 +537,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/launch-runtime",
     keywords: ["engineer", "launch", "runtime", "agent sdk", "terminal", "host", "pipeline"],
     kind: "jump",
+    backup: backupDomains("pipelines"),
   },
   {
     id: "conductor-foreman-triage",
@@ -503,6 +547,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "conductor/foreman-triage",
     keywords: ["foreman", "triage", "halt", "unpark", "mechanical", "pipeline"],
     kind: "jump",
+    backup: backupDomains("pipelines"),
   },
   // Two entries, because there are now two controls and `models/provider` only names one of
   // them. That anchor is the APP-WIDE radio; the per-job providers live in the matrix below
@@ -516,6 +561,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "models/provider",
     keywords: ["provider", "runner", "claude", "codex", "app-wide", "default"],
     kind: "jump",
+    backup: backupDomains("models"),
   },
   {
     id: "llm-jobs",
@@ -536,6 +582,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "inherit",
     ],
     kind: "jump",
+    backup: backupDomains("models"),
   },
   // A third entry on this category, because the grid below the jobs answers a different
   // question from either control above it: not "what does the app spend on itself" but "what
@@ -566,6 +613,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "inherit",
     ],
     kind: "jump",
+    backup: backupDomains("harnesses"),
   },
   // Re-pointed here from the Foreman and GitHub Inspector categories when their model
   // controls moved. The IDS are unchanged - `foreman-models` and `review-model` are the keys
@@ -591,6 +639,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "inherit",
     ],
     kind: "jump",
+    backup: backupDomains("foreman"),
   },
   {
     id: "review-model",
@@ -600,6 +649,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "models/inspector",
     keywords: ["inspector", "github", "model", "provider", "runner", "review", "pull request"],
     kind: "jump",
+    backup: backupDomains("inspector"),
   },
   {
     id: "inspector-enabled",
@@ -609,6 +659,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "inspector/enabled",
     keywords: ["review", "pull request", "pr", "enable"],
     kind: "toggle",
+    backup: backupDomains("inspector"),
     risky: true,
   },
   {
@@ -619,6 +670,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "inspector/mode",
     keywords: ["dry run", "live", "publish", "post", "comments"],
     kind: "jump",
+    backup: backupDomains("inspector"),
     risky: true,
   },
   {
@@ -629,6 +681,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "shipping/yolo",
     keywords: ["auto merge", "automerge", "ship", "self-merge"],
     kind: "toggle",
+    backup: backupDomains("shipping"),
     risky: true,
   },
   {
@@ -639,6 +692,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "shipping/soak",
     keywords: ["soak", "window", "delay", "minutes", "wait"],
     kind: "jump",
+    backup: backupDomains("shipping"),
   },
   {
     id: "merge-method",
@@ -648,6 +702,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "shipping/method",
     keywords: ["squash", "rebase", "merge commit", "method"],
     kind: "jump",
+    backup: backupDomains("shipping"),
   },
   {
     id: "trust-grants",
@@ -657,6 +712,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "trust/matrix",
     keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix"],
     kind: "jump",
+    backup: backupDomains("foreman", "workflow-policy", "inspector", "shipping", "pipelines"),
   },
 ];
 

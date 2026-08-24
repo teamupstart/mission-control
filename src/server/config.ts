@@ -26,6 +26,8 @@ export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
 export const WORKTREE_POOLS_DIR = join(STATE_DIR, "worktree-pools");
 /** Disposable isolated worktrees used when native allocation positively declines a check. */
 export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
+/** Owner-only logical settings snapshots, beneath the daemon's one configured state home. */
+export const SETTINGS_BACKUPS_DIR = join(STATE_DIR, "backups", "settings");
 
 /**
  * The portable archive library: `archives/<producer-id>/<archive-id>/` bundles.

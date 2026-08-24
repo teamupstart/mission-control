@@ -1,17 +1,18 @@
 import { AwayConfigSchema } from "@shared/protocol.ts";
 import type { AwayConfig, AwayConfigPatch } from "@shared/protocol.ts";
 import type { StallThresholds } from "@shared/stall.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
 // Away mode's durable config, in app_config alongside Foreman's - same storage,
 // same shape (a Zod blob parsed with defaults on every read, so a config written
 // by an older build gains new fields rather than failing).
 
-const CONFIG_KEY = "away";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.away;
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getAwayConfig(): AwayConfig {
-  return AwayConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return AwayConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /**
@@ -30,7 +31,7 @@ export function setAwayConfig(patch: AwayConfigPatch, now = Date.now()): AwayCon
   const away = patch.away ?? cur.away;
   const awaySince = away === cur.away ? cur.awaySince : away ? now : null;
   const next = AwayConfigSchema.parse({ ...cur, ...patch, away, awaySince });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 

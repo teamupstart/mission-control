@@ -131,6 +131,7 @@
         <li>The general headless <code>LlmRunner</code> has no MCP descriptor and must remain tool-less. Full session adapters provide the provider-specific launch patterns.</li>
         <li>Mission MCP includes task tools and credentials, so repository MCP is a separate bundle with no daemon credential.</li>
         <li>A normal Git bundle would include sensitive reachable blobs. The portable artifact must be a sparse object set that preserves commit/tree identities but omits denied blob bodies.</li>
+        <li>History pagination cannot define artifact retention. <code>RepositoryHistoryPolicyV1</code> retains one deterministic all-parent prefix capped before 2,048 commits or 512 MiB of additional allowed historical blobs.</li>
         <li>Workflow events and LLM calls are already paged. Query audits need an independent bounded page and compact summary.</li>
       </ul>
     </section>
@@ -222,6 +223,7 @@
         <li>Pre-authorize literal paths before every content-producing Git invocation.</li>
         <li>Disable external diff, text conversion, filters, hooks, fetching, and network.</li>
         <li>Own shared bytes by digest and delete them only after atomically releasing and rechecking the last submission claim.</li>
+        <li>Digest the ordered retained revisions and frontier metadata; deny outside revisions as <code>revision_out_of_range</code>, return <code>history_boundary</code> for unavailable frontier patches, and mark frontier log/blame truncation.</li>
       </ol>
     </section>
 
@@ -231,8 +233,8 @@
         <table>
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
-            <tr><td>Phase 1</td><td>Closed operations, repository policy, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
-            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, independent submission claims, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
+            <tr><td>Phase 1</td><td>Closed operations, repository and history policy, retained-set/boundary semantics, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
+            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact policy-retained history prefix, independent submission claims, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
             <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query audit paging, same-attempt evidence validation</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>
@@ -263,6 +265,7 @@
         <li>Access-off behavior retains the historical prompt, provider options, fingerprints, and verdict path.</li>
         <li>Read-enabled attempts never reconstruct from the live checkout or degrade to prompt-only review.</li>
         <li>Shared artifact bytes survive release of any submission claim until the final active claim is atomically released and cleanup rechecks zero references.</li>
+        <li>History selection is deterministic at both ceilings; in-range queries work after source removal, and boundary or out-of-range behavior is provider-neutral and auditable.</li>
         <li>Repository bodies stay inside the workload; SQLite, logs, exports, SSE, and browser receive safe metadata only.</li>
         <li>Built-in overrides affect future operator-published versions, never shipped built-in versions.</li>
         <li>The local executor is a conformance implementation for a future remote adapter, not a hidden selection of remote infrastructure.</li>
@@ -278,7 +281,7 @@ npm run build
 npm run smoke
 # Phase 3
 npm run test:e2e</code></pre>
-      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, exact state after source checkout deletion, absence of sensitive blobs and bodies, and idempotent event replay.</p>
+      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
     </section>
   </div>
   <p class="footer">Source of truth: phased-plan.md. Detailed implementation instructions live in the three linked phase Markdown files.</p>

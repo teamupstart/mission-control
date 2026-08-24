@@ -56,12 +56,12 @@ The approved plan requires both Git history and omission of sensitive blob conte
 The implementation will use a versioned sparse Git object artifact instead of a normal bundle:
 
 1. Preserve original commit and tree objects, exact HEAD, base, index tree, and worktree tree identifiers.
-2. Include allowed blob objects needed for the current layers and reachable history.
+2. Apply the shared `RepositoryHistoryPolicyV1`: breadth-first all-parent traversal from captured HEAD, stop before exceeding 2,048 retained commits or 512 MiB of incremental unique allowed historical blobs, and record the exact retained prefix/frontier in the digested manifest.
 3. Deliberately omit blobs classified as sensitive while retaining their path classification and object id in the canonical manifest.
 4. Materialize an object database and allowed worktree view in an isolated workload. Git operations are always pre-scoped to validated allowed literal paths, with external diff, text conversion, filters, hooks, and network disabled.
 5. Derive status from the captured manifest. Never run an unrestricted diff or show and filter its output afterwards.
 
-This preserves original Git identities for log, show, and blame on allowed content while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Phase 1 proves that the MCP operates safely over a sparse object database; Phase 2 owns producing and validating that artifact.
+This preserves original Git identities for log, show, and blame on an explicit bounded range while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Revisions outside the retained manifest set are denied as `revision_out_of_range`; frontier patch requests return `history_boundary`, and frontier log/blame results carry explicit truncation without consulting the original checkout. Phase 1 proves that the MCP operates safely over a sparse object database and establishes the history policy; Phase 2 owns producing and validating that exact artifact set.
 
 ## Sizing and phase count
 
@@ -125,7 +125,8 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 - `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, and safe query audit metadata.
 - The MCP operation set is closed: `read`, `search`, `glob`, `git_status`, `git_diff`, `git_show`, `git_log`, and `git_blame`.
-- `RepositoryViewDescriptor` names a verified manifest and sparse object/materialized view. It never names the original checkout.
+- `RepositoryHistoryPolicyV1` fixes the retained range at a deterministic all-parent breadth-first prefix capped before 2,048 commits or 512 MiB of incremental unique allowed historical blobs. Descriptor membership, not generic reachability, controls history queries; boundary and out-of-range results are typed and auditable.
+- `RepositoryViewDescriptor` names a verified manifest and sparse object/materialized view, including the immutable retained-revision/frontier fields. It never names the original checkout.
 - Path policy and secret scrubbing are shared pure modules. The MCP applies them for both providers; provider prompts do not enforce access.
 - `PersonaWorkloadExecutor` accepts a versioned request and supports dispatch, ordered event replay after a sequence, cancellation by generation, and reconciliation by workload id.
 - `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
@@ -134,9 +135,9 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 ### Established by Phase 2, consumed by Phase 3
 
-- `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, policy version, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
+- `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, repository/history policy versions, retained-revision/frontier metadata, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
 - `WorkflowRepositoryArtifactService.seal`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points.
-- The artifact contains original commit/tree identities and allowed blobs but no sensitive blob bodies. Denied entries remain visible only as classified metadata.
+- The artifact contains original commit/tree identities and all allowed blobs for the exact policy-retained revision prefix, but no sensitive blob bodies. Denied entries remain visible only as classified metadata; source-base objects outside the prefix remain diff-only.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
 - A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
 - Historical submissions without an artifact claim row remain valid prompt-only submissions. An access-enabled Phase 3 attempt requires an active claim joined to a ready artifact and never reconstructs from a live checkout.
@@ -179,7 +180,8 @@ Independent review work inside a phase may run in parallel, but each phase is on
 ### Audit after Phase 2 design
 
 - Reconciled the sensitive-content and Git-history requirements with a sparse object artifact, not a normal bundle.
-- Kept original commit and tree ids so history results remain meaningful while denied blob bodies are physically absent.
+- Kept original commit and tree ids for the deterministic policy-retained prefix so history results remain meaningful while denied blob bodies are physically absent.
+- Bounded history independently from query pagination, with an exact retained-set manifest, explicit frontier semantics, and sealing failure instead of silent range shrinkage when an in-range allowed object cannot be packaged.
 - Put artifact bytes under digest-level ownership, gave each submission a durable claim, and made retries reuse that claim. Releasing one submission cannot delete bytes while another active claim remains.
 - Left conditional capture activation to Phase 3 because Phase 2 has no published access setting yet. Phase 2 ships an unused but fully tested service rather than capturing every submission.
 
@@ -229,4 +231,5 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 3. Claude and Codex expose the same eight operations and use the same security and audit path.
 4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
-6. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.
+6. History selection is deterministic at both ceilings; in-range show/log/blame works after source removal, while boundary and `revision_out_of_range` behavior is identical for Claude and Codex.
+7. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.

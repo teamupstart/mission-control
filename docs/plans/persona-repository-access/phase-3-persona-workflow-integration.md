@@ -60,6 +60,7 @@ This phase does not:
 From Phase 1:
 
 - final access, operation, workload, event, audit, failure, cursor, budget, and cancellation schemas;
+- `RepositoryHistoryPolicyV1`, retained-revision validation, history-boundary result metadata, and the auditable `revision_out_of_range` denial;
 - repository policy and standalone MCP bundle;
 - workload-specific Claude/Codex adapters and `LocalPersonaWorkloadExecutor`;
 - repository bodies remain local to provider/MCP;
@@ -68,7 +69,7 @@ From Phase 1:
 From Phase 2:
 
 - `WorkflowRepositoryArtifactService` and artifact/claim store API;
-- active submission claim joined to a ready digest-owned artifact, immutable digest/locator, exact layer identities, and typed failure codes;
+- active submission claim joined to a ready digest-owned artifact, immutable digest/locator, exact layer identities, immutable retained-revision/frontier metadata, and typed failure codes;
 - optional stable-capture sealing seam;
 - digest ownership, per-submission claims, retention, and startup reconciliation.
 
@@ -163,6 +164,7 @@ Visible disclosure states:
 - access covers non-sensitive committed, staged, unstaged, and nonignored untracked content from the submitted state;
 - the Persona receives no shell, writes, agent-visible network, host files, `.git` internals, or unrestricted provider tools;
 - known secret-bearing paths are denied and their blob bodies are omitted; allowed text is scrubbed as defense in depth;
+- Git history is retained as a deterministic bounded prefix of at most 2,048 commits and 512 MiB of additional allowed historical blobs; the reviewer sees an explicit boundary or out-of-range response instead of silently consulting older history;
 - the value freezes only when a workflow version is published;
 - built-in access is a local override and does not alter shipped built-in workflow versions.
 
@@ -190,7 +192,7 @@ Persist enough state for local and future remote executors:
 
 - workload id, node attempt id, request/idempotency key, executor identity, snapshot digest, protocol version, state, deadline, cancellation generation, accepted/terminal timestamps, highest contiguous sequence, last error, and transport diagnostics;
 - ordered workload events with payload equality hash and ingestion timestamp;
-- query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error, item/byte counts, truncation, cursor presence, and cancellation state.
+- query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error including history-boundary and out-of-range results, item/byte counts, truncation, cursor presence, and cancellation state.
 
 The daemon is the only database writer. The MCP writes a safe local journal; the workload supervisor emits safe events; the engine/store validates and persists them.
 
@@ -226,7 +228,7 @@ For every repository evidence reference:
 - the quote is bounded/scrubbed and consistent with the operation metadata contract;
 - a denied, failed, cancelled, or unrelated operation cannot support a verdict.
 
-Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, and repository evidence form without telling the provider it has shell or filesystem access.
+Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, bounded retained-history range, boundary/out-of-range responses, and repository evidence form without telling the provider it has shell or filesystem access.
 
 ### 9. Integrate retry, cancellation, and restart recovery
 
@@ -259,6 +261,7 @@ Run detail displays:
 - query count, bytes, allowed/denied/truncated/failed/cancelled counts;
 - bounded rows showing operation, safe path/hash metadata, duration, outcome, size, truncation, and cursor presence;
 - retry/block reason when repository access caused it.
+- retained history count and boundary state from the verified manifest, plus safe audit rows for `history_boundary` and `revision_out_of_range` without exposing omitted commit messages or paths.
 
 Never render repository response bodies, sensitive query text, raw locator paths, or denied content. Keep the compact run summary/SSE projection small.
 
@@ -274,7 +277,7 @@ Update in the same phase:
 - `docs/agent-guides/architecture.md`
 - any configuration or generated-artifact documentation the final implementation changes
 
-Document the local MCP as an in-workload repository query service, not a network callback to the scheduling session. Document future remote execution as an adapter to the same artifact/request/event contract, not part of this feature.
+Document the local MCP as an in-workload repository query service, not a network callback to the scheduling session. Document the 2,048-commit/512-MiB `RepositoryHistoryPolicyV1`, deterministic frontier behavior, source-base diff-only rule, and operator-visible boundary/out-of-range outcomes. Document future remote execution as an adapter to the same artifact/request/event contract, not part of this feature.
 
 ## Data, API, migration, and compatibility
 
@@ -324,6 +327,7 @@ Cover:
 - exact dirty capture only when at least one frozen Persona needs access;
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;
+- retained-history boundary and out-of-range recovery within the same provider session, with the same result and audit semantics for Claude and Codex;
 - same-attempt evidence validation;
 - Claude/Codex parity and image preservation;
 - missing/corrupt artifact, failed materialization, MCP crash, provider crash, malformed verdict, audit failure, event duplicate/gap, timeout, cumulative budget, cancellation, late result, daemon restart, executor loss, retry exhaustion, and manual resubmit;
@@ -343,9 +347,10 @@ Cover:
 5. observe multiple repository queries and one verdict for Claude;
 6. repeat capability parity for Codex;
 7. observe denial and truncation/pagination in the audit summary without response bodies;
-8. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
-9. reload and see persisted audit/retry state;
-10. render a historical old run as no repository access.
+8. observe retained-history boundary and out-of-range outcomes without omitted commit metadata;
+9. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
+10. reload and see persisted audit/retry state;
+11. render a historical old run as no repository access.
 
 Use roles, labels, placeholders, and visible text only. Do not add `data-testid`.
 

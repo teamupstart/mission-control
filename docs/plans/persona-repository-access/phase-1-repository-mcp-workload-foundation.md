@@ -59,8 +59,9 @@ Create `src/shared/repository-access.ts` with append-only or closed constants an
 - `PERSONA_REPOSITORY_ACCESS_MODES = ["none", "read"]` and default `none`;
 - `REPOSITORY_OPERATION_IDS = ["read", "search", "glob", "git_status", "git_diff", "git_show", "git_log", "git_blame"]`;
 - operation-specific request payloads with no free-form argv, revision expression, or host path;
-- result envelopes containing operation id, status, byte/item counts, truncation, continuation cursor, and typed denial/failure code;
-- a versioned `RepositoryViewDescriptor` naming only an isolated manifest/object view and its verified digest;
+- result envelopes containing operation id, status, byte/item counts, truncation, continuation cursor, history-boundary metadata, and typed denial/failure codes including `revision_out_of_range` and `history_boundary`;
+- a closed `RepositoryHistoryPolicyV1` contract: captured HEAD root, deterministic all-parent breadth-first traversal, 2,048 retained commits, 512 MiB of incremental unique allowed historical blob bodies, stop-before-overflow prefix semantics, and no timestamp cutoff;
+- a versioned `RepositoryViewDescriptor` naming only an isolated manifest/object view and its verified digest, ordered retained-revision ids, frontier/omitted-parent metadata, retained counts/bytes, and history policy version;
 - layered budgets for per-call bytes/items/time and per-attempt calls/bytes/time;
 - opaque cursor metadata bound to snapshot digest, operation shape, policy version, and position;
 - a versioned `PersonaWorkloadRequest` with idempotency key, frozen Persona payload, provider/model, prompt/images, artifact locator/digest, policy, budgets, deadline, and cancellation generation;
@@ -134,9 +135,9 @@ Implement:
 - `glob`: manifest-backed path enumeration with type/classification metadata and cursor;
 - `git_status`: manifest-backed exact captured classification, never live `git status`;
 - `git_diff`: only the four approved layer pairs, optional validated scope, explicit literal allowlist before content generation;
-- `git_show`: captured HEAD or validated reachable ancestor, fixed metadata format plus allowlisted patch generation;
-- `git_log`: captured HEAD ancestry only, fixed metadata-only format, optional validated allowed path, no patch/stat/name flags;
-- `git_blame`: bounded allowed regular file/range against the captured view, with any emitted filename/previous path revalidated.
+- `git_show`: captured HEAD or a revision in the descriptor's retained set, fixed metadata format plus an allowlisted first-parent patch; reject outside revisions as `revision_out_of_range`, compare a true root with the empty tree, and return `history_boundary` instead of a root-style patch when a non-root retained frontier commit lacks its first parent;
+- `git_log`: descriptor-retained ancestry only, fixed metadata-only format, optional validated allowed path, no patch/stat/name flags, and explicit terminal boundary metadata;
+- `git_blame`: bounded allowed regular file/range against the retained view, with boundary attribution and `historyTruncated`, and with any emitted filename/previous path revalidated.
 
 All Git invocations use argv arrays, `--` separation, deterministic config, explicit revisions derived from the descriptor, timeouts, and cancellation. Disable external diff, text conversion, hooks, filters, pagers, optional locks, credential helpers, object fetching, and network. Treat a missing object on an allowed path as `unavailable`, not an empty file. Denied missing blobs must never be requested.
 
@@ -145,6 +146,8 @@ For `git_diff` and patch-producing `git_show`, first resolve the complete change
 ### 4. Implement bounds and opaque cursors
 
 Centralize initial defaults from the source plan: approximately 128 operations, 32 MiB cumulatively served, 1 MiB maximum response, and 15 minutes per workload. Add smaller operation-specific item/line/history/time limits.
+
+History query pagination does not define artifact retention. Implement the exact shared `RepositoryHistoryPolicyV1` declared above and require every fixture descriptor to carry its computed retained set. History validation tests use that set, not a live reachability check. A captured source-base object outside the retained set remains valid only for the approved layer diffs and is rejected by all three history operations. Missing allowed objects inside the retained set are typed artifact unavailability, never an implicit shorter range.
 
 Every truncated response states the limit reached and supplies an integrity-protected continuation cursor when continuation is meaningful. Cursor verification binds it to the view digest, policy version, operation kind, normalized input hash, and prior position. Reusing a cursor with a different request fails closed and is audited.
 
@@ -204,7 +207,7 @@ Add or extend focused tests such as:
 - `test/inspector-scrub.test.ts` and Inspector grant equality regressions
 - `test/keep-awake-native-build.test.ts` or the current bundle/build contract suite where new entrypoint enumeration belongs
 
-Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
+Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, boundary show/log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
 
 Provider contract fixtures prove multiple repository calls and one verdict for Claude and Codex without real tokens. They assert image preservation and exact capability parity.
 
@@ -223,6 +226,7 @@ npm run smoke
 - Both installed provider paths pass the one-session, multiple-MCP-call, image, structured-result, cancellation, and no-direct-tool contract.
 - The repository MCP publishes exactly eight tools and contains no Mission Control credential or task API path.
 - Every operation shares the same path/content policy and explicit budgets.
+- History operations enforce the shared retained-revision set, report its boundary, and never fetch, accept, or imply history beyond it.
 - Sparse denied blobs cannot be read or leaked through another operation.
 - MCP response bodies remain between provider and MCP; emitted events contain safe metadata only.
 - Build and smoke prove both MCP bundles are packaged and runnable.
@@ -236,6 +240,7 @@ If provider parity fails, this phase does not merge and Phase 2 must not start.
 Phase 2 may rely on:
 
 - the exact shared operation, view, policy, workload, event, audit, cursor, and cancellation schemas;
+- the exact `RepositoryHistoryPolicyV1`, retained-revision validation, boundary result semantics, and out-of-range denial code;
 - the sparse-object reader's rule that denied blob bodies may be physically absent;
 - `RepositoryArtifactMaterializer` and `RepositoryViewLease` boundaries;
 - the standalone MCP bundle and its descriptor;
@@ -251,5 +256,6 @@ Phase 3 may rely on the same contracts and must not widen `LlmRunner`, create a 
 - Query and audit schemas contain attempt/workload identity fields even though Phase 1 does not persist them; Phase 3 can write them without changing MCP responses.
 - The materializer is injected, so Phase 2 can add the real artifact owner without replacing the executor.
 - The MCP reads a manifest and sparse object view rather than a live repository path, matching Phase 2's portability and sensitive-blob omission.
+- History validity is descriptor membership, not generic reachability, so Phase 2 can package one deterministic bounded prefix and Phase 3 can disclose and audit the same boundary without changing provider semantics.
 - The final verdict contract remains the existing Persona verdict union, so Phase 3 can preserve access-off parsing and add repository evidence validation without a second verdict format.
 - No user-visible or durable surface exists yet, so a Phase 1 merge cannot advertise an unavailable capability.

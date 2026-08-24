@@ -117,7 +117,7 @@ The snapshot artifact stores:
 - captured `HEAD`, with an explicit unborn-repository representation;
 - an immutable tree and named artifact ref for the submitted index state;
 - an immutable tree and named artifact ref for the submitted working-tree state, including nonignored untracked files;
-- the history objects required for bounded show, log, and blame rooted at captured `HEAD`;
+- the history objects required by `RepositoryHistoryPolicyV1`, rooted at captured `HEAD`, plus an explicit ordered retained-revision set and boundary metadata;
 - a canonical manifest that classifies each path as committed, staged, unstaged, untracked, deleted, symlink, submodule, binary, or sensitive-denied where applicable;
 - repository identity, artifact format version, policy version, content digest, capture fingerprint, byte counts, artifact state, per-submission claim state, cleanup state, and timestamps.
 
@@ -146,9 +146,9 @@ Define browser-safe tool input, output, cursor, policy, and audit metadata schem
 | `glob` | Enumerate matching manifest paths with a cursor and type metadata. |
 | `git_status` | Return the captured path classifications, not the current checkout status. |
 | `git_diff` | Diff explicit captured layers: base to HEAD, HEAD to index, index to worktree, or base to worktree, optionally scoped to approved paths. |
-| `git_show` | Read metadata or patch for captured HEAD or an allowed ancestor reachable from captured HEAD. |
-| `git_log` | Traverse history anchored at captured HEAD with bounded count, cursor, and optional approved path. |
-| `git_blame` | Attribute a bounded line range for an approved regular file at the captured view without reading the current checkout. |
+| `git_show` | Read metadata or an allowlisted fixed first-parent patch for captured HEAD or a revision in the artifact's retained-revision set. Reject every other revision as `revision_out_of_range`; never render a non-root boundary commit as a root patch. |
+| `git_log` | Traverse only the manifest's ordered retained-revision set, anchored at captured HEAD, with bounded count, cursor, optional approved path, and an explicit history-boundary marker. |
+| `git_blame` | Attribute a bounded line range for an approved regular file using only retained revisions, marking boundary attribution and truncation instead of consulting missing or host objects. |
 
 Every MCP response includes a stable operation id, status, structured result metadata, byte and item counts, `truncated`, an explicit `nextCursor` when more data is available, and a typed error or denial code. Pagination cursors are opaque, integrity-checked tokens bound to snapshot digest, operation shape, and prior position so a provider cannot turn one cursor into a different request.
 
@@ -192,7 +192,7 @@ The repository MCP server reads the materialized artifact through its canonical 
 - Never expose `.git` or any nested Git administrative path.
 - Never follow symlinks. A symlink result may expose only its repository-stored target text and metadata after policy checks; it may not resolve that target.
 - Never traverse submodules. Return only the gitlink identity and approved metadata.
-- Restrict history operations to captured HEAD and validated reachable ancestors. Never accept an arbitrary ref, revision expression, option-like argument, or object id that is not proven reachable.
+- Restrict history operations to captured HEAD and the exact retained-revision set committed into the verified manifest. Never accept an arbitrary ref, revision expression, option-like argument, merely reachable object id, source-base anchor outside that set, or revision beyond the retained boundary.
 
 ### Sensitive-path policy
 
@@ -212,6 +212,16 @@ Use layered budgets rather than a single prompt character limit:
 
 Initial constants should be centralized and testable. The implementation phase should validate practical defaults against large repository fixtures, targeting approximately 128 operations, 32 MiB cumulatively served, a 1 MiB maximum MCP response, and 15 minutes per Persona attempt. These are reliability defaults, not a promise that all cumulative data remains in the provider context. Every truncation must say what was omitted and how to continue.
 
+History retention uses the shared, versioned `RepositoryHistoryPolicyV1`, separate from per-query pagination:
+
+1. Captured `HEAD` is the sole traversal root; an unborn repository has an empty retained set.
+2. Walk the all-parent ancestry breadth-first. Queue parents in the order stored by each commit, producing a deterministic prefix without relying on commit timestamps.
+3. Retain at most 2,048 commits including `HEAD` and at most 512 MiB of unique allowed historical blob bodies not already required by the exact base, HEAD, index, or worktree layers. Before accepting each next commit, calculate its incremental allowed blobs; if either ceiling would be exceeded, stop the traversal rather than skipping that commit and creating holes.
+4. Include every commit and tree object plus every nonsensitive blob needed by the retained prefix. Omit sensitive blob bodies. Record the ordered retained ids, retained counts/bytes, frontier commits, omitted parent ids, and policy version in the digested manifest.
+5. Treat captured source base outside the retained set as a diff-layer anchor only. Its presence in the artifact does not make it valid for `git_show`, `git_log`, or `git_blame`.
+
+The oldest retained frontier is a shallow history boundary. `git_log` stops there, and `git_blame` returns boundary attribution with `historyTruncated: true`. `git_show` metadata remains available for a retained frontier commit. Patch mode compares against the commit's recorded first parent; a true root compares with the empty tree, while a non-root commit whose first parent is omitted returns typed `history_boundary` rather than emitting a misleading root patch. Any requested revision outside the retained set returns the auditable `revision_out_of_range` denial. If capture cannot package every required allowed object for the selected set, sealing fails as infrastructure unavailable; it never silently shrinks the range or leaves an in-range query with a missing allowed blob.
+
 Propagate cancellation from the Workflow attempt through `PersonaWorkloadExecutor`, provider process, MCP process, Git child processes, blob reads, search iterators, and event persistence. Commands carry a cancellation generation and idempotency key so reconnect or duplication cannot revive older work. Cancellation terminates local processes, records cancelled events, and makes any later terminal verdict audit-only.
 
 ## Audit and observability
@@ -228,7 +238,7 @@ Extend Workflow evidence references so a final verdict can cite a successful MCP
 
 Classify failures consistently:
 
-- Sensitive-path denial, invalid query, exhausted page, or unsupported operation is an auditable MCP response. The Persona may issue a corrected query within the same attempt.
+- Sensitive-path denial, invalid query, exhausted page, unsupported operation, `revision_out_of_range`, or `history_boundary` is an auditable MCP response. The Persona may issue a corrected query within the same attempt.
 - Missing or mismatched artifact, failed materialization, unreadable repository view, MCP process failure, workload launch failure, event-sequence gap, audit-write failure, provider failure, malformed final output, lost executor without resumable ownership, or exceeded attempt budget is an infrastructure failure.
 - Cancellation is terminal for the active work and records cancellation without scheduling a retry that contradicts the requested stop.
 
@@ -265,9 +275,10 @@ Migration tests open representative pre-feature databases, including custom Pers
 ### Unit and security tests
 
 - Schema defaults, exhaustive MCP tool and workload-event unions, cursor integrity, artifact digest validation, budget accounting, event idempotency, evidence-reference validation, and access freshness.
-- Path normalization, traversal, option injection, Unicode and case behavior, symlink and submodule handling, ancestor validation, binary handling, and every sensitive-path family.
+- Path normalization, traversal, option injection, Unicode and case behavior, symlink and submodule handling, retained-revision validation, history frontier behavior, binary handling, and every sensitive-path family.
 - Layered Git fixtures that distinguish committed, staged, unstaged, deleted, renamed, untracked, ignored, symlink, submodule, and unborn-repository states.
 - Per-operation pagination and truncation without silent omissions.
+- Deterministic history selection at both ceilings, all-parent merge traversal, out-of-range revision denial, boundary show/log/blame semantics, and failure rather than silent range shrinkage when an in-range allowed object cannot be packaged.
 
 ### Persistence, migration, and integration tests
 
@@ -341,7 +352,7 @@ The feature is complete only when all of the following are true:
 - Claude and Codex use the same MCP tool contract and security path with no direct filesystem, shell, write, or agent-visible network tools.
 - The local reference executor consumes a versioned portable workload request and produces ordered idempotent events suitable for a later remote adapter.
 - Repository query result bodies remain inside the workload; Mission Control persists only safe query metadata, lifecycle events, and the final verdict.
-- Protected paths, traversal, symlink following, submodule traversal, arbitrary history, shell, writes, network, and host files are impossible through the exposed contract.
+- Protected paths, traversal, symlink following, submodule traversal, history beyond the manifest-retained range, shell, writes, network, and host files are impossible through the exposed contract.
 - Every query outcome, denial, truncation, cancellation, and failure is auditable without storing repository response bodies.
 - Artifact, workload, provider, or MCP unavailability retries and eventually blocks with infrastructure error, never silently degrading to prompt-only review.
 - Unit, integration, runner-contract, migration, and built-browser E2E suites cover the behavior and both providers.

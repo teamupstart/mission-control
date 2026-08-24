@@ -154,10 +154,11 @@ test("preview maps Phase 2 results without reimplementing validation", async () 
 test("public restore results consume complete local paths including spaces and platform forms", async () => {
   const unsafePreview = {
     ...preview,
-    exclusions: ["Excluded /Users/operator/My Project/private.json after validation"],
+    exclusions: ["Excluded path:/Users/operator/My Project/private.json after validation"],
     warnings: [
       "Warning C:\\Users\\operator\\My Project\\private.json after validation",
       "Warning ~/My Project/private.json after validation",
+      "See https://example.com/restore-help",
     ],
     blockers: ["Blocked \\\\server\\share\\My Project\\private.json after validation"],
   };
@@ -167,8 +168,8 @@ test("public restore results consume complete local paths including spaces and p
   assert.equal(previewResponse.status, 409);
   assert.deepEqual((await previewResponse.json()).preview, {
     ...unsafePreview,
-    exclusions: ["Excluded [local path]"],
-    warnings: ["Warning [local path]", "Warning [local path]"],
+    exclusions: ["Excluded path:[local path]"],
+    warnings: ["Warning [local path]", "Warning [local path]", "See https://example.com/restore-help"],
     blockers: ["Blocked [local path]"],
   });
 

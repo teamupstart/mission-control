@@ -1,11 +1,11 @@
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 
 interface PendingRestore {
-  requestId: string;
   onCommitted: () => void;
 }
 
 const pending = new Map<string, PendingRestore>();
+export const SETTINGS_RESTORE_PENDING_LIMIT = 32;
 
 /** A first snapshot is a baseline; only a changed marker after a stream gap is invalidation. */
 export function settingsRestoreMarkerChanged(
@@ -18,7 +18,15 @@ export function settingsRestoreMarkerChanged(
 
 /** Register before POST so a fast SSE event cannot be misidentified as another window's. */
 export function beginSettingsRestore(requestId: string, onCommitted: () => void): void {
-  pending.set(requestId, { requestId, onCommitted });
+  // A transport failure has no safe expiry: the daemon may have committed and its event may
+  // still arrive. Retain a generous recent window, but never let retries grow this module-level
+  // registry without bound for the lifetime of the page.
+  pending.delete(requestId);
+  pending.set(requestId, { onCommitted });
+  if (pending.size > SETTINGS_RESTORE_PENDING_LIMIT) {
+    const oldest = pending.keys().next().value;
+    if (oldest !== undefined) pending.delete(oldest);
+  }
 }
 
 export function observeSettingsRestored(

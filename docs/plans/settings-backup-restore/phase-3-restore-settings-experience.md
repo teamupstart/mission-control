@@ -150,6 +150,10 @@ daemon-backed and browser-cached setting is rebuilt from one startup path. Clear
 state on failure. Do not treat an HTTP timeout as proof that the daemon did not commit; a later
 matching event or refreshed list remains authoritative.
 
+Keep definite failures out of the request registry. Retain at most 32 recent ambiguous request ids
+so a late matching event still owns the initiating window without letting repeated offline retries
+grow page memory for its entire lifetime.
+
 ### 4. Coordinate other open windows without discarding drafts
 
 When `useEventStream` receives `settings_restored`:

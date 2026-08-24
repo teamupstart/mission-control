@@ -23,6 +23,7 @@ import {
   finishSettingsRestore,
   observeSettingsRestored,
   reloadAfterSettingsRestore,
+  SETTINGS_RESTORE_PENDING_LIMIT,
   settingsRestoreMarkerChanged,
 } from "../src/web/lib/settings-restore-coordinator.ts";
 
@@ -182,6 +183,26 @@ test("a retry cannot orphan an earlier restore with an ambiguous transport resul
 
   assert.equal(observeSettingsRestored({ ...first, requestId: retryId }), "external");
   assert.equal(reloads, 1);
+});
+
+test("ambiguous restore ownership retains a bounded recent window", () => {
+  const requestIds = Array.from(
+    { length: SETTINGS_RESTORE_PENDING_LIMIT + 1 },
+    (_, index) => `ambiguous-${index}`,
+  );
+  let reloads = 0;
+  for (const id of requestIds) beginSettingsRestore(id, () => { reloads += 1; });
+
+  const event = {
+    type: "settings_restored" as const,
+    snapshotId: "daily-2026-08-24" as const,
+    restoredAt: "2026-08-24T12:05:00.000Z",
+  };
+  assert.equal(observeSettingsRestored({ ...event, requestId: requestIds[0]! }), "external");
+  assert.equal(observeSettingsRestored({ ...event, requestId: requestIds.at(-1)! }), "initiating");
+  assert.equal(reloads, 1);
+
+  for (const id of requestIds) abandonSettingsRestore(id);
 });
 
 test("a reconnect detects a restore missed during the stream gap without alerting a fresh window", () => {

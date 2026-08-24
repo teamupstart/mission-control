@@ -190,10 +190,21 @@ final round cannot ask for more.
 
 ### 5. Accounting - `src/server/db.ts` and the store
 
-`addColumn(d, "workflow_llm_calls", "round", "INTEGER NOT NULL DEFAULT 1")` plus the boot-block
-column. Comment the distinction that makes two integer columns necessary: `attempt` is the
-parse-retry attempt **within** a round, `round` is the broker round. The store's row schema takes
-it as optional-with-default so a pre-migration row still parses, and the observer writes it.
+Both halves, named explicitly as a pair, because the omission is invisible on a fresh install and
+total on an upgrade - the failure round 14 found in Phase 2:
+
+```sql
+-- boot CREATE TABLE block, workflow_llm_calls:
+--   round INTEGER NOT NULL DEFAULT 1
+```
+
+```ts
+addColumn(d, "workflow_llm_calls", "round", "INTEGER NOT NULL DEFAULT 1");
+```
+
+Comment the distinction that makes two integer columns necessary: `attempt` is the parse-retry
+attempt **within** a round, `round` is the broker round. The store's row schema takes it as
+optional-with-default so a pre-migration row still parses, and the observer writes it.
 
 ### 6. Built-in guidance - `personas/*.md`
 
@@ -263,6 +274,10 @@ fencing on fetched content, scrubbing, and the fact that a denial is reported to
 - `test/workflow-security.test.ts`: fetched repository content arrives inside an `-untrusted`
   fence; a denial is present in the prompt as data with its code; no host path appears in any
   prompt section.
+- **The boot-block/migration pair check and the general guard**, the same two Phase 1 and Phase 2
+  carry: assert `round` appears in the `workflow_llm_calls` `CREATE TABLE` block **and** in a
+  matching `addColumn`; and assert a migrated pre-feature database's `PRAGMA table_info` column set
+  for that table **equals** a fresh database's. The second names no column and so cannot go stale.
 - `test/workflow-db.test.ts` and a migration test: `workflow_llm_calls.round` exists on a fresh
   create and via migration, a pre-migration row reads as `1`, and two opens are idempotent.
 - `test/builtin-personas.test.ts`, `test/builtin-personas-web.test.ts`,

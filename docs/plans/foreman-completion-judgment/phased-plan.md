@@ -85,9 +85,11 @@ order equals phase order.
 ## Cross-phase contracts
 
 - **C1 (Phase 1 owns): the verifier's evidence input.** `VerifyInput.registeredEvidence`
-  and the structural evidence-registration statement, with server-derived metadata above
-  the untrusted fence and child-authored captions inside it. Later phases must not move
-  content across that fence.
+  and the registered-evidence statement: daemon-generated metadata (counts, kinds,
+  generations, timestamps, sizes) above the untrusted fence; child-authored display
+  names, source locators, and captions inside it. Zero registered items is stated as
+  "clause not satisfied"; a nonempty list is stated as a count only, with coverage
+  judgment left to the verifier. Later phases must not move content across that fence.
 - **C2 (Phase 1 owns): the evidence-class gap kind.** One additive `GapSchema.kind` value,
   `"unverified"`, meaning "the change looks done; only proof of verification is missing".
   Phase 3 persists it; nothing renames existing kinds.
@@ -119,3 +121,9 @@ source plan's success criteria, spread across the phases that introduce them.
 - 2026-08-24 (post Phase-3 write): re-checked Phases 1-2 against Phase 3's additive
   persisted shapes; no earlier contract needed edits. Dependency directions and the
   no-concurrency claim re-confirmed.
+- 2026-08-24 (Inspector round 1 on the plan PR): C1 tightened. Display names are
+  child-authored at registration and moved inside the untrusted fence, and the
+  registration clause is never declared satisfied from a nonempty item list - the trusted
+  statement carries the count (zero stated as not satisfied) and coverage judgment stays
+  with the verifier. Phase 1's steps, tests, and handoff updated to match; Phases 2-3
+  unaffected.

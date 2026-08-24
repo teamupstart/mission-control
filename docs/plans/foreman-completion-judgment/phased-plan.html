@@ -97,8 +97,10 @@
   <h2>Cross-phase contracts</h2>
   <ul>
     <li><strong>C1</strong> (Phase 1): <code>VerifyInput.registeredEvidence</code> and the
-    structural evidence-registration statement; metadata above the untrusted fence, captions
-    inside it.</li>
+    registered-evidence statement; daemon-generated metadata above the untrusted fence,
+    child-authored display names, locators, and captions inside it. Zero items is stated as
+    "clause not satisfied"; a nonempty list is a count only - coverage judgment stays with the
+    verifier.</li>
     <li><strong>C2</strong> (Phase 1): the additive gap kind <code>unverified</code> - "the change
     looks done; only proof of verification is missing".</li>
     <li><strong>C3</strong> (Phase 2 entry point, Phase 3 keying): one daemon-owned recovery

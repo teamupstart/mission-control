@@ -111,13 +111,16 @@
     task-bound session, the worker fetches registered evidence via a new
     <code>client.workflowEvidence(sessionId)</code> against the existing daemon route
     <code>GET /api/sessions/:id/workflow-evidence</code> (<code>src/server/routes.ts:1973</code>).
-    "Evidence registration is done" becomes a computed fact stated to the verifier as trusted policy,
-    in either direction - never a model inference about database contents.</p>
+    What is registered becomes a stated fact, never a model inference about database contents:
+    zero rows render as "the clause is not satisfied"; a nonempty list renders as a count, with
+    coverage judgment left to the verifier - it is never declared to satisfy the clause outright,
+    because a task that requested several artifacts is not satisfied by one.</p>
     <p><strong>Evidence in the prompt.</strong> <code>VerifyInput</code> gains a
-    <code>registeredEvidence</code> list (display name, kind, source locator/command, generation,
-    created-at, size). Server-derived metadata renders above the evidence fence; child-authored
-    captions and command text render inside the untrusted fence, capped, exactly as the transcript
-    does.</p>
+    <code>registeredEvidence</code> list. Only daemon-generated metadata - counts, evidence kinds,
+    generations, timestamps, byte sizes - renders above the evidence fence as trusted context.
+    Child-authored fields - display names, source locators/commands, captions - are the session's
+    own text, chosen at registration, and render inside the untrusted fence, capped, exactly as
+    the transcript does.</p>
     <p><strong>Policy alignment.</strong> The verify POLICY is extended: when registered command
     evidence covers the required verification, absence of test output in the transcript is not a gap;
     prior-generation evidence remains valid for a re-submission - which resolves the

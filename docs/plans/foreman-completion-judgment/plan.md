@@ -64,21 +64,23 @@ The judgment layer learns to see the proof that already exists.
 **Structural pre-check.** Before the LLM call on the prompted verify path for a task-bound
 session, the worker fetches the session's registered evidence through a new
 `client.workflowEvidence(sessionId)` against the existing daemon route
-`GET /api/sessions/:id/workflow-evidence` (`src/server/routes.ts:1973`). "Evidence
-registration ... is done" becomes a computed fact, not a model judgment:
+`GET /api/sessions/:id/workflow-evidence` (`src/server/routes.ts:1973`). What is
+registered becomes a stated fact, not a model inference about database contents:
 
-- Rows exist for this note key: the contract clause is satisfied. The verify prompt states
-  it as trusted policy (beside the completion contract block) and instructs the verifier
-  not to raise an evidence-registration gap.
-- No rows exist and the objective demands registration: stated as trusted policy the other
-  way. The verifier still judges intent satisfaction; it does not have to infer the
-  database's contents from prose.
+- No rows exist: the verify prompt states as trusted policy that the contract clause
+  "evidence registration is done" is not satisfied.
+- Rows exist: the prompt states the count as trusted fact and hands coverage judgment to
+  the verifier - whether the registered items cover the evidence the task asked for is its
+  call, made from the item contents inside the evidence fence. A nonempty list is never
+  declared to satisfy the clause outright, because a task that requested several artifacts
+  is not satisfied by one.
 
-**Evidence in the prompt.** `VerifyInput` gains a `registeredEvidence` list (display name,
-kind, source locator/command, generation, created-at, byte size). Server-derived metadata -
-counts, timestamps, states - renders above the evidence fence as trusted context.
-Child-authored fields - captions, command text - render inside the untrusted fence, exactly
-as the transcript does, with per-item and total caps.
+**Evidence in the prompt.** `VerifyInput` gains a `registeredEvidence` list. Only
+daemon-generated metadata - counts, evidence kinds, generations, timestamps, byte sizes -
+renders above the evidence fence as trusted context. Child-authored fields - display
+names, source locators/commands, captions - are the session's own text, chosen at
+registration, and render inside the untrusted fence, exactly as the transcript does, with
+per-item and total caps.
 
 **Policy alignment.** The verify POLICY (`queue-prompt.ts:67`) already says the No-Mistakes
 workflow runs tests and lint and the verifier's job is intent satisfaction. The prompt is

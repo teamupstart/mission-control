@@ -66,22 +66,31 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
    the worker can treat them as an evidence-gather failure.
 
 2. **Verify input** (`src/server/foreman/queue-prompt.ts`): extend `VerifyInput` with
-   `registeredEvidence?: { items: RegisteredEvidenceItem[]; truncated: boolean } | null`
-   where each item carries display name, evidence kind, source locator (the command line
-   for command evidence), work generation, created-at, byte size, and the child-authored
-   caption. Add `evidenceRegistrationSatisfied?: boolean | null` - the structural fact,
-   `null` when the session has no ship contract.
+   `registeredEvidence?: { items: RegisteredEvidenceItem[]; totalCount: number; truncated: boolean } | null`
+   (`null` when the session has no ship contract). Each item separates daemon-generated
+   fields - evidence kind (a server-constrained enum), work generation, created-at, byte
+   size - from child-authored fields: display name, source locator (the command line for
+   command evidence), and caption. The child-authored fields are the session's own text,
+   chosen at registration, and the rendering below never lets them cross the trust fence.
+   There is no boolean "registration satisfied" field: whether the registered items cover
+   what the task asked for is the verifier's judgment, not a structural fact - only the
+   count and the zero case are structural.
 
 3. **Prompt rendering** (`buildVerifyPrompt`):
    - Above the fence, beside the completion-contract block: a trusted statement of the
-     structural fact - either "N evidence items are registered for this work (server
-     metadata below); the contract clause 'evidence registration is done' is satisfied
-     structurally - do not raise a gap about evidence registration" or the explicit
-     opposite. Render the server-derived metadata table (names, kinds, generations,
-     timestamps, sizes) here; none of it is child-authored.
+     narrow structural facts only. Zero items: "no evidence is registered for this work,
+     so the contract clause 'evidence registration is done' is not satisfied". One or
+     more: "N evidence items are registered for this work; daemon-verified metadata below,
+     contents inside the evidence fence - judge from those contents whether they cover the
+     evidence the task asked for". Never state the clause as satisfied from a nonempty
+     list: a task that requested several artifacts is not satisfied by one.
+   - The trusted metadata table renders daemon-generated fields only: item index, evidence
+     kind, work generation, created-at, byte size. Display names, source locators, and
+     captions are child-authored and must NOT appear above the fence.
    - Inside the untrusted fence, after the transcript: a "Registered evidence contents"
-     section carrying each item's source locator and caption, per-item capped (600 chars)
-     and section capped (12 kB), with a truncation header like the diff's.
+     section carrying each item's display name, source locator, and caption, keyed by the
+     same item index as the trusted table, per-item capped (600 chars) and section capped
+     (12 kB), with a truncation header like the diff's.
    - POLICY additions: define the new gap kind `unverified` as "the requested change
      itself appears done; the only deficiency is missing or unconfirmable proof that
      verification ran". Instruct: when registered command evidence covers the verification
@@ -98,8 +107,10 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
 5. **Worker** (`src/server/foreman/worker.ts`, prompted path):
    - Fetch evidence in the same `Promise.all` as the diff and transcript anchor; on read
      failure, log and return `false` without consuming (same as a failed diff read).
-   - Compute `evidenceRegistrationSatisfied` from the item list when the session's task
-     kind is `ship`; pass both new fields into `verifyItem`.
+   - Build `registeredEvidence` (items, total count, truncation) when the session's task
+     kind is `ship` and pass it into `verifyItem`. No satisfaction boolean is computed:
+     the zero case renders as "clause not satisfied" and the nonempty case hands coverage
+     judgment to the verifier, per step 3.
    - After the verdict and the existing `refreshPromptedCandidate` re-check
      (`worker.ts:2055`): if the verdict is claimable as today (`complete` and no blocking
      gaps), behavior is unchanged. New branch: if `complete === true` and every blocking
@@ -130,11 +141,14 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
 Extend the existing suites rather than creating parallel ones:
 
 - `test/queue-verify.test.ts`: `unverified` parses; existing kinds unchanged.
-- Prompt-builder coverage (beside the existing verify-prompt tests): metadata renders
-  above the fence, captions inside it, caps and truncation headers, structural statement
-  in both directions, POLICY lines present.
-- `test/prompted-wrapup-worker-e2e.test.ts`: with staged evidence, the structural clause
-  is stated and a clean verdict claims; a verdict with only `unverified` blocking gaps
+- Prompt-builder coverage (beside the existing verify-prompt tests): the trusted table
+  carries daemon-generated fields only - a hostile display name, locator, and caption
+  (each shaped like a prompt heading) must render inside the fence and never above it;
+  caps and truncation headers; the zero-items statement says the clause is not satisfied;
+  the nonempty statement gives the count and hands coverage judgment to the verifier
+  without declaring the clause satisfied; POLICY lines present.
+- `test/prompted-wrapup-worker-e2e.test.ts`: with staged evidence, the count statement is
+  rendered and a clean verdict claims; a verdict with only `unverified` blocking gaps
   claims with the fallback-prefixed summary; a verdict with any other blocking gap holds;
   `complete: false` holds; `no_binding` falls through to hold; an evidence read failure
   neither consumes nor claims.
@@ -157,12 +171,21 @@ npm test
 ## Downstream handoff
 
 Later phases may rely on: `client.workflowEvidence`, the `VerifyInput.registeredEvidence`
-and `evidenceRegistrationSatisfied` fields and their fence placement (contract C1), and
-the `unverified` gap kind's meaning (contract C2). They must not move evidence content
-across the trust fence or redefine the kind.
+field and its fence placement (contract C1: daemon-generated metadata above the fence,
+child-authored display names, locators, and captions inside it), and the `unverified` gap
+kind's meaning (contract C2). They must not move evidence content across the trust fence
+or redefine the kind.
 
 ## Cross-phase audit record
 
 - 2026-08-24: written first; owns C1 and C2. The gap-kind definition was placed here
   rather than in Phase 3 (which persists it) so the prompt and the fallback share one
   definition from the start.
+- 2026-08-24 (Inspector round 1): display names reclassified as child-authored and moved
+  inside the untrusted fence - a session chooses them at registration, so rendering them
+  in the trusted table would let child text cross the injection fence. The
+  `evidenceRegistrationSatisfied` boolean was dropped: a nonempty item list must not
+  declare the contract clause satisfied when the task requested more artifacts than were
+  registered, so the trusted statement now carries only the count (with the zero case
+  stated as not satisfied) and coverage judgment stays with the verifier. C1's wording
+  tightened accordingly; C2 unchanged.

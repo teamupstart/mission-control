@@ -606,6 +606,19 @@
       of a migrated pre-feature database against a fresh one - it names no column, so it does not go
       stale as columns are added, and it is the assertion that would have caught this. Each phase adds
       it for the tables it owns, so the two stay independent.</li>
+    <li><strong>Paths are bytes end to end; the durable columns are BLOBs</strong> (Phase 2).
+      <code>-z</code> was chosen because git paths are bytes, and the payload was then specified into a
+      <code>TEXT</code> column - the same contradiction as writing &ldquo;match as bytes, never
+      normalize&rdquo; at step 2 and then decoding every path into a JavaScript string. Measured: a
+      UTF-8 round trip turns 11 bytes into 15 and is not recoverable, and <code>a&lt;ff&gt;b</code> and
+      <code>a&lt;fe&gt;b</code> - two distinct paths - decode to one string, which is the
+      security-relevant half because a denylist decision on a decoded string is a decision about a
+      different value. Fixed as a class: validation, denylist and glob matcher compare bytes; the
+      porcelain and the audit <code>path</code> are BLOBs; <code>-c core.quotePath=false</code> is
+      required on every invocation (git otherwise C-quotes into a <em>third</em> representation,
+      verified) with <code>-z</code> wherever the output form allows. A non-UTF-8 path is reported to
+      the reviewer with a marker and is unaddressable, so <code>read_file</code> on the mangled
+      spelling fails closed.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

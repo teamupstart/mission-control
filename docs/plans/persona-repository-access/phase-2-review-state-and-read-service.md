@@ -155,7 +155,7 @@ ALTER-equivalent on workflow_submissions: review_snapshot_repo_root TEXT
 -- window as the snapshot. The snapshot tree records one blob per path and so cannot express the
 -- staged-versus-worktree distinction at all; this is the only durable record of it. NULL on a row
 -- written before the column, and on any submission whose status could not be captured.
-ALTER-equivalent on workflow_submissions: review_status_porcelain TEXT
+ALTER-equivalent on workflow_submissions: review_status_porcelain BLOB
 -- Set when the porcelain exceeded statusPorcelainBytes and was stored as a prefix, so git_status
 -- reports truncation instead of implying completeness.
 ALTER-equivalent on workflow_submissions: review_status_truncated INTEGER NOT NULL DEFAULT 0
@@ -168,7 +168,9 @@ CREATE TABLE IF NOT EXISTS workflow_repository_queries (
   round            INTEGER NOT NULL,
   ordinal          INTEGER NOT NULL,
   op               TEXT NOT NULL,
-  path             TEXT,
+  -- Byte-exact, because git paths are bytes and a TEXT column collapses two distinct paths
+  -- that decode to the same string. The browser renders a labelled lossy display form.
+  path             BLOB,
   detail           TEXT,
   outcome          TEXT NOT NULL,
   denial_code      TEXT,
@@ -189,7 +191,7 @@ four**, not just the snapshot pair:
 ```ts
 addColumn(d, "workflow_submissions", "review_snapshot_oid", "TEXT");
 addColumn(d, "workflow_submissions", "review_snapshot_repo_root", "TEXT");
-addColumn(d, "workflow_submissions", "review_status_porcelain", "TEXT");
+addColumn(d, "workflow_submissions", "review_status_porcelain", "BLOB");
 addColumn(d, "workflow_submissions", "review_status_truncated", "INTEGER NOT NULL DEFAULT 0");
 ```
 
@@ -287,8 +289,9 @@ Two hard constraints:
 
 ### 5. Store - `src/server/workflows/store.ts`
 
-- `WorkflowSubmissionRowSchema` gains the snapshot and status columns as `nullableText.optional()`,
-  and the truncation flag as an optional integer;
+- `WorkflowSubmissionRowSchema` gains the two snapshot columns as `nullableText.optional()`, the
+  porcelain as an optional nullable **`Uint8Array`** (it is a BLOB), and the truncation flag as an
+  optional integer;
   `WorkflowSubmission` gains `reviewSnapshotOid?: string | null` and
   `reviewSnapshotRepoRoot?: string | null`, optional for the same reason `repositoryFingerprint`
   is - a row written before the column exists.
@@ -407,11 +410,14 @@ returned a wrong answer for any mixed staged/unstaged submission.
 **Capture therefore persists a complete machine-readable status beside the snapshot.**
 
 - At capture, inside the same bounded window, run `git status --porcelain=v2 -z --untracked-files=all`
-  and store it on `workflow_submissions` as `review_status_porcelain` (TEXT, nullable), with
+  and store it on `workflow_submissions` as `review_status_porcelain` (**BLOB**, nullable - see
+  *Paths are bytes end to end*), with
   `review_status_truncated` (INTEGER, default 0).
 - **v2 rather than v1**, because v1 gives two status letters while v2 additionally carries the index
   and worktree modes and the index blob oid - which is the only durable record of the staged
-  version's identity. `-z` because paths are bytes and may contain newlines.
+  version's identity. `-z` because paths are bytes and may contain newlines - and because without it git C-quotes an
+  odd path into a third encoding. See *Paths are bytes end to end* below for why the column that
+  receives this is a BLOB.
 - Bounded by `REPOSITORY_QUERY_LIMITS.statusPorcelainBytes` (2,000,000 - one line per changed path,
   so this is roughly 20,000 paths and well past any real submission). On overflow, store the prefix
   and set `review_status_truncated`; **`git_status` then reports `truncated: true` with the omitted
@@ -430,6 +436,65 @@ oid; the index tree pinned beside the snapshot carries the staged **bytes**, so 
 the worktree surviving and `git gc` cannot prune either. This paragraph previously said the staged
 content was out of scope; that was a misreading of decision 7, corrected in round 13.
 
+### Paths are bytes end to end, and the durable columns are BLOBs
+
+Step 2 already says "match as **bytes**; never normalize, because git paths are bytes and
+normalizing would let two spellings resolve to one object". Several parts of this phase then
+specified decoding those bytes into JavaScript strings - a `TEXT` column for the porcelain, a
+`TEXT` column for the audit path - which is exactly the normalization that rule forbids. Measured,
+the decode is both lossy and collapsing:
+
+```
+raw bytes        6261642d fffe 2e656e7600      (bad-<ff><fe>.env)
+utf8 round trip  6261642d efbfbd efbfbd 2e...  11 bytes become 15, not recoverable
+
+a<ff>b and a<fe>b   distinct paths
+  both decode to    "a\uFFFDb"                 two paths collapse to one
+```
+
+The collapse is the security-relevant half: a denylist decision taken on a decoded string is a
+decision about a different value than the one in the tree, and two distinct paths comparing equal
+is precisely what step 2 exists to prevent.
+
+There are also **three** representations of a path in git's output, not two. Verified on a tree
+holding `q<ff>.txt`:
+
+| Invocation | Emits |
+|---|---|
+| `ls-tree --name-only` | `"q\377.txt"` - C-quoted, with escapes |
+| `ls-tree --name-only -z` | `71 ff 2e 74 78 74 00` - raw bytes |
+| a UTF-8 decode of either | a lossy string |
+
+So the rules, and they are not per-op:
+
+- **`-c core.quotePath=false` on every invocation**, as a required option checked in the argv
+  builder beside the driver flags. This is the general lever and it is not per-op: it stops git
+  C-quoting a path in *any* output, including the `diff --git` headers of a patch, where `-z` does
+  not apply. Verified - `ls-tree --name-only` emits `"q\377.txt"` by default and the raw bytes
+  `71 ff ...` with the option set.
+- **`-z` additionally wherever the output form supports it**, so records are NUL-delimited rather
+  than newline-delimited and a path containing a newline cannot split a record. Verified available
+  on `ls-tree -z`, `git grep -z` (which NUL-separates the path from the match), `diff -z
+  --name-status`, and `status --porcelain=v2 -z`. It does **not** apply to patch output, which is
+  why the quotePath option above is the load-bearing one for `git_diff` and `git_show`, and why the
+  step-5 header verifier compares header paths as **bytes**.
+- **Validation, the denylist and the glob matcher take bytes** (`Uint8Array`/`Buffer`), not strings,
+  and compare bytes. `matchesRepositoryGlob` and `REPOSITORY_DENY_GLOBS` operate on byte sequences;
+  the glob syntax stays ASCII, so the matcher is unchanged in behaviour for every path that is valid
+  UTF-8 and correct for the ones that are not.
+- **Durable columns hold bytes.** `review_status_porcelain` is a **BLOB**, and
+  `workflow_repository_queries.path` is a **BLOB**. A `TEXT` column cannot round-trip what `-z` was
+  chosen to preserve, so storing it as text would have made `-z` pointless.
+- **The browser renders a lossy display form and says so.** The audit surface shows the path
+  UTF-8-decoded, with a marker when the bytes are not valid UTF-8, so an operator sees that the
+  display is not the value. The durable record stays exact.
+
+**And the limit this leaves, stated plainly.** A model reads text, so a path that is not valid
+UTF-8 cannot be handed to the reviewer faithfully. Such an entry is reported by `list_paths` and
+`search_text` with an explicit marker and is **unaddressable**: `read_file` on the mangled spelling
+returns `not_found`, because the argument bytes will not equal any tree entry's bytes. That fails
+closed - the reviewer is told the file exists and cannot be opened, rather than being served a
+different file whose name happened to decode the same way.
 ### One list of flags the argv builder refuses
 
 Three separate rules about flags accumulated across review - the metadata class's, the driver
@@ -444,9 +509,9 @@ named list, `REFUSED_GIT_FLAGS`, checked in the argv builder for every op:
 | `-c`, `--cc` | combined-diff headers the step-5 verifier cannot parse into two paths |
 | `--no-index` | reads paths outside the object database entirely |
 
-And two flags are **required** on the ops that take them, checked in the same place:
-`--no-ext-diff --no-textconv` on every content-producing invocation, and `--no-renames` on
-`git_diff` and `git_show`. Required rather than merely present in a specimen argv, because
+And these are **required**, checked in the same place: `-c core.quotePath=false` on **every**
+invocation; `--no-ext-diff --no-textconv` on every content-producing one; `--no-renames` on
+`git_diff` and `git_show`; and `-z` wherever the output form supports it. Required rather than merely present in a specimen argv, because
 omitting any of them yields a well-formed answer - see the next two sections for what each one
 prevents.
 
@@ -757,6 +822,13 @@ look viable.
   `filename` or `previous` header naming a **denied** old path; the header is dropped while the
   line attribution survives. Verified that `--no-renames` does not suppress those headers, so this
   cannot be delegated to a flag.
+- **The non-UTF-8 path tests**, which are cheap to build and were the gap this class hid in. Use
+  `git mktree` to put a path with bytes `ff fe` into the tree, so the fixture needs no filesystem
+  support for it. Then: the persisted porcelain round-trips byte-for-byte out of the BLOB column; the
+  audit row's `path` round-trips byte-for-byte; the denylist refuses `bad-<ff><fe>.env` on its
+  **bytes**; two paths differing only in an invalid byte (`a<ff>b` versus `a<fe>b`) are treated as
+  distinct rather than collapsing; and `read_file` on the U+FFFD-mangled spelling returns
+  `not_found` rather than resolving to either.
 - **The status tests.** A submission with a staged-then-modified file records `AM` and the index oid
   in `review_status_porcelain`, and `git_status` reports that classification **after the worktree
   is deleted** - the case the tree alone cannot answer. A status over `statusPorcelainBytes` sets
@@ -764,8 +836,8 @@ look viable.
   rather than a short complete-looking list. A denied path present in the porcelain is filtered out
   like any other `path`-class result.
 - **The revision-pin test, table-driven over every op.** Build each op's argv and assert it contains
-  a snapshot-derived revision, **and that every content-producing op carries `--no-ext-diff` and
-  `--no-textconv`**. This is a mechanical check on the argv rather than a behavioural one,
+  a snapshot-derived revision, that **every** op carries `-c core.quotePath=false`, and that every
+  content-producing op carries `--no-ext-diff` and `--no-textconv`. This is a mechanical check on the argv rather than a behavioural one,
   deliberately: it is what would have caught `git_log` shipping with no revision at all, which no
   amount of output assertion does, because an unpinned log returns a perfectly well-formed answer
   about the wrong commits.

@@ -443,6 +443,18 @@ reintroduce and neither is caught by the guards that look like they should catch
     no column, so it does not go stale as columns are added, and it is the assertion that would have
     caught this. Each phase adds it for the tables it owns, so the two stay independent.
 
+24. **Paths are bytes end to end; the durable columns are BLOBs** (Phase 2). `-z` was chosen
+    because git paths are bytes, and the payload was then specified into a `TEXT` column - the same
+    contradiction as writing "match as bytes, never normalize" at step 2 and then decoding every path
+    into a JavaScript string. Measured: a UTF-8 round trip turns 11 bytes into 15 and is not
+    recoverable, and `a<ff>b` and `a<fe>b` - two distinct paths - decode to one string, which is the
+    security-relevant half because a denylist decision on a decoded string is a decision about a
+    different value. Fixed as a class: validation, denylist and glob matcher compare bytes; the
+    porcelain and the audit `path` are BLOBs; `-c core.quotePath=false` is required on every
+    invocation (git otherwise C-quotes into a *third* representation, verified) with `-z` wherever
+    the output form allows. A non-UTF-8 path is reported to the reviewer with a marker and is
+    unaddressable, so `read_file` on the mangled spelling fails closed.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

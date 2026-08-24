@@ -654,6 +654,19 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
   <p>Decision 6 is met by removing the filesystem from the picture and then layering the existing
   defences on what remains.</p>
   <ol>
+    <li><strong>Paths are bytes, end to end, and the durable columns are BLOBs.</strong> Step 2&rsquo;s
+      rule is &ldquo;match as bytes, never normalize&rdquo; - and decoding a path into a JavaScript
+      string is exactly that normalization. Measured, it is lossy and collapsing:
+      <code>bad-&lt;ff&gt;&lt;fe&gt;.env</code> round-trips through UTF-8 as 15 bytes instead of 11, and
+      <code>a&lt;ff&gt;b</code> and <code>a&lt;fe&gt;b</code> - two distinct paths - decode to the same
+      string. The collapse is the security-relevant half, since a denylist decision on a decoded string
+      is a decision about a different value. So path validation, the denylist and the glob matcher
+      compare <strong>bytes</strong>; the persisted status and the audit <code>path</code> are
+      <strong>BLOB</strong> columns; every invocation passes <code>-c core.quotePath=false</code>
+      (verified: git otherwise emits <code>"q\377.txt"</code>) with <code>-z</code> wherever the output
+      form supports it; and a path that is not valid UTF-8 is reported to the reviewer with a marker and
+      is deliberately <strong>unaddressable</strong>, so <code>read_file</code> on the mangled spelling
+      fails closed rather than serving a different file that decoded the same way.</li>
     <li><strong>Every git invocation disables configured conversion drivers.</strong>
       <code>git</code> executes a program from repository configuration while producing a patch -
       <code>.gitattributes</code> in the change under review selects a driver, and

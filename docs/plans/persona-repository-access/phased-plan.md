@@ -5,7 +5,7 @@ This index turns it into three merge units. The phase files (`phase-<n>-<slug>.m
 file) are the authoritative per-phase instructions; a scheduled task carries their paths, not their
 content.
 
-Rendered page: `phased-plan.html`.
+A rendered, self-contained version of this document sits beside it at `phased-plan.html`.
 
 ## Incorporated decisions
 
@@ -294,6 +294,13 @@ reintroduce and neither is caught by the guards that look like they should catch
   stated as universal rather than per-class, and why the adversarial suites are table-driven over the
   op list: the class rules and the test shape are the fix, not the three individual patches. When
   reviewing a new op, check **both** axes - what it is handed, and what its output can carry.
+- **Fixing the instance the review pointed at, and not its siblings elsewhere.** The same failure in
+  a different register, and the reason it is called out separately: a reader-directed instruction was
+  removed from `plan.md` in reconciliation 9 and left standing in the pull request description, which
+  is where a reviewer actually meets it (17). A finding anchored on one line is evidence about a
+  class, not a work item scoped to that line - so when one lands, sweep the whole surface it belongs
+  to, **including the pull request text**, which is as much untrusted input to automated review as
+  any committed file.
 
 6. **Every caller-supplied revision is ancestry-constrained, not just `git_show`'s** (Phase 2).
    `git_diff`'s `base` was left free, which would let an access-enabled Persona name another branch
@@ -370,6 +377,12 @@ reintroduce and neither is caught by the guards that look like they should catch
     per attempt with that attempt's `{ runId, submissionId, nodeAttemptId }` and a narrow
     `recordQuery` writer, takes `round` per `execute`, and assigns `ordinal` itself. Ownership did
     not move; the reader had always been the writer, and it now has what the contract required.
+17. **Reader-directed instructions removed from the pull request text too, not just the plan**
+    (no phase - review hygiene). Reconciliation 9 neutralised an imperative in `plan.md` but left two
+    in the pull request description, which is where a reviewer and an automated reviewer actually
+    encounter it. Both are now statements of where the rendered files are rather than directions to
+    open or read them. Recorded here because the miss was the class failure above, not a second
+    independent defect: the finding was anchored on a file, so the sweep stopped at that file.
 
 ## Final verification strategy
 

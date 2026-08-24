@@ -16,6 +16,10 @@ import {
 } from "@shared/harness-capabilities.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
+import {
+  dispatchHasNoProvisionedResources,
+  taskKindAllowsBacklog,
+} from "@shared/task.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
@@ -140,9 +144,10 @@ export function dispatchPermissionModeArgs(agent: AgentType): string[] {
  * its selected runtime, bind that exact live session, then deliver the task as turn one
  * through the harness's native launch or pane-input path.
  *
- * Every step patches the task through the registry so progress streams to the UI
- * over SSE. `dispatch` never throws - a failure lands the task in `failed` with a
- * human-readable reason rather than crashing the daemon.
+ * Every step patches the task through the registry so progress streams to the UI over SSE.
+ * `dispatch` never throws. A resource-preflight or provisioning failure that leaves no
+ * resources returns backlog-capable work with its reason; deterministic refusals and failures
+ * after launch resources exist land in `failed` rather than crashing the daemon.
  */
 export class Dispatcher {
   private readonly teardown: typeof teardownWorktree;
@@ -246,6 +251,10 @@ export class Dispatcher {
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
+    // Only failures in the resource preflight/provisioning phase are safe ordinary backlog
+    // retries. Earlier refusals describe a task or launch configuration that must change,
+    // while anything after this phase may have crossed into an agent runtime.
+    let backlogRecoveryEligible = false;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
       status: "dispatching",
@@ -348,11 +357,13 @@ export class Dispatcher {
       // the third repository must not leave the first two leased. Placed after the cheap
       // refusals above so a dispatch that was going to be turned away for its runtime or
       // its harness capability does not pay for a network round trip first.
+      backlogRecoveryEligible = true;
       const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
         { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
         baseSha,
       );
       const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
+      backlogRecoveryEligible = false;
       // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
       // The collection lands in the SAME patch so every durable native owner becomes visible
       // atomically before provisional allocator state settles.
@@ -787,6 +798,22 @@ export class Dispatcher {
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
+      // The same resource proof startup reconciliation uses, restricted to the base-freeze
+      // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no
+      // hidden agent or checkout, so put backlog-capable work back where the operator is
+      // already watching and carry the exact failure reason onto its card. Deterministic
+      // launch refusals before this phase remain failed so an unchanged retry is not
+      // presented as ordinary work; failures after it retain the conservative cleanup path.
+      if (backlogRecoveryEligible && dispatchHasNoProvisionedResources(cur)) {
+        const returnsToBacklog = taskKindAllowsBacklog(cur.kind);
+        this.patch(taskId, {
+          status: returnsToBacklog ? "backlog" : "failed",
+          error: message,
+          sessionId: null,
+          ...(returnsToBacklog ? { dispatchedAt: null } : {}),
+        });
+        return;
+      }
       // If the terminal home still exists (e.g. discovery was merely slow, or only
       // the prompt send failed), do NOT destroy its work: keep the home + worktree
       // and fail the task with guidance. Only when no home remains do we tear the

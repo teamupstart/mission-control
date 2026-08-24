@@ -2149,7 +2149,7 @@ export interface Task {
   /** Free text set on completion (e.g. "opened PR #123"). */
   outcome: string | null;
   outcomeUrl: string | null;
-  /** Failure reason when status = failed. */
+  /** Failure reason, including one carried by a backlog task that is safe to retry. */
   error: string | null;
   /**
    * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.

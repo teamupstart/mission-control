@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,6 +10,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 const TITLE = "Retry the dispatch after restart";
+const LIVE_FAILURE_TITLE = "Retry the dispatch after git fetch recovers";
 const RECOVERY =
   "Dispatch was interrupted before a worktree or agent was created. It is back in the backlog and safe to launch again.";
 const EVIDENCE = artifactsDir("dispatch-restart-recovery");
@@ -27,14 +29,34 @@ async function captureRecovery(page: Page): Promise<void> {
   );
 }
 
-async function seedBacklogTask(daemon: DaemonHandle): Promise<string> {
+async function captureLiveFailure(page: Page): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: viewport?.width ?? 1280, height: 900 });
+  try {
+    await page.locator("main.board").screenshot({
+      path: join(EVIDENCE, "git-preflight-recovery-backlog.png"),
+    });
+  } finally {
+    if (viewport) await page.setViewportSize(viewport);
+  }
+  // eslint-disable-next-line no-console
+  console.log("OBSERVED the failed git preflight visible in Backlog with its error and launch control");
+  // eslint-disable-next-line no-console
+  console.log(
+    "CAPTURED e2e/.artifacts/dispatch-restart-recovery/git-preflight-recovery-backlog.png",
+  );
+}
+
+async function seedBacklogTask(daemon: DaemonHandle, title = TITLE): Promise<string> {
   const response = await fetch(`${daemon.baseURL}/api/tasks`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       repoRoot: daemon.repo,
-      title: TITLE,
-      intent: "Make this launch safe to retry after the daemon stops before provisioning.",
+      title,
+      intent: "Make this launch safe to retry when it stops before provisioning.",
       kind: "ship",
       agent: "claude",
       workflowId: null,
@@ -119,6 +141,56 @@ test("a pre-provision dispatch interrupted by restart stays visible and retries"
   await expect(dashboard.getByRole("button", { name: `Open ${TITLE}`, exact: true })).toBeVisible({
     timeout: 60_000,
   });
+  await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
+    "running",
+  );
+});
+
+test("a live git preflight failure returns to Backlog with its error and retries there", async ({
+  dashboard,
+  daemon,
+}) => {
+  const taskId = await seedBacklogTask(daemon, LIVE_FAILURE_TITLE);
+  await useBoardLayout(dashboard, daemon);
+
+  const originalOrigin = execFileSync(
+    "git",
+    ["-C", daemon.repo, "remote", "get-url", "origin"],
+    { encoding: "utf8" },
+  ).trim();
+  execFileSync(
+    "git",
+    ["-C", daemon.repo, "remote", "set-url", "origin", join(daemon.home, "missing-origin")],
+    { stdio: "pipe" },
+  );
+
+  const card = dashboard.locator(".bl-card", { hasText: LIVE_FAILURE_TITLE });
+  const retry = card.getByRole("button", { name: "launch new agent" });
+  try {
+    await expect(card).toBeVisible();
+    await retry.click();
+
+    await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
+      "backlog",
+    );
+    await expect(card).toBeVisible();
+    await expect(card.getByRole("status")).toContainText("could not freeze");
+    await expect(card.getByRole("status")).toContainText("git fetch origin failed");
+    await expect(retry).toBeVisible();
+    await expect(retry).toBeEnabled();
+    await captureLiveFailure(dashboard);
+  } finally {
+    execFileSync(
+      "git",
+      ["-C", daemon.repo, "remote", "set-url", "origin", originalOrigin],
+      { stdio: "pipe" },
+    );
+  }
+
+  await retry.click();
+  await expect(
+    dashboard.getByRole("button", { name: `Open ${LIVE_FAILURE_TITLE}`, exact: true }),
+  ).toBeVisible({ timeout: 60_000 });
   await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
     "running",
   );

@@ -69,7 +69,7 @@ which is what makes the frames evidence for "every card in every column" rather 
 card. The `review` flag stays drawn in all three, because the attention flags are not
 customizable.
 
-Regenerate all three with:
+Regenerate both with:
 
 ```sh
 mkdir -p e2e/.artifacts/board-card-customization
@@ -100,7 +100,7 @@ The viewport is deliberately taller than the panel. An element screenshot taken 
 scroll is stitched rather than photographed, and the seam reads as a missing row in a frame
 meant for pixel review.
 
-Regenerate both with:
+Regenerate all three with:
 
 ```sh
 mkdir -p e2e/.artifacts/board-card-preview
@@ -141,7 +141,10 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 interrupted before provisioning back in the Backlog, with the restart explanation and enabled
 launch control visible together. The same run deliberately persists stale branch and base SHA
 metadata to prove those descriptive fields do not hide an otherwise resource-free dispatch.
-Its real command output belongs at
+`git-preflight-recovery-backlog.png` drives the live half of the same boundary by making the
+fixture repository's `origin` unreachable, then shows the exact fetch error and enabled launch
+control on the restored Backlog card before the test repairs `origin` and retries successfully.
+The real command output belongs at
 `e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt`.
 
 Regenerate both with:

@@ -85,6 +85,12 @@ from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the
 you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
 still launches the task immediately.
 
+If freezing a dispatch's Git bases or provisioning its worktrees fails before any worktree or
+agent remains, a backlog-capable task returns to the Board's Backlog with the exact error on its
+card and its normal launch control enabled. Task kinds that cannot appear in Backlog remain
+failed. Fix the reported condition, such as Git or SSH access to the repository's origin, and
+launch backlog-capable work again from the same place.
+
 Choose **chat** for an open-ended conversation. It requires an opening message and launches
 immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
 automatic after-work action. The session stays yours to continue and complete unless you

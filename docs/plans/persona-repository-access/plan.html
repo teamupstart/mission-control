@@ -1,0 +1,969 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persona repository access</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1d1f24; --muted: #5c6370; --line: #e3e0da;
+    --card: #ffffff; --code-bg: #f1efe9; --accent: #7154c0; --accent-2: #1d7f6e;
+    --warn: #a05a1c; --box: #f6f4ef; --box-line: #cfcac0;
+    --new: #e9f4f1; --new-line: #9cc9bd; --old: #f3eee4; --old-line: #d4c6a6;
+    --danger: #b3261e; --danger-bg: #fbecea; --danger-line: #e5b4ae;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --fg: #e6e4df; --muted: #9aa0ab; --line: #2c2f36;
+      --card: #1c1f25; --code-bg: #22252c; --accent: #a98ff0; --accent-2: #5cc3ab;
+      --warn: #d99a55; --box: #20232a; --box-line: #3a3e47;
+      --new: #1b2a27; --new-line: #35695c; --old: #292620; --old-line: #5c5340;
+      --danger: #f2b8b5; --danger-bg: #2a1d1c; --danger-line: #5d3a36;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .3rem; letter-spacing: -.02em; }
+  .subtitle { color: var(--muted); margin: 0 0 2.2rem; max-width: 48rem; }
+  h2 { font-size: 1.35rem; margin: 2.8rem 0 .8rem; letter-spacing: -.01em;
+       border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: 1.08rem; margin: 1.9rem 0 .5rem; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .86em;
+  }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--box); }
+  td code { white-space: nowrap; }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--card);
+    border-radius: 0 8px 8px 0; padding: .8rem 1.1rem; margin: 1.2rem 0;
+  }
+  .callout.win { border-left-color: var(--accent-2); }
+  .callout.risk { border-left-color: var(--warn); }
+  .callout.stop { border-left-color: var(--danger); background: var(--danger-bg); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  figure { margin: 1.6rem 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: .8rem; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  svg text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .grp { font-size: 12px; font-weight: 600; fill: var(--muted); }
+  svg .node rect, svg rect.node { fill: var(--box); stroke: var(--box-line); }
+  svg rect.newn { fill: var(--new); stroke: var(--new-line); }
+  svg rect.oldn { fill: var(--old); stroke: var(--old-line); }
+  svg rect.zone { fill: none; stroke: var(--line); stroke-dasharray: 4 4; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .bad { stroke: var(--warn); stroke-dasharray: 5 3; }
+  svg .good { stroke: var(--accent-2); stroke-width: 1.6; }
+  svg .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+  ol li, ul li { margin: .3rem 0; }
+  .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; color: var(--muted); margin: 0 0 .4rem; }
+  .yes { color: var(--accent-2); font-weight: 600; }
+  .no { color: var(--warn); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">docs/plans/persona-repository-access/plan.md</p>
+  <h1>Persona repository access</h1>
+  <p class="subtitle">
+    Give selected Workflow Personas read-only access to the complete Git worktree of the change
+    they are reviewing, through a provider-neutral query broker that ai-harness executes and
+    audits against the exact submitted state.
+  </p>
+
+  <h2>The problem</h2>
+  <p>A Persona review today sees a bounded text packet and nothing else.
+  <code>readWorkflowContextRaw</code> (<code>src/server/workflows/context.ts:559</code>) freezes a
+  diff clipped to <code>MAX_DIFF_BYTES</code> (800,000), up to 500 <code>git status</code> lines, a
+  transcript window, standards documents, Check outcomes and registered evidence, and hands that
+  to one <code>runner.run(prompt)</code> call
+  (<code>src/server/workflows/engine.ts:1018</code>). The reviewer cannot open an unchanged file.</p>
+
+  <p>Every shipped built-in says so in its own words. <code>code-quality-judge</code> states
+  &ldquo;You have no repository tools and the pull request does not exist yet&rdquo;.
+  <code>code-risk-reviewer</code> is asked to judge whether a fix is durable - &ldquo;ask
+  whether that same failure stays reachable through a sibling path&rdquo; - which is a
+  question about code the diff does not contain.</p>
+
+  <p>The Inspector already crossed this line and is the proof it matters: it holds
+  <code>REVIEW_TOOLS = "Read,Grep,Glob"</code>
+  (<code>src/server/inspector/worker.ts:280</code>) because &ldquo;reviewing a diff without being
+  able to open a file misses most of what matters (does this break a caller? is there a
+  test?)&rdquo;. A Persona reviewing the <em>same</em> change locally gets none of that.</p>
+
+  <p>The Inspector's mechanism cannot simply be reused, for three reasons this plan is shaped by:</p>
+  <ol>
+    <li><strong>It cannot reach Codex.</strong> <code>codexRunner.sandbox</code> is
+      <code>null</code> (<code>src/server/llm/codex.ts:436</code>), so <code>grantRefusal</code>
+      refuses every grant before spawning. The Inspector's own comment records the consequence:
+      &ldquo;Codex currently cannot, so it reviews the supplied diff without repository tools
+      instead of silently accepting a weaker grant.&rdquo; A native grant is a Claude-only feature.</li>
+    <li><strong>It cannot see the submitted state.</strong> A grant scopes tools to a
+      <code>cwd</code>. That directory is a pooled worktree the daemon may hard-reset underneath a
+      running review. The Inspector already carries a <code>liveDir</code> fallback because
+      &ldquo;the adopted <code>cwd</code> may be a transient session worktree that gets released
+      and reused&rdquo;.</li>
+    <li><strong>It cannot be audited.</strong> A provider-executed <code>Read</code> is invisible
+      to ai-harness. There is no record of what was read, denied, or truncated.</li>
+  </ol>
+
+  <h2>Approved decisions</h2>
+  <p>These are settled. This plan implements them; it does not re-open them.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>#</th><th>Decision</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Access is configured separately on each Persona.</td></tr>
+      <tr><td>2</td><td>Claude and Codex reviewers receive equivalent capabilities.</td></tr>
+      <tr><td>3</td><td>A provider-neutral <strong>interactive query broker</strong>: the reviewer requests typed repository operations; ai-harness executes and audits them against the exact review checkout.</td></tr>
+      <tr><td>4</td><td>Supported capabilities: read, search and glob across repository files, plus server-owned Git status, diff, show, log and blame.</td></tr>
+      <tr><td>5</td><td>No arbitrary shell execution, file writes, network access, or direct unrestricted provider tools.</td></tr>
+      <tr><td>6</td><td>Sensitive-path protections are preserved or strengthened. Repository-wide code access must not expose credentials, host files, <code>.git</code> internals, or known secret-bearing files.</td></tr>
+      <tr><td>7</td><td>The repository view represents the exact submitted review state - committed, staged, unstaged and untracked. A detached checkout of the captured commit alone is insufficient.</td></tr>
+      <tr><td>8</td><td>If the exact review checkout or the repository-read service is unavailable, block and retry the Persona attempt. Never silently fall back to prompt-only review.</td></tr>
+      <tr><td>9</td><td>The access setting is frozen into the Persona snapshot at publish. Later Persona edits affect only newly published workflow versions.</td></tr>
+      <tr><td>10</td><td>Built-in Personas stay immutable for guidance, runner and model, but a local repository-access override is configurable for them.</td></tr>
+      <tr><td>11</td><td>Repository operations, denials, truncation and failures are auditable.</td></tr>
+      <tr><td>12</td><td>Query and response limits protect reliability without preventing an expansive review of large changes. No single global character limit that silently excludes most of the worktree.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Verified findings</h2>
+  <p>Measured against the worktree at planning time. Implementers re-verify; the numbers are
+  recorded because three of them decide the design.</p>
+
+  <h3>Persona storage and immutability</h3>
+  <p><code>Persona</code> is <code>src/shared/workflow.ts:461</code>; the row is
+  <code>personas</code> (<code>src/server/db.ts:1088</code>). A built-in is <strong>not a
+  row</strong> - <code>BUILTIN_PERSONAS</code> is projected from compiled-in Markdown
+  (<code>src/server/workflows/builtin-personas.ts:65</code>) and merged into every read through the
+  store's private <code>withBuiltins</code> / <code>withAddressableBuiltins</code> /
+  <code>builtinPersona</code> (<code>src/server/workflows/store.ts:2121-2133</code>). Immutability
+  is enforced in exactly three store methods, as the first statement inside the transaction,
+  returning <code>reason: "builtin"</code>: <code>insertPersona</code> (<code>:2222</code>),
+  <code>updatePersonaCas</code> (<code>:2268</code>), <code>archivePersonaCas</code>
+  (<code>:2322</code>). <strong>There is no existing per-persona override mechanism for a
+  built-in</strong>, and none can be added by patching a row, because there is no row.
+  <code>workflow_commands</code> / <code>workflow_command_overrides</code> is the repository's own
+  precedent for exactly this shape: shipped defaults in one place, local exceptions in a sidecar
+  table keyed by the immutable identity.</p>
+
+  <h3>Snapshot compatibility</h3>
+  <p><code>PersonaSnapshot</code> (<code>src/shared/workflow.ts:1401</code>) is produced by the
+  single projection <code>personaSnapshotOf</code> (<code>:1419</code>), used by both publishers
+  - the store's <code>publishWorkflow</code> and the built-in catalog's compile-time
+  <code>publishBuiltinGraph</code>. It is validated by <code>PersonaSnapshotSchema</code>
+  (<code>src/shared/protocol.ts:3981</code>), a plain <code>z.object</code> -
+  <strong>strip mode</strong>, verified against zod 3.25.76: unknown keys parse and are dropped,
+  but every declared key is required.</p>
+  <div class="callout stop">
+    <p>A new snapshot field must therefore carry <code>.default(...)</code>, or every
+    already-published <code>workflow_versions.graph_json</code> row and every historical
+    <code>workflow_node_attempts.persona_snapshot_json</code> row stops parsing and the version
+    resolves to <code>null</code>.</p>
+  </div>
+
+  <h3>The review is a single one-shot call, and no provider offers more</h3>
+  <p><code>runInThread</code> is <code>null</code> on both runners
+  (<code>src/server/llm/claude.ts:168</code>, <code>src/server/llm/codex.ts:430</code>). The default
+  Claude transport is the Agent SDK (<code>src/shared/llm.ts:72</code>) and it pins
+  <code>maxTurns: 1</code> for a tool-less schema-less run - the exact Persona shape.
+  <code>codex exec</code> is one turn by construction
+  (<code>features.shell_tool=false</code>, <code>features.unified_exec=false</code>).
+  <code>LlmRunOptions</code> has no field that could carry a tool definition or an MCP server, and
+  no headless path passes <code>--mcp-config</code> or <code>-c mcp_servers.*</code>. The in-repo
+  MCP server binds one stdio transport and is explicitly launch-scoped: &ldquo;everything in this
+  file is LAUNCH-scoped: it reaches sessions the dashboard dispatches and nothing else.&rdquo;</p>
+
+  <h3>A pooled worktree can be reset underneath a running review</h3>
+  <p><code>nativeWorktreeOwnerReferenced</code> (<code>src/server/worktrees/owners.ts:18</code>)
+  consults <code>tasks</code>, <code>task_repos</code>, <code>workflow_check_leases</code> and
+  <code>worktree_slots</code> - there is <strong>no <code>workflow_runs</code> clause</strong>.
+  Task teardown calls <code>release(lease, { ownerAuthorized: true })</code>
+  (<code>src/server/dispatcher.ts:2027</code>), which skips the domain check and leaves only
+  process-occupancy as a gate; a server-side review holds no process in the tree. The workflow
+  manager already records the consequence (<code>src/server/workflows/manager.ts:1163</code>):
+  &ldquo;a worktree can be reclaimed while its pull request is still open &hellip; There is then
+  genuinely nothing to review.&rdquo;</p>
+  <div class="callout stop">
+    <p><strong>Any design that reads the live checkout during a review is reading a directory
+    another subsystem is entitled to erase.</strong></p>
+  </div>
+
+  <h3>Existing machinery this feature rides</h3>
+  <ul>
+    <li><strong>Retry and blocking.</strong> <code>handleInfrastructureFailure</code> records the
+      attempt as <code>error</code>, schedules <code>MAX_INFRA_ATTEMPTS = 3</code> attempts with
+      <code>retryBaseMs * 4 ** (attempt - 1)</code> backoff, and on exhaustion fails the submission
+      and sets the run <code>blocked</code> with a phase string. Phases are free-form strings with a
+      label map (<code>BLOCKED_PHASE_CLAUSES</code>), and
+      <code>CHECK_CLEANUP_UNRESOLVED_PHASE</code> is the precedent for a distinct phase whose
+      operator remedy differs.</li>
+    <li><strong>Per-round accounting and cancellation.</strong> The attempt's
+      <code>StructuredAttemptObserver</code> (<code>engine.ts:973</code>) writes a
+      <code>workflow_llm_calls</code> row per provider call with byte counts and an error code, and
+      its <code>start</code> hook already refuses to begin a new call once the run or submission
+      stops being <code>running</code>.</li>
+  </ul>
+
+  <h3>Git can materialize the exact dirty state, cheaply and immutably</h3>
+  <p>Measured on this repository:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Step</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td><code>cp .git/index $TMP</code> then <code>GIT_INDEX_FILE=$TMP git add -A</code></td><td><strong>34&nbsp;ms</strong>, 2,633 paths</td></tr>
+      <tr><td>cold temp index (<code>read-tree &lt;headSha&gt;</code> then <code>add -A</code>)</td><td>729&nbsp;ms</td></tr>
+      <tr><td>the same cold seed taken from live <code>HEAD</code> after the checkout advanced</td><td><span class="no">silently drops</span> a path tracked at capture but matching a <code>.gitignore</code> pattern</td></tr>
+      <tr><td>live worktree and live index after the run</td><td>unchanged (<code>git status</code> byte-identical)</td></tr>
+      <tr><td><code>git rev-parse --git-path refs/mission-control/review-snapshots/x</code></td><td>resolves into the <strong>common</strong> <code>.git/refs</code>, not the per-worktree dir</td></tr>
+      <tr><td><code>git gc --prune=now</code> with the ref set</td><td>snapshot commit still reachable</td></tr>
+      <tr><td><code>node_modules/</code> (gitignored)</td><td><span class="yes">absent</span> from the tree</td></tr>
+      <tr><td>an untracked, non-ignored <code>.env</code></td><td><span class="no">present</span> in the tree</td></tr>
+      <tr><td>a symlink</td><td>mode <code>120000</code>, blob content is the target string; not followed</td></tr>
+      <tr><td><code>cat-file -p &lt;snap&gt;:../etc/passwd</code></td><td><code>fatal: '../etc/passwd' is outside repository</code></td></tr>
+      <tr><td><code>cat-file -p &lt;snap&gt;:/etc/passwd</code></td><td><code>fatal: path &hellip; exists on disk, but not in &lt;snap&gt;</code></td></tr>
+      <tr><td><code>cat-file -p &lt;snap&gt;:.git/config</code></td><td><code>fatal: path &hellip; exists on disk, but not in &lt;snap&gt;</code></td></tr>
+      <tr><td><code>git grep</code>, <code>log</code>, <code>blame</code>, <code>diff</code> against the snapshot commit</td><td>all work</td></tr>
+      <tr><td><code>git cat-file --batch-check</code></td><td>returns <code>&lt;oid&gt; blob &lt;size&gt;</code> (or <code>missing</code>) <strong>without reading bytes</strong></td></tr>
+      <tr><td><code>git ls-tree</code> with <code>:(glob)</code> pathspec</td><td><span class="no">not supported</span> - <code>pathspec magic not supported by this command</code></td></tr>
+      <tr><td><code>git grep</code> with <code>:(glob)</code> pathspec</td><td>supported</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The design</h2>
+
+  <h3>1. The setting, and where it lives</h3>
+  <p>One appended-only enum in <code>src/shared/workflow.ts</code>:</p>
+<pre><code>export const PERSONA_REPOSITORY_ACCESS_MODES = ["off", "read"] as const;
+export type PersonaRepositoryAccess = (typeof PERSONA_REPOSITORY_ACCESS_MODES)[number];
+export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";</code></pre>
+  <p>Two values rather than a bag of per-capability booleans. The approved capability set
+  (decision 4) is one coherent read-only grant; splitting it into eight toggles would offer an
+  operator eight combinations nobody asked for and would put eight fields into every published
+  snapshot. The list is appended-only for the reason every other durable enum in this repository
+  is: the strings reach durable rows.</p>
+
+  <p>Storage follows the <code>workflow_commands</code> precedent, because the two kinds of Persona
+  are genuinely different objects:</p>
+  <ul>
+    <li><strong>Operator Personas</strong> get a column:
+      <code>personas.repository_access TEXT NOT NULL DEFAULT 'off'</code>. It is part of the row, so
+      it participates in <code>revision</code>, in the CAS write path, in Duplicate, and in
+      import/export - none of which a sidecar table would give it.</li>
+    <li><strong>Built-in Personas</strong> get a sidecar row:
+      <code>persona_access_overrides(persona_id PRIMARY KEY, repository_access, revision, created_at, updated_at)</code>.
+      A built-in has no row to carry the setting, and inventing one would make it operator data and
+      break the four properties <code>builtin-personas.ts</code> exists to guarantee.</li>
+  </ul>
+  <p>One private resolver in <code>WorkflowStore</code> applies overrides where built-ins are merged
+  in, so every existing read path picks them up without a second merge rule to keep in step.</p>
+
+  <div class="callout stop">
+    <p>The override row carries <strong>its own <code>revision</code></strong>, and that is not
+    decoration. A built-in's <code>Persona.revision</code> is the synthetic constant <code>1</code>
+    that <code>builtin-personas.ts</code> documents, so it cannot serve as a compare-and-swap token:
+    two dashboards changing the same built-in's access would both compare against <code>1</code>,
+    both succeed, and the later write would silently discard the earlier one while each browser
+    reported its own value as committed. The sidecar's revision is the token that makes that a
+    refusal instead, exactly as <code>workflow_commands.revision</code> does for the shipped command
+    slots.</p>
+  </div>
+
+  <p>So the setting exposes one number with one meaning - <strong>the revision of the record that
+  stores it</strong> - surfaced on <code>PersonaView</code> as
+  <code>repositoryAccessRevision</code>:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Persona kind</th><th><code>repositoryAccessRevision</code> is</th><th>A write</th></tr></thead>
+    <tbody>
+      <tr><td>Operator row</td><td>the <code>personas</code> row's <code>revision</code></td><td>CAS on the row, bumping it, as every other Persona edit does</td></tr>
+      <tr><td>Built-in with an override</td><td>the override row's <code>revision</code></td><td>CAS on the override row, bumping it</td></tr>
+      <tr><td>Built-in with no override yet</td><td><code>0</code></td><td>inserts, and succeeds only if no row exists - so the concurrent first write is refused too</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>The write path is a <strong>new route</strong>,
+  <code>PUT /api/personas/:id/repository-access</code>, not a widening of
+  <code>UpdatePersonaSchema</code>. <code>PATCH /api/personas/:id</code> keeps refusing a built-in
+  outright, which is the whole of decision 10: guidance, runner and model stay immutable, and
+  exactly one setting is locally configurable. Widening <code>PERSONA_EDIT_FIELDS</code> would have
+  required per-field built-in logic inside the three store methods whose current strength is that
+  they refuse before looking at any field.</p>
+
+  <p>Two consequences of that separation, both deliberate:</p>
+  <ul>
+    <li>The setting is <strong>not part of the editor draft</strong>.
+      <code>PERSONA_DRAFT_FIELDS</code> and <code>personaUpdatePatch</code> are untouched, so
+      <code>reconcilePersonaSave</code>, the guidance CAS and the conflict banner keep their current
+      shapes. The control commits on change, for both kinds of Persona.</li>
+    <li>Committing on change is also the only shape that <em>works</em> for a built-in, which is the
+      check that confirms the separation rather than merely permitting it: a built-in renders no Save
+      button at all - the primary flips to <code>Duplicate to edit</code> and
+      <code>save()</code> hard-returns for <code>builtin</code> - so a setting that rode the
+      draft would be unreachable on exactly the Personas decision 10 exists for.</li>
+  </ul>
+  <p>The route body is revision-and-mode only, so it takes the existing small guard
+  (<code>REVISION_ONLY_BODY_MAX_BYTES = 1024</code>) rather than
+  <code>PERSONA_BODY_MAX_BYTES</code>, and it returns the same <code>personaFailure</code> envelope
+  every other Persona mutation does - including <code>revision_conflict</code> with the current
+  <code>PersonaView</code> attached, which is what lets the editor re-render the value that actually
+  won, and minus the <code>builtin</code> arm, which is the one refusal this route must not
+  make.</p>
+
+  <h3>2. Snapshot and publication</h3>
+  <p><code>PersonaSnapshot</code> gains
+  <code>repositoryAccess: PersonaRepositoryAccess</code>, produced by
+  <code>personaSnapshotOf</code> so both publishers are covered by construction.
+  <code>PersonaSnapshotSchema</code> declares it as
+  <code>z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("off")</code>.</p>
+  <div class="callout win">
+    <p><code>.default("off")</code> - not <code>.optional()</code> - is the load-bearing
+    choice, and it satisfies decision 9 exactly. Every version published before this feature parses,
+    and parses as <code>off</code>: a historical workflow version does not silently acquire
+    repository access because someone later ticked a box. &ldquo;Later Persona edits affect only
+    newly published workflow versions&rdquo; is enforced by the absence of the key meaning
+    <code>off</code>, not by a migration. And every reader gets a non-optional value, so no call
+    site has to decide what absent means.</p>
+  </div>
+  <p><code>personaSnapshotIsOutdated</code> gains an access comparison, so changing the setting marks
+  published versions as outdated - the honest signal, and the one that tells an operator a
+  re-publish is what makes the change take effect.</p>
+
+  <p><strong>Built-in workflows are a documented limitation.</strong>
+  <code>publishBuiltinGraph</code> runs at module load and cannot read the database, so a shipped
+  workflow's persona nodes always freeze <code>repositoryAccess: "off"</code>. An operator who wants
+  a built-in reviewer to hold access uses the existing <strong>Duplicate</strong> gesture on the
+  workflow and publishes their own version, which snapshots the live catalog including the override.
+  This is the same &ldquo;Duplicate to customize&rdquo; rule the product already teaches for built-in
+  Personas, and it keeps a build's own app data free of machine-local state.</p>
+
+  <div class="callout risk">
+    <p><strong>One pre-existing cliff, made explicit.</strong>
+    <code>validateWorkflowGraph</code> checks <code>graphJsonBytes</code> (500,000) against the
+    <em>draft</em> graph, whose persona nodes carry only an id, while the published graph inlines up
+    to 100,000 bytes of guidance per node and is read back through <code>parseJson</code>'s
+    500,000-byte cap. Six maximum-size Personas in one workflow publish cleanly today and then read
+    back as <code>null</code> forever. This plan adds roughly thirty bytes per persona node, so it
+    does not create the cliff - but because it widens the snapshot at all, the same change adds
+    a publish-time byte check of the <em>published</em> graph against the read cap. That is a ten-line
+    guard closing a latent data-loss path in a controlled file, and skipping it while touching the
+    field would be the wrong trade.</p>
+  </div>
+
+  <h3>3. The exact submitted review state</h3>
+  <p>At capture time, the daemon writes a <strong>review snapshot commit</strong> into the
+  repository's object database: a commit whose tree is the worktree exactly as submitted -
+  committed, staged, unstaged and untracked - parented on the captured <code>HEAD</code>,
+  pinned by a ref under <code>refs/mission-control/review-snapshots/&lt;submissionId&gt;</code>.</p>
+<pre><code># Fast path seeds the stat cache from the live index: 34 ms instead of 729 ms.
+# The cold fallback seeds from the CAPTURED headSha, never live HEAD - seeding from a
+# moved HEAD silently drops paths tracked at capture that match a .gitignore pattern.
+cp &lt;worktree&gt;/.git/index $TMP           # or: GIT_INDEX_FILE=$TMP git read-tree &lt;headSha&gt;
+GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
+GIT_INDEX_FILE=$TMP git write-tree
+# Then verify the tree: every path tracked at &lt;headSha&gt; is in it, or gone from disk too.
+# The parent assertion below cannot cover this - the parent is passed explicitly.
+# Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
+# clone that never set user.email would fail every snapshot - and on a machine that did set
+# it, the operator would be recorded as the author of an object the daemon wrote.
+GIT_AUTHOR_NAME=... GIT_AUTHOR_EMAIL=... GIT_COMMITTER_NAME=... GIT_COMMITTER_EMAIL=... \
+  git commit-tree &lt;tree&gt; -p &lt;headSha&gt; -m "mission-control review snapshot &lt;submissionId&gt;"
+git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;commit&gt;</code></pre>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 400" width="900" height="400" role="img"
+           aria-label="Before and after: today the review reads a bounded diff from a worktree that may be released; after, a snapshot commit in the shared object database survives the release and serves the broker.">
+        <text class="grp" x="10" y="18">BEFORE</text>
+        <rect class="node oldn" x="10" y="30" width="150" height="46" rx="7"/>
+        <text x="85" y="50" text-anchor="middle">session worktree</text>
+        <text class="lbl" x="85" y="66" text-anchor="middle">pooled slot</text>
+
+        <rect class="node" x="215" y="30" width="150" height="46" rx="7"/>
+        <text x="290" y="50" text-anchor="middle">bounded diff text</text>
+        <text class="lbl" x="290" y="66" text-anchor="middle">800 KB cap</text>
+
+        <rect class="node" x="420" y="30" width="150" height="46" rx="7"/>
+        <text x="495" y="50" text-anchor="middle">one runner.run</text>
+        <text class="lbl" x="495" y="66" text-anchor="middle">maxTurns: 1</text>
+
+        <rect class="node" x="625" y="30" width="120" height="46" rx="7"/>
+        <text x="685" y="57" text-anchor="middle">verdict</text>
+
+        <path class="arrow" d="M160 53 H211" marker-end="url(#a)"/>
+        <path class="arrow" d="M365 53 H416" marker-end="url(#a)"/>
+        <path class="arrow" d="M570 53 H621" marker-end="url(#a)"/>
+
+        <path class="arrow bad" d="M85 76 V120" marker-end="url(#w)"/>
+        <rect class="node oldn" x="10" y="126" width="150" height="40" rx="7"/>
+        <text x="85" y="151" text-anchor="middle">released / reset</text>
+        <text class="lbl" x="175" y="145">no workflow_runs owner: the tree can go</text>
+        <text class="lbl" x="175" y="161">while the review is still running</text>
+
+        <line x1="10" y1="196" x2="890" y2="196" stroke="var(--line)"/>
+
+        <text class="grp" x="10" y="222">AFTER</text>
+        <rect class="node oldn" x="10" y="236" width="150" height="46" rx="7"/>
+        <text x="85" y="256" text-anchor="middle">session worktree</text>
+        <text class="lbl" x="85" y="272" text-anchor="middle">read once, at capture</text>
+
+        <rect class="node" x="215" y="236" width="150" height="46" rx="7"/>
+        <text x="290" y="256" text-anchor="middle">bounded diff text</text>
+        <text class="lbl" x="290" y="272" text-anchor="middle">unchanged</text>
+
+        <rect class="node newn" x="215" y="300" width="150" height="52" rx="7"/>
+        <text x="290" y="321" text-anchor="middle">snapshot commit</text>
+        <text class="lbl mono" x="290" y="337" text-anchor="middle">refs/mission-control/</text>
+        <text class="lbl mono" x="290" y="348" text-anchor="middle">review-snapshots/&lt;id&gt;</text>
+
+        <rect class="node newn" x="420" y="268" width="150" height="52" rx="7"/>
+        <text x="495" y="289" text-anchor="middle">query broker</text>
+        <text class="lbl" x="495" y="305" text-anchor="middle">N bounded rounds</text>
+
+        <rect class="node" x="625" y="268" width="120" height="52" rx="7"/>
+        <text x="685" y="289" text-anchor="middle">verdict</text>
+        <text class="lbl" x="685" y="305" text-anchor="middle">+ audit rows</text>
+
+        <path class="arrow" d="M160 259 H211" marker-end="url(#a)"/>
+        <path class="arrow good" d="M85 282 V326 H211" marker-end="url(#g)"/>
+        <path class="arrow" d="M365 259 H392 V282 H416" marker-end="url(#a)"/>
+        <path class="arrow good" d="M365 326 H404 V306 H416" marker-end="url(#g)"/>
+        <path class="arrow" d="M570 294 H621" marker-end="url(#a)"/>
+
+        <rect class="zone" x="200" y="288" width="180" height="76" rx="10"/>
+        <text class="lbl" x="290" y="378" text-anchor="middle">in the shared .git - survives release, removeSlot and gc</text>
+
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent-2)"/>
+          </marker>
+          <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--warn)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+    <figcaption>The load-bearing change in the data path: the review's repository view moves out of a
+    reclaimable directory and into the repository's shared object database.</figcaption>
+  </figure>
+
+  <p>This answers decision 7 more completely than a checkout could, and it answers decision 8's
+  availability problem structurally rather than by retrying into a race:</p>
+  <ul>
+    <li><strong>It is the exact submitted state.</strong> A detached checkout of the captured
+      <code>HEAD</code> is missing the staged, unstaged and untracked work, which for a session
+      mid-repair is most of the change. The snapshot tree contains all four.</li>
+    <li><strong>It is immutable and it outlives the checkout.</strong> Refs under
+      <code>refs/</code> live in the <strong>common</strong> git directory (verified), and the ref
+      makes the objects reachable, so the snapshot survives <code>release()</code>'s hard reset,
+      <code>removeSlot</code>, and <code>git gc --prune=now</code> (all verified).</li>
+    <li><strong>No worktree is borrowed, so no lease is needed.</strong>
+      <code>check-lease.ts</code> exists because a check runs a build in a tree; a repository read
+      needs no tree at all. Reusing that machinery would add a durable lease row, a holder token, a
+      reclamation backoff ladder and a second consumer of the pool, to solve a problem the object
+      database does not have.</li>
+    <li><strong>The filesystem is not in the trust boundary.</strong> There is no directory to
+      escape from. Host paths, <code>..</code>, absolute paths and <code>.git</code> internals are
+      not denied by a rule that could have a hole - they are absent from the namespace (all
+      three verified to fail at the git layer).</li>
+  </ul>
+
+  <p>Lifecycle ownership is the submission's. The snapshot is created inside the existing bounded
+  capture window in <code>readWorkflowContextRaw</code>, so the existing capture-boundary re-read and
+  single retry already cover a worktree that moved mid-capture; the snapshot additionally asserts its
+  parent is the captured <code>headSha</code>. The ref is deleted by the same retention path that
+  prunes a submission's evidence. Neither <code>evidenceFingerprint</code> nor
+  <code>repositoryFingerprint</code> includes the snapshot oid: they are identity and
+  change-detection keys that trigger keys, idempotency and the unchanged-resubmission guard are built
+  on, and folding a new input into them would invalidate every existing run.</p>
+
+  <h3>4. The broker protocol</h3>
+  <p>Provider-neutral, in <code>src/shared/</code>, so the browser can render an audit record and
+  neither runner needs to know it exists. A reviewer's reply is one envelope, a discriminated union
+  on <code>action</code>:</p>
+<pre><code>type PersonaReviewReply =
+  | { action: "query"; queries: RepositoryQuery[] }
+  | { action: "verdict"; verdict: PersonaVerdict };</code></pre>
+  <p>A <code>RepositoryQuery</code> is a discriminated union on <code>op</code>, covering exactly
+  decision 4 and nothing else:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th><code>op</code></th><th>Arguments</th><th>Executed as</th></tr></thead>
+    <tbody>
+      <tr><td><code>read_file</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>cat-file --batch-check</code> on <code>&lt;snapshotOid&gt;:&lt;path&gt;</code> for type and size, then the blob; <code>stage: "index"</code> reads the pinned index tree instead, so a staged-then-modified path&rsquo;s staged bytes stay reachable</td></tr>
+      <tr><td><code>search_text</code></td><td><code>pattern</code>, <code>pathGlob?</code>, <code>fixedString?</code>, <code>maxMatches?</code></td><td><code>git grep -I -n &lt;snapshotOid&gt;</code>; unpinned, <code>git grep</code> searches the live working tree</td></tr>
+      <tr><td><code>list_paths</code></td><td><code>pathGlob</code>, <code>maxPaths?</code></td><td><code>git ls-tree -r -z &lt;snapshotOid&gt;</code> filtered by the shared matcher</td></tr>
+      <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshotOid&gt;</code> plus the complete <code>--porcelain=v2</code> status persisted at capture; the tree alone cannot express staged-versus-worktree</td></tr>
+      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff --no-ext-diff --no-textconv &lt;base or headSha&gt; &lt;snapshotOid&gt;</code>, the base defaulting to the captured <code>headSha</code> and never live <code>HEAD</code>; an explicit <code>base</code> must be an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation</td></tr>
+      <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show --no-ext-diff --no-textconv &lt;rev&gt;</code>, where <code>rev</code> is proven an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation, with the commit message fetched separately from the patch</td></tr>
+      <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log &lt;snapshotOid&gt; --max-count=N --format=&lt;NUL-separated&gt;</code>; unpinned, <code>git log</code> walks live <code>HEAD</code>; a supplied <code>path</code> is validated and denied like any other; no <code>-p</code>, <code>--name-only</code>, <code>--name-status</code> or <code>--stat</code></td></tr>
+      <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --no-ext-diff --no-textconv --porcelain &lt;snapshotOid&gt; -- &lt;path&gt;</code>; its <code>filename</code>/<code>previous</code> headers name other paths and are denylist-filtered; unpinned, <code>git blame</code> reads the live worktree file</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Every result is <code>{ ok: true, &hellip;, truncated: boolean }</code> or
+  <code>{ ok: false, code, detail }</code>, with denial codes an appended-only list:
+  <code>not_found</code>, <code>not_a_file</code>, <code>sensitive_path</code>,
+  <code>path_invalid</code>, <code>symlink</code>, <code>submodule</code>, <code>binary</code>,
+  <code>too_large</code>, <code>unsupported_rev</code>, <code>invalid_argument</code>,
+  <code>budget_exhausted</code>, <code>unavailable</code>, <code>cancelled</code>.</p>
+  <p>A denial is <strong>data, never an error</strong>: the reviewer is told, in the response, that
+  the path is denied and why, and goes on reviewing. Only <code>unavailable</code> is
+  infrastructure, and it takes the attempt down the retry ladder rather than into a verdict.</p>
+
+  <h3>5. How one attempt makes many queries</h3>
+  <p>The broker is a <strong>server-owned round loop</strong> over the existing single-shot
+  <code>LlmRunner.run(prompt)</code>. Each round re-sends the review prompt with the accumulated
+  query-and-response transcript appended, and asks for either another query batch or the final
+  verdict.</p>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 880 436" width="880" height="436" role="img"
+           aria-label="Sequence for one Persona attempt: the engine calls the broker; inside a bounded loop the broker checks cancellation and budget, calls the runner for one round, receives a query batch or a verdict, executes each typed operation against the snapshot commit, and writes one audit row per operation; finally it returns a verdict or an infrastructure failure.">
+        <!-- participants -->
+        <rect class="node" x="20" y="14" width="150" height="40" rx="7"/>
+        <text x="95" y="39" text-anchor="middle">WorkflowEngine</text>
+
+        <rect class="node newn" x="235" y="14" width="170" height="40" rx="7"/>
+        <text x="320" y="32" text-anchor="middle">repository broker</text>
+        <text class="lbl" x="320" y="47" text-anchor="middle">server-owned loop</text>
+
+        <rect class="node" x="470" y="14" width="170" height="40" rx="7"/>
+        <text x="555" y="32" text-anchor="middle">LlmRunner.run</text>
+        <text class="lbl" x="555" y="47" text-anchor="middle">claude or codex, identical</text>
+
+        <rect class="node newn" x="700" y="14" width="160" height="40" rx="7"/>
+        <text x="780" y="32" text-anchor="middle">git objects</text>
+        <text class="lbl" x="780" y="47" text-anchor="middle">snapshot commit</text>
+
+        <!-- lifelines -->
+        <line x1="95" y1="54" x2="95" y2="392" stroke="var(--line)" stroke-dasharray="4 4"/>
+        <line x1="320" y1="54" x2="320" y2="392" stroke="var(--line)" stroke-dasharray="4 4"/>
+        <line x1="555" y1="54" x2="555" y2="392" stroke="var(--line)" stroke-dasharray="4 4"/>
+        <line x1="780" y1="54" x2="780" y2="392" stroke="var(--line)" stroke-dasharray="4 4"/>
+
+        <!-- 1: engine starts the attempt -->
+        <text class="lbl" x="207" y="74" text-anchor="middle">run attempt, access = read</text>
+        <path class="arrow" d="M95 84 H316" marker-end="url(#a2)"/>
+
+        <!-- bounded loop -->
+        <rect class="zone" x="225" y="100" width="645" height="234" rx="10"/>
+        <text class="grp" x="238" y="120">bounded rounds (max 8)</text>
+
+        <!-- 2: self check -->
+        <path class="arrow" d="M320 138 H366 V158 H324" marker-end="url(#a2)"/>
+        <text class="lbl" x="376" y="143">cancelled? budget and wall clock left?</text>
+
+        <!-- 3: one provider call -->
+        <text class="lbl" x="437" y="184" text-anchor="middle">prompt + transcript so far</text>
+        <path class="arrow" d="M320 194 H551" marker-end="url(#a2)"/>
+
+        <!-- 4: the reply envelope -->
+        <text class="lbl" x="437" y="216" text-anchor="middle">query batch, or verdict</text>
+        <path class="arrow" d="M555 226 H324" marker-end="url(#a2)" stroke-dasharray="5 3"/>
+
+        <!-- 5: the typed operation -->
+        <rect x="336" y="240" width="252" height="14" fill="var(--card)"/>
+        <text class="lbl" x="338" y="251">typed op, path-validated and denylisted</text>
+        <path class="arrow good" d="M320 262 H776" marker-end="url(#g2)"/>
+
+        <!-- 6: the bounded answer -->
+        <rect x="336" y="278" width="268" height="14" fill="var(--card)"/>
+        <text class="lbl" x="338" y="289">bounded bytes, marked if truncated</text>
+        <path class="arrow good" d="M780 300 H324" marker-end="url(#g2)" stroke-dasharray="5 3"/>
+
+        <!-- 7: the audit row -->
+        <text class="lbl" x="376" y="318">one audit row per operation, denial included</text>
+
+        <!-- 8: back to the engine -->
+        <text class="lbl" x="207" y="362" text-anchor="middle">verdict, or infrastructure failure</text>
+        <path class="arrow" d="M320 372 H99" marker-end="url(#a2)"/>
+
+        <text class="lbl" x="20" y="416">an infrastructure failure takes the existing retry ladder, then blocks in
+          <tspan class="mono">repository_access_unavailable</tspan> - never a verdict</text>
+
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="g2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent-2)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+    <figcaption>Every repository operation is executed by ai-harness, so provider parity and
+    auditability are properties of the code path rather than of a provider's cooperation.</figcaption>
+  </figure>
+
+  <p>This is the design's central decision, and it is chosen because it is the only shape that
+  satisfies decision 2:</p>
+  <ul>
+    <li><strong>It needs nothing from either provider.</strong> No new <code>LlmRunOptions</code>
+      field, no MCP wire into four transports, no <code>runInThread</code>, no turn-cap change.
+      Claude and Codex become equivalent by construction rather than by two adapters that must be
+      kept in step - and Codex's <code>sandbox: null</code> stops being relevant, because no
+      grant is ever requested.</li>
+    <li><strong>It preserves the fresh-context guarantee.</strong> <code>LlmRunner.run</code>'s
+      contract is that every call starts empty; this loop keeps that literally true and carries
+      continuity in the prompt the daemon composes, so no cross-session context can bleed.</li>
+    <li><strong>It is auditable by construction</strong>, satisfying decision 11 in the code path.</li>
+    <li><strong>It is cancellable between rounds</strong>, through the observer hook that already
+      refuses to start a call once the run or submission stops being <code>running</code>.</li>
+  </ul>
+  <div class="callout risk">
+    <p>The cost is honest and worth stating: re-sending the transcript means the prompt grows with
+    each round, so a review that uses all its rounds costs more input tokens than one that does not.
+    Server-side prompt caching absorbs most of the repeat, and the round ceiling bounds the rest. The
+    alternative - implementing <code>runInThread</code> for two providers - buys token
+    efficiency in exchange for a resumable per-provider session, which is the exact mechanism the
+    runner contract warns reintroduces cross-session bleed.</p>
+  </div>
+  <p>Where the provider can validate the envelope shape it is asked to:
+  <code>claudeRunner.structuredOutput</code> guarantees input shape, so the round schema is passed as
+  <code>LlmRunOptions.schema</code> and <code>runStructured</code>'s <code>shapeGuaranteed</code>
+  skips the redundant JSON re-prompt. Codex ignores it and the existing two-attempt parse ladder
+  covers it. A reply that will not parse after the ladder is an infrastructure failure, exactly as
+  today - never a fail verdict.</p>
+
+  <h3>6. Security model</h3>
+  <p>Decision 6 is met by removing the filesystem from the picture and then layering the existing
+  defences on what remains.</p>
+  <ol>
+    <li><strong>Paths are bytes, end to end, and the durable columns are BLOBs.</strong> Step 2&rsquo;s
+      rule is &ldquo;match as bytes, never normalize&rdquo; - and decoding a path into a JavaScript
+      string is exactly that normalization. Measured, it is lossy and collapsing:
+      <code>bad-&lt;ff&gt;&lt;fe&gt;.env</code> round-trips through UTF-8 as 15 bytes instead of 11, and
+      <code>a&lt;ff&gt;b</code> and <code>a&lt;fe&gt;b</code> - two distinct paths - decode to the same
+      string. The collapse is the security-relevant half, since a denylist decision on a decoded string
+      is a decision about a different value. So path validation, the denylist and the glob matcher
+      compare <strong>bytes</strong>; the persisted status and the audit <code>path</code> are
+      <strong>BLOB</strong> columns; every invocation passes <code>-c core.quotePath=false</code>
+      (verified: git otherwise emits <code>"q\377.txt"</code>) with <code>-z</code> wherever the output
+      form supports it; and a path that is not valid UTF-8 is reported to the reviewer with a marker and
+      is deliberately <strong>unaddressable</strong>, so <code>read_file</code> on the mangled spelling
+      fails closed rather than serving a different file that decoded the same way.</li>
+    <li><strong>Capture neutralises content filters, or the snapshot is not the submitted
+      bytes.</strong> <code>git add -A</code> runs a configured <code>filter.&lt;name&gt;.clean</code>
+      for paths a submitted <code>.gitattributes</code> selects, and a clean filter does not merely
+      execute - it <strong>rewrites what gets stored</strong>. Measured with a filter mapping
+      <code>SECRET</code> to <code>REDACTED</code>: as originally specified, two filter invocations and
+      <code>value=REDACTED-original</code> in the snapshot; with every clean filter overridden to
+      <code>cat</code>, zero invocations and <code>value=SECRET-original</code>. So the first form
+      broke decision 7, not only decision 5. Capture enumerates configured drivers and neutralises
+      <code>filter.*.clean</code> <strong>and</strong> <code>filter.*.process</code> - the latter is
+      what git-lfs uses, and a mismatched <code>process</code> driver <em>hangs</em>
+      <code>git add</code> rather than failing, so the capture invocations also carry a timeout. File
+      modes survive (<code>100644</code>, <code>100755</code>, <code>120000</code>), which a
+      hand-rolled plumbing path would have had to rebuild.</li>
+    <li><strong>Every git invocation disables configured conversion drivers.</strong>
+      <code>git</code> executes a program from repository configuration while producing a patch -
+      <code>.gitattributes</code> in the change under review selects a driver, and
+      <code>diff.&lt;name&gt;.textconv</code>/<code>.command</code> maps it to a command an operator
+      may legitimately have configured. An argv array at the outer call does not deliver decision 5’s
+      no-shell boundary if git forks underneath it. Measured driver invocations without the flags:
+      <code>git diff</code> 3, <code>git show</code> 2, <code>git blame</code> <strong>3</strong>;
+      <code>git grep</code> 0. So every content-producing invocation passes
+      <code>--no-ext-diff --no-textconv</code>, <code>--textconv</code> is a forbidden flag, and the
+      argv test asserts it - their absence produces a well-formed answer, so no output reveals that
+      a program ran.</li>
+    <li><strong>Every git invocation names an explicit snapshot-derived revision.</strong>
+      Listed first because omitting one does not fail - it silently reads live state, differently per
+      command. Measured: <code>git log</code> walks live <code>HEAD</code>, and <code>git grep</code>
+      and <code>git blame</code> read the live <strong>working tree</strong> rather than any commit,
+      which is the worst case since that directory may have been reset and reassigned to another
+      task; <code>git cat-file</code> and <code>git ls-tree</code> refuse to run and so fail closed.
+      Three of five silently substitute, two refuse, and a reviewer cannot tell from the response -
+      so the argv for every op spells its revision and a mechanical test over the built argv asserts
+      it, rather than the guarantee resting on prose.</li>
+    <li><strong>No filesystem access at all.</strong> Every read is a git object read against one of
+      two immutable commits - the snapshot tree, or the index tree that preserves staged bytes. Traversal, absolute paths, host files and <code>.git</code> internals are
+      structurally absent - verified at the git layer, not asserted.</li>
+    <li><strong>Path validation before git is invoked, for every op that is given a path.</strong>
+      Reject empty, absolute, NUL-bearing, and any path with a <code>.</code> or <code>..</code>
+      segment; reject <code>.git</code> as a leading segment. Paths are matched as bytes against the
+      tree listing and never normalized, because git paths are bytes and a normalization step would
+      make two spellings resolve to one object. This is <strong>universal and independent of what the
+      op's output looks like</strong> - the two are separate axes, and treating them as one is what
+      once let <code>git_log -- .env</code> through: it was filed under an output class that filters
+      paths out of results, so nothing checked the path it was handed.</li>
+    <li><strong>A sensitive-path denylist</strong>, seeded from the repository-relative half of the
+      Inspector's <code>DENY_PATHS</code> and <strong>strengthened</strong>: the Inspector denies
+      <code>**/.git/config</code>, this denies <code>.git/**</code> outright, and the list is applied
+      to the <em>results</em> of <code>search_text</code> and <code>list_paths</code> as well as to
+      the arguments of <code>read_file</code>. A matcher that only guarded arguments would be exactly
+      the hole <code>claude-grant.ts</code> already documents: &ldquo;<code>Grep</code> takes an
+      absolute path and prints the matching lines, so a <code>Read(...)</code>-only list protects
+      nothing it names.&rdquo; The measurement above is why this layer survives the move to git
+      objects: an untracked, non-ignored <code>.env</code> <strong>is</strong> in the snapshot tree.</li>
+    <li><strong>Every op declares an output class, and a content-bearing one is allowlisted before it
+      is generated rather than filtered after.</strong> Filtering paths out of a result works for an
+      op that emits a path beside its own content - drop the line and the content goes with it. It
+      does <strong>not</strong> work for <code>git_diff</code> or <code>git_show</code>, whose output
+      is one blob carrying file content. Measured, both leak: an unrestricted diff over that snapshot
+      emitted <code>+SECRET=hunter2-should-never-be-seen</code>, and <code>git show</code> on an
+      ancestor commit emitted the same for a <code>.env</code> that commit introduced. So both
+      resolve their changed-path set first with <code>--name-only</code> (which carries no content),
+      apply the denylist to that set, and generate content only for an explicit
+      <code>:(literal)</code> allowlist - then verify both sides of every <code>diff --git</code>
+      header before returning and refuse the whole operation rather than shipping a partly filtered
+      patch. The class lives in a total <code>Record</code> over the op list, so a new
+      content-bearing op cannot compile without declaring itself into that pipeline.
+      <code>--no-renames</code> is explicit, because <code>diff.renames=true</code> on the reviewing
+      machine otherwise makes a header name a denied path and makes the response shape depend on
+      operator configuration; and <code>git_show</code> fetches its commit message separately from
+      its patch, because a message is attacker-controlled text and can contain a forged
+      <code>diff --git</code> line.
+      <br><strong>Ancestry and the denylist are different checks.</strong> The leaking
+      <code>git_show</code> revision <em>passed</em> the ancestry check - it was a genuine ancestor of
+      the snapshot. Ancestry answers &ldquo;is this revision part of what was submitted&rdquo;; the
+      denylist answers &ldquo;may this path be read&rdquo;. Neither substitutes for the other.</li>
+    <li><strong>Modes are classified, links are never followed.</strong> Mode <code>120000</code> is
+      denied as <code>symlink</code> and <code>160000</code> as <code>submodule</code>. A symlink's
+      blob content is its target string, so serving it as file content would hand the reviewer an
+      arbitrary host path under a repository-relative name.</li>
+    <li><strong>Binary refusal without reading.</strong> <code>cat-file --batch-check</code> yields
+      type and size first, so an oversize blob is refused as <code>too_large</code> before a byte is
+      read; <code>git grep -I</code> skips binary content (verified).</li>
+    <li><strong>Per-operation output scrubbing.</strong> <code>scrubSecrets</code> runs over every
+      broker response. Its own comment makes the trade explicit - &ldquo;a mangled example is a
+      nuisance, a published credential is an incident&rdquo; - and it applies with more force
+      here, because a verdict's evidence quotes can reach a public pull request through the feedback
+      packet.</li>
+    <li><strong>Untrusted framing.</strong> Every response is delivered inside an
+      <code>untrustedBlock</code>, so repository content the reviewer fetched carries the same
+      <code>-untrusted</code> fence as the diff it came from.</li>
+  </ol>
+  <p><code>REVIEW_SNAPSHOT_ONLY</code> currently tells every reviewer &ldquo;do not look anything
+  up&rdquo;. With access enabled that sentence is false, so <code>reviewContract</code> gains an
+  opt-in variant that names the repository snapshot as part of the reviewed snapshot and the broker as
+  the only way to reach it. When access is off the rendered string stays <strong>byte-identical</strong>
+  to today, pinned by a test - four reviewers across two providers share that function and none
+  of the other three is changing.</p>
+
+  <h3>7. Retry, blocking, and never falling back</h3>
+  <p>Decision 8 maps onto machinery that already exists. A missing snapshot, an unreadable object
+  database, a vanished repository root or a git invocation that fails is an <strong>infrastructure
+  failure</strong>, routed through <code>handleInfrastructureFailure</code>: the attempt is recorded
+  <code>error</code>, up to <code>MAX_INFRA_ATTEMPTS</code> attempts are scheduled with the existing
+  exponential backoff, and on exhaustion the submission fails and the run blocks.</p>
+  <p>It blocks in a <strong>distinct phase</strong>, <code>repository_access_unavailable</code>, with
+  its own <code>BLOCKED_PHASE_CLAUSES</code> entry, for the reason
+  <code>CHECK_CLEANUP_UNRESOLVED_PHASE</code> is distinct from <code>infrastructure_error</code>: the
+  operator's next move differs. &ldquo;The provider call failed&rdquo; is debugged; &ldquo;the
+  repository this review needs is gone&rdquo; is answered by re-running against a live checkout.</p>
+  <div class="callout stop">
+    <p>What must never happen, and is prevented by there being no such branch in the code: a Persona
+    with <code>repositoryAccess: "read"</code> completing a review without the repository. Prompt-only
+    is not a degraded mode of this feature; it is a different review, and passing it off as the
+    configured one would silently weaken every gate an operator turned on.</p>
+  </div>
+
+  <h3>8. Persona Editor</h3>
+  <p>The setting joins the existing property-chip row beside Provider and Model, as a chip named
+  <code>repository</code> with <code>controlLabel="Repository access"</code>. A chip is a
+  <code>&lt;button&gt;</code> whose accessible name is <code>&lt;name&gt;&lt;value&gt;</code> and whose
+  popover is a <code>role="group"</code> named by <code>controlLabel</code>, so the browser spec
+  reaches it exactly as <code>persona-rail.spec.ts</code> already reaches Provider. On an unsaved
+  draft the chip reads <code>resolves after save</code> and its control is disabled, following the
+  Model chip.</p>
+  <p>Its popover holds the choice and the disclosure, because this is the one Persona setting whose
+  security boundary an operator has to be told rather than guess:</p>
+  <ul>
+    <li>what is granted - read, search and glob over the exact submitted worktree, plus
+      server-run <code>status</code>, <code>diff</code>, <code>show</code>, <code>log</code> and
+      <code>blame</code>;</li>
+    <li>what is not - no shell, no writes, no network, no provider tools;</li>
+    <li>what is denied - credential-shaped and secret-bearing paths, <code>.git</code>
+      internals, symlinks and submodules, with denials recorded;</li>
+    <li>what the state means - that the setting takes effect for <strong>newly published</strong>
+      workflow versions, so an existing version keeps the behaviour it was published with.</li>
+  </ul>
+  <p>For a built-in the chip is the single enabled control on an otherwise read-only editor, and it
+  says so: the override is local to this machine, does not change the shipped guidance, and does not
+  make the Persona editable. Everything else keeps <code>readOnly = archived || builtin</code>, the
+  primary action stays <code>Duplicate to edit</code>, and <code>PersonaEditorStatus</code>'s built-in
+  banner keeps its precedence over every other state. An archived Persona's chip stays disabled
+  - the exception is for built-ins, not for read-only in general.</p>
+  <p>No new <code>ServerEvent</code> is needed. <code>persona_upsert</code> already carries a
+  <code>PersonaView</code>, so a widened <code>Persona</code> reaches the browser through the existing
+  frame and <code>useEventStream</code>'s exhaustiveness check stays untouched.</p>
+
+  <h3>9. Limits</h3>
+  <p>Decision 12 rules out one global character cap, so the budget is a small hierarchy - per
+  operation, per round, per attempt - each of which announces truncation where it bites:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Limit</th><th>Value</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>maxRounds</code></td><td>8</td><td>Enough to open a file, follow its callers, and check its test; bounded so a loop cannot run forever</td></tr>
+      <tr><td><code>maxQueriesPerRound</code></td><td>12</td><td>Batching is what keeps round count low; a reviewer asks for a listing and six files at once</td></tr>
+      <tr><td><code>maxResponseBytesPerQuery</code></td><td>96,000</td><td>Roughly a 2,500-line source file whole</td></tr>
+      <tr><td><code>maxRoundBytes</code></td><td>320,000</td><td>A full batch of substantial files in one round</td></tr>
+      <tr><td><code>maxAttemptBytes</code></td><td>2,000,000</td><td>The expansive-review budget: ~40 large files across the whole attempt</td></tr>
+      <tr><td><code>maxMatchesPerSearch</code></td><td>200</td><td>A search is for locating code, not for exporting it</td></tr>
+      <tr><td><code>maxPathsPerList</code></td><td>4,000</td><td>Comfortably above this repository's measured 2,633-path tree, so a whole-repository listing is complete rather than clipped</td></tr>
+      <tr><td><code>maxLogEntries</code></td><td>100</td><td>Blame and log answer &ldquo;why is this here&rdquo;, not &ldquo;replay the history&rdquo;</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Truncation is never silent: an <code>ok</code> response carries <code>truncated: true</code> and
+  the omitted byte count, <code>read_file</code> accepts <code>startLine</code>/<code>lineCount</code>
+  so a clipped file can be paged rather than guessed at, and every truncation is written to the audit
+  record.</p>
+
+  <h3>10. Audit and observability</h3>
+  <p>Decision 11 gets a durable table rather than only log lines, because &ldquo;what did this
+  reviewer read&rdquo; is a question asked after the fact:
+  <code>workflow_repository_queries(id, run_id, submission_id, node_attempt_id, round, ordinal, op,
+  path, detail, outcome, denial_code, bytes, truncated, duration_ms, created_at)</code>.</p>
+  <p>Alongside it: <code>workflow_llm_calls</code> gains a <code>round</code> column so a provider
+  call can be placed in its round (<code>attempt</code> continues to mean the parse-retry attempt
+  within a round), bounded aggregate <code>workflow_events</code> rows report per-round operation
+  counts, denials and truncations on the run timeline, and run detail renders a per-attempt summary
+  - operations, bytes, denials, truncations - so the cost and the reach of an
+  access-enabled review are visible without a database query.</p>
+
+  <h2>Migration and backward compatibility</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Existing thing</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>Existing operator Personas</td><td><code>addColumn(d, "personas", "repository_access", "TEXT NOT NULL DEFAULT 'off'")</code>. The column default <strong>is</strong> the true backfill, so no <code>UPDATE</code> follows the <code>ALTER</code> - the idiom <code>db.ts:1221-1227</code> documents.</td></tr>
+      <tr><td>Existing built-in Personas</td><td>No override row, so they resolve to <code>off</code>.</td></tr>
+      <tr><td>Already-published workflow versions</td><td><code>graph_json</code> lacks the key; <code>.default("off")</code> parses it as <code>off</code>. No rewrite of any stored graph.</td></tr>
+      <tr><td>Historical <code>workflow_node_attempts</code> rows</td><td>Same <code>.default("off")</code> path through <code>PersonaSnapshotSchema</code>.</td></tr>
+      <tr><td>In-flight runs at upgrade</td><td>Pinned to their published version, which parses as <code>off</code>; behaviour is byte-identical to before.</td></tr>
+      <tr><td>Existing submissions</td><td><code>review_snapshot_oid</code> is nullable and null; a Persona with access off never asks for it, and one with access on cannot exist against a version published before the column did.</td></tr>
+      <tr><td>A newer daemon's rows read by an older build</td><td>Zod strip mode drops the unknown key and nothing rewrites the column, so the field round-trips.</td></tr>
+      <tr><td>Exported workflow versions</td><td><code>manager.exportVersion</code> serializes the parsed version, so a re-import of an old export lands <code>off</code>.</td></tr>
+      <tr><td><code>reviewContract</code> output with access off</td><td>Byte-identical, pinned by a test.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Testing strategy</h2>
+  <p>Every layer is used for what only it can say.</p>
+  <ul>
+    <li><strong>Unit (<code>test/</code>)</strong>: the enum and its default;
+      <code>personaSnapshotOf</code> including the field; <code>PersonaSnapshotSchema</code> parsing a
+      pre-feature snapshot as <code>off</code> <em>and</em> rejecting an unknown mode;
+      <code>personaSnapshotIsOutdated</code> reacting to an access change on both a row and a
+      built-in; path validation refusing absolute, <code>..</code>, NUL and <code>.git</code>; the
+      denylist applied to arguments <em>and</em> to search and list results; the glob matcher; every
+      limit boundary; denial-code mapping; <code>reviewContract</code> byte-equality when access is
+      off.</li>
+    <li><strong>Persistence and migration</strong>: modelled on the two existing patterns rather than
+      invented. <code>test/persona-migration.test.ts</code> hand-writes the pre-feature
+      <code>personas</code> table (never importing the current schema, since a fixture built from
+      <code>db.ts</code> would create the new column itself), and
+      <code>test/session-action-migration.test.ts</code> hand-seeds a published
+      <code>workflow_versions.graph_json</code> in its old shape and asserts it still parses through
+      the current store. This feature needs both. It also closes a <strong>gap the investigation
+      named</strong>: nothing today seeds a <code>PersonaSnapshot</code> written by a <em>newer</em>
+      build - an unknown extra key inside <code>graph_json</code> - and asserts the
+      current parser tolerates it. Zod's strip mode makes that true; it has never been pinned, and it
+      is the property that lets this field ship without a rewrite of stored graphs.</li>
+    <li><strong>Runner contract (<code>test/llm-runner-contract.test.ts</code>)</strong>: the broker
+      requests <strong>no</strong> grant and <strong>no</strong> tools from either runner, so the
+      feature cannot regress into a provider-tool grant; and the same round schema drives Claude and
+      Codex identically, which is decision 2's regression test.</li>
+    <li><strong>Integration (<code>test/workflow-engine.test.ts</code>,
+      <code>test/workflow-context.test.ts</code>)</strong>: a real fixture repository with committed,
+      staged, unstaged and untracked content; the snapshot contains all four and excludes gitignored
+      paths; the broker answers each op against it; reading the snapshot still works after the
+      worktree is removed; a multi-round attempt terminates, is cancellable mid-loop, and records one
+      audit row per operation; a missing snapshot blocks in
+      <code>repository_access_unavailable</code> after the retry ladder and <strong>never</strong>
+      produces a verdict.</li>
+    <li><strong>Security (<code>test/workflow-security.test.ts</code>)</strong>: the existing home for
+      &ldquo;malicious Persona and evidence content stays data inside the review contract&rdquo; gains
+      the broker's half - a crafted repository path cannot leave the tree, a denied path is
+      absent from every response shape, and a fetched file arrives inside an <code>-untrusted</code>
+      fence.</li>
+    <li><strong>Browser (<code>e2e/</code>)</strong>: setting access in the Persona Editor and seeing
+      it persist across reload; the disclosure copy present in the popover; a built-in whose access
+      chip is the only enabled control while <code>Save</code> has count zero and the primary reads
+      <code>Duplicate to edit</code>; and a full access-enabled review round trip. All of it reaches
+      the existing selector vocabulary, and the review is steered through the existing marker channel:
+      the fake Claude keys behaviour off a marker planted in Persona guidance, and already persists a
+      per-call counter in a file precisely because &ldquo;each review call is its own process&rdquo;,
+      which is exactly what a two-round broker exchange needs.</li>
+  </ul>
+
+  <h2>Documentation</h2>
+  <p>Each page is owned by the phase that introduces the behaviour it documents:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Page</th><th>What it gains</th><th>Phase</th></tr></thead>
+    <tbody>
+      <tr><td><code>docs/workflows.md</code></td><td>The Persona setting, the capability and denial list, the limits, the publish-freeze rule, the built-in override and its Duplicate-the-workflow limitation; then the review behaviour, the blocked phase and the audit surface</td><td>1, then 3</td></tr>
+      <tr><td><code>docs/security.md</code></td><td>A pointer that access exists and is off by default; then the full trust boundary and layered defences; then the prompt-side framing</td><td>1, 2, 3</td></tr>
+      <tr><td><code>docs/database-and-migrations.md</code></td><td>The column, the override table, the snapshot columns, the audit table and the ref namespace</td><td>1, 2</td></tr>
+      <tr><td><code>docs/worktrees-and-checks.md</code></td><td>That a review's repository view is a snapshot commit and is therefore unaffected by worktree reclamation</td><td>2</td></tr>
+      <tr><td><code>docs/models.md</code></td><td>The round-loop cost model</td><td>3</td></tr>
+      <tr><td><code>docs/event-stream.md</code></td><td>The per-round aggregate event kinds, if it enumerates them</td><td>3</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><code>docs/architecture.md</code> is deliberately <strong>not</strong> in that list. It is a
+  52-line component index that points at the technical pages rather than describing tables or
+  subsystems, so this feature has nothing to add to it, and adding a line would make a page whose job
+  is orientation slightly worse at it.</p>
+  <p>Built-in Persona Markdown under <code>personas/</code> is corrected in Phase 3 where it asserts
+  &ldquo;you have no repository tools&rdquo;, which is a generated-source edit
+  (<code>npm run personas</code>), and one that marks published snapshots of those built-ins outdated
+  - the honest consequence, recorded rather than avoided.</p>
+
+  <h2>Out of scope</h2>
+  <ul>
+    <li>Write access, shell execution, network access, or any provider tool grant.</li>
+    <li>Repository access for the Inspector, Foreman, ensembles, or Check nodes.</li>
+    <li>Cross-repository reads. One run is one repository, and <code>workflowCheckoutPath</code> is
+      the single place that says which.</li>
+    <li>Reading a session's live checkout at review time. The snapshot replaces it deliberately.</li>
+    <li>Fixing the pre-existing published-graph size cliff beyond the publish-time guard described
+      above; the guard prevents new data loss and the underlying read cap is left alone.</li>
+  </ul>
+
+  <h2>Risks</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr><td>Token cost of re-sent transcripts</td><td>Round and byte ceilings; provider-side prompt caching; per-attempt audit makes the cost visible rather than surprising</td></tr>
+      <tr><td>A reviewer burning rounds without converging</td><td><code>maxRounds</code> is a hard stop; the final round is asked for a verdict explicitly, and a non-verdict at the ceiling is an infrastructure failure, never a fail</td></tr>
+      <tr><td>Snapshot creation slowing capture</td><td>Measured at 34&nbsp;ms with a seeded index; the cold path is 729&nbsp;ms and is the fallback when the live index cannot be copied</td></tr>
+      <tr><td>Ref accumulation in an operator's repository</td><td>Refs are deleted by the same retention that prunes submission evidence, and a startup sweep removes refs with no live submission</td></tr>
+      <tr><td>A crafted repository path or content steering the reviewer</td><td>Untrusted fencing on every response, the same framing the diff already carries, plus scrubbing and the denylist</td></tr>
+      <tr><td>Snapshot content not matching the captured diff</td><td>Created inside the existing bounded capture window, parent asserted equal to the captured <code>headSha</code>, and covered by the existing boundary re-read and retry</td></tr>
+    </tbody>
+  </table>
+  </div>
+</main>
+</body>
+</html>

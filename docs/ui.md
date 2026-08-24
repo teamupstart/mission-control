@@ -379,6 +379,14 @@ Two tours are registered, and neither stores progress: there is no first-run tri
 resume prompt, and no "you have not finished this tour" nudge. Exiting one restores the page,
 the asset, and the control it started from, and starting it again starts it at stop one.
 
+The tour names, stage titles, stage descriptions, and stage definition lists have one authored
+location per tour: [`tours/see-work.md`](../tours/see-work.md) and
+[`tours/library.md`](../tours/library.md). Their H1 is the tour name, each H2 is a stage title,
+and the prose below it is the stage description. Edit those Markdown files and run
+`npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
+edited by hand. Navigation, readiness, fallbacks, and button behavior remain in the matching
+TypeScript definition because they are executable tour behavior rather than editable copy.
+
 #### See the work
 
 **See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**

@@ -8,6 +8,7 @@ import {
   type TourStep,
   type TourStepContext,
 } from "../contracts.ts";
+import { assertTourContentStages, tourStageContent } from "../content.ts";
 
 export type SeeWorkDemoPhase =
   | "not-started"
@@ -82,9 +83,7 @@ const demoTileStop = (step: Step): Step => ({
 const STEPS: readonly Step[] = [
   {
     id: "line",
-    title: "Fleet and the Line",
-    description:
-      "The Line summarizes the whole work pipeline: intake → backlog → working → review → decide → shipped. Amber means there is something you can move.",
+    ...tourStageContent("see-work", "line"),
     targets: [{ target: "see-work:line", side: "bottom" }],
     prepare: (context) => context.navigation.showLine(),
     // The opening stops are ordinary chrome that is already on screen. Runtime landing
@@ -93,18 +92,14 @@ const STEPS: readonly Step[] = [
   },
   {
     id: "board",
-    title: "Board View",
-    description:
-      "The Board places backlog beside session-state columns. Column height shows the fleet’s shape, and opening a tile reveals that session’s operating detail.",
+    ...tourStageContent("see-work", "board"),
     targets: [{ target: "see-work:board" }],
     prepare: (context) => context.navigation.showBoard(),
     reconcile: hold,
   },
   {
     id: "session-detail",
-    title: "Session detail",
-    description:
-      "Conversation, Work queue, Workflows, Diff, and Files make one session’s desk: talk, queued work, checks, changes, and the working tree in one place.",
+    ...tourStageContent("see-work", "session-detail"),
     targets: [{ target: "see-work:session-detail" }],
     gateNext: true,
     prepare: (context) => context.navigation.showSessionDetail(),
@@ -121,9 +116,7 @@ const STEPS: readonly Step[] = [
   },
   {
     id: "dispatch",
-    title: "Open Dispatch",
-    description:
-      "Dispatch turns an intent into a live session. Next opens the real form so you can see the work contract before anything is scheduled.",
+    ...tourStageContent("see-work", "dispatch"),
     targets: [{ target: "see-work:dispatch" }],
     prepare: (context) => context.navigation.showDispatch(),
     nextLabel: () => "Open Dispatch",
@@ -131,15 +124,7 @@ const STEPS: readonly Step[] = [
   },
   dispatchModalStop({
     id: "dispatch-kind",
-    title: "Choose the kind",
-    description:
-      "Kind sets the outcome you expect from the agent. The tour’s fixed demo uses Ship.",
-    details: [
-      { label: "Chat", description: "Have an open-ended conversation without a planned artifact." },
-      { label: "Scout", description: "Investigate and report findings without producing a diff." },
-      { label: "Plan", description: "Produce a reviewed plan and optionally schedule the work." },
-      { label: "Ship", description: "Deliver a reviewable change with a completion path." },
-    ],
+    ...tourStageContent("see-work", "dispatch-kind"),
     targets: [{ target: "see-work:dispatch-kind" }],
     ready: (context) => context.runtime.dispatchOpen && context.element !== null,
     fallback: () =>
@@ -155,9 +140,7 @@ const STEPS: readonly Step[] = [
   }),
   dispatchModalStop({
     id: "dispatch-input",
-    title: "Brief ready",
-    description:
-      "The tour filled the real task input with its read-only demo brief. Repo and Crew show the full launch contract: Ship on Codex with GPT-5.6 Terra. Your own saved Dispatch draft remains untouched underneath this temporary one.",
+    ...tourStageContent("see-work", "dispatch-input"),
     targets: [{ target: "see-work:dispatch-input" }],
     ready: (context) =>
       context.runtime.dispatchOpen &&
@@ -171,9 +154,7 @@ const STEPS: readonly Step[] = [
   }),
   dispatchModalStop({
     id: "dispatch-workflow",
-    title: "Choose what follows",
-    description:
-      "Workflows run reusable review and follow-up steps after an agent finishes. None leaves the session with you instead. This demo selects None because its Needs You request comes directly from the task.",
+    ...tourStageContent("see-work", "dispatch-workflow"),
     targets: [{ target: "see-work:dispatch-workflow" }],
     ready: (context) =>
       context.runtime.dispatchOpen &&
@@ -185,9 +166,7 @@ const STEPS: readonly Step[] = [
   }),
   dispatchModalStop({
     id: "dispatch-submit",
-    title: "Dispatch the task",
-    description:
-      "The launch contract is ready. Click Dispatch now in the modal to schedule the Terra task. The rest of the form stays visible so you can review it before the task leaves.",
+    ...tourStageContent("see-work", "dispatch-submit"),
     targets: [{ target: "see-work:dispatch-submit", side: "left" }],
     interactive: true,
     ready: (context) => {
@@ -217,9 +196,7 @@ const STEPS: readonly Step[] = [
   }),
   demoTileStop({
     id: "working",
-    title: "Working",
-    description:
-      "The scheduled task appears under Working while Terra starts its turn. Its tile is the live summary; opening it returns to the same session desk you just saw.",
+    ...tourStageContent("see-work", "working"),
     targets: [{ target: "see-work:demo-task" }],
     ready: (context) => context.runtime.sessionId !== null && context.element !== null,
     fallback: () =>
@@ -227,9 +204,7 @@ const STEPS: readonly Step[] = [
   }),
   demoTileStop({
     id: "needs-you",
-    title: "Needs You",
-    description:
-      "When the task asks through Mission Control’s review channel, its same tile moves to Needs You. The state change is the prompt to review, not a separate notification workflow.",
+    ...tourStageContent("see-work", "needs-you"),
     targets: [{ target: "see-work:demo-task" }],
     ready: (context) => context.runtime.reviewPending && context.element !== null,
     fallback: (context) =>
@@ -240,9 +215,7 @@ const STEPS: readonly Step[] = [
   }),
   {
     id: "review",
-    title: "Choose and submit",
-    description:
-      "Pick one option in the real review dialog and submit it. The tour pauses here; your answer unblocks the session and no choice is made for you.",
+    ...tourStageContent("see-work", "review"),
     targets: [{
       target: "see-work:review-modal",
       // Before the operator opens the review, the popover is a centered card that offers to
@@ -289,9 +262,7 @@ const STEPS: readonly Step[] = [
   },
   demoTileStop({
     id: "idle",
-    title: "Idle",
-    description:
-      "After the answer returns, the task settles under Idle. The session is still available for another instruction, but this demo deliberately sends none.",
+    ...tourStageContent("see-work", "idle"),
     targets: [{ target: "see-work:demo-task" }],
     ready: (context) => context.runtime.phase === "idle" && context.element !== null,
     fallback: () =>
@@ -300,9 +271,7 @@ const STEPS: readonly Step[] = [
   }),
   {
     id: "actions",
-    title: "Complete or run a retro",
-    description:
-      "Complete records an outcome and closes the session. A retro keeps the task open while the session proposes memories for you to review. Next opens the real completion dialog; this tour will not run a retro.",
+    ...tourStageContent("see-work", "actions"),
     targets: [{ target: "see-work:session-actions" }],
     gateNext: true,
     prepare: (context) => context.navigation.showDemoDetail(),
@@ -313,9 +282,7 @@ const STEPS: readonly Step[] = [
   },
   {
     id: "complete",
-    title: "Complete the tour",
-    description:
-      "The real Complete dialog records an optional outcome before closing the session. “Tour demo” is prefilled as a generic note. Run a retro first would keep the work open; Complete & close would finish it. The guide’s Complete tour button performs that fixed completion safely.",
+    ...tourStageContent("see-work", "complete"),
     targets: [{ target: "see-work:complete-modal" }],
     gateNext: true,
     prepare: (context) => context.navigation.showComplete(),
@@ -331,10 +298,12 @@ const STEPS: readonly Step[] = [
   },
 ];
 
+const CONTENT = assertTourContentStages("see-work", STEPS);
+
 export const SEE_WORK_TOUR: TourDefinition<SeeWorkTourRuntime, SeeWorkTourNavigation> =
   assertTourDefinition({
     id: "see-work",
-    title: "See the work",
+    title: CONTENT.title,
     steps: STEPS,
     documentFlags: [REVIEW_FLAG, DISPATCH_FLAG, SESSION_TILE_FLAG],
     stopping: {

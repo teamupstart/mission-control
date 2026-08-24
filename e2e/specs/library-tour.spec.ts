@@ -268,7 +268,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(dialog.getByText("Author what runs", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("progressbar", { name: "Author what runs tour progress" }))
     .toHaveAttribute("aria-valuenow", "1");
-  // The six shelves are named from the shelf registry, so this reads the product's own words.
+  // The six shelf labels and questions are authored with this stage in tours/library.md.
   await expect(dialog).toContainText("Who does the reviewing?");
   await expect(dialog).toContainText("What counts as done?");
   // And they are readable, not merely present: the longest shelf name is two words and a

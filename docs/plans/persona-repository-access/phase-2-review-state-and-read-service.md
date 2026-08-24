@@ -235,9 +235,18 @@ Order of checks per query, and the order is the contract:
 9. **Scrub** - `scrubSecrets` over the response text.
 10. **Audit** - one row per operation, whatever the outcome.
 
-`git_show` accepts only a revision that `merge-base --is-ancestor <rev> <snapshotOid>` proves is an
-ancestor of the snapshot, refusing anything else as `unsupported_rev`. Without that, `rev` is an
-arbitrary reference into the whole object database, including other branches and other tasks' work.
+**Every caller-supplied revision is constrained to the snapshot's ancestry.** `git_show`'s `rev`
+and `git_diff`'s `base` each pass only when `merge-base --is-ancestor <rev> <snapshotOid>` succeeds,
+and are otherwise refused as `unsupported_rev`. Without that check a revision is an arbitrary
+reference into the whole object database - another branch, another task's work, any object the
+repository happens to hold - and a diff taken against one returns files that were never in the
+submitted state, which defeats the exact-submitted-state boundary this phase exists to draw.
+
+The rule is written once and applied to both ops rather than per-op, because the two were specified
+separately at first and only `git_show` got the check; a shared `resolveSnapshotAncestor(rev)` that
+every rev-taking op must call is what stops the next op added to this list from repeating that.
+`git_status`, `git_log` and `git_blame` take no caller revision - they walk from the snapshot - and a
+future op that does must go through the same helper.
 
 `list_paths` lists the tree once (`ls-tree -r -z`), caches it for the reader's lifetime - the tree
 is immutable, so a per-reader cache is correct by construction - and filters in Node.
@@ -280,8 +289,17 @@ look viable.
   boundary - absolute path, `..` in every position, NUL, a leading `.git`, an over-long path, a
   denied path as an argument, a denied path appearing **only** in a `search_text` result, a denied
   path appearing only in a `list_paths` result, a symlink pointing outside the repository, a
-  submodule, a binary, an oversize blob, and a `git_show` naming a commit that is not an ancestor
-  of the snapshot. Each asserts the denial code and that no content crosses the boundary.
+  submodule, a binary, an oversize blob, and - for **both** rev-taking ops - a `git_show` `rev` and
+  a `git_diff` `base` naming a commit that is not an ancestor of the snapshot. Each asserts the
+  denial code and that no content crosses the boundary.
+- The ancestry case is worth building deliberately rather than with a random sha: create a second
+  branch in the fixture with a file the snapshot never contained, then assert that naming its tip as
+  `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
+  that file's content or path. A test that only checks the code would still pass if the
+  implementation refused after running the diff.
+- Also assert the positive half, so the check is not simply "refuse everything": a `base` that *is*
+  an ancestor - the snapshot's parent, and the merge base against the default branch - succeeds and
+  returns the expected paths.
 - `test/workflow-context.test.ts`: capture persists the oid and root; **both fingerprints are
   byte-identical** to a run whose snapshot oid differs; a snapshot failure leaves the columns null
   and capture still succeeds.
@@ -349,3 +367,13 @@ Phase 3 may rely on, and must not change:
 - **Reconciliation record**: snapshot-creation failure is non-fatal in this phase and fatal in
   Phase 3 for an access-enabled Persona. That asymmetry is intentional and stated in both files,
   because inverting it here would make a feature nobody enabled able to fail an existing run.
+- **Reconciliation record, review round 2.** The first draft constrained only `git_show`'s `rev`
+  to the snapshot's ancestry and left `git_diff`'s `base` free, which lets an access-enabled
+  Persona name another branch or object id and receive a diff containing files that were never in
+  the submitted state - defeating the exact-submitted-state boundary this phase draws. Fixed by
+  routing **every** caller-supplied revision through one shared `resolveSnapshotAncestor(rev)`, so
+  the next rev-taking op added to the list cannot repeat the omission. The op set and decision 4 are
+  unchanged: `git_diff` keeps its selectable base, it just cannot leave the snapshot's history.
+  `maxPathsPerList` also rose from 2,000 to 4,000, because 2,000 sat below this repository's
+  measured 2,633-path tree while claiming to sit above it - a whole-repository listing would have
+  been silently clipped, which is the exact failure decision 12 rules out.

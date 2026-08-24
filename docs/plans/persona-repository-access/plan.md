@@ -4,7 +4,7 @@ Give selected Workflow Personas read-only access to the **complete Git worktree*
 change they are reviewing, through a provider-neutral query broker that ai-harness executes
 and audits against the exact submitted state.
 
-Rendered page: `plan.html` (open that, not this file, for the skimmable version).
+A rendered, self-contained version of this document sits beside it at `plan.html`.
 
 ## The problem
 
@@ -170,9 +170,26 @@ genuinely different objects:
   It is part of the row, so it participates in `revision`, in the CAS write path, in
   Duplicate, and in import/export - none of which a sidecar table would give it.
 - **Built-in Personas** get a sidecar row:
-  `persona_access_overrides(persona_id TEXT PRIMARY KEY, repository_access TEXT NOT NULL, created_at, updated_at)`.
+  `persona_access_overrides(persona_id TEXT PRIMARY KEY, repository_access TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at, updated_at)`.
   A built-in has no row to carry the setting, and inventing one would make it operator data
   and break the four properties `builtin-personas.ts` exists to guarantee.
+
+The override row carries **its own `revision`**, and that is not decoration. A built-in's
+`Persona.revision` is the synthetic constant `1` that `builtin-personas.ts` documents ("a build has
+exactly one copy of each document"), so it cannot serve as a compare-and-swap token: two dashboards
+changing the same built-in's access would both compare against `1`, both succeed, and the later
+write would silently discard the earlier one while each browser reported its own value as committed.
+The sidecar's revision is the token that makes that a refusal instead, exactly as
+`workflow_commands.revision` does for the shipped command slots.
+
+So the setting exposes one number with one meaning - **the revision of the record that stores it** -
+surfaced on `PersonaView` as `repositoryAccessRevision`:
+
+| Persona kind | `repositoryAccessRevision` is | A write |
+|---|---|---|
+| Operator row | the `personas` row's `revision` | CAS on the row, bumping it, as every other Persona edit does |
+| Built-in with an override | the override row's `revision` | CAS on the override row, bumping it |
+| Built-in with no override yet | `0` | inserts, and succeeds only if no row exists - so the concurrent first write is refused too |
 
 One private resolver in `WorkflowStore` applies overrides where built-ins are merged in, so
 every existing read path picks them up without a second merge rule to keep in step.
@@ -200,8 +217,10 @@ Two consequences of that separation, both deliberate:
 The route body is revision-and-mode only, so it takes the existing small guard
 (`REVISION_ONLY_BODY_MAX_BYTES = 1024`, `src/server/routes.ts:532`) rather than
 `PERSONA_BODY_MAX_BYTES`, and it returns the same `personaFailure` envelope
-(`src/server/routes.ts:1379`) every other Persona mutation does - minus the `builtin` arm,
-which is the one refusal this route must not make.
+(`src/server/routes.ts:1379`) every other Persona mutation does - including
+`revision_conflict` with the current `PersonaView` attached, which is what lets the editor
+re-render the value that actually won, and minus the `builtin` arm, which is the one refusal
+this route must not make.
 
 ### 2. Snapshot and publication
 
@@ -328,8 +347,8 @@ else:
 | `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n` against the snapshot commit |
 | `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z` filtered by the shared matcher |
 | `git_status` | - | `git diff --name-status <headSha> <snapshot>` plus the captured porcelain status |
-| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and its base or `HEAD` |
-| `git_show` | `rev`, `path?` | `git show` restricted to ancestors of the snapshot |
+| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base` or `HEAD`; `base` must be an ancestor of the snapshot |
+| `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot |
 | `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>` |
 | `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshot> -- <path>` |
 
@@ -506,7 +525,7 @@ operation, per round, per attempt - each of which announces truncation where it 
 | `maxRoundBytes` | 320,000 | A full batch of substantial files in one round |
 | `maxAttemptBytes` | 2,000,000 | The expansive-review budget: ~40 large files across the whole attempt |
 | `maxMatchesPerSearch` | 200 | A search is for locating code, not for exporting it |
-| `maxPathsPerList` | 2,000 | Larger than this repository's 2,633-path tree by design, so a listing is a listing |
+| `maxPathsPerList` | 4,000 | Comfortably above this repository's measured 2,633-path tree, so a whole-repository listing is complete rather than clipped |
 | `maxLogEntries` | 100 | Blame and log answer "why is this here", not "replay the history" |
 
 Truncation is never silent: an `ok` response carries `truncated: true` and the omitted byte

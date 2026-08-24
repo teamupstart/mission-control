@@ -269,12 +269,37 @@ export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";
       it participates in <code>revision</code>, in the CAS write path, in Duplicate, and in
       import/export - none of which a sidecar table would give it.</li>
     <li><strong>Built-in Personas</strong> get a sidecar row:
-      <code>persona_access_overrides(persona_id PRIMARY KEY, repository_access, created_at, updated_at)</code>.
+      <code>persona_access_overrides(persona_id PRIMARY KEY, repository_access, revision, created_at, updated_at)</code>.
       A built-in has no row to carry the setting, and inventing one would make it operator data and
       break the four properties <code>builtin-personas.ts</code> exists to guarantee.</li>
   </ul>
   <p>One private resolver in <code>WorkflowStore</code> applies overrides where built-ins are merged
   in, so every existing read path picks them up without a second merge rule to keep in step.</p>
+
+  <div class="callout stop">
+    <p>The override row carries <strong>its own <code>revision</code></strong>, and that is not
+    decoration. A built-in's <code>Persona.revision</code> is the synthetic constant <code>1</code>
+    that <code>builtin-personas.ts</code> documents, so it cannot serve as a compare-and-swap token:
+    two dashboards changing the same built-in's access would both compare against <code>1</code>,
+    both succeed, and the later write would silently discard the earlier one while each browser
+    reported its own value as committed. The sidecar's revision is the token that makes that a
+    refusal instead, exactly as <code>workflow_commands.revision</code> does for the shipped command
+    slots.</p>
+  </div>
+
+  <p>So the setting exposes one number with one meaning - <strong>the revision of the record that
+  stores it</strong> - surfaced on <code>PersonaView</code> as
+  <code>repositoryAccessRevision</code>:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Persona kind</th><th><code>repositoryAccessRevision</code> is</th><th>A write</th></tr></thead>
+    <tbody>
+      <tr><td>Operator row</td><td>the <code>personas</code> row's <code>revision</code></td><td>CAS on the row, bumping it, as every other Persona edit does</td></tr>
+      <tr><td>Built-in with an override</td><td>the override row's <code>revision</code></td><td>CAS on the override row, bumping it</td></tr>
+      <tr><td>Built-in with no override yet</td><td><code>0</code></td><td>inserts, and succeeds only if no row exists - so the concurrent first write is refused too</td></tr>
+    </tbody>
+  </table>
+  </div>
 
   <p>The write path is a <strong>new route</strong>,
   <code>PUT /api/personas/:id/repository-access</code>, not a widening of
@@ -299,8 +324,10 @@ export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";
   <p>The route body is revision-and-mode only, so it takes the existing small guard
   (<code>REVISION_ONLY_BODY_MAX_BYTES = 1024</code>) rather than
   <code>PERSONA_BODY_MAX_BYTES</code>, and it returns the same <code>personaFailure</code> envelope
-  every other Persona mutation does - minus the <code>builtin</code> arm, which is the one
-  refusal this route must not make.</p>
+  every other Persona mutation does - including <code>revision_conflict</code> with the current
+  <code>PersonaView</code> attached, which is what lets the editor re-render the value that actually
+  won, and minus the <code>builtin</code> arm, which is the one refusal this route must not
+  make.</p>
 
   <h3>2. Snapshot and publication</h3>
   <p><code>PersonaSnapshot</code> gains
@@ -480,8 +507,8 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       <tr><td><code>search_text</code></td><td><code>pattern</code>, <code>pathGlob?</code>, <code>fixedString?</code>, <code>maxMatches?</code></td><td><code>git grep -I -n</code> against the snapshot commit</td></tr>
       <tr><td><code>list_paths</code></td><td><code>pathGlob</code>, <code>maxPaths?</code></td><td><code>git ls-tree -r -z</code> filtered by the shared matcher</td></tr>
       <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshot&gt;</code> plus the captured porcelain status</td></tr>
-      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff</code> between the snapshot and its base or <code>HEAD</code></td></tr>
-      <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show</code> restricted to ancestors of the snapshot</td></tr>
+      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff</code> between the snapshot and <code>base</code> or <code>HEAD</code>; <code>base</code> must be an ancestor of the snapshot</td></tr>
+      <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show</code>; <code>rev</code> must be an ancestor of the snapshot</td></tr>
       <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log --max-count=N --format=&lt;NUL-separated&gt;</code></td></tr>
       <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --porcelain &lt;snapshot&gt; -- &lt;path&gt;</code></td></tr>
     </tbody>
@@ -718,7 +745,7 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       <tr><td><code>maxRoundBytes</code></td><td>320,000</td><td>A full batch of substantial files in one round</td></tr>
       <tr><td><code>maxAttemptBytes</code></td><td>2,000,000</td><td>The expansive-review budget: ~40 large files across the whole attempt</td></tr>
       <tr><td><code>maxMatchesPerSearch</code></td><td>200</td><td>A search is for locating code, not for exporting it</td></tr>
-      <tr><td><code>maxPathsPerList</code></td><td>2,000</td><td>Larger than this repository's 2,633-path tree by design, so a listing is a listing</td></tr>
+      <tr><td><code>maxPathsPerList</code></td><td>4,000</td><td>Comfortably above this repository's measured 2,633-path tree, so a whole-repository listing is complete rather than clipped</td></tr>
       <tr><td><code>maxLogEntries</code></td><td>100</td><td>Blame and log answer &ldquo;why is this here&rdquo;, not &ldquo;replay the history&rdquo;</td></tr>
     </tbody>
   </table>

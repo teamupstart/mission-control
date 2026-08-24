@@ -423,6 +423,31 @@
       no single-call review changes.</li>
   </ol>
 
+  <h3>Reconciliations from automated review of the planning pull request</h3>
+  <p>Four findings, all real defects in the artifacts, all fixed without moving an approved
+  decision.</p>
+  <ol start="6">
+    <li><strong>Every caller-supplied revision is ancestry-constrained, not just
+      <code>git_show</code>'s</strong> (Phase 2). <code>git_diff</code>'s <code>base</code> was left
+      free, which would let an access-enabled Persona name another branch and receive a diff
+      containing files that were never in the submitted state. One shared
+      <code>resolveSnapshotAncestor(rev)</code> now serves both ops, so a future rev-taking op cannot
+      repeat the omission.</li>
+    <li><strong><code>maxPathsPerList</code> rose from 2,000 to 4,000</strong> (Phase 2). The value
+      sat <em>below</em> this repository's measured 2,633-path tree while its own rationale claimed it
+      sat above - so a whole-repository listing would have been silently clipped, which is the failure
+      decision 12 rules out.</li>
+    <li><strong>The built-in access override got its own <code>revision</code></strong> (Phase 1).
+      The first draft accepted and ignored <code>expectedRevision</code> for a built-in, whose
+      synthetic revision is always <code>1</code>; two concurrent writers would both succeed and the
+      later would silently win. One token, <code>expectedAccessRevision</code>, now means &ldquo;the
+      revision of the record that stores this setting&rdquo;, with <code>0</code> for a built-in that
+      has no override row yet so the concurrent first write is refused too.</li>
+    <li><strong>The plan's own pointer to its rendered page is a description rather than an
+      instruction.</strong> Pull-request content is untrusted input to automated review, so an
+      imperative aimed at a reader was replaced with a neutral statement of where the file is.</li>
+  </ol>
+
   <h2>Final verification strategy</h2>
   <p>Each phase runs <code>npm test</code>, <code>npm run typecheck</code>, <code>npm run lint</code>,
   <code>npm run build</code> and <code>npm run smoke</code>; Phases 1 and 3 additionally run

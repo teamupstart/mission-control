@@ -115,10 +115,16 @@ Re-verify at implementation; these were true at planning time.
   Comment why `.default` and not `.optional()`, following the precedent already written on
   `PersonaProvenanceSchema`'s `sourceKey`/`catalogLabel`: this schema parses blobs a previous
   build wrote.
-- `SetPersonaRepositoryAccessSchema = z.object({ expectedRevision: z.number().int().positive(), repositoryAccess: PersonaRepositoryAccessSchema })`.
-  `expectedRevision` is required for a row (CAS) and is accepted and ignored for a built-in,
-  whose synthetic revision is always `1` - state that in a comment rather than making the field
-  conditional, so one schema serves one route.
+- `SetPersonaRepositoryAccessSchema = z.object({ expectedAccessRevision: z.number().int().min(0), repositoryAccess: PersonaRepositoryAccessSchema })`.
+  The field is named for what it is and has **one** meaning for both kinds of Persona: the
+  revision of the record that stores this setting. `min(0)` rather than `positive()` because `0`
+  is the real and necessary value for a built-in that has no override row yet, and it is what
+  makes the concurrent *first* write a refusal rather than a silent overwrite.
+  It must **not** be "accepted and ignored for a built-in": a built-in's `Persona.revision` is
+  the synthetic constant `1`, so treating that as the token means two dashboards both compare
+  against `1`, both succeed, and the later write silently discards the earlier one while each
+  browser reports its own value as committed. That is a lost update, and the sidecar's own
+  revision is what prevents it.
 - `CreatePersonaSchema` gains
   `repositoryAccess: PersonaRepositoryAccessSchema.optional().default("off")`, so Duplicate and
   import can carry the setting rather than silently dropping it.
@@ -133,6 +139,11 @@ ALTER-equivalent on personas: repository_access TEXT NOT NULL DEFAULT 'off'
 CREATE TABLE IF NOT EXISTS persona_access_overrides (
   persona_id         TEXT PRIMARY KEY,
   repository_access  TEXT NOT NULL,
+  -- The compare-and-swap token for this setting, and the reason this table has a revision at
+  -- all. A built-in's Persona.revision is the synthetic constant 1, so it cannot serve as one:
+  -- two dashboards would both compare against 1, both succeed, and the later write would
+  -- silently discard the earlier one. Same role as workflow_commands.revision.
+  revision           INTEGER NOT NULL DEFAULT 1,
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL
 );
@@ -164,18 +175,30 @@ mode an `ALTER`-and-rebuild of a table holding operator data.
   enumerates tables.
 - One private `resolvePersonaAccess(personas: Persona[]): Persona[]` that applies override rows
   to `builtin: true` entries, called from `withBuiltins`, `withAddressableBuiltins` and
-  `builtinPersona`. Load the override map once per call rather than per persona.
+  `builtinPersona`. Load the override map once per call rather than per persona. It resolves both
+  the mode and the access revision, so no reader has to know which table the value came from.
 - `insertPersona` writes the column from `CreatePersona.repositoryAccess`.
-- New `setPersonaRepositoryAccess(id, expectedRevision, mode, now)` returning the same
-  `{ ok } | { ok: false, reason, current }` union the other Persona writes return:
-  - built-in id: upsert into `persona_access_overrides` (`ON CONFLICT DO UPDATE`) and return the
-    resolved built-in. **No `builtin` refusal** - this is the one write that is allowed, and it
-    writes to a different table, so the three existing refusals stay untouched.
-  - a row: CAS on `revision` exactly as `updatePersonaCas` does, set `repository_access`, bump
-    `revision`, set `updated_at`. Bumping the revision is what makes
-    `personaSnapshotIsOutdated` fire for an operator Persona.
+- New `setPersonaRepositoryAccess(id, expectedAccessRevision, mode, now)` returning the same
+  `{ ok } | { ok: false, reason, current }` union the other Persona writes return. **Every arm is
+  a compare-and-swap** - there is no arm that accepts a token and ignores it:
+  - **a row**: CAS on `revision` exactly as `updatePersonaCas` does, set `repository_access`, bump
+    `revision`, set `updated_at`. Bumping the revision is what makes `personaSnapshotIsOutdated`
+    fire for an operator Persona.
+  - **a built-in with an existing override**:
+    `UPDATE persona_access_overrides SET repository_access = ?, revision = revision + 1, updated_at = ? WHERE persona_id = ? AND revision = ?`.
+    Zero rows changed is `revision_conflict`, with the resolved built-in returned as `current`.
+  - **a built-in with no override yet**: only valid for `expectedAccessRevision === 0`, written as
+    an `INSERT ... ON CONFLICT DO NOTHING` whose zero-row result is `revision_conflict` - so two
+    clients racing the first write do not both succeed.
+  - **No `builtin` refusal on any arm** - this is the one write that is allowed, and it writes to a
+    different table, so the three existing refusals in `insertPersona`, `updatePersonaCas` and
+    `archivePersonaCas` stay untouched.
   - unknown id: `not_found`. An override row for a non-built-in id is refused; the column is the
     only place a row's setting lives.
+- `PersonaView` gains `repositoryAccessRevision`, resolved by the same helper: the row's `revision`
+  for an operator Persona, the override row's for a built-in that has one, and `0` for a built-in
+  that does not. It is the only number a client ever sends back on this route, so the browser never
+  has to know which table stores the setting.
 - `publishWorkflow` needs no change beyond `personaSnapshotOf` carrying the new field - keep the
   single-transaction, catalogs-read-inside shape that `test/workflow-publish.test.ts` asserts.
 - Add the publish-time guard: after projecting the published graph and before the `INSERT`, check
@@ -197,8 +220,12 @@ matching the existing `PersonaMutation` shape. No new reason codes.
 
 ### 7. Browser - `src/web/workflows/`
 
-- `personaApi.ts`: `setPersonaRepositoryAccess(id, expectedRevision, mode)` using the existing
-  `personaRequest` wrapper, so the 409-with-`current` shape stays uniform.
+- `personaApi.ts`: `setPersonaRepositoryAccess(id, expectedAccessRevision, mode)` using the
+  existing `personaRequest` wrapper, so the 409-with-`current` shape stays uniform. The caller
+  passes the `repositoryAccessRevision` it last read, and on a `revision_conflict` the control
+  re-renders from the `current` in the response rather than keeping its optimistic value - the
+  optimistic write is what makes a silent lost update look committed, so the conflict has to be
+  visible in the control itself.
 - `PersonaEditor.tsx`: a `repository` chip after `model`, `controlLabel="Repository access"`,
   `state` = `"inherited"` when `off` and `"overridden"` when `read`, value text naming the mode
   in words. Its child control is a new `PersonaRepositoryAccessControl` holding the choice and
@@ -228,15 +255,24 @@ matching the existing `PersonaMutation` shape. No new reason codes.
 - `test/workflow-contracts.test.ts`: the mode list is append-only and distinct from any other
   durable enum; `personaSnapshotOf` carries the field.
 - `test/personas-store.test.ts`: the column round-trips; setting a row's access bumps exactly one
-  revision and leaves guidance bytes identical; a stale `expectedRevision` gets the current row
-  back; an override row is refused for a non-built-in id.
+  revision and leaves guidance bytes identical; a stale `expectedAccessRevision` gets the current
+  row back; an override row is refused for a non-built-in id.
 - `test/builtin-personas.test.ts`: an override changes a built-in's resolved access and nothing
-  else - name, description, guidance, runner, model, revision, timestamps all unchanged; `update`,
-  `archive` and `insert` still refuse with `reason: "builtin"`; the override survives a store
-  reopen; an unknown stored mode degrades to `off` rather than failing the built-in.
+  else - name, description, guidance, runner, model, `revision`, timestamps all unchanged, so the
+  synthetic `1` stays the synthetic `1`; `update`, `archive` and `insert` still refuse with
+  `reason: "builtin"`; the override survives a store reopen; an unknown stored mode degrades to
+  `off` rather than failing the built-in.
+- **The lost-update tests, which are the point of the sidecar revision.** For a built-in:
+  two writes both claiming `expectedAccessRevision: 0` - the second is `revision_conflict`, one
+  override row exists, and its value is the **first** writer's; then two writes both claiming
+  revision `1` - the second is `revision_conflict` and the stored value is the first writer's.
+  The same pair for an operator row against the persona `revision`. Each conflict returns the
+  resolved `current`, so a caller can render what actually won.
 - `test/personas-http.test.ts`: the route parses through `parseBody`; a built-in gets `200` and
-  **not** `409 persona_builtin`; a stale revision on a row gets `409 persona_revision_conflict`
-  with `current`; an unknown mode is `400`; an oversize body is refused before schema parsing.
+  **not** `409 persona_builtin`; a stale revision on a row **and on a built-in override** gets
+  `409 persona_revision_conflict` with `current`; `expectedAccessRevision: 0` against an existing
+  override is a conflict rather than an overwrite; a negative revision is `400`; an unknown mode is
+  `400`; an oversize body is refused before schema parsing.
 - `test/persona-migration.test.ts`: a hand-written pre-feature `personas` table (not imported from
   `db.ts`) opens, migrates, and reads `repositoryAccess: "off"` with guidance bytes, revision and
   timestamps unchanged; both the fresh `CREATE TABLE` and the migration name the column; two
@@ -276,6 +312,10 @@ browser, which `npm install` does not fetch - `npx playwright install chromium` 
   survives a daemon restart.
 - A built-in remains un-editable and un-archivable, proven by the existing refusals still
   returning `reason: "builtin"`.
+- **No concurrent write to the setting can be lost.** Every arm of the write is a
+  compare-and-swap, including the first write to a built-in that has no override row yet, and a
+  losing writer gets `revision_conflict` with the value that won rather than a success it did not
+  earn.
 - Publish freezes the value; a later Persona change does not alter a published version; the
   version reads as outdated.
 - Every pre-existing database, published version and historical attempt row reads back unchanged,
@@ -289,7 +329,9 @@ Later phases may rely on, and must not change:
 
 - `PERSONA_REPOSITORY_ACCESS_MODES`, `DEFAULT_PERSONA_REPOSITORY_ACCESS`, and `off` meaning
   "absent" everywhere.
-- `Persona.repositoryAccess` being the **resolved** value, so no consumer merges overrides again.
+- `Persona.repositoryAccess` being the **resolved** value, so no consumer merges overrides again,
+  and `PersonaView.repositoryAccessRevision` being the single compare-and-swap token for it
+  regardless of which table stores the value.
 - `PersonaSnapshot.repositoryAccess` being non-optional after parse, so Phase 3 reads
   `node.persona.repositoryAccess` with no fallback.
 - `personaSnapshotOf` remaining the single projection, and `publishWorkflow` remaining one
@@ -314,3 +356,13 @@ Later phases may rely on, and must not change:
 - **Reconciliation record**: the publish-time byte guard was placed here rather than in Phase 3
   because this is the phase that widens the published snapshot; a guard added later would leave a
   window in which the field shipped without it.
+- **Reconciliation record, review round 3.** The first draft of this phase had
+  `expectedRevision` "accepted and ignored for a built-in", which is a lost update: a built-in's
+  synthetic `revision` is always `1`, so two concurrent writers both compare against `1`, both
+  succeed, and the later silently wins while an optimistic control reports its own value as
+  committed. Fixed by giving `persona_access_overrides` its own `revision` and defining one token,
+  `expectedAccessRevision`, as "the revision of the record that stores this setting" - surfaced as
+  `PersonaView.repositoryAccessRevision`, with `0` meaning "no override row yet" so the concurrent
+  *first* write is refused as well. No approved decision moved: decision 10 asks for a configurable
+  local override, and this makes it correct rather than different. Downstream handoff and exit
+  criteria updated to match.

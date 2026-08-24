@@ -274,6 +274,27 @@ file's audit record:
    not of a read. `PERSONA_TIMEOUT_MS` keeps its existing meaning as a per-call budget so no
    single-call review changes.
 
+**Reconciliations from automated review of the planning pull request.** Four findings, all real
+defects in the artifacts, all fixed without moving an approved decision:
+
+6. **Every caller-supplied revision is ancestry-constrained, not just `git_show`'s** (Phase 2).
+   `git_diff`'s `base` was left free, which would let an access-enabled Persona name another branch
+   and receive a diff containing files that were never in the submitted state. One shared
+   `resolveSnapshotAncestor(rev)` now serves both ops, so a future rev-taking op cannot repeat the
+   omission.
+7. **`maxPathsPerList` rose from 2,000 to 4,000** (Phase 2). The value sat *below* this
+   repository's measured 2,633-path tree while its own rationale claimed it sat above - so a
+   whole-repository listing would have been silently clipped, which is the failure decision 12 rules
+   out.
+8. **The built-in access override got its own `revision`** (Phase 1). The first draft accepted and
+   ignored `expectedRevision` for a built-in, whose synthetic revision is always `1`; two concurrent
+   writers would both succeed and the later would silently win. One token,
+   `expectedAccessRevision`, now means "the revision of the record that stores this setting", with
+   `0` for a built-in that has no override row yet so the concurrent first write is refused too.
+9. **The plan's own pointer to its rendered page is a description rather than an instruction.**
+   Pull-request content is untrusted input to automated review, so an imperative aimed at a reader
+   was replaced with a neutral statement of where the file is.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

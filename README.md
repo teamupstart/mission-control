@@ -21,6 +21,8 @@ choose, and the defaults draw the card the previous release drew.
 Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
 per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
 One tour runs at a time, and two are registered.
+Their names and stage copy are edited in [`tours/see-work.md`](tours/see-work.md) and
+[`tours/library.md`](tours/library.md); see [`tours/README.md`](tours/README.md) for the format.
 
 **See the work** teaches the operating half - the Line, the Board, one session's desk, and a
 task from dispatch through review to completion.
@@ -42,10 +44,8 @@ run is started, and no model is called - and a machine with no ended No-Mistakes
 same two stops against the built-in graph instead. Neither tour stores progress, and both
 restore the page, the asset, and the control you started from when you exit.
 
-Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
-and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
-<kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
-scroll the page.
+For Files workspace behavior and controls, see the
+[UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).
 
 **Comment** turns on comment mode, so you can leave a comment on a line the way you would on a
 pull request, and **Review** walks the agent through those comments one at a time - one comment
@@ -80,10 +80,28 @@ same task without advancing the pass.
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
+The repository field is a searchable index of your workspace, and every row in it is the
+checkout's **directory name** rather than its path - the list is only as wide as the field,
+and a column of paths that all begin the same way ellipsizes away the one part that tells two
+repositories apart. Hovering a row reveals its full path, which is also what the field itself
+holds and what the task is dispatched against. Where two checkouts share a name, each of those
+rows adds the **name of a folder above it** underneath - still never a path - so `~/a/api` and
+`~/b/api` are told apart by `a` and `b`. A checkout with no folder above it at all is the one
+row that gets nothing added, because the only thing left to add would be a path. The same
+picker, and the same rows, appear wherever you choose a repository - **Settings → Trust**,
+**Standing instructions**, and **Task sources**.
+
 Open **Backlog details** to choose whether Foreman may automatically schedule a task added
 from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the backlog until
 you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
 still launches the task immediately.
+
+If freezing a dispatch's Git bases or provisioning its worktrees fails before any worktree or
+agent remains, a backlog-capable task returns to the Board's Backlog with the exact error on its
+card and its normal launch control enabled. Task kinds that cannot appear in Backlog remain
+failed. Foreman leaves a card carrying that launch error out of unattended scheduling so the
+failure stays visible instead of retrying in a loop. Fix the reported condition, such as Git or
+SSH access to the repository's origin, and launch backlog-capable work again from the same place.
 
 Choose **chat** for an open-ended conversation. It requires an opening message and launches
 immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
@@ -170,6 +188,14 @@ without the chip there would be nothing anywhere to read.
 
 See [Skills and settings](docs/skills-and-settings.md).
 
+## Keep local settings recoverable
+
+Mission Control automatically keeps versioned logical snapshots of the settings and reusable
+Library definitions that shape local behavior.
+
+See [Automatic settings snapshots](docs/configuration.md#automatic-settings-snapshots) for the
+authoritative format, lifecycle, storage, scope, exclusions, and retention contract.
+
 ## Build the operating system around the work
 
 The Library centralizes reusable workflows, personas, session actions, ensemble strategies,
@@ -203,6 +229,20 @@ and remote review state visible beside the work that produced it.
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
+
+With **Settings → Foreman → Safety → Keep pre-PR ship tasks moving** enabled, an
+invited managed ship task that completion review holds receives its reviewed blocking gaps in
+the same Foreman worker pass. The existing quiet-window shepherd remains the backstop under the
+same setting. Human-driven and task-less sessions keep their silent hold and are not nudged.
+
+**Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
+Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts
+a worktree, or types into a session. What it files arrives **parked**, with that source's
+**Allow backlog autopilot** switched off, so a sweep's rows are a list you triage rather than
+work that starts dispatching before you have read a title; enabling a row is you saying yes to
+that row. Turn **Allow backlog autopilot** on for a source whose upstream is already curated
+and every later sweep of it files ready-to-schedule tasks instead. See
+[task sources](docs/dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog).
 
 ## Report a public product issue through an agent
 

@@ -5,7 +5,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
-import { sessionIntentMatches } from "@shared/goal.ts";
+import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
@@ -1336,6 +1336,7 @@ export class WorkflowManager {
       artifacts: evidence.artifacts,
       commandOutputs: evidence.commandOutputs,
       now,
+      episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
   }
 
@@ -1422,6 +1423,7 @@ export class WorkflowManager {
       fallbackRoot: session.cwd,
       locator,
       now,
+      episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
   }
 
@@ -1461,6 +1463,7 @@ export class WorkflowManager {
       fallbackRoot: session.cwd,
       images,
       now,
+      episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
   }
 

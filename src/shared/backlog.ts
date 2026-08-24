@@ -286,14 +286,17 @@ function declaredReachable(
  * dependency-safe. `blockersIn` is the guard that makes that true, and the equivalence is
  * pinned by a test in `test/backlog-plan.test.ts` rather than left as this comment.
  *
- * Disabled items are not here at all. This is the list the autopilot decides from for
- * both ways it can start work (a fresh worktree and an assign to an idle agent), so
- * neither action path needs a second copy of the scheduling gate.
+ * Disabled items and tasks carrying a launch error are not here at all. An error kept on
+ * a backlog card is a manual-retry gate: the operator can launch it normally, and entering
+ * dispatch clears the error, but autopilot must not hammer a condition such as broken Git
+ * authentication while the card is trying to explain that condition. This is the list the
+ * autopilot decides from for both ways it can start work (a fresh worktree and an assign to
+ * an idle agent), so neither action path needs a second copy of either scheduling gate.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const index = backlogIndex(tasks, plan);
   return backlogTasks(tasks)
-    .filter((task) => task.enabled && taskKindAllowsBacklog(task.kind))
+    .filter((task) => task.enabled && task.error === null && taskKindAllowsBacklog(task.kind))
     .filter((task) => blockersIn(task, index).length === 0);
 }
 

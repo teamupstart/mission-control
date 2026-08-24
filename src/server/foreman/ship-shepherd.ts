@@ -57,6 +57,8 @@ interface RecoveryCause {
   decision: PromptedCompletionDecision | null;
 }
 
+type ShipRecoveryTiming = "quiet-window" | "immediate-held";
+
 /** Server-time wait after a successfully claimed delivery attempt. */
 export function nextShipRecoveryAt(attempt: number, now: number): number | null {
   if (attempt === 1) return now + SHIP_RECOVERY_LATER_DELAYS_MS[0];
@@ -91,6 +93,25 @@ export function recoveryStateMatches(
  * refusals precede quiet/diff reasoning, and every actionable branch names one owner.
  */
 export function decideShipShepherd(input: ShipShepherdInput): ShipShepherdDecision {
+  return decideShipRecovery(input, "quiet-window");
+}
+
+/**
+ * Immediate counterpart to the quiet-window shepherd. It shares every authority and
+ * ownership gate, but only a current held verdict may waive elapsed quiet time.
+ */
+export function decideImmediateHeldGapDelivery(input: ShipShepherdInput): ShipShepherdDecision {
+  const decision = decideShipRecovery(input, "immediate-held");
+  if (decision.kind !== "skip" && decision.reason !== "held_gaps") {
+    return skip("there is no current held completion to deliver immediately");
+  }
+  return decision;
+}
+
+function decideShipRecovery(
+  input: ShipShepherdInput,
+  timing: ShipRecoveryTiming,
+): ShipShepherdDecision {
   const { session: s, queue, now } = input;
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
@@ -121,7 +142,8 @@ export function decideShipShepherd(input: ShipShepherdInput): ShipShepherdDecisi
   ) {
     return skip("there is no exact settled work cycle");
   }
-  if (!settledIdle(s, now, input.recoveryMinutes * 60_000)) return skip("the quiet window is not due");
+  const settleMs = timing === "immediate-held" ? 0 : input.recoveryMinutes * 60_000;
+  if (!settledIdle(s, now, settleMs)) return skip("the quiet window is not due");
   if (!input.mayActLive) return skip("Foreman is not live in a trusted repository");
 
   const cause = recoveryCause(queue, cycle.generation, input.diffHasChanges);

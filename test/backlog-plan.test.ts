@@ -337,6 +337,22 @@ test("a dependency still in the backlog reads as waiting", () => {
   assert.equal(b?.title, dep.title);
 });
 
+test("a pre-provision failure waits for manual retry instead of becoming ready or a dead blocker", () => {
+  const prerequisite = mkTask({
+    status: "backlog",
+    error: "git fetch origin failed: Permission denied (publickey)",
+  });
+  const dependent = mkTask();
+  const plan = planFor([[dependent.id, [prerequisite.id]]]);
+
+  assert.equal(blockersFor(dependent, plan, [prerequisite, dependent])[0]?.state, "waiting");
+  assert.deepEqual(
+    readyBacklog([prerequisite, dependent], plan).map((task) => task.id),
+    [],
+    "the failed prerequisite stays manually retryable without entering autopilot",
+  );
+});
+
 test("a running dependency reads as waiting", () => {
   const dep = mkTask({ status: "running" });
   const t = mkTask();
@@ -345,6 +361,12 @@ test("a running dependency reads as waiting", () => {
 
 test("a cancelled dependency reads as STOPPED - it needs you, not more patience", () => {
   const dep = mkTask({ status: "cancelled" });
+  const t = mkTask();
+  assert.equal(blockersFor(t, planFor([[t.id, [dep.id]]]), [dep, t])[0]?.state, "stopped");
+});
+
+test("a terminally failed dependency still reads as STOPPED", () => {
+  const dep = mkTask({ status: "failed" });
   const t = mkTask();
   assert.equal(blockersFor(t, planFor([[t.id, [dep.id]]]), [dep, t])[0]?.state, "stopped");
 });

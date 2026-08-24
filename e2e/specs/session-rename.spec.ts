@@ -69,15 +69,36 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(page.locator("main.board")).toBeVisible();
 }
 
+/**
+ * Open the exact dispatched session after its live rail row has stopped reflowing.
+ *
+ * Dispatch returns before every session projection has settled. Under the full suite's
+ * four-worker load, clicking `.first()` could therefore land on the early row just as React
+ * replaced it, report a successful pointer action, and leave the detail unselected. The
+ * shared `settled` barrier exists for this boundary; use it on the control that performs the
+ * selection, not only on the title button reached after selection succeeds.
+ */
+async function openSessionDetail(page: Page, name: string): Promise<Locator> {
+  const row = page
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: name });
+  await expect(row).toBeVisible({ timeout: 60_000 });
+  await settled(row);
+  await row.click();
+  await expect(row).toHaveAttribute("aria-current", "true");
+
+  const detail = page.locator(".console-detail");
+  await expect(detail).toContainText("Agent SDK", { timeout: 30_000 });
+  return detail;
+}
+
 test("a shortened generated name keeps its full name in the tooltip", async ({
   dashboard,
   daemon,
 }) => {
   await dispatch(dashboard, daemon, LONG_TASK);
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const detail = dashboard.locator(".console-detail");
-  await expect(detail).toContainText("Agent SDK", { timeout: 30_000 });
+  const detail = await openSessionDetail(dashboard, FULL_LONG_TITLE);
 
   const title = sessionHeading(detail).getByRole("button");
   await expect(title).toContainText("…");
@@ -101,9 +122,7 @@ test("a shortened generated name keeps its full name in the tooltip", async ({
 test("clicking an SDK session's title renames it, durably", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const detail = dashboard.locator(".console-detail");
-  await expect(detail).toContainText("Agent SDK", { timeout: 30_000 });
+  const detail = await openSessionDetail(dashboard, DERIVED_TITLE);
 
   // The detail header's heading is its title. Selecting the button THROUGH it is what pins
   // the regression: on the broken build the heading is present and its text is right, and
@@ -131,8 +150,7 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
   // on every read of its durable row, so without a column to put this in the reload below
   // brings the dispatch's title straight back.
   await dashboard.reload();
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const reloaded = dashboard.locator(".console-detail");
+  const reloaded = await openSessionDetail(dashboard, "renamed by hand");
   await expect(sessionHeading(reloaded)).toContainText("renamed by hand");
   await expect(sessionHeading(reloaded)).not.toContainText(DERIVED_TITLE);
 });
@@ -144,8 +162,7 @@ test("an SDK session's title takes a name no terminal home could hold", async ({
   // name rules just because that is where rename already lived.
   await dispatch(dashboard, daemon);
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const detail = dashboard.locator(".console-detail");
+  const detail = await openSessionDetail(dashboard, DERIVED_TITLE);
   const title = sessionHeading(detail).getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);
@@ -162,8 +179,7 @@ test("an SDK session's title takes a name no terminal home could hold", async ({
 test("Escape leaves an SDK session's title alone", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
-  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-  const detail = dashboard.locator(".console-detail");
+  const detail = await openSessionDetail(dashboard, DERIVED_TITLE);
   const title = sessionHeading(detail).getByRole("button");
   await expect(title).toBeVisible();
   await settled(title);

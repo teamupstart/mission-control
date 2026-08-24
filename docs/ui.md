@@ -379,6 +379,14 @@ Two tours are registered, and neither stores progress: there is no first-run tri
 resume prompt, and no "you have not finished this tour" nudge. Exiting one restores the page,
 the asset, and the control it started from, and starting it again starts it at stop one.
 
+The tour names, stage titles, stage descriptions, and stage definition lists have one authored
+location per tour: [`tours/see-work.md`](../tours/see-work.md) and
+[`tours/library.md`](../tours/library.md). Their H1 is the tour name, each H2 is a stage title,
+and the prose below it is the stage description. Edit those Markdown files and run
+`npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
+edited by hand. Navigation, readiness, fallbacks, and button behavior remain in the matching
+TypeScript definition because they are executable tour behavior rather than editable copy.
+
 #### See the work
 
 **See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
@@ -584,6 +592,11 @@ available:
   <kbd>Tab</kbd> reaches it whatever a click last left focused - except while you are typing
   in the filter or the reply box, where <kbd>Tab</kbd> stays native. In the focused inline
   Diff reader the arrows move through its file list instead.
+  In Files Preview, <kbd>d</kbd> pages the rendered document down and <kbd>u</kbd> pages it
+  back up, both from the file list and after <kbd>Tab</kbd> enters the document. Preview claims
+  <kbd>Tab</kbd> instead of walking controls rendered inside the file. <kbd>⇧</kbd><kbd>Tab</kbd>
+  or <kbd>Esc</kbd> returns to the selected file, and <kbd>Tab</kbd> enters Preview again. The
+  letter keys stand down while you are typing.
   <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
   the pane. **The board's drill-in reads the same**: opening a card morphs its column into
   this rail-plus-reader, and every key here behaves identically there.
@@ -1147,6 +1160,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
 | <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click | Integrated Files tab on a file with source |
+| <kbd>u</kbd> / <kbd>d</kbd> | Page the rendered file preview up or down. Preview claims <kbd>d</kbd> before the global Delete action | Integrated Files tab in Preview mode |
+| <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> | Return from the rendered file preview to the selected file; <kbd>Tab</kbd> enters Preview again | Focused integrated Files preview |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
 | <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the selected Console/Board detail | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -1181,7 +1196,7 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
 and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> controls
+editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
 are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: the LLM config is the one blob two PROCESSES read - the daemon resolves
 // its background jobs from it, and the Foreman worker reads the runner off a route backed by
@@ -87,7 +88,7 @@ test("Claude transport resolves config, then env, then the SDK default", () => {
 });
 
 test("an unknown Claude transport degrades to the shipped default", () => {
-  setAppConfig("llm", { claudeTransport: "future-wire", models: {} });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { claudeTransport: "future-wire", models: {} } as never);
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(getLlmConfig().claudeTransport, "");
   assert.equal(claudeTransportChoice(), DEFAULT_CLAUDE_TRANSPORT);
@@ -119,7 +120,7 @@ test("Codex transport resolves config, then env, then the exec default", () => {
 });
 
 test("an unknown Codex transport degrades to the shipped default", () => {
-  setAppConfig("llm", { codexTransport: "future-wire", models: {} });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { codexTransport: "future-wire", models: {} } as never);
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(getLlmConfig().codexTransport, "");
   assert.equal(codexTransportChoice(), DEFAULT_CODEX_TRANSPORT);
@@ -182,7 +183,7 @@ test("a config override still beats the env var", () => {
 test("a stored runner this build cannot resolve degrades instead of throwing", () => {
   // Written straight to the KV, as a newer build (or a hand edit) would leave it. Every
   // reader below is on a hot path; a throw here is a daemon that cannot title a dispatch.
-  setAppConfig("llm", { runner: "ollama", models: { goal: "claude-sonnet-5" } });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runner: "ollama", models: { goal: "claude-sonnet-5" } } as never);
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(llmRunnerChoice().id, DEFAULT_LLM_RUNNER_ID);
   // ...and the rest of the blob survives the one field that could not be read.
@@ -190,7 +191,7 @@ test("a stored runner this build cannot resolve degrades instead of throwing", (
 });
 
 test("a stored models map of the wrong shape degrades instead of throwing", () => {
-  setAppConfig("llm", { models: "not an object" });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { models: "not an object" } as never);
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(llmJobModel("goal").id, LLM_JOB_SPECS.goal.fallback);
 });
@@ -280,7 +281,7 @@ test("an unreadable per-job override is REPORTED, and inherits rather than dropp
   // The rungs beneath an override this build cannot read are the rest of the ladder, not the
   // bottom of it: "I cannot read your choice here" is much closer to "you did not choose
   // here" than to "use whatever ships".
-  setAppConfig("llm", { runner: "codex", runners: { goal: "ollama" } });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runner: "codex", runners: { goal: "ollama" } } as never);
   assert.doesNotThrow(() => getLlmConfig());
   const resolved = llmJobRunner("goal");
   assert.equal(resolved.unknown, "ollama", "a dropped choice must not be silently swallowed");
@@ -292,7 +293,7 @@ test("an unreadable APP-WIDE provider is reported too, which the old enum schema
   // `resolveLlmRunner` saw it, the ladder skips an empty value, and the `unknown` branch was
   // dead for every stored value - so the panel printed the fallback as the operator's choice
   // while the field's own comment promised the opposite.
-  setAppConfig("llm", { runner: "ollama" });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runner: "ollama" } as never);
   const resolved = llmRunnerChoice();
   assert.equal(resolved.unknown, "ollama");
   assert.equal(resolved.id, DEFAULT_LLM_RUNNER_ID);
@@ -301,7 +302,7 @@ test("an unreadable APP-WIDE provider is reported too, which the old enum schema
 test("one unreadable entry leaves every OTHER slot's override intact", () => {
   // A record-level `.catch` is all or nothing. One id a build cannot read used to discard the
   // whole map, silently, which is indistinguishable from never having configured anything.
-  setAppConfig("llm", {
+  setAppConfig(APP_CONFIG_ENTRIES.llm, {
     runners: { goal: "ollama", "task-title": "codex" },
     models: { goal: "not a valid model id!!", "task-title": "gpt-5.6-sol" },
   });
@@ -316,7 +317,10 @@ test("a NON-STRING persisted override recovers that entry instead of taking getL
   // The difference between a `.catch` on the value and no `.catch` at all. `getLlmConfig` is
   // on the path of every titling, goal refresh, digest and the settings route; a throw here
   // is a daemon that cannot do its own bookkeeping, over a hand edit.
-  setAppConfig("llm", { runners: { goal: 7, "task-title": "codex" }, models: { goal: null } });
+  setAppConfig(
+    APP_CONFIG_ENTRIES.llm,
+    { runners: { goal: 7, "task-title": "codex" }, models: { goal: null } } as never,
+  );
   assert.doesNotThrow(() => getLlmConfig());
   assert.equal(getLlmConfig().runners.goal, "");
   assert.equal(getLlmConfig().runners["task-title"], "codex");
@@ -329,7 +333,7 @@ test("a legacy config's models are pinned to the OUTGOING provider when the app-
   // runner, because the panel wiped the map whenever that runner changed. With the wipe gone,
   // the moment the radio moves is the only moment that provenance is both needed and still
   // knowable.
-  setAppConfig("llm", { runner: "claude", models: { goal: "claude-sonnet-5" }, runners: {} });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runner: "claude", models: { goal: "claude-sonnet-5" }, runners: {} });
   setLlmConfig({ runner: "codex" });
   const cfg = getLlmConfig();
   assert.equal(cfg.runners.goal, "claude", "a deliberate Claude model was carried over to Codex");
@@ -345,7 +349,7 @@ test("the pin uses the RESOLVED outgoing provider, so an env-driven installation
   // The stored field is empty on an installation driven by `MISSION_LLM_RUNNER`; pinning what
   // it says would record "" and preserve nothing.
   process.env.MISSION_LLM_RUNNER = "codex";
-  setAppConfig("llm", { runner: "", models: { goal: "gpt-5.6-sol" }, runners: {} });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runner: "", models: { goal: "gpt-5.6-sol" }, runners: {} });
   setLlmConfig({ runner: "claude" });
   assert.equal(getLlmConfig().runners.goal, "codex");
   delete process.env.MISSION_LLM_RUNNER;
@@ -364,7 +368,7 @@ test("a model belonging to another provider falls back to that provider's defaul
   // Reachable with no config write at all: `MISSION_LLM_RUNNER` moving between daemon restarts
   // shifts the effective provider under a saved model, which is why the guard lives at
   // resolution rather than in the write path. Broken on the build before this one, too.
-  setAppConfig("llm", { runners: { goal: "codex" }, models: { goal: "claude-sonnet-5" } });
+  setAppConfig(APP_CONFIG_ENTRIES.llm, { runners: { goal: "codex" }, models: { goal: "claude-sonnet-5" } });
   const resolved = llmJobModel("goal");
   assert.equal(resolved.id, "gpt-5.6-luna", "Codex was handed a Claude model id");
   assert.equal(resolved.unsupported, "claude-sonnet-5", "the dropped id must be reported");
@@ -387,7 +391,7 @@ test("no reachable pair reaches a runner that cannot honour it", () => {
   for (const provider of LLM_RUNNER_IDS) {
     for (const other of LLM_RUNNER_IDS) {
       for (const choice of MODEL_CATALOG[other]) {
-        setAppConfig("llm", { runners: { goal: provider }, models: { goal: choice.id } });
+        setAppConfig(APP_CONFIG_ENTRIES.llm, { runners: { goal: provider }, models: { goal: choice.id } });
         const resolved = llmJobModel("goal");
         assert.ok(
           MODEL_CATALOG[provider].some((c) => c.id === resolved.id),

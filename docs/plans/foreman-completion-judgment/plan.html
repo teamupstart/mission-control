@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: Foreman completion judgment and recovery fixes</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d21; --muted: #5c6470; --line: #d9dde3;
+    --card: #f5f7f9; --accent: #2f6fed; --bad: #c0392b; --good: #1e7a46;
+    --warn: #9a6700; --code-bg: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b; --fg: #e6e9ed; --muted: #9aa4b0; --line: #333a43;
+      --card: #1d2229; --accent: #6b9dff; --bad: #ff7b6b; --good: #57c684;
+      --warn: #e3b341; --code-bg: #232a32;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 2.5rem 1.25rem 5rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 52rem; margin: 0 auto; }
+  h1 { font-size: 1.65rem; line-height: 1.25; margin: 0 0 0.4rem; }
+  h2 { font-size: 1.25rem; margin: 2.4rem 0 0.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
+  h3 { font-size: 1.05rem; margin: 1.6rem 0 0.5rem; }
+  p { margin: 0.7rem 0; }
+  .kicker { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1.1rem; }
+  code { background: var(--code-bg); border-radius: 4px; padding: 0.1em 0.35em; font: 0.86em ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem; margin: 1.2rem 0; }
+  ul li, ol li { margin: 0.35rem 0; }
+  .phase { border-left: 3px solid var(--accent); padding-left: 1rem; margin: 1.4rem 0; }
+  .phase h3 { margin-top: 0; }
+  .svgwrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; }
+  svg text { font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .small { font-size: 10.5px; fill: var(--muted); }
+  svg .box { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; rx: 6; }
+  svg .boxgood { fill: var(--bg); stroke: var(--good); stroke-width: 1.4; rx: 6; }
+  svg .boxbad { fill: var(--bg); stroke: var(--bad); stroke-width: 1.4; rx: 6; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+  svg .arrowbad { stroke: var(--bad); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+  svg .arrowgood { stroke: var(--good); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+  figure { margin: 1.5rem 0; }
+  figcaption { font-size: 0.83rem; color: var(--muted); margin-top: 0.5rem; }
+  .muted { color: var(--muted); }
+  .bad { color: var(--bad); font-weight: 600; }
+  .good { color: var(--good); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Implementation plan · docs/plans/foreman-completion-judgment · 2026-08-24</p>
+  <h1>Foreman completion judgment and recovery fixes</h1>
+  <p>Source finding: <code>docs/reports/foreman-completion-detection-stall/report.html</code>.
+  The completion <em>signal</em> works; the <em>judgment</em> and <em>recovery</em> layers around it
+  fail in three compounding ways. This plan turns the report's recommendations into an
+  implementable, three-phase design.</p>
+
+  <h2>Problem</h2>
+  <div class="card">
+    <p>A dispatched ship task finishes, reports completion, and registers verification evidence.
+    Foreman detects it within seconds and runs its verifier - which holds, because:</p>
+    <ol>
+      <li><strong>It cannot see command output.</strong> The transcript renderer emits tool inputs only
+      (<code>src/server/foreman/prompt.ts:604-628</code>; <code>ToolCall</code> in
+      <code>src/shared/types.ts:3126</code> has no output field). It sees <code>npm test</code> start and
+      can never see it pass.</li>
+      <li><strong>It cannot see registered evidence.</strong> <code>VerifyInput</code>
+      (<code>src/server/foreman/queue-prompt.ts:26-65</code>) has no evidence field; the
+      <code>workflow_evidence_staging</code> rows carrying exactly the missing proof are invisible.</li>
+      <li><strong>The contract makes it judge what it cannot observe.</strong> The ship contract
+      (<code>src/shared/task-completion.ts:64-90</code>) requires verification-run and
+      evidence-registration facts it structurally cannot check.</li>
+    </ol>
+    <p>A held verdict is silent (<code>prompted-wrapup.ts:309-359</code>); recovery is the 20-minute
+    ship shepherd (<code>ship-shepherd.ts:124</code>); each nudge mints a new generation, resetting the
+    verifier's gap memory (<code>round: 0, priorGaps: []</code>, <code>worker.ts:1991-2022</code>) and
+    the shepherd's 3-attempt escalation budget (<code>ship-shepherd.ts:71-87</code>). Observed: 4
+    completions, 4 holds, 3 nudges ~23 min apart, <span class="bad">0 workflow runs</span>; fleet-wide,
+    15 of 31 decided sessions currently sit on <span class="bad">held</span>. The repository standing
+    instruction ("do not rerun the full test suite before re-submitting") directly contradicts what the
+    verifier keeps demanding.</p>
+  </div>
+
+  <h2>Goal</h2>
+  <ul>
+    <li>A completion whose registered evidence covers required verification is
+    <span class="good">claimed into its bound workflow on the first verify</span>.</li>
+    <li>A genuinely incomplete managed ship completion gets gap feedback within one worker pass
+    (seconds), not after a 20-minute backstop.</li>
+    <li>A session held across repeated cycles of one intent episode reaches a human after a bounded
+    number of attempts.</li>
+    <li>Human-driven (non-task) sessions keep today's behavior exactly: the prompted trigger stays a
+    silent bystander on hold.</li>
+  </ul>
+
+  <h2>Non-goals</h2>
+  <ul>
+    <li>No change to workflow internals, drain/queue-item semantics, or dispatch.</li>
+    <li>No new UI surface - recorded episodes reuse existing situations so the Foreman drawer renders
+    them unchanged.</li>
+    <li>No relaxation of injection safety: child-authored text stays inside the untrusted fence;
+    consume-before-type ordering is preserved.</li>
+  </ul>
+
+  <h2>Design</h2>
+
+  <div class="phase">
+    <h3>Phase 1 - Evidence-grounded verification</h3>
+    <p><strong>Structural pre-check.</strong> Before the LLM call on the prompted verify path for a
+    task-bound session, the worker fetches registered evidence via a new
+    <code>client.workflowEvidence(sessionId)</code> against the existing daemon route
+    <code>GET /api/sessions/:id/workflow-evidence</code> (<code>src/server/routes.ts:1973</code>).
+    Each staged row is stamped with the resolved intent episode key at registration and only
+    same-episode items are admitted - a session re-purposed by a new human prompt cannot present
+    stale evidence from its previous instruction. What is registered becomes a stated fact, never a
+    model inference about database contents: zero rows render as "the clause is not satisfied"; a
+    nonempty list renders as a count, with coverage judgment left to the verifier - it is never
+    declared to satisfy the clause outright, because a task that requested several artifacts is not
+    satisfied by one.</p>
+    <p><strong>Evidence in the prompt.</strong> <code>VerifyInput</code> gains a
+    <code>registeredEvidence</code> list. Only daemon-generated metadata - counts, evidence kinds,
+    generations, timestamps, byte sizes - renders above the evidence fence as trusted context.
+    Child-authored fields - display names, source locators/commands, captions - are the session's
+    own text, chosen at registration, and render inside the untrusted fence, capped, exactly as
+    the transcript does.</p>
+    <p><strong>Policy alignment.</strong> The verify POLICY is extended: when registered command
+    evidence covers the required verification, absence of test output in the transcript is not a gap;
+    prior-generation evidence from the same intent episode remains valid for a re-submission -
+    which resolves the standing-instruction contradiction without touching the instruction.</p>
+    <p><strong>Auto-submit fallback for verification-evidence-only holds</strong>
+    <span class="muted">(adopted decision, 2026-08-24)</span>. The gap vocabulary gains an explicit
+    evidence-class marker (an additive <code>kind</code> value in <code>GapSchema</code>). When a
+    <code>foreman_complete</code> binding exists, at least one same-episode evidence item is
+    registered, and a verdict is otherwise complete but every blocking gap carries that marker, the
+    worker claims the workflow instead of holding - the bound workflow runs the real suite, so
+    submitting is strictly safer than stalling. The evidence floor is structural, checked in the
+    worker: with zero admitted items the registration clause is known unsatisfied and no gap
+    classification can waive it. With no binding, the hold stands. The claim summary records that
+    the fallback fired.</p>
+    <p class="muted">Touches <code>queue-prompt.ts</code>, <code>queue-verify.ts</code>,
+    <code>worker.ts</code>, <code>client.ts</code>. Tests in <code>test/</code>. No UI change.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 2 - Immediate gap delivery for managed ship tasks</h3>
+    <p>When <code>planPromptedWrapup</code> returns <code>hold</code> and the session is a managed ship
+    task the shepherd would eventually nudge anyway (same gates as
+    <code>decideShipShepherd</code>: Foreman invited, live and allowlisted, hooked, pane available, no
+    human owner, no queue items or pending turns, no active workflow, no task-owned open PR), the
+    worker delivers the held-gaps payload immediately in the same pass - reusing the shepherd's
+    <code>structuralPayload</code> wording and its recovery/episode accounting so the attempt counts
+    once wherever it is delivered from. The 20-minute shepherd remains as the backstop. Authority
+    <span class="muted">(adopted decision, 2026-08-24)</span>: the existing
+    <code>keepShipTasksMoving</code> flag governs both - no new knob.</p>
+    <p class="muted">Touches <code>worker.ts</code>, <code>prompted-wrapup.ts</code>,
+    <code>ship-shepherd.ts</code>. Cuts cycle latency from ~23 min to one pass.</p>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 3 - Convergence and escalation across generations</h3>
+    <p><strong>Gap strikes survive the generation bump.</strong> The previous held decision's gaps
+    (already persisted in <code>prompted_decision</code>) feed the next verify for the same intent
+    episode as <code>priorGaps</code> with persisted strike counts; a per-episode held-round counter
+    is persisted beside them, because the decision row is overwritten in place and the round cannot
+    be reconstructed once replaced. The verifier's REUSE-GAP-IDS machinery then works across
+    cycles.</p>
+    <p><strong>Attempt budget keyed on the episode, not the generation.</strong> Ship-recovery attempt
+    counting moves to (task, intent episodeKey, reason): a nudge-response's new generation continues
+    the same budget, and attempt 4 escalates through the existing path. A new accepted human prompt
+    advances the episode and correctly resets the budget. Old persisted JSON keeps parsing
+    (compatibility pinned in tests); append-only identifier contracts untouched.</p>
+    <p class="muted">Touches <code>ship-shepherd.ts</code>, <code>worker.ts</code>,
+    <code>src/shared/types.ts</code>.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>Adopted decisions (2026-08-24 plan review):</strong></p>
+    <ul>
+      <li><strong>Auto-submit on verification-evidence-only holds: included in Phase 1.</strong>
+      The reviewer chose the belt-and-suspenders reading of report recommendation 3 - the
+      No-Mistakes workflow runs the real suite, so holding finished work out of the stage that runs
+      the tests is the worse failure.</li>
+      <li><strong>Phase 2 authority: reuse <code>keepShipTasksMoving</code>.</strong> No new config
+      knob.</li>
+      <li><strong>Follow-up: phased implementation</strong> - merge-aware phases and
+      dependency-linked Mission Control tasks.</li>
+    </ul>
+  </div>
+
+  <h2>Flow change</h2>
+  <figure>
+    <div class="svgwrap">
+    <svg viewBox="0 0 860 330" width="860" height="330" role="img" aria-label="Before: silent hold loop with 20-minute nudges. After: claim on first verify, in-pass gap delivery, bounded escalation.">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>
+      </defs>
+      <text x="16" y="24" font-weight="600" fill="var(--bad)">Before: the hold loop has no exit</text>
+      <rect class="box" x="16" y="38" width="190" height="48"/>
+      <text x="30" y="58">Session finishes,</text><text x="30" y="74">registers evidence</text>
+      <rect class="boxbad" x="256" y="38" width="220" height="48"/>
+      <text x="270" y="58">Verify: diff + transcript only</text>
+      <text x="270" y="74">&rarr; HELD, silent</text>
+      <rect class="box" x="536" y="38" width="230" height="48"/>
+      <text x="550" y="58">20 min quiet &rarr; shepherd nudge,</text>
+      <text x="550" y="74">attempt resets to 1/3</text>
+      <path class="arrow" d="M206,62 L252,62"/>
+      <path class="arrowbad" d="M476,62 L532,62"/>
+      <path class="arrowbad" d="M651,86 L651,110 L111,110 L111,90"/>
+      <text x="330" y="104" class="small">re-verify, re-register, re-report - forever</text>
+
+      <text x="16" y="158" font-weight="600" fill="var(--good)">After</text>
+      <rect class="box" x="16" y="172" width="190" height="48"/>
+      <text x="30" y="192">Session finishes,</text><text x="30" y="208">registers evidence</text>
+      <rect class="boxgood" x="256" y="172" width="250" height="64"/>
+      <text x="270" y="190">Verify: diff + transcript</text>
+      <text x="270" y="206">+ registered evidence</text>
+      <text x="270" y="222">+ structural clause check</text>
+      <rect class="boxgood" x="566" y="160" width="200" height="44"/>
+      <text x="580" y="178">complete &rarr; claim,</text>
+      <text x="580" y="194">workflow run starts</text>
+      <rect class="box" x="566" y="222" width="200" height="44"/>
+      <text x="580" y="240">incomplete &rarr; gaps typed</text>
+      <text x="580" y="256">back in the same pass</text>
+      <rect class="box" x="566" y="284" width="200" height="36"/>
+      <text x="580" y="306">3 held cycles &rarr; human</text>
+      <path class="arrow" d="M206,198 L252,198"/>
+      <path class="arrowgood" d="M506,190 L562,182"/>
+      <path class="arrow" d="M506,214 L562,240"/>
+      <path class="arrow" d="M666,266 L666,280"/>
+    </svg>
+    </div>
+    <figcaption>The mermaid definition of this flow is in <code>plan.md</code>; this SVG is its
+    rendering.</figcaption>
+  </figure>
+
+  <h2>Phasing and dependencies</h2>
+  <p>Phases land in order - all three touch <code>src/server/foreman/worker.ts</code>, and Phase 2's
+  attempt accounting is what Phase 3 re-keys.</p>
+  <ol>
+    <li>Evidence-grounded verification (highest leverage; removes the false-hold class).</li>
+    <li>Immediate gap delivery (cuts cycle latency from ~23 min to one pass).</li>
+    <li>Cross-generation convergence and escalation (bounds the loop).</li>
+  </ol>
+
+  <h2>Success criteria</h2>
+  <ul>
+    <li>Worker test: completion with registered evidence covering required verification is claimed on
+    first verify; without evidence rows it still verifies on intent alone and can hold.</li>
+    <li>Worker test: a verdict whose blocking gaps are all evidence-class claims the bound workflow
+    (fallback recorded in the claim summary); any other blocking gap holds; with no binding, the
+    evidence-class hold stands; with zero admitted same-episode evidence items, the evidence-class
+    verdict holds too.</li>
+    <li>Worker test: a held managed ship completion receives gap text in the same pass; a held
+    human-driven session receives nothing.</li>
+    <li>Policy test: three held cycles across three generations of one intent episode escalate; a new
+    human prompt resets the budget.</li>
+    <li><code>npm run typecheck</code>, <code>npm run lint</code>, and the affected <code>test/</code>
+    files pass; no UI change, so no new <code>e2e/</code> spec is required.</li>
+  </ul>
+</main>
+</body>
+</html>

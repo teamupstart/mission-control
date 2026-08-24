@@ -40,6 +40,20 @@ test("Conversation and Files register their actual arrow owners", () => {
   const files = source("components/FileWorkspace.tsx");
   assert.match(files, /scrollActiveFileReader\(root, direction\)/);
   assert.match(files, /previewable && mode === "preview"/);
+  assert.match(files, /focusFileList: \(\) =>/);
+  assert.match(files, /focusCurrentFileRow\(root\)/);
+});
+
+test("Preview Escape and Shift+Tab return to the selected file before the session rail", () => {
+  const app = source("App.tsx");
+  const escape = app.indexOf('case "Escape":');
+  const railPeel = app.indexOf('readerSession && target?.closest(".cdetail")', escape);
+  const branch = app.slice(escape, railPeel);
+  assert.match(branch, /target\?\.closest\("\.file-preview-reader"\)/);
+  assert.match(branch, /readerTabbers\.current\.get\(readerSession\.id\)\?\.\(-1\) === "moved"/);
+
+  const detail = source("components/layouts/ConsoleDetail.tsx");
+  assert.match(detail, /dir === -1 && filesRef\.current\?\.focusFileList\(\)/);
 });
 
 test("preview file arrows stop at list edges rather than leaking to session navigation", () => {
@@ -75,6 +89,18 @@ test("Files scroll visible content before the earlier sidebar node", () => {
   assert.deepEqual(list.moves, []);
 });
 
+test("Files page navigation moves by one whole preview height", () => {
+  const content = reader(500);
+  const root = {
+    querySelectorAll: () => [content.element],
+    querySelector: () => null,
+  } as unknown as ParentNode;
+
+  assert.equal(scrollActiveFileReader(root, 1, "page"), true);
+  assert.equal(scrollActiveFileReader(root, -1, "page"), true);
+  assert.deepEqual(content.moves, [500, -500]);
+});
+
 test("Files route HTML preview scrolling through its sandbox bridge", () => {
   const list = reader(600);
   const messages: unknown[] = [];
@@ -92,4 +118,25 @@ test("Files route HTML preview scrolling through its sandbox bridge", () => {
   assert.equal(scrollActiveFileReader(root, -1), true);
   assert.deepEqual(messages, [{ type: "mission:file-preview-scroll", top: -90 }]);
   assert.deepEqual(list.moves, []);
+});
+
+test("Files route HTML preview pagination through its sandbox bridge", () => {
+  const messages: unknown[] = [];
+  const preview = {
+    clientHeight: 500,
+    contentWindow: {
+      postMessage: (message: unknown) => messages.push(message),
+    },
+  } as unknown as HTMLIFrameElement;
+  const root = {
+    querySelectorAll: () => [],
+    querySelector: (selector: string) => selector.includes("html-preview") ? preview : null,
+  } as unknown as ParentNode;
+
+  assert.equal(scrollActiveFileReader(root, 1, "page"), true);
+  assert.equal(scrollActiveFileReader(root, -1, "page"), true);
+  assert.deepEqual(messages, [
+    { type: "mission:file-preview-scroll", top: 500 },
+    { type: "mission:file-preview-scroll", top: -500 },
+  ]);
 });

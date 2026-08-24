@@ -7,24 +7,25 @@ import { isLlmRunnerId } from "@shared/llm.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import { InspectorConfigSchema } from "@shared/protocol.ts";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
 
 // The Inspector's config: a schema-validated blob over the `app_config` KV, so a new
 // key needs no migration - Zod's defaults are applied on every read, and a blob written
 // by an older build gains new fields for free.
 
-const CONFIG_KEY = "inspector";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.inspector;
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getInspectorConfig(): InspectorConfig {
-  return InspectorConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return InspectorConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /** Merge a patch over the current config, persist, and return the result. */
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
   const cur = getInspectorConfig();
   const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 

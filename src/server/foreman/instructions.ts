@@ -5,6 +5,7 @@ import type {
   ForemanInstructionsUpdate,
   ForemanInstructionsView,
 } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { foremanInstructionsPath } from "../config.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
@@ -22,7 +23,7 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 // table. `personas/FOREMAN.md` under the app root is the SEED, not the storage - once the human edits
 // this, the file is only what a fresh install starts from.
 
-const CONFIG_KEY = "foreman.instructions";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.foremanInstructions;
 const ETAG_NAMESPACE = "mission-control:foreman-instructions:v1";
 
 export type ForemanInstructionsMutation =
@@ -90,7 +91,7 @@ function viewFromStored(stored: unknown): ForemanInstructionsView {
  * `wrapupTriggers: []` documents for an empty list meaning empty rather than unset.
  */
 export function foremanInstructionsView(): ForemanInstructionsView {
-  return viewFromStored(getAppConfig<unknown>(CONFIG_KEY));
+  return viewFromStored(getAppConfig(CONFIG_ENTRY));
 }
 
 /**
@@ -107,6 +108,6 @@ export function updateForemanInstructions(
   if (update.expectedEtag !== current.etag) return { ok: false, current };
 
   const stored = "text" in update ? update.text : null;
-  setAppConfig(CONFIG_KEY, stored);
+  setAppConfig(CONFIG_ENTRY, stored);
   return { ok: true, view: viewFromStored(stored) };
 }

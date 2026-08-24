@@ -175,13 +175,27 @@ The contract comes from the task's durable `Kind`, never from transcript prose, 
 sessions and every other kind are judged exactly as before. See
 [work queues](work-queues.md) for the whole prompted path.
 
+For a dispatched `ship` task, that verifier also receives the session's registered Workflow
+evidence from the current resolved intent episode. Mission Control states the registered count,
+kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
+and captions remain inside the untrusted evidence fence. Evidence from an older work
+generation remains usable within the same intent episode, while legacy unstamped evidence and
+evidence from another episode are excluded. A zero count explicitly leaves the evidence-registration
+clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
+the items cover what the task requested. If the implementation is complete and every blocking gap
+only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
+`foreman_complete` Workflow anyway. The Workflow runs the authoritative checks; a Manual binding,
+no binding, no registered evidence, an incomplete verdict, or any other blocking gap still holds.
+Command evidence uses an opaque public locator, so a raw command with inline credentials cannot
+enter the staging API or Foreman prompt; the exact command remains in its bounded captured artifact.
+
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
 `empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
-**The pre-PR ship shepherd recovers only invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
 ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
@@ -189,6 +203,14 @@ settled-idle work cycle. A human ask, a work-queue item, a pending turn, an acti
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
+
+When prompted completion records a real held verdict for an eligible managed ship task, Foreman
+does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
+and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the
+existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery, live-mode, and
+repository-trust gate above. A task-less session or any session a human owns remains silent. The
+quiet-window shepherd is unchanged and remains the backstop when immediate delivery could not be
+claimed or reached no pane.
 
 Known states use structural instructions: relay the verifier's held gaps, resume an empty
 checkout, or continue an already-authorized direct shipping handoff whose pull request did not
@@ -200,8 +222,9 @@ human. A repeated verification infrastructure failure escalates without a recove
 Transient reviewer or evidence failures claim no recovery attempt. They are recorded on the
 session, retried after a one-minute cooldown, and escalate after three consecutive failures.
 
-Foreman claims each exact recovery in the daemon before typing. Sends one, two, and three wait
-the configured first window, then fixed **40-minute** and **80-minute** intervals. After the third
+Foreman claims each exact recovery in the daemon before typing. A held-gap first send is immediate;
+other first sends wait for the configured quiet window. Sends two and three retain the fixed
+**40-minute** and **80-minute** intervals. After the third
 send the next due pass records a visible escalation and types nothing. A confirmed non-delivery
 releases the same attempt for retry; an unknown delivery remains spent so a lost response cannot
 become a duplicate send after restart. Every attempt and escalation uses the existing session

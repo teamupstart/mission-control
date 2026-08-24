@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  decideImmediateHeldGapDelivery,
   decideShipShepherd,
   SHIP_RECOVERY_LATER_DELAYS_MS,
 } from "../src/server/foreman/ship-shepherd.ts";
@@ -195,6 +196,74 @@ test("the configured quiet threshold is inclusive at its exact boundary", () => 
     session: session({ lastActivity: NOW - 20 * 60_000 }),
   }));
   assert.equal(out.kind, "recover");
+});
+
+test("immediate held-gap delivery waives only elapsed quiet time and reuses the shepherd payload", () => {
+  const heldDecision = decision("held");
+  const recent = session({ lastActivity: NOW - 2 * 60_000 });
+  const heldQueue = queue({ promptedDecision: heldDecision });
+  assert.deepEqual(
+    decideShipShepherd(input({ session: recent, queue: heldQueue })),
+    { kind: "skip", why: "the quiet window is not due" },
+  );
+
+  const immediate = decideImmediateHeldGapDelivery(input({ session: recent, queue: heldQueue }));
+  const backstop = decideShipShepherd(input({ queue: heldQueue }));
+  assert.equal(immediate.kind, "recover");
+  assert.equal(backstop.kind, "recover");
+  if (immediate.kind === "recover" && backstop.kind === "recover") {
+    assert.equal(immediate.reason, "held_gaps");
+    assert.equal(immediate.attempt, 1);
+    assert.equal(immediate.payload, backstop.payload);
+  }
+});
+
+test("immediate held-gap delivery preserves every owner and authority gate", () => {
+  const heldDecision = decision("held");
+  const recent = session({ lastActivity: NOW - 2 * 60_000 });
+  const heldQueue = queue({ promptedDecision: heldDecision });
+  const cases: Array<[string, Partial<Parameters<typeof decideImmediateHeldGapDelivery>[0]>]> = [
+    ["off", { featureEnabled: false }],
+    ["human", { humanOwnsSession: true }],
+    ["workflow", { workflowOwnsSession: true }],
+    ["pull request", { hasTaskOwnedOpenPr: true }],
+    ["not live", { mayActLive: false }],
+    ["pending turn", {
+      session: session({
+        lastActivity: NOW - 2 * 60_000,
+        pendingTurns: [{ id: "turn" } as Session["pendingTurns"][number]],
+      }),
+    }],
+    ["queue", {
+      queue: queue({
+        promptedDecision: heldDecision,
+        items: [{ id: "owned" } as SessionQueue["items"][number]],
+      }),
+    }],
+    ["no task", { session: session({ lastActivity: NOW - 2 * 60_000, task: null }) }],
+    ["non-ship task", {
+      session: session({
+        lastActivity: NOW - 2 * 60_000,
+        task: mkTaskSummary({ id: "task-1", kind: "chat", status: "running" }),
+      }),
+    }],
+    ["uninvited", { session: session({ lastActivity: NOW - 2 * 60_000, foremanInvite: null }) }],
+    ["working", { session: session({ lastActivity: NOW - 2 * 60_000, state: "working" }) }],
+  ];
+  for (const [name, over] of cases) {
+    const out = decideImmediateHeldGapDelivery(input({
+      session: recent,
+      queue: heldQueue,
+      ...over,
+    }));
+    assert.equal(out.kind, "skip", name);
+  }
+
+  assert.equal(
+    decideImmediateHeldGapDelivery(input({ session: recent, queue: queue() })).kind,
+    "skip",
+    "a non-held recovery cause cannot use the immediate route",
+  );
 });
 
 test("Phase 1 terminal and owned outcomes never become recovery instructions", () => {

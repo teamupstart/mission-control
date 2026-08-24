@@ -412,7 +412,10 @@ export function ConsoleDetail({
   useEffect(() => {
     const order = tabs.map((t) => t.id);
     const nav = (dir: -1 | 1): "moved" | "edge" => {
-      if (tab === "files" && dir === 1 && filesRef.current?.focusPreview()) return "moved";
+      if (tab === "files") {
+        if (dir === 1 && filesRef.current?.focusPreview()) return "moved";
+        if (dir === -1 && filesRef.current?.focusFileList()) return "moved";
+      }
       const nextTab = order[order.indexOf(tab) + dir];
       if (!nextTab) return "edge";
       setTab(nextTab);

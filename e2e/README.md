@@ -69,7 +69,7 @@ which is what makes the frames evidence for "every card in every column" rather 
 card. The `review` flag stays drawn in all three, because the attention flags are not
 customizable.
 
-Regenerate all three with:
+Regenerate both with:
 
 ```sh
 mkdir -p e2e/.artifacts/board-card-customization
@@ -100,7 +100,7 @@ The viewport is deliberately taller than the panel. An element screenshot taken 
 scroll is stitched rather than photographed, and the seam reads as a missing row in a frame
 meant for pixel review.
 
-Regenerate both with:
+Regenerate all three with:
 
 ```sh
 mkdir -p e2e/.artifacts/board-card-preview
@@ -141,7 +141,11 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 interrupted before provisioning back in the Backlog, with the restart explanation and enabled
 launch control visible together. The same run deliberately persists stale branch and base SHA
 metadata to prove those descriptive fields do not hide an otherwise resource-free dispatch.
-Its real command output belongs at
+`git-preflight-recovery-backlog.png` drives the live half of the same boundary by making the
+fixture repository's `origin` unreachable, then shows the exact fetch error and enabled launch
+control on the restored Backlog card, without a `next up` marker, before the test repairs
+`origin` and retries successfully.
+The real command output belongs at
 `e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt`.
 
 Regenerate both with:
@@ -276,17 +280,21 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `e2e/.artifacts/file-default-view/html-report-opens-rendered.png` is captured the moment a
 session's `docs/reports/<slug>/report.html` is selected in the Files tab, with no click on the
 view toggle in between: the page is rendered in the preview pane and **Preview** carries the
-pressed state. It is the payoff shot for the `html-report` skill - the logged path resolves to
-the report as a page, not to its markup in an editor - and the same run proves the report's own
+pressed state. The focused keyboard cases capture `preview-page-down.png`,
+`preview-page-up.png`, `preview-keyboard-focus.png`, and `preview-keyboard-exit.png` alongside
+it. The [UI keyboard shortcut reference](../docs/ui.md#keyboard-shortcuts) is the sole owner of
+the behavior those captures exercise. The first frame is the payoff shot for the `html-report`
+skill - the logged path resolves to the
+report as a page, not to its markup in an editor - and the same run proves the report's own
 `<script>` did not run inside the sandbox.
 
-Regenerate it with:
+Regenerate them with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/file-default-view.spec.ts \
-  -g 'opens rendered' \
+  -g 'opens rendered|u and d paginate|Preview focus returns' \
   --reporter=list
 ```
 
@@ -1404,10 +1412,11 @@ saying a running session keeps what it launched with. It is a column-aligned cla
 assertion makes, and the block exists precisely because a rule that silently reaches half
 the fleet is worse than none - it is trusted and wrong.
 
-`session-chip.png` is the marker on a live session, and `session-chip-open.png` is the text
-that session actually received. That pair is the answer to "why is the agent behaving like
-this": on Claude the block rides the system prompt and never enters the transcript, so
-without the chip there is nothing anywhere to read.
+`session-chip.png` is the minimized pencil control on a live session with its **See standing
+instructions.** tooltip open, and `session-chip-open.png` is the text that session actually
+received. That pair is the answer to "why is the agent behaving like this": on Claude the
+block rides the system prompt and never enters the transcript, so without the control there
+is nothing anywhere to read.
 
 `dispatch-note-secondary.png` is the forecast on a two-repo dispatch whose **secondary**
 carries the rule and whose primary has none - the case where a note that previewed only the

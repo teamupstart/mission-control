@@ -1,5 +1,6 @@
 import { SkillsConfigSchema } from "@shared/protocol.ts";
 import type { SkillsConfig, SkillsConfigPatch } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { readCatalog } from "./catalog.ts";
 import { reconcileSkillLinks, skillBlockers } from "./reconcile.ts";
@@ -14,11 +15,11 @@ import type { ReconcileResult } from "./reconcile.ts";
 // whole coalescing story rests on ("the generation moves only when the disk moves")
 // has exactly one enforcement point.
 
-const CONFIG_KEY = "skills";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.skills;
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getSkillsConfig(): SkillsConfig {
-  return SkillsConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return SkillsConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /**
@@ -48,7 +49,7 @@ function merge(before: SkillsConfig, patch: SkillsConfigPatch): SkillsConfig {
  */
 export function setSkillsConfig(patch: SkillsConfigPatch): SkillsConfig {
   const next = merge(getSkillsConfig(), patch);
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 
@@ -94,7 +95,7 @@ export interface SkillsSyncResult extends ReconcileResult {
 /** Persist a config, bumping the watermark iff `changed` says the disk moved. */
 function persist(cfg: SkillsConfig, changed: boolean, now: number): SkillsConfig {
   const next = changed ? { ...cfg, generation: cfg.generation + 1, generationAt: now } : cfg;
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 
@@ -114,6 +115,11 @@ export function reconcileSkills(now = Date.now()): SkillsSyncResult {
   const result = reconcileTo(cfg);
   if (!result.changed) return { ...result, config: cfg, refused: [] };
   return { ...result, config: persist(cfg, true, now), refused: [] };
+}
+
+/** Known restore blockers, computed without touching the filesystem. */
+export function preflightSkillsReconcile(config: SkillsConfig): string[] {
+  return [...skillBlockers(config, readCatalog()).values()];
 }
 
 /**

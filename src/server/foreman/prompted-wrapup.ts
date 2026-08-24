@@ -311,9 +311,9 @@ export type PromptedPlan =
  * Note what is NOT here: a fix round. The queue answers an incomplete verdict by
  * typing the gaps back at the agent, because it commissioned that work and owns it.
  * This trigger commissioned nothing - it is a bystander to a conversation between a
- * human and their agent - so its only honest move on "not finished" is to stay out of
- * the way. Sending gap text into a session whose human is mid-thought would be Foreman
- * interrupting to relay a critique nobody asked for.
+ * human and their agent - so this plan only records the hold. The worker may separately
+ * deliver that durable decision through managed-ship recovery after rechecking every
+ * recovery owner and authority gate; task-less human sessions remain silent.
  *
  * `hold` still consumes the observed work-cycle generation, same as a fire. A later
  * normalized completion advances that generation and creates one new opportunity even

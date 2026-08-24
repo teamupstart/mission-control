@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: Foreman's four roles no longer share one provider, and two processes have
 // to agree about which one each of them got. The daemon resolves it for the panel; the worker
@@ -117,7 +118,10 @@ test("an unreadable stored provider is reported, then inherits the rest of the l
 test("a non-string persisted provider recovers to inherit rather than failing the whole parse", () => {
   // `getForemanConfig` is on the path of every worker pass and the settings route. A hand edit
   // or a future build's shape must not take Foreman down over a preference.
-  setAppConfig("foreman", { runner: 7, reviewRunner: { id: "codex" }, reviewModel: "keep-me" });
+  setAppConfig(
+    APP_CONFIG_ENTRIES.foreman,
+    { runner: 7, reviewRunner: { id: "codex" }, reviewModel: "keep-me" } as never,
+  );
   const cfg = getForemanConfig();
   assert.equal(cfg.runner, undefined);
   assert.equal(cfg.reviewRunner, undefined);
@@ -160,7 +164,7 @@ test("a pair no writer ever recorded is still refused at resolution, and says wh
   // The half no write path can reach: a blob from a build that had no per-role providers, or a
   // hand edit, or `MISSION_LLM_RUNNER` moving between restarts. The guard is the backstop for
   // all three, and it reports rather than silently substituting.
-  setAppConfig("foreman", { ...getForemanConfig(), reviewModel: "claude-opus-5", reviewRunner: "" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { ...getForemanConfig(), reviewModel: "claude-opus-5", reviewRunner: "" });
   const resolved = resolveForemanModel("review", getForemanConfig(), {}, "codex");
   assert.equal(
     resolved.unsupported,
@@ -275,7 +279,7 @@ test("a Foreman provider this build cannot read is REPORTED at the group level, 
   setLlmConfig({ runner: "codex" });
   // Persisted directly: the panel cannot offer this, and the patch schema refuses it. A build
   // that once had it, or a hand-edited blob, is how it gets here.
-  setAppConfig("foreman", { ...getForemanConfig(), runner: "gemini" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { ...getForemanConfig(), runner: "gemini" });
 
   const resolved = foremanGroupRunnerResolved();
   assert.equal(resolved.id, "codex", "an unreadable provider inherits the app-wide answer");
@@ -341,7 +345,7 @@ test("an Inspector provider the operator set outranks both", () => {
 });
 
 test("an unreadable Inspector provider is reported rather than swallowed", () => {
-  setAppConfig("inspector", { runner: "gemini" });
+  setAppConfig(APP_CONFIG_ENTRIES.inspector, { runner: "gemini" });
   const resolved = inspectorRunner();
   assert.equal(resolved.id, DEFAULT_LLM_RUNNER_ID);
   assert.equal(resolved.unknown, "gemini");
@@ -355,7 +359,7 @@ test("an unrelated Foreman write never pins a legacy role's provider", () => {
   // which moved the next review onto a different account than the one it had been running on.
   // Nobody asked for that, and nothing on screen said it happened.
   setLlmConfig({ runner: "codex" });
-  setAppConfig("foreman", { reviewModel: "claude-opus-5" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { reviewModel: "claude-opus-5" });
   assert.equal(getForemanConfig().reviewRunner, undefined, "the legacy pair starts unpinned");
   assert.equal(foremanRoleRunner("review").id, "codex", "and is running on the app-wide answer");
 
@@ -372,7 +376,7 @@ test("a group provider move pins what a legacy role was RUNNING, not what its mo
   // resolver guard was already spending. Pinning the model's owner instead would use a group
   // change as cover for moving the role somewhere it had never run.
   setLlmConfig({ runner: "codex" });
-  setAppConfig("foreman", { reviewModel: "claude-opus-5" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { reviewModel: "claude-opus-5" });
 
   setForemanConfig({ runner: "claude" });
 
@@ -409,7 +413,7 @@ test("saving an Inspector model with no provider pins the one it belongs to", ()
 
 test("an unrelated Inspector write never pins its provider", () => {
   setLlmConfig({ runner: "codex" });
-  setAppConfig("inspector", { model: "claude-opus-5" });
+  setAppConfig(APP_CONFIG_ENTRIES.inspector, { model: "claude-opus-5" });
 
   setInspectorConfig({ mode: "live" });
 
@@ -420,7 +424,7 @@ test("an incompatible Inspector pair no writer reached is refused at resolution"
   // The backstop for what pinning cannot reach: a blob written by an older build, a hand
   // edit, or MISSION_LLM_RUNNER moving between restarts. The review is a DEEP call, so the
   // substitute comes from the deep tier rather than quietly downgrading the review.
-  setAppConfig("inspector", { model: "claude-opus-5" });
+  setAppConfig(APP_CONFIG_ENTRIES.inspector, { model: "claude-opus-5" });
   setLlmConfig({ runner: "codex" });
 
   const resolved = inspectorModel();
@@ -430,7 +434,7 @@ test("an incompatible Inspector pair no writer reached is refused at resolution"
 });
 
 test("an Inspector model its provider does offer is left exactly alone", () => {
-  setAppConfig("inspector", { runner: "codex", model: "gpt-5.6-sol" });
+  setAppConfig(APP_CONFIG_ENTRIES.inspector, { runner: "codex", model: "gpt-5.6-sol" });
   const resolved = inspectorModel();
   assert.equal(resolved.id, "gpt-5.6-sol");
   assert.equal(resolved.unsupported, null);

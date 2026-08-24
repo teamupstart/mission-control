@@ -63,6 +63,7 @@ import type {
   WorkflowCompletionClaimResult,
   WorkflowRunPage,
   WorkflowRunSummary,
+  WorkflowStagedEvidenceList,
 } from "@shared/workflow.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
@@ -1175,6 +1176,15 @@ export class ForemanClient implements ForemanActions {
   diff(id: string, base?: string | null): Promise<SessionDiff> {
     const q = base ? `?base=${enc(base)}` : "";
     return get<SessionDiff>(`/api/sessions/${enc(id)}/diff${q}`);
+  }
+
+  /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
+  async workflowEvidence(id: string): Promise<WorkflowStagedEvidenceList | null> {
+    const path = `/api/sessions/${enc(id)}/workflow-evidence`;
+    const res = await fetch(BASE_URL + path);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
+    return (await res.json()) as WorkflowStagedEvidenceList;
   }
 
   /**

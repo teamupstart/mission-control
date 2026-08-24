@@ -353,7 +353,10 @@ import {
   activeWorkflowOwnsSession,
   followupPrs,
 } from "./foreman/review-followup.ts";
-import { decideShipShepherd } from "./foreman/ship-shepherd.ts";
+import {
+  decideImmediateHeldGapDelivery,
+  decideShipShepherd,
+} from "./foreman/ship-shepherd.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -401,8 +404,7 @@ import {
   agentLaunchBlockedReason,
   shellLaunchBlockedReason,
 } from "@shared/session-launch.ts";
-import { readFileSync } from "node:fs";
-import { fileURLToPath, URL } from "node:url";
+import { SERVICE_VERSION } from "./version.ts";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
 import { PersonaImportError } from "./workflows/persona-import.ts";
 import type { SessionActionManager, SessionActionMutation } from "./workflows/session-actions.ts";
@@ -760,18 +762,6 @@ function noPermissionModeCycle(session: Session): string | null {
   return `${AGENT_IDENTITY[session.agent].label} changes permission modes through its picker`;
 }
 
-/** Service version, read once from package.json; "unknown" if unreadable. */
-const VERSION = readVersion();
-function readVersion(): string {
-  try {
-    const raw = readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8");
-    const v = (JSON.parse(raw) as { version?: unknown }).version;
-    return typeof v === "string" ? v : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 /** Parse a query-string count into a bounded positive integer, or fall back. */
 function boundedLimit(raw: string | undefined, fallback: number, max = fallback): number {
   const n = raw === undefined ? fallback : Number(raw);
@@ -992,7 +982,7 @@ export function buildApp(
   app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
-    c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
+    c.json({ ok: true, service: "mission-control", version: SERVICE_VERSION, pid: process.pid }),
   );
 
   // --- public product issue preflight/preview for the future dashboard form ---
@@ -4770,7 +4760,7 @@ export function buildApp(
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
     );
-    const decision = decideShipShepherd({
+    const recoveryInput = {
       session,
       queue,
       humanOwnsSession:
@@ -4783,7 +4773,10 @@ export function buildApp(
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
       recoveryMinutes: cfg.shipRecoveryMinutes,
       now: Date.now(),
-    });
+    };
+    const decision = parsed.data.deliveryRoute === "immediate-held"
+      ? decideImmediateHeldGapDelivery(recoveryInput)
+      : decideShipShepherd(recoveryInput);
     if (
       decision.kind === "skip"
       || decision.reason !== parsed.data.reason

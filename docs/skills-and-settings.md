@@ -198,6 +198,11 @@ While the page is up the session and panel shortcuts stand down, so nothing you 
 drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain available when
 focus is not in a text field.
 
+### Automatic settings snapshots
+
+For the authoritative snapshot contract for settings configured from this page, see
+[Automatic settings snapshots](configuration.md#automatic-settings-snapshots).
+
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of thirteen peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
@@ -264,13 +269,13 @@ silently reaches half the fleet is worse than none, because it is trusted and wr
 The rule is visible in two more places, both read-only, and they deliberately read different
 sources. The **dispatch note** forecasts what a launch will send and reads live configuration
 for every attached repository, so a two-repo dispatch whose secondary carries the rule is told
-so. The **session header chip** records what that session was actually given and reads only
-its immutable launch snapshot - never live configuration, because a session outlives the
-setting that launched it and a chip that re-resolved would quote it text it never saw. Both
-name the *mechanism* as well as the size, because on Claude the text rides the system prompt
-and never enters the transcript, so a marker that only said "sent" would send an operator
-searching a conversation for something that was never in it. Neither is editable: one editor,
-in Settings, is the point.
+so. The **pencil control** in the session header records what that session was actually given
+and reads only its immutable launch snapshot - never live configuration, because a session
+outlives the setting that launched it and a control that re-resolved would quote it text it
+never saw. Its tooltip says **See standing instructions.**, and opening it names the mechanism
+and size as well as showing the exact text. That matters on Claude, where the text rides the
+system prompt and never enters the transcript. Neither read-only surface is editable: one
+editor, in Settings, is the point.
 
 **Conductor** is the one category whose subject is somebody else's software. It is
 **not** conditional, and that is the current rule for every category:

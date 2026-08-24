@@ -1164,7 +1164,7 @@ export type WorkItemState =
 /** How badly a gap misses: ONLY `blocking` drives a fix round. */
 export type GapSeverity = "blocking" | "advisory";
 
-export type GapKind = "incomplete" | "untested" | "standards" | "regression";
+export type GapKind = "incomplete" | "untested" | "standards" | "regression" | "unverified";
 
 /**
  * One shortfall the verifier found, with the strike count that decides when to
@@ -1632,10 +1632,10 @@ export interface ForemanStatus {
     active: number;
     /** The configured ceiling (`maxSessions`). */
     max: number;
-    /** Enabled backlog items with every dependency satisfied - what autopilot may take next. */
+    /** Enabled, error-free backlog items with every dependency satisfied. */
     ready: number;
     /**
-     * ENABLED backlog items waiting on another task.
+     * ENABLED backlog items withheld by a dependency or a carried launch error.
      *
      * Counted over the enabled ones only, so `ready + blocked + disabled` is the whole
      * backlog. Folding the disabled items in here would report work somebody
@@ -2149,7 +2149,7 @@ export interface Task {
   /** Free text set on completion (e.g. "opened PR #123"). */
   outcome: string | null;
   outcomeUrl: string | null;
-  /** Failure reason when status = failed. */
+  /** Failure reason, including one carried by a backlog task that is safe to retry. */
   error: string | null;
   /**
    * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.

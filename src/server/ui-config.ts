@@ -1,5 +1,6 @@
 import { UI_CONFIG_DEFAULTS, UiConfigSchema } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -11,7 +12,7 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 // rename reset all four (docs/plans/ui-settings-to-daemon/plan.md), and the fix is simply
 // to keep them somewhere that is actually per-machine - which the daemon already is.
 
-const CONFIG_KEY = "ui";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
 
 /**
  * Cards was persisted as `grid` before that layout was retired. Keep the compatibility
@@ -28,11 +29,13 @@ function migrateRetiredLayout(raw: unknown): unknown {
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
-export function getUiConfig(): UiConfig {
-  const stored = getAppConfig<unknown>(CONFIG_KEY);
+export function getUiConfig(persistMigration = true): UiConfig {
+  const stored = getAppConfig(CONFIG_ENTRY);
   const migrated = migrateRetiredLayout(stored ?? {});
   const config = UiConfigSchema.parse(migrated);
-  if (migrated !== stored && stored !== undefined) setAppConfig(CONFIG_KEY, config);
+  if (persistMigration && migrated !== stored && stored !== undefined) {
+    setAppConfig(CONFIG_ENTRY, config);
+  }
   return config;
 }
 
@@ -44,7 +47,7 @@ export function getUiConfig(): UiConfig {
  * would call that unset and let the dashboard adopt stale `localStorage` over it.
  */
 export function uiConfigView(): UiConfigView {
-  return { configured: getAppConfig<unknown>(CONFIG_KEY) !== undefined, config: getUiConfig() };
+  return { configured: getAppConfig(CONFIG_ENTRY) !== undefined, config: getUiConfig() };
 }
 
 /**
@@ -58,6 +61,6 @@ export function uiConfigView(): UiConfigView {
  */
 export function setUiConfig(patch: UiConfigPatch): UiConfig {
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }

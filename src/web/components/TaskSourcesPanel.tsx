@@ -998,7 +998,9 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
         agent: null,
         priority: null,
         labels: [],
-        enabled: true,
+        // Parked, matching the schema's own default: what a sweep files is a machine's
+        // guess at work, and reviewing it is a separate act from filing it.
+        enabled: false,
       },
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
       config: {},

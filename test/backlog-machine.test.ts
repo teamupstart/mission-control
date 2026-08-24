@@ -150,6 +150,26 @@ test("an empty backlog says so rather than planning nothing", () => {
   assert.match(a.kind === "none" ? a.why : "", /empty/);
 });
 
+test("autopilot leaves a launch error visible for manual retry", () => {
+  const retry = mkTask({ error: "git fetch origin failed: Permission denied (publickey)" });
+  const a = decide({ tasks: [retry], plan: mkPlan([[retry.id, []]]) });
+
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /manual retry/);
+});
+
+test("a launch error does not keep autopilot from taking the next ready task", () => {
+  const retry = mkTask({ error: "git fetch origin failed: Permission denied (publickey)" });
+  const on = mkTask();
+  const a = decide({
+    tasks: [retry, on],
+    plan: mkPlan([[retry.id, []], [on.id, []]]),
+  });
+
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : null, on.id);
+});
+
 // ---- planning ------------------------------------------------------------------------
 
 test("a backlog with no plan is READ first, and nothing is scheduled that tick", () => {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TaskSourceInstanceSchema } from "../src/shared/task-source.ts";
 import type { SweepResult, TaskCandidate, TaskSourceInstance } from "../src/shared/task-source.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
 // `import type` only - it is erased, so it cannot pull `repos.ts` in ahead of the
@@ -138,6 +139,32 @@ test("a source can file every task disabled so backlog autopilot leaves it parke
   const [task] = listTasks();
   assert.equal(task!.status, "backlog");
   assert.equal(task!.enabled, false);
+});
+
+/**
+ * The schema default and the ingest write, joined up.
+ *
+ * The two tests above each hold one end still with an explicit flag, which is what makes
+ * them regression-proof - and is also why neither can see the DEFAULT change. This one parses
+ * a source the way `getTaskSourcesConfig` does, from a blob that says nothing about
+ * autopilot, and asserts what a sweep of it actually files. That is the claim: a source
+ * nobody configured files work nobody has to catch.
+ */
+test("a source configured with no autopilot answer files parked tasks", async () => {
+  // Every slot but `enabled` left to the schema. The agent is named only because the fake
+  // TaskManager below binds what it is handed straight into SQLite and `undefined` is not a
+  // bindable value - the real one resolves an unset agent from the task kind.
+  const inst = TaskSourceInstanceSchema.parse({
+    id: "src-1",
+    kind: "github-issues",
+    repoRoot: "/repo",
+    defaults: { agent: "claude" },
+  });
+  assert.equal(inst.defaults.enabled, false);
+  const report = await ingestSweep(inst, sweep([mkCandidate()]), fakeTasks(), deps);
+  assert.deepEqual(report.refused, []);
+  assert.equal(report.filed, 1);
+  assert.equal(listTasks()[0]!.enabled, false);
 });
 
 test("a re-sweep of the same item files nothing", async () => {

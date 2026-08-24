@@ -156,9 +156,12 @@ upgrade never replays a spent generation.
 ### Pre-PR ship recovery
 
 Prompted completion decides whether the first implementation turn is complete and records why it
-stopped. The pre-PR ship shepherd is a later, bounded owner that can resume only a current managed
-`ship` task after that session has remained settled-idle past its configured quiet window. It does
-not re-run or rewrite completion truth. A held decision relays its bounded gaps structurally; an
+stopped. A current managed `ship` task may receive a held decision's bounded gaps immediately in
+that same worker pass. The worker first consumes the verdict, then claims one recovery attempt from
+the daemon-owned ledger before typing. Human-driven and task-less sessions keep the prompted
+trigger's silent hold. The existing pre-PR ship shepherd remains a later, bounded backstop for a
+delivery that could not happen immediately and for other recoverable states after the configured
+quiet window. Neither route re-runs or rewrites completion truth. A held decision relays its bounded gaps structurally; an
 empty checkout receives a structural resume instruction; an ambiguous non-empty checkout receives
 one bounded tool-less review; and an existing direct-shipping handoff can be continued only while
 no task-owned pull request exists.
@@ -169,11 +172,13 @@ pre-PR recovery. When a bound Workflow has parked but is still active, Workflow 
 Once any task-owned pull request appears, the shepherd stops and the existing review-comment and
 CI follow-through path owns later idle periods. It never adds a second PR poller.
 
-The daemon stores the current recovery attempt beside the prompted decision. Its identity is task,
+The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
+quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
 logical key, current work-cycle generation, reason, and attempt. The worker must claim that exact
 identity through the daemon before injection. A positive non-delivery releases only that identity;
 an unknown result remains claimed. Attempts are capped at three sends: the configured first quiet
-window, then fixed waits of 40 and 80 minutes, followed by one no-send escalation. A new completed
+window for ordinary shepherd recovery or immediate delivery for a held verdict, then fixed waits
+of 40 and 80 minutes, followed by one no-send escalation. A new completed
 generation begins a new reason-specific sequence and returns through ordinary prompted completion
 before it can be recovered.
 

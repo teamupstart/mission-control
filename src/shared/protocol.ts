@@ -3475,7 +3475,7 @@ export const SetWorkItemStateSchema = z
         z.object({
           id: z.string().min(1),
           severity: z.enum(["blocking", "advisory"]),
-          kind: z.enum(["incomplete", "untested", "standards", "regression"]),
+          kind: z.enum(["incomplete", "untested", "standards", "regression", "unverified"]),
           path: z.string(),
           detail: z.string(),
           fix: z.string(),
@@ -3672,6 +3672,8 @@ export const PromptedRecoveryStateSchema = PromptedRecoveryIdentitySchema.extend
 /** Claim one exact recovery attempt before anything reaches the child session. */
 export const PromptedRecoveryClaimSchema = PromptedRecoveryIdentitySchema.extend({
   payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+  /** Selects which daemon policy admitted the claim; it is request context, not ledger identity. */
+  deliveryRoute: z.enum(["shepherd", "immediate-held"]).optional(),
 });
 export type PromptedRecoveryClaim = z.infer<typeof PromptedRecoveryClaimSchema>;
 

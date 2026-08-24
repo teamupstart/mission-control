@@ -137,9 +137,10 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
 
   await dispatcher.dispatch("rollback-task");
 
-  const failed = registry.getTask("rollback-task");
-  assert.equal(failed?.status, "failed");
-  assert.match(failed?.error ?? "", /is not a git repository/);
+  const recovered = registry.getTask("rollback-task");
+  assert.equal(recovered?.status, "backlog");
+  assert.match(recovered?.error ?? "", /is not a git repository/);
+  assert.equal(recovered?.dispatchedAt, null);
   // The primary's native lease was really returned. Its warm directory remains while its
   // exact slot becomes available, which is the resource fact this row never got to record.
   const slots = worktrees.store.slots().filter((slot) => slot.path.includes("rollback-api"));
@@ -148,9 +149,9 @@ test("a secondary that cannot be provisioned unwinds the primary's tree", async 
   assert.equal(slots[0]?.activeLeaseId, null);
   assert.ok(slots[0] && existsSync(slots[0].path));
   // Nothing half-recorded: a task that provisioned nothing names nothing.
-  assert.equal(failed?.worktreePath, null);
+  assert.equal(recovered?.worktreePath, null);
   assert.deepEqual(
-    failed?.extraRepos.map((e) => e.worktreePath),
+    recovered?.extraRepos.map((e) => e.worktreePath),
     [null],
     "the repo set survives the failure; only its provisioning facts are absent",
   );
@@ -192,7 +193,7 @@ test("the unwind is provider-aware in every ordering", async () => {
 
     await dispatcher.dispatch(id);
 
-    assert.equal(registry.getTask(id)?.status, "failed", id);
+    assert.equal(registry.getTask(id)?.status, "backlog", id);
     // Filtered to the calls that name a tree. The dispatch's own error path also runs
     // teardown against the task ROW, which by then records nothing - that call is a
     // deliberate no-op and not what this test is about.

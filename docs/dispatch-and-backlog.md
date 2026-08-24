@@ -549,13 +549,22 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
-A restart can also land between accepting a dispatch and provisioning its first worktree.
-When the persisted row has no worktree, provider, terminal home, terminal resource, or session,
-and every attached repository has neither a worktree nor a provider, Mission Control knows no
-agent could have launched: every worktree is recorded before either runtime starts. That narrow
-state returns to the backlog with a visible explanation and a normal launch control, and its
-next launch starts with a new dispatch timestamp. Once any launch resource exists, recovery
-keeps the conservative behavior below instead of assuming whether an agent or checkout survived.
+A dispatch can stop between being accepted and provisioning its first worktree, either because
+its Git base freeze or all-or-nothing worktree provisioning failed live, or because the daemon
+restarted in that window. When the task has no worktree, provider, terminal home, terminal
+resource, or session, and every attached repository has neither a worktree nor a provider,
+Mission Control knows no agent could have launched: every worktree is recorded before either
+runtime starts. For a backlog-capable task kind, that narrow state returns to the backlog with
+the exact live failure or restart explanation on its card and a normal launch control. A failed
+remote-default fetch, including broken Git or SSH authentication to `origin`, is therefore fixed
+and retried from the Board instead of disappearing into terminal history. Its next launch starts
+with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
+ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
+that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+launch refusals outside that resource phase also remain failed, and once any launch resource
+exists recovery keeps the conservative behavior below instead of assuming whether an agent or
+checkout survived.
 
 ### When a task's agent goes away
 
@@ -721,9 +730,9 @@ Three rules follow from "the order is yours", and all three are deliberate:
 - **Dependencies still gate everything.** Moving a blocked item to the top makes it the
   first thing to run *when it unblocks*, and not one moment before. Nothing about
   [declared dependencies](#resolve-a-stopped-dependency) or `launch anyway` changes.
-- **A task that comes back keeps its place.** Rescheduling a cancelled or failed task, or
-  a dispatch that a restart recovered before it provisioned anything, puts the card back
-  where it was rather than at the bottom of a queue it never left.
+- **A task that comes back keeps its place.** Rescheduling a cancelled or failed task, or a
+  dispatch that live handling or restart recovery returned before it provisioned anything,
+  puts the card back where it was rather than at the bottom of a queue it never left.
 
 **The one exception, stated rather than left to be discovered.** Foreman starts work two
 ways, and only one of them follows your order absolutely. Dispatching into a fresh

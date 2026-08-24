@@ -366,8 +366,10 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   const backlog = backlogTasks(tasks);
   const ready = readyBacklog(tasks, getBacklogPlan()).length;
   // Split off before `blocked` is derived, so the three numbers partition the backlog:
-  // a parked item is neither ready nor held up by a dependency, and folding it into
-  // "blocked" would have the popover report a graph problem nobody can find.
+  // a parked item is neither ready nor blocked from scheduling, and folding it into
+  // "blocked" would have the popover report a problem whose fix is really its switch.
+  // The residual also includes an enabled card carrying a launch error. That card is
+  // intentionally blocked from unattended scheduling until the operator retries it.
   const disabled = backlog.filter((t) => !t.enabled).length;
 
   // The same ladder the worker applies (`worker.ts`), resolved once here so the panel and

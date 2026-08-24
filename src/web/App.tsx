@@ -1836,8 +1836,7 @@ export function App(): React.JSX.Element {
       : null;
   const seeWorkPreviewFailed = Boolean(
     seeWorkTourPreviewError ||
-    seeWorkPreviewTask?.status === "failed" ||
-    seeWorkPreviewTask?.status === "cancelled",
+    taskLaunchStopped(seeWorkPreviewTask),
   );
   const seeWorkDemoTask = seeWorkTourTaskId
     ? tasks.find((task) => task.id === seeWorkTourTaskId) ?? null
@@ -1860,7 +1859,7 @@ export function App(): React.JSX.Element {
     sessionId: seeWorkDemoSession?.id ?? null,
     phase: !seeWorkTourTaskId
       ? "not-started"
-      : seeWorkDemoTask?.status === "failed" || seeWorkDemoTask?.status === "cancelled"
+      : taskLaunchStopped(seeWorkDemoTask)
         ? "failed"
         : !seeWorkDemoSession
           ? "launching"
@@ -3767,6 +3766,16 @@ function matchesFilter(s: Session, q: string): boolean {
 function matchesTaskFilter(t: Task, q: string): boolean {
   const haystack = `${t.title} ${t.status} ${t.agent} ${t.labels.join(" ")}`.toLowerCase();
   return haystack.includes(q);
+}
+
+/** A launch failure can be terminal, or safely returned to Backlog with its reason. */
+function taskLaunchStopped(task: Task | null): boolean {
+  return Boolean(
+    task &&
+      (task.status === "failed" ||
+        task.status === "cancelled" ||
+        (task.status === "backlog" && task.error !== null)),
+  );
 }
 
 /**

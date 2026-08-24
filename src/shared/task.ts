@@ -224,6 +224,29 @@ export function taskKindAllowsBacklog(kind: TaskKind): boolean {
   return KIND_ALLOWS_BACKLOG[kind];
 }
 
+/**
+ * Whether a dispatch still has no durable milestone proving provisioning or launch began.
+ *
+ * Live failure handling and startup reconciliation share this resource proof; live handling
+ * additionally limits recovery to its base-freeze and worktree-provisioning phase. Every
+ * worktree is recorded before either harness runtime can start, so this shape cannot hide a
+ * second agent on the same work. Branch and base-SHA fields are descriptive metadata, not
+ * launch milestones, so stale or precomputed values there do not keep an otherwise
+ * resource-free row stranded.
+ */
+export function dispatchHasNoProvisionedResources(task: Task): boolean {
+  return (
+    task.status === "dispatching" &&
+    task.pipelineRun === null &&
+    task.worktreePath === null &&
+    task.provider === null &&
+    task.homeName === null &&
+    task.terminalResourceId === null &&
+    task.sessionId === null &&
+    task.extraRepos.every((entry) => entry.worktreePath === null && entry.provider === null)
+  );
+}
+
 /** Task kinds offered by surfaces that can only create or edit backlog work. */
 export const BACKLOG_TASK_KINDS = TASK_KINDS.filter(taskKindAllowsBacklog);
 

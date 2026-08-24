@@ -18,6 +18,7 @@ import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts
 import { canMessage } from "@shared/pane.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
+  dispatchHasNoProvisionedResources,
   TASK_KIND_BACKLOG_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
@@ -444,26 +445,6 @@ function needsStartupReconcile(task: Task): boolean {
 }
 
 /**
- * A restart can only safely re-file the dispatch when no durable launch milestone exists.
- * `Dispatcher` records all worktrees before it can launch either runtime, so this shape
- * proves there is no agent whose prompt may already have landed.
- * Branch and base-SHA fields are descriptive metadata, not launch milestones, so stale or
- * precomputed values there deliberately do not keep an otherwise resource-free row stranded.
- */
-function interruptedBeforeProvision(task: Task): boolean {
-  return (
-    task.status === "dispatching" &&
-    task.pipelineRun === null &&
-    task.worktreePath === null &&
-    task.provider === null &&
-    task.homeName === null &&
-    task.terminalResourceId === null &&
-    task.sessionId === null &&
-    task.extraRepos.every((entry) => entry.worktreePath === null && entry.provider === null)
-  );
-}
-
-/**
  * A scout whose durable archive is not ready, refusing its own completion.
  *
  * Carries every problem rather than one sentence, because the caller is usually an agent or
@@ -767,7 +748,7 @@ export class TaskManager {
       if (!needsStartupReconcile(t)) continue;
       // No cleanup exists in this state, so do not make visibility wait behind cleanup.
       // The async function reaches this branch before its first await.
-      if (interruptedBeforeProvision(t)) {
+      if (dispatchHasNoProvisionedResources(t)) {
         void this.reconcileOnStartup(t);
         continue;
       }
@@ -4193,9 +4174,9 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
-    if (interruptedBeforeProvision(t)) {
+    if (dispatchHasNoProvisionedResources(t)) {
       const current = this.registry.getTask(t.id);
-      if (!current || !interruptedBeforeProvision(current)) return;
+      if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
         ...current,
         status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",

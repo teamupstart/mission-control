@@ -706,9 +706,10 @@ function BacklogCard({
         )}
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
-      {/* Startup can prove a dispatch stopped before any worktree or agent existed and put
-          it back here for a safe retry. Keep that reason on the card: merely restoring the
-          row would fix scheduling while preserving the original "it disappeared" symptom. */}
+      {/* Live failure handling and startup recovery can prove a dispatch stopped before any
+          worktree or agent existed and put it back here for a safe retry. Keep that reason
+          on the card: merely restoring the row would fix scheduling while preserving the
+          original "it disappeared" symptom. */}
       {task.error && (
         <span className="bl-recovery" role="status">
           {task.error}

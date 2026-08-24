@@ -505,12 +505,12 @@ test("a task releases the trees that came back and keeps the ones still standing
 
 // ---- every repository's base is frozen in FRONT of the first tree -----------------------
 
-test("a repository whose base cannot be frozen fails the dispatch before any tree is taken", async () => {
+test("a repository whose base cannot be frozen returns to backlog before any tree is taken", async () => {
   // The all-or-nothing promise, moved one step earlier. `provisionAll` already unwound the
   // trees it had taken when a later repository failed, but the unwind is only ever the
   // second-best outcome: it returns a pool slot that was leased, reset and handed out for a
   // task that never ran. Freezing every base first makes the common failure - one
-  // repository's origin being unreachable - cost an error and nothing else.
+  // repository's origin being unreachable - cost a visible backlog error and nothing else.
   const api = mkRepo("frozen-first-api");
   const web = mkRepo("frozen-first-web");
   // A configured origin that cannot be fetched. NOT a missing origin, which is the one
@@ -547,8 +547,9 @@ test("a repository whose base cannot be frozen fails the dispatch before any tre
   await dispatcher.dispatch("frozen-first");
 
   const task = registry.getTask("frozen-first")!;
-  assert.equal(task.status, "failed");
+  assert.equal(task.status, "backlog");
   assert.match(task.error ?? "", /could not freeze .*remote default branch/);
+  assert.equal(task.dispatchedAt, null, "the next launch gets a fresh dispatch timestamp");
   // Not one tree, not one branch, in either repository - including the primary, whose own
   // base resolved perfectly well.
   assert.equal(task.worktreePath, null);

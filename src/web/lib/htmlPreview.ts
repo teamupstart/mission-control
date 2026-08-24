@@ -12,8 +12,8 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  * The contract both surfaces get:
  *
  * - `default-src 'none'` with `connect-src 'none'`, so a previewed document reaches nothing.
- * - `script-src` naming exactly two SHA-256 hashes, so the ONLY JavaScript that can run is
- *   the two bridge scripts below. `allow-scripts` on the iframe is what lets those run; the
+ * - `script-src` naming exactly three SHA-256 hashes, so the ONLY JavaScript that can run is
+ *   the three bridge scripts below. `allow-scripts` on the iframe is what lets those run; the
  *   document's own `<script>` is blocked by the hash allowlist, not by the sandbox.
  * - No `allow-same-origin`, ever. The pair `allow-scripts allow-same-origin` would let a
  *   previewed page reach into the dashboard origin and undo the whole boundary.
@@ -22,11 +22,95 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  * A caller may not weaken any of this for its own documents. Scouts in particular must not
  * relax it to make an archived report render: an archive is untrusted input that may have
  * been copied in from another machine.
+ *
+ * Every bridge here is the SAME capability, three times: it reads the document it is already
+ * inside and posts a message to the parent that sent it. None of them fetches, navigates,
+ * writes, or reaches the dashboard origin, and none of them is granted a token. A bridge
+ * that needed one would be a bridge that does not belong here.
  */
 
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
 const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
 const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
+/**
+ * The block-level selector a comment click resolves to, shared by the bridge and the
+ * hover affordance beside it so the thing you see highlighted is the thing you comment on.
+ *
+ * Deliberately generous. A checkout's HTML is a mockup, a report, a rendered plan - not a
+ * document class this module gets to assume - so anything that reads as a block on screen
+ * is a legitimate thing to point at. `closest()` matches the element itself first, so a
+ * click inside a `<td>` anchors to its row and a click in a nested `<p>` anchors to that
+ * paragraph rather than to the section around it.
+ */
+const PREVIEW_BLOCK_SELECTOR =
+  "p,h1,h2,h3,h4,h5,h6,blockquote,pre,li,tr,table,thead,tbody,ul,ol,dl,dt,dd,figure,"
+  + "figcaption,section,article,aside,header,footer,main,nav,div,details,summary,svg,hr";
+
+/**
+ * The third bridge: while the parent has comment mode ON, a click reports which BLOCK was
+ * clicked, as a structural path through the tree the browser built.
+ *
+ * It is inert until enabled, and only the parent that owns the frame can enable it - the
+ * same `event.source===parent` test the scroll bridge uses. Scouts never sends that
+ * message, so an archived report behaves exactly as it did before this existed.
+ *
+ * **It gains no capability the other two lack.** It reads the document it is already
+ * inside and posts to the parent that sent it. It fetches nothing, navigates nothing,
+ * writes nothing, and carries no token; `allow-same-origin` remains absent.
+ *
+ * **What it reports is a PATH, never text.** The DOM text of `<p>Read <strong>this</strong></p>`
+ * is `Read this`, which appears nowhere in the source, so a resolver that searched the
+ * source for a block's words would refuse most real blocks while passing a demo. The path
+ * indexes element children from `document.body` down, and the parent resolves it against a
+ * parse5 tree of the same source - the one parser that performs HTML5 tree construction, so
+ * an implicit `<tbody>` is in both trees or neither. The tag name rides along at every step
+ * purely so a resolution that has drifted is REFUSED rather than silently landing on a
+ * neighbour.
+ *
+ * From `document.body` rather than from the document root, and that is what keeps this
+ * independent of everything injected above: the CSP meta and all three of these scripts land
+ * in `<head>`, and so does a `<link>` this module rewrote into a `<style>`. None of that can
+ * shift a body path by one.
+ *
+ * **It announces itself when it is ready, and that is what removes the arming race.** The
+ * parent cannot know when a `srcdoc` document has finished running its scripts: a load event
+ * can fire for the `about:blank` that precedes the real document, and an arm message posted
+ * a moment early reaches a window with no listener and is simply lost - leaving comment mode
+ * ON in the toolbar and OFF inside the frame, where a click does nothing and says nothing.
+ * So the LAST thing this script does is tell the parent it exists, and the parent replies
+ * with the current state. Ordering stops being a question anybody has to get right.
+ *
+ * The ping goes to Scouts too, which ignores it - it only ever acts on the link message.
+ *
+ * The click is swallowed whole while comment mode is on - `stopImmediatePropagation` before
+ * the link bridge, which is registered after this one for exactly that reason. Clicking a
+ * paragraph that happens to contain a link is a comment on the paragraph, not navigation.
+ *
+ * NO LITERAL `<` ANYWHERE IN THIS BODY. `test/html-preview.test.ts` extracts each script
+ * with `/<script>([^<]+)<\/script>/g` to recompute its hash, so one comparison operator
+ * would truncate this script's body and fail there - which is the loud version. The quiet
+ * version is a bridge whose hash no longer matches and that therefore never runs at all.
+ */
+const PREVIEW_COMMENT_MESSAGE = "mission:file-preview-comment";
+const PREVIEW_BLOCK_MESSAGE = "mission:file-preview-block";
+const PREVIEW_READY_MESSAGE = "mission:file-preview-ready";
+const PREVIEW_COMMENT_SCRIPT = `let missionCommenting=false;addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_COMMENT_MESSAGE}")return;missionCommenting=event.data.enabled===true;document.documentElement.classList.toggle("mission-comment-mode",missionCommenting)});document.addEventListener("click",event=>{if(!missionCommenting)return;event.preventDefault();event.stopImmediatePropagation();const origin=event.composedPath()[0];const block=origin instanceof Element?origin.closest("${PREVIEW_BLOCK_SELECTOR}"):null;if(!block||!document.body.contains(block))return;const path=[];let node=block;while(node!==document.body){const owner=node.parentElement;if(!owner)return;path.unshift({index:[...owner.children].indexOf(node),tag:node.tagName.toLowerCase()});node=owner}parent.postMessage({type:"${PREVIEW_BLOCK_MESSAGE}",path},"*")},true);parent.postMessage({type:"${PREVIEW_READY_MESSAGE}"},"*")`;
+const PREVIEW_COMMENT_SCRIPT_HASH = "f5hT4Wegc47zmW/z4mO8eplZX/mWfzE0FnKJIKWMCwM=";
+
+/**
+ * The hover affordance, gated on the class only the bridge above ever sets.
+ *
+ * Inside the frame because that is the only place it can be: the parent cannot draw on a
+ * document it has no origin for. `style-src 'unsafe-inline'` already permits it, so this
+ * adds no policy, and with comment mode off the class is absent and every rule here is
+ * dead weight a previewed document never notices.
+ *
+ * `:not(:has(...))` is what keeps a click target honest on nested blocks. Without it a
+ * paragraph inside a section inside a div outlines three boxes at once, and none of them
+ * is the one `closest()` will actually pick.
+ */
+const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode :is(${PREVIEW_BLOCK_SELECTOR}):hover:not(:has(:is(${PREVIEW_BLOCK_SELECTOR}):hover)){outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}`;
+
 /**
  * Every anchor click leaves the document through the parent, or not at all.
  *
@@ -52,13 +136,32 @@ const PREVIEW_LINK_MESSAGE = "mission:file-preview-link";
 const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href)return;event.preventDefault();if(href.startsWith("#")){const raw=href.slice(1);if(!raw){scrollTo({top:0});return}let id=raw;try{id=decodeURIComponent(raw)}catch{}(document.getElementById(id)||[...document.getElementsByName(id)].find(target=>target instanceof HTMLAnchorElement))?.scrollIntoView();return}parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
 const PREVIEW_LINK_SCRIPT_HASH = "0DQ6IkD0vFcUQsY+X6LP861dP2RW9HXIVdbSAi5MkBk=";
 const PREVIEW_CSP =
-  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
-  "font-src data:; form-action 'none'; navigate-to 'none'";
+  "default-src 'none'; connect-src 'none'; script-src "
+  + `'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_COMMENT_SCRIPT_HASH}' `
+  + `'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; `
+  + "font-src data:; form-action 'none'; navigate-to 'none'";
 
 /** The message a preview posts up when a non-fragment link is clicked inside it. */
 export const HTML_PREVIEW_LINK_MESSAGE = PREVIEW_LINK_MESSAGE;
 /** The message the parent posts down to scroll a preview it cannot reach into. */
 export const HTML_PREVIEW_SCROLL_MESSAGE = PREVIEW_SCROLL_MESSAGE;
+/**
+ * The message the parent posts down to arm or disarm comment mode inside a preview.
+ *
+ * Carries `enabled: boolean` and nothing else. There is no "and also" here on purpose: the
+ * frame is told whether the reader is commenting, and answers with where they clicked.
+ */
+export const HTML_PREVIEW_COMMENT_MESSAGE = PREVIEW_COMMENT_MESSAGE;
+/** The message a preview posts up when a block is clicked while comment mode is armed. */
+export const HTML_PREVIEW_BLOCK_MESSAGE = PREVIEW_BLOCK_MESSAGE;
+/**
+ * The message a preview posts up once its bridges are live and can be told anything.
+ *
+ * The parent answers it with the current comment-mode state. Without it the parent is
+ * guessing at when a `srcdoc` document finished loading, and a guess that is early loses the
+ * message in a window that no longer exists.
+ */
+export const HTML_PREVIEW_READY_MESSAGE = PREVIEW_READY_MESSAGE;
 
 /**
  * The sandbox attribute every preview iframe must carry.
@@ -70,7 +173,15 @@ export const HTML_PREVIEW_SCROLL_MESSAGE = PREVIEW_SCROLL_MESSAGE;
 export const HTML_PREVIEW_SANDBOX = "allow-scripts";
 
 export function htmlPreviewSource(source: string): string {
-  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script><script>${PREVIEW_LINK_SCRIPT}</script>`;
+  // The comment bridge is injected BEFORE the link bridge, and the order is the behaviour:
+  // both listen on `document` in the capture phase, listeners run in registration order, and
+  // `stopImmediatePropagation` only reaches the ones registered after. A paragraph containing
+  // a link therefore takes a comment while comment mode is on, instead of navigating.
+  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`
+    + `<style>${PREVIEW_COMMENT_STYLE}</style>`
+    + `<script>${PREVIEW_SCROLL_SCRIPT}</script>`
+    + `<script>${PREVIEW_COMMENT_SCRIPT}</script>`
+    + `<script>${PREVIEW_LINK_SCRIPT}</script>`;
   // This prefix must be parsed before a single checkout-controlled byte. Searching
   // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
   // after which `allow-scripts` would run the document's own JavaScript unrestricted.

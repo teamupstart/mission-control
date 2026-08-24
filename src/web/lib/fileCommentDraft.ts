@@ -48,6 +48,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CreateFileCommentBody } from "@shared/protocol.ts";
+import type { FileCommentSurface } from "@shared/file-comment-anchor.ts";
 import type { FileCommentThread } from "@shared/types.ts";
 import {
   createFileComment,
@@ -78,6 +79,15 @@ export interface FileCommentComposerState {
   revision: string | null;
   /** The line the person clicked - which is what the panel opens under. */
   line: number;
+  /**
+   * Which renderer the reader was looking at when they pointed at this text.
+   *
+   * Carried on the composer rather than read from the workspace at request time, for rule
+   * 1's reason: the surface is a property of the ACT of commenting, and a reader who clicks
+   * a paragraph in Preview and then switches to the Editor while the debounce is in flight
+   * still commented in Preview.
+   */
+  surface: FileCommentSurface;
   /** The anchor the quote actually covers; wider than `line` only on a blank line. */
   startLine: number;
   endLine: number;
@@ -88,6 +98,33 @@ export interface FileCommentComposerState {
   messageId: string | null;
   busy: boolean;
   error: string | null;
+}
+
+/**
+ * An anchor a rendered surface has already resolved, on its way into a composer.
+ *
+ * Every field is settled before it gets here: the range comes from a parse of the source
+ * (Markdown's `node.position`, or the server's parse5 walk for HTML), and the quote is the
+ * SOURCE slice at that range - never the rendered text. That is what lets a preview thread
+ * re-anchor through the same `reanchor()` as an editor thread rather than needing a second
+ * rule for text that was never in the file.
+ */
+export interface FileCommentRangeAnchor {
+  startLine: number;
+  endLine: number;
+  quote: string;
+  surface: FileCommentSurface;
+  /**
+   * The revision the quote was actually sliced out of, when the surface knows it better than
+   * the workspace does.
+   *
+   * The HTML resolver reads the file on the daemon to answer, so it can hand back a revision
+   * the browser's buffer has not caught up with. Recording the buffer's instead would be a
+   * lie in the one direction that matters: `reanchor()`'s first rule skips the search when
+   * the revisions match, so an anchor stamped with a revision it was NOT taken against would
+   * report unchanged lines for text that has since moved.
+   */
+  revision?: string | null;
 }
 
 /** The row one particular composer brought into being, as the create reported it. */
@@ -102,6 +139,16 @@ export interface FileCommentDraftController {
   composer: FileCommentComposerState | null;
   /** Open a fresh composer on a line, or false when the file has no text to anchor to. */
   openLine: (line: number, text: string) => boolean;
+  /**
+   * Open a fresh composer on a RANGE that a rendered surface already resolved.
+   *
+   * The preview surfaces take this door rather than `openLine`. They do not have a line the
+   * reader clicked - they have a block, whose source range comes from a parse: `node.position`
+   * for Markdown, and a parse5 walk of the reported structural path for HTML. Both arrive
+   * with the quote already sliced out of the source, so there is nothing left here to search
+   * for and nothing to widen.
+   */
+  openRange: (anchor: FileCommentRangeAnchor) => boolean;
   /** Reopen a thread that was never submitted. A draft IS its composer. */
   openDraft: (thread: FileCommentThread) => void;
   change: (value: string) => void;
@@ -132,7 +179,7 @@ export function draftCreateRequest(
       endLine: composer.endLine,
       quote: composer.quote,
       revision: composer.revision,
-      surface: "editor",
+      surface: composer.surface,
       body,
     },
   };
@@ -396,11 +443,22 @@ export function useFileCommentDraft(input: {
     if (pending) void enqueue(() => persist(pending));
   };
 
-  const openLine = useCallback((line: number, text: string): boolean => {
-    const { sessionId, path, revision } = target.current;
+  /**
+   * The one place a fresh composer comes into being, for every surface.
+   *
+   * `openLine` and `openRange` differ only in where the anchor came from, so they share this
+   * rather than each resetting the four pieces of chain bookkeeping above - a second copy of
+   * that reset is a second place to forget one, and forgetting `createRequested` is a
+   * duplicate durable draft (rule 3).
+   */
+  const openAnchor = useCallback((
+    line: number,
+    anchor: { startLine: number; endLine: number; quote: string; revision?: string | null },
+    surface: FileCommentSurface,
+  ): boolean => {
+    const { sessionId, path, revision: current } = target.current;
     if (!path) return false;
-    const anchor = anchorForLine(text, line);
-    if (!anchor) return false;
+    const revision = anchor.revision === undefined ? current : anchor.revision;
     written.current = null;
     createdThreadId.current = null;
     createRequested.current = null;
@@ -411,6 +469,7 @@ export function useFileCommentDraft(input: {
       path,
       revision,
       line,
+      surface,
       startLine: anchor.startLine,
       endLine: anchor.endLine,
       quote: anchor.quote,
@@ -422,6 +481,21 @@ export function useFileCommentDraft(input: {
     });
     return true;
   }, []);
+
+  const openLine = useCallback((line: number, text: string): boolean => {
+    const anchor = anchorForLine(text, line);
+    if (!anchor) return false;
+    return openAnchor(line, anchor, "editor");
+  }, [openAnchor]);
+
+  const openRange = useCallback((anchor: FileCommentRangeAnchor): boolean => {
+    // The same refusal `CreateFileCommentSchema` makes at the door, made before a row exists:
+    // a quote that normalizes to nothing names no text in the file, so the thread would be
+    // born unanchorable with no edit that could repair it.
+    if (!isPersistableBody(anchor.quote)) return false;
+    // The panel opens under the block's FIRST line, which is where the reader was pointing.
+    return openAnchor(anchor.startLine, anchor, anchor.surface);
+  }, [openAnchor]);
 
   const openDraft = useCallback((thread: FileCommentThread) => {
     const opening = openingMessage(thread);
@@ -445,6 +519,7 @@ export function useFileCommentDraft(input: {
       path: thread.path,
       revision: thread.revision,
       line: thread.startLine,
+      surface: thread.surface,
       startLine: thread.startLine,
       endLine: thread.endLine,
       quote: thread.quote,
@@ -565,5 +640,5 @@ export function useFileCommentDraft(input: {
     if (current) void enqueue(() => persist(current));
   }, [enqueue, persist]);
 
-  return { composer, openLine, openDraft, change, submit, cancel, dismiss };
+  return { composer, openLine, openRange, openDraft, change, submit, cancel, dismiss };
 }

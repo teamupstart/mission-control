@@ -86,6 +86,7 @@ import {
   SaveSessionFileSchema,
   AppendFileCommentMessageSchema,
   CreateFileCommentSchema,
+  HtmlBlockAnchorSchema,
   EditFileCommentMessageSchema,
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
@@ -248,6 +249,7 @@ import {
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
+import { resolveHtmlBlockAnchor } from "./html-block-anchor.ts";
 import { progressOf, type FileCommentWalkthrough } from "./file-comment-walkthrough.ts";
 import type { ProductIssueService } from "./product-issues.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
@@ -2346,6 +2348,49 @@ export function buildApp(
     }
     },
   );
+  /**
+   * Which SOURCE lines a block clicked in the HTML preview covers.
+   *
+   * A read, and deliberately not a mutation: it answers a question about a file and writes
+   * nothing. The create route is still the only way a comment comes into being, so this
+   * hands the browser an anchor and the browser opens the ordinary composer on it.
+   *
+   * The file is re-read here rather than posted up, for two reasons. A 2 MiB document per
+   * click is not a thing to put on the wire, and reading the CURRENT source is exactly what
+   * turns a stale render into an honest refusal instead of a wrong line.
+   *
+   * `parse5` stays on this side of the wire as well, which is the other half of why this is
+   * a route: a tree-constructing HTML parser has no business in the dashboard bundle.
+   */
+  app.post("/api/sessions/:id/html-block-anchor", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    const parsed = await parseBody(c, HtmlBlockAnchorSchema);
+    if (!parsed.ok) return parsed.res;
+    let document: Awaited<ReturnType<typeof readSessionFile>>;
+    try {
+      document = await readSessionFile(session.cwd, parsed.data.path);
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      return c.json({ error: known?.message ?? "could not read session file" }, status);
+    }
+    if (document.text === null) {
+      return c.json({ error: document.error ?? "this file has no source to anchor to" }, 400);
+    }
+    const resolved = resolveHtmlBlockAnchor(document.text, parsed.data.blockPath);
+    // 409, not 400: the request was well formed and the answer is that the file moved under
+    // the render it was taken from. That is a conflict the reader resolves by reloading.
+    if (!resolved.ok) return c.json({ error: resolved.reason }, 409);
+    return c.json({
+      startLine: resolved.startLine,
+      endLine: resolved.endLine,
+      quote: resolved.quote,
+      revision: document.revision,
+    });
+  });
+
   // ---- line comments in the Files workspace ----
   //
   // Two roots on purpose. Session-scoped operations - listing a file's threads, reordering

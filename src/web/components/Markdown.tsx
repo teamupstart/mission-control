@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -81,6 +81,85 @@ function WorkspaceAnchor({
   );
 }
 
+/** A block's range in the markdown SOURCE, 1-based and inclusive. */
+export interface MarkdownBlockRange {
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * What a caller does when a reader points at a rendered block.
+ *
+ * A callback rather than a boolean, and ABSENT rather than empty when off, matching
+ * `diagramRenderers` - `undefined` is the "off" signal this file already uses, and every
+ * other caller keeps rendering exactly the markup it renders today.
+ */
+export type MarkdownBlockAnchorHandler = (range: MarkdownBlockRange) => void;
+
+/**
+ * Which rendered elements can take a comment.
+ *
+ * The blocks a person points at in a spec: paragraphs, headings, quotes, lists, tables, and
+ * fenced code - which is also where a Mermaid diagram lands, because a diagram IS a fence
+ * and the `pre` override is what replaces it.
+ *
+ * `li` is absent deliberately. A bullet is inside a list that already anchors, and the list
+ * is the thing a reader points at; anchoring both would put a control on every bullet of
+ * every list in the document.
+ *
+ * Blocks that genuinely contain other blocks - a paragraph inside a quote, a table inside a
+ * list item - do nest, and both are anchorable, which is right: they are different things to
+ * say something about. Which ONE a hover offers is settled in the stylesheet, by the same
+ * "nearest block" rule `closest()` gives the HTML preview.
+ */
+const BLOCK_ANCHOR_TAGS = [
+  "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "table", "ul", "ol", "pre",
+] as const;
+
+/** The hast node a custom component receives, narrowed to the one field this needs. */
+interface PositionedNode {
+  position?: { start?: { line?: number }; end?: { line?: number } };
+}
+
+/**
+ * The source range a rendered block came from, or null when the parser did not record one.
+ *
+ * Verified rather than assumed: this repository's exact plugin chain (`remark-parse` ->
+ * `remark-gfm` -> `remark-rehype` -> `rehype-highlight`) leaves `position.start.line` and
+ * `position.end.line` on every top-level hast element, and `rehype-highlight` does not strip
+ * them. A node without one still renders - it simply renders without a comment button, which
+ * is the containment rule this file has kept since the Mermaid work.
+ */
+export function blockRangeFromNode(node: unknown): MarkdownBlockRange | null {
+  const position = (node as PositionedNode | undefined)?.position;
+  const startLine = position?.start?.line;
+  const endLine = position?.end?.line;
+  if (typeof startLine !== "number" || typeof endLine !== "number") return null;
+  if (startLine < 1 || endLine < startLine) return null;
+  return { startLine, endLine };
+}
+
+/**
+ * What the control's tooltip says: the ACTION and where it lands.
+ *
+ * Deliberately not the same sentence as the accessible name. The name answers "what is this
+ * control" for a reader stepping through them; the tooltip answers "what happens if I click
+ * it", which is the thing a rendered document cannot show - the comment is anchored to source
+ * lines, not to the paragraph as it appears.
+ */
+export function blockAnchorTooltip(range: MarkdownBlockRange): string {
+  return range.startLine === range.endLine
+    ? `Comment on this block, anchored to source line ${range.startLine}`
+    : `Comment on this block, anchored to source lines ${range.startLine}-${range.endLine}`;
+}
+
+/** How a block's comment control reads to a screen reader, and to a browser test. */
+export function blockAnchorLabel(range: MarkdownBlockRange): string {
+  return range.startLine === range.endLine
+    ? `Comment on line ${range.startLine}`
+    : `Comment on lines ${range.startLine} to ${range.endLine}`;
+}
+
 /**
  * The one markdown renderer in the app - plans, Foreman briefs, and chat turns all
  * come through here, so a fence looks the same wherever you read it.
@@ -108,6 +187,12 @@ function WorkspaceAnchor({
  * `diagramRenderers` is a separate, opt-in capability for the Files preview. Keeping the
  * registry absent by default is what leaves every other caller's fences as source code.
  *
+ * `blockAnchor` is the second opt-in of that shape, and the Files preview is again its only
+ * caller. With it, every block-level element renders inside a host carrying the SOURCE lines
+ * it came from, so a reader can point at the paragraph they are reading rather than at the
+ * line number beside it. Without it - nine callers, from conversations to the Library
+ * editors - the markup is byte-for-byte what it has always been.
+ *
  * Memoized on the rendered text: highlighting is real work, and the transcript
  * re-renders on every SSE frame. Turns are append-only (see `mergeById`), so an
  * existing message's text never changes and this stays a hit for the whole session -
@@ -123,6 +208,12 @@ interface MarkdownProps {
   filePaths?: WorkspacePaths;
   /** Canonical fenced languages this caller may replace with isolated diagram hosts. */
   diagramRenderers?: MarkdownDiagramRegistry;
+  /**
+   * Opt-in: wrap every block-level element in a host carrying its SOURCE line range, with a
+   * control that reports that range back. Absent for every caller that is not the Files
+   * preview, exactly like `diagramRenderers`.
+   */
+  blockAnchor?: MarkdownBlockAnchorHandler;
   /** File identity for remounting async hosts when equal source comes from another file. */
   diagramDocumentKey?: string;
 }
@@ -134,6 +225,7 @@ function MarkdownBody({
   filePaths = null,
   diagramRenderers,
   diagramDocumentKey = "",
+  blockAnchor,
 }: MarkdownProps): React.JSX.Element {
   const paths = onLinkClick ? filePaths : null;
   // The handler reaches the rendered anchors through a ref, and that is load-bearing
@@ -150,6 +242,15 @@ function MarkdownBody({
   const linkHandler = useRef(onLinkClick);
   linkHandler.current = onLinkClick;
   const linkable = Boolean(onLinkClick);
+  // Behind a ref for the reason the link handler is, stated one paragraph up: a `components`
+  // map that closed over the handler would be a NEW component type on every parent render,
+  // and React unmounts a subtree whose element type changed - so the whole preview would be
+  // destroyed and rebuilt each time the workspace re-rendered, taking the scroll position
+  // and any open selection with it. The map depends on the BOOLEAN, which changes only when
+  // comment mode is turned on or off.
+  const blockHandler = useRef(blockAnchor);
+  blockHandler.current = blockAnchor;
+  const blockAnchored = Boolean(blockAnchor);
   const components = useMemo(() => {
     const anchor = ({ node: _node, href, onClick: _onClick, ...props }: React.ComponentPropsWithoutRef<"a"> & {
       node?: unknown;
@@ -170,10 +271,8 @@ function MarkdownBody({
           />
         </Tooltip>
       );
-    if (!diagramRenderers) return { a: anchor };
-    return {
-      a: anchor,
-      pre: ({ node, ...props }: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
+    const fenced = diagramRenderers
+      ? ({ node, ...props }: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
         const fence = diagramFenceFromPre(node as DiagramHastNode | undefined);
         const Renderer = fence ? diagramRenderers[fence.tag] : null;
         if (!fence || !Renderer) return <pre {...props} />;
@@ -192,9 +291,50 @@ function MarkdownBody({
             ordinal={fence.ordinal}
           />
         );
-      },
-    };
-  }, [diagramDocumentKey, diagramRenderers, linkable]);
+      }
+      : null;
+    if (!blockAnchored) {
+      // Unchanged, and this early return is the containment: with neither opt-in passed the
+      // map is exactly `{ a }`, which is what nine other callers get.
+      return fenced ? { a: anchor, pre: fenced } : { a: anchor };
+    }
+    const map: Record<string, React.ElementType> = { a: anchor };
+    for (const tag of BLOCK_ANCHOR_TAGS) {
+      // A fence is still a diagram host when the registry is on; the anchor wraps whatever
+      // that produced rather than replacing it, so a diagram takes a comment like any block.
+      const Inner: React.ElementType | null = tag === "pre" ? fenced : null;
+      map[tag] = ({ node, ...props }: { node?: unknown } & Record<string, unknown>) => {
+        const rendered = Inner
+          ? createElement(Inner, { ...props, node })
+          : createElement(tag, props);
+        const range = blockRangeFromNode(node);
+        // No position, no host. A block the parser did not place cannot be anchored to a
+        // line, and rendering it bare is the honest outcome - the reader simply has no
+        // button on that one, rather than a button that points somewhere invented.
+        if (!range) return rendered;
+        return (
+          <div
+            className="md-block-anchor"
+            data-start-line={range.startLine}
+            data-end-line={range.endLine}
+          >
+            {rendered}
+            <Tooltip label={blockAnchorTooltip(range)}>
+              <button
+                type="button"
+                className="md-block-comment"
+                aria-label={blockAnchorLabel(range)}
+                onClick={() => blockHandler.current?.(range)}
+              >
+                +
+              </button>
+            </Tooltip>
+          </div>
+        );
+      };
+    }
+    return map;
+  }, [blockAnchored, diagramDocumentKey, diagramRenderers, linkable]);
   return (
     <ReactMarkdown
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
@@ -246,7 +386,13 @@ export function markdownPropsEqual(before: MarkdownProps, after: MarkdownProps):
     before.filePaths === after.filePaths &&
     before.onLinkClick === after.onLinkClick &&
     before.diagramRenderers === after.diagramRenderers &&
-    before.diagramDocumentKey === after.diagramDocumentKey
+    before.diagramDocumentKey === after.diagramDocumentKey &&
+    // `blockAnchor` is compared for `onLinkClick`'s reason, one paragraph up: the body keeps
+    // it in a ref refreshed DURING its own render, so a comparator that let a new handler
+    // through without re-rendering would pin every block button to the previous closure -
+    // and that closure carries the file, the revision and the draft controller. A prop
+    // missing from here is not a slow render, it is a silently ignored prop.
+    before.blockAnchor === after.blockAnchor
   );
 }
 

@@ -34,6 +34,7 @@ import type {
   AwayConfig,
   AwayConfigPatch,
   CreateFileCommentBody,
+  HtmlBlockAnchorBody,
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
@@ -1884,6 +1885,54 @@ export const createFileComment = (sessionId: string, body: CreateFileCommentBody
   fileCommentWrite(`/api/sessions/${encodeURIComponent(sessionId)}/file-comments`, {
     body: JSON.stringify(body),
   });
+
+/**
+ * Which SOURCE lines the block clicked in the HTML preview covers.
+ *
+ * A READ despite the POST - it writes nothing, and the create route is still the only way a
+ * comment comes into being. It is a POST because the structural path is a list.
+ *
+ * The refusal is passed through verbatim rather than replaced with a status code, because
+ * the daemon's sentence is the one a person can act on: it says the render is stale and to
+ * reload it, which is the only way this can honestly fail.
+ */
+export async function resolveHtmlBlockAnchor(
+  sessionId: string,
+  body: HtmlBlockAnchorBody,
+): Promise<
+  | { ok: true; startLine: number; endLine: number; quote: string; revision: string | null }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/html-block-anchor`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      startLine?: number;
+      endLine?: number;
+      quote?: string;
+      revision?: string | null;
+      error?: string;
+    };
+    if (!res.ok || typeof data.startLine !== "number" || typeof data.quote !== "string") {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      startLine: data.startLine,
+      endLine: data.endLine ?? data.startLine,
+      quote: data.quote,
+      revision: data.revision ?? null,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** Submit a draft, or put a replied-to thread back at the TAIL of the queue. One route. */
 export const queueFileComment = (threadId: string) =>

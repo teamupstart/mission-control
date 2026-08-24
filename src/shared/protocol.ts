@@ -6282,6 +6282,44 @@ export type SubmitScoutArtifactsInput = z.infer<typeof SubmitScoutArtifactsSchem
 // bounded, and the two fields a caller could use to describe an anchor it never took -
 // `quoteHash` and `shortId` - are absent on purpose: the daemon computes the hash and mints
 // the handle, exactly as `fingerprint()` is computed server-side and never supplied.
+//
+// One schema here is NOT a mutation: `HtmlBlockAnchorSchema` describes a read that answers
+// which source lines a clicked preview block covers. It is a POST because a path is a list,
+// and it is bounded and validated exactly like the rest.
+
+/**
+ * How deep a reported block path may be, and how wide a step may index.
+ *
+ * A path is a walk from `<body>` to a block a person clicked, so both bounds are far above
+ * any real document and exist only so a malformed message costs one comparison rather than
+ * a walk. They are bounds on an untrusted message, not a statement about HTML.
+ */
+export const HTML_BLOCK_PATH_LIMITS = { depth: 128, index: 65_536 } as const;
+
+/**
+ * One step of the structural path the HTML preview bridge reports.
+ *
+ * `index` is the position among the parent's ELEMENT children, and `tag` is that element's
+ * lowercase tag name. The tag is carried so a resolution that has drifted is refused rather
+ * than landing on a neighbour - see `resolveHtmlBlockAnchor`.
+ */
+export const HtmlBlockPathStepSchema = z.object({
+  index: z.number().int().min(0).max(HTML_BLOCK_PATH_LIMITS.index),
+  tag: z.string().trim().min(1).max(64).regex(/^[a-z0-9:-]+$/),
+});
+export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
+
+/**
+ * Resolving a clicked preview block to a source line range.
+ *
+ * A READ, and the route that takes it mutates nothing - phase 1 owns every mutation route
+ * for file comments. It is a POST only because a path is a list, not a query string.
+ */
+export const HtmlBlockAnchorSchema = z.object({
+  path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
+  blockPath: z.array(HtmlBlockPathStepSchema).min(1).max(HTML_BLOCK_PATH_LIMITS.depth),
+});
+export type HtmlBlockAnchorBody = z.infer<typeof HtmlBlockAnchorSchema>;
 
 /** A new line-anchored comment thread, with its opening comment. */
 export const CreateFileCommentSchema = z.object({

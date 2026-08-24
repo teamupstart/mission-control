@@ -4821,6 +4821,85 @@ body {
 .file-comment-panel-foot { display: flex; align-items: center; gap: 6px; }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
+
+/*
+ * Commenting on the RENDERED markdown.
+ *
+ * The host is a plain wrapper with no box of its own, so a block's own margins still collapse
+ * through it and the document reads exactly as it did before comment mode was turned on. Only
+ * `position` and the hover rules below are new, and both are scoped to `.is-commenting` so a
+ * preview nobody is commenting on is untouched.
+ *
+ * The button sits in the LEFT gutter rather than over the text: a control drawn on top of a
+ * paragraph covers the words the reader is deciding what to say about.
+ */
+/*
+ * Comment mode reserves the gutter the control lives in, rather than assuming one is there.
+ *
+ * The preview's own left padding is not a constant - it is 32px, 16px under the phone
+ * breakpoint, and whatever a future layout decides - so a control positioned at a fixed
+ * negative offset clips off the left edge the moment the padding is smaller than it. Setting
+ * the padding here, on the commenting state, is the only version that cannot be wrong: the
+ * gutter and the offset are stated together.
+ *
+ * The text shifting a little when comment mode comes on is not a cost worth avoiding - the
+ * pane has just split in half beside it.
+ */
+.file-markdown-preview.is-commenting { padding-left: 44px; }
+.file-markdown-preview .md-block-anchor { position: relative; }
+.file-markdown-preview.is-commenting .md-block-anchor::before {
+  content: "";
+  position: absolute;
+  inset: -2px -6px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  background: color-mix(in srgb, var(--working) 10%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--working) 45%, transparent);
+}
+/*
+ * `:not(:has(...))` keeps the highlight on the block the reader is actually pointing at. A
+ * paragraph inside a list inside a quote would otherwise light up three boxes at once, and a
+ * click resolves to exactly one of them.
+ */
+.file-markdown-preview.is-commenting .md-block-anchor:hover:not(:has(.md-block-anchor:hover))::before,
+.file-markdown-preview.is-commenting .md-block-anchor:focus-within::before { opacity: 1; }
+/*
+ * Hidden by OPACITY, not by `display: none`, and that is an accessibility decision rather
+ * than a styling one: a `display: none` control cannot be focused, so every one of these
+ * would be unreachable by keyboard and the whole feature would be mouse-only. Invisible and
+ * focusable is what lets Tab walk a document block by block, hearing "Comment on lines 7 to
+ * 9" at each - which is the same journey a hover is, without a pointer.
+ *
+ * `pointer-events` goes with it so an invisible button never swallows a click meant for the
+ * text underneath.
+ */
+.md-block-comment {
+  position: absolute;
+  top: 0;
+  left: -26px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--working);
+  border-radius: 4px;
+  background: var(--working);
+  color: var(--bg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+.file-markdown-preview.is-commenting .md-block-anchor:hover:not(:has(.md-block-anchor:hover)) > .md-block-comment,
+.file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.md-block-comment:hover { filter: brightness(1.15); }
 .file-image-preview {
   position: relative;
   flex: 1;

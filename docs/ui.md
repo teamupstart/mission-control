@@ -727,8 +727,9 @@ or network access. A slow stylesheet read therefore delays styling, not the docu
 ### Comment on a line
 
 **Comment** in the Files toolbar turns on comment mode (<kbd>m</kbd>, in the integrated tab)
-for any file with source to read. With it on, clicking a line number opens a box under that
-line. An image has no lines and shows the control disabled with that as the reason.
+for any file with source to read. With it on, clicking a line number - or a block of the
+rendered preview - opens a box under that line. An image has no lines and shows the control
+disabled with that as the reason.
 
 **This works in Preview as well as in the Editor.** A comment names a line and quotes it, so
 something with line numbers has to be on screen to click - but turning the control on over a
@@ -769,9 +770,33 @@ brings them back, where each offers **Reopen**. That control appears only while 
 is on and the file has at least one closed thread - it is part of deciding what you are
 looking at, not a permanent fixture of the toolbar.
 
-One thing comment mode is not, yet: a marker is drawn on the *source*, not yet on the rendered
-document beside it, so in Preview you click a line in the source column rather than a paragraph
-in the preview.
+**In Preview, point at what you are reading.** With comment mode on, hovering a block of the
+rendered document outlines it, and the block you land on is the innermost one under the pointer -
+so a paragraph inside a quote is one target, not three.
+
+- In **Markdown Preview** - a paragraph, heading, table, list, code block or Mermaid diagram -
+  a small **+** appears in the margin beside it. Its name says which lines it covers ("Comment
+  on lines 7 to 9").
+- In **HTML Preview** the block itself is the target: click anywhere in it. A link inside a
+  block you are commenting on does not navigate while comment mode is on.
+
+Either way it opens the same box, in the source column beside the preview, at the line that
+block was written on - and the comment anchors to **source lines** and quotes **source text**,
+because that is what the agent is being sent and what a later edit is checked against. A block
+anchor quotes the whole block, so what you see in the composer is the paragraph or the table as
+it is written in the file, markup and all.
+
+Two things follow from a rendered document being a render:
+
+- **A comment on a rendered block covers the whole block.** The marker lands on its first line,
+  and the Editor shows it there.
+- **An HTML block can be refused.** The preview is a sandboxed frame the dashboard cannot
+  read into, so a click is resolved against the file on disk. If the agent has rewritten the file
+  under a render still on screen, that block no longer exists to point at, and the refusal says
+  so and asks you to reload the preview. It never guesses at a nearby line. Repeated wording and
+  duplicate headings are not a problem at all - blocks are matched by position, never by text.
+
+Markers themselves are still drawn on the source column rather than over the rendered document.
 
 ### Walk the agent through your review
 

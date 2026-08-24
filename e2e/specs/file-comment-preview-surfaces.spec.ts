@@ -1,0 +1,432 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import type { Locator, Page } from "@playwright/test";
+
+import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+/**
+ * Comment mode where a person actually reads a spec: on the RENDERED document.
+ *
+ * Hover a paragraph in Markdown Preview, or any block in HTML Preview, and leave a comment
+ * anchored to its exact source lines. This is the only layer that can say whether that
+ * works. `renderToStaticMarkup` proves the anchor host carries a line range but never mounts
+ * an iframe, never delivers a `postMessage`, and never runs the bridge whose whole job is to
+ * report where a click landed inside an opaque sandbox. The route tests parse HTML without a
+ * browser, which is exactly the parity the parse5 resolver exists to guarantee and cannot
+ * itself demonstrate.
+ *
+ * The claim under test is one sentence: **a comment made in Preview lands on the same source
+ * line the Editor shows.** So every case here ends the same way - flip to the Editor and read
+ * the marker off the gutter.
+ *
+ * No model tokens. Every agent binary is redirected at a fake by `fake-agents.ts`, and this
+ * spec never asks an agent for anything.
+ */
+
+const EVIDENCE = artifactsDir("file-comment-preview-surfaces");
+
+/** Photograph a state this spec has already asserted on. See file-line-comments.spec.ts. */
+async function shoot(target: Locator, page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/file-comment-preview-surfaces/${name}.png`);
+}
+
+const TASK = "review the rendered spec";
+
+const MARKDOWN = "docs/plans/spec.md";
+const MARKDOWN_SOURCE = [
+  "# The spec",                                  // 1
+  "",                                            // 2
+  "The retry budget is thirty seconds.",         // 3
+  "",                                            // 4
+  "## Limits",                                   // 5
+  "",                                            // 6
+  "| Retries | Window |",                        // 7
+  "| --- | --- |",                               // 8
+  "| 3 | 30s |",                                 // 9
+  "",                                            // 10
+].join("\n");
+
+const HTML = "docs/plans/mockup.html";
+/**
+ * Every case a text-matching resolver would have failed, in one document.
+ *
+ * - line 4: nested inline markup, whose DOM text appears nowhere in the source.
+ * - line 5: a character entity, which renders as something the file does not contain.
+ * - lines 6 and 7: two blocks with identical text.
+ * - line 10: a row inside a table written with no `<tbody>`, which the browser inserts and a
+ *   tag walk over the source does not.
+ */
+const HTML_SOURCE = [
+  "<html>",                                                    // 1
+  "<head><title>Mockup</title></head>",                        // 2
+  "<body>",                                                    // 3
+  "<p>Read <strong>this</strong> carefully.</p>",              // 4
+  "<p>Fish &amp; chips, twice.</p>",                            // 5
+  "<p>The budget is thirty seconds.</p>",                       // 6
+  "<p>The budget is thirty seconds.</p>",                       // 7
+  "<table>",                                                    // 8
+  "<tr><th>Retries</th><th>Window</th></tr>",                   // 9
+  "<tr><td>3</td><td>30s</td></tr>",                            // 10
+  "</table>",                                                   // 11
+  "</body>",                                                    // 12
+  "</html>",                                                    // 13
+].join("\n");
+
+const MARKDOWN_COMMENT = "Thirty seconds contradicts the table below.";
+const TABLE_COMMENT = "This table is missing a units column.";
+const HTML_COMMENT = "This paragraph says the opposite of the heading.";
+const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
+
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  // The repo combobox portals its listbox over the Task field and reopens on every keystroke,
+  // so the fill below can land on a covered control. See file-default-view.spec.ts. Escape
+  // closes it; the assertion is what makes a fill that still missed a loud failure here
+  // rather than a session dispatched with an empty task and an unfindable name later.
+  await page.keyboard.press("Escape");
+  const task = dialog.getByPlaceholder("What should this agent do?");
+  await expect.poll(async () => {
+    await task.fill(TASK);
+    return task.inputValue();
+  }, { message: "the Task field never took the text" }).toBe(TASK);
+  await dialog
+    .locator("select")
+    .filter({ hasText: "finish without a Workflow" })
+    .selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+}
+
+/** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
+async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  const body = (await response.json()) as { config?: { layout?: string } };
+  expect(body.config?.layout, "the daemon accepted the Console layout").toBe("console");
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
+}
+
+async function sessionCwd(daemon: DaemonHandle): Promise<string> {
+  await expect
+    .poll(async () => {
+      const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+        cwd: string | null;
+      }[];
+      return sessions[0]?.cwd ?? null;
+    }, { message: "the dispatched session never reported a working directory" })
+    .not.toBeNull();
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+    cwd: string | null;
+  }[];
+  return sessions[0]!.cwd!;
+}
+
+function write(cwd: string, path: string, contents: string): void {
+  mkdirSync(join(cwd, dirname(path)), { recursive: true });
+  writeFileSync(join(cwd, path), contents);
+}
+
+async function openFiles(page: Page): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /Review The Rendered Spec/i })
+    .click();
+  await page
+    .getByRole("tablist", { name: "Session detail" })
+    .getByRole("tab", { name: /Files$/ })
+    .click();
+  await expect(page.getByRole("listbox", { name: "Session files" })).toBeVisible();
+}
+
+/**
+ * Open a file and wait for its rendered view.
+ *
+ * The two previews name themselves differently and that is not an oversight: a Markdown
+ * preview is an `<article>` with an `aria-label`, and an HTML preview is an `<iframe>`, whose
+ * accessible name comes from `title`. Both say `Preview of <path>`.
+ */
+async function choose(page: Page, path: string): Promise<void> {
+  await page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: path }).click();
+  await expect(
+    path.endsWith(".html")
+      ? page.getByTitle(`Preview of ${path}`)
+      : page.getByLabel(`Preview of ${path}`),
+  ).toBeVisible();
+}
+
+/** Turn comment mode on, and prove the control says so. */
+async function startCommenting(page: Page): Promise<void> {
+  const toggle = page.getByRole("button", { name: "Comment mode" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+}
+
+/** Write and submit a comment into whichever composer is open. */
+async function writeComment(page: Page, lines: string, body: string): Promise<void> {
+  const box = page.getByRole("textbox", { name: `Comment on ${lines}` });
+  await expect(box).toBeVisible();
+  await box.fill(body);
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(box).toBeHidden();
+}
+
+/** Every thread the daemon holds, as the anchor it settled on. */
+function storedThreads(daemon: DaemonHandle): {
+  path: string;
+  start_line: number;
+  end_line: number;
+  quote: string;
+  surface: string;
+  body: string;
+}[] {
+  return withDaemonDb(daemon, (db) =>
+    db
+      .prepare(
+        `SELECT t.path, t.start_line, t.end_line, t.quote, t.surface, m.body
+           FROM file_comment_threads t
+           JOIN file_comment_messages m ON m.thread_id = t.id
+          ORDER BY t.created_at, m.created_at`,
+      )
+      .all() as never);
+}
+
+/** Flip to the Editor and read a marker straight off the gutter. */
+async function expectMarkerOnLine(page: Page, line: number): Promise<void> {
+  await page.getByRole("button", { name: "Editor" }).click();
+  await expect(
+    page.getByRole("button", { name: new RegExp(`on line ${line},`) }),
+  ).toBeVisible();
+}
+
+test.describe("commenting on a rendered document", () => {
+  test("a comment on a Markdown block lands on the source line the Editor shows", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, MARKDOWN, MARKDOWN_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, MARKDOWN);
+
+    const preview = page.getByLabel(`Preview of ${MARKDOWN}`);
+    // Nothing to click before comment mode is on: reading a document is the default, and the
+    // controls stay out of it.
+    await expect(preview.getByRole("button", { name: /^Comment on lines? / })).toHaveCount(0);
+
+    await startCommenting(page);
+
+    // ---- a paragraph ----
+    const paragraph = preview.getByText("The retry budget is thirty seconds.");
+    await paragraph.hover();
+    await expect(preview.getByRole("button", { name: "Comment on line 3" })).toBeVisible();
+    await shoot(page.locator(".file-content"), page, "markdown-hover");
+    await preview.getByRole("button", { name: "Comment on line 3" }).click();
+    // The quote the composer shows is the SOURCE line, which is what the agent will be sent
+    // and what a later re-anchor searches the file for.
+    const composer = page.getByRole("region", { name: "New comment on line 3" });
+    await expect(composer).toBeVisible();
+    await expect(composer.getByText("The retry budget is thirty seconds.")).toBeVisible();
+    await page.getByRole("textbox", { name: "Comment on line 3" }).fill(MARKDOWN_COMMENT);
+    await shoot(page.locator(".file-content"), page, "markdown-composer");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toBeHidden();
+
+    // ---- a table, which spans three lines ----
+    await preview.getByRole("table").hover();
+    await preview.getByRole("button", { name: "Comment on lines 7 to 9" }).click();
+    await writeComment(page, "lines 7-9", TABLE_COMMENT);
+
+    await expect
+      .poll(() => storedThreads(daemon).length, { message: "both comments reached the daemon" })
+      .toBe(2);
+    const stored = storedThreads(daemon);
+    expect(stored.map((row) => [row.path, row.start_line, row.end_line, row.surface])).toEqual([
+      [MARKDOWN, 3, 3, "markdown"],
+      [MARKDOWN, 7, 9, "markdown"],
+    ]);
+    expect(stored[0]!.quote).toBe("The retry budget is thirty seconds.");
+    expect(stored[0]!.body).toBe(MARKDOWN_COMMENT);
+    // A block anchor quotes the WHOLE block, which is the property that makes a preview
+    // comment survive an edit anywhere else in the file.
+    expect(stored[1]!.quote).toBe("| Retries | Window |\n| --- | --- |\n| 3 | 30s |");
+    expect(stored[1]!.body).toBe(TABLE_COMMENT);
+
+    // ---- the claim ----
+    await expectMarkerOnLine(page, 3);
+    await expect(page.getByRole("button", { name: /on line 7,/ })).toBeVisible();
+  });
+
+  test("a rendered block is reachable without a pointer", async ({ dashboard: page, daemon }) => {
+    // The control is hidden by OPACITY rather than `display: none`, which is what keeps it
+    // focusable. Hidden the other way it would be mouse-only, and "hover any paragraph" would
+    // be the whole feature for people who do not hover.
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, MARKDOWN, MARKDOWN_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, MARKDOWN);
+    await startCommenting(page);
+
+    const control = page
+      .getByLabel(`Preview of ${MARKDOWN}`)
+      .getByRole("button", { name: "Comment on line 3" });
+    await control.focus();
+    await expect(control).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toBeVisible();
+    await writeComment(page, "line 3", MARKDOWN_COMMENT);
+    await expect.poll(() => storedThreads(daemon).length).toBe(1);
+    expect(storedThreads(daemon)[0]!.start_line).toBe(3);
+    await expectMarkerOnLine(page, 3);
+  });
+
+  test("a comment on an HTML block lands on the right line, through nesting and entities", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+
+    // A paragraph whose DOM text - `Read this carefully.` - appears nowhere in the source.
+    // Text search could not have found this, which is why the bridge reports a path instead.
+    await frame.getByText("Read this carefully.").hover();
+    await shoot(page.locator(".file-content"), page, "html-hover");
+    await frame.getByText("Read this carefully.").click();
+    // The composer quotes the SOURCE, markup and all - `Read this carefully.` is what the
+    // browser shows, and appears nowhere in the file.
+    const composer = page.getByRole("region", { name: "New comment on line 4" });
+    await expect(composer.getByText("<p>Read <strong>this</strong> carefully.</p>")).toBeVisible();
+    await page.getByRole("textbox", { name: "Comment on line 4" }).fill(HTML_COMMENT);
+    await shoot(page.locator(".file-content"), page, "html-composer");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Comment on line 4" })).toBeHidden();
+
+    // A row inside a table written with no `<tbody>`. The browser inserts one; a source tag
+    // walk does not, and would land an element off.
+    await frame.getByRole("cell", { name: "30s" }).click();
+    await writeComment(page, "line 10", ROW_COMMENT);
+
+    await expect
+      .poll(() => storedThreads(daemon).length, { message: "both comments reached the daemon" })
+      .toBe(2);
+    const stored = storedThreads(daemon);
+    expect(stored.map((row) => [row.path, row.start_line, row.surface])).toEqual([
+      [HTML, 4, "html"],
+      [HTML, 10, "html"],
+    ]);
+    // Source, not rendered text, so a later `reanchor()` can find it in the file again.
+    expect(stored[0]!.quote).toBe("<p>Read <strong>this</strong> carefully.</p>");
+    expect(stored[1]!.quote).toBe("<tr><td>3</td><td>30s</td></tr>");
+
+    await expectMarkerOnLine(page, 4);
+    await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
+  });
+
+  test("two blocks with identical text take their own lines, and an entity survives", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+
+    // `Fish & chips, twice.` on screen; `Fish &amp; chips, twice.` in the file.
+    await frame.getByText("Fish & chips, twice.").click();
+    await writeComment(page, "line 5", "Entities are not the point of this sentence.");
+
+    // The SECOND of two paragraphs that read identically. Position is what tells them apart -
+    // there is nothing about the words that could.
+    await frame.getByText("The budget is thirty seconds.").nth(1).click();
+    await writeComment(page, "line 7", "This one, not the one above it.");
+
+    await expect.poll(() => storedThreads(daemon).length).toBe(2);
+    const stored = storedThreads(daemon);
+    expect(stored.map((row) => row.start_line)).toEqual([5, 7]);
+    expect(stored[0]!.quote).toBe("<p>Fish &amp; chips, twice.</p>");
+    expect(stored[1]!.quote).toBe("<p>The budget is thirty seconds.</p>");
+
+    await expectMarkerOnLine(page, 7);
+  });
+
+  test("a block from a render the file has outrun is refused with a reason", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+    await expect(frame.getByText("Read this carefully.")).toBeVisible();
+
+    // The agent rewrites the file underneath the render still on screen. The reported path
+    // now names a different element, and there is exactly one honest thing to say about that.
+    write(cwd, HTML, ["<body>", "<h1>Rewritten entirely.</h1>", "</body>"].join("\n"));
+    await frame.getByText("Read this carefully.").click();
+
+    await expect(page.getByText(/showing an older version of the file/)).toBeVisible();
+    await expect(page.getByText(/Reload the preview and try again/)).toBeVisible();
+    await shoot(page.locator(".file-main"), page, "html-stale-refusal");
+    // Refused, not guessed at: no thread was written on a line nobody pointed to.
+    expect(storedThreads(daemon)).toEqual([]);
+    // "Dismiss" is the button's text; the sentence about it is a tooltip, not its name.
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(page.getByText(/showing an older version of the file/)).toBeHidden();
+  });
+
+  test("the preview takes no comments while comment mode is off", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    // The bridge is inert until the parent arms it, so this click is an ordinary click on a
+    // paragraph: nothing opens, and nothing is written.
+    const frame = page.frameLocator("iframe.html-preview");
+    await frame.getByText("Read this carefully.").click();
+    await expect(page.getByRole("textbox", { name: /^Comment on line/ })).toHaveCount(0);
+    expect(storedThreads(daemon)).toEqual([]);
+  });
+});

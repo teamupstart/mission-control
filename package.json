@@ -105,8 +105,7 @@
     "patterns": [
       "!**/*",
       "dist/main/**",
-      "dist/preload/**",
-      "dist/native/**"
+      "dist/preload/**"
     ]
   }
 }

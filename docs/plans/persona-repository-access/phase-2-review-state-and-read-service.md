@@ -120,6 +120,9 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
   Appended-only; the strings reach durable audit rows.
 - `RepositoryQueryResult`: `{ ok: true; op; ...payload; bytes; truncated; omittedBytes }` or
   `{ ok: false; op; code; detail }`.
+- `REPOSITORY_QUERY_LIMITS.statusPorcelainBytes` (2,000,000) - the capture-time bound on the
+  persisted `--porcelain=v2` status. It sits with the query limits rather than beside the snapshot
+  service because `git_status` is what reports its truncation, and one budget belongs in one file.
 - `REPOSITORY_QUERY_LIMITS` exactly as the plan's limits table states, with each value's reason in
   a comment. `maxRounds` and `maxQueriesPerRound` live here too even though Phase 3 is their only
   consumer - they are part of one budget and splitting them across phases would let the two halves
@@ -146,6 +149,14 @@ Boot block:
 -- not be snapshotted; a reader must treat NULL as "no exact state is available".
 ALTER-equivalent on workflow_submissions: review_snapshot_oid TEXT
 ALTER-equivalent on workflow_submissions: review_snapshot_repo_root TEXT
+-- The complete `git status --porcelain=v2 -z --untracked-files=all` taken in the same capture
+-- window as the snapshot. The snapshot tree records one blob per path and so cannot express the
+-- staged-versus-worktree distinction at all; this is the only durable record of it. NULL on a row
+-- written before the column, and on any submission whose status could not be captured.
+ALTER-equivalent on workflow_submissions: review_status_porcelain TEXT
+-- Set when the porcelain exceeded statusPorcelainBytes and was stored as a prefix, so git_status
+-- reports truncation instead of implying completeness.
+ALTER-equivalent on workflow_submissions: review_status_truncated INTEGER NOT NULL DEFAULT 0
 
 CREATE TABLE IF NOT EXISTS workflow_repository_queries (
   id               TEXT PRIMARY KEY,
@@ -208,6 +219,9 @@ guarantee that a retried round cannot double-write its audit.
      fault above, and it discards the attempt and retries through the cold path, which is seeded
      from `headSha` and correct by construction. The difference set is normally empty or tiny, so
      this costs one `ls-tree` and a sorted comparison.
+  4b. capture `git status --porcelain=v2 -z --untracked-files=all`, bounded by
+     `statusPorcelainBytes`, and return it with a truncation flag for the manager to persist beside
+     the oid. Taken in the same window as the tree, so the two describe one instant.
   5. `commit-tree -p <headSha>`, then `update-ref`. **`commit-tree` runs with an
      explicit daemon-owned identity** in its environment - `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
      `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` - and never relies on repository or global config.
@@ -246,7 +260,8 @@ Two hard constraints:
 
 ### 5. Store - `src/server/workflows/store.ts`
 
-- `WorkflowSubmissionRowSchema` gains the two nullable columns as `nullableText.optional()`;
+- `WorkflowSubmissionRowSchema` gains the snapshot and status columns as `nullableText.optional()`,
+  and the truncation flag as an optional integer;
   `WorkflowSubmission` gains `reviewSnapshotOid?: string | null` and
   `reviewSnapshotRepoRoot?: string | null`, optional for the same reason `repositoryFingerprint`
   is - a row written before the column exists.
@@ -325,6 +340,104 @@ Order of checks per query, and the order is the contract:
     reader's `audit` identity, the `round` this `execute` was given, and the `ordinal` the reader
     assigned. The write happens on **every** exit path including a refusal at step 2 or 3, so a
     denial is as auditable as a success - which is what decision 11 asks for.
+
+### `git_status` needs a persisted status; the tree cannot reconstruct one
+
+A snapshot commit records **one blob per path** - the final state. It therefore cannot express the
+staged-versus-worktree distinction at all. Verified: stage a file and then modify it again, and
+
+```
+git status --porcelain=v1   ->  AM s.txt
+git status --porcelain=v2   ->  1 AM N... 100644 100644 <indexOid> ... s.txt
+the snapshot tree           ->  the worktree version only
+```
+
+The `AM` classification and the index blob oid exist nowhere in the tree. So specifying `git_status`
+as "the tree diff plus the captured porcelain status" was wrong twice over: the existing capture is
+bounded at `MAX_STATUS = 500` lines and `MAX_STATUS_BYTES = 80_000`
+(`src/server/workflows/context.ts`), so a large submission's status is **incomplete**; and nothing
+durable holds the classification at all once the worktree is released, so it is also
+**unreconstructable**. An op that answers "what is the state of this change" would have quietly
+returned a wrong answer for any mixed staged/unstaged submission.
+
+**Capture therefore persists a complete machine-readable status beside the snapshot.**
+
+- At capture, inside the same bounded window, run `git status --porcelain=v2 -z --untracked-files=all`
+  and store it on `workflow_submissions` as `review_status_porcelain` (TEXT, nullable), with
+  `review_status_truncated` (INTEGER, default 0).
+- **v2 rather than v1**, because v1 gives two status letters while v2 additionally carries the index
+  and worktree modes and the index blob oid - which is the only durable record of the staged
+  version's identity. `-z` because paths are bytes and may contain newlines.
+- Bounded by `REPOSITORY_QUERY_LIMITS.statusPorcelainBytes` (2,000,000 - one line per changed path,
+  so this is roughly 20,000 paths and well past any real submission). On overflow, store the prefix
+  and set `review_status_truncated`; **`git_status` then reports `truncated: true` with the omitted
+  count**, which is the contract intentionally permitting truncation rather than hiding it.
+- This is separate from the existing 500-line `workingTreeStatus` in the context snapshot, which
+  stays exactly as it is - that field feeds the prompt and its bound is part of an existing
+  fingerprint. Do not widen it; do not make `git_status` read it.
+
+`git_status` therefore answers from two exact sources: the tree-level change set
+(`git diff --name-status <headSha> <snapshotOid>`, complete by construction) and the persisted
+porcelain (complete unless flagged). Both are post-filtered through the denylist as a `path`-class
+result.
+
+**One limit stated rather than implied.** The persisted porcelain preserves the *classification* and
+the staged blob's oid, but the staged blob's **content** is not separately retrievable: it is not in
+the snapshot tree, and nothing pins it, so `git gc` may prune it. `read_file` serves the worktree
+version, which is what the tree holds. Pinning staged blobs as well would be a second snapshot
+mechanism for a distinction decision 7 does not ask for - it asks for the *content* of committed,
+staged, unstaged and untracked work, which the merged tree provides.
+
+### One list of flags the argv builder refuses
+
+Three separate rules about flags accumulated across review - the metadata class's, the driver
+flags, and rename detection - and scattered rules are what this review kept punishing. They are one
+named list, `REFUSED_GIT_FLAGS`, checked in the argv builder for every op:
+
+| Refused | Why |
+|---|---|
+| `-p`, `--patch` | emits file content from an op whose class promises none (verified on `git log`) |
+| `--name-only`, `--name-status`, `--stat` | emits paths from a `metadata` op, bypassing the class contract |
+| `--textconv`, `--ext-diff` | re-enables the conversion drivers the next section disables |
+| `-c`, `--cc` | combined-diff headers the step-5 verifier cannot parse into two paths |
+| `--no-index` | reads paths outside the object database entirely |
+
+And two flags are **required** on the ops that take them, checked in the same place:
+`--no-ext-diff --no-textconv` on every content-producing invocation, and `--no-renames` on
+`git_diff` and `git_show`. Required rather than merely present in a specimen argv, because
+omitting any of them yields a well-formed answer - see the next two sections for what each one
+prevents.
+
+### Every git invocation disables configured conversion drivers
+
+`git` will **execute a program from the repository's configuration** while producing a diff, and it
+does so by default. `.gitattributes` - a file in the change under review - selects a driver by name,
+and `diff.<name>.textconv` or `diff.<name>.command` maps that name to a command. The command comes
+from config rather than from the reviewed content, so this is not a self-contained repository
+exploit; but an operator legitimately has such drivers configured (`*.pdf diff=pdf` with
+`textconv = pdftotext` is the textbook case), and the reviewed change chooses which paths route
+through one. Decision 5 says no arbitrary shell execution, and an argv array at the outer call does
+not deliver that if git forks a configured program underneath it.
+
+Measured with a driver configured and `.gitattributes` selecting it - invocations of the driver per
+command:
+
+| Command | default | with the flags |
+|---|---|---|
+| `git diff --no-renames <a> <b>` | **3** | 0 |
+| `git show --no-renames --format= <rev>` | **2** | 0 |
+| `git blame --porcelain <rev> -- <path>` | **3** | 0 |
+| `git grep -I -n <rev>` | 0 | 0 |
+
+So **every content-producing invocation passes `--no-ext-diff --no-textconv`**: `git_diff`,
+`git_show` and `git_blame`. `git blame` is on that list although the review finding named only diff
+and show - it executes the driver by default too, verified above, and `--no-ext-diff` is accepted
+there as well. `git grep` does not (textconv is opt-in for it) and `--textconv` is added to the
+forbidden-flag list so it stays that way.
+
+These flags are **required**, not merely present in the specimen argv, and the revision-pin test
+below is extended to assert them, for the same reason it asserts the revision: their absence
+produces a well-formed answer, so nothing about the output reveals that a program ran.
 
 ### Every git invocation names an explicit snapshot-derived revision
 
@@ -552,8 +665,21 @@ look viable.
   `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
   that file's content or path. A test that only checks the code would still pass if the
   implementation refused after running the diff.
+- **The conversion-driver test.** Configure `diff.mydriver.textconv` in the fixture repository and
+  add `.gitattributes` selecting it, then assert the driver **never executes** for `git_diff`,
+  `git_show` or `git_blame` - have the driver append to a file and assert that file is never
+  created. Verified that without the flags those three invoke it 3, 2 and 3 times respectively, so
+  this fails loudly against the original argv. Assert `--textconv` is refused if it reaches the
+  argv builder.
+- **The status tests.** A submission with a staged-then-modified file records `AM` and the index oid
+  in `review_status_porcelain`, and `git_status` reports that classification **after the worktree
+  is deleted** - the case the tree alone cannot answer. A status over `statusPorcelainBytes` sets
+  `review_status_truncated` and `git_status` reports `truncated: true` with an omitted count
+  rather than a short complete-looking list. A denied path present in the porcelain is filtered out
+  like any other `path`-class result.
 - **The revision-pin test, table-driven over every op.** Build each op's argv and assert it contains
-  a snapshot-derived revision. This is a mechanical check on the argv rather than a behavioural one,
+  a snapshot-derived revision, **and that every content-producing op carries `--no-ext-diff` and
+  `--no-textconv`**. This is a mechanical check on the argv rather than a behavioural one,
   deliberately: it is what would have caught `git_log` shipping with no revision at all, which no
   amount of output assertion does, because an unpinned log returns a perfectly well-formed answer
   about the wrong commits.
@@ -778,3 +904,22 @@ Phase 3 may rely on, and must not change:
   regression for each of the three that can fall back. That test is what would have caught this,
   because an unpinned log returns a well-formed answer about the wrong commits and no output
   assertion notices.
+- **Reconciliation record, review round 12.** Two findings, both accepted.
+  1. **Conversion drivers execute during diff generation.** `git` runs a configured
+     `diff.<name>.textconv` or `.command` while producing a patch, selected by a `.gitattributes` in
+     the change under review - so the "no shell" boundary of decision 5 was not actually held by
+     passing an argv array at the outer call. Measured invocations of a configured driver:
+     `git diff` 3, `git show` 2, `git blame` **3**. Every content-producing invocation now passes
+     `--no-ext-diff --no-textconv`, and `git blame` is included although the finding named only diff
+     and show - it executes the driver by default too. `git grep` does not, and `--textconv` joins
+     the forbidden-flag list so it cannot start. The argv test asserts the flags for the same reason
+     it asserts the revision: their absence produces a well-formed answer.
+  2. **`git_status` could not answer correctly and would not have said so.** A snapshot tree holds
+     one blob per path, so the staged-versus-worktree distinction is absent from it entirely -
+     verified, a staged-then-modified file is `AM` with a distinct index oid in `porcelain=v2` and
+     just the worktree version in the tree. Leaning on the existing captured status made it worse,
+     since that is bounded at 500 lines for the prompt. Capture now persists the complete
+     `--porcelain=v2 -z` output on the submission with an explicit truncation flag, and `git_status`
+     answers from that plus the tree-level name-status. Stated rather than papered over: the staged
+     blob's *content* is not separately retrievable, because nothing pins it - decision 7 asks for
+     the content of all four categories, which the merged tree provides.

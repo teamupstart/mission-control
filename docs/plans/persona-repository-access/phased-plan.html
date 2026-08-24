@@ -551,6 +551,24 @@
       indistinguishable from the response. The pin is now an invariant with a per-op argv table and a
       mechanical test over the built argv, which is what catches this class - an unpinned log returns
       a well-formed answer about the wrong commits, so no output assertion notices.</li>
+    <li><strong>Every content-producing git invocation disables conversion drivers</strong>
+      (Phase 2). <code>git</code> runs a configured <code>diff.&lt;name&gt;.textconv</code> or
+      <code>.command</code> while producing a patch, selected by a <code>.gitattributes</code> in the
+      change under review - so decision 5’s no-shell boundary was not held by passing an argv array at
+      the outer call. Measured driver invocations: <code>git diff</code> 3, <code>git show</code> 2,
+      <code>git blame</code> <strong>3</strong>. All three now pass
+      <code>--no-ext-diff --no-textconv</code>; <code>git blame</code> is included although the finding
+      named only diff and show. <code>--textconv</code> joins the forbidden-flag list and the argv test
+      asserts the flags, since their absence produces a well-formed answer.</li>
+    <li><strong><code>git_status</code> answers from a persisted <code>--porcelain=v2</code>, not from
+      the tree</strong> (Phase 2). A snapshot commit records one blob per path, so the
+      staged-versus-worktree distinction is absent from it - verified, a staged-then-modified file is
+      <code>AM</code> with a distinct index oid in porcelain and only the worktree version in the tree.
+      Leaning on the existing captured status made it worse, since that is bounded at 500 lines for the
+      prompt. Capture now persists the complete porcelain on the submission with an explicit truncation
+      flag. Stated rather than papered over: the staged blob’s <em>content</em> is not separately
+      retrievable, because nothing pins it - decision 7 asks for the content of all four categories,
+      which the merged tree provides.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

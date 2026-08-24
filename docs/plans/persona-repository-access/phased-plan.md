@@ -394,6 +394,22 @@ reintroduce and neither is caught by the guards that look like they should catch
     is what catches this class - an unpinned log returns a well-formed answer about the wrong commits,
     so no output assertion notices.
 
+19. **Every content-producing git invocation disables conversion drivers** (Phase 2). `git` runs a
+    configured `diff.<name>.textconv` or `.command` while producing a patch, selected by a
+    `.gitattributes` in the change under review - so decision 5's no-shell boundary was not held by
+    passing an argv array at the outer call. Measured driver invocations: `git diff` 3, `git show` 2,
+    `git blame` **3**. All three now pass `--no-ext-diff --no-textconv`; `git blame` is included
+    although the finding named only diff and show. `--textconv` joins the forbidden-flag list and the
+    argv test asserts the flags, since their absence produces a well-formed answer.
+20. **`git_status` answers from a persisted `--porcelain=v2`, not from the tree** (Phase 2). A
+    snapshot commit records one blob per path, so the staged-versus-worktree distinction is absent
+    from it - verified, a staged-then-modified file is `AM` with a distinct index oid in porcelain and
+    only the worktree version in the tree. Leaning on the existing captured status made it worse,
+    since that is bounded at 500 lines for the prompt. Capture now persists the complete porcelain on
+    the submission with an explicit truncation flag. Stated rather than papered over: the staged
+    blob's *content* is not separately retrievable, because nothing pins it - decision 7 asks for the
+    content of all four categories, which the merged tree provides.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

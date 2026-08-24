@@ -516,11 +516,11 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       <tr><td><code>read_file</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>cat-file --batch-check</code> on <code>&lt;snapshotOid&gt;:&lt;path&gt;</code> for type and size, then the blob</td></tr>
       <tr><td><code>search_text</code></td><td><code>pattern</code>, <code>pathGlob?</code>, <code>fixedString?</code>, <code>maxMatches?</code></td><td><code>git grep -I -n &lt;snapshotOid&gt;</code>; unpinned, <code>git grep</code> searches the live working tree</td></tr>
       <tr><td><code>list_paths</code></td><td><code>pathGlob</code>, <code>maxPaths?</code></td><td><code>git ls-tree -r -z &lt;snapshotOid&gt;</code> filtered by the shared matcher</td></tr>
-      <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshotOid&gt;</code> plus the captured porcelain status</td></tr>
-      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff &lt;base or headSha&gt; &lt;snapshotOid&gt;</code>, the base defaulting to the captured <code>headSha</code> and never live <code>HEAD</code>; an explicit <code>base</code> must be an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation</td></tr>
-      <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show &lt;rev&gt;</code>, where <code>rev</code> is proven an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation, with the commit message fetched separately from the patch</td></tr>
+      <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshotOid&gt;</code> plus the complete <code>--porcelain=v2</code> status persisted at capture; the tree alone cannot express staged-versus-worktree</td></tr>
+      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff --no-ext-diff --no-textconv &lt;base or headSha&gt; &lt;snapshotOid&gt;</code>, the base defaulting to the captured <code>headSha</code> and never live <code>HEAD</code>; an explicit <code>base</code> must be an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation</td></tr>
+      <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show --no-ext-diff --no-textconv &lt;rev&gt;</code>, where <code>rev</code> is proven an ancestor of <code>&lt;snapshotOid&gt;</code>; allowlisted before generation, with the commit message fetched separately from the patch</td></tr>
       <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log &lt;snapshotOid&gt; --max-count=N --format=&lt;NUL-separated&gt;</code>; unpinned, <code>git log</code> walks live <code>HEAD</code>; a supplied <code>path</code> is validated and denied like any other; no <code>-p</code>, <code>--name-only</code>, <code>--name-status</code> or <code>--stat</code></td></tr>
-      <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --porcelain &lt;snapshotOid&gt; -- &lt;path&gt;</code>; unpinned, <code>git blame</code> reads the live worktree file</td></tr>
+      <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --no-ext-diff --no-textconv --porcelain &lt;snapshotOid&gt; -- &lt;path&gt;</code>; unpinned, <code>git blame</code> reads the live worktree file</td></tr>
     </tbody>
   </table>
   </div>
@@ -654,6 +654,17 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
   <p>Decision 6 is met by removing the filesystem from the picture and then layering the existing
   defences on what remains.</p>
   <ol>
+    <li><strong>Every git invocation disables configured conversion drivers.</strong>
+      <code>git</code> executes a program from repository configuration while producing a patch -
+      <code>.gitattributes</code> in the change under review selects a driver, and
+      <code>diff.&lt;name&gt;.textconv</code>/<code>.command</code> maps it to a command an operator
+      may legitimately have configured. An argv array at the outer call does not deliver decision 5’s
+      no-shell boundary if git forks underneath it. Measured driver invocations without the flags:
+      <code>git diff</code> 3, <code>git show</code> 2, <code>git blame</code> <strong>3</strong>;
+      <code>git grep</code> 0. So every content-producing invocation passes
+      <code>--no-ext-diff --no-textconv</code>, <code>--textconv</code> is a forbidden flag, and the
+      argv test asserts it - their absence produces a well-formed answer, so no output reveals that
+      a program ran.</li>
     <li><strong>Every git invocation names an explicit snapshot-derived revision.</strong>
       Listed first because omitting one does not fail - it silently reads live state, differently per
       command. Measured: <code>git log</code> walks live <code>HEAD</code>, and <code>git grep</code>

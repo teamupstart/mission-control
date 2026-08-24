@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { driver, type Driver, type PopoverDOM } from "driver.js";
+import { driver, type Driver, type DriveStep, type PopoverDOM } from "driver.js";
 import "driver.js/dist/driver.css";
 
 import { containTourTab } from "./focus-containment.ts";
@@ -17,6 +17,25 @@ import {
 import type { TourTargetRegistry } from "./target-registry.ts";
 
 const TARGET_WAIT_MS = 2_000;
+
+/**
+ * How long Driver.js should poll the document for a screen's element before giving up.
+ *
+ * Zero for a screen that cannot have one right now: a centered stop declares no target at
+ * all, and `attainable` can say the runtime has already ruled a beat's target out. Driver's
+ * own wait is a `MutationObserver` over the whole document plus a timeout - useful while a
+ * newly-navigated page is still mounting, wasted motion for `TARGET_WAIT_MS` when the answer
+ * was already known before the transition started. Read live rather than cached alongside the
+ * step: `attainable` can flip true later in the same tour run, and a value frozen at Driver
+ * construction would then skip the mount tolerance a newly-opened page still needs.
+ */
+function waitBudget<Runtime, Navigation>(
+  context: TourStepContext<Runtime, Navigation>,
+): number {
+  if (context.stop.centered) return 0;
+  if (context.stop.attainable && !context.stop.attainable(context)) return 0;
+  return TARGET_WAIT_MS;
+}
 
 function renderDescription<R, N>(
   element: HTMLElement,
@@ -451,9 +470,8 @@ export function GuidedTourController<Runtime, Navigation>({
           // Driver asks for this element again after its own wait, so it resolves through the
           // screen's own cursor rather than closing over the position it was built at.
           const cursor: TourCursor = { stopId: screen.stop.id, beat: screen.beat };
-          return {
+          const driveStep: DriveStep = {
             element: (() => contextAt(cursor).element) as () => Element,
-            waitForElement: TARGET_WAIT_MS,
             skipMissingElement: false,
             disableActiveInteraction: !screen.stop.interactive,
             popover: {
@@ -463,6 +481,13 @@ export function GuidedTourController<Runtime, Navigation>({
               align: "center",
             },
           };
+          // A getter, not a value: Driver re-reads this property on every `moveTo`, and the
+          // budget can change between transitions into the SAME screen - see `waitBudget`.
+          Object.defineProperty(driveStep, "waitForElement", {
+            enumerable: true,
+            get: () => waitBudget(contextAt(cursor)),
+          });
+          return driveStep;
         }),
       });
     } catch (error) {

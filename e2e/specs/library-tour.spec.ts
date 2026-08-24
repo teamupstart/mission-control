@@ -85,6 +85,29 @@ function step(page: Page, title: string): Locator {
   return page.getByRole("dialog", { name: title }).or(page.getByRole("status", { name: title }));
 }
 
+/**
+ * Click Next and require the NEXT stop to land well under Driver's own element-wait.
+ *
+ * A stop whose target the runtime already knows does not exist - no qualifying run, or a
+ * centered stop with no target at all - must not make Driver poll the document for one
+ * anyway: that wait is `TARGET_WAIT_MS` (2s) per screen, spent inside Driver's own
+ * transition rather than inside Playwright's `click()`, so the click resolves instantly and
+ * only the NEXT popover's arrival shows the stall. 1200ms is comfortably above ordinary
+ * transition cost (tens of milliseconds, even under CI contention) and comfortably below the
+ * 2s floor a regression here reintroduces, so this fails on the stall without chasing CI's
+ * own jitter.
+ */
+async function clickNextWithin(page: Page, dialog: Locator, nextTitle: string, budgetMs: number): Promise<Locator> {
+  const start = Date.now();
+  await dialog.getByRole("button", { name: "Next" }).click();
+  const next = step(page, nextTitle);
+  await expect(next).toBeVisible();
+  const elapsed = Date.now() - start;
+  expect(elapsed, "Next stalled waiting for a target the runtime already knew was absent")
+    .toBeLessThan(budgetMs);
+  return next;
+}
+
 const hash = (page: Page): Promise<string> => page.evaluate(() => location.hash);
 
 async function startFromSettings(page: Page, daemon: DaemonHandle, category = "display"): Promise<void> {
@@ -378,11 +401,15 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   dialog = step(dashboard, "Binding it");
   await expect(dashboard.getByRole("button", { name: "Bind to a session…" }))
     .toHaveCSS("outline-width", "2px");
-  await dialog.getByRole("button", { name: "Next" }).click();
+  // The exact click reported slow: no qualifying run exists yet, so the next stop's beats
+  // resolve to nothing, and Driver must not poll the document for either of them.
+  dialog = await clickNextWithin(dashboard, dialog, "A run, moving", 1200);
 
   // 13-14. No qualifying run on this fleet, so both stops fall back in place.
-  dialog = step(dashboard, "A run, moving");
   await expect(dialog).toContainText("no finished No-Mistakes Review run");
+  // The rendered consequence of the fix: this is the stop the previously-slow click landed
+  // on, drawn immediately rather than after a multi-second stall.
+  await shoot(dashboard, "11-run-moving-fallback");
   // Two beats even in the fallback: a stop keeps its shape when its surface is absent, so
   // Next walks the second look before it walks to the next stop.
   await dialog.getByRole("button", { name: "Next" }).click();
@@ -391,10 +418,12 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await dialog.getByRole("button", { name: "Next" }).click();
   dialog = step(dashboard, "Where a run is watched");
   await expect(dialog).toContainText("no stage ladder to open");
-  await dialog.getByRole("button", { name: "Next" }).click();
+  // The centered close: no target at all, so this is every tour's own last click, not just
+  // the no-run path above - Driver must not poll the document for a target that was never
+  // declared.
+  dialog = await clickNextWithin(dashboard, dialog, "That is the authoring half", 1200);
 
   // 15. The centered close, offering the other tour without starting it.
-  dialog = step(dashboard, "That is the authoring half");
   await expect(dialog).toContainText("Step 15 of 15");
   await expect(dialog).toContainText("See the work");
   await expect(dashboard.locator(".driver-popover")).toHaveCount(1);

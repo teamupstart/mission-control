@@ -96,6 +96,20 @@ export interface TourStep<Runtime, Navigation> {
   ready?: (context: TourStepContext<Runtime, Navigation>) => boolean;
   /** Replacement copy shown while the stop is not ready. */
   fallback?: (context: TourStepContext<Runtime, Navigation>) => string | null;
+  /**
+   * Whether the runtime has already ruled a target in or out, independent of the DOM - a
+   * finished run that does not exist, a session that has left. Omit it when a stop's target is
+   * ordinary chrome that is merely mounting after a route change; declare it when a beat's own
+   * `resolve` can return null for a reason no amount of waiting fixes.
+   *
+   * Driver's own element wait cannot tell "not mounted yet" from "this render will never
+   * produce one" - both read as a null element - so a stop that never declares this pays the
+   * engine's full wait even when the answer was already known before the transition started.
+   * The engine reads this live, on every check, rather than once: a run that does not exist
+   * when a tour starts can still exist by the time this stop is reached, and a value frozen
+   * early would then skip the mount tolerance the newly-opened page still needs.
+   */
+  attainable?: (context: TourStepContext<Runtime, Navigation>) => boolean;
   /** Next's label. Undefined keeps Driver's default. */
   nextLabel?: (context: TourStepContext<Runtime, Navigation>) => string | undefined;
   /** Hide Next entirely, because a real control owns this transition. */

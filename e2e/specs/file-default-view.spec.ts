@@ -46,9 +46,16 @@ const TASK = "read a generated report in the files tab";
 /** A report shaped like the skill's output, plus a script that must not run. */
 const REPORT_HTML = `<!doctype html>
 <html><body>
-  <h1>SSE reconnect audit</h1>
-  <p id="verdict">Reconnects are bounded</p>
-  <div style="height: 1800px" aria-hidden="true"></div>
+  <section style="height: 100vh">
+    <h1>SSE reconnect audit</h1>
+    <p id="verdict">Reconnects are bounded</p>
+    <a href="#verdict">Jump to the reconnect verdict</a>
+    <div contenteditable aria-label="Preview scratchpad"></div>
+  </section>
+  <section style="height: 100vh">
+    <h2>Reconnect details</h2>
+    <p>The second page stays readable from the keyboard.</p>
+  </section>
   <p>End of report</p>
   <script>document.getElementById("verdict").textContent = "SCRIPT RAN";</script>
 </body></html>
@@ -151,7 +158,7 @@ const IMAGE = "docs/reports/sse-reconnect-audit/zz-preview.png";
 const AFTER = "docs/reports/sse-reconnect-audit/z-later.md";
 const SOURCE = "src/reconnect.ts";
 
-test("Preview arrows walk files until Tab moves focus into the rendered page", async ({
+test("Preview focus returns to the file list with Shift+Tab or Escape", async ({
   dashboard,
   daemon,
 }) => {
@@ -169,6 +176,11 @@ test("Preview arrows walk files until Tab moves focus into the rendered page", a
   // the reported boundary: before the fix, the next arrow selected the neighbouring session.
   await reportSession.click();
   await expect(reportSession).toBeFocused();
+  await expect(
+    dashboard
+      .getByRole("tablist", { name: "Session detail" })
+      .getByRole("tab", { name: /Files$/ }),
+  ).toHaveAttribute("aria-selected", "true");
   const rows = rail.locator("button.rail-row");
   const selectedIndex = await rows.evaluateAll((elements) =>
     elements.findIndex((element) => element.getAttribute("aria-current") === "true")
@@ -180,8 +192,12 @@ test("Preview arrows walk files until Tab moves focus into the rendered page", a
   // on the same HTML target and proves file order rather than session order owns the key.
   const files = dashboard.getByRole("listbox", { name: "Session files" });
   const startPath = direction === "ArrowDown" ? NOTES : AFTER;
-  await files.getByRole("option", { name: startPath }).click();
+  const startFile = files.getByRole("option", { name: startPath });
+  await startFile.click();
+  await expect(startFile).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByLabel(`Preview of ${startPath}`)).toBeVisible();
   await reportSession.click();
+  await expect(reportSession).toBeFocused();
   await dashboard.keyboard.press(direction);
 
   const selectedReport = files.getByRole("option", { name: REPORT });
@@ -198,11 +214,83 @@ test("Preview arrows walk files until Tab moves focus into the rendered page", a
   await shoot(dashboard, "preview-keyboard-focus");
 
   const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  expect(await report.locator("body").evaluate(() => window.scrollY)).toBe(0);
-  await dashboard.keyboard.press("ArrowDown");
-  await expect.poll(() => report.locator("body").evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  const body = report.locator("body");
+  expect(await body.evaluate(() => window.scrollY)).toBe(0);
+
+  // Tab is structural navigation here, not a way to walk links inside an arbitrary report.
+  await dashboard.keyboard.press("Tab");
+  await expect(frame).toBeFocused();
+  expect(await body.evaluate(() => document.activeElement?.tagName)).toBe("BODY");
+
+  // Once entered, the same page keys work inside the sandboxed browsing context.
+  await dashboard.keyboard.press("d");
+  await expect.poll(() => body.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  await dashboard.keyboard.press("Shift+Tab");
+  await expect(selectedReport).toBeFocused();
+  await dashboard.keyboard.press("Tab");
+  await expect(frame).toBeFocused();
+  await dashboard.keyboard.press("u");
+  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(0);
+
+  await dashboard.keyboard.press("Escape");
+  await expect(selectedReport).toBeFocused();
+  await shoot(dashboard, "preview-keyboard-exit");
+  await dashboard.keyboard.press("Tab");
+  await expect(frame).toBeFocused();
   await expect(selectedReport).toHaveAttribute("aria-selected", "true");
   await expect(reportSession).toHaveAttribute("aria-current", "true");
+});
+
+test("Preview u and d paginate a rendered report by one page", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  const body = report.locator("body");
+  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  const pageHeight = await body.evaluate(() => window.innerHeight);
+  expect(await body.evaluate(() => window.scrollY)).toBe(0);
+
+  // The file row still owns focus after selection. Preview mode itself claims the key, so
+  // pagination does not require an extra Tab into the rendered document and bare `d` does
+  // not fall through to the dashboard's contextual Delete binding.
+  await dashboard.keyboard.press("d");
+  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(pageHeight);
+  await expect(report.getByRole("heading", { name: "Reconnect details" })).toBeVisible();
+  await shoot(dashboard, "preview-page-down");
+
+  await dashboard.keyboard.press("u");
+  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(0);
+  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  await shoot(dashboard, "preview-page-up");
+});
+
+test("Preview page keys stand down in a bare contenteditable field", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  const body = report.locator("body");
+  const scratchpad = report.locator('[contenteditable][aria-label="Preview scratchpad"]');
+  await scratchpad.focus();
+  await expect(scratchpad).toBeFocused();
+  await dashboard.keyboard.press("d");
+
+  await expect(scratchpad).toHaveText("d");
+  expect(await body.evaluate(() => window.scrollY)).toBe(0);
 });
 
 test("an HTML report opens rendered, and its source only on request", async ({

@@ -57,6 +57,19 @@ test("HTML fragments stay opaque and authorize only the three bridges", () => {
   assert.match(source, /mission:file-preview-comment/);
   assert.match(source, /mission:file-preview-block/);
   assert.match(source, /mission:file-preview-ready/);
+  assert.match(source, /mission:file-preview-keyboard/);
+});
+
+test("the preview keyboard bridge is inert until Files arms it", () => {
+  const bridge = bridgeContaining("mission:file-preview-keyboard");
+  assert.match(bridge, /missionKeyboard=false/);
+  assert.match(bridge, /event\.source===parent/);
+  assert.match(bridge, /event\.data\.enabled===true/);
+  assert.match(bridge, /event\.key==="Tab"[\s\S]*preventDefault\(\)[\s\S]*event\.shiftKey[\s\S]*action:"exit"/);
+  assert.match(bridge, /event\.key==="Escape"[\s\S]*action:"exit"/);
+  assert.match(bridge, /event\.key==="u"\|\|event\.key==="d"[\s\S]*innerHeight/);
+  assert.match(bridge, /event\.target\.isContentEditable/);
+  assert.doesNotMatch(bridge, /\[contenteditable=/);
 });
 
 test("the comment bridge announces itself, so arming it is never a guess about timing", () => {

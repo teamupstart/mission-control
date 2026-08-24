@@ -76,6 +76,11 @@ const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 let effort = argvValue("--effort") ?? "medium";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
+// This review scenario has to submit two queued messages before the held turn drains. A
+// separate longer window keeps that setup deterministic under the full gate's four workers
+// without adding ten seconds to every spec that uses the ordinary held turn.
+const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
+const REVIEW_HELD_TURN_MS = 15_000;
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -1064,12 +1069,17 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
-    if (prompt === HELD_TURN) {
+    const heldTurnMs = prompt === HELD_TURN
+      ? HELD_TURN_MS
+      : prompt === REVIEW_HELD_TURN
+      ? REVIEW_HELD_TURN_MS
+      : null;
+    if (heldTurnMs !== null) {
       const turnState = { prompts: [prompt] };
       turnState.timer = setTimeout(() => {
         openTurn = null;
         answer(turnState.prompts);
-      }, HELD_TURN_MS);
+      }, heldTurnMs);
       openTurn = turnState;
       return;
     }

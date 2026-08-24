@@ -2432,6 +2432,17 @@ export function App(): React.JSX.Element {
       // Fixed structural navigation (not rebindable).
       switch (e.key) {
         case "Escape":
+          // Files Preview has one closer keyboard layer inside the detail. Escape leaves the
+          // rendered page for its selected file first, matching Shift+Tab; only a later press
+          // peels the whole detail back to the session rail.
+          if (
+            readerSession
+            && target?.closest(".file-preview-reader")
+            && readerTabbers.current.get(readerSession.id)?.(-1) === "moved"
+          ) {
+            e.preventDefault();
+            return;
+          }
           // The reader (console detail or board drill-in) sits above the selection: if the
           // keyboard is inside it, one Escape hands it back to the
           // rail, and only the NEXT closes the board drill-in or drops the selection.

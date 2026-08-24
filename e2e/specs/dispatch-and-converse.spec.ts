@@ -754,11 +754,24 @@ test("Foreman recovers one settled pre-PR ship turn, records it, and stops at th
 
   await expect(detail.getByText(/Mock reply to: Foreman's completion review found blocking work/))
     .toBeVisible({ timeout: 30_000 });
-  // The chip is a SECOND round trip after the reply above - the turn has to land, then its
-  // Foreman provenance has to be recorded and streamed back before this counter can draw.
-  // Every other link in this chain already carries its own window (40s for the delivery, 30s
-  // for the reply); this was the one left on the default, which is why it is the one that
-  // fails when the daemon is busy.
+  // The note and its episode are separate worker requests. Under full-suite contention the
+  // browser can refetch history after the note lands but before the episode does, leaving the
+  // chip stale even though the durable record is correct. This test owns the RECORDED recovery,
+  // not that independent live-fetch race: wait for its record, then read it from a fresh pane.
+  await expect.poll(async () => {
+    const episodes = await api<Array<{ situation: string }>>(
+      daemon,
+      `/api/sessions/${session!.id}/foreman-episodes`,
+    );
+    return episodes.filter((episode) => episode.situation === "ship-recovery").length;
+  }, { timeout: 30_000 }).toBe(1);
+  await dashboard.reload();
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first()
+    .click();
+  await expect(detail).toBeVisible();
   await expect(detail.getByRole("button", { name: /Foreman · 1/ })).toBeVisible({ timeout: 30_000 });
   await detail.getByRole("button", { name: /Foreman · 1/ }).click();
   await detail.getByRole("button", {

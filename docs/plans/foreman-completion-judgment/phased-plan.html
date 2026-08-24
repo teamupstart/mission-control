@@ -54,8 +54,8 @@
   </ol>
 
   <h2>Sizing and phase count</h2>
-  <p>Estimated non-test implementation lines: Phase 1 ~200-250, Phase 2 ~120-160, Phase 3
-  ~130-170; total ~450-580. Three phases because each boundary isolates a distinct risk class in
+  <p>Estimated non-test implementation lines: Phase 1 ~230-290, Phase 2 ~120-160, Phase 3
+  ~130-170; total ~480-620. Three phases because each boundary isolates a distinct risk class in
   the repository's most safety-critical worker: Phase 1 changes <em>what the verifier sees and
   claims</em> (judgment and prompt-injection surface), Phase 2 changes <em>when text is typed into
   live sessions</em> (delivery safety), Phase 3 changes <em>persisted-state keying</em>
@@ -98,9 +98,10 @@
   <ul>
     <li><strong>C1</strong> (Phase 1): <code>VerifyInput.registeredEvidence</code> and the
     registered-evidence statement; daemon-generated metadata above the untrusted fence,
-    child-authored display names, locators, and captions inside it. Zero items is stated as
-    "clause not satisfied"; a nonempty list is a count only - coverage judgment stays with the
-    verifier.</li>
+    child-authored display names, locators, and captions inside it. Evidence rows are stamped
+    with the resolved intent episode key at staging and only same-episode items are admitted.
+    Zero admitted items is stated as "clause not satisfied"; a nonempty list is a count only -
+    coverage judgment stays with the verifier.</li>
     <li><strong>C2</strong> (Phase 1): the additive gap kind <code>unverified</code> - "the change
     looks done; only proof of verification is missing".</li>
     <li><strong>C3</strong> (Phase 2 entry point, Phase 3 keying): one daemon-owned recovery

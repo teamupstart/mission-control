@@ -54,21 +54,29 @@ renders episodes and free-text gap kinds.
 
 1. **Shapes** (`src/shared/types.ts`, additive and optional throughout):
    - `PromptedCompletionGap` gains `kind?`, `severity?`, `strikes?`.
-   - `PromptedCompletionDecision` gains `episodeKey?: string | null`.
+   - `PromptedCompletionDecision` gains `episodeKey?: string | null` and
+     `heldRound?: number` - the count of consecutive held decisions for this episode,
+     carried on the decision itself because the row is overwritten in place: once a
+     decision is replaced, that count exists nowhere else, and it must not depend on the
+     gap set (gaps are resolved, replaced, and reminted between rounds).
    - `PromptedRecoveryState` gains `episodeKey?: string | null`.
    Legacy JSON with the fields absent must parse to today's meaning; the daemon's
    consume and recovery-claim schemas accept the new fields additively.
 
 2. **Persist verdict detail** (`src/server/foreman/worker.ts` and the daemon consume
    route): `consumePromptedCycle` passes the candidate's episode key and, for held
-   outcomes, each blocking gap's kind, severity, and its updated strike count.
+   outcomes, each blocking gap's kind, severity, and its updated strike count. The daemon
+   computes `heldRound` at the single write point: when the outcome is `held` and the row
+   it replaces is a `held` decision with the same episode key, the new `heldRound` is the
+   previous value plus one; on any other outcome, a different or absent episode key, or a
+   legacy predecessor without the field, it is 1. The worker never computes it.
 
 3. **Feed prior gaps forward** (`worker.ts`, prompted verify): when the queue's current
    decision is `held`, its `episodeKey` equals the candidate's, and its generation is
    older than the candidate's, map its gaps (with strikes) into `priorGaps` and set
-   `round` to the count of consecutive held decisions for this episode. A legacy decision
-   without an episode key feeds nothing (today's behavior). The verifier then reuses gap
-   ids, and its verdict's `resolved` list retires them.
+   `round` to that decision's persisted `heldRound`. A legacy decision without an episode
+   key (and therefore without `heldRound`) feeds nothing (today's behavior). The verifier
+   then reuses gap ids, and its verdict's `resolved` list retires them.
 
 4. **Episode-keyed attempt continuity** (`src/server/foreman/ship-shepherd.ts`):
    `recoveryStateMatches` accepts a state whose `episodeKey` matches the input's episode
@@ -105,6 +113,10 @@ renders episodes and free-text gap kinds.
 - `test/prompted-wrapup.test.ts` / `test/prompted-wrapup-worker-e2e.test.ts`: prior gaps
   and round feed forward only on matching episode; strikes accumulate in the persisted
   decision; a verdict resolving a gap id retires it; legacy decisions feed nothing.
+- `heldRound` accounting (daemon consume path): increments across replaced decisions of
+  one episode even when the gap set changes completely between rounds; resets to 1 on a
+  non-held outcome, a different episode key, or a legacy predecessor; the fed `round`
+  equals the persisted value, never a reconstruction.
 - `test/ship-recovery-http.test.ts`: claim endpoint round-trips the episode key; old
   payloads without it are accepted.
 
@@ -135,6 +147,13 @@ budgets are per (task, episode, reason); markers remain per-delivery idempotency
 - 2026-08-24: written after Phases 1-2 and audited against them. Phase 1's gap-kind
   vocabulary (C2) is consumed here unchanged; Phase 2's single delivery entry point (C3)
   is preserved - continuity changes keying only, adding no second ledger or delivery path.
+- 2026-08-24 (Inspector round 2): the verification round is now durable. "Count of
+  consecutive held decisions" cannot be reconstructed from the single overwritten
+  `prompted_decision` row, so the decision carries a persisted `heldRound` counter,
+  computed at the daemon's single write point, independent of the gap set, and reset by a
+  non-held outcome or an episode change. The fed `round` reads the persisted value.
+  The decision `episodeKey` here and Phase 1's evidence `episode_key` stamp both use the
+  same resolved intent episode key.
 - 2026-08-24: final whole-set audit - every source-plan requirement and submitted decision
   maps to exactly one phase (evidence input, structural clause, fallback: Phase 1;
   immediate delivery under `keepShipTasksMoving`: Phase 2; strikes, episode budget,

@@ -111,10 +111,13 @@
     task-bound session, the worker fetches registered evidence via a new
     <code>client.workflowEvidence(sessionId)</code> against the existing daemon route
     <code>GET /api/sessions/:id/workflow-evidence</code> (<code>src/server/routes.ts:1973</code>).
-    What is registered becomes a stated fact, never a model inference about database contents:
-    zero rows render as "the clause is not satisfied"; a nonempty list renders as a count, with
-    coverage judgment left to the verifier - it is never declared to satisfy the clause outright,
-    because a task that requested several artifacts is not satisfied by one.</p>
+    Each staged row is stamped with the resolved intent episode key at registration and only
+    same-episode items are admitted - a session re-purposed by a new human prompt cannot present
+    stale evidence from its previous instruction. What is registered becomes a stated fact, never a
+    model inference about database contents: zero rows render as "the clause is not satisfied"; a
+    nonempty list renders as a count, with coverage judgment left to the verifier - it is never
+    declared to satisfy the clause outright, because a task that requested several artifacts is not
+    satisfied by one.</p>
     <p><strong>Evidence in the prompt.</strong> <code>VerifyInput</code> gains a
     <code>registeredEvidence</code> list. Only daemon-generated metadata - counts, evidence kinds,
     generations, timestamps, byte sizes - renders above the evidence fence as trusted context.
@@ -123,8 +126,8 @@
     the transcript does.</p>
     <p><strong>Policy alignment.</strong> The verify POLICY is extended: when registered command
     evidence covers the required verification, absence of test output in the transcript is not a gap;
-    prior-generation evidence remains valid for a re-submission - which resolves the
-    standing-instruction contradiction without touching the instruction.</p>
+    prior-generation evidence from the same intent episode remains valid for a re-submission -
+    which resolves the standing-instruction contradiction without touching the instruction.</p>
     <p><strong>Auto-submit fallback for verification-evidence-only holds</strong>
     <span class="muted">(adopted decision, 2026-08-24)</span>. The gap vocabulary gains an explicit
     evidence-class marker (an additive <code>kind</code> value in <code>GapSchema</code>). When a
@@ -155,8 +158,10 @@
     <h3>Phase 3 - Convergence and escalation across generations</h3>
     <p><strong>Gap strikes survive the generation bump.</strong> The previous held decision's gaps
     (already persisted in <code>prompted_decision</code>) feed the next verify for the same intent
-    episode as <code>priorGaps</code> with persisted strike counts, so the verifier's REUSE-GAP-IDS
-    machinery works across cycles.</p>
+    episode as <code>priorGaps</code> with persisted strike counts; a per-episode held-round counter
+    is persisted beside them, because the decision row is overwritten in place and the round cannot
+    be reconstructed once replaced. The verifier's REUSE-GAP-IDS machinery then works across
+    cycles.</p>
     <p><strong>Attempt budget keyed on the episode, not the generation.</strong> Ship-recovery attempt
     counting moves to (task, intent episodeKey, reason): a nudge-response's new generation continues
     the same budget, and attempt 4 escalates through the existing path. A new accepted human prompt

@@ -20,7 +20,7 @@ and, fleet-wide, 15 of 31 decided sessions sitting on `held`.
 
 ## Scope and non-goals
 
-In scope: the Foreman client evidence read, the verify prompt's evidence sections and
+In scope: the intent-episode stamp on staged evidence, the Foreman client evidence read, the verify prompt's evidence sections and
 policy text, the additive gap kind, the structural evidence-registration statement, and the
 worker's fallback claim branch. All on the prompted path.
 
@@ -60,14 +60,29 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
 
 ## Implementation steps
 
-1. **Client read** (`src/server/foreman/client.ts`): add
-   `workflowEvidence(id: string): Promise<WorkflowStagedEvidenceList | null>` against the
-   existing route. Map 404 to `null` (session gone or exited); throw on other failures so
-   the worker can treat them as an evidence-gather failure.
+1. **Episode stamp at staging and the client read.** Evidence must be scoped to the
+   intent episode it was produced for, or a session re-purposed by a new human prompt
+   could present stale command evidence as support for the new work and trigger the
+   fallback on it.
+   - The daemon stamps each staged evidence row with the session's resolved intent
+     episode key at registration time (additive `episode_key` column on
+     `workflow_evidence_staging` via `addColumn`, migration beside the upgrade path; the
+     staging write path is the single writer and already resolves the session). The
+     stamp surfaces on `WorkflowStagedEvidenceList` items.
+   - `src/server/foreman/client.ts` gains
+     `workflowEvidence(id: string): Promise<WorkflowStagedEvidenceList | null>` against
+     the existing route. Map 404 to `null` (session gone or exited); throw on other
+     failures so the worker can treat them as an evidence-gather failure.
+   - The worker admits only items whose stamp equals the verify candidate's episode key.
+     Legacy unstamped rows and rows from another episode are excluded entirely - from the
+     items, the count, and the prior-generation policy. Exclusion errs in the safe
+     direction: it can cause a hold on work whose evidence predates the stamp, never a
+     claim on another instruction's evidence.
 
 2. **Verify input** (`src/server/foreman/queue-prompt.ts`): extend `VerifyInput` with
    `registeredEvidence?: { items: RegisteredEvidenceItem[]; totalCount: number; truncated: boolean } | null`
-   (`null` when the session has no ship contract). Each item separates daemon-generated
+   (`null` when the session has no ship contract), carrying only the admitted
+   same-episode items. Each item separates daemon-generated
    fields - evidence kind (a server-constrained enum), work generation, created-at, byte
    size - from child-authored fields: display name, source locator (the command line for
    command evidence), and caption. The child-authored fields are the session's own text,
@@ -95,8 +110,9 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
      itself appears done; the only deficiency is missing or unconfirmable proof that
      verification ran". Instruct: when registered command evidence covers the verification
      the change requires, the absence of test output in the transcript is NOT a gap;
-     prior-generation registered evidence remains valid for a re-submission (the operator
-     may explicitly tell agents not to rerun the full suite on re-submission); when the
+     prior-generation registered evidence from the same intent episode remains valid for
+     a re-submission (the operator may explicitly tell agents not to rerun the full suite
+     on re-submission) - evidence from another episode is never shown, per step 1; when the
      only thing standing between this verdict and complete is verification proof, answer
      `complete: true` with a blocking gap of kind `unverified` rather than
      `complete: false`.
@@ -108,9 +124,10 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
    - Fetch evidence in the same `Promise.all` as the diff and transcript anchor; on read
      failure, log and return `false` without consuming (same as a failed diff read).
    - Build `registeredEvidence` (items, total count, truncation) when the session's task
-     kind is `ship` and pass it into `verifyItem`. No satisfaction boolean is computed:
-     the zero case renders as "clause not satisfied" and the nonempty case hands coverage
-     judgment to the verifier, per step 3.
+     kind is `ship`, admitting only same-episode items per step 1, and pass it into
+     `verifyItem`. No satisfaction boolean is computed: the zero case renders as "clause
+     not satisfied" and the nonempty case hands coverage judgment to the verifier, per
+     step 3.
    - After the verdict and the existing `refreshPromptedCandidate` re-check
      (`worker.ts:2055`): if the verdict is claimable as today (`complete` and no blocking
      gaps), behavior is unchanged. New branch: if `complete === true` and every blocking
@@ -128,9 +145,14 @@ change to recovery accounting or persisted decision shapes (Phase 3); no UI chan
 
 ## Data, API, and compatibility
 
-- No persisted-shape changes. The fallback decision is made at verdict time on the live
-  `QueueVerdict`; the persisted `PromptedCompletionGap` (id, path, detail) is unchanged in
-  this phase (Phase 3 extends it).
+- One additive schema migration: the `episode_key` column on
+  `workflow_evidence_staging` (`addColumn`, kept beside the upgrade path per
+  `src/server/db.ts` conventions). Existing rows keep a NULL stamp and are excluded from
+  admission - the conservative direction; a session that re-registers evidence after this
+  ships gets stamped rows.
+- No other persisted-shape changes. The fallback decision is made at verdict time on the
+  live `QueueVerdict`; the persisted `PromptedCompletionGap` (id, path, detail) is
+  unchanged in this phase (Phase 3 extends it).
 - The wire schema for the verdict gains one additive enum value; old recorded decisions
   parse unchanged.
 - The evidence read adds one daemon round-trip per prompted verify (a handful per hour,
@@ -152,6 +174,10 @@ Extend the existing suites rather than creating parallel ones:
   claims with the fallback-prefixed summary; a verdict with any other blocking gap holds;
   `complete: false` holds; `no_binding` falls through to hold; an evidence read failure
   neither consumes nor claims.
+- Episode scoping: evidence stamped with another intent episode is excluded from the
+  items, the count, and the fallback (a session with only other-episode evidence renders
+  the zero-items statement); legacy unstamped rows are likewise excluded; staging stamps
+  the current resolved episode key.
 
 Run:
 
@@ -189,3 +215,9 @@ or redefine the kind.
   registered, so the trusted statement now carries only the count (with the zero case
   stated as not satisfied) and coverage judgment stays with the verifier. C1's wording
   tightened accordingly; C2 unchanged.
+- 2026-08-24 (Inspector round 2): evidence admission scoped to the intent episode. The
+  daemon stamps each staged row with the resolved episode key (additive `episode_key`
+  column), and the worker admits only same-episode items - stale evidence from a previous
+  instruction in a re-purposed session can no longer support the fallback. Legacy
+  unstamped rows are excluded conservatively. Phase 3's decision `episodeKey` uses the
+  same resolved key, so the two fields cannot drift.

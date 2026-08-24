@@ -51,11 +51,11 @@ Estimated non-test implementation lines (gross added or materially changed):
 
 | Phase | Estimate | Main surfaces |
 |---|---|---|
-| 1 | ~200-250 | `client.ts`, `queue-prompt.ts`, `queue-verify.ts`, `worker.ts` |
+| 1 | ~230-290 | `client.ts`, `queue-prompt.ts`, `queue-verify.ts`, `worker.ts`, `db.ts` + staging write (episode stamp) |
 | 2 | ~120-160 | `worker.ts`, `ship-shepherd.ts` |
 | 3 | ~130-170 | `src/shared/types.ts`, `ship-shepherd.ts`, `worker.ts`, daemon claim route |
 
-Total ~450-580 lines, well above the one-phase threshold. Three phases rather than one
+Total ~480-620 lines, well above the one-phase threshold. Three phases rather than one
 because each boundary isolates a distinct risk class in the repository's most
 safety-critical worker, and each leaves the repository operable and independently
 testable:
@@ -87,9 +87,12 @@ order equals phase order.
 - **C1 (Phase 1 owns): the verifier's evidence input.** `VerifyInput.registeredEvidence`
   and the registered-evidence statement: daemon-generated metadata (counts, kinds,
   generations, timestamps, sizes) above the untrusted fence; child-authored display
-  names, source locators, and captions inside it. Zero registered items is stated as
-  "clause not satisfied"; a nonempty list is stated as a count only, with coverage
-  judgment left to the verifier. Later phases must not move content across that fence.
+  names, source locators, and captions inside it. Evidence rows are stamped with the
+  resolved intent episode key at staging and only same-episode items are admitted - to
+  the items, the count, and the fallback. Zero admitted items is stated as "clause not
+  satisfied"; a nonempty list is stated as a count only, with coverage judgment left to
+  the verifier. Later phases must not move content across that fence, and Phase 3's
+  decision `episodeKey` uses the same resolved key as the evidence stamp.
 - **C2 (Phase 1 owns): the evidence-class gap kind.** One additive `GapSchema.kind` value,
   `"unverified"`, meaning "the change looks done; only proof of verification is missing".
   Phase 3 persists it; nothing renames existing kinds.
@@ -127,3 +130,11 @@ source plan's success criteria, spread across the phases that introduce them.
   statement carries the count (zero stated as not satisfied) and coverage judgment stays
   with the verifier. Phase 1's steps, tests, and handoff updated to match; Phases 2-3
   unaffected.
+- 2026-08-24 (Inspector round 2 on the plan PR): two boundary fixes. Phase 1 scopes
+  evidence admission to the intent episode - the daemon stamps each staged row with the
+  resolved episode key (additive `episode_key` column, Phase 1's estimate raised
+  accordingly) and stale or legacy rows are excluded conservatively. Phase 3 makes the
+  verification round durable - the decision persists a `heldRound` counter computed at
+  the daemon's single write point, because the overwritten decision row cannot reconstruct
+  consecutive-held history. Both keys derive from the same resolved intent episode, noted
+  in C1.

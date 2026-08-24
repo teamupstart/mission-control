@@ -64,8 +64,11 @@ The judgment layer learns to see the proof that already exists.
 **Structural pre-check.** Before the LLM call on the prompted verify path for a task-bound
 session, the worker fetches the session's registered evidence through a new
 `client.workflowEvidence(sessionId)` against the existing daemon route
-`GET /api/sessions/:id/workflow-evidence` (`src/server/routes.ts:1973`). What is
-registered becomes a stated fact, not a model inference about database contents:
+`GET /api/sessions/:id/workflow-evidence` (`src/server/routes.ts:1973`). Each staged row
+is stamped with the resolved intent episode key at registration, and only same-episode
+items are admitted - a session re-purposed by a new human prompt cannot present stale
+evidence from its previous instruction. What is registered becomes a stated fact, not a
+model inference about database contents:
 
 - No rows exist: the verify prompt states as trusted policy that the contract clause
   "evidence registration is done" is not satisfied.
@@ -86,8 +89,8 @@ per-item and total caps.
 workflow runs tests and lint and the verifier's job is intent satisfaction. The prompt is
 extended to say explicitly: when registered command evidence covers the verification the
 change requires, absence of test output in the transcript is not a gap; and prior-generation
-evidence remains valid for a re-submission (which resolves the standing-instruction
-contradiction without touching the instruction).
+evidence from the same intent episode remains valid for a re-submission (which resolves the
+standing-instruction contradiction without touching the instruction).
 
 **Auto-submit fallback for verification-evidence-only holds** *(adopted decision,
 2026-08-24)*. The gap vocabulary gains an explicit evidence-class marker (an additive
@@ -134,8 +137,10 @@ The loop terminates: either the work converges or a human hears about it.
 
 **Gap strikes survive the generation bump.** The previous held decision's gaps (already
 persisted in `foreman_queues.prompted_decision`) are fed into the next prompted verify for
-the same intent episode as `priorGaps` with live strike counts, and strike counts are
-persisted beside the gaps. The verifier's existing REUSE-GAP-IDS machinery then works
+the same intent episode as `priorGaps` with live strike counts; strike counts and a
+per-episode held-round counter are persisted beside the gaps, because the decision row is
+overwritten in place and the round cannot be reconstructed once it is replaced. The
+verifier's existing REUSE-GAP-IDS machinery then works
 across cycles, making a stuck demand visible instead of eternally fresh.
 
 **Attempt budget keyed on the episode, not the generation.** Ship-recovery attempt

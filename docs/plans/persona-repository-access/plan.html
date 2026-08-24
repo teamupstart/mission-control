@@ -377,7 +377,11 @@ export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";
 <pre><code>cp &lt;worktree&gt;/.git/index $TMP          # seeds the stat cache: 34 ms instead of 729 ms
 GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
 GIT_INDEX_FILE=$TMP git write-tree
-git commit-tree &lt;tree&gt; -p &lt;headSha&gt; -m "mission-control review snapshot &lt;submissionId&gt;"
+# Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
+# clone that never set user.email would fail every snapshot - and on a machine that did set
+# it, the operator would be recorded as the author of an object the daemon wrote.
+GIT_AUTHOR_NAME=... GIT_AUTHOR_EMAIL=... GIT_COMMITTER_NAME=... GIT_COMMITTER_EMAIL=... \
+  git commit-tree &lt;tree&gt; -p &lt;headSha&gt; -m "mission-control review snapshot &lt;submissionId&gt;"
 git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;commit&gt;</code></pre>
 
   <figure>
@@ -507,7 +511,7 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       <tr><td><code>search_text</code></td><td><code>pattern</code>, <code>pathGlob?</code>, <code>fixedString?</code>, <code>maxMatches?</code></td><td><code>git grep -I -n</code> against the snapshot commit</td></tr>
       <tr><td><code>list_paths</code></td><td><code>pathGlob</code>, <code>maxPaths?</code></td><td><code>git ls-tree -r -z</code> filtered by the shared matcher</td></tr>
       <tr><td><code>git_status</code></td><td>none</td><td><code>git diff --name-status &lt;headSha&gt; &lt;snapshot&gt;</code> plus the captured porcelain status</td></tr>
-      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff</code> between the snapshot and <code>base</code> or <code>HEAD</code>; <code>base</code> must be an ancestor of the snapshot</td></tr>
+      <tr><td><code>git_diff</code></td><td><code>path?</code>, <code>base?</code></td><td><code>git diff</code> between the snapshot and <code>base</code>, defaulting to the captured <code>headSha</code> and never live <code>HEAD</code>; an explicit <code>base</code> must be an ancestor of the snapshot</td></tr>
       <tr><td><code>git_show</code></td><td><code>rev</code>, <code>path?</code></td><td><code>git show</code>; <code>rev</code> must be an ancestor of the snapshot</td></tr>
       <tr><td><code>git_log</code></td><td><code>path?</code>, <code>maxEntries?</code></td><td><code>git log --max-count=N --format=&lt;NUL-separated&gt;</code></td></tr>
       <tr><td><code>git_blame</code></td><td><code>path</code>, <code>startLine?</code>, <code>lineCount?</code></td><td><code>git blame --porcelain &lt;snapshot&gt; -- &lt;path&gt;</code></td></tr>

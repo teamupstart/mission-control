@@ -170,7 +170,15 @@ guarantee that a retried round cannot double-write its audit.
   2. copy the checkout's live index to a temp path, falling back to `read-tree HEAD` into an empty
      temp index when the copy fails - the fast path is 34 ms and the fallback is 729 ms, and the
      fallback must exist because a fresh or repaired worktree may have no readable index;
-  3. `add -A`, `write-tree`, `commit-tree -p <headSha>`, `update-ref`;
+  3. `add -A`, `write-tree`, `commit-tree -p <headSha>`, `update-ref`. **`commit-tree` runs with an
+     explicit daemon-owned identity** in its environment - `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+     `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` - and never relies on repository or global config.
+     Verified: with no identity configured, `commit-tree` exits non-zero with "Author identity
+     unknown", so a freshly cloned repository that never set `user.email` would fail every snapshot,
+     and Phase 3 would then retry and block every access-enabled Persona before any provider call.
+     The explicit identity also fixes provenance in the opposite case: on a machine that *does* have
+     config, the operator would otherwise be recorded as the author of an object the daemon wrote.
+     Constants live beside `reviewSnapshotRef` so one module owns the namespace and the identity;
   4. assert the resulting commit's parent equals `headSha`, and return
      `{ oid, repoRoot }` or a typed failure naming which step failed;
   5. clean up the temp index on every path.
@@ -242,6 +250,14 @@ reference into the whole object database - another branch, another task's work, 
 repository happens to hold - and a diff taken against one returns files that were never in the
 submitted state, which defeats the exact-submitted-state boundary this phase exists to draw.
 
+**`git_diff`'s default base is the captured `headSha` - the snapshot commit's own parent - and
+never live `HEAD`.** This is the same hazard the whole phase exists to answer, so it must not be
+reintroduced by an omitted argument: the worktree's `HEAD` is mutable and may have moved, been
+reset, or been handed to another task by the time a review runs, so a diff against it can return
+state that was never submitted. The reader already holds `headSha`; it resolves the default itself
+and never asks git for `HEAD`. An explicitly requested `base` goes through the ancestry check
+above; an omitted one is not a request and is not resolved through anything.
+
 The rule is written once and applied to both ops rather than per-op, because the two were specified
 separately at first and only `git_show` got the check; a shared `resolveSnapshotAncestor(rev)` that
 every rev-taking op must call is what stops the next op added to this list from repeating that.
@@ -281,10 +297,20 @@ look viable.
   - the snapshot still reads after the worktree directory is deleted;
   - the snapshot still reads after `git gc --prune=now`;
   - the cold-index fallback produces the same tree as the seeded path;
+  - **snapshot creation succeeds in a repository with no `user.name` or `user.email`** - build the
+    fixture with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_SYSTEM=/dev/null` so the ambient
+    operator config cannot mask the failure, and assert the commit's recorded author and committer
+    are the daemon identity rather than anyone else's;
   - `deleteReviewSnapshot` is idempotent and the sweep removes an orphan and spares a live one.
 - `test/repository-read.test.ts` (new): every op returns its shape against the fixture; a dirty
   file reads with its dirty content; `read_file` paging by `startLine`/`lineCount`; truncation sets
   `truncated` and `omittedBytes`; `list_paths` and `search_text` agree on which paths exist.
+- **`git_diff` with no `base` does not follow live `HEAD`.** The regression test for the hazard the
+  whole phase exists to answer: take a snapshot, then move the worktree's `HEAD` (commit again, or
+  reset it) and assert the default-base diff is unchanged and still describes the submitted state.
+  A test that only checked the happy path would pass against an implementation that asked git for
+  `HEAD`, because at capture time the two agree - the bug only appears once the checkout moves,
+  which is exactly when it matters.
 - `test/workflow-security.test.ts`: the adversarial half, and the tests that justify this phase's
   boundary - absolute path, `..` in every position, NUL, a leading `.git`, an over-long path, a
   denied path as an argument, a denied path appearing **only** in a `search_text` result, a denied
@@ -377,3 +403,15 @@ Phase 3 may rely on, and must not change:
   `maxPathsPerList` also rose from 2,000 to 4,000, because 2,000 sat below this repository's
   measured 2,633-path tree while claiming to sit above it - a whole-repository listing would have
   been silently clipped, which is the exact failure decision 12 rules out.
+- **Reconciliation record, review round 4.** Two more findings, both this phase's, both accepted:
+  1. `git_diff`'s default base read "`base` or `HEAD`", which reintroduces in one word the exact
+     hazard this phase exists to answer - live `HEAD` is mutable and may have moved, been reset, or
+     been handed to another task by review time. The default is now the captured `headSha`, resolved
+     by the reader from state it already holds, and git is never asked for `HEAD`. A regression test
+     moves the worktree's `HEAD` after capture and asserts the default-base diff does not follow it.
+  2. `commit-tree` was specified without an identity, and it exits "Author identity unknown" when
+     none is configured (verified). A clone that never set `user.email` would have failed every
+     snapshot, and Phase 3 would then block every access-enabled Persona. It now runs with an
+     explicit daemon-owned author and committer, which also stops the operator being recorded as the
+     author of an object the daemon wrote. Fixture tests null out global and system config so
+     ambient operator settings cannot mask the failure.

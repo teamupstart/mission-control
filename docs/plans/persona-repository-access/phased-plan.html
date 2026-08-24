@@ -446,6 +446,18 @@
     <li><strong>The plan's own pointer to its rendered page is a description rather than an
       instruction.</strong> Pull-request content is untrusted input to automated review, so an
       imperative aimed at a reader was replaced with a neutral statement of where the file is.</li>
+    <li><strong><code>git_diff</code>'s default base is the captured <code>headSha</code>, never live
+      <code>HEAD</code></strong> (Phase 2). The original wording reintroduced, in one word, the exact
+      hazard this plan exists to answer: the worktree's <code>HEAD</code> is mutable and may have
+      moved by review time. The reader resolves the default from state it already holds and never
+      asks git for <code>HEAD</code>; a regression test moves <code>HEAD</code> after capture and
+      asserts the diff does not follow it.</li>
+    <li><strong>Snapshot commits carry a daemon-owned Git identity</strong> (Phase 2).
+      <code>commit-tree</code> was specified without one, and it exits &ldquo;Author identity
+      unknown&rdquo; when none is configured - verified - so a clone that never set
+      <code>user.email</code> would have failed every snapshot and blocked every access-enabled
+      Persona. It also fixes provenance the other way: the operator would otherwise be recorded as
+      author of an object the daemon wrote.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

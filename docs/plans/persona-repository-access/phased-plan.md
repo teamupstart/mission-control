@@ -294,6 +294,16 @@ defects in the artifacts, all fixed without moving an approved decision:
 9. **The plan's own pointer to its rendered page is a description rather than an instruction.**
    Pull-request content is untrusted input to automated review, so an imperative aimed at a reader
    was replaced with a neutral statement of where the file is.
+10. **`git_diff`'s default base is the captured `headSha`, never live `HEAD`** (Phase 2). The
+    original wording reintroduced, in one word, the exact hazard this plan exists to answer: the
+    worktree's `HEAD` is mutable and may have moved by review time. The reader resolves the default
+    from state it already holds and never asks git for `HEAD`; a regression test moves `HEAD` after
+    capture and asserts the diff does not follow it.
+11. **Snapshot commits carry a daemon-owned Git identity** (Phase 2). `commit-tree` was specified
+    without one, and it exits "Author identity unknown" when none is configured - verified - so a
+    clone that never set `user.email` would have failed every snapshot and blocked every
+    access-enabled Persona. It also fixes provenance the other way: the operator would otherwise be
+    recorded as author of an object the daemon wrote.
 
 ## Final verification strategy
 

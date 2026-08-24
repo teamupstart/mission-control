@@ -271,7 +271,11 @@ unstaged and untracked - parented on the captured `HEAD`, pinned by a ref under
 cp <worktree>/.git/index $TMP          # seeds the stat cache: 34 ms instead of 729 ms
 GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
 GIT_INDEX_FILE=$TMP git write-tree
-git commit-tree <tree> -p <headSha> -m "mission-control review snapshot <submissionId>"
+# Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
+# clone that never set user.email would fail every snapshot - and on a machine that did set
+# it, the operator would be recorded as the author of an object the daemon wrote.
+GIT_AUTHOR_NAME=... GIT_AUTHOR_EMAIL=... GIT_COMMITTER_NAME=... GIT_COMMITTER_EMAIL=... \
+  git commit-tree <tree> -p <headSha> -m "mission-control review snapshot <submissionId>"
 git update-ref refs/mission-control/review-snapshots/<submissionId> <commit>
 ```
 
@@ -347,7 +351,7 @@ else:
 | `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n` against the snapshot commit |
 | `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z` filtered by the shared matcher |
 | `git_status` | - | `git diff --name-status <headSha> <snapshot>` plus the captured porcelain status |
-| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base` or `HEAD`; `base` must be an ancestor of the snapshot |
+| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base`, defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of the snapshot |
 | `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot |
 | `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>` |
 | `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshot> -- <path>` |

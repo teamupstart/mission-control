@@ -1,0 +1,1379 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ai-conductor pipeline stages on a session card &middot; mockups</title>
+    <style>
+      /* ==========================================================================
+         Tokens, copied verbatim from src/web/styles.css so these mockups are the
+         real palette rather than an approximation of it.
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --exited: #707a88;
+        --neutral: #8b94a3;
+        --select: #35c08a;
+        --purple: #a371f7;
+
+        --radius: 13px;
+        --shadow:
+          0 1px 2px rgba(0, 0, 0, 0.4),
+          0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ==========================================================================
+         Presentation chrome for this document only. `mk-` prefix so nothing here
+         could ever be mistaken for a class the app ships.
+         ========================================================================== */
+      .mk-page { max-width: 1400px; margin: 0 auto; padding: 40px 32px 120px; }
+      .mk-masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 26px;
+        margin-bottom: 34px;
+      }
+      .mk-eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      .mk-masthead h1 { margin: 0 0 12px; font-size: 27px; letter-spacing: -0.015em; }
+      .mk-lede { margin: 0; max-width: 76ch; color: var(--muted); font-size: 14.5px; }
+      .mk-lede strong { color: var(--fg); font-weight: 600; }
+      .mk-lede code, .mk-note code, .mk-tbl code, .mk-li code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        color: var(--fg);
+        background: var(--bg-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+
+      .mk-opt { margin: 0 0 68px; }
+      .mk-opt-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        border-left: 3px solid var(--working);
+        padding-left: 14px;
+        margin-bottom: 6px;
+      }
+      .mk-opt.b .mk-opt-head { border-left-color: var(--purple); }
+      .mk-opt.c .mk-opt-head { border-left-color: var(--idle); }
+      .mk-opt-head h2 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+      .mk-tag {
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 9px;
+      }
+      .mk-opt-lede {
+        margin: 0 0 22px 17px;
+        max-width: 82ch;
+        color: var(--muted);
+        font-size: 13.5px;
+      }
+      .mk-opt-lede strong { color: var(--fg); font-weight: 600; }
+
+      .mk-sub {
+        margin: 30px 0 12px 17px;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      /* A board column, so a tile is judged at the width it really gets. */
+      .mk-rack { display: flex; flex-wrap: wrap; gap: 22px; margin-left: 17px; }
+      .mk-col { width: 288px; flex: none; }
+      .mk-col-cap {
+        font-size: 10.5px;
+        color: var(--dim);
+        margin-bottom: 7px;
+        font-family: var(--mono);
+      }
+
+      .mk-note {
+        margin: 18px 0 0 17px;
+        max-width: 82ch;
+        padding: 12px 15px;
+        border-left: 2px solid var(--border);
+        background: var(--bg-2);
+        border-radius: 0 8px 8px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .mk-note strong { color: var(--fg); }
+
+      .mk-tbl {
+        width: calc(100% - 17px);
+        margin-left: 17px;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .mk-tbl th, .mk-tbl td {
+        text-align: left;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+      }
+      .mk-tbl th {
+        color: var(--dim);
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+      .mk-tbl td strong { color: var(--fg); }
+      .mk-yes { color: var(--idle); }
+      .mk-no { color: var(--danger); }
+      .mk-mid { color: var(--attention); }
+
+      /* ==========================================================================
+         The real tile, rebuilt from src/web/styles.css `.tile` so the stage strip
+         is judged inside the box it has to live in.
+         ========================================================================== */
+      .tile {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        width: 100%;
+        padding: 10px 11px 9px 13px;
+        text-align: left;
+        color: var(--fg);
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+      }
+      .tile::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 10px 0 0 10px;
+        background: var(--working);
+      }
+      .tile.t-idle::before { background: var(--idle); }
+      .tile.t-attention::before { background: var(--attention); }
+      .tile.t-exited::before { background: var(--exited); }
+
+      .tile-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .agent-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #d97757;
+        flex: none;
+      }
+      .tile-name {
+        font-size: 12.5px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tile-goal {
+        font-size: 11.5px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tile-activity {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        color: var(--working);
+        min-width: 0;
+      }
+      .tile-activity .ta-txt {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tile-marks { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+      .tile-flag {
+        font-size: 10px;
+        font-weight: 650;
+        padding: 1px 6px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-2);
+        color: var(--muted);
+      }
+      .tile-flag.tf-review { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+      .tile-runtime {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 9.5px;
+        color: var(--dim);
+        font-family: var(--mono);
+      }
+
+      /* Today's shipped chip, for the before/after read. */
+      .pipeline-chip {
+        display: inline-flex;
+        align-items: center;
+        align-self: flex-start;
+        max-width: 100%;
+        padding: 5px 8px;
+        font-size: 11px;
+        line-height: 1;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-2);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pipeline-chip-step { color: var(--dim); }
+    </style>
+  </head>
+  <body>
+    <div class="mk-page">
+      <header class="mk-masthead">
+        <p class="mk-eyebrow">Mission Control &middot; design options</p>
+        <h1>ai-conductor pipeline stages on a session card</h1>
+        <p class="mk-lede">
+          A correlated session card says <strong>one word</strong> about a 22-step feature today:
+          <code>&#8632; add-widgets &middot; Build</code>. The step it names is the only one visible,
+          so the card cannot answer <strong>how far along</strong> the run is, <strong>what already
+          failed</strong>, or <strong>what got skipped</strong> - the three reads an operator
+          scanning a board actually wants. Three compact treatments follow. Each replaces the
+          chip's step half with a stage indicator, each fits the tile's existing rhythm, and in
+          each one <strong>hovering a stage opens a popover with that stage's live status</strong>.
+        </p>
+      </header>
+      <style>
+        /* ======================================================================
+           Shared: the hover popover. All three options use one popover grammar,
+           so the choice below is genuinely about the INDICATOR and not about the
+           panel it opens. Hover-driven with CSS here; the real one goes through
+           the app's existing `Tooltip` positioning (flip + edge-shift).
+           ====================================================================== */
+        .mk-hov { position: relative; }
+        .mk-pop {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 9px);
+          z-index: 40;
+          width: 226px;
+          transform: translateX(-50%);
+          padding: 9px 11px 10px;
+          background: var(--panel-2);
+          border: 1px solid var(--border);
+          border-radius: 9px;
+          box-shadow: var(--shadow);
+          opacity: 0;
+          visibility: hidden;
+          transition: opacity 0.12s ease;
+          pointer-events: none;
+          text-align: left;
+        }
+        .mk-hov:hover > .mk-pop { opacity: 1; visibility: visible; }
+        /* Shown at rest in the showcase row: same bubble, no anchoring. */
+        .mk-pop.is-static {
+          /* A `span` laid out statically stays inline, so the bubble would draw no box
+             and its rows would spill past the border. Blockify it explicitly - absolute
+             positioning was doing this implicitly for the anchored ones. */
+          display: block;
+          position: static;
+          transform: none;
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
+        }
+        .mk-pop.is-static::after { display: none; }
+        .mk-popshow {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 26px;
+          align-items: flex-start;
+          margin: 22px 0 0 17px;
+        }
+        .mk-popshow figure { margin: 0; }
+        .mk-popshow figcaption {
+          margin: 0 0 8px;
+          font-size: 10.5px;
+          color: var(--dim);
+          font-family: var(--mono);
+        }
+        .mk-pop::after {
+          content: "";
+          position: absolute;
+          top: 100%;
+          left: 50%;
+          margin-left: -5px;
+          border: 5px solid transparent;
+          border-top-color: var(--border);
+        }
+        .mk-pop-hd {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 7px;
+          padding-bottom: 6px;
+          border-bottom: 1px solid var(--border-soft);
+        }
+        .mk-pop-name {
+          font-size: 10.5px;
+          font-weight: 600;
+          letter-spacing: 0.09em;
+          text-transform: uppercase;
+          color: var(--fg);
+        }
+        .mk-pop-stat { font-size: 10px; white-space: nowrap; }
+        .mk-pop-stat.s-run { color: var(--working); }
+        .mk-pop-stat.s-pass { color: var(--idle); }
+        .mk-pop-stat.s-fail { color: var(--danger); }
+        .mk-pop-stat.s-wait { color: var(--attention); }
+        .mk-pop-stat.s-stop { color: var(--exited); }
+        .mk-pop-row {
+          display: flex;
+          align-items: baseline;
+          gap: 7px;
+          font-size: 10.5px;
+          line-height: 1.65;
+          color: var(--muted);
+        }
+        .mk-pop-row .g { width: 9px; flex: none; text-align: center; font-size: 9px; }
+        .mk-pop-row .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mk-pop-row .v { color: var(--dim); font-size: 9.5px; flex: none; }
+        .mk-pop-row.r-run { color: var(--working); }
+        .mk-pop-row.r-run .g { color: var(--working); }
+        .mk-pop-row.r-pass .g { color: var(--idle); }
+        .mk-pop-row.r-fail { color: var(--danger); }
+        .mk-pop-row.r-fail .g { color: var(--danger); }
+        .mk-pop-row.r-skip { color: var(--dim); }
+        .mk-pop-row.r-skip .n { text-decoration: line-through; text-decoration-color: color-mix(in oklab, var(--dim) 60%, transparent); }
+        .mk-pop-row.r-pend { color: var(--dim); }
+        .mk-pop-row.r-pend .g { color: var(--exited); }
+        .mk-pop-foot {
+          margin: 8px 0 0;
+          padding-top: 7px;
+          border-top: 1px solid var(--border-soft);
+          font-size: 10px;
+          color: var(--dim);
+        }
+        .mk-pop-foot b { color: var(--attention); font-weight: 600; }
+
+        /* ======================================================================
+           OPTION A - the phase meter. One bar, five segments, each segment's
+           WIDTH proportional to how many steps that phase holds and its FILL
+           proportional to how many are finished.
+           ====================================================================== */
+        .pl-meter-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .pl-meter-cap {
+          display: flex;
+          align-items: baseline;
+          gap: 5px;
+          font-size: 9.5px;
+          color: var(--dim);
+          min-width: 0;
+        }
+        .pl-meter-cap .slug {
+          color: var(--muted);
+          font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pl-meter-cap .now { color: var(--working); font-weight: 600; letter-spacing: 0.05em; }
+        .pl-meter-cap .ct { margin-left: auto; flex: none; font-family: var(--mono); }
+        .pl-meter { display: flex; align-items: stretch; gap: 2px; height: 7px; }
+        .plm-seg {
+          position: relative;
+          min-width: 9px;
+          border-radius: 2px;
+          background: color-mix(in oklab, var(--exited) 22%, var(--bg-2));
+          cursor: help;
+          overflow: visible;
+        }
+        .plm-seg > i {
+          display: block;
+          height: 100%;
+          border-radius: 2px;
+          background: var(--exited);
+        }
+        .plm-seg.p-pass > i { background: var(--idle); }
+        .plm-seg.p-run > i { background: var(--working); }
+        .plm-seg.p-fail > i { background: var(--danger); }
+        .plm-seg.p-wait > i { background: var(--attention); }
+        /* The phase the run is actually in: a ring, so it is findable without colour. */
+        .plm-seg.is-now {
+          outline: 1px solid color-mix(in oklab, var(--working) 62%, transparent);
+          outline-offset: 2px;
+        }
+        .plm-seg.is-now.p-fail { outline-color: color-mix(in oklab, var(--danger) 66%, transparent); }
+        /* A phase that finished with skipped steps: hatched, so "done" and "done, 2
+           skipped" are not the same green. */
+        .plm-seg.is-degraded > i {
+          background: repeating-linear-gradient(
+            115deg,
+            var(--idle) 0 3px,
+            color-mix(in oklab, var(--idle) 58%, var(--bg-2)) 3px 6px
+          );
+        }
+        .plm-seg:hover { filter: brightness(1.35); }
+      </style>
+
+      <p class="mk-note" style="margin-left:0;max-width:100ch">
+        <strong>All three cost nothing on the wire.</strong>
+        <code>useEventStream</code> already holds every run on the fleet as
+        <code>pipelineRuns</code>, and <code>PipelineRun.steps</code> already carries all 22 step
+        states. A card joins <code>session.pipeline</code> to that map on
+        <code>(provider, repoRoot, slug)</code> and folds it with the existing
+        <code>pipelineStrip</code> / <code>pipelinePhaseStatus</code> derivation. No SSE widening,
+        no fetch, no new server work, and <code>SessionPipelineLink</code> stays exactly as it is.
+      </p>
+
+      <!-- ================================================================== -->
+      <section class="mk-opt a">
+        <div class="mk-opt-head">
+          <h2>Option A &middot; Phase meter</h2>
+          <span class="mk-tag">one bar &middot; +11px</span>
+        </div>
+        <p class="mk-opt-lede">
+          A single hairline bar cut into five segments, one per phase. Segment
+          <strong>width</strong> is proportional to how many steps that phase holds - so DECIDE's
+          nine steps really are half the bar - and segment <strong>fill</strong> is how many of
+          them are finished. The phase the run is in carries a ring. It reads like a progress bar
+          that knows where its milestones are, which is the read a board scan wants: <em>how far,
+          and is anything red</em>.
+        </p>
+
+        <p class="mk-sub">Four run states, at the board's real column width</p>
+        <div class="mk-rack">
+          <div class="mk-col">
+            <div class="mk-col-cap">building &middot; DECIDE</div>
+            <div class="tile">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">add-widgets</span></span>
+              <span class="tile-goal">Add the widget board to settings</span>
+              <span class="tile-activity"><span aria-hidden>&#10227;</span><span class="ta-txt">Writing stories&hellip;</span></span>
+              <div class="pl-meter-wrap">
+                <span class="pl-meter-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">add-widgets</span>
+                  <span class="now">DECIDE</span>
+                  <span class="ct">8/22</span>
+                </span>
+                <span class="pl-meter">
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-run is-now mk-hov" style="flex-grow:9"><i style="width:67%"></i>
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-run">Running</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">M</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">PRD</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Diagram</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Review</span></span>
+                      <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">Stories</span><span class="v">current</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Conflict Check</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Plan</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Coherence Check</span></span>
+                    </span>
+                  </span>
+                  <span class="plm-seg mk-hov" style="flex-grow:5"><i style="width:0%"></i></span>
+                  <span class="plm-seg mk-hov" style="flex-grow:6"><i style="width:0%"></i></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">&#8901; no input here</span></span>
+            </div>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">halted &middot; BUILD gate refused</div>
+            <div class="tile t-attention">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">rate-limit-tuning</span></span>
+              <span class="tile-goal">Tune the per-tenant rate limiter</span>
+              <div class="pl-meter-wrap">
+                <span class="pl-meter-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">rate-limit-tuning</span>
+                  <span class="now" style="color:var(--danger)">BUILD</span>
+                  <span class="ct">15/22</span>
+                </span>
+                <span class="pl-meter">
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass is-degraded mk-hov" style="flex-grow:9"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-fail is-now mk-hov" style="flex-grow:5"><i style="width:80%"></i>
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Build</span><span class="mk-pop-stat s-fail">Failed</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Acceptance Specs</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Build</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Wiring Check</span><span class="v">no-op</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Test Suite</span></span>
+                      <span class="mk-pop-row r-fail"><span class="g">&#10007;</span><span class="n">Build Review</span><span class="v">gate</span></span>
+                      <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Scope widened past the approved plan.</span>
+                    </span>
+                  </span>
+                  <span class="plm-seg mk-hov" style="flex-grow:6"><i style="width:0%"></i></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag tf-review">halted</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">A failing phase: red fill, red ring, red word.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">shipped &middot; S tier, skips</div>
+            <div class="tile t-idle">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">fix-tooltip-clip</span></span>
+              <span class="tile-goal">Tooltip clipped at the viewport top</span>
+              <div class="pl-meter-wrap">
+                <span class="pl-meter-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">fix-tooltip-clip</span>
+                  <span class="now" style="color:var(--idle)">DONE</span>
+                  <span class="ct">22/22</span>
+                </span>
+                <span class="pl-meter">
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:1"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass is-degraded mk-hov" style="flex-grow:9"><i style="width:100%"></i>
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-pass">Done, 5 skipped</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">S</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">PRD</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Architecture Diagram</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Architecture Review</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Stories</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Conflict Check</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Plan</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Coherence Check</span></span>
+                      <span class="mk-pop-foot">Skipped for this run&rsquo;s <b>S</b> tier.</span>
+                    </span>
+                  </span>
+                  <span class="plm-seg p-pass mk-hov" style="flex-grow:5"><i style="width:100%"></i></span>
+                  <span class="plm-seg p-pass is-degraded mk-hov" style="flex-grow:6"><i style="width:100%"></i></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">PR #4120</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">Hatched fill = finished, but not everything ran.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">eligible &middot; not started</div>
+            <div class="tile t-exited">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">export-csv</span></span>
+              <span class="tile-goal">Export the ledger as CSV</span>
+              <div class="pl-meter-wrap">
+                <span class="pl-meter-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">export-csv</span>
+                  <span class="now" style="color:var(--dim)">NOT STARTED</span>
+                  <span class="ct">0/22</span>
+                </span>
+                <span class="pl-meter">
+                  <span class="plm-seg mk-hov" style="flex-grow:1"><i style="width:0%"></i></span>
+                  <span class="plm-seg mk-hov" style="flex-grow:1"><i style="width:0%"></i></span>
+                  <span class="plm-seg mk-hov" style="flex-grow:9"><i style="width:0%"></i></span>
+                  <span class="plm-seg mk-hov" style="flex-grow:5"><i style="width:0%"></i></span>
+                  <span class="plm-seg mk-hov" style="flex-grow:6"><i style="width:0%"></i></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">daemon stopped</span></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="mk-sub">What hovering a stage opens</p>
+        <div class="mk-popshow">
+          <figure>
+            <figcaption>hover DECIDE, mid-run</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-run">Running</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">M</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">PRD</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Diagram</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Review</span></span>
+              <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">Stories</span><span class="v">current</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Conflict Check</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Plan</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Coherence Check</span></span>
+              <span class="mk-pop-foot">6 of 9 finished &middot; step 8 of 22</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover BUILD, halted</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Build</span><span class="mk-pop-stat s-fail">Failed</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Acceptance Specs</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Build</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Wiring Check</span><span class="v">no-op</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Test Suite</span></span>
+              <span class="mk-pop-row r-fail"><span class="g">&#10007;</span><span class="n">Build Review</span><span class="v">gate</span></span>
+              <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Scope widened past the approved plan.</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover DECIDE, S tier</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-pass">Done, 5 skipped</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">S</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">PRD</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Architecture Diagram</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Architecture Review</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Stories</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Conflict Check</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Plan</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Coherence Check</span></span>
+              <span class="mk-pop-foot">Skipped for this run&rsquo;s <b>S</b> tier.</span>
+            </span>
+          </figure>
+        </div>
+
+        <p class="mk-note">
+          <strong>The honest cost.</strong> SETUP and UNDERSTAND hold one step each, so at
+          proportional width they are 9px slivers - readable, but a small hover target, which is
+          why <code>min-width: 9px</code> is set rather than left to flex. Proportional width is
+          also what makes DECIDE dominate the bar; that is accurate, and it means the four steps
+          after BUILD get less room than their importance suggests.
+        </p>
+      </section>
+      <style>
+        /* ======================================================================
+           OPTION B - the step barcode. One tick per step, all 22 of them, with a
+           wider gutter at each phase boundary. Nothing is folded away.
+           ====================================================================== */
+        .pl-bars-wrap { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+        .pl-bars { display: flex; align-items: flex-start; gap: 5px; }
+        /* One column per phase, owning its ticks and its own label. The label cannot
+           drift out from under the group it names, which a sibling legend row did. */
+        .plb-phase { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+        .plb-group { display: flex; align-items: flex-end; gap: 2px; height: 13px; }
+        .plb-lbl {
+          font-size: 8px;
+          letter-spacing: 0.06em;
+          line-height: 1;
+          color: var(--dim);
+          white-space: nowrap;
+        }
+        .plb-lbl.is-now { color: var(--working); font-weight: 700; }
+        .plb-tick {
+          position: relative;
+          width: 4px;
+          height: 8px;
+          border-radius: 1.5px;
+          background: color-mix(in oklab, var(--exited) 30%, var(--bg-2));
+          cursor: help;
+        }
+        .plb-tick.k-pass { background: var(--idle); }
+        .plb-tick.k-fail { background: var(--danger); height: 13px; }
+        .plb-tick.k-stale { background: var(--attention); }
+        .plb-tick.k-skip {
+          background: none;
+          border: 1px dashed color-mix(in oklab, var(--dim) 55%, transparent);
+          border-radius: 1.5px;
+        }
+        /* The running step: full height, blue, and haloed - the one tick the eye should
+           find first. Height carries it as well as colour, so it survives a colourblind
+           read and a glance across the room. */
+        .plb-tick.k-run {
+          background: var(--working);
+          height: 13px;
+          box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--working) 34%, transparent);
+        }
+        .plb-tick:hover { filter: brightness(1.4); }
+        .plb-tick:hover::before {
+          content: "";
+          position: absolute;
+          inset: -3px -2px;
+          border-radius: 3px;
+          background: color-mix(in oklab, var(--fg) 9%, transparent);
+        }
+        .pl-bars-cap {
+          display: flex;
+          align-items: baseline;
+          gap: 5px;
+          font-size: 9.5px;
+          color: var(--dim);
+          min-width: 0;
+        }
+        .pl-bars-cap .slug {
+          color: var(--muted);
+          font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pl-bars-cap .now { color: var(--working); font-weight: 600; }
+        .pl-bars-cap .ct { margin-left: auto; flex: none; font-family: var(--mono); }
+
+        /* A one-step popover is narrower - it says one thing. */
+        .mk-pop.is-step { width: 196px; }
+        .mk-pop-sent { display: block; font-size: 10.5px; color: var(--muted); line-height: 1.55; }
+        .mk-pop-kicker {
+          display: block;
+          font-size: 9px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: var(--dim);
+          margin-bottom: 3px;
+        }
+      </style>
+
+      <!-- ================================================================== -->
+      <section class="mk-opt b">
+        <div class="mk-opt-head">
+          <h2>Option B &middot; Step barcode</h2>
+          <span class="mk-tag">every step &middot; +17px</span>
+        </div>
+        <p class="mk-opt-lede">
+          One 4px tick per step - all twenty-two - with a wider gutter where a phase ends.
+          <strong>Nothing is aggregated away</strong>: a single skipped step, a single stale one,
+          and the exact position of the failure are all on the card. State is carried by colour
+          <em>and</em> height, so the running tick and the failed tick are the two tall ones and
+          the eye lands on them without reading a legend. Hover resolves to
+          <strong>one step</strong>, not a phase.
+        </p>
+
+        <p class="mk-sub">Four run states, at the board's real column width</p>
+        <div class="mk-rack">
+          <div class="mk-col">
+            <div class="mk-col-cap">building &middot; Stories</div>
+            <div class="tile">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">add-widgets</span></span>
+              <span class="tile-goal">Add the widget board to settings</span>
+              <span class="tile-activity"><span aria-hidden>&#10227;</span><span class="ta-txt">Writing stories&hellip;</span></span>
+              <div class="pl-bars-wrap">
+                <span class="pl-bars-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">add-widgets</span>
+                  <span class="now">Stories</span>
+                  <span class="ct">8/22</span>
+                </span>
+                <span class="pl-bars">
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">S</span></span>
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">U</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-run mk-hov">
+                      <span class="mk-pop is-step">
+                        <span class="mk-pop-hd"><span class="mk-pop-name">Stories</span><span class="mk-pop-stat s-run">Running</span></span>
+                        <span class="mk-pop-kicker">Decide &middot; step 8 of 22</span>
+                        <span class="mk-pop-sent">Generating user stories with happy and negative paths from the PRD&rsquo;s requirements.</span>
+                      </span>
+                    </span>
+                    <span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl is-now">DECIDE</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl">BUILD</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl">SHIP</span></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">&#8901; no input here</span></span>
+            </div>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">halted &middot; Build Review refused</div>
+            <div class="tile t-attention">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">rate-limit-tuning</span></span>
+              <span class="tile-goal">Tune the per-tenant rate limiter</span>
+              <div class="pl-bars-wrap">
+                <span class="pl-bars-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">rate-limit-tuning</span>
+                  <span class="now" style="color:var(--danger)">Build Review</span>
+                  <span class="ct">15/22</span>
+                </span>
+                <span class="pl-bars">
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">S</span></span>
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">U</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-skip mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                  </span><span class="plb-lbl">DECIDE</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-fail mk-hov">
+                      <span class="mk-pop is-step">
+                        <span class="mk-pop-hd"><span class="mk-pop-name">Build Review</span><span class="mk-pop-stat s-fail">Failed</span></span>
+                        <span class="mk-pop-kicker">Build &middot; step 16 of 22</span>
+                        <span class="mk-pop-sent">Scope: three files changed outside the approved plan.</span>
+                        <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Sends back to Plan.</span>
+                      </span>
+                    </span>
+                  </span><span class="plb-lbl is-now" style="color:var(--danger)">BUILD</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl">SHIP</span></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag tf-review">halted</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">The tall red tick is the whole read, at position 16.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">shipped &middot; S tier, six skips</div>
+            <div class="tile t-idle">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">fix-tooltip-clip</span></span>
+              <span class="tile-goal">Tooltip clipped at the viewport top</span>
+              <div class="pl-bars-wrap">
+                <span class="pl-bars-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">fix-tooltip-clip</span>
+                  <span class="now" style="color:var(--idle)">Finish</span>
+                  <span class="ct">22/22</span>
+                </span>
+                <span class="pl-bars">
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">S</span></span>
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">U</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-skip mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span>
+                  </span><span class="plb-lbl">DECIDE</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span>
+                  </span><span class="plb-lbl">BUILD</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                  </span><span class="plb-lbl is-now" style="color:var(--idle)">SHIP</span></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">PR #4120</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">Six dashed ticks - the S-tier ceremony, individually visible.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">re-running &middot; kicked back</div>
+            <div class="tile">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">search-facets</span></span>
+              <span class="tile-goal">Faceted search on the ledger</span>
+              <div class="pl-bars-wrap">
+                <span class="pl-bars-cap">
+                  <span aria-hidden>&#8632;</span>
+                  <span class="slug">search-facets</span>
+                  <span class="now">Plan</span>
+                  <span class="ct">10/22</span>
+                </span>
+                <span class="pl-bars">
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">S</span></span>
+                  <span class="plb-phase"><span class="plb-group"><span class="plb-tick k-pass mk-hov"></span></span><span class="plb-lbl">U</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-pass mk-hov"></span>
+                    <span class="plb-tick k-pass mk-hov"></span><span class="plb-tick k-stale mk-hov"></span>
+                    <span class="plb-tick k-stale mk-hov"></span><span class="plb-tick k-run mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl is-now">DECIDE</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick k-stale mk-hov"></span><span class="plb-tick k-stale mk-hov"></span>
+                    <span class="plb-tick k-skip mk-hov"></span><span class="plb-tick k-stale mk-hov"></span>
+                    <span class="plb-tick k-stale mk-hov"></span>
+                  </span><span class="plb-lbl">BUILD</span></span>
+                  <span class="plb-phase"><span class="plb-group">
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                    <span class="plb-tick mk-hov"></span><span class="plb-tick mk-hov"></span>
+                  </span><span class="plb-lbl">SHIP</span></span>
+                </span>
+              </div>
+              <span class="tile-marks"><span class="tile-flag">round 2</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">Amber = invalidated by a later gate, so it runs again. Only B can show this.</p>
+          </div>
+        </div>
+
+        <p class="mk-sub">What hovering a step opens</p>
+        <div class="mk-popshow">
+          <figure>
+            <figcaption>hover the running tick</figcaption>
+            <span class="mk-pop is-step is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Stories</span><span class="mk-pop-stat s-run">Running</span></span>
+              <span class="mk-pop-kicker">Decide &middot; step 8 of 22</span>
+              <span class="mk-pop-sent">Generating user stories with happy and negative paths from the PRD&rsquo;s requirements.</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover the tall red tick</figcaption>
+            <span class="mk-pop is-step is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Build Review</span><span class="mk-pop-stat s-fail">Failed</span></span>
+              <span class="mk-pop-kicker">Build &middot; step 16 of 22</span>
+              <span class="mk-pop-sent">Scope: three files changed outside the approved plan.</span>
+              <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Sends back to Plan.</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover a dashed tick</figcaption>
+            <span class="mk-pop is-step is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Wiring Check</span><span class="mk-pop-stat s-stop">Skipped</span></span>
+              <span class="mk-pop-kicker">Build &middot; step 14 of 22</span>
+              <span class="mk-pop-sent">A retained no-op slot in the engine&rsquo;s own state. It runs nothing.</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover an amber tick</figcaption>
+            <span class="mk-pop is-step is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Plan</span><span class="mk-pop-stat s-wait">Stale</span></span>
+              <span class="mk-pop-kicker">Decide &middot; step 10 of 22</span>
+              <span class="mk-pop-sent">A later gate invalidated this step&rsquo;s result, so it runs again.</span>
+            </span>
+          </figure>
+        </div>
+
+        <p class="mk-note">
+          <strong>The honest cost.</strong> 22 ticks at 4px plus gutters is about 148px, which fits
+          the 250px column but leaves the strip nowhere to go if a conductor release adds steps -
+          unknown steps would have to append and the ticks narrow. A 4px hover target is also the
+          smallest of the three, and it is the only option where the popover has 22 distinct
+          contents to get right rather than 5.
+        </p>
+      </section>
+      <style>
+        /* ======================================================================
+           OPTION C - phase pips. Five glyphs on the chip line the card already
+           has, so the indicator costs the tile NO additional height at all.
+           ====================================================================== */
+        .pl-pips-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          align-self: flex-start;
+          max-width: 100%;
+          padding: 4px 9px 4px 8px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          background: var(--bg-2);
+          font-size: 11px;
+          line-height: 1;
+          color: var(--muted);
+          cursor: pointer;
+          min-width: 0;
+        }
+        .pl-pips-row:hover { border-color: color-mix(in oklab, var(--working) 40%, var(--border)); }
+        .pl-pips-row .glyph { color: var(--dim); flex: none; }
+        .pl-pips-row .slug {
+          font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
+        .pl-pips { display: flex; align-items: center; gap: 3px; flex: none; }
+        .plp {
+          position: relative;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          border: 1.5px solid var(--exited);
+          cursor: help;
+        }
+        /* Done: solid. Running: a ring with a live core. Failed: solid red with a
+           notch. Pending: hollow. Degraded: half-filled, drawn with a gradient so
+           "done" and "done with skips" are different shapes, not just tones. */
+        .plp.q-pass { border-color: var(--idle); background: var(--idle); }
+        .plp.q-degraded {
+          border-color: var(--idle);
+          background: linear-gradient(to right, var(--idle) 0 50%, transparent 50% 100%);
+        }
+        .plp.q-run {
+          border-color: var(--working);
+          background: radial-gradient(circle, var(--working) 0 42%, transparent 45%);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 26%, transparent);
+        }
+        .plp.q-fail { border-color: var(--danger); background: var(--danger); }
+        .plp.q-wait { border-color: var(--attention); background: linear-gradient(to right, var(--attention) 0 50%, transparent 50% 100%); }
+        .plp.q-pend { border-color: color-mix(in oklab, var(--exited) 66%, transparent); background: none; }
+        /* A phase holding steps this build has never heard of. Never hidden. */
+        .plp.q-unknown {
+          border-style: dashed;
+          border-color: var(--neutral);
+        }
+        .plp:hover { filter: brightness(1.5); }
+        .pl-pips-row .now {
+          flex: none;
+          color: var(--working);
+          font-weight: 600;
+          font-size: 9.5px;
+          letter-spacing: 0.04em;
+        }
+        .pl-pips-row .now.n-fail { color: var(--danger); }
+        .pl-pips-row .now.n-pass { color: var(--idle); }
+        .pl-pips-row .now.n-idle { color: var(--dim); }
+        .pl-pips-sep { width: 1px; height: 11px; background: var(--border); flex: none; }
+      </style>
+
+      <!-- ================================================================== -->
+      <section class="mk-opt c">
+        <div class="mk-opt-head">
+          <h2>Option C &middot; Phase pips</h2>
+          <span class="mk-tag">no new height &middot; +0px</span>
+        </div>
+        <p class="mk-opt-lede">
+          Five 8px pips live <strong>on the chip the card already draws</strong>, between the slug
+          and a single word naming where the run is. The card gets no taller than it is today -
+          this replaces <code>&middot; Build</code> with <code>&#9679;&#9679;&#9686;&#9675;&#9675;
+          BUILD</code>. State is a <strong>shape</strong> first: solid is done, half is partial,
+          a ring with a core is running, hollow is untouched, dashed means this build does not
+          know some of those steps. Hover a pip for that phase's status.
+        </p>
+
+        <p class="mk-sub">Four run states, at the board's real column width</p>
+        <div class="mk-rack">
+          <div class="mk-col">
+            <div class="mk-col-cap">building &middot; DECIDE</div>
+            <div class="tile">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">add-widgets</span></span>
+              <span class="tile-goal">Add the widget board to settings</span>
+              <span class="tile-activity"><span aria-hidden>&#10227;</span><span class="ta-txt">Writing stories&hellip;</span></span>
+              <span class="pl-pips-row">
+                <span class="glyph" aria-hidden>&#8632;</span>
+                <span class="slug">add-widgets</span>
+                <span class="pl-pips-sep"></span>
+                <span class="pl-pips">
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-run mk-hov">
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-run">Running</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">M</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">PRD</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Diagram</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Review</span></span>
+                      <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">Stories</span><span class="v">current</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Conflict Check</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Plan</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Coherence Check</span></span>
+                      <span class="mk-pop-foot">6 of 9 finished &middot; step 8 of 22</span>
+                    </span>
+                  </span>
+                  <span class="plp q-pend mk-hov"></span>
+                  <span class="plp q-pend mk-hov"></span>
+                </span>
+                <span class="now">DECIDE</span>
+              </span>
+              <span class="tile-marks"><span class="tile-flag">&#8901; no input here</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">Same tile height as today. The chip just got informative.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">halted &middot; BUILD</div>
+            <div class="tile t-attention">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">rate-limit-tuning</span></span>
+              <span class="tile-goal">Tune the per-tenant rate limiter</span>
+              <span class="pl-pips-row">
+                <span class="glyph" aria-hidden>&#8632;</span>
+                <span class="slug">rate-limit&hellip;</span>
+                <span class="pl-pips-sep"></span>
+                <span class="pl-pips">
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-degraded mk-hov"></span>
+                  <span class="plp q-fail mk-hov">
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Build</span><span class="mk-pop-stat s-fail">Failed</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Acceptance Specs</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Build</span></span>
+                      <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Wiring Check</span><span class="v">no-op</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Test Suite</span></span>
+                      <span class="mk-pop-row r-fail"><span class="g">&#10007;</span><span class="n">Build Review</span><span class="v">gate</span></span>
+                      <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Scope widened past the approved plan.</span>
+                    </span>
+                  </span>
+                  <span class="plp q-pend mk-hov"></span>
+                </span>
+                <span class="now n-fail">BUILD</span>
+              </span>
+              <span class="tile-marks"><span class="tile-flag tf-review">halted</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">A red pip and one red word. Nothing else changed.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">shipped &middot; S tier</div>
+            <div class="tile t-idle">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">fix-tooltip-clip</span></span>
+              <span class="tile-goal">Tooltip clipped at the viewport top</span>
+              <span class="pl-pips-row">
+                <span class="glyph" aria-hidden>&#8632;</span>
+                <span class="slug">fix-tooltip-clip</span>
+                <span class="pl-pips-sep"></span>
+                <span class="pl-pips">
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-degraded mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-degraded mk-hov"></span>
+                </span>
+                <span class="now n-pass">DONE</span>
+              </span>
+              <span class="tile-marks"><span class="tile-flag">PR #4120</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">Two half pips = it shipped, and it did not do everything.</p>
+          </div>
+
+          <div class="mk-col">
+            <div class="mk-col-cap">custom steps this build does not know</div>
+            <div class="tile">
+              <span class="tile-head"><span class="agent-dot"></span><span class="tile-name">release-notes</span></span>
+              <span class="tile-goal">Automate the release note rollup</span>
+              <span class="pl-pips-row">
+                <span class="glyph" aria-hidden>&#8632;</span>
+                <span class="slug">release-notes</span>
+                <span class="pl-pips-sep"></span>
+                <span class="pl-pips">
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-pass mk-hov"></span>
+                  <span class="plp q-run q-unknown mk-hov">
+                    <span class="mk-pop">
+                      <span class="mk-pop-hd"><span class="mk-pop-name">Ship</span><span class="mk-pop-stat s-run">Running</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Retro</span></span>
+                      <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Rebase</span></span>
+                      <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">maintain-documentation</span><span class="v">?</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">release-disposition</span><span class="v">?</span></span>
+                      <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Finish</span></span>
+                      <span class="mk-pop-foot">2 steps this build does not know, shown as the engine reported them.</span>
+                    </span>
+                  </span>
+                </span>
+                <span class="now">SHIP</span>
+              </span>
+              <span class="tile-marks"><span class="tile-flag">round 1</span></span>
+            </div>
+            <p class="mk-col-cap" style="margin-top:8px">A dashed border says &ldquo;this phase holds steps I cannot name&rdquo;.</p>
+          </div>
+        </div>
+
+        <p class="mk-sub">What hovering a pip opens</p>
+        <div class="mk-popshow">
+          <figure>
+            <figcaption>hover the running pip</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Decide</span><span class="mk-pop-stat s-run">Running</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Explore</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Complexity</span><span class="v">M</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">PRD</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Diagram</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Architecture Review</span></span>
+              <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">Stories</span><span class="v">current</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Conflict Check</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Plan</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Coherence Check</span></span>
+              <span class="mk-pop-foot">6 of 9 finished &middot; step 8 of 22</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover the red pip</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Build</span><span class="mk-pop-stat s-fail">Failed</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Acceptance Specs</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Build</span></span>
+              <span class="mk-pop-row r-skip"><span class="g">&#8211;</span><span class="n">Wiring Check</span><span class="v">no-op</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Test Suite</span></span>
+              <span class="mk-pop-row r-fail"><span class="g">&#10007;</span><span class="n">Build Review</span><span class="v">gate</span></span>
+              <span class="mk-pop-foot"><b>Halted &middot; needs-human.</b> Scope widened past the approved plan.</span>
+            </span>
+          </figure>
+          <figure>
+            <figcaption>hover the dashed pip</figcaption>
+            <span class="mk-pop is-static">
+              <span class="mk-pop-hd"><span class="mk-pop-name">Ship</span><span class="mk-pop-stat s-run">Running</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Retro</span></span>
+              <span class="mk-pop-row r-pass"><span class="g">&#10003;</span><span class="n">Rebase</span></span>
+              <span class="mk-pop-row r-run"><span class="g">&#9679;</span><span class="n">maintain-documentation</span><span class="v">?</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">release-disposition</span><span class="v">?</span></span>
+              <span class="mk-pop-row r-pend"><span class="g">&#9675;</span><span class="n">Finish</span></span>
+              <span class="mk-pop-foot">2 steps this build does not know, shown as the engine reported them.</span>
+            </span>
+          </figure>
+        </div>
+
+        <p class="mk-note">
+          <strong>The honest cost.</strong> Five pips is the coarsest of the three: DECIDE's nine
+          steps and SETUP's one get the same 8px circle, so the pips say <em>which phase</em> and
+          not <em>how far</em>. A run that is two steps into DECIDE and one that is eight steps in
+          both draw a running ring, and only the popover separates them. In exchange it is the
+          only option that adds no height at all, and the only one that survives a repository
+          whose config inserts custom steps without changing its own geometry.
+        </p>
+      </section>
+      <!-- ================================================================== -->
+      <section class="mk-opt" style="margin-bottom:34px">
+        <div class="mk-opt-head" style="border-left-color:var(--neutral)">
+          <h2>Side by side</h2>
+        </div>
+        <table class="mk-tbl">
+          <thead>
+            <tr>
+              <th style="width:24%">&nbsp;</th>
+              <th style="width:25.3%">A &middot; Phase meter</th>
+              <th style="width:25.3%">B &middot; Step barcode</th>
+              <th style="width:25.3%">C &middot; Phase pips</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Height added to the card</strong></td>
+              <td class="mk-mid">+11px (bar + caption)</td>
+              <td class="mk-no">+17px (ticks + legend)</td>
+              <td class="mk-yes">0px - it replaces the chip</td>
+            </tr>
+            <tr>
+              <td><strong>Granularity</strong></td>
+              <td>5 phases, weighted by step count</td>
+              <td class="mk-yes">every step, individually</td>
+              <td class="mk-mid">5 phases, unweighted</td>
+            </tr>
+            <tr>
+              <td><strong>Answers &ldquo;how far along&rdquo;</strong></td>
+              <td class="mk-yes">Yes - fill is the answer</td>
+              <td class="mk-yes">Yes - count the green</td>
+              <td class="mk-no">Only to the phase</td>
+            </tr>
+            <tr>
+              <td><strong>Answers &ldquo;what failed&rdquo;</strong></td>
+              <td>Which phase</td>
+              <td class="mk-yes">Which step, by position</td>
+              <td>Which phase</td>
+            </tr>
+            <tr>
+              <td><strong>Shows a single skip</strong></td>
+              <td class="mk-mid">Hatched, aggregated</td>
+              <td class="mk-yes">One dashed tick</td>
+              <td class="mk-mid">Half pip, aggregated</td>
+            </tr>
+            <tr>
+              <td><strong>Shows a stale / re-running step</strong></td>
+              <td class="mk-mid">Phase reads &ldquo;Re-running&rdquo;</td>
+              <td class="mk-yes">Every amber tick</td>
+              <td class="mk-mid">Half pip, amber</td>
+            </tr>
+            <tr>
+              <td><strong>Smallest hover target</strong></td>
+              <td class="mk-mid">9px &times; 7px sliver</td>
+              <td class="mk-no">4px &times; 8px tick</td>
+              <td class="mk-yes">8px circle, 3px gaps</td>
+            </tr>
+            <tr>
+              <td><strong>Survives a repo with custom steps</strong><br />
+                <span style="color:var(--dim);font-size:11.5px">ai-conductor&rsquo;s own config adds two SHIP steps</span></td>
+              <td class="mk-yes">Yes - widths are computed from the run</td>
+              <td class="mk-no">Geometry changes; ticks narrow</td>
+              <td class="mk-yes">Yes - unchanged, dashed border</td>
+            </tr>
+            <tr>
+              <td><strong>Distinct from the workflow ladder already on the tile</strong></td>
+              <td class="mk-yes">Yes - a bar, not rungs</td>
+              <td class="mk-yes">Yes - unlike anything shipped</td>
+              <td class="mk-yes">Yes - lives on the chip line</td>
+            </tr>
+            <tr>
+              <td><strong>Needs a board-card registry entry</strong><br />
+                <span style="color:var(--dim);font-size:11.5px"><code>DISPLAY_ITEMS</code> in <code>src/web/lib/board-card.ts</code></span></td>
+              <td>Yes - it is a body region</td>
+              <td>Yes - it is a body region</td>
+              <td class="mk-yes">No - it is the existing chip</td>
+            </tr>
+            <tr>
+              <td><strong>Distinct popover contents to author</strong></td>
+              <td>5</td>
+              <td class="mk-no">One per step (22+)</td>
+              <td>5</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="mk-note">
+          <strong>What is common to all three, and is the real work.</strong> The app has exactly
+          one hover primitive, <code>Tooltip</code>, and it takes
+          <code>label: string</code> - no rich content. <code>title=</code> is banned outright and
+          <code>test/tooltip-coverage.test.ts</code> scans for it. So the per-stage popover drawn
+          above does not exist yet in any form, and every option needs the same decision made
+          about it: teach <code>Tooltip</code> to take a node, or add a second hover primitive
+          beside it. The plan puts that question up for decision rather than assuming it.
+        </p>
+      </section>
+
+      <footer style="border-top:1px solid var(--border);padding-top:20px;color:var(--dim);font-size:12px">
+        Mockups for <code style="font-family:var(--mono)">docs/plans/pipeline-stages-on-session-card/plan.md</code>.
+        Palette and card geometry copied from <code style="font-family:var(--mono)">src/web/styles.css</code>;
+        step vocabulary from <code style="font-family:var(--mono)">src/shared/pipeline.ts</code>.
+        Popovers here are CSS-hover only on the cards, and shown at rest in each
+        &ldquo;what hovering opens&rdquo; row; the shipped ones go through the app&rsquo;s own
+        positioning.
+      </footer>
+    </div>
+  </body>
+</html>

@@ -5894,9 +5894,18 @@ export function buildApp(
     }
 
     let session = task.sessionId ? registry.getSession(task.sessionId) : null;
+    // A cancel that could not reclaim every resource still CANCELLED the task; its `ok: false`
+    // reports leftover trees, not a refusal. Returning on it abandoned the completion this
+    // route exists to perform, leaving the tour's own task closed as `cancelled` with a null
+    // outcome - and worktree teardown contends with the pool, so that is an ordinary outcome
+    // on a loaded machine rather than an exceptional one. The warning is carried to the
+    // response instead, where the caller can see it without losing the outcome.
+    let resourceWarning: string | null = null;
     if (!session && task.status !== "done") {
       const cancelled = await tasks.cancel(id);
-      if (!cancelled.ok) return c.json(cancelled, 500);
+      if (!cancelled.ok) {
+        resourceWarning = cancelled.error ?? "the task's resources remain tracked";
+      }
     }
     const completed = await tasks.complete(id, recipe.outcome);
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
@@ -5922,7 +5931,7 @@ export function buildApp(
         }
       }
     }
-    return c.json({ ok: true, task: completed });
+    return c.json({ ok: true, task: completed, ...(resourceWarning ? { warning: resourceWarning } : {}) });
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

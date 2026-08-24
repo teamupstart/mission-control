@@ -12,9 +12,10 @@ Mission MCP `create_task` can explicitly file work in another valid local reposi
 additional repositories to the same task. The current-repository default is unchanged, the complete
 repository set is validated before storage, and the selected ship harness must support that set.
 
-An older daemon can never silently ignore the new selector fields: selector-bearing calls verify an
-advertised capability before they attempt creation. Foreman's separate unattended-launch allowlist
-remains intact.
+An older daemon can never silently ignore the new selector fields: selector-bearing calls use a
+versioned creation route that an older daemon does not have, so it returns 404 and creates nothing.
+The daemon accepting the request validates and stores the repository set atomically. Foreman's
+separate unattended-launch allowlist remains intact.
 
 ## Entry criteria
 
@@ -26,7 +27,7 @@ remains intact.
 ## Scope
 
 1. Public `create_task` fields for an alternate primary and attached repositories.
-2. Additive MCP transport fields and a token-authenticated capability advertisement.
+2. Additive MCP transport fields and a token-authenticated versioned creation route.
 3. Absolute-path and unique-basename selector resolution.
 4. Shared dashboard/MCP preparation of canonical repository sets and effective harness capability.
 5. Canonical repository-set echo in the tool result.
@@ -49,8 +50,9 @@ remains intact.
 - `McpCreateTaskSchema` in `src/shared/protocol.ts` currently appears before
   `MAX_TASK_EXTRA_REPOS`. Reusing that cap may require moving the constant earlier in the module;
   do not introduce a second numeric limit.
-- `McpCreateTaskSchema` strips unknown keys. Do not depend on an old daemon refusing new selector
-  fields. A capability request must succeed before a selector-bearing create request is sent.
+- `McpCreateTaskSchema` strips unknown keys. Do not send selectors to the legacy route and do not use
+  a separate capability preflight, which can race a daemon restart. A selector-bearing request must
+  reach a versioned route whose handler both validates and creates the task.
 - `resolveTaskRepoSet` in `src/server/repos.ts` is authoritative for main-checkout walk-back,
   primary/secondary collisions, duplicate attachments, and ordering. New short-name logic selects
   candidate paths but never replaces canonicalization.
@@ -71,11 +73,11 @@ remains intact.
 
 In `src/shared/protocol.ts`:
 
-- Add optional, trimmed, non-empty `targetRepository` and bounded
-  `additionalRepositories` fields to `McpCreateTaskSchema`.
+- Preserve `McpCreateTaskSchema` as the selector-free legacy contract. Factor any shared base needed
+  to avoid duplicating caller identity, task fields, and dependency validation.
+- Add `McpCreateTaskV2Schema` with optional, trimmed, non-empty `targetRepository` and bounded
+  `additionalRepositories` fields.
 - Reuse `MAX_TASK_EXTRA_REPOS`; move its declaration earlier if needed rather than copying `8`.
-- Add a small MCP capability response schema or typed constant that advertises repository-set task
-  targeting. Keep it additive and browser-safe.
 - Preserve `repoRoot` as the calling checkout. Omitted selectors continue to resolve that field.
 - Preserve the existing dependency-count refinement.
 
@@ -103,17 +105,19 @@ The dashboard calls the helper in path-only mode. MCP calls it in name-or-absolu
 `targetRepository ?? repoRoot`. Keep `repos.ts` as the owner of Git identity; the new helper may
 coordinate it with harness policy but must not duplicate its Git commands.
 
-### 3. Advertise capability and converge the routes
+### 3. Add atomic versioned creation and converge the routes
 
 In `src/server/routes.ts`:
 
-- Add a token-authenticated read-only MCP capability endpoint. Its response must clearly advertise
-  repository-set `create_task` support.
+- Add a token-authenticated `POST /mcp/v2/tasks` route for selector-bearing creation. An older daemon
+  must have no matching route, so it returns 404 before any task can exist.
 - Replace the dashboard route's inline repo-set/effective-agent/capability block with the shared
   helper, keeping workflow and plan-dispatch checks in the dashboard route.
-- Update `POST /mcp/tasks` to prepare `targetRepository ?? repoRoot` plus
-  `additionalRepositories`, then pass canonical `extraRepoRoots` and the resolved agent into
-  `TaskManager.create`.
+- Keep legacy `POST /mcp/tasks` for selector-free calls. The versioned route prepares
+  `targetRepository ?? repoRoot` plus `additionalRepositories`, then passes canonical
+  `extraRepoRoots` and the resolved agent into `TaskManager.create`.
+- Share the actual handler after parsing so legacy and versioned routes keep dependency attribution
+  and task creation semantics aligned, while only the versioned schema admits selectors.
 - Keep dependency conversion and `registry.findSessionByEnv(env, sessionId, cwd)` in the MCP route.
   Targeting B must not make session lookup search B.
 - Map selector ambiguity to 409 and invalid paths or unsupported harness capability to 400.
@@ -125,17 +129,15 @@ In `src/mcp/server.ts`:
 
 - Add optional `repository` and bounded `additionalRepositories` inputs. Describe the accepted
   absolute path or unique basename forms and the current-repository default.
-- When either selector is explicitly supplied, call the capability endpoint first. If it is absent,
-  malformed, or does not advertise repository targeting, return an actionable tool error and do not
-  call `POST /mcp/tasks`.
+- When either selector is explicitly supplied, call `POST /mcp/v2/tasks`. Treat 404 as an actionable
+  mixed-version refusal. Do not retry the legacy route or drop selector fields.
 - Map public names to `targetRepository` and `additionalRepositories`; continue sending caller
   `cwd` and `repoRoot: process.cwd()` for identity and the omitted-selector fallback.
 - Parse the returned task's canonical `repoRoot` and `extraRepos`, and include the canonical primary
   and attachment paths in the tool result beside the id, status, and dependency echo.
 - Do not add agent, model, effort, kind, backlog, or permission parameters.
 
-Current-repository calls must send the same creation request they send today and skip the capability
-round trip.
+Current-repository calls must continue sending the same request to legacy `POST /mcp/tasks`.
 
 ### 5. Update the phased-plan procedure
 
@@ -158,7 +160,7 @@ no longer requires or tolerates the manual dashboard stop.
 
 Update the current behavior docs, not historical plans:
 
-- `docs/sessions.md`: public signature, selector forms, canonical result, capability preflight, and
+- `docs/sessions.md`: public signature, selector forms, canonical result, versioned routing, and
   push-time enforcement.
 - `docs/dispatch-and-backlog.md`: main-checkout identity, alternate primary, attachments, ambiguity
   handling, and the distinction between creation/manual dispatch and Foreman auto-launch.
@@ -178,8 +180,8 @@ Extend existing tests where they already own the contract:
   absolute repositories outside workspace scan roots.
 - `test/multi-repo-policy.test.ts`: cap, duplicate, primary collision, order, and capability
   invariants remain identical through MCP preparation.
-- `test/mission-mcp.test.ts` and `test/dispatcher-runtime.test.ts`: public source schema, capability
-  preflight behavior, required-tool registry, and built-bundle parity.
+- `test/mission-mcp.test.ts` and `test/dispatcher-runtime.test.ts`: public source schema, versioned
+  route selection, no legacy fallback, required-tool registry, and built-bundle parity.
 - `test/phased-plan-task-intent.test.ts`: a B-primary/A-context phase remains dependency-gated until
   the planning merge, then all referenced plan paths resolve from A's attached checkout.
 
@@ -200,8 +202,8 @@ tokens.
 
 - No database migration or Task type change.
 - The MCP request change is additive. Old children continue using `repoRoot` only.
-- Explicit selectors require advertised daemon capability before creation, preventing mixed-version
-  silent stripping. Calls without selectors retain the previous single request.
+- Explicit selectors use the versioned creation route, preventing mixed-version silent stripping and
+  check/create races. Calls without selectors retain the legacy route and previous request shape.
 - Short names are local workspace addresses, not durable repository identity. Stored values and tool
   results are canonical absolute main-checkout paths.
 - The entire repository set and effective harness resolve atomically before task storage.
@@ -240,7 +242,8 @@ run `npm run test:e2e` as the final browser gate.
 - [ ] Absolute and unique-name primary selectors create exactly one task in the intended repository.
 - [ ] Attachments are canonical, ordered, bounded, deduplicated, and capability-checked before
       storage.
-- [ ] A selector-bearing call against an unadvertised or old daemon creates no task.
+- [ ] A selector-bearing call against an old daemon receives 404, creates no task, and never retries
+      the legacy route.
 - [ ] Cross-repository current-session dependencies remain durable and merge-gated.
 - [ ] Existing Board surfaces visibly render B and A+B tasks in Playwright.
 - [ ] Foreman allowlist behavior is unchanged and documented distinctly from creation.
@@ -262,6 +265,9 @@ URLs, bypass `resolveTaskRepoSet`, or weaken Foreman's separately approved launc
 - 2026-08-24: Created as the only implementation phase. All root-plan requirements and all three
   submitted decisions are owned here.
 - 2026-08-24: Corrected the root plan's mixed-version assumption after confirming that the current
-  Zod object strips unknown fields. Capability preflight now owns safe new-child/old-daemon behavior.
+  Zod object strips unknown fields.
+- 2026-08-24: Replaced the separate capability preflight after Inspector correctly identified its
+  daemon-replacement race. A versioned creation route now makes support validation and storage one
+  atomic handler decision.
 - 2026-08-24: Rechecked phase boundaries. Schema, route, bundled tool, shipped skill, docs, tests, and
   browser proof remain one vertical slice; no independent phase can merge operably.

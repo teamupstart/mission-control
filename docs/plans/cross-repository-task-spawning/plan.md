@@ -116,19 +116,21 @@ remote-owner mapping, or push probe.
 
 ### Transport compatibility
 
-Keep the current internal `repoRoot` field as the calling checkout for compatibility with an older
-built MCP bundle. Add optional `targetRepository` and `additionalRepositories` fields to
-`McpCreateTaskSchema`. The daemon selects `targetRepository ?? repoRoot`.
+Keep `McpCreateTaskSchema` and legacy `POST /mcp/tasks` as the selector-free contract for older
+bundles. Add `McpCreateTaskV2Schema` with optional `targetRepository` and
+`additionalRepositories`; its handler selects `targetRepository ?? repoRoot`. Both schemas preserve
+the internal `repoRoot` field as the calling checkout.
 
 The MCP child exposes the friendlier `repository` names in its tool schema and maps them to the
 transport fields. An old child continues to create current-repo tasks against a new daemon.
 
-A repository-targeting call first checks a small token-authenticated MCP capability endpoint. This
-is required because the older request schema strips unknown object keys rather than rejecting them:
-without a preflight, an older daemon could ignore a target or attachment and create a valid-looking
-task in the wrong repository set. A daemon that does not advertise repository-set targeting is
-refused before task creation. Current-repository calls skip the preflight and retain their existing
-compatibility path.
+Repository-targeting calls use a new token-authenticated, versioned creation endpoint. This is
+required because the older request schema strips unknown object keys rather than rejecting them: an
+older daemon handling the legacy endpoint could ignore a target or attachment and create a
+valid-looking task in the wrong repository set. An older daemon has no versioned route, so it returns
+404 without creating anything. Current-repository calls keep the legacy endpoint and their existing
+compatibility path. The daemon that accepts a selector-bearing request is therefore the same daemon
+that validates and stores the full repository set, with no check/create race.
 
 ### Server convergence
 
@@ -190,9 +192,9 @@ After:
 flowchart LR
   P[Plan session in repo A] --> C[create_task plus repo selectors]
   C --> Q{explicit selectors?}
-  Q -- no --> M[POST /mcp/tasks]
-  Q -- yes --> H[GET /mcp/capabilities]
-  H --> M
+  Q -- no --> M[POST /mcp/tasks legacy]
+  Q -- yes --> V[POST /mcp/v2/tasks atomic]
+  V --> R
   M --> R[server repo-set resolver]
   R --> T[TaskManager.create]
   T --> A[repo A backlog task]
@@ -231,8 +233,9 @@ the task model's existing capability and persistence checks.
 
 ### Shared and MCP contracts
 
-- Extend `McpCreateTaskSchema` in `src/shared/protocol.ts` additively with bounded optional selector
-  fields. Reuse `MAX_TASK_EXTRA_REPOS` for the secondary list.
+- Add a selector-bearing `McpCreateTaskV2Schema` in `src/shared/protocol.ts` while preserving the
+  legacy schema. Reuse one base request shape, the dependency refinement, and
+  `MAX_TASK_EXTRA_REPOS` rather than duplicating limits.
 - Extend `create_task` in `src/mcp/server.ts` with public selector fields, current-repo defaults,
   accurate descriptions, transport mapping, and canonical repository paths in its result.
 - Keep the existing tool name and `MISSION_MCP_TOOLS` entry. This is a schema extension, not a new
@@ -243,10 +246,11 @@ the task model's existing capability and persistence checks.
 - Add the selector resolver beside `src/server/repos.ts` ownership or in a focused MCP task-target
   module that delegates canonical identity to `resolveTaskRepoRoot` and `resolveTaskRepoSet`.
 - Extract shared full-repo-set and harness-capability preparation from the dashboard route.
-- Update `POST /mcp/tasks` to resolve the selected set, preserve caller-session dependency
-  attribution, and pass `extraRepoRoots` into `TaskManager.create`.
-- Add a token-authenticated MCP capability response and require it before the bundled tool sends any
-  explicit repository selector, preventing a mixed-version daemon from silently stripping fields.
+- Keep selector-free `POST /mcp/tasks` behavior and route it through the shared preparation helper.
+- Add a token-authenticated versioned creation endpoint for explicit selectors. An older daemon lacks
+  that route and cannot silently strip fields or race between a support check and task creation. The
+  versioned handler preserves caller-session dependency attribution and passes canonical
+  `extraRepoRoots` into `TaskManager.create`.
 - Return 400 for invalid repositories and unsupported harness capability, 409 for ambiguous short
   names or dependency conflicts, and no partially created task.
 
@@ -322,8 +326,8 @@ npm run test:e2e -- e2e/specs/cross-repo-plan-tasks.spec.ts
 
 - Current-repo callers are equivalent at the task-manager boundary when selectors are omitted.
 - The MCP transport change is additive and preserves the existing caller `repoRoot`.
-- Selector-bearing calls verify daemon support before creation; unselected current-repo calls do not
-  add a round trip.
+- Selector-bearing calls use the atomic versioned creation route; unselected current-repo calls keep
+  the legacy route.
 - No database schema or Task wire migration is required.
 - No task is created until the whole repo set resolves and the effective harness capability is known.
 - A failed creation returns no id. The phased-plan procedure stops before creating dependents.
@@ -349,15 +353,17 @@ npm run test:e2e -- e2e/specs/cross-repo-plan-tasks.spec.ts
 2. Omitting `repository` still targets repo A through worktree-owner resolution.
 3. Valid absolute paths outside workspace scan roots work; non-repos, orphaned worktrees, duplicate
    repos, and ambiguous names fail before task creation.
-4. A repo B task can depend directly on the planning task or session in repo A.
-5. One call can create B primary plus A attached under existing harness capability rules.
-6. A phased plan can schedule every resolvable phase without pasting phase Markdown into task intent.
-7. Plan-file paths resolve in a source-repo checkout only after the planning pull request merges.
-8. The backlog visibly names the selected repo set, with Playwright proof of the full route and SSE
+4. A selector-bearing call to an older daemon fails on the missing versioned route and creates no
+   legacy task.
+5. A repo B task can depend directly on the planning task or session in repo A.
+6. One call can create B primary plus A attached under existing harness capability rules.
+7. A phased plan can schedule every resolvable phase without pasting phase Markdown into task intent.
+8. Plan-file paths resolve in a source-repo checkout only after the planning pull request merges.
+9. The backlog visibly names the selected repo set, with Playwright proof of the full route and SSE
    consequence.
-9. Git push and pull-request authority stays enforced by the repository host at ship time. No MC
+10. Git push and pull-request authority stays enforced by the repository host at ship time. No MC
    repository grant or push preflight is added.
-10. Foreman keeps its all-target-repositories allowlist for unattended execution and does not
+11. Foreman keeps its all-target-repositories allowlist for unattended execution and does not
     conflate that policy with task creation.
 
 ## Non-goals

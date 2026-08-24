@@ -46,15 +46,16 @@ The choices submitted in the root-plan review are requirements, not open questio
    machine after task creation. The approved decision leaves that code unchanged.
 7. **The initial mixed-version assumption was wrong.** `McpCreateTaskSchema` is not strict, so an
    older daemon strips unknown selector fields instead of refusing them. Selector-bearing calls need
-   a capability preflight before creation. Otherwise an attached repository could be silently lost.
+   a versioned creation route that an older daemon cannot handle. A separate support check is also
+   insufficient because the daemon can change between the check and creation.
 8. **The phased-plan procedure is the user-facing consumer.** Its current manual-stop branch is the
    procedural bottleneck. Once this phase lands it must supply explicit target and attachment fields,
    keep `dependsOnCurrentSession: true`, and stop safely on any refusal.
 
 ## Sizing and phase-count rationale
 
-**Estimate: 170–240 gross non-test implementation lines.** Assumptions: 15–25 shared schema and
-capability lines, 65–90 selector and task-repository preparation lines, 30–45 route changes, 30–45
+**Estimate: 165–230 gross non-test implementation lines.** Assumptions: 10–20 shared schema lines,
+65–90 selector and task-repository preparation lines, 30–45 route changes, 30–45
 MCP child changes, and 30–35 shipped-skill changes. Tests and documentation are excluded from this
 estimate and remain part of the phase.
 
@@ -62,8 +63,8 @@ This is one phase and one one-shot task. The lower end is below the 200-line one
 even at the upper end the skill defaults to one phase unless another merge boundary materially
 reduces risk. None does here:
 
-- Schema, capability advertisement, tool preflight, and route handling are one compatibility
-  contract. Landing only one side creates either a dead API or a selector that cannot be sent safely.
+- Schema, versioned route, public-tool routing, and handler logic are one compatibility contract.
+  Landing only one side creates either a dead API or a selector that cannot be sent safely.
 - Selector resolution and multi-repository harness validation must land together so no task can be
   stored with a repository set its eventual harness cannot reach.
 - The shipped phased-plan update cannot land before the tool supports the calls it instructs agents
@@ -76,7 +77,7 @@ test-only, or cleanup phase.
 
 | # | Phase | Delivers | Direct prerequisites |
 |---|---|---|---|
-| 1 | [Enable cross-repository `create_task`](phase-1-enable-cross-repository-create-task.md) | Safe optional primary and attachment selectors, shared daemon validation, mixed-version preflight, phased-plan scheduling guidance, docs, focused tests, and browser proof | none beyond the planning-session PR |
+| 1 | [Enable cross-repository `create_task`](phase-1-enable-cross-repository-create-task.md) | Safe optional primary and attachment selectors, atomic versioned creation, shared daemon validation, phased-plan scheduling guidance, docs, focused tests, and browser proof | none beyond the planning-session PR |
 
 ## Dependency graph
 
@@ -103,8 +104,8 @@ There is only one implementation phase, so these are feature contracts rather th
 - Public selectors accept an absolute local path or a unique basename from `listRepos()`. Ambiguity
   is refused with canonical candidates; no first-match behavior is permitted.
 - `resolveTaskRepoSet` remains the canonical identity and collision boundary.
-- Selector-bearing calls verify daemon support before creation. Current-repository calls do not add
-  a preflight request.
+- Selector-bearing calls use a versioned creation endpoint that validates and stores the request
+  atomically. Current-repository calls keep the legacy endpoint.
 - The effective `ship` harness is resolved before storage; attached repositories require
   `multiRepoDispatch` and the dispatcher remains the launch backstop.
 - The calling session is still identified by `env`, `sessionId`, and `cwd`, independently of the
@@ -139,8 +140,9 @@ card. Fake agents are used throughout.
 
 - Every root-plan requirement and submitted decision is owned by Phase 1 or explicitly preserved as
   unchanged infrastructure.
-- The discovered mixed-version stripping behavior is reconciled in the earliest and only phase
-  through a pre-creation capability check; the root plan records the correction.
+- The discovered mixed-version stripping behavior and Inspector's check/create race are reconciled in
+  the earliest and only phase through an atomic versioned creation route; the root plan records both
+  corrections.
 - No concurrent merge claim exists and no later phase is expected to repair Phase 1.
 - Historical multi-repository plans remain historical records; only current product docs and the
   shipped phased-plan skill change.

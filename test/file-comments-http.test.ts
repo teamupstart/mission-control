@@ -895,11 +895,19 @@ async function reply(
  * Through phase 1's and phase 3's own writers rather than by writing the columns, so a
  * scenario here is reachable by the daemon that actually runs it.
  */
-function deliver(threadId: string, turnId: string): void {
-  beginFileCommentDelivery(threadId, turnId, Date.now());
+/**
+ * Stage a delivery the way the walkthrough does.
+ *
+ * `at` is a parameter rather than always `Date.now()` so a test can pin two deliveries of one
+ * thread to the SAME millisecond. That is not a contrivance: a timeout, a follow-up, and its
+ * send all inside one tick is ordinary on a fast machine, and it is what a real CI runner
+ * produced.
+ */
+function deliver(threadId: string, turnId: string, at: number = Date.now()): void {
+  beginFileCommentDelivery(threadId, turnId, at);
   const thread = loadFileCommentThread(threadId)!;
   const next = thread.messages.find((m) => m.author === "human" && m.deliveredAt === null)!;
-  markFileCommentMessageDelivered(next.id, Date.now());
+  markFileCommentMessageDelivered(next.id, at);
 }
 
 test("a reply quoting the handle the payload printed lands in that thread and releases the turn", async () => {
@@ -1101,6 +1109,44 @@ test("round 17: a reply naming an EARLIER delivery of an outstanding thread rele
   const right = await reply({ commentId: `${shortId}.2`, body: "and about the follow-up" });
   assert.equal(right.body.released, true);
   assert.equal(loadFileCommentThread(t.id)!.status, "answered");
+});
+
+test("two deliveries sharing a millisecond still resolve to the LATER one", async () => {
+  // The same shape as round 17, with the clock pinned instead of trusted. `Date.now()` has
+  // millisecond resolution and a timeout, a follow-up, and its send can land inside one tick,
+  // so "the greatest delivered_at" is a tie and the tie-break decides which delivery a reply
+  // is judged against. Getting it backwards releases the queue on a reply that answered an
+  // earlier delivery - which is the whole failure round 17 exists to refuse, reachable
+  // without any stale reply at all.
+  reset();
+  const t = await create();
+  const other = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${t.id}/queue`);
+  await post(`/api/file-comments/${other.id}/queue`);
+
+  const TICK = 1_770_000_000_000;
+  deliver(t.id, "turn-1", TICK);
+  const shortId = loadFileCommentThread(t.id)!.shortId;
+  setFileCommentThreadStatus(t.id, "unanswered", TICK);
+  await post(`/api/file-comments/${t.id}/messages`, { body: "still not right" });
+  deliver(t.id, "turn-2", TICK);
+
+  const delivered = loadFileCommentThread(t.id)!.messages.filter((m) => m.author === "human");
+  assert.deepEqual(
+    delivered.map((m) => m.deliveredAt),
+    [TICK, TICK],
+    "the fixture really did tie the two deliveries",
+  );
+
+  assert.equal(
+    (await reply({ commentId: `${shortId}.1`, body: "about your first point" })).body.released,
+    false,
+    "the earlier delivery is not the outstanding one, however the clock reads",
+  );
+  assert.equal(
+    (await reply({ commentId: `${shortId}.2`, body: "and about the follow-up" })).body.released,
+    true,
+  );
 });
 
 test("round 21: answering a thread that gained a follow-up leaves it QUEUED, never awaiting", async () => {

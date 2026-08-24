@@ -12113,7 +12113,13 @@ function deliveredOrdinal(thread: FileCommentThread): number | null {
     if (message.author !== "human") continue;
     ordinal += 1;
     if (message.deliveredAt === null) continue;
-    if (!best || message.deliveredAt > best.at) best = { ordinal, at: message.deliveredAt };
+    // `>=`, so a tie goes to the LATER message. Two deliveries of one thread can share a
+    // millisecond - a timeout, a follow-up, and its send all inside one tick is ordinary on a
+    // fast machine, and `Date.now()` cannot separate them. Messages arrive here in creation
+    // order, so among equal stamps the greatest ordinal is the most recent delivery; strict
+    // `>` handed a tie to the FIRST one and released the queue on a reply that answered an
+    // earlier delivery. Node 26 CI hit exactly that.
+    if (!best || message.deliveredAt >= best.at) best = { ordinal, at: message.deliveredAt };
   }
   return best?.ordinal ?? null;
 }

@@ -60,6 +60,17 @@ export interface DaemonHandle {
    */
   secondRepo: string;
   /**
+   * Two checkouts in the same workspace that share a basename, under different parents, or
+   * null unless the file asked for them with `test.use({daemonEnv: {MC_E2E_TWIN_REPOS: "1"}})`.
+   *
+   * The repo picker names a row by its directory name, so this pair is the case where that
+   * name is not an identity and the row has to say more. Seeded with the daemon rather than
+   * by the spec for `secondRepo`'s reason - the workspace scan is cached, so a repo created
+   * after the daemon started can be missing from the picker - and behind a flag because a
+   * standing pair would change what every other spec's picker offers.
+   */
+  twinRepos: [string, string] | null;
+  /**
    * Where a spec scripts what the fake `gh` reports, for THIS daemon.
    *
    * On the handle rather than derived in each spec because the daemon has to be told about it
@@ -228,6 +239,26 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
   const secondRepo = seedRepo(workspace, "second-repo");
+  // Two checkouts that share a basename, in different parents. The repo picker draws a
+  // checkout by its DIRECTORY NAME, which makes a shared basename the one case where a name
+  // is not an identity, and this pair is what a browser can be pointed at to prove the row
+  // still says which is which.
+  //
+  // Seeded HERE for `secondRepo`'s reason - the workspace scan is cached behind a TTL, so a
+  // repo a spec creates after the daemon started may simply be missing from the picker - but
+  // OPT-IN, unlike `secondRepo`, and the guided pass is why: it asserts the picker offers
+  // exactly two rows, so a standing pair would make a repo COUNT wrong elsewhere in the
+  // suite. Every test here gets its own daemon, so the sixteen extra git subprocesses would
+  // also be paid roughly six hundred times over for the three tests that want them.
+  //
+  // Nested names rather than a nested `workspace` argument: `seedRepo` derives each bare
+  // origin from the directory ABOVE the one it is given, so seeding both from `workspace`
+  // keeps the two origins distinct (`origins/alpha/…` and `origins/beta/…`) and keeps them
+  // outside the scanned tree, which is what that function's own note asks for.
+  const twinRepos: [string, string] | null =
+    extraEnv.MC_E2E_TWIN_REPOS === "1"
+      ? [seedRepo(workspace, "alpha/shared-lib"), seedRepo(workspace, "beta/shared-lib")]
+      : null;
   const conductorCheckout =
     extraEnv.MC_E2E_CONDUCTOR_CHECKOUT === "1"
       ? seedConductorInstallerCheckout(seedRepo(workspace, "ai-conductor"))
@@ -526,6 +557,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     workspace,
     repo,
     secondRepo,
+    twinRepos,
     ghPrsPath: ghPullRequestsPath(home),
     ghProductPath: ghProductScriptPath(home),
     productConsentPath: productConsentScriptPath(home),

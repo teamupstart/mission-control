@@ -9645,7 +9645,7 @@ select:not([multiple]) option:focus-visible {
 /* Rendered in a body-level portal with fixed positioning, so the list floats
    above the modal and never clips against a scrollable ancestor's overflow.
    `top`/`left`/`width`/`max-height` are set inline from the input's rect. The width
-   tracks the INPUT, so a field too narrow for a repo path ellipsizes every option at
+   tracks the INPUT, so a field too narrow for what a row says ellipsizes every option at
    the same character - fix that by giving the field room, not by letting the menu grow
    past the surface holding it (see `RepoCombobox`). */
 .combobox-list {
@@ -9660,6 +9660,12 @@ select:not([multiple]) option:focus-visible {
   border-radius: 8px;
   box-shadow: var(--shadow);
 }
+/* A row is the repo's DIRECTORY NAME, not its path - the path shares a long prefix with
+   every sibling checkout, so drawing it here ellipsizes away the only part that tells two
+   rows apart. The full path is still one hover away (each row is wrapped in a `Tooltip`)
+   and is still what the input holds. `.combobox-option-hint` appears only on rows whose
+   name collides with another offered row, and is ONE MORE FOLDER NAME rather than the
+   directory spelled out - see `repoOptionLabels`, which is where that rule lives. */
 .combobox-option {
   padding: 7px 9px;
   font-family: var(--mono);
@@ -9669,11 +9675,32 @@ select:not([multiple]) option:focus-visible {
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
+}
+/* Its own line, not a column beside the name, and that is the whole point: this menu is
+   exactly as wide as the input that opened it, so anything sharing a line with the name
+   is competing with it for the few characters there are - and a first pass that did share
+   one produced `fileserve…  ~/wo…`, which cuts BOTH halves and reads worse than the path
+   it replaced. Stacked, the name always gets the full width, and a hint (a single folder
+   name, on the rare colliding row) costs that row some height instead of the answer. */
+.combobox-option-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-option-hint {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 .combobox-option.is-active {
   color: #fff;
   background: color-mix(in oklab, var(--working) 20%, var(--panel-2));
+}
+.combobox-option.is-active .combobox-option-hint {
+  color: color-mix(in oklab, #fff 70%, var(--muted));
 }
 /* Live preview of the labels the comma-separated field will actually store. Lives
    inside the Labels field so it reads as that input's output; the `.field` above it is
@@ -18369,8 +18396,16 @@ button.wf-carried.is-link:focus-visible {
   border-radius: 9px;
   background: var(--panel-2);
 }
+/* The repo picker takes a row of its own in this column, rather than the last third of
+   one. `RepoCombobox` sizes its dropdown to its input by design and says so - a caller
+   owes the field room - and sharing a ~300px settings column with the kind select and the
+   Add button left the menu about 190px wide, which ellipsizes a repository name. Wrapping
+   the field to its own line is that room, and it is the layout half of the same fix. */
 .ts-add .foreman-repo-add {
   flex-wrap: wrap;
+}
+.ts-add .foreman-repo-add .combobox {
+  flex: 1 0 100%;
 }
 .ts-directory-row.is-active {
   background: color-mix(in oklab, var(--working) 12%, var(--panel));

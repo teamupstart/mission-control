@@ -82,6 +82,17 @@ same task without advancing the pass.
 also finds by name. See
 [the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
 
+The repository field is a searchable index of your workspace, and every row in it is the
+checkout's **directory name** rather than its path - the list is only as wide as the field,
+and a column of paths that all begin the same way ellipsizes away the one part that tells two
+repositories apart. Hovering a row reveals its full path, which is also what the field itself
+holds and what the task is dispatched against. Where two checkouts share a name, each of those
+rows adds the **name of a folder above it** underneath - still never a path - so `~/a/api` and
+`~/b/api` are told apart by `a` and `b`. A checkout with no folder above it at all is the one
+row that gets nothing added, because the only thing left to add would be a path. The same
+picker, and the same rows, appear wherever you choose a repository - **Settings → Trust**,
+**Standing instructions**, and **Task sources**.
+
 Open **Backlog details** to choose whether Foreman may automatically schedule a task added
 from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the backlog until
 you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
@@ -220,6 +231,15 @@ and remote review state visible beside the work that produced it.
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
+
+**Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
+Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts
+a worktree, or types into a session. What it files arrives **parked**, with that source's
+**Allow backlog autopilot** switched off, so a sweep's rows are a list you triage rather than
+work that starts dispatching before you have read a title; enabling a row is you saying yes to
+that row. Turn **Allow backlog autopilot** on for a source whose upstream is already curated
+and every later sweep of it files ready-to-schedule tasks instead. See
+[task sources](docs/dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog).
 
 ## Report a public product issue through an agent
 

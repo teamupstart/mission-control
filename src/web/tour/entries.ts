@@ -1,4 +1,5 @@
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
+import { tourContent } from "./content.ts";
 import type { TourId } from "./contracts.ts";
 
 /**
@@ -39,18 +40,21 @@ export interface TourEntry {
   entryRoute: MissionRoute;
 }
 
+const SEE_WORK_TITLE = tourContent("see-work").title;
+const LIBRARY_TITLE = tourContent("library").title;
+
 const SEE_WORK_ENTRY: TourEntry = {
   id: "see-work",
-  title: "See the work",
+  title: SEE_WORK_TITLE,
   settings: {
     tooltip: "Tour the fleet, Board, and one session's work desk",
-    ariaLabel: "Start See the work tour",
-    heading: "See the work",
+    ariaLabel: `Start ${SEE_WORK_TITLE} tour`,
+    heading: SEE_WORK_TITLE,
     hint: "Start the guided tour",
   },
   palette: {
     rowId: "command:see-work-tour",
-    title: "Start See the work tour",
+    title: `Start ${SEE_WORK_TITLE} tour`,
     detail: "Preview how the Fleet, Board, and one session desk fit together.",
     keywords: ["tour", "product tour", "onboarding", "fleet", "board", "session detail"],
     hint: "Start the temporary guided See the work comparison tour.",
@@ -60,16 +64,16 @@ const SEE_WORK_ENTRY: TourEntry = {
 
 const LIBRARY_ENTRY: TourEntry = {
   id: "library",
-  title: "Author what runs",
+  title: LIBRARY_TITLE,
   settings: {
     tooltip: "Tour the Library: Personas, Actions, Commands, and the workflow that reviews",
-    ariaLabel: "Start Author what runs tour",
-    heading: "Author what runs",
+    ariaLabel: `Start ${LIBRARY_TITLE} tour`,
+    heading: LIBRARY_TITLE,
     hint: "Start the Library guided tour",
   },
   palette: {
     rowId: "command:library-tour",
-    title: "Start Author what runs tour",
+    title: `Start ${LIBRARY_TITLE} tour`,
     detail: "Walk the Library - Personas, Actions, Commands - and the review that follows work.",
     keywords: [
       "tour",

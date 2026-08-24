@@ -21,6 +21,8 @@ choose, and the defaults draw the card the previous release drew.
 Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
 per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
 One tour runs at a time, and two are registered.
+Their names and stage copy are edited in [`tours/see-work.md`](tours/see-work.md) and
+[`tours/library.md`](tours/library.md); see [`tours/README.md`](tours/README.md) for the format.
 
 **See the work** teaches the operating half - the Line, the Board, one session's desk, and a
 task from dispatch through review to completion.

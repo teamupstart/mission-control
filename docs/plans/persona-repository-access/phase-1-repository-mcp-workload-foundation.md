@@ -67,7 +67,8 @@ Create `src/shared/repository-access.ts` with append-only or closed constants an
 - a versioned `PersonaWorkloadRequest` with idempotency key, frozen Persona payload, provider/model, prompt/images, artifact locator/digest, policy, budgets, deadline, and cancellation generation;
 - ordered `PersonaWorkloadEvent` variants with workload id, sequence, timestamp, and payload;
 - `PersonaWorkloadResult` containing one validated Persona verdict or one typed infrastructure failure;
-- safe `RepositoryQueryAuditMetadata` with hashes/counts only, never result bodies or sensitive query text.
+- opaque `RepositoryEvidenceHandleId` and safe handle metadata bound to snapshot/workload/operation identity, returned item ordinal, canonical approved path and exact line/diff range, policy version, and truncation state;
+- safe `RepositoryQueryAuditMetadata` with hashes/counts and bounded evidence-handle metadata only, never result bodies, excerpts, quote fields, or sensitive query text.
 
 Use exhaustive records and switches over every operation and event. Unknown future values must fail closed rather than map to a nearby capability.
 
@@ -128,6 +129,8 @@ Path rules:
 
 Create one reader factory from a verified `RepositoryViewDescriptor`. The reader owns validation, policy, budgets, cursors, cancellation, Git invocation, scrubbing, and local audit emission.
 
+For every successfully returned content item, mint one unpredictable opaque evidence handle and include only its id in the MCP result. Emit the matching safe handle metadata to the supervisor-owned audit journal in the same operation lifecycle. Do not mint a handle for denied, failed, cancelled, or omitted items. A truncated result binds handles only to the ranges actually returned. The provider cannot create an id that matches an authenticated workload event and persisted handle record.
+
 Implement:
 
 - `read`: regular file or symlink target, explicit layer (`worktree` or `index` where available), line/byte window, cursor;
@@ -162,7 +165,7 @@ Create `src/repository-mcp/server.ts` as a stdio MCP server with only the eight 
 
 Add `build:repository-mcp` and include it in `npm run build`. Extend `scripts/smoke-bundles.mjs` to initialize the built repository MCP, verify the exact tool set, execute a harmless fixture-backed query, and confirm clean termination. Keep the existing Mission MCP smoke unchanged.
 
-The MCP writes only safe metadata to an attempt-scoped local audit journal or equivalent supervisor-owned IPC. MCP stdout remains protocol-only. An audit write failure makes the operation unavailable and eventually fails the workload; it is never ignored.
+The MCP writes only safe query and evidence-handle metadata to an attempt-scoped local audit journal or equivalent supervisor-owned IPC. MCP stdout remains protocol-only. An audit write failure makes the operation unavailable and eventually fails the workload; it is never ignored. The journal never contains result bodies, excerpts, or quote text.
 
 ### 6. Implement the local workload supervisor and executor
 
@@ -172,7 +175,7 @@ The supervisor:
 2. asks the injected materializer for a verified repository view lease;
 3. creates attempt-scoped provider and MCP configuration;
 4. starts one provider session and the local repository MCP;
-5. streams monotonically sequenced lifecycle and safe query-audit events;
+5. streams monotonically sequenced lifecycle and safe query/evidence-handle audit events;
 6. validates one terminal Persona verdict and its provider result envelope;
 7. releases the view lease and terminates child processes in `finally`;
 8. treats late results after cancellation as terminal audit only.
@@ -207,7 +210,7 @@ Add or extend focused tests such as:
 - `test/inspector-scrub.test.ts` and Inspector grant equality regressions
 - `test/keep-awake-native-build.test.ts` or the current bundle/build contract suite where new entrypoint enumeration belongs
 
-Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, boundary show/log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
+Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, boundary show/log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, evidence handles for exact returned ranges, absence of handles on non-success outcomes, body-free audit events, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
 
 Provider contract fixtures prove multiple repository calls and one verdict for Claude and Codex without real tokens. They assert image preservation and exact capability parity.
 
@@ -229,6 +232,7 @@ npm run smoke
 - History operations enforce the shared retained-revision set, report its boundary, and never fetch, accept, or imply history beyond it.
 - Sparse denied blobs cannot be read or leaked through another operation.
 - MCP response bodies remain between provider and MCP; emitted events contain safe metadata only.
+- Every content evidence handle maps to one actually returned allowed item and exact range; no response excerpt or quote crosses into workload events.
 - Build and smoke prove both MCP bundles are packaged and runnable.
 - No existing Workflow or Inspector behavior changes.
 - The phase pull request records any deviation from this proposed route and why.
@@ -241,6 +245,7 @@ Phase 2 may rely on:
 
 - the exact shared operation, view, policy, workload, event, audit, cursor, and cancellation schemas;
 - the exact `RepositoryHistoryPolicyV1`, retained-revision validation, boundary result semantics, and out-of-range denial code;
+- opaque repository evidence-handle ids and safe handle metadata, including the no-body/no-quote event contract;
 - the sparse-object reader's rule that denied blob bodies may be physically absent;
 - `RepositoryArtifactMaterializer` and `RepositoryViewLease` boundaries;
 - the standalone MCP bundle and its descriptor;
@@ -253,7 +258,7 @@ Phase 3 may rely on the same contracts and must not widen `LlmRunner`, create a 
 ## Cross-phase compatibility audit
 
 - The Phase 1 access enum uses final `none`/`read` spellings so Phase 3 does not migrate a temporary vocabulary.
-- Query and audit schemas contain attempt/workload identity fields even though Phase 1 does not persist them; Phase 3 can write them without changing MCP responses.
+- Query, evidence-handle, and audit schemas contain attempt/workload identity fields even though Phase 1 does not persist them; Phase 3 can write and validate them without changing MCP responses or retaining excerpts.
 - The materializer is injected, so Phase 2 can add the real artifact owner without replacing the executor.
 - The MCP reads a manifest and sparse object view rather than a live repository path, matching Phase 2's portability and sensitive-blob omission.
 - History validity is descriptor membership, not generic reachability, so Phase 2 can package one deterministic bounded prefix and Phase 3 can disclose and audit the same boundary without changing provider semantics.

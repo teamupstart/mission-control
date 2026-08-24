@@ -233,9 +233,9 @@
         <table>
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
-            <tr><td>Phase 1</td><td>Closed operations, repository and history policy, retained-set/boundary semantics, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
+            <tr><td>Phase 1</td><td>Closed operations, repository and history policy, retained-set/boundary semantics, metadata-only evidence handles, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
             <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact policy-retained history prefix, independent submission claims, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
-            <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query audit paging, same-attempt evidence validation</td><td>Future remote adapter</td></tr>
+            <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query/handle audit paging, same-attempt metadata-only evidence validation</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>
       </div>
@@ -251,7 +251,7 @@
             <tr><td>Repository MCP</td><td>Validation, read/Git operations, policy, cursors, bounds, local safe audit</td><td>Mission credentials, shell, writes, network</td></tr>
             <tr><td>Artifact service</td><td>Exact capture, sparse packaging, digest records, submission claims, materialization, zero-claim cleanup</td><td>Retry policy, provider behavior, UI</td></tr>
             <tr><td>Workload supervisor/executor</td><td>Provider/MCP lifecycle, ordered events, cancellation, reconciliation</td><td>SQLite or Workflow transitions</td></tr>
-            <tr><td>Workflow engine/store</td><td>Dispatch authority, event ingestion, retries, verdict/evidence validation</td><td>Repository body transport or direct path resolution</td></tr>
+            <tr><td>Workflow engine/store</td><td>Dispatch authority, event ingestion, retries, verdict and evidence-handle validation</td><td>Repository body/excerpt transport or provider-supplied path resolution</td></tr>
             <tr><td>Persona and run UI</td><td>Configuration disclosure, frozen-state and safe audit display</td><td>Security enforcement or response bodies</td></tr>
           </tbody>
         </table>
@@ -267,6 +267,7 @@
         <li>Shared artifact bytes survive release of any submission claim until the final active claim is atomically released and cleanup rechecks zero references.</li>
         <li>History selection is deterministic at both ceilings; in-range queries work after source removal, and boundary or out-of-range behavior is provider-neutral and auditable.</li>
         <li>Repository bodies stay inside the workload; SQLite, logs, exports, SSE, and browser receive safe metadata only.</li>
+        <li>Repository evidence references contain only <code>operationId</code> and opaque <code>evidenceHandleId</code>; daemon-owned metadata proves the exact returned path/range without storing quotes or excerpts.</li>
         <li>Built-in overrides affect future operator-published versions, never shipped built-in versions.</li>
         <li>The local executor is a conformance implementation for a future remote adapter, not a hidden selection of remote infrastructure.</li>
       </ul>
@@ -281,7 +282,7 @@ npm run build
 npm run smoke
 # Phase 3
 npm run test:e2e</code></pre>
-      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
+      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, metadata-only same-attempt evidence handles, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
     </section>
   </div>
   <p class="footer">Source of truth: phased-plan.md. Detailed implementation instructions live in the three linked phase Markdown files.</p>

@@ -150,7 +150,7 @@ Define browser-safe tool input, output, cursor, policy, and audit metadata schem
 | `git_log` | Traverse only the manifest's ordered retained-revision set, anchored at captured HEAD, with bounded count, cursor, optional approved path, and an explicit history-boundary marker. |
 | `git_blame` | Attribute a bounded line range for an approved regular file using only retained revisions, marking boundary attribution and truncation instead of consulting missing or host objects. |
 
-Every MCP response includes a stable operation id, status, structured result metadata, byte and item counts, `truncated`, an explicit `nextCursor` when more data is available, and a typed error or denial code. Pagination cursors are opaque, integrity-checked tokens bound to snapshot digest, operation shape, and prior position so a provider cannot turn one cursor into a different request.
+Every MCP response includes a stable operation id, status, structured result metadata, byte and item counts, `truncated`, an explicit `nextCursor` when more data is available, and a typed error or denial code. Each successful content-bearing result item also carries an opaque `evidenceHandleId`. The MCP emits matching safe handle metadata containing the snapshot/workload/operation identity, item ordinal, canonical approved path and exact line or diff range, policy version, and truncation state, but no excerpt or response body. Pagination cursors are opaque, integrity-checked tokens bound to snapshot digest, operation shape, and prior position so a provider cannot turn one cursor into a different request.
 
 The MCP process receives no Mission Control credential and no arbitrary network capability. Repository results stay between the provider and local MCP process. The MCP sends only bounded audit metadata to the workload supervisor over local IPC. The supervisor owns any authenticated connection or callback to Mission Control.
 
@@ -167,7 +167,7 @@ The versioned workload request includes:
 - deadline and cancellation generation;
 - an attempt-scoped event sink descriptor that the local adapter may satisfy in-process and a remote adapter may satisfy through authenticated middleware.
 
-The ordered workload event union includes accepted, sandbox ready, repository verified, Persona started, repository query metadata, progress, question or approval requests where later workflows allow them, terminal verdict, failure, and cancellation. Every event carries workload id, attempt id, monotonic sequence, event id, timestamp, and safe payload. Ingestion is idempotent by workload and sequence, detects gaps, and can resume from a persisted cursor.
+The ordered workload event union includes accepted, sandbox ready, repository verified, Persona started, repository query and evidence-handle metadata, progress, question or approval requests where later workflows allow them, terminal verdict, failure, and cancellation. Every event carries workload id, attempt id, monotonic sequence, event id, timestamp, and safe payload. Ingestion is idempotent by workload and sequence, detects gaps, and can resume from a persisted cursor.
 
 A WebSocket, HTTP stream, polling API, or other future connection is only a transport for this event protocol. Mission Control persists an event before projecting it to the dashboard or original session. The workload never writes the Mission Control database and never connects directly to a session terminal. Human questions and answers, if enabled later, use durable addressed events and idempotent commands mediated by Mission Control.
 
@@ -226,13 +226,13 @@ Propagate cancellation from the Workflow attempt through `PersonaWorkloadExecuto
 
 ## Audit and observability
 
-Add an append-only `workflow_repository_query_events` ledger keyed by attempt id and MCP operation sequence. Each record includes workload id, workload event sequence, snapshot digest, normalized operation kind, safe path or query hash metadata, start/end time, duration, outcome, denial/error code, item and byte counts, truncation, cursor presence, and cancellation state. Do not store full repository response bodies, sensitive query text, or provider secrets.
+Add an append-only `workflow_repository_query_events` ledger keyed by attempt id and MCP operation sequence, plus bounded evidence-handle metadata keyed by opaque handle id. Each query record includes workload id, workload event sequence, snapshot digest, normalized operation kind, safe path or query hash metadata, start/end time, duration, outcome, denial/error code, item and byte counts, truncation, cursor presence, and cancellation state. Each handle record binds one actually returned item to its successful operation, canonical approved path/range, item ordinal, policy version, and truncation state. Do not store repository response bodies, excerpts, quote fields, sensitive query text, or provider secrets.
 
 Add durable workload dispatch and event state sufficient to make local and future remote execution share one lifecycle: request idempotency key, accepted executor identity, highest contiguous event sequence, terminal outcome, cancellation generation, and transport diagnostics. A duplicate event is ignored after equality validation; a conflicting duplicate or sequence gap is an infrastructure fault rather than guessed ordering.
 
 Extend existing Workflow run detail data and UI with a repository-query audit summary. Operators can inspect what operation ran, whether it was allowed, denied, truncated, failed, or cancelled, and how much data it returned. The view must not reproduce file bodies. Add structured server logs and status counts for capture latency/failure, query latency/outcome, retries caused by repository access, active snapshot count, and cleanup backlog.
 
-Extend Workflow evidence references so a final verdict can cite a successful MCP operation id plus approved path and line or diff range. The engine validates that cited evidence belongs to the same workload attempt and was actually returned. Existing prompt-only evidence remains valid for Personas with `none` access and for old runs.
+Extend Workflow evidence references with a metadata-only `repository` kind containing an operation id and `evidenceHandleId`. It has no quote, excerpt, or free-form path/range field. The engine resolves the handle against persisted safe metadata and accepts it only when it was minted for a successfully returned item from the same snapshot, workload, and node attempt; the UI may display the stored approved path/range metadata. A truncated item remains bound to only the exact returned range. A fabricated, duplicate-conflicting, denied, failed, cancelled, or unrelated handle is invalid. Existing prompt-only evidence remains valid for Personas with `none` access and for old runs. Ordinary reviewer prose remains part of the existing bounded/scrubbed final verdict, but it is not treated as a verified repository excerpt.
 
 ## Failure and retry behavior
 
@@ -274,11 +274,12 @@ Migration tests open representative pre-feature databases, including custom Pers
 
 ### Unit and security tests
 
-- Schema defaults, exhaustive MCP tool and workload-event unions, cursor integrity, artifact digest validation, budget accounting, event idempotency, evidence-reference validation, and access freshness.
+- Schema defaults, exhaustive MCP tool and workload-event unions, cursor integrity, artifact digest validation, budget accounting, event idempotency, metadata-only evidence-handle validation, and access freshness.
 - Path normalization, traversal, option injection, Unicode and case behavior, symlink and submodule handling, retained-revision validation, history frontier behavior, binary handling, and every sensitive-path family.
 - Layered Git fixtures that distinguish committed, staged, unstaged, deleted, renamed, untracked, ignored, symlink, submodule, and unborn-repository states.
 - Per-operation pagination and truncation without silent omissions.
 - Deterministic history selection at both ceilings, all-parent merge traversal, out-of-range revision denial, boundary show/log/blame semantics, and failure rather than silent range shrinkage when an in-range allowed object cannot be packaged.
+- Evidence handles are minted only for actually returned allowed items; forged, cross-attempt, mismatched-range, denied, failed, cancelled, and conflicting duplicate handles fail without persisting or reconstructing a quote.
 
 ### Persistence, migration, and integration tests
 
@@ -351,7 +352,7 @@ The feature is complete only when all of the following are true:
 - One review attempt starts one provider session that can execute multiple typed, pageable local MCP queries and then return one validated verdict.
 - Claude and Codex use the same MCP tool contract and security path with no direct filesystem, shell, write, or agent-visible network tools.
 - The local reference executor consumes a versioned portable workload request and produces ordered idempotent events suitable for a later remote adapter.
-- Repository query result bodies remain inside the workload; Mission Control persists only safe query metadata, lifecycle events, and the final verdict.
+- Repository query result bodies and evidence excerpts remain inside the workload; Mission Control persists only safe query/evidence-handle metadata, lifecycle events, and the ordinary bounded final verdict.
 - Protected paths, traversal, symlink following, submodule traversal, history beyond the manifest-retained range, shell, writes, network, and host files are impossible through the exposed contract.
 - Every query outcome, denial, truncation, cancellation, and failure is auditable without storing repository response bodies.
 - Artifact, workload, provider, or MCP unavailability retries and eventually blocks with infrastructure error, never silently degrading to prompt-only review.

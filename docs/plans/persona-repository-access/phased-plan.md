@@ -123,14 +123,14 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 ### Established by Phase 1, consumed by Phases 2 and 3
 
-- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, and safe query audit metadata.
+- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, safe query audit metadata, and opaque metadata-only repository evidence handles.
 - The MCP operation set is closed: `read`, `search`, `glob`, `git_status`, `git_diff`, `git_show`, `git_log`, and `git_blame`.
 - `RepositoryHistoryPolicyV1` fixes the retained range at a deterministic all-parent breadth-first prefix capped before 2,048 commits or 512 MiB of incremental unique allowed historical blobs. Descriptor membership, not generic reachability, controls history queries; boundary and out-of-range results are typed and auditable.
 - `RepositoryViewDescriptor` names a verified manifest and sparse object/materialized view, including the immutable retained-revision/frontier fields. It never names the original checkout.
 - Path policy and secret scrubbing are shared pure modules. The MCP applies them for both providers; provider prompts do not enforce access.
 - `PersonaWorkloadExecutor` accepts a versioned request and supports dispatch, ordered event replay after a sequence, cancellation by generation, and reconciliation by workload id.
 - `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
-- Repository bodies travel only between the provider and local MCP. Workload events carry safe metadata and the final verdict.
+- Repository bodies travel only between the provider and local MCP. Workload events carry safe query/evidence-handle metadata and the final verdict, never response bodies, evidence excerpts, or quote fields.
 - The separate repository MCP bundle has no Mission Control credentials or HTTP client and is included in build and smoke verification.
 
 ### Established by Phase 2, consumed by Phase 3
@@ -149,8 +149,8 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - Publication identity is `(workflow_id, source_draft_revision, source_snapshot_fingerprint)` over canonical resolved graph JSON.
 - A repository-enabled attempt owns exactly one durable workload id and one current cancellation generation.
 - Workload event ingestion is append-only and idempotent by `(workload_id, sequence)`. Conflicting duplicates or gaps are infrastructure failures.
-- Query audit persistence stores metadata only and is paged independently from Workflow events and LLM calls.
-- Evidence references to repository content must name a successful operation from the same attempt plus an allowed path/range. The engine validates them before accepting the verdict.
+- Query audit and evidence-handle persistence stores metadata only and is paged independently from Workflow events and LLM calls.
+- Evidence references to repository content contain only `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt returned-item/path/range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.
 - `none` access preserves the historical prompt, provider call, fingerprint, and verdict path byte for byte.
 
 ## Ownership matrix
@@ -174,7 +174,7 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 - Kept the repository MCP separate from Mission MCP so its process cannot inherit task tools or bearer credentials.
 - Kept the general `LlmRunner` unchanged so existing Foreman, Inspector, ensemble, title, and Workflow calls do not inherit MCP capability.
-- Put query, policy, workload, event, and audit envelopes in one browser-safe module so provider adapters, the MCP, daemon ingestion, and UI cannot drift.
+- Put query, policy, workload, event, audit, and metadata-only evidence-handle envelopes in one browser-safe module so provider adapters, the MCP, daemon ingestion, and UI cannot drift.
 - Made provider parity a Phase 1 exit gate. Failure returns to operator review before capture or Persona migrations land.
 
 ### Audit after Phase 2 design
@@ -190,7 +190,8 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - Integrated Persona setting and execution in one merge, preventing a visible control that silently has no effect.
 - Kept historical and access-off execution on the exact old path.
 - Routed all access-enabled infrastructure failures through the existing retry ladder and final blocked state.
-- Kept repository bodies inside the workload while giving run detail enough safe metadata to explain operations and failures.
+- Kept repository bodies and evidence excerpts inside the workload while giving run detail enough safe query/handle metadata to explain operations, exact returned ranges, and failures.
+- Made repository evidence validation resolve daemon-owned handles rather than provider-supplied quotes, so same-attempt proof does not require retaining or reconstructing MCP excerpts.
 - Assigned every source-plan requirement to exactly one owner and every consumer to a direct or transitive prerequisite.
 
 ### Final audit result
@@ -232,4 +233,5 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
 6. History selection is deterministic at both ceilings; in-range show/log/blame works after source removal, while boundary and `revision_out_of_range` behavior is identical for Claude and Codex.
-7. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.
+7. Repository evidence handles validate one same-attempt returned item and exact range without any response body, excerpt, quote, or provider-supplied path entering daemon state.
+8. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.

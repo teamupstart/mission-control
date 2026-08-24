@@ -108,14 +108,15 @@ In `src/shared/protocol.ts`:
 - allow `repositoryAccess` on create with default `none`;
 - add a dedicated repository-access mutation schema carrying `expectedAccessRevision` and the closed mode;
 - default missing `PersonaSnapshot.repositoryAccess` to `none`;
-- extend run-detail/query-audit and evidence-reference schemas additively.
+- extend run-detail/query-audit schemas additively;
+- append a metadata-only `repository` evidence kind containing required `operationId` and opaque `evidenceHandleId`, with no quote, excerpt, or free-form path/range field.
 
 In `src/server/db.ts`:
 
 1. add `personas.repository_access TEXT NOT NULL DEFAULT 'none'`;
 2. create `persona_builtin_overrides` keyed by built-in Persona id, storing only repository access, monotonic revision, and timestamps;
 3. add `workflow_versions.source_snapshot_fingerprint`, backfill it from canonical parsed graph JSON, drop the old draft uniqueness index, and create uniqueness on `(workflow_id, source_draft_revision, source_snapshot_fingerprint)`;
-4. create workload, ordered workload-event, and repository-query audit tables/indexes;
+4. create workload, ordered workload-event, repository-query audit, and bounded repository-evidence-handle metadata tables/indexes;
 5. add any snapshot-to-workload ownership columns proven necessary by the final Phase 1/2 contracts.
 
 Indexes over added columns live beside migrations. Migration parity tests compare fresh and upgraded table/column/index sets mechanically.
@@ -192,9 +193,10 @@ Persist enough state for local and future remote executors:
 
 - workload id, node attempt id, request/idempotency key, executor identity, snapshot digest, protocol version, state, deadline, cancellation generation, accepted/terminal timestamps, highest contiguous sequence, last error, and transport diagnostics;
 - ordered workload events with payload equality hash and ingestion timestamp;
-- query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error including history-boundary and out-of-range results, item/byte counts, truncation, cursor presence, and cancellation state.
+- query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error including history-boundary and out-of-range results, item/byte counts, truncation, cursor presence, and cancellation state;
+- evidence-handle rows keyed by unpredictable opaque id, binding one actually returned item to snapshot/workload/operation identity, item ordinal, canonical approved path and exact returned line/diff range, policy version, and truncation state.
 
-The daemon is the only database writer. The MCP writes a safe local journal; the workload supervisor emits safe events; the engine/store validates and persists them.
+The daemon is the only database writer. The MCP writes a safe local journal; the workload supervisor emits safe events; the engine/store validates and persists them. Neither event type nor table stores result bodies, excerpts, quotes, or provider-supplied path/range assertions.
 
 Add bounded store and HTTP paging for query audits, for example `GET /api/workflow-runs/:id/repository-queries?after=&limit=`. Run detail carries only repository-access enabled state and aggregate counts/latest failure; it does not inline an unbounded ledger or response body. Run export includes safe audit metadata only.
 
@@ -218,17 +220,19 @@ There is no model-facing broker loop in the engine. Multiple queries happen insi
 
 ### 8. Validate repository evidence references
 
-Append a `repository` evidence kind and optional operation id/range fields without renaming or reordering existing persisted ids.
+Append the Phase 1 metadata-only `repository` evidence kind without renaming or reordering existing persisted ids. It contains only required `operationId` and `evidenceHandleId`; it rejects quote, excerpt, and free-form path/range fields.
 
 For every repository evidence reference:
 
 - operation id belongs to the same workload and node attempt;
-- the operation completed successfully and returned the cited allowed path/range;
-- the cited path is canonical and not denied;
-- the quote is bounded/scrubbed and consistent with the operation metadata contract;
-- a denied, failed, cancelled, or unrelated operation cannot support a verdict.
+- the handle record exists in the authenticated event stream and belongs to the same snapshot, workload, operation, and returned item;
+- the operation completed successfully and the stored handle metadata names one canonical allowed path and exact range that was actually returned;
+- a truncated item supports only its stored returned range;
+- fabricated, duplicate-conflicting, denied, failed, cancelled, omitted, cross-attempt, or unrelated handles cannot support a verdict.
 
-Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, bounded retained-history range, boundary/out-of-range responses, and repository evidence form without telling the provider it has shell or filesystem access.
+The engine and UI resolve the approved display path/range from daemon-owned handle metadata, never from provider text. They do not reconstruct or persist the excerpt. Ordinary reviewer prose remains the existing bounded/scrubbed final verdict and is not represented as a verified repository quote.
+
+Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, bounded retained-history range, boundary/out-of-range responses, and metadata-only evidence handle form without telling the provider it has shell or filesystem access.
 
 ### 9. Integrate retry, cancellation, and restart recovery
 
@@ -328,7 +332,7 @@ Cover:
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;
 - retained-history boundary and out-of-range recovery within the same provider session, with the same result and audit semantics for Claude and Codex;
-- same-attempt evidence validation;
+- same-attempt metadata-only evidence validation, including a successful handle, exact truncated range, fabricated id, cross-attempt reuse, operation mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
 - Claude/Codex parity and image preservation;
 - missing/corrupt artifact, failed materialization, MCP crash, provider crash, malformed verdict, audit failure, event duplicate/gap, timeout, cumulative budget, cancellation, late result, daemon restart, executor loss, retry exhaustion, and manual resubmit;
 - proof that every read-enabled failure avoids prompt-only execution;
@@ -348,9 +352,10 @@ Cover:
 6. repeat capability parity for Codex;
 7. observe denial and truncation/pagination in the audit summary without response bodies;
 8. observe retained-history boundary and out-of-range outcomes without omitted commit metadata;
-9. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
-10. reload and see persisted audit/retry state;
-11. render a historical old run as no repository access.
+9. submit a verdict with a returned evidence handle and see only its approved path/range metadata, never an excerpt;
+10. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
+11. reload and see persisted audit/retry state;
+12. render a historical old run as no repository access.
 
 Use roles, labels, placeholders, and visible text only. Do not add `data-testid`.
 
@@ -375,7 +380,7 @@ Perform desktop and narrow-width visual QA of the Persona control, Version Histo
 - Read-enabled submission capture produces one ready exact artifact before attempts start.
 - One attempt means one provider session with multiple MCP queries and one validated verdict.
 - Claude and Codex have equivalent operations, limits, denials, cancellation, and audit metadata.
-- Repository response bodies remain inside the workload.
+- Repository response bodies, evidence excerpts, and quote fields remain inside the workload; repository evidence references persist only validated handle metadata.
 - Unavailability retries and eventually blocks without prompt-only fallback.
 - Cancellation and restart recovery cannot duplicate or revive stale workloads.
 - Persona Editor, Version History, run detail, migration, unit, integration, runner-contract, and built-browser E2E coverage pass.
@@ -390,6 +395,7 @@ This is the final implementation phase. Future remote execution work may rely on
 - `PersonaWorkloadExecutor` dispatch/reconcile/cancel semantics;
 - ordered idempotent workload events and cancellation generations;
 - repository bodies staying local to worker/MCP;
+- metadata-only repository evidence handles that a remote executor emits through the same authenticated event contract;
 - daemon-owned Workflow state and audit ingestion;
 - local executor behavior as the reference conformance suite.
 
@@ -400,7 +406,7 @@ A future adapter may replace local artifact resolution and event transport. It m
 - Persona access uses Phase 1's final enum and Phase 2's ready artifact invariant.
 - Conditional capture activates Phase 2 without changing access-off fingerprints or capturing every submission.
 - The engine dispatches Phase 1's workload instead of adding a repeated model-call broker.
-- Query audits persist Phase 1 safe metadata only; response bodies never cross into daemon state.
+- Query audits and evidence handles persist Phase 1 safe metadata only; response bodies, excerpts, and quote fields never cross into daemon state.
 - Retries reuse the digest held by Phase 2's durable submission claim and create new Phase 1 workload identities.
 - Built-in overrides affect future operator publication only, preserving generated built-in versions.
 - Run detail pages query audits separately, preserving existing event/LLM paging and compact SSE summaries.

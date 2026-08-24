@@ -447,7 +447,7 @@ a pull request, or runs a retro.
 **Author what runs** in the same **Help & tours** footer, or **Start Author what runs tour**
 in the palette, teaches the AUTHORING half: the Library's four editable assets, and the
 workflow that composes them into a definition of done. It is fifteen stops and nineteen
-spotlights - four stops spend two beats on one lesson - plus a centered closing card.
+spotlights - five stops spend two beats on one lesson - plus a centered closing card.
 
 It walks the shelves BOTTOM-UP, which is dependency order rather than reading order: Personas,
 then Actions, then Commands, then Workflows, because a workflow is built out of the first

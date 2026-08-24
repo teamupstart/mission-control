@@ -294,9 +294,10 @@ reintroduce and neither is caught by the guards that look like they should catch
   stated as universal rather than per-class, and why the adversarial suites are table-driven over the
   op list: the class rules and the test shape are the fix, not the three individual patches. When
   reviewing a new op, check **both** axes - what it is handed, and what its output can carry.
-- **Updating one list and not its sibling list.** The boot block versus `migrate()`
-  (reconciliation 23), the class table versus the op set (22), the op argv versus its siblings (18).
-  Three different pairs, one habit. Where a fact has to appear in two places, the durable answer has
+- **Updating one list and not its sibling list.** The dominant failure of this review, by some
+  distance: the boot block versus `migrate()` (23), the class table versus the op set (22), the op argv
+  versus its siblings (18), the reader's inputs versus what was persisted (27, 28), and the row schema
+  versus the domain type (30). Six findings, one habit. Where a fact has to appear in two places, the durable answer has
   been a test that derives one from the other rather than a note asking the next author to remember -
   the `table_info` set comparison, the argv assertion, the total `Record`.
 - **Fixing the instance the review pointed at, and not its siblings elsewhere.** The same failure in
@@ -493,6 +494,17 @@ reintroduce and neither is caught by the guards that look like they should catch
     exported at all. The tolerant schema moves to `src/shared/protocol.ts` beside the strict
     `PersonaVerdictSchema` it is the sibling of, and the server parser imports it, keeping
     `normalizePersonaVerdict` and the id cross-checks server-side.
+
+30. **Every persisted value travels all five hops, with a round-trip test** (Phases 2 and 3). The
+    porcelain was declared on the row schema and never carried onto `WorkflowSubmission`, so it was
+    parsed and dropped - the fifth instance of one-list-not-its-sibling, and this time both halves sat
+    three lines apart in the same bullet. Fixed, and then swept properly rather than narrowly: the
+    same sweep found two more the review had not reached - the audit rows had no domain type at all
+    (Phase 3 renders them, so there was nothing to render), and `workflow_llm_calls.round` was never
+    added to `WorkflowLlmCall`. The rule is now stated once with the five hops named -
+    column, row schema, row parser, domain type, writer - and each value carries a **round-trip test**
+    through the public store API, which is the only test that sees a value parsed and then dropped: a
+    parser test passes and an insert test passes.
 
 ## Final verification strategy
 

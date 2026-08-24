@@ -226,8 +226,14 @@ addColumn(d, "workflow_llm_calls", "round", "INTEGER NOT NULL DEFAULT 1");
 ```
 
 Comment the distinction that makes two integer columns necessary: `attempt` is the parse-retry
-attempt **within** a round, `round` is the broker round. The store's row schema takes it as
-optional-with-default so a pre-migration row still parses, and the observer writes it.
+attempt **within** a round, `round` is the broker round.
+
+**And all five hops, because naming four of them is how this class of bug ships** (Phase 2 states the
+rule): the boot-block column and the `addColumn` above; `WorkflowLlmCallRowSchema` takes it as
+optional-with-default so a pre-migration row still parses; the row parser maps it; **`WorkflowLlmCall`
+gains `round: number`**; and the observer writes it. A round-trip test writes a call with a non-default
+round and reads it back through the ordinary getter - the check that catches a value parsed and then
+dropped, which no parser test or insert test sees.
 
 ### 6. Built-in guidance - `personas/*.md`
 
@@ -248,7 +254,9 @@ document must read correctly whether or not an operator turned access on. Regene
 - A per-attempt repository summary on the attempt detail: rounds, operations, bytes, denials by
   code, truncations, and the operation list with paths. This is what makes decision 11 usable
   rather than merely stored.
-- A route to read the audit rows for an attempt, following the existing run-detail read shape.
+- A route to read the audit rows for an attempt, following the existing run-detail read shape, typed
+  as Phase 2's `WorkflowRepositoryQuery[]`. It renders `path` through the labelled lossy display form,
+  since the durable value is bytes.
 
 ### 8. Documentation
 

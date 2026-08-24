@@ -118,6 +118,10 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
   whose safety argument did not apply to it. A `Record` makes the omission a type error.
   It describes **output only**. Validation of a supplied path is universal and independent of it -
   see *Two axes* below, and note that conflating the two is what produced the `git_log` hole.
+- `WorkflowRepositoryQuery` - the browser-safe shape of one audit row: run, submission and attempt
+  ids, `round`, `ordinal`, `op`, `path` (`Uint8Array | null`), `detail`, `outcome`, `denialCode`,
+  `bytes`, `truncated`, `durationMs`, `createdAt`. Here rather than server-side because Phase 3's run
+  detail renders it.
 - `REPOSITORY_DENIAL_CODES = ["not_found", "not_a_file", "sensitive_path", "path_invalid", "symlink", "submodule", "binary", "too_large", "unsupported_rev", "invalid_argument", "budget_exhausted", "stage_unavailable", "unavailable", "cancelled"] as const`.
   Appended-only; the strings reach durable audit rows.
 - `RepositoryQueryResult`: `{ ok: true; op; ...payload; bytes; truncated; omittedBytes }` or
@@ -309,14 +313,25 @@ Two hard constraints:
 
 ### 5. Store - `src/server/workflows/store.ts`
 
-- `WorkflowSubmissionRowSchema` gains the two snapshot columns as `nullableText.optional()`, the
-  porcelain as an optional nullable **`Uint8Array`** (it is a BLOB), and the truncation flag as an
-  optional integer;
-  `WorkflowSubmission` gains `reviewSnapshotOid?: string | null` and
-  `reviewSnapshotRepoRoot?: string | null`, optional for the same reason `repositoryFingerprint`
-  is - a row written before the column exists.
-- The submission insert writes them.
-- `insertRepositoryQueryAudit(...)` and `listRepositoryQueryAudit(attemptId)`.
+- **All four columns travel the whole way: row schema, domain type, and both projections.** Listed as
+  one step deliberately, because splitting them across sentences is how the porcelain came to be
+  parsed and then dropped.
+
+  | | `WorkflowSubmissionRowSchema` | `WorkflowSubmission` |
+  |---|---|---|
+  | `review_snapshot_oid` | `nullableText.optional()` | `reviewSnapshotOid?: string \| null` |
+  | `review_snapshot_repo_root` | `nullableText.optional()` | `reviewSnapshotRepoRoot?: string \| null` |
+  | `review_status_porcelain` | optional nullable `Uint8Array` (BLOB) | `reviewStatusPorcelain?: Uint8Array \| null` |
+  | `review_status_truncated` | optional integer | `reviewStatusTruncated?: boolean` |
+
+  Every field is optional for the reason `repositoryFingerprint` is: a row written before the column
+  existed. `parseWorkflowSubmissionRow` maps all four onto the domain object and the insert writes
+  all four back - a value parsed at the row layer and not carried onto `WorkflowSubmission` is
+  invisible to a row-parser test and to an insert test, and only a round trip catches it.
+- `insertRepositoryQueryAudit(row)` and `listRepositoryQueryAudit(attemptId): WorkflowRepositoryQuery[]`,
+  with a validating typed row parser like every other workflow table. The domain type is named and
+  browser-safe because Phase 3 renders these rows; a store method returning an anonymous row shape
+  would leave that surface with nothing to render.
 - Retention deletes the snapshot ref wherever a submission's evidence is pruned, and the sweep is
   wired at daemon start beside the other reconciliations.
 
@@ -512,6 +527,33 @@ worktree's CRLF. That is deliberate: those bytes are what the change contains in
 `git diff` reports no difference for them, and a reviewer reading the tree sees what a commit would.
 The claim is "the bytes git would record for this change", not "a byte-for-byte image of the
 directory" - and the difference is worth stating because I had been writing the latter.
+### Every persisted value travels the whole path, and a round trip proves it
+
+This is stated as a rule because it has now failed four times in review and twice more in my own
+sweep. A persisted value has **five** hops, and naming four of them reads as complete:
+
+```
+column  ->  row schema  ->  row parser  ->  domain type  ->  writer
+```
+
+The failure is always the same shape: a value declared on the row schema and never carried onto the
+domain type, so it is parsed and dropped. It is invisible to a row-parser test (the parse succeeds)
+and invisible to an insert test (the write succeeds). **Only a round trip through the public store
+API catches it** - write a record with every field set, read it back with the ordinary getter, and
+assert every field survived.
+
+So each persisted value this phase adds carries a round-trip test, and the table below is the
+checklist rather than prose that can lose an entry:
+
+| Value | Domain type it lands on |
+|---|---|
+| the four `workflow_submissions` columns | `WorkflowSubmission` (see the table above) |
+| `workflow_repository_queries` rows | `WorkflowRepositoryQuery`, a browser-safe shape in `src/shared/repository-query.ts` |
+
+`WorkflowRepositoryQuery` is named here rather than left implicit because Phase 3 **renders** these
+rows in run detail, so there has to be a wire type for them, and `listRepositoryQueryAudit` has to
+return it. Its `path` is a `Uint8Array` for the reason every other path is, with the browser
+rendering the labelled lossy display form.
 ### Paths are bytes end to end, and the durable columns are BLOBs
 
 Step 2 already says "match as **bytes**; never normalize, because git paths are bytes and
@@ -977,6 +1019,10 @@ look viable.
 - `test/workflow-db.test.ts`: the new columns and table exist with their indexes; the audit table
   has a validating typed row parser like every other workflow table; the unique index refuses a
   duplicate `(attempt, round, ordinal)`.
+- **The round-trip tests.** A submission written with all four review-state values set reads back
+  through the ordinary getter with all four intact - the assertion that catches a value parsed at the
+  row layer and dropped before the domain object, which is how the porcelain was lost for several
+  rounds. Same for an audit row through `listRepositoryQueryAudit`, including a non-UTF-8 `path`.
 - **The audit-identity tests**, which are what make the row writable at all: a reader built with
   fixture `{ runId, submissionId, nodeAttemptId }` and driven across rounds 1, 2 and 3 writes rows
   carrying that identity, with `ordinal` restarting at the first value in each round and increasing

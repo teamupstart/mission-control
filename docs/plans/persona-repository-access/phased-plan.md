@@ -318,7 +318,18 @@ defects in the artifacts, all fixed without moving an approved decision:
     machine made a header name a denied path and made the response shape depend on operator config.
     The path-shaped denylist's genuine limit - content the change itself moved to an allowed path -
     is now stated rather than implied covered.
-13. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
+13. **Output class is declared per op, and both content-bearing ops share one allowlisted pipeline**
+    (Phase 2). `git_show` with an allowed ancestor `rev` and no `path` emitted its commit's whole
+    patch, leaking a denied path's content - the identical hole reconciliation 12 fixed in
+    `git_diff`, left behind because that fix was written as a one-op fix. Verified: the offending
+    revision **passes** the ancestry check, which is the real lesson - ancestry answers "is this
+    revision part of what was submitted" and the denylist answers "may this path be read", and one
+    had been treated as covering the other. Now a total `Record<RepositoryQueryOp, ...>` states each
+    op's class, both `content` ops call one `generateAllowlistedPatch`, and the adversarial suite is
+    table-driven over that record so a future content op inherits it rather than needing to be
+    remembered. `git_show` also fetches its commit message separately from its patch, because a
+    message is attacker-controlled text that can contain a forged `diff --git` line (verified).
+14. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
     `{ repoRoot, snapshotOid, headSha, budget }` while the same phase required it to write a row per
     operation under a unique `(node_attempt_id, round, ordinal)`, and Phase 3 was forbidden from
     writing rows - so as written, nothing could persist a brokered query. The reader is now built

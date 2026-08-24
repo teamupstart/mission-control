@@ -351,8 +351,8 @@ else:
 | `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n` against the snapshot commit |
 | `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z` filtered by the shared matcher |
 | `git_status` | - | `git diff --name-status <headSha> <snapshot>` plus the captured porcelain status |
-| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base`, defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of the snapshot |
-| `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot |
+| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base`, defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of the snapshot; allowlisted before generation |
+| `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot; allowlisted before generation, with the commit message fetched separately from the patch |
 | `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>` |
 | `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshot> -- <path>` |
 
@@ -442,17 +442,26 @@ defences on what remains.
    lines, so a `Read(...)`-only list protects nothing it names." The measurement above is why
    this layer survives the move to git objects: an untracked, non-ignored `.env` **is** in the
    snapshot tree.
-4. **A content-bearing response is allowlisted before it is generated, not filtered after.**
-   Filtering paths out of a result works for every op that emits a path beside its own content -
-   drop the line and the content goes with it. It does **not** work for `git_diff`, whose output is
-   one blob carrying file content: measured, an unrestricted diff over that same snapshot emitted
-   `+SECRET=hunter2-should-never-be-seen` and `+-----BEGIN PRIVATE KEY-----` directly into the
-   response. So `git_diff` resolves its changed-path set first with `--name-only` (which carries no
-   content), applies the denylist to that set, and generates content only for an explicit
-   `:(literal)` allowlist - then verifies both sides of every `diff --git` header before returning
-   and refuses the whole operation rather than shipping a partly filtered patch. `--no-renames` is
-   passed explicitly, because `diff.renames=true` on the reviewing machine otherwise makes a header
-   name a denied path and makes the response shape depend on operator configuration.
+4. **Every op declares an output class, and a content-bearing one is allowlisted before it is
+   generated rather than filtered after.** Filtering paths out of a result works for an op that
+   emits a path beside its own content - drop the line and the content goes with it. It does
+   **not** work for `git_diff` or `git_show`, whose output is one blob carrying file content.
+   Measured, both leak: an unrestricted diff over that snapshot emitted
+   `+SECRET=hunter2-should-never-be-seen`, and `git show` on an ancestor commit emitted the same
+   for a `.env` that commit introduced. So both resolve their changed-path set first with
+   `--name-only` (which carries no content), apply the denylist to that set, and generate content
+   only for an explicit `:(literal)` allowlist - then verify both sides of every `diff --git`
+   header before returning and refuse the whole operation rather than shipping a partly filtered
+   patch. The class lives in a total `Record` over the op list, so a new content-bearing op cannot
+   compile without declaring itself into that pipeline. `--no-renames` is explicit, because
+   `diff.renames=true` on the reviewing machine otherwise makes a header name a denied path and
+   makes the response shape depend on operator configuration; and `git_show` fetches its commit
+   message separately from its patch, because a message is attacker-controlled text and can contain
+   a forged `diff --git` line.
+   **Ancestry and the denylist are different checks.** The leaking `git_show` revision *passed* the
+   ancestry check - it was a genuine ancestor of the snapshot. Ancestry answers "is this revision
+   part of what was submitted"; the denylist answers "may this path be read". Neither substitutes
+   for the other.
 5. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
    and `160000` as `submodule`. A symlink's blob content is its target string, so serving it as
    file content would hand the reviewer an arbitrary host path under a repository-relative name.

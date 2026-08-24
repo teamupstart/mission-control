@@ -104,6 +104,12 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
 
 - `REPOSITORY_QUERY_OPS = ["read_file", "search_text", "list_paths", "git_status", "git_diff", "git_show", "git_log", "git_blame"] as const`
   and `RepositoryQuery`, a discriminated union on `op` with the arguments the plan's table names.
+- `REPOSITORY_OP_OUTPUT: Record<RepositoryQueryOp, "content" | "path" | "single-path">` - the
+  output class of every op, as a total `Record` so a new op **cannot compile** without stating its
+  class. This is the same enforcement idiom `LLM_RUNNERS` uses on `LlmRunnerId` and
+  `SESSION_FIELD_COMPARATORS` uses on a new `Session` field, and it is here for a demonstrated
+  reason rather than a stylistic one: the per-op version of this rule failed twice in review, once
+  for `git_diff` and then again for `git_show`. A `Record` makes the omission a type error.
 - `REPOSITORY_DENIAL_CODES = ["not_found", "not_a_file", "sensitive_path", "path_invalid", "symlink", "submodule", "binary", "too_large", "unsupported_rev", "invalid_argument", "budget_exhausted", "unavailable", "cancelled"] as const`.
   Appended-only; the strings reach durable audit rows.
 - `RepositoryQueryResult`: `{ ok: true; op; ...payload; bytes; truncated; omittedBytes }` or
@@ -266,14 +272,12 @@ Order of checks per query, and the order is the contract:
    reading.
 6. **Execute** - the argv from the plan's table, through `run` with a per-operation timeout.
 7. **Post-filter** - re-apply the path validator and the denylist to every path in the **result**
-   of `search_text`, `list_paths`, `git_status`, `git_log` and `git_blame`. This is the
-   step that makes the denylist real; `claude-grant.ts` already documents why a rule that guards
-   only arguments protects nothing it names.
-   **This step is sufficient only because each of those five emits paths beside their own content,
-   or no content at all** - `search_text` is line-per-match, `list_paths` and `git_status` are
-   name-only, `git_log` is metadata, and `git_blame` takes its single path as an argument validated
-   at step 2. Dropping the line drops the content with it. **`git_diff` is deliberately absent from
-   that list and must not be added to it** - see *Content-bearing output* below.
+   of every `path`-class op (see the classification below). This is the step that makes the
+   denylist real; `claude-grant.ts` already documents why a rule that guards only arguments
+   protects nothing it names. It is sufficient for that class and **only** that class, because
+   each of those ops emits a path beside its own content or no content at all, so dropping the
+   line drops the content with it. A `content`-class op does not come through here at all - it
+   goes through the allowlisted pipeline below.
 8. **Bound and mark** - clip to the per-query, per-round and per-attempt budgets, set
    `truncated` and `omittedBytes`. Never clip silently.
 9. **Scrub** - `scrubSecrets` over the response text.
@@ -289,44 +293,73 @@ reference into the whole object database - another branch, another task's work, 
 repository happens to hold - and a diff taken against one returns files that were never in the
 submitted state, which defeats the exact-submitted-state boundary this phase exists to draw.
 
-### Content-bearing output: `git_diff` is allowlisted before it runs
+### Output classes, and one allowlisted pipeline for the content-bearing ones
 
-A unified diff is **one blob that carries file content**, not a list of paths beside content. So
-filtering paths out of a finished patch is not the same operation as filtering a path list, and a
-denylist applied after the fact has already lost. Measured on a fixture snapshot containing an
-untracked, non-ignored `.env` and a `k/id_rsa`:
+Every op declares an **output class** in the registry, and the class - not the op - decides how its
+result is made safe. This is a class rule rather than a per-op rule because the per-op version
+already failed twice in review: `git_diff` was specified with a path-list filter that cannot work on
+a patch, and once that was fixed `git_show` was left with the identical hole. A registry that makes
+each op state its class turns "the next content-bearing op forgets" into a missing declaration
+rather than a silent leak.
+
+| Class | Ops | How its result is made safe |
+|---|---|---|
+| `content` | `git_diff`, `git_show` | The allowlisted pipeline below. Nothing denied is ever generated. |
+| `path` | `search_text`, `list_paths`, `git_status`, `git_log` | Step 7's post-filter. Each emits a path beside its own content, or no content, so dropping the line drops the content. |
+| `single-path` | `read_file`, `git_blame` | The path is an argument, validated and denied at steps 2 and 3 before anything runs. |
+
+A unified diff is **one blob that carries file content**, not a list of paths beside content, so
+filtering paths out of a finished patch is not the same operation as filtering a path list. Measured
+against a fixture snapshot containing an untracked, non-ignored `.env` and a `k/id_rsa`, both
+unrestricted forms leak:
 
 ```
 $ git diff <headSha> <snapshot> | grep -n 'hunter2\|BEGIN PRIVATE KEY'
 7:+SECRET=hunter2-should-never-be-seen
 21:+-----BEGIN PRIVATE KEY-----
+
+$ git show <ancestorRev> | grep -n 'hunter2\|BEGIN PRIVATE KEY'
+13:+SECRET=hunter2-via-git-show
+27:+-----BEGIN PRIVATE KEY-----
 ```
 
-Both files are in the snapshot tree - which the plan already establishes as the reason the denylist
-survives the move to git objects - so an unrestricted `git_diff` hands their contents to the broker.
+The `git_show` case is worth dwelling on, because it shows two checks being mistaken for one: that
+`rev` **passed** the ancestry check - it is a genuine ancestor of the snapshot, so it is squarely
+inside the submitted history. Ancestry answers "is this revision part of what was submitted"; the
+denylist answers "may this path be read". Neither substitutes for the other, and conflating them is
+what left the hole.
 
-`git_diff` therefore runs as two invocations, and **content is never generated for a denied path**:
+**The pipeline, one implementation both `content` ops call.** `generateAllowlistedPatch` takes the
+op's name-only form and its content form, and never lets content exist for a denied path:
 
-1. **Paths first, no content.** `git diff --no-renames -z --name-only <base> <snapshot>` yields the
-   changed path set and nothing else.
-2. **Validate and deny** that set through steps 2 and 3 above. Record how many paths were dropped.
+1. **Paths first, no content.** `git diff --no-renames -z --name-only <base> <snapshot>`, or
+   `git show --no-renames -z --name-only --format= <rev>`. Path sets, nothing else.
+2. **Validate and deny** that set through steps 2 and 3 above. Record how many were dropped.
 3. **Nothing surviving** returns an ok, empty patch with `filtered: true` and the dropped count -
    not an error, because "every changed file is denied" is an answer.
-4. **Content second, allowlisted.** `git diff --no-renames <base> <snapshot> -- ':(literal)<path>'…`
-   over the surviving paths only, batched so argv stays bounded, results concatenated in path order.
-   Verified: the same fixture yields zero occurrences of either secret.
-5. **Verify before returning.** Re-extract the paths from every `diff --git a/<x> b/<y>` header in
-   the produced patch and re-check **both** sides against the validator and the denylist. A header
-   that fails, or that cannot be parsed into two paths, refuses the whole operation as
-   `sensitive_path` rather than returning a partially filtered patch. Generating nothing denied is
-   the guarantee; this is the assertion that the guarantee held.
+4. **Content second, allowlisted.** The same command with `-- ':(literal)<path>'…` over the
+   survivors only, batched so argv stays bounded, concatenated in path order. Verified: both fixture
+   cases yield zero occurrences of either secret.
+5. **Verify before returning.** Re-extract the paths from every `diff --git a/<x> b/<y>` header,
+   anchored at line start, and re-check **both** sides. A header that fails, or that cannot be
+   parsed into two paths, refuses the whole operation as `sensitive_path` rather than returning a
+   partially filtered patch. Generating nothing denied is the guarantee; this is the assertion that
+   it held.
 
-`--no-renames` is **explicit, not inherited**. With the operator's `diff.renames=true` the same
-fixture emits `diff --git a/.env b/notsecret.txt` - a header naming a denied path, whose shape
-depends on the reviewing machine's git config. Passing `--no-renames` makes every path its own
-section and the response shape independent of configuration. The broker also never passes `-c` or
-`--cc`, so combined-diff headers cannot arise; step 5 refuses any header form it cannot parse, so
-they could not slip through unnoticed if they did.
+**`git_show` fetches its metadata separately, and its patch with `--format=`.** Not cosmetic: a
+commit message is attacker-controlled text in a review, and `git show`'s default format prints it
+inside the same stream the step-5 verifier parses. Verified - a commit whose message contains
+`diff --git a/.env b/.env` puts that line into `git show` output (indented four spaces, which is why
+step 5 anchors at line start). Splitting metadata into `git show -s --format=<NUL-separated>` and
+the patch into `--format=` means the verifier only ever parses git's own diff output, with no
+attacker-controlled prose in it at all.
+
+`--no-renames` is **explicit, not inherited**. With the operator's `diff.renames=true` the fixture
+emits `diff --git a/.env b/notsecret.txt` - a header naming a denied path, whose shape depends on the
+reviewing machine's git config. Passing `--no-renames` makes every path its own section and the
+response shape independent of configuration. The broker also never passes `-c` or `--cc`, so
+combined-diff headers cannot arise; step 5 refuses any header form it cannot parse, so they could not
+slip through unnoticed if they did.
 
 **The honest limit, stated because overclaiming here would be worse than the gap.** This guarantees
 that a *denied path* contributes no section. It does not stop content the submitted work itself
@@ -334,7 +367,7 @@ moved to an *allowed* path: rename `.env` to `notsecret.txt` in the change under
 bytes are reachable - but reachable exactly as `read_file("notsecret.txt")` already makes them,
 because the denylist is path-shaped by construction. That is the documented boundary of a
 path-shaped rule, with `scrubSecrets` as the imperfect content-shaped layer behind it, and it is not
-made better or worse by `git_diff`. Do not describe the allowlist as preventing it.
+made better or worse by either `content` op. Do not describe the allowlist as preventing it.
 
 **`git_diff`'s default base is the captured `headSha` - the snapshot commit's own parent - and
 never live `HEAD`.** This is the same hazard the whole phase exists to answer, so it must not be
@@ -409,12 +442,21 @@ look viable.
   `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
   that file's content or path. A test that only checks the code would still pass if the
   implementation refused after running the diff.
-- **The adversarial `git_diff` content tests, which are their own group because path-shaped
-  assertions do not cover a content-bearing response.** Against a snapshot holding an untracked
-  non-ignored `.env`, a `k/id_rsa`, a binary file and an ordinary changed source file:
-  - a whole-repository `git_diff` returns the source file's hunks and **zero bytes** of the `.env`
+- **The adversarial content-class tests, which are their own group because path-shaped assertions do
+  not cover a content-bearing response.** Run **the whole group against every `content` op** -
+  table-driven over `REPOSITORY_OP_OUTPUT`, so adding a third content op inherits the suite instead
+  of needing someone to remember it. That table-driven shape is the test-side half of the same
+  lesson: `git_show` had this hole because `git_diff`'s fix was written as a one-op fix.
+  Against a snapshot holding an untracked non-ignored `.env`, a `k/id_rsa`, a binary file and an
+  ordinary changed source file, plus an ancestor commit that touches both a denied and an allowed
+  path:
+  - each `content` op returns the source file's hunks and **zero bytes** of the `.env`
     or `id_rsa` content - assert on the secret *values*, not on the paths, since a path-only
     assertion passes against an implementation that filtered headers and kept hunks;
+  - `git_show` on an ancestor `rev` **that passes the ancestry check** and carries a denied path
+    returns no content for it - the regression for conflating ancestry with the denylist;
+  - a commit whose **message** contains a forged `diff --git a/.env b/.env` line does not corrupt
+    the verifier or appear in the patch stream, because metadata and patch are fetched separately;
   - no `diff --git` header in the response names a denied path on **either** side;
   - `filtered` is set and the dropped count matches the number of denied changed paths;
   - a diff in which *every* changed path is denied returns ok-and-empty with `filtered: true`,
@@ -554,3 +596,15 @@ Phase 3 may rely on, and must not change:
   writes every row - so Phase 3's non-goal stands unchanged; what changed is that it now has the
   data the contract always required. The reader also owning `ordinal` removes a class of bug the
   first shape invited, where two subsystems counting independently collide on the unique index.
+- **Reconciliation record, review round 7.** `git_show` with an allowed ancestor `rev` and no
+  `path` emits that commit's whole patch, so a commit touching a denied path leaked its content -
+  the identical hole round 5 fixed in `git_diff`, left behind in the sibling op because round 5's
+  fix was written as a one-op fix. Verified: the offending `rev` **passes** the ancestry check,
+  which is the actual lesson - ancestry answers "is this revision part of what was submitted" and
+  the denylist answers "may this path be read", and one had been treated as covering the other.
+  Fixed as a **class** rather than as a third instance: every op declares an output class in a total
+  `Record<RepositoryQueryOp, ...>`, both `content` ops share one `generateAllowlistedPatch`, and the
+  adversarial suite is table-driven over that record so a future content op inherits it. Found on
+  the way: `git show`'s default format prints the commit message into the same stream the header
+  verifier parses, and a message can contain a forged `diff --git` line (verified), so metadata and
+  patch are now separate invocations and step 5 anchors at line start.

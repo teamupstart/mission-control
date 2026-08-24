@@ -474,6 +474,20 @@
       denied path and made the response shape depend on operator config. The path-shaped denylist's
       genuine limit - content the change itself moved to an allowed path - is now stated rather than
       implied covered.</li>
+    <li><strong>Output class is declared per op, and both content-bearing ops share one allowlisted
+      pipeline</strong> (Phase 2). <code>git_show</code> with an allowed ancestor <code>rev</code> and
+      no <code>path</code> emitted its commit's whole patch, leaking a denied path's content - the
+      identical hole the previous item fixed in <code>git_diff</code>, left behind because that fix
+      was written as a one-op fix. Verified: the offending revision <strong>passes</strong> the
+      ancestry check, which is the real lesson - ancestry answers &ldquo;is this revision part of what
+      was submitted&rdquo; and the denylist answers &ldquo;may this path be read&rdquo;, and one had
+      been treated as covering the other. Now a total <code>Record&lt;RepositoryQueryOp, ...&gt;</code>
+      states each op's class, both <code>content</code> ops call one
+      <code>generateAllowlistedPatch</code>, and the adversarial suite is table-driven over that
+      record so a future content op inherits it rather than needing to be remembered.
+      <code>git_show</code> also fetches its commit message separately from its patch, because a
+      message is attacker-controlled text that can contain a forged <code>diff --git</code> line
+      (verified).</li>
     <li><strong>The reader carries per-attempt audit identity</strong> (Phases 2 and 3). The factory
       took only <code>{ repoRoot, snapshotOid, headSha, budget }</code> while the same phase required
       it to write a row per operation under a unique

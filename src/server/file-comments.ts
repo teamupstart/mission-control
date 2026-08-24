@@ -16,14 +16,17 @@ import {
   loadFileCommentMessage,
   loadFileCommentThread,
   loadFileCommentThreadWithFullHistory,
+  findFileCommentThreadByShortId,
   markFileCommentMessagesRead,
   markFileCommentThreadAddressed,
   orphanFileCommentThreadsForSession,
   queueFileCommentThread,
+  recordAgentFileCommentReply,
   reorderFileCommentQueue,
   setFileCommentThreadStatus,
   updateFileCommentMessageBody,
 } from "./db.ts";
+import { parseDeliveryHandle } from "./file-comment-payload.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
 
@@ -366,6 +369,61 @@ export class FileCommentManager {
       // this method no longer accepts. `publish` keeps the orphan backstop anyway, for the
       // race where session cleanup settled the row between the guard and this line.
       return this.publish(threadId);
+    } catch (err) {
+      throw this.asRouteError(err);
+    }
+  }
+
+  /**
+   * The agent's answer to a delivered comment, arriving through `respond_to_file_comments`.
+   *
+   * **`commentId` is the handle the payload printed - `MC-a41f.2` - and never the row's
+   * uuid.** It is the only comment identifier an agent is ever shown, so a tool that took a
+   * uuid would be one no agent could call. The trailing ordinal is what makes the reply
+   * answer a TURN rather than a thread; a bare handle (what the transcript fallback
+   * recovers) resolves the thread and confirms no delivery.
+   *
+   * **Resolution is session-scoped, always, and there is no global fallback on a miss.**
+   * `short_id` is unique per session, not globally, so two sessions can each hold an
+   * `MC-a41f` - and a global lookup would file this session's reply onto another session's
+   * thread, which is a silent cross-session write rather than the honest 404 below.
+   */
+  agentReply(
+    sessionId: string,
+    commentId: string,
+    body: string,
+    addressed: boolean,
+  ): { thread: FileCommentThread; message: FileCommentMessage; released: boolean } {
+    try {
+      const handle = parseDeliveryHandle(commentId);
+      if (!handle) {
+        throw new FileCommentError(
+          `"${commentId}" is not a comment id; quote the id the comment was delivered with, like MC-a41f.2`,
+          400,
+        );
+      }
+      const found = findFileCommentThreadByShortId(sessionId, handle.shortId);
+      if (!found) {
+        throw new FileCommentError(`this session has no comment ${handle.shortId}`, 404);
+      }
+      // The ordinary lifetime guard, for its ordinary reason: a reply must not revive a
+      // thread whose session has already ended.
+      this.writable(found.id);
+      const reply = recordAgentFileCommentReply({
+        messageId: randomUUID(),
+        threadId: found.id,
+        sessionId,
+        body,
+        ordinal: handle.ordinal,
+        addressed,
+        now: Date.now(),
+      });
+      if (!reply) throw new FileCommentError("no such comment thread", 404);
+      // ONE frame carries the whole outcome - the reply, the status, the queue position - to
+      // every dashboard, live and without a refresh. `publish` rather than a direct upsert,
+      // for the orphan backstop it keeps.
+      const thread = this.publish(found.id);
+      return { thread, message: reply.message, released: reply.released };
     } catch (err) {
       throw this.asRouteError(err);
     }

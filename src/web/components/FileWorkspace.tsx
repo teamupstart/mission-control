@@ -25,6 +25,7 @@ import {
   controlFileCommentReview,
   deleteFileComment,
   editFileCommentMessage,
+  markFileCommentRead,
   reorderFileComments,
   setFileCommentStatus,
 } from "../lib/api.ts";
@@ -403,6 +404,22 @@ export function FileWorkspace({
     [fileCommentThreads, selectedPath, session.id],
   );
   const openThread = fileThreads.find((thread) => thread.id === openThreadId) ?? null;
+
+  /*
+   * Reading a thread is what clears its pip.
+   *
+   * Durable rather than local, because the badge is durable: the integrated Files tab and the
+   * extracted Files window are two instances that converge only through the daemon, so a read
+   * recorded in one has to be a read in the other. The guard is the loop's terminator as well
+   * as its economy - the write comes back as an upsert with `readAt` stamped, so the next run
+   * of this effect finds nothing unread and posts nothing.
+   */
+  useEffect(() => {
+    if (!openThread) return;
+    const unread = openThread.messages.some((m) => m.author === "agent" && m.readAt === null);
+    if (!unread) return;
+    void markFileCommentRead(openThread.id);
+  }, [openThread]);
 
   // ---- the review queue ----
   const queue = useMemo(

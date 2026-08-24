@@ -20,6 +20,7 @@ import {
 } from "../src/server/file-comment-walkthrough.ts";
 
 const SESSION = "s1";
+const REPLY_TOOL = "mcp__mission-control__respond_to_file_comments";
 
 function message(over: Partial<FileCommentMessage> & { id: string }): FileCommentMessage {
   return {
@@ -82,6 +83,12 @@ interface Harness {
   session: Session;
   turns: Map<string, PendingTurn>;
   files: Map<string, { text: string | null; revision: string }>;
+  /** The tool this session can answer through, or null for one that has none. */
+  replyTool: { value: string | null };
+  /** Every prose turn this session has said, oldest first, with when it said it. */
+  transcript: { text: string; at: number }[];
+  /** Record an assistant turn as spoken NOW, which is what the fallback reads. */
+  say(text: string): void;
   /** Play out the outbox: the row is retired and the confirmed-delivery signal fires. */
   deliver(): void;
 }
@@ -92,6 +99,22 @@ function harness(rows: FileCommentThread[], over: Partial<Session> = {}): Harnes
   const turns = new Map<string, PendingTurn>();
   const files = new Map([["docs/spec.md", { text: FILE, revision: "r1" }]]);
   const sent: string[] = [];
+  /**
+   * What this session can answer through, mutable so a test can take the tool away.
+   *
+   * Null is the session an operator started without the integration, or one whose built
+   * bundle does not publish the tool - the two cases the real port cannot tell apart and
+   * deliberately renders the same way.
+   */
+  const replyTool: { value: string | null } = { value: REPLY_TOOL };
+  /**
+   * What this session has said in prose, oldest first, as the transcript recorded it.
+   *
+   * A LIST with timestamps rather than a lookup by handle, deliberately: the rule under test
+   * is which turns fall inside the delivery being answered, and a fake that answered by handle
+   * would decide that question itself and prove nothing about the machine.
+   */
+  const transcript: { text: string; at: number }[] = [];
   let turnSeq = 0;
   const session = {
     id: SESSION,
@@ -123,6 +146,7 @@ function harness(rows: FileCommentThread[], over: Partial<Session> = {}): Harnes
 
   const port: FileCommentWalkthroughPort = {
     now: () => now.value,
+    replyTool: () => Promise.resolve(replyTool.value),
     session: () => session,
     review: () => review,
     setReviewState: (_id, state, pauseReason) => {
@@ -186,6 +210,21 @@ function harness(rows: FileCommentThread[], over: Partial<Session> = {}): Harnes
       return { ok: true, turnId: id, error: null };
     },
     pendingTurn: (_id, turnId) => turns.get(turnId) ?? null,
+    agentTurnsSince: (_id, since) =>
+      transcript
+        .filter((turn) => turn.at !== 0 && turn.at >= since)
+        .map((turn) => turn.text)
+        .reverse(),
+    appendAgentReply: (id, body) => {
+      const current = threads.get(id);
+      if (!current) return null;
+      return patch(id, {
+        messages: [
+          ...current.messages,
+          message({ id: `${id}-fallback-${current.messages.length}`, threadId: id, author: "agent", body }),
+        ],
+      });
+    },
   };
 
   const walkthrough = new FileCommentWalkthrough(port);
@@ -199,6 +238,9 @@ function harness(rows: FileCommentThread[], over: Partial<Session> = {}): Harnes
     session,
     turns,
     files,
+    replyTool,
+    transcript,
+    say: (text: string) => transcript.push({ text, at: now.value }),
     deliver: () => {
       const out = [...threads.values()].find((t) => t.status === "sending");
       if (!out?.deliveryId) throw new Error("nothing is out with the agent");
@@ -900,4 +942,228 @@ test("an unconfirmed turn appearing during the read pauses instead of sending pa
   assert.equal(h.sent.length, 0);
   assert.equal(h.review.state, "paused");
   assert.equal(h.review.pauseReason, PAUSE_REASONS.outboxBlocked);
+});
+
+test("the payload names the reply tool, so the closing instruction can be honoured", () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.start(SESSION);
+  return settle().then(() => {
+    // An instruction the loop cannot honour is one it follows into silence, so the name here
+    // has to be the fully-qualified one a launch actually registers.
+    assert.match(h.sent[0]!, new RegExp(`^Answer with ${REPLY_TOOL} quoting id MC-a\\.1\\.$`, "m"));
+  });
+});
+
+test("a session that cannot call the tool is asked for the id back instead of for a tool call", async () => {
+  // The tool is not universally reachable: it reaches sessions the dashboard launched, and
+  // sessions on a machine where the integration is installed. A session without it must not be
+  // told to call one - an instruction the loop cannot honour is one it follows into silence -
+  // so the payload falls back to citing the id, which is exactly what the transcript fallback
+  // reads back out of the conversation.
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.match(h.sent[0]!, /^Answer in your next turn, quoting id MC-a\.1\.$/m);
+  assert.doesNotMatch(h.sent[0]!, /respond_to_file_comments/);
+  // The handle is cited either way. It is the only thing that makes a tool-less session
+  // answerable at all, so it is the one part of that line that never changes.
+  assert.match(h.sent[0]!, /MC-a\.1/);
+});
+
+test("a reply releases the next comment IMMEDIATELY, without waiting out the grace window", async () => {
+  const h = harness([thread({ id: "a" }), thread({ id: "b", queueSeq: 1 })]);
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  assert.equal(h.threads.get("a")!.status, "awaiting");
+  assert.equal(h.sent.length, 1, "and the second comment is still waiting its turn");
+
+  // The route has already released the turn durably - that transaction is
+  // `recordAgentFileCommentReply`'s and is pinned in `file-comments-http.test.ts`. What this
+  // signal does is make the queue move NOW rather than within the second.
+  h.threads.set("a", { ...h.threads.get("a")!, status: "answered", queueSeq: null, deliveryId: null });
+  h.walkthrough.onCommentAnswered(SESSION);
+  await settle();
+
+  assert.equal(h.sent.length, 2, "the next comment went on the reply, not on the timeout");
+  assert.equal(h.threads.get("b")!.status, "sending");
+  // The clock never moved: this is the whole point of the phase. The queue stops advancing on
+  // an inference about idleness and starts advancing on a real completion.
+  assert.ok(h.now.value < 1_000_000 + FILE_COMMENT_ADVANCE_SETTLE_MS);
+});
+
+test("a reply signal for a review nobody started releases nothing", async () => {
+  const h = harness([thread({ id: "a" }), thread({ id: "b", queueSeq: 1 })]);
+  h.walkthrough.onCommentAnswered(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.review.state, "idle");
+});
+
+test("a session with no reply tool has its answer recovered from the conversation", async () => {
+  // The fallback, and the ONE thing it must not do. A session an operator started without the
+  // integration has no tool at all, so free text is the only thing that works everywhere - but
+  // it recovers the handle and not reliably the ordinal, so it can confirm no delivery.
+  const h = harness([thread({ id: "a" }), thread({ id: "b", queueSeq: 1 })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += 1_000;
+  h.say("MC-a.1 - fixed, the table was right.");
+
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  const answered = h.threads.get("a")!;
+  assert.deepEqual(
+    answered.messages.map((m) => [m.author, m.body]),
+    [["human", "say something"], ["agent", "MC-a.1 - fixed, the table was right."]],
+  );
+  // Filed on the thread, and the TIME-based signal is still what advanced the queue: the
+  // status is the timeout's, not a release. Phase 3's floor carries these sessions.
+  assert.equal(answered.status, "unanswered");
+  assert.equal(h.sent.length, 2, "and the review kept moving on its own signal");
+});
+
+test("the fallback does not re-file the turn an earlier timeout already recovered", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += 1_000;
+  h.say("MC-a - I looked at this.");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 1);
+
+  // A person follows up, it goes round again, and it times out again - reading a tail window
+  // that still contains the turn the first timeout already filed. Only that turn's TIMESTAMP
+  // says it belongs to the earlier delivery, which is what the window is for.
+  const again = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...again,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...again.messages, message({ id: "m2", threadId: "a", body: "and this?" })],
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  assert.equal(
+    h.threads.get("a")!.messages.filter((m) => m.author === "agent").length,
+    1,
+    "the same turn is not recorded twice",
+  );
+});
+
+test("two distinct fallback answers are both kept, even worded identically", async () => {
+  // The failure the text-equality guard this replaced would have caused, and it is a silent
+  // one: a terse agent says "Done." to the comment and "Done." again to the follow-up, and
+  // deduping on what the answer SAYS discards the second - so the human's follow-up reads as
+  // unanswered when it was in fact answered. The delivery window is what tells them apart.
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += 1_000;
+  // BYTE-IDENTICAL to the second answer below. A tool-less agent recovers the handle but not
+  // reliably the ordinal, so the terse form it actually writes carries nothing that
+  // distinguishes one round from the next.
+  h.say("MC-a Done.");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 1);
+
+  const again = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...again,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...again.messages, message({ id: "m2", threadId: "a", body: "and this?" })],
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  // A SECOND, genuinely distinct answer - to the follow-up - that reads exactly like the
+  // first. It is a different turn, spoken after this delivery, so it is a different answer.
+  h.now.value += 1_000;
+  h.say("MC-a Done.");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  assert.deepEqual(
+    h.threads.get("a")!.messages.filter((m) => m.author === "agent").map((m) => m.body),
+    ["MC-a Done.", "MC-a Done."],
+    "both answers are kept - the human asked twice and was answered twice",
+  );
+});
+
+test("a turn the transcript could not timestamp is not attributed to a delivery", async () => {
+  // `TranscriptMessage.ts` is 0 when the record carried no timestamp. Such a turn cannot be
+  // placed against the delivery at all, and admitting it is how a turn from an earlier round
+  // lands in this round's window - the precise thing the window exists to prevent.
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.transcript.push({ text: "MC-a.1 - answered, but unstamped.", at: 0 });
+
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 0);
+});
+
+test("a turn spoken BEFORE the comment went out is not an answer to it", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  // It quotes the handle, but the agent said it before the comment ever reached it - so
+  // whatever it is, it is not an answer to this delivery.
+  h.say("MC-a.1 - said before the comment was ever sent.");
+  h.now.value += 1_000;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 0);
+});
+
+test("a transcript turn about a DIFFERENT comment is not filed on this one", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.replyTool.value = null;
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += 1_000;
+  h.say("MC-b.1 - this answers another comment entirely.");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 0);
 });

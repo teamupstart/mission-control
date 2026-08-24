@@ -36,6 +36,16 @@ and <kbd>↓</kbd> change the selected file instead of moving through the sessio
 <kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
 scroll the page.
 
+**Comment** turns on comment mode, so you can leave a comment on a line the way you would on a
+pull request, and **Review** walks the agent through those comments one at a time - one comment
+per turn, and the next only once the agent has finished with the one before it. The agent
+answers through the bundled Mission MCP server's `respond_to_file_comments` tool, and the
+answer appears in that comment's thread, on that line, without a refresh; the **Files** tab
+raises a count of answers nobody has read yet, which expanding the thread clears. A session
+whose MCP bundle cannot serve that tool is asked to quote the comment's id back in its next
+turn instead, and its answer is recovered from the conversation. See
+[walk the agent through your review](docs/ui.md#walk-the-agent-through-your-review).
+
 The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
 Foreman turns carry their purple provenance from the chat log into the terminal, and completion
 reviews separate the original request, each missing item, its suggested fix, and the safety note

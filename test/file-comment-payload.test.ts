@@ -12,6 +12,8 @@ import {
   FILE_COMMENT_PAYLOAD_LIMITS,
   deliveryHandle,
   lineRangeLabel,
+  openingDeliveryHandle,
+  parseDeliveryHandle,
   renderFileCommentPayload,
 } from "../src/server/file-comment-payload.ts";
 
@@ -164,4 +166,50 @@ test("an ordinary review comment is nowhere near the budget", () => {
   const { payload, truncated } = renderFileCommentPayload(BASE);
   assert.equal(truncated, false);
   assert.ok(Buffer.byteLength(payload, "utf8") < 1_000);
+});
+
+// ---- reading the handle back, which is the other half of printing it ----
+//
+// The agent quotes back exactly what the renderer above printed, so these two live in one
+// file: a change to the spelling that no reader followed produces a handle nothing can
+// resolve, which is the whole failure the ordinal exists to prevent.
+
+test("a reply's citation is read back as the thread and the delivery it names", () => {
+  assert.deepEqual(parseDeliveryHandle("MC-a41f.2"), { shortId: "MC-a41f", ordinal: 2 });
+  assert.deepEqual(parseDeliveryHandle(deliveryHandle("MC-a41f", 7)), {
+    shortId: "MC-a41f",
+    ordinal: 7,
+  });
+  // Tolerant of what a model does to a quoted id, and of case: a handle that differs only in
+  // case is the same handle, and the store minted it with lowercase hex.
+  assert.deepEqual(parseDeliveryHandle("  [MC-A41F.2] "), { shortId: "MC-a41f", ordinal: 2 });
+  // A bare handle is not an error. It names a THREAD and confirms no delivery, which is
+  // precisely what the transcript fallback recovers and why it advances nothing.
+  assert.deepEqual(parseDeliveryHandle("MC-a41f"), { shortId: "MC-a41f", ordinal: null });
+});
+
+test("what is not a handle is refused rather than half-resolved", () => {
+  // A uuid is the identifier the agent is never given - it is not shown one anywhere - so a
+  // tool that resolved one would be a tool no agent could call.
+  assert.equal(parseDeliveryHandle("6f1c2b6e-6a0e-4f2f-9a1a-0b8d2b6b2f2f"), null);
+  assert.equal(parseDeliveryHandle(""), null);
+  assert.equal(parseDeliveryHandle("comment 3"), null);
+  assert.equal(parseDeliveryHandle("MC-zzzz.1"), null);
+  assert.equal(parseDeliveryHandle("MC-a41f.0"), null, "ordinals are 1-based, like the payload");
+  assert.equal(parseDeliveryHandle("see MC-a41f.2 above"), null, "the argument is the id alone");
+});
+
+test("the transcript fallback reads a turn that OPENS with a handle, and only that", () => {
+  assert.deepEqual(openingDeliveryHandle("MC-a41f.2 - fixed, the table was right."), {
+    shortId: "MC-a41f",
+    ordinal: 2,
+  });
+  assert.deepEqual(openingDeliveryHandle("**MC-a41f**: I have changed that paragraph."), {
+    shortId: "MC-a41f",
+    ordinal: null,
+  });
+  // A turn that merely MENTIONS a handle - quoting the comment it is about to answer, or
+  // listing what is still outstanding - is not an answer to it.
+  assert.equal(openingDeliveryHandle("I will get to MC-a41f.2 after this."), null);
+  assert.equal(openingDeliveryHandle("Reading the file now."), null);
 });

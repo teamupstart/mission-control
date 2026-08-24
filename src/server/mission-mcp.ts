@@ -63,6 +63,11 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "report_product_issue",
   "report_status",
+  // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
+  // scrapes `registerTool("...")` out of the server and compares the two lists by value, and
+  // `scripts/smoke-bundles.mjs` resolves any CONSTANT here through a hand-written name-to-module
+  // map it would also have to be added to.
+  "respond_to_file_comments",
   "adopt_pipeline_run",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -160,6 +160,58 @@ function storedReview(daemon: DaemonHandle): { state: string; pause_reason: stri
     (db.prepare(`SELECT state, pause_reason FROM file_comment_reviews`).get() ?? null) as never);
 }
 
+/**
+ * Answer the comment currently out with the agent, the way its MCP child does.
+ *
+ * Posted over HTTP rather than scripted into the fake agent, because the reply channel IS an
+ * HTTP route - `src/mcp/server.ts` does exactly this POST - and going through it keeps the
+ * spec honest about the contract while spending no model tokens. Bound by `cwd`, which is how
+ * a real agent binds when it has no session id to offer, and token-guarded: `/mcp/*` needs no
+ * loopback `host` header, the token is the gate.
+ */
+async function answer(
+  daemon: DaemonHandle,
+  cwd: string,
+  commentId: string,
+  body: string,
+): Promise<{ released: boolean }> {
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const res = await fetch(`${daemon.baseURL}/mcp/file-comments/replies`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ env: {}, cwd, commentId, body }),
+  });
+  expect(res.status, `the reply channel accepted the answer: ${await res.clone().text()}`).toBe(200);
+  return (await res.json()) as { released: boolean };
+}
+
+/**
+ * Every turn the fake agent actually received, read off the transcript the daemon serves.
+ *
+ * Durable, unlike `pending_turns.text`, which is deleted the moment the row is retired - so
+ * this can be asked after delivery has been confirmed rather than raced against the drain.
+ */
+async function receivedTurns(daemon: DaemonHandle): Promise<string[]> {
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as { id: string }[];
+  const id = sessions[0]!.id;
+  const body = (await (await fetch(`${daemon.baseURL}/api/sessions/${id}/transcript`)).json()) as {
+    messages?: { role: string; text: string }[];
+  };
+  return (body.messages ?? []).filter((m) => m.role === "user").map((m) => m.text);
+}
+
+/** Every message on every thread, so a reply can be read as bytes and not only as pixels. */
+function storedMessages(daemon: DaemonHandle): { author: string; body: string; read: number }[] {
+  return withDaemonDb(daemon, (db) =>
+    db
+      .prepare(
+        `SELECT m.author, m.body, (m.read_at IS NOT NULL) AS read
+           FROM file_comment_messages m
+          ORDER BY m.created_at, m.rowid`,
+      )
+      .all() as never);
+}
+
 /** How many turns are sitting in the daemon's human outbox for this session. */
 function outboxDepth(daemon: DaemonHandle): number {
   return withDaemonDb(daemon, (db) =>
@@ -311,6 +363,109 @@ test.describe("the review walkthrough", () => {
     ).toBe(1);
     expect(outboxDepth(daemon)).toBe(0);
   });
+  test("the agent's answer lands in the thread, raises the Files pip, and releases the next comment", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    // The whole of phase 4, end to end: a tool call becomes a durable row becomes a reply
+    // drawn in that thread, on that line, with no refresh - and becomes the next comment
+    // going out. Nothing here waits out the ten-second grace window, which is the point:
+    // before this the queue advanced on an inference that the session had gone quiet.
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
+    writeFileSync(join(cwd, SOURCE), CONTENTS);
+
+    await useConsoleLayout(page, daemon);
+    await openTheFile(page);
+    await page.getByRole("button", { name: "Comment mode" }).click();
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    await comment(page, 3, FIRST);
+    await comment(page, 5, SECOND);
+
+    await page.getByRole("button", { name: "Review queue" }).click();
+    const queue = page.getByRole("region", { name: "Review queue" });
+    await queue.getByRole("button", { name: "Start review" }).click();
+
+    // The first comment reaches the agent for real - the fake echoes what it was sent.
+    await expect
+      .poll(() => storedQueue(daemon)[0]?.delivered, {
+        message: "the first comment never reached the agent",
+        timeout: 20_000,
+      })
+      .toBe(1);
+    const head = storedQueue(daemon)[0]!;
+    expect(head.start_line).toBe(3);
+
+    // The turn the agent actually received names the tool it is expected to answer through -
+    // the fully-qualified name an MCP client namespaces it under. The production port decides
+    // that per session, by interrogating the BUILT bundle, so this is what proves the built
+    // `dist/mcp/server.mjs` and the instruction agree. A session the probe found no tool for
+    // would read `Answer in your next turn, quoting id ...` here instead.
+    await expect
+      .poll(async () => (await receivedTurns(daemon)).join("\n"), {
+        message: "the delivered comment never reached the transcript",
+        timeout: 15_000,
+      })
+      .toContain(`Answer with mcp__mission-control__respond_to_file_comments quoting id ${head.short_id}.1.`);
+
+    // The handle is the one the payload printed: the thread's short id plus the delivery
+    // ordinal. It is the only comment identifier an agent is ever shown.
+    const ANSWER = "Fixed - the paragraph now says thirty seconds.";
+    const { released } = await answer(daemon, cwd, `${head.short_id}.1`, ANSWER);
+    expect(released, "the reply answered the delivery that was outstanding").toBe(true);
+
+    // ---- it releases the next comment, on the reply rather than on a timeout ----
+    await expect
+      .poll(() => storedQueue(daemon).find((row) => row.start_line === 5)?.status, {
+        message: "the reply never released the next comment",
+        // Comfortably inside the ten-second grace window that would otherwise have to expire.
+        timeout: 8_000,
+        intervals: [250],
+      })
+      .not.toBe("queued");
+    expect(outboxDepth(daemon)).toBeLessThanOrEqual(1);
+
+    // ---- and the Files tab says an answer arrived, before anybody has read it ----
+    // Not queue depth: comments still waiting to go out are the reader's own work.
+    const filesTab = page
+      .getByRole("tablist", { name: "Session detail" })
+      .getByRole("tab", { name: /Files/ });
+    await expect(filesTab).toHaveText(/Files\s*1/);
+    // The whole detail pane, so the pip is readable against the tab strip it sits in rather
+    // than cropped out of its context. The thread is still collapsed here on purpose: opening
+    // it is what marks the reply read, so the lit pip and the expanded answer cannot share a
+    // frame. They are two shots of the same second.
+    await shoot(page.locator(".cdetail"), page, "files-pip-lit");
+
+    // ---- the answer is IN THE THREAD, on the line it was written about ----
+    await lineNumber(page, 3).click();
+    // By ROLE, because the line's gutter marker carries a very similar accessible name -
+    // and that marker is itself worth reading: it now says "answered, 1 reply".
+    await expect(
+      page.getByRole("button", { name: new RegExp(`^Comment ${head.short_id} on line 3, answered, 1 reply$`) }),
+    ).toBeVisible();
+    const panel = page.getByRole("region", { name: `Comment ${head.short_id} on line 3`, exact: true });
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText(FIRST);
+    await expect(panel).toContainText(ANSWER);
+    await shoot(page.locator(".file-main"), page, "answered-thread");
+
+    // Reading it is what clears the pip - durably, so the extracted Files window agrees.
+    await expect
+      .poll(() => storedMessages(daemon).find((m) => m.author === "agent")?.read, {
+        message: "expanding the thread never marked the reply read",
+      })
+      .toBe(1);
+    await expect(filesTab).not.toHaveText(/Files\s*\d/);
+    await shoot(page.locator(".cdetail"), page, "files-pip-cleared");
+
+    // And the bytes, not the pixels: one agent message, attributed to the agent.
+    expect(storedMessages(daemon).filter((m) => m.author === "agent").map((m) => m.body)).toEqual([
+      ANSWER,
+    ]);
+  });
+
   test("a review spanning two files takes the reader to the file each comment is in", async ({
     dashboard: page,
     daemon,

@@ -31,6 +31,14 @@ export interface DetailTab {
 export interface DetailTabInputs {
   /** Open items in the session's work queue. */
   queueCount: number;
+  /**
+   * Agent replies to line comments that nobody has read yet.
+   *
+   * Deliberately not the review's queue depth: the comments still waiting to go out are the
+   * human's own work, and a pip counting those would light up as they typed them. This counts
+   * what arrived while they were on another tab, and expanding the thread clears it.
+   */
+  fileReplyCount: number;
 }
 
 /**
@@ -40,12 +48,12 @@ export interface DetailTabInputs {
  * which is the question you ask right after "what is it about to do" and before you go
  * read the change itself.
  */
-export function detailTabs({ queueCount }: DetailTabInputs): DetailTab[] {
+export function detailTabs({ queueCount, fileReplyCount }: DetailTabInputs): DetailTab[] {
   return [
     { id: "conversation", label: "Conversation", pip: 0, action: "conversation" },
     { id: "queue", label: "Work queue", pip: queueCount, action: "queue" },
     { id: "workflows", label: "Workflows", pip: 0, action: "sessionWorkflows" },
     { id: "diff", label: "Diff", pip: 0, action: "diff" },
-    { id: "files", label: "Files", pip: 0, action: "files" },
+    { id: "files", label: "Files", pip: fileReplyCount, action: "files" },
   ];
 }

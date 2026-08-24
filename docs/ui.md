@@ -832,9 +832,42 @@ Nothing here lives in the browser. A daemon restart mid-review resumes rather th
 comment that was in flight when the daemon went down surfaces as a paused review awaiting one
 confirmation, rather than being recorded as delivered when it may never have been read.
 
-The agent cannot yet answer *in the thread* - that arrives with the reply tool. For now it
-answers in the conversation, and the comment is marked as having gone unanswered in the thread
-so the queue keeps moving.
+**The agent answers in the thread, on the line, live.** Each comment arrives naming the id it
+was delivered with - `MC-a41f.2`, the comment's handle plus which delivery of it this is - and
+the agent answers by quoting that id back through Mission Control's `respond_to_file_comments`
+tool. The answer appears in that comment's thread without a refresh, in the integrated Files
+tab and the extracted Files window alike, and it is what releases the next comment. The queue
+stops advancing on an inference that the session has gone quiet and starts advancing on a real
+completion.
+
+The **Files** tab raises a pip when an answer lands, counting replies nobody has read yet -
+not how many comments are still queued, which is your own work. Expanding the thread clears it,
+in both windows.
+
+The trailing `.2` is what makes a reply answer a *turn* rather than a thread, and it matters
+because a thread can go out more than once - it times out, you follow up, it goes round again.
+A reply quoting an earlier delivery is still filed on the thread, because it is a real answer
+and losing it would lose the agent's work, but it advances nothing: a comment you have already
+followed up on keeps its place in the queue and the follow-up is still delivered.
+
+An agent can also say it **acted** on a comment rather than only answering it. That marks the
+thread as handled and never closes it - only you resolve a comment.
+
+**A session with no such tool still works, and is not told to call one.** Mission Control's
+tools reach sessions the dashboard launched and sessions on a machine where the integration is
+installed; a session you started yourself without it has none, and neither does one whose
+built MCP bundle is too old to publish the tool. Each comment is checked against that bundle
+before it goes out, so a session that cannot call it is asked to quote the comment's id back in
+its next turn instead - an instruction naming a tool that is not there is one an agent follows
+into silence.
+
+The id is then the fallback: an answer that opens by quoting it is filed into that thread out
+of the conversation when the comment's window closes. It is less precise in one specific way -
+free text recovers which comment was answered but not reliably which delivery - so a recovered
+answer is filed and the queue advances on the ordinary idle signal instead. What cannot be
+established either way is whether a particular running process registered the server; that is a
+property of a process Mission Control did not necessarily start, which is why the fallback
+covers a session that simply ignores the tool exactly as it covers one that never had it.
 
 **Opening a file at a line works now.** A `path:line` link from a conversation, a diff, or a
 review finding scrolls the editor to that line rather than opening the file at the top, and the

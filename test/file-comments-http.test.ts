@@ -17,7 +17,9 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { FileCommentManager } = await import("../src/server/file-comments.ts");
 const {
   appendFileCommentMessage,
+  beginFileCommentDelivery,
   loadFileCommentThread,
+  markFileCommentMessageDelivered,
   openDb,
   loadFileCommentThreadWithFullHistory,
   loadFileCommentThreadsForSession,
@@ -27,6 +29,7 @@ const {
 const { FILE_COMMENT_THREAD_MESSAGE_CAP } = await import("../src/shared/file-comments.ts");
 const { FileCommentWalkthrough } = await import("../src/server/file-comment-walkthrough.ts");
 const { loadFileCommentReview, setFileCommentReviewState } = await import("../src/server/db.ts");
+const { ensureToken } = await import("../src/server/auth.ts");
 type Registry = import("../src/server/registry.ts").Registry;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
@@ -40,10 +43,19 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const events: ServerEvent[] = [];
 const held = new Map<string, FileCommentThread>();
 const reviews = new Map<string, FileCommentReview>();
-const sessions = new Set(["live"]);
+const sessions = new Set(["live", "other"]);
+/** Which session a `cwd` resolves to, so a reply can bind the way a real agent does. */
+const cwdSessions = new Map<string, string>([["/tmp", "live"], ["/tmp/other", "other"]]);
 
 const registry = {
   getSession: (id: string) => (sessions.has(id) ? { id, cwd: "/tmp" } : undefined),
+  // The `/mcp/*` join. The real one resolves a pane token, then an agent session id, then a
+  // UNIQUE cwd; what matters to these tests is only that a reply arrives already scoped to a
+  // session, because that scoping is what makes a per-session `short_id` safe to resolve.
+  findSessionByEnv: (_env: unknown, sessionId: string | null, cwd: string | null) => {
+    const id = sessionId ?? (cwd ? cwdSessions.get(cwd) ?? null : null);
+    return id && sessions.has(id) ? { id, cwd } : undefined;
+  },
   subscribe: () => () => {},
   onSessionsObserved: () => () => {},
   listFileCommentThreads: () => [...held.values()],
@@ -94,6 +106,7 @@ const stub = <T,>() => ({}) as unknown as T;
 const submitted: string[] = [];
 const walkthrough = new FileCommentWalkthrough({
   now: () => Date.now(),
+  replyTool: () => Promise.resolve("mcp__mission-control__respond_to_file_comments"),
   session: () => ({ id: "live", runtime: "sdk", state: "idle", terminals: [], lastActivity: 0, firstSeen: 0, pendingTurns: [] }) as never,
   review: (sessionId) => loadFileCommentReview(sessionId),
   setReviewState: (sessionId, state, pauseReason) => {
@@ -117,6 +130,10 @@ const walkthrough = new FileCommentWalkthrough({
     return { ok: true, turnId: `turn-${submitted.length}`, error: null };
   },
   pendingTurn: () => null,
+  // The tool-less fallback is the walkthrough's, and it has its own file. What is at stake
+  // here is the doors, so this reads nothing and files nothing.
+  agentTurnsSince: () => [],
+  appendAgentReply: () => null,
 });
 const app = buildApp(
   registry,
@@ -848,4 +865,299 @@ test("a human reply requeues an unanswered thread at the TAIL, and never one in 
   const outstanding = loadFileCommentThread(second.id)!;
   assert.equal(outstanding.status, "awaiting", "appending is allowed; the status must not move");
   assert.equal(outstanding.messageCount, 2);
+});
+
+// ---- phase 4: the agent's reply, through `POST /mcp/file-comments/replies` ----
+//
+// The `/mcp/*` shape, not the dashboard's: the token is the gate and no `host` header is
+// needed. What is at stake in every case below is the pair of questions the route keeps
+// apart - does this reply ANSWER the outstanding delivery (which releases the turn), and does
+// the thread still owe another turn (which decides only where it goes next). Collapsing them
+// is what deadlocked the review once already.
+
+/** The reply an agent's MCP child posts, bound by `cwd` exactly as a real one binds. */
+async function reply(
+  body: Record<string, unknown>,
+  cwd = "/tmp",
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await app.request("/mcp/file-comments/replies", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({ env: {}, sessionId: null, cwd, ...body }),
+  });
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+}
+
+/**
+ * Put a queued thread through a real delivery: `sending` with a correlation, then the
+ * confirmed-delivery stamp that moves it to `awaiting`.
+ *
+ * Through phase 1's and phase 3's own writers rather than by writing the columns, so a
+ * scenario here is reachable by the daemon that actually runs it.
+ */
+function deliver(threadId: string, turnId: string): void {
+  beginFileCommentDelivery(threadId, turnId, Date.now());
+  const thread = loadFileCommentThread(threadId)!;
+  const next = thread.messages.find((m) => m.author === "human" && m.deliveredAt === null)!;
+  markFileCommentMessageDelivered(next.id, Date.now());
+}
+
+test("a reply quoting the handle the payload printed lands in that thread and releases the turn", async () => {
+  reset();
+  const first = await create();
+  const second = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${first.id}/queue`);
+  await post(`/api/file-comments/${second.id}/queue`);
+  deliver(first.id, "turn-1");
+  const handle = `${loadFileCommentThread(first.id)!.shortId}.1`;
+
+  events.length = 0;
+  const answered = await reply({ commentId: handle, body: "Fixed - the table was right." });
+  assert.equal(answered.status, 200, JSON.stringify(answered.body));
+  assert.equal(answered.body.released, true);
+
+  const thread = loadFileCommentThread(first.id)!;
+  assert.equal(thread.status, "answered");
+  assert.equal(thread.answeredAt !== null, true);
+  // `delivery_id` names a `pending_turns` row, and this thread is correlated to nothing now.
+  assert.equal(thread.deliveryId, null);
+  assert.deepEqual(
+    thread.messages.map((m) => [m.author, m.body]),
+    [["human", COMMENT.body], ["agent", "Fixed - the table was right."]],
+  );
+  // One frame carries the whole outcome to every dashboard, without a refresh.
+  assert.deepEqual(events.map((e) => e.type), ["file_comment_thread_upsert"]);
+  // And the next comment is free to go: nothing is outstanding.
+  assert.equal(loadFileCommentThread(second.id)!.status, "queued");
+});
+
+test("`addressed` stamps a timestamp and moves no status", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  deliver(t.id, "turn-1");
+  const answered = await reply({
+    commentId: `${loadFileCommentThread(t.id)!.shortId}.1`,
+    body: "Done.",
+    addressed: true,
+  });
+  assert.equal(answered.status, 200);
+  const thread = loadFileCommentThread(t.id)!;
+  assert.equal(thread.addressedAt !== null, true, "the agent said it handled this");
+  // A suggestion, never a closure: only a person resolves a thread.
+  assert.equal(thread.status, "answered");
+  assert.equal(thread.resolvedAt, null);
+});
+
+test("the same short id in two sessions resolves to each session's OWN thread", async () => {
+  reset();
+  const mine = await create();
+  const theirs = (await (async () => {
+    const res = await post("/api/sessions/other/file-comments", COMMENT);
+    return ((await res.json()) as { thread: FileCommentThread }).thread;
+  })());
+  // `short_id` is unique PER SESSION, so this collision is legal - and it is the case a
+  // global lookup passes silently by filing a reply onto the wrong session's thread.
+  const shared = mine.shortId;
+  openDb()
+    .prepare(`UPDATE file_comment_threads SET short_id = ? WHERE id = ?`)
+    .run(shared, theirs.id);
+  await post(`/api/file-comments/${mine.id}/queue`);
+  deliver(mine.id, "turn-1");
+  await post(`/api/file-comments/${theirs.id}/queue`);
+  deliver(theirs.id, "turn-2");
+
+  const answered = await reply({ commentId: `${shared}.1`, body: "theirs" }, "/tmp/other");
+  assert.equal(answered.status, 200);
+  assert.equal(answered.body.threadId, theirs.id, "the reply landed in the session it came from");
+  assert.equal(loadFileCommentThread(theirs.id)!.messageCount, 2);
+  assert.equal(loadFileCommentThread(mine.id)!.messageCount, 1, "and not on the other session's");
+});
+
+test("a handle this session does not hold is refused, never resolved globally", async () => {
+  reset();
+  const mine = await create();
+  await post(`/api/file-comments/${mine.id}/queue`);
+  deliver(mine.id, "turn-1");
+  // The handle exists - in the OTHER session. A global fallback on a miss is exactly what
+  // turns an honest refusal into the wrong thread.
+  const missed = await reply({ commentId: `${mine.shortId}.1`, body: "wrong door" }, "/tmp/other");
+  assert.equal(missed.status, 404);
+  assert.match(String(missed.body.error), /no comment MC-/);
+  assert.equal(loadFileCommentThread(mine.id)!.messageCount, 1);
+});
+
+test("the reply door refuses an unknown session, a bad token, and a value that is not a handle", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  deliver(t.id, "turn-1");
+
+  const anonymous = await app.request("/mcp/file-comments/replies", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ env: {}, cwd: "/tmp", commentId: `${t.shortId}.1`, body: "hi" }),
+  });
+  assert.equal(anonymous.status, 401);
+
+  assert.equal((await reply({ commentId: `${t.shortId}.1`, body: "hi" }, "/nowhere")).status, 404);
+  // A uuid is the identifier the agent is never given, and a tool that took one would be a
+  // tool no agent could call. It is refused as what it is rather than resolved by accident.
+  const uuid = await reply({ commentId: t.id, body: "hi" });
+  assert.equal(uuid.status, 400);
+  assert.match(String(uuid.body.error), /is not a comment id/);
+  assert.equal((await reply({ commentId: `${t.shortId}.1`, body: "" })).status, 400);
+  assert.equal(loadFileCommentThread(t.id)!.messageCount, 1);
+});
+
+test("a bare handle - what the transcript fallback recovers - files the reply and advances nothing", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  deliver(t.id, "turn-1");
+  const answered = await reply({ commentId: t.shortId, body: "an answer with no ordinal" });
+  assert.equal(answered.status, 200);
+  assert.equal(answered.body.released, false, "it names a thread, so it confirms no delivery");
+  const thread = loadFileCommentThread(t.id)!;
+  assert.equal(thread.messageCount, 2, "the reply is real content and is always persisted");
+  assert.equal(thread.status, "awaiting", "and the turn is still the one the timeout will settle");
+});
+
+test("round 14: a late reply does not move a thread the human has already requeued", async () => {
+  reset();
+  const first = await create();
+  const second = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${first.id}/queue`);
+  await post(`/api/file-comments/${second.id}/queue`);
+  deliver(first.id, "turn-1");
+  const handle = `${loadFileCommentThread(first.id)!.shortId}.1`;
+
+  // It timed out, and a person wrote a follow-up, which put it back at the TAIL.
+  setFileCommentThreadStatus(first.id, "unanswered", Date.now());
+  await post(`/api/file-comments/${first.id}/messages`, { body: "still not right" });
+  const requeued = loadFileCommentThread(first.id)!;
+  assert.equal(requeued.status, "queued");
+  const place = requeued.queueSeq;
+
+  // Only NOW does the slow reply to the first comment arrive.
+  const late = await reply({ commentId: handle, body: "sorry, I was slow" });
+  assert.equal(late.status, 200);
+  assert.equal(late.body.released, false);
+  const after = loadFileCommentThread(first.id)!;
+  // The message persists - dropping it would lose the agent's work - and NOTHING else moves.
+  // Moving it to `answered` here would take it out of the queue and the follow-up would never
+  // be delivered, silently, with this reply reported as a success.
+  assert.equal(after.messageCount, 3);
+  assert.equal(after.status, "queued");
+  assert.equal(after.queueSeq, place, "and it keeps its place in the review");
+});
+
+test("round 14: a resolved thread stays closed, because only a person closes one", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  deliver(t.id, "turn-1");
+  const handle = `${loadFileCommentThread(t.id)!.shortId}.1`;
+  // The reachable route to `resolved`: the grace window gave up on it, and only then could a
+  // person close it - the status route refuses a thread still out with the agent.
+  setFileCommentThreadStatus(t.id, "unanswered", Date.now());
+  assert.equal((await post(`/api/file-comments/${t.id}/status`, { status: "resolved" })).status, 200);
+
+  const late = await reply({ commentId: handle, body: "answering anyway" });
+  assert.equal(late.status, 200);
+  assert.equal(late.body.released, false);
+  const after = loadFileCommentThread(t.id)!;
+  assert.equal(after.messageCount, 2, "the reply is still a record of what was said");
+  assert.equal(after.status, "resolved");
+});
+
+test("round 17: a reply naming an EARLIER delivery of an outstanding thread releases nothing", async () => {
+  reset();
+  const t = await create();
+  const other = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${t.id}/queue`);
+  await post(`/api/file-comments/${other.id}/queue`);
+  deliver(t.id, "turn-1");
+  const shortId = loadFileCommentThread(t.id)!.shortId;
+
+  // It timed out, a person followed up, and that follow-up was DELIVERED - so the thread is
+  // legitimately outstanding again, on its SECOND delivery.
+  setFileCommentThreadStatus(t.id, "unanswered", Date.now());
+  await post(`/api/file-comments/${t.id}/messages`, { body: "still not right" });
+  deliver(t.id, "turn-2");
+  assert.equal(loadFileCommentThread(t.id)!.status, "awaiting");
+
+  // The stale reply to the FIRST comment arrives. The thread identifier alone cannot survive
+  // this: matching on it would mark the follow-up's delivery answered and release the next
+  // comment, having answered nothing. The ordinal refuses that.
+  const stale = await reply({ commentId: `${shortId}.1`, body: "about your first point" });
+  assert.equal(stale.status, 200);
+  assert.equal(stale.body.released, false);
+  const after = loadFileCommentThread(t.id)!;
+  assert.equal(after.messageCount, 3, "the reply persists");
+  assert.equal(after.status, "awaiting", "and the delivery that IS outstanding is still open");
+
+  // Whereas the answer to the delivery actually outstanding does release it.
+  const right = await reply({ commentId: `${shortId}.2`, body: "and about the follow-up" });
+  assert.equal(right.body.released, true);
+  assert.equal(loadFileCommentThread(t.id)!.status, "answered");
+});
+
+test("round 21: answering a thread that gained a follow-up leaves it QUEUED, never awaiting", async () => {
+  reset();
+  const t = await create();
+  const other = await create({ startLine: 90, endLine: 90, quote: "another paragraph" });
+  await post(`/api/file-comments/${t.id}/queue`);
+  await post(`/api/file-comments/${other.id}/queue`);
+  deliver(t.id, "turn-1");
+  const handle = `${loadFileCommentThread(t.id)!.shortId}.1`;
+
+  // A person writes a follow-up while the comment is still out. Appending is allowed; the
+  // status must not move, so the thread stays `awaiting` with an undelivered message on it.
+  await post(`/api/file-comments/${t.id}/messages`, { body: "and another thing" });
+  assert.equal(loadFileCommentThread(t.id)!.status, "awaiting");
+
+  const answered = await reply({ commentId: handle, body: "here is your answer" });
+  assert.equal(answered.status, 200);
+  assert.equal(answered.body.released, true);
+
+  // The trap: leaving it `awaiting` because it has queued work. `awaiting` is an outstanding
+  // status, `queueFileCommentThread` refuses it, and the partial unique index would block
+  // every later delivery - so the follow-up could never be sent and the whole review would
+  // deadlock behind a comment that had in fact been answered.
+  const after = loadFileCommentThread(t.id)!;
+  assert.equal(after.status, "queued");
+  assert.equal(after.queueSeq, 2, "at the TAIL, behind everything queued since");
+  assert.equal(after.deliveryId, null);
+  // And the review keeps moving: nothing is outstanding, so the next comment is free to go.
+  assert.equal(
+    loadFileCommentThreadsForSession("live").filter((x) => x.status === "awaiting").length,
+    0,
+  );
+});
+
+test("a reply arriving while the next delivery is still UNCONFIRMED releases nothing", async () => {
+  reset();
+  const t = await create();
+  await post(`/api/file-comments/${t.id}/queue`);
+  deliver(t.id, "turn-1");
+  const shortId = loadFileCommentThread(t.id)!.shortId;
+
+  // It timed out, a person followed up, and that follow-up has been handed to the outbox but
+  // NOT yet confirmed delivered - the thread is `sending`, and its newest `delivered_at` still
+  // names the FIRST delivery.
+  setFileCommentThreadStatus(t.id, "unanswered", Date.now());
+  await post(`/api/file-comments/${t.id}/messages`, { body: "still not right" });
+  beginFileCommentDelivery(t.id, "turn-2", Date.now());
+  assert.equal(loadFileCommentThread(t.id)!.status, "sending");
+
+  // Releasing here would mark the thread answered - and clear the correlation - while its turn
+  // is genuinely live in `pending_turns`.
+  const late = await reply({ commentId: `${shortId}.1`, body: "about your first point" });
+  assert.equal(late.status, 200);
+  assert.equal(late.body.released, false);
+  const after = loadFileCommentThread(t.id)!;
+  assert.equal(after.messageCount, 3);
+  assert.equal(after.status, "sending");
+  assert.equal(after.deliveryId, "turn-2", "the live correlation is untouched");
 });

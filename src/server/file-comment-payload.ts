@@ -67,11 +67,12 @@ export interface FileCommentPayloadInput {
   /**
    * The MCP tool the agent should answer through, or null while there is not one.
    *
-   * Null in phase 3, which is the one deliberate difference from `plan.md`'s rendering:
-   * `respond_to_file_comments` does not exist until phase 4, and naming a tool an agent
-   * cannot call is the failure mode `FINAL_INSTRUCTION` in `feedback.ts` documents - an
-   * instruction the loop cannot honour is one it follows into silence. Phase 4 passes the
-   * name and changes nothing else about this packet.
+   * Phase 4 supplies `mcp__mission-control__respond_to_file_comments`; the null rendering is
+   * kept rather than deleted, because it is what a caller that cannot offer the tool must
+   * print. Naming a tool an agent cannot call is the failure mode `FINAL_INSTRUCTION` in
+   * `feedback.ts` documents - an instruction the loop cannot honour is one it follows into
+   * silence - and the handle is cited either way, which is what makes the tool-less session
+   * answerable at all.
    */
   replyTool?: string | null;
 }
@@ -90,6 +91,60 @@ export function lineRangeLabel(startLine: number, endLine: number): string {
 /** The handle the agent quotes back: the thread's short id plus this turn's delivery ordinal. */
 export function deliveryHandle(shortId: string, ordinal: number): string {
   return `${shortId}.${ordinal}`;
+}
+
+/**
+ * The one spelling of a delivery handle, and therefore the one place it is READ back.
+ *
+ * Minting it and parsing it live in the same file on purpose: the agent quotes back exactly
+ * what this module printed, so a change to `deliveryHandle` that no reader followed would
+ * produce a handle nothing can resolve - which is the whole failure mode the ordinal exists
+ * to avoid.
+ */
+const HANDLE = "\\[?(MC-[0-9a-fA-F]+)(?:\\.(\\d+))?\\]?";
+/** The tool argument: the handle and nothing else, with surrounding space or brackets. */
+const HANDLE_EXACT = new RegExp(`^\\s*${HANDLE}\\s*$`);
+/**
+ * The transcript fallback: an assistant turn that OPENS with the handle.
+ *
+ * Anchored at the start rather than searched for anywhere in the turn, because a turn that
+ * merely mentions a handle in passing - quoting the comment it is about to answer, listing
+ * what is still outstanding - is not an answer to it. Markdown emphasis and a leading list
+ * marker are allowed through because a model writes `**MC-a41f.2**` as readily as `MC-a41f.2`.
+ */
+const HANDLE_OPENING = new RegExp(`^[\\s>*_#-]*${HANDLE}`);
+
+export interface DeliveryHandleParts {
+  /** The thread's `short_id`, normalized to the case the store minted it in. */
+  shortId: string;
+  /**
+   * The delivery ordinal, or null when the citation carried none.
+   *
+   * Null is not an error and is not a rejection: it is the transcript fallback's ordinary
+   * outcome, and it means the citation names a THREAD but confirms no delivery. A caller
+   * that files the message and advances nothing is behaving correctly; a caller that treats
+   * null as "the current delivery" would release a turn nothing answered.
+   */
+  ordinal: number | null;
+}
+
+function parts(match: RegExpMatchArray | null): DeliveryHandleParts | null {
+  if (!match) return null;
+  const ordinal = match[2] === undefined ? null : Number(match[2]);
+  if (ordinal !== null && (!Number.isInteger(ordinal) || ordinal < 1)) return null;
+  // `MC-` is minted uppercase with lowercase hex; a citation may arrive in any case, and a
+  // handle that differs from the stored one only in case is the same handle.
+  return { shortId: `MC-${match[1]!.slice(3).toLowerCase()}`, ordinal };
+}
+
+/** Read the handle a reply cites. Null when the value is not a handle at all. */
+export function parseDeliveryHandle(value: string): DeliveryHandleParts | null {
+  return parts(HANDLE_EXACT.exec(value));
+}
+
+/** Read the handle an assistant turn opens with, for the tool-less fallback. */
+export function openingDeliveryHandle(text: string): DeliveryHandleParts | null {
+  return parts(HANDLE_OPENING.exec(text));
 }
 
 function clip(value: string, maxBytes: number): { value: string; truncated: boolean } {

@@ -93,6 +93,7 @@ import {
   REQUEUEABLE_THREAD_STATUSES,
   holdsQueuePosition,
   isFileCommentThreadStatus,
+  isOutstandingThreadStatus,
   type FileCommentAuthor,
   type FileCommentReviewState,
   type FileCommentThreadStatus,
@@ -11752,29 +11753,41 @@ export function updateFileCommentMessageBody(
  * `BEGIN IMMEDIATE`, the house style every transaction in this file follows.
  */
 export function queueFileCommentThread(threadId: string, now: number): FileCommentThread | null {
-  return inTransaction(() => {
-    const d = openDb();
-    const row = d
-      .prepare(`SELECT session_id, status FROM file_comment_threads WHERE id = ?`)
-      .get(threadId) as { session_id?: string; status?: string } | undefined;
-    if (!row?.session_id) return null;
-    const status = readThreadStatus(row.status ?? "");
-    if (!(REQUEUEABLE_THREAD_STATUSES as readonly string[]).includes(status)) {
-      throw new FileCommentStoreError(`a ${status} comment cannot be queued`);
-    }
-    const seq = d
-      .prepare(
-        `SELECT COALESCE(MAX(queue_seq), -1) + 1 AS seq FROM file_comment_threads
-           WHERE session_id = ?`,
-      )
-      .get(row.session_id) as unknown as { seq: number };
-    d.prepare(
-      `UPDATE file_comment_threads
-          SET status = 'queued', queue_seq = ?, updated_at = ?
-        WHERE id = ?`,
-    ).run(seq.seq, now, threadId);
-    return loadFileCommentThread(threadId);
-  });
+  return inTransaction(() => queueFileCommentThreadRow(threadId, now));
+}
+
+/**
+ * `queueFileCommentThread`'s body, WITHOUT the transaction.
+ *
+ * Split out for exactly one caller: `recordAgentFileCommentReply`, which has to release a
+ * thread and requeue it in the SAME transaction as the reply that justifies both.
+ * `inTransaction` issues `BEGIN IMMEDIATE`, which SQLite refuses inside an open transaction,
+ * so composing the exported form would throw rather than nest. Splitting the body is what
+ * keeps the tail-allocation and the source-status allow-list to one implementation instead
+ * of a second, subtly different copy inside the reply path.
+ */
+function queueFileCommentThreadRow(threadId: string, now: number): FileCommentThread | null {
+  const d = openDb();
+  const row = d
+    .prepare(`SELECT session_id, status FROM file_comment_threads WHERE id = ?`)
+    .get(threadId) as { session_id?: string; status?: string } | undefined;
+  if (!row?.session_id) return null;
+  const status = readThreadStatus(row.status ?? "");
+  if (!(REQUEUEABLE_THREAD_STATUSES as readonly string[]).includes(status)) {
+    throw new FileCommentStoreError(`a ${status} comment cannot be queued`);
+  }
+  const seq = d
+    .prepare(
+      `SELECT COALESCE(MAX(queue_seq), -1) + 1 AS seq FROM file_comment_threads
+         WHERE session_id = ?`,
+    )
+    .get(row.session_id) as unknown as { seq: number };
+  d.prepare(
+    `UPDATE file_comment_threads
+        SET status = 'queued', queue_seq = ?, updated_at = ?
+      WHERE id = ?`,
+  ).run(seq.seq, now, threadId);
+  return loadFileCommentThread(threadId);
 }
 
 /**
@@ -12049,16 +12062,155 @@ export function setFileCommentThreadStatus(
   // keeps a withdrawn thread from sitting in the order as a `draft`, and a closed one from
   // leaving a permanent hole in it.
   const keepsPosition = holdsQueuePosition(status);
+  // `delivery_id` names the `pending_turns` row a comment is correlated to, and it is only
+  // meaningful while the comment is outstanding. A thread that has left that set - answered
+  // by the agent, timed out to `unanswered`, resolved by a person - is correlated to nothing,
+  // and a stale correlation is worse than none: `outstandingDelivery` matches on it, so a
+  // recycled turn id would let an unrelated retry lift a pause about a comment that is no
+  // longer in flight. `beginFileCommentDelivery` is still the only writer that SETS it.
+  const outstanding = isOutstandingThreadStatus(status);
   d.prepare(
     `UPDATE file_comment_threads
         SET status = ?,
             queue_seq = CASE WHEN ? = 1 THEN queue_seq ELSE NULL END,
+            delivery_id = CASE WHEN ? = 1 THEN delivery_id ELSE NULL END,
             answered_at = CASE WHEN ? = 'answered' THEN COALESCE(answered_at, ?) ELSE answered_at END,
             resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE NULL END,
             updated_at = ?
       WHERE id = ?`,
-  ).run(status, keepsPosition ? 1 : 0, status, now, status, now, now, threadId);
+  ).run(
+    status,
+    keepsPosition ? 1 : 0,
+    outstanding ? 1 : 0,
+    status,
+    now,
+    status,
+    now,
+    now,
+    threadId,
+  );
   return loadFileCommentThread(threadId);
+}
+
+/**
+ * Which of a thread's human messages the CURRENT delivery carried, as the ordinal the
+ * payload printed - or null when nothing on this thread has been delivered.
+ *
+ * The greatest `delivered_at` rather than the last message: a thread can be delivered more
+ * than once (it times out, a person follows up, it goes round again), and the turn being
+ * answered is the most recent one that actually reached the agent. Derived from the message
+ * list exactly as `renderFileCommentPayload` derives what it prints, so no column stores it
+ * and the two cannot disagree.
+ *
+ * Read from a thread hydrated WITHOUT the message cap: the ordinal counts every human
+ * message, so a capped read past fifty replies would compute a number the payload never
+ * printed.
+ */
+function deliveredOrdinal(thread: FileCommentThread): number | null {
+  let ordinal = 0;
+  let best: { ordinal: number; at: number } | null = null;
+  for (const message of thread.messages) {
+    if (message.author !== "human") continue;
+    ordinal += 1;
+    if (message.deliveredAt === null) continue;
+    if (!best || message.deliveredAt > best.at) best = { ordinal, at: message.deliveredAt };
+  }
+  return best?.ordinal ?? null;
+}
+
+export interface AgentFileCommentReply {
+  thread: FileCommentThread;
+  message: FileCommentMessage;
+  /**
+   * The reply answered the delivery that is outstanding, so the turn was released.
+   *
+   * False is an ordinary outcome, not a failure: a late reply, and a reply whose citation
+   * carried no ordinal (what the transcript fallback recovers), both persist and release
+   * nothing.
+   */
+  released: boolean;
+  /** The released thread went straight back to the queue's tail, owing another turn. */
+  requeued: boolean;
+}
+
+/**
+ * The agent's answer to one delivered comment: persisted, and - only when it answers the
+ * delivery that is actually outstanding - the turn released with it.
+ *
+ * **One transaction, and the insert is the only unconditional part of it.** A reply is real
+ * content the agent produced, so it is stored whatever else is true; dropping a late one
+ * would lose work. Everything after it is conditional, and TWO INDEPENDENT QUESTIONS decide
+ * it - collapsing them is how this deadlocked once already:
+ *
+ * 1. *Does this reply answer the outstanding delivery?* decides whether the turn is
+ *    released. The cited ordinal must name the message the current delivery carried, and
+ *    the thread must still be outstanding. Nothing else qualifies: a reply naming an earlier
+ *    delivery of a thread that is outstanding AGAIN would otherwise mark the follow-up's
+ *    delivery answered and release the next comment having answered nothing.
+ * 2. *Does the thread still owe another turn?* decides only where it goes afterwards, and is
+ *    asked ONLY once the first has already released it.
+ *
+ * **Releasing first is what makes the requeue legal.** `queueFileCommentThreadRow` refuses
+ * an outstanding thread, so leaving a thread `awaiting` because it has a follow-up on it
+ * would wedge the whole review: `awaiting` is in the partial unique index's WHERE clause, so
+ * no later comment could ever be delivered, behind a comment that had in fact been answered.
+ * `answered` is in `REQUEUEABLE_THREAD_STATUSES`, so the two-step needs no exception.
+ *
+ * `addressed` is stamped through `markFileCommentThreadAddressed` and never through the
+ * status route: it is a suggestion, not a closure, and it must be writable without moving
+ * the thread anywhere.
+ */
+export function recordAgentFileCommentReply(input: {
+  messageId: string;
+  threadId: string;
+  sessionId: string;
+  body: string;
+  /** The delivery ordinal the reply cited, or null when it cited a bare handle. */
+  ordinal: number | null;
+  addressed: boolean;
+  now: number;
+}): AgentFileCommentReply | null {
+  return inTransaction(() => {
+    // Read BEFORE the insert, uncapped. The insert is agent-authored so it moves no human
+    // ordinal, but the status and the delivery stamps are what the two questions turn on and
+    // they must be the ones that were true when the reply arrived.
+    const before = loadFileCommentThreadWithFullHistory(input.threadId);
+    if (!before) return null;
+    const message = appendFileCommentMessage({
+      id: input.messageId,
+      threadId: input.threadId,
+      author: "agent",
+      sessionId: input.sessionId,
+      body: input.body,
+      now: input.now,
+    });
+    if (!message) return null;
+    if (input.addressed) markFileCommentThreadAddressed(input.threadId, input.now);
+
+    // `awaiting` specifically, not "outstanding". A `sending` thread's current delivery has
+    // not been CONFIRMED, so its message carries no `delivered_at` and the greatest one names
+    // an EARLIER delivery - releasing on that would mark the thread answered, and clear the
+    // correlation, while its turn is genuinely live in `pending_turns`. `awaiting` is exactly
+    // "the outstanding delivery is confirmed", which is what the ordinal can speak about.
+    const released =
+      input.ordinal !== null
+      && before.status === "awaiting"
+      && input.ordinal === deliveredOrdinal(before);
+    let requeued = false;
+    if (released) {
+      setFileCommentThreadStatus(input.threadId, "answered", input.now);
+      // A person replied while the comment was out. The turn is over, so the follow-up is
+      // owed a turn of its own: back to the TAIL, never its old position, because "at the
+      // end" is the contract and a reused number would send it ahead of everything queued
+      // since.
+      if (before.messages.some((m) => m.author === "human" && m.deliveredAt === null)) {
+        queueFileCommentThreadRow(input.threadId, input.now);
+        requeued = true;
+      }
+    }
+    const thread = loadFileCommentThread(input.threadId);
+    return thread ? { thread, message, released, requeued } : null;
+  });
 }
 
 export function deleteFileCommentThread(threadId: string): boolean {

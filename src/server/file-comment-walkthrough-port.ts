@@ -5,9 +5,12 @@
 // `test/file-comment-walkthrough.test.ts` drive every advance, hold, pause and restart path
 // against a fake port instead of a fixture per case. This file is the only place the two meet.
 
+import { randomUUID } from "node:crypto";
 import {
+  appendFileCommentMessage,
   beginFileCommentDelivery,
   loadFileCommentReview,
+  loadFileCommentThread,
   loadFileCommentThreadsForSession,
   loadFileCommentThreadWithFullHistory,
   markFileCommentMessageDelivered,
@@ -19,9 +22,30 @@ import {
 } from "./db.ts";
 import type { FileCommentThread } from "@shared/types.ts";
 import { FileCommentWalkthrough, type FileCommentWalkthroughPort } from "./file-comment-walkthrough.ts";
+import { sessionMessages } from "./harness/index.ts";
+import { missionMcpToolName, verifyMissionMcpToolsForRunningSession } from "./mission-mcp.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import type { Registry } from "./registry.ts";
 import { readSessionFile } from "./session-files.ts";
+
+/**
+ * How much of the conversation's tail the tool-less fallback reads.
+ *
+ * A comment's answer is the agent's next turn, so this only has to reach past whatever tool
+ * calls that turn made. Twenty-four turns is the same order as the transcript surfaces
+ * already read and keeps the cost of a timed-out comment to one bounded read.
+ */
+const FALLBACK_TAIL_TURNS = 24;
+
+/**
+ * The tool a session answers a comment through, as `MISSION_MCP_TOOLS` spells it.
+ *
+ * A constant HERE rather than in `mission-mcp.ts`, where the list entry is a bare literal on
+ * purpose: `mission-mcp.test.ts` scrapes that array with a regex and `scripts/smoke-bundles.mjs`
+ * resolves any CONSTANT in it through a hand-written name-to-module map. Naming it on this side
+ * keeps both scrapes reading exactly what they read before.
+ */
+const FILE_COMMENT_REPLY_TOOL = "respond_to_file_comments" as const;
 
 /**
  * Build the walkthrough and subscribe it to the three facts it runs on.
@@ -45,6 +69,38 @@ export function createFileCommentWalkthrough(
 
   const port: FileCommentWalkthroughPort = {
     now: () => Date.now(),
+    replyTool: async (sessionId) => {
+      const session = registry.getSession(sessionId);
+      if (!session) return null;
+      // The question `TaskManager` already asks before it resets a scout's checkout, asked
+      // here for the same reason and with the same limits. It interrogates the BUILT bundle -
+      // `dist/mcp/server.mjs`, which only `npm run build` refreshes and which git ignores - and
+      // orders that file against this session's start, so a bundle rebuilt after the agent
+      // spawned reports as unusable rather than speaking for a child still running the previous
+      // build. An operator's own session that never registered our server at all is the case
+      // this cannot see; the transcript fallback is what covers it, and it is why a null here
+      // and a session that simply ignores the tool produce the same recoverable outcome.
+      //
+      // Cached per build identity by `publishedTools`, and warmed at boot by
+      // `reportMissionMcpDrift`, so an ordinary pass pays a `stat` and nothing more.
+      let check;
+      try {
+        check = await verifyMissionMcpToolsForRunningSession(
+          [FILE_COMMENT_REPLY_TOOL],
+          session.startedAt,
+        );
+      } catch {
+        // A probe that cannot answer must never be able to stop a review. `tick` turns an
+        // escaping rejection into a pause with a reason, which would be the wrong outcome
+        // entirely here: this decides one line of the payload, and the tool-less rendering is
+        // a working review rather than a degraded one.
+        return null;
+      }
+      // The fully-qualified name an MCP client namespaces our tool under, resolved through the
+      // one module that owns the server name - so a rename cannot leave the payload naming a
+      // tool no session registers, which is an instruction the loop cannot honour.
+      return check.ok ? missionMcpToolName(FILE_COMMENT_REPLY_TOOL) : null;
+    },
     session: (sessionId) => registry.getSession(sessionId) ?? null,
     review: (sessionId) => loadFileCommentReview(sessionId),
     setReviewState: (sessionId, state, pauseReason) => {
@@ -96,6 +152,53 @@ export function createFileCommentWalkthrough(
     },
     pendingTurn: (sessionId, turnId) =>
       registry.getSession(sessionId)?.pendingTurns.find((turn) => turn.id === turnId) ?? null,
+    agentTurnsSince: (sessionId, since) => {
+      const session = registry.getSession(sessionId);
+      if (!session) return [];
+      // A harness that records no readable conversation (Codex kept none for years) is not a
+      // session that failed to answer - it is a session nothing can be read out of, which is
+      // what an empty read says here.
+      const located = sessionMessages(session);
+      if (!located) return [];
+      let messages;
+      try {
+        // The TAIL only, and bounded: this runs once per timed-out comment, and an answer to a
+        // comment delivered moments ago is at the end of the conversation or nowhere.
+        messages = located.read.window(located.path, 0, FALLBACK_TAIL_TURNS).messages;
+      } catch {
+        return []; // an unreadable transcript is not a session that said nothing
+      }
+      const turns: string[] = [];
+      // Newest first, which is the order the caller reads them in: a thread delivered more
+      // than once wants the agent's latest word on it.
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const message = messages[i]!;
+        if (message.role !== "assistant" || !message.text.trim()) continue;
+        // `ts` is 0 when the record carried no timestamp (see `TranscriptMessage`). Such a turn
+        // cannot be placed against `since` at all, so it is omitted rather than guessed at -
+        // admitting it would put a turn from an earlier delivery into this delivery's window,
+        // which is the one thing this filter exists to prevent.
+        if (message.ts === 0 || message.ts < since) continue;
+        turns.push(message.text);
+      }
+      return turns;
+    },
+    // `appendFileCommentMessage` with `agent`, and nothing else: the fallback recovers a
+    // handle but not reliably the ordinal, so it can confirm no delivery and must move no
+    // status and no queue position.
+    appendAgentReply: (threadId, body) => {
+      const thread = loadFileCommentThread(threadId);
+      if (!thread) return null;
+      appendFileCommentMessage({
+        id: randomUUID(),
+        threadId,
+        author: "agent",
+        sessionId: thread.sessionId,
+        body,
+        now: Date.now(),
+      });
+      return publish(loadFileCommentThread(threadId));
+    },
   };
 
   const walkthrough = new FileCommentWalkthrough(port);

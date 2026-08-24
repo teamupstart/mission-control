@@ -90,6 +90,7 @@ import {
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
   FileCommentReviewControlSchema,
+  RespondToFileCommentsSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
@@ -3398,6 +3399,46 @@ export function buildApp(
     const review = reviews.detachWait(c.req.param("id"), session.id);
     if (!review) return c.json({ error: "no such review for this session" }, 404);
     return c.json({ id: review.id, detached: true });
+  });
+
+  /**
+   * The agent's answer to one line comment. Phase 4's whole door.
+   *
+   * In the `/mcp/reviews` shape - token, `parseBody`, `findSessionByEnv` - and deliberately
+   * NOT behind `requireLoopback`: `/mcp/*` is reached by an MCP child that may not present a
+   * loopback `host`, and the token is the gate there. Non-blocking by construction: it posts
+   * and answers, because an agent must never wait on a human here.
+   *
+   * The session is established BEFORE the handle is resolved, and that order is the whole
+   * safety property: `short_id` is unique per session, so resolving it inside the session
+   * that just authenticated is what stops a reply landing on another session's identically
+   * named thread.
+   */
+  app.post("/mcp/file-comments/replies", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, RespondToFileCommentsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, commentId, body, addressed } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const reply = fileComments!.agentReply(session.id, commentId, body, addressed);
+      // Only a released turn is worth waking the walkthrough for. It advances on its own
+      // timer regardless, so this is what turns "within ten seconds" into "immediately" -
+      // and the walkthrough re-reads everything durably, so nothing is passed to it.
+      if (reply.released) fileCommentWalkthrough?.onCommentAnswered(session.id);
+      return c.json({
+        sessionId: session.id,
+        threadId: reply.thread.id,
+        commentId: reply.thread.shortId,
+        status: reply.thread.status,
+        released: reply.released,
+      });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
   });
 
   app.post("/mcp/status", async (c) => {

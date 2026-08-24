@@ -353,14 +353,14 @@ else:
 
 | `op` | Arguments | Executed as |
 |---|---|---|
-| `read_file` | `path`, `startLine?`, `lineCount?` | `cat-file --batch-check` for type and size, then the blob |
-| `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n` against the snapshot commit |
-| `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z` filtered by the shared matcher |
-| `git_status` | - | `git diff --name-status <headSha> <snapshot>` plus the captured porcelain status |
-| `git_diff` | `path?`, `base?` | `git diff` between the snapshot and `base`, defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of the snapshot; allowlisted before generation |
-| `git_show` | `rev`, `path?` | `git show`; `rev` must be an ancestor of the snapshot; allowlisted before generation, with the commit message fetched separately from the patch |
-| `git_log` | `path?`, `maxEntries?` | `git log --max-count=N --format=<NUL-separated>`; a supplied `path` is validated and denied like any other; no `-p`, `--name-only`, `--name-status` or `--stat` |
-| `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshot> -- <path>` |
+| `read_file` | `path`, `startLine?`, `lineCount?` | `cat-file --batch-check` on `<snapshotOid>:<path>` for type and size, then the blob |
+| `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n <snapshotOid>`; unpinned, `git grep` searches the live working tree |
+| `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z <snapshotOid>` filtered by the shared matcher |
+| `git_status` | - | `git diff --name-status <headSha> <snapshotOid>` plus the captured porcelain status |
+| `git_diff` | `path?`, `base?` | `git diff <base or headSha> <snapshotOid>`, the base defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of `<snapshotOid>`; allowlisted before generation |
+| `git_show` | `rev`, `path?` | `git show <rev>`, where `rev` is proven an ancestor of `<snapshotOid>`; allowlisted before generation, with the commit message fetched separately from the patch |
+| `git_log` | `path?`, `maxEntries?` | `git log <snapshotOid> --max-count=N --format=<NUL-separated>`; unpinned, `git log` walks live `HEAD`; a supplied `path` is validated and denied like any other; no `-p`, `--name-only`, `--name-status` or `--stat` |
+| `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --porcelain <snapshotOid> -- <path>`; unpinned, `git blame` reads the live worktree file |
 
 Every result is `{ ok: true, ... , truncated: boolean }` or
 `{ ok: false, code: RepositoryQueryDenialCode, detail }`, with the denial codes an appended-only
@@ -432,17 +432,25 @@ is an infrastructure failure, exactly as today - never a fail verdict.
 Decision 6 is met by removing the filesystem from the picture and then layering the existing
 defences on what remains.
 
-1. **No filesystem access at all.** Every read is a git object read against one immutable
+1. **Every git invocation names an explicit snapshot-derived revision.** Listed first because
+   omitting one does not fail - it silently reads live state, differently per command. Measured:
+   `git log` walks live `HEAD`, and `git grep` and `git blame` read the live **working tree** rather
+   than any commit, which is the worst case since that directory may have been reset and reassigned
+   to another task; `git cat-file` and `git ls-tree` refuse to run and so fail closed. Three of five
+   silently substitute, two refuse, and a reviewer cannot tell from the response - so the argv for
+   every op spells its revision and a mechanical test over the built argv asserts it, rather than
+   the guarantee resting on prose.
+2. **No filesystem access at all.** Every read is a git object read against one immutable
    commit. Traversal, absolute paths, host files and `.git` internals are structurally absent -
    verified at the git layer, not asserted.
-2. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
+3. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
    absolute, NUL-bearing, and any path with a `.` or `..` segment; reject `.git` as a leading
    segment. Paths are matched as bytes against the tree listing and never normalized, because git
    paths are bytes and a normalization step would make two spellings resolve to one object.
    This is **universal and independent of what the op's output looks like** - the two are separate
    axes, and treating them as one is what once let `git_log -- .env` through: it was filed under an
    output class that filters paths out of results, so nothing checked the path it was handed.
-3. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
+4. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
    `DENY_PATHS` (`src/server/inspector/worker.ts:295`) and **strengthened**: the Inspector
    denies `**/.git/config`, this denies `.git/**` outright, and the list is applied to the
    *results* of `search_text` and `list_paths` as well as to the arguments of `read_file`. A
@@ -451,7 +459,7 @@ defences on what remains.
    lines, so a `Read(...)`-only list protects nothing it names." The measurement above is why
    this layer survives the move to git objects: an untracked, non-ignored `.env` **is** in the
    snapshot tree.
-4. **Every op declares an output class, and a content-bearing one is allowlisted before it is
+5. **Every op declares an output class, and a content-bearing one is allowlisted before it is
    generated rather than filtered after.** Filtering paths out of a result works for an op that
    emits a path beside its own content - drop the line and the content goes with it. It does
    **not** work for `git_diff` or `git_show`, whose output is one blob carrying file content.
@@ -471,18 +479,18 @@ defences on what remains.
    ancestry check - it was a genuine ancestor of the snapshot. Ancestry answers "is this revision
    part of what was submitted"; the denylist answers "may this path be read". Neither substitutes
    for the other.
-5. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
+6. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
    and `160000` as `submodule`. A symlink's blob content is its target string, so serving it as
    file content would hand the reviewer an arbitrary host path under a repository-relative name.
-6. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
+7. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
    an oversize blob is refused as `too_large` before a byte is read; `git grep -I` skips binary
    content (verified).
-7. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
+8. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
    over every broker response. Its own comment makes the trade explicit - "a mangled example is
    a nuisance, a published credential is an incident" - and it applies with more force here,
    because a verdict's evidence quotes can reach a public pull request through the feedback
    packet.
-8. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
+9. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
    (`src/server/review/prompt.ts`), so repository content the reviewer fetched carries the same
    `-untrusted` fence as the diff it came from.
 

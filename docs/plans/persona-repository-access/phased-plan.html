@@ -433,7 +433,7 @@
   easy to reintroduce and neither is caught by the guard that looks like it should catch it:</p>
   <ul>
     <li><strong>Live <code>HEAD</code> standing in for the captured <code>headSha</code></strong> -
-      three separate places (items 10 and 14). The snapshot exists precisely because the checkout is
+      four separate places (items 10, 14 and 18). The snapshot exists precisely because the checkout is
       mutable, so any code path that asks git for <code>HEAD</code> after capture has reintroduced
       the problem the design exists to solve. The captured sha is always in hand; use it. The parent
       assertion on the snapshot commit does <strong>not</strong> detect this, because the parent is
@@ -540,6 +540,17 @@
       are rather than directions to open or read them. Recorded because the miss was the class failure
       above, not a second independent defect: the finding was anchored on a file, so the sweep stopped
       at that file.</li>
+    <li><strong>Every git invocation names an explicit snapshot-derived revision</strong>
+      (Phase 2). <code>git_log</code> carried no revision, so it walked live <code>HEAD</code>;
+      verified, two post-capture commits including one from an unrelated task appeared in its output.
+      Auditing every op rather than just that one turned up why this keeps happening: omitting a
+      revision does not fail, it silently reads live state, and differently per command -
+      <code>git log</code> walks live <code>HEAD</code>, <code>git grep</code> and
+      <code>git blame</code> read the live <em>working tree</em> rather than any commit, while
+      <code>git cat-file</code> and <code>git ls-tree</code> refuse to run. Three silent, two safe,
+      indistinguishable from the response. The pin is now an invariant with a per-op argv table and a
+      mechanical test over the built argv, which is what catches this class - an unpinned log returns
+      a well-formed answer about the wrong commits, so no output assertion notices.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

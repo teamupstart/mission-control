@@ -283,8 +283,8 @@ defect in the artifacts, and every one was fixed without moving an approved deci
 Two patterns repeated often enough to be worth naming for the implementers, because both are easy to
 reintroduce and neither is caught by the guards that look like they should catch it:
 
-- **Live `HEAD` standing in for the captured `headSha`.** Three separate places (reconciliations 10
-  and 14). The snapshot exists precisely because the checkout is mutable, so any code path that asks
+- **Live `HEAD` standing in for the captured `headSha`.** Four separate places (reconciliations 10,
+  14 and 18). The snapshot exists precisely because the checkout is mutable, so any code path that asks
   git for `HEAD` after capture has reintroduced the problem the design exists to solve. The captured
   sha is always in hand; use it. Note that the parent assertion on the snapshot commit does **not**
   detect this, because the parent is passed explicitly.
@@ -383,6 +383,16 @@ reintroduce and neither is caught by the guards that look like they should catch
     encounter it. Both are now statements of where the rendered files are rather than directions to
     open or read them. Recorded here because the miss was the class failure above, not a second
     independent defect: the finding was anchored on a file, so the sweep stopped at that file.
+18. **Every git invocation names an explicit snapshot-derived revision** (Phase 2). `git_log`
+    carried no revision, so it walked live `HEAD`; verified, two post-capture commits including one
+    from an unrelated task appeared in its output. Auditing every op rather than just that one turned
+    up why this keeps happening: omitting a revision does not fail, it silently reads live state, and
+    it does so differently per command - `git log` walks live `HEAD`, `git grep` and
+    `git blame` read the live *working tree* rather than any commit, while `git cat-file` and
+    `git ls-tree` refuse to run. Three silent, two safe, indistinguishable from the response. The
+    pin is now an invariant with a per-op argv table and a mechanical test over the built argv, which
+    is what catches this class - an unpinned log returns a well-formed answer about the wrong commits,
+    so no output assertion notices.
 
 ## Final verification strategy
 

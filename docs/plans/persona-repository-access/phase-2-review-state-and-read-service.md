@@ -326,6 +326,40 @@ Order of checks per query, and the order is the contract:
     assigned. The write happens on **every** exit path including a refusal at step 2 or 3, so a
     denial is as auditable as a success - which is what decision 11 asks for.
 
+### Every git invocation names an explicit snapshot-derived revision
+
+This is an invariant of the reader, not a property of individual ops, and it is stated separately
+because the per-op version of it has now failed four times - `git_diff`'s default base, the cold
+index seed, and `git_log`, all defaulting to live state, plus the `git_show` case where a revision
+was checked but the wrong thing was concluded from it.
+
+The reason it has to be an invariant is that **omitting a revision does not fail; it silently reads
+live state**, and it does so differently per command. Measured:
+
+| Command with no revision | What it actually reads |
+|---|---|
+| `git log` | live `HEAD` - commits made after capture, including another task's work |
+| `git grep` | the live **working tree**, not any commit - the worst case, since that directory may have been reset and handed to a different task |
+| `git blame` | the live worktree file |
+| `git cat-file --batch-check` | treats the input as an object name and answers `missing`. Fails closed. |
+| `git ls-tree` | usage error, refuses to run. Fails closed. |
+
+So three of the five silently substitute live state and two refuse. A reviewer cannot tell the
+difference from the response, and neither could I from my own specification - which is why the
+argv for **every** op now spells its revision, and why a test asserts it rather than a reader
+trusting the prose:
+
+| Op | Revision in its argv |
+|---|---|
+| `read_file` | `<snapshotOid>:<path>` |
+| `search_text` | `<snapshotOid>` |
+| `list_paths` | `<snapshotOid>` |
+| `git_status` | `<headSha> <snapshotOid>` |
+| `git_diff` | `<base or headSha> <snapshotOid>` |
+| `git_show` | `<rev>`, proven an ancestor of `<snapshotOid>` |
+| `git_log` | `<snapshotOid>` |
+| `git_blame` | `<snapshotOid>` |
+
 **Every caller-supplied revision is constrained to the snapshot's ancestry.** `git_show`'s `rev`
 and `git_diff`'s `base` each pass only when `merge-base --is-ancestor <rev> <snapshotOid>` succeeds,
 and are otherwise refused as `unsupported_rev`. Without that check a revision is an arbitrary
@@ -518,6 +552,17 @@ look viable.
   `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
   that file's content or path. A test that only checks the code would still pass if the
   implementation refused after running the diff.
+- **The revision-pin test, table-driven over every op.** Build each op's argv and assert it contains
+  a snapshot-derived revision. This is a mechanical check on the argv rather than a behavioural one,
+  deliberately: it is what would have caught `git_log` shipping with no revision at all, which no
+  amount of output assertion does, because an unpinned log returns a perfectly well-formed answer
+  about the wrong commits.
+- **The live-state regression, per op that can silently fall back.** After capture, advance the
+  checkout - commit twice more and edit the worktree - then assert `git_log`, `search_text` and
+  `git_blame` still answer about the snapshot: the log does not list the post-capture commits, the
+  search does not match the uncommitted worktree edit, and blame does not attribute it. Each of the
+  three defaults to a different flavour of live state, so all three need the assertion rather than
+  one standing in for the others.
 - **The universal input-validation test, table-driven over every op that accepts a path or glob.**
   Feed each one a denied path (`.env`, `k/id_rsa`, `.git/config`) and assert `sensitive_path`, and
   feed each one a traversal (`../etc/passwd`) and assert `path_invalid`. Driven off the op list
@@ -722,3 +767,14 @@ Phase 3 may rely on, and must not change:
   subject is `add .env with the prod credentials`. No path-shaped rule filters an author's sentence,
   and that is the same boundary already recorded for the rename case, so the finding's broader
   framing is answered by stating the limit rather than by claiming to have closed it.
+- **Reconciliation record, review round 11.** `git_log`'s argv carried no revision, so it walked live
+  `HEAD`. Verified: after capture, two further commits - including one belonging to an unrelated task
+  - appeared in its output, which is a straight breach of the exact-state boundary. Fixed, but the
+  useful part was auditing **every** op's argv instead of only this one, which turned up that
+  omitting a revision silently reads live state for `git log`, `git grep` and `git blame` (the last
+  two read the live *working tree*, not any commit) while `git cat-file` and `git ls-tree` fail
+  closed. Three silent, two safe, and no way to tell from the response - so the revision pin is now
+  an invariant with a table of every op's argv and a mechanical test over it, plus a live-state
+  regression for each of the three that can fall back. That test is what would have caught this,
+  because an unpinned log returns a well-formed answer about the wrong commits and no output
+  assertion notices.

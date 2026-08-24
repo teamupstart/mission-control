@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persona repository access - phased implementation</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1d1f24; --muted: #5c6370; --line: #e3e0da;
+    --card: #ffffff; --code-bg: #f1efe9; --accent: #7154c0; --accent-2: #1d7f6e;
+    --warn: #a05a1c; --box: #f6f4ef; --box-line: #cfcac0;
+    --new: #e9f4f1; --new-line: #9cc9bd; --old: #f3eee4; --old-line: #d4c6a6;
+    --danger: #b3261e; --danger-bg: #fbecea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --fg: #e6e4df; --muted: #9aa0ab; --line: #2c2f36;
+      --card: #1c1f25; --code-bg: #22252c; --accent: #a98ff0; --accent-2: #5cc3ab;
+      --warn: #d99a55; --box: #20232a; --box-line: #3a3e47;
+      --new: #1b2a27; --new-line: #35695c; --old: #292620; --old-line: #5c5340;
+      --danger: #f2b8b5; --danger-bg: #2a1d1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .3rem; letter-spacing: -.02em; }
+  .subtitle { color: var(--muted); margin: 0 0 2.2rem; max-width: 48rem; }
+  h2 { font-size: 1.35rem; margin: 2.8rem 0 .8rem; letter-spacing: -.01em;
+       border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: 1.08rem; margin: 1.9rem 0 .5rem; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .86em;
+  }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--box); }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--card);
+    border-radius: 0 8px 8px 0; padding: .8rem 1.1rem; margin: 1.2rem 0;
+  }
+  .callout.win { border-left-color: var(--accent-2); }
+  .callout.risk { border-left-color: var(--warn); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  figure { margin: 1.6rem 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: .8rem; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  svg text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .grp { font-size: 12px; font-weight: 600; fill: var(--muted); }
+  svg rect.node { fill: var(--box); stroke: var(--box-line); }
+  svg rect.newn { fill: var(--new); stroke: var(--new-line); }
+  svg rect.zone { fill: none; stroke: var(--line); stroke-dasharray: 4 4; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .good { stroke: var(--accent-2); stroke-width: 1.6; }
+  ol li, ul li { margin: .3rem 0; }
+  .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; color: var(--muted); margin: 0 0 .4rem; }
+  .files { list-style: none; padding: 0; }
+  .files li { border: 1px solid var(--line); border-radius: 8px; padding: .7rem .9rem; margin: .5rem 0; background: var(--card); }
+  .files code { background: none; padding: 0; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">docs/plans/persona-repository-access/phased-plan.md</p>
+  <h1>Persona repository access - phased implementation</h1>
+  <p class="subtitle">
+    Three merge units. The phase files beside this one are the authoritative per-phase
+    instructions; a scheduled task carries their paths, not their content.
+    Source plan: <code>plan.md</code> (rendered at <code>plan.html</code>).
+  </p>
+
+  <h2>Incorporated decisions</h2>
+  <p>Every product and architecture decision below arrived approved with the request. This plan
+  implements them; none is re-opened, and none was presented back to the operator for
+  confirmation.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Decision</th><th>Selection</th><th>Owning phase</th></tr></thead>
+    <tbody>
+      <tr><td>Where access is configured</td><td>Separately on each Persona</td><td>1</td></tr>
+      <tr><td>Provider coverage</td><td>Claude and Codex receive equivalent capabilities</td><td>3</td></tr>
+      <tr><td>Mechanism</td><td>Provider-neutral interactive query broker; ai-harness executes and audits</td><td>2 (ops) + 3 (loop)</td></tr>
+      <tr><td>Capability set</td><td>read, search, glob, plus server-owned status, diff, show, log, blame</td><td>2</td></tr>
+      <tr><td>Excluded</td><td>shell, writes, network, direct unrestricted provider tools</td><td>2 and 3 (as non-goals)</td></tr>
+      <tr><td>Sensitive paths</td><td>preserved or strengthened</td><td>2</td></tr>
+      <tr><td>Repository view</td><td>exact submitted state, including staged, unstaged and untracked</td><td>2</td></tr>
+      <tr><td>Unavailable</td><td>block and retry; never fall back to prompt-only</td><td>3 (Phase 2 records the state)</td></tr>
+      <tr><td>Publication</td><td>frozen into the Persona snapshot at publish</td><td>1</td></tr>
+      <tr><td>Built-ins</td><td>immutable guidance/runner/model, local access override allowed</td><td>1</td></tr>
+      <tr><td>Auditability</td><td>operations, denials, truncation and failures recorded</td><td>2 (record) + 3 (surface)</td></tr>
+      <tr><td>Limits</td><td>per-operation, per-round, per-attempt; no single global character cap</td><td>2 (values) + 3 (round budget)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Repository findings that shaped the phases</h2>
+  <p>Verified against the worktree at planning time; implementers re-verify. Three findings decided
+  the shape, and each is the reason a phase exists where it does.</p>
+
+  <div class="callout risk">
+    <p><strong>A pooled worktree can be reset underneath a running review.</strong>
+    <code>nativeWorktreeOwnerReferenced</code> (<code>src/server/worktrees/owners.ts:18</code>) has no
+    <code>workflow_runs</code> clause, and task teardown releases with
+    <code>ownerAuthorized: true</code> (<code>src/server/dispatcher.ts:2027</code>), which skips the
+    domain check and leaves only process occupancy - which a server-side review does not have.
+    <code>src/server/workflows/manager.ts:1163</code> already records the consequence in prose. So the
+    review's repository view cannot be a directory. It is a snapshot commit in the repository's shared
+    object database, and that is Phase 2's core.</p>
+  </div>
+
+  <div class="callout risk">
+    <p><strong>No provider offers a second turn, and one of them offers no tool grant at all.</strong>
+    <code>runInThread</code> is <code>null</code> on both runners; the default Claude transport pins
+    <code>maxTurns: 1</code> for the Persona shape; <code>codex exec</code> is one turn by
+    construction; <code>codexRunner.sandbox</code> is <code>null</code> so every grant is refused;
+    <code>LlmRunOptions</code> has no field for a tool definition or an MCP server, and no headless
+    path passes an MCP flag. Parity is therefore impossible through native tools and trivial through a
+    server-owned loop over <code>run(prompt)</code>. That is Phase 3's core, and it is why the
+    approved broker decision is also the only workable one.</p>
+  </div>
+
+  <div class="callout risk">
+    <p><strong><code>PersonaSnapshotSchema</code> is a strip-mode <code>z.object</code> whose every
+    key is required.</strong> A new field must carry <code>.default("off")</code>, which is
+    simultaneously the backward-compatibility mechanism and the enforcement of &ldquo;later Persona
+    edits affect only newly published versions&rdquo;. That single choice is the highest-risk edit in
+    the feature and is why Phase 1 exists as its own merge unit.</p>
+  </div>
+
+  <p>Supporting findings, each cited in the phase that consumes it:</p>
+  <ul>
+    <li>A built-in Persona is not a row; immutability is enforced in three store methods, and
+      <code>workflow_commands</code>/<code>workflow_command_overrides</code> is the repository's own
+      precedent for a sidecar override table keyed by an immutable identity.</li>
+    <li><code>publishBuiltinGraph</code> runs at module load and cannot read the database, so built-in
+      workflow versions freeze <code>off</code>. Duplicate-the-workflow is the documented route,
+      matching the product's existing Duplicate-to-customize rule.</li>
+    <li><code>handleInfrastructureFailure</code> already provides the retry ladder and the blocked-run
+      terminus, and <code>CHECK_CLEANUP_UNRESOLVED_PHASE</code> is the precedent for a distinct phase
+      with a distinct remedy.</li>
+    <li>The attempt's <code>StructuredAttemptObserver</code> already writes a per-call
+      <code>workflow_llm_calls</code> row and already refuses to start a call after cancellation
+      - the accounting and cancellation seams a round loop needs.</li>
+    <li><strong>Measured:</strong> seeding a temp index from the live one makes exact-state
+      materialization <strong>34&nbsp;ms</strong> (2,633 paths) against 729&nbsp;ms cold, leaves the
+      worktree and live index untouched, and the pinning ref lands in the <strong>common</strong>
+      <code>.git</code> so it survives release, removal and <code>gc</code>.</li>
+    <li><strong>Measured:</strong> <code>git ls-tree</code> does <strong>not</strong> support
+      <code>:(glob)</code> pathspec magic (<code>git grep</code> does), and there is no glob dependency
+      in <code>package.json</code> - so the glob matcher is a small audited function, not a
+      library and not two different semantics.</li>
+    <li><strong>Measured:</strong> <code>git add -A</code> respects <code>.gitignore</code>, but an
+      untracked non-ignored <code>.env</code> is in the snapshot tree. Moving to git objects removes
+      the filesystem from the trust boundary; it does not remove the need for a sensitive-path
+      denylist.</li>
+  </ul>
+
+  <p>Two discrepancies between the request's starting surfaces and the code, recorded rather than
+  carried forward:</p>
+  <ul>
+    <li><code>ServerEvent</code> is in <code>src/shared/types.ts:2860</code>, not
+      <code>src/shared/protocol.ts</code>. It needs no change: <code>persona_upsert</code> already
+      carries a <code>PersonaView</code>.</li>
+    <li><code>src/server/inspector/</code> is a <em>reference</em>, not a target. The Inspector is the
+      precedent for a review holding repository tools, and its <code>DENY_PATHS</code> seeds the
+      denylist - but its grant cannot be reused, and this feature changes no Inspector
+      behaviour.</li>
+  </ul>
+
+  <h2>Sizing and phase count</h2>
+  <p><strong>Estimated gross non-test implementation lines: 2,100 - 2,700</strong>, counting
+  production code added or materially changed across shared contracts, persistence, server modules
+  and browser code, and excluding tests and documentation prose.</p>
+  <p>Assumptions behind the estimate: this repository's comment density is high and load-bearing (the
+  schema, migration and runner contracts all carry their rationale inline), so line counts run roughly
+  1.5&times; what the same logic would be elsewhere; the eight typed operations are the largest single
+  block; and no new dependency is added.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Area</th><th>Estimate</th></tr></thead>
+    <tbody>
+      <tr><td>Shared contracts (<code>workflow.ts</code>, <code>protocol.ts</code>, <code>repository-query.ts</code>, <code>review.ts</code>)</td><td>300 - 380</td></tr>
+      <tr><td>Persistence (<code>db.ts</code> columns, tables, migrations)</td><td>60 - 90</td></tr>
+      <tr><td>Store (row schemas, resolver, override CRUD, snapshot columns, audit)</td><td>320 - 400</td></tr>
+      <tr><td>Routes and manager</td><td>80 - 110</td></tr>
+      <tr><td>Review-state materialization and retention</td><td>200 - 260</td></tr>
+      <tr><td>The eight typed operations, validation, denial, bounds</td><td>420 - 520</td></tr>
+      <tr><td>Broker loop, engine wiring, blocked phase, prompt</td><td>380 - 470</td></tr>
+      <tr><td>Browser (Persona Editor chip and control, api, run detail)</td><td>340 - 470</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>Well above the 200-line one-phase threshold, so more than one phase is permitted. The default is
+  still one phase, and each additional boundary has to earn itself:</p>
+  <ul>
+    <li><strong>Phase 1 exists separately</strong> because it is the only phase that touches persisted
+      Persona state, published-version compatibility and built-in immutability - three surfaces
+      where a mistake is silent and durable. <code>PersonaSnapshotSchema</code>'s
+      <code>.default("off")</code> decides whether every existing published version keeps parsing, and
+      the built-in override has to thread past three refusals that currently reject before looking at
+      any field. Combining it with the broker would bury that compatibility argument inside a
+      1,600-line diff whose interesting parts are elsewhere. It also leaves the repository in a
+      genuinely useful state on its own: an operator can configure and publish the setting, and no
+      review behaviour changes.</li>
+    <li><strong>Phase 2 exists separately</strong> because it is the feature's entire security
+      surface, and it can be proven without a model. Its adversarial tests - traversal in every
+      position, a denied path reached only through a search <em>result</em>, a symlink out of the tree,
+      a non-ancestor revision - are the reason the boundary is here: they get reviewed against
+      the code that enforces them, before anything can point a reviewer at it. Folded into Phase 3,
+      the same review would arrive alongside a round loop, a prompt change, a provider-parity argument
+      and a UI surface, and the eight validation orderings would be the least-read part of it.</li>
+    <li><strong>Phase 3 exists separately</strong> because it is the behaviour change, and because it
+      is the only phase that can be wrong in a way tests catch loudly rather than quietly. Its risks
+      - does the loop terminate, does cancellation land, does a failure become a verdict -
+      are dynamic, not structural.</li>
+    <li><strong>No fourth phase.</strong> Documentation, migration compatibility and observability
+      live with the behaviour that introduces them. There is no test-only or docs-only phase.</li>
+  </ul>
+  <p>Why not fewer: Phases 2 and 3 combined would be ~1,300 - 1,600 lines spanning twelve files
+  and two distinct risk classes (&ldquo;can a crafted path escape the tree&rdquo; and &ldquo;does this
+  loop terminate&rdquo;). Why not more: no smaller unit leaves the repository operable. A phase that
+  shipped only the query contract, or only the snapshot, would be a dead surface with nothing to
+  exercise it.</p>
+
+  <h2>Phases</h2>
+  <ul class="files">
+    <li><code>phase-1-persona-access-setting.md</code> - the setting, its storage, its
+      publication contract, and the Persona Editor. <strong>Direct dependencies: none.</strong></li>
+    <li><code>phase-2-review-state-and-read-service.md</code> - exact review-state
+      materialization, the eight typed operations, and the audit record.
+      <strong>Direct dependencies: none.</strong></li>
+    <li><code>phase-3-interactive-broker.md</code> - the broker loop, provider parity, retry and
+      blocking, prompt, and run detail. <strong>Direct dependencies: 1 and 2.</strong></li>
+  </ul>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 760 224" width="760" height="224" role="img"
+           aria-label="Dependency graph: the planning pull request merge releases Phase 1 and Phase 2, which run concurrently in either order; Phase 3 depends on both.">
+        <rect class="node" x="10" y="80" width="150" height="50" rx="7"/>
+        <text x="85" y="101" text-anchor="middle">planning PR</text>
+        <text class="lbl" x="85" y="117" text-anchor="middle">merges the artifacts</text>
+
+        <rect class="node newn" x="240" y="20" width="220" height="56" rx="7"/>
+        <text x="350" y="42" text-anchor="middle">Phase 1</text>
+        <text class="lbl" x="350" y="60" text-anchor="middle">setting + snapshot + editor</text>
+
+        <rect class="node newn" x="240" y="132" width="220" height="56" rx="7"/>
+        <text x="350" y="154" text-anchor="middle">Phase 2</text>
+        <text class="lbl" x="350" y="172" text-anchor="middle">exact state + read service + audit</text>
+
+        <rect class="node newn" x="545" y="76" width="205" height="58" rx="7"/>
+        <text x="647" y="99" text-anchor="middle">Phase 3</text>
+        <text class="lbl" x="647" y="116" text-anchor="middle">broker + parity + prompt + UI</text>
+
+        <path class="arrow" d="M160 96 H200 V48 H236" marker-end="url(#a3)"/>
+        <path class="arrow" d="M160 114 H200 V160 H236" marker-end="url(#a3)"/>
+        <path class="arrow good" d="M460 48 H500 V96 H541" marker-end="url(#g3)"/>
+        <path class="arrow good" d="M460 160 H500 V114 H541" marker-end="url(#g3)"/>
+
+        <rect class="zone" x="228" y="8" width="244" height="192" rx="10"/>
+        <text class="grp" x="350" y="218" text-anchor="middle">concurrent - either merge order</text>
+
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="g3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent-2)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+    <figcaption>Phases 1 and 2 may execute and merge at the same time, in either order. Phase 3 starts
+    when both have merged. Merge order is any of <code>1, 2, 3</code> or <code>2, 1, 3</code>.</figcaption>
+  </figure>
+
+  <h2>Cross-phase contracts</h2>
+  <h3>Established by Phase 1, consumed by Phase 3</h3>
+  <ul>
+    <li><code>PERSONA_REPOSITORY_ACCESS_MODES</code> / <code>DEFAULT_PERSONA_REPOSITORY_ACCESS</code>,
+      appended-only, with <code>off</code> meaning &ldquo;absent&rdquo; everywhere.</li>
+    <li><code>Persona.repositoryAccess</code> is the <strong>resolved</strong> value, so no consumer
+      merges overrides again.</li>
+    <li><code>PersonaSnapshot.repositoryAccess</code> is non-optional after parse, via
+      <code>.default(DEFAULT_PERSONA_REPOSITORY_ACCESS)</code> on the schema.</li>
+    <li><code>personaSnapshotOf</code> stays the single projection; <code>publishWorkflow</code> stays
+      one transaction reading both catalogs inside it.</li>
+    <li>The setting lives <strong>outside</strong> the editor draft:
+      <code>PERSONA_DRAFT_FIELDS</code>, <code>personaUpdatePatch</code> and
+      <code>reconcilePersonaSave</code> are unchanged.</li>
+  </ul>
+  <h3>Established by Phase 2, consumed by Phase 3</h3>
+  <ul>
+    <li><code>RepositoryQuery</code>, <code>RepositoryQueryResult</code>,
+      <code>REPOSITORY_DENIAL_CODES</code>, <code>REPOSITORY_QUERY_LIMITS</code>,
+      <code>matchesRepositoryGlob</code>, <code>REPOSITORY_DENY_GLOBS</code>.</li>
+    <li><code>createRepositoryReader(...).execute(query)</code> as the <strong>only</strong> way to
+      reach the repository. The reader owns validation, denial, mode classification, bounds, scrubbing
+      and the audit write, so Phase 3 never re-implements a check and never writes an audit row
+      itself.</li>
+    <li><code>unavailable</code> as the only denial code meaning infrastructure.</li>
+    <li><code>WorkflowSubmission.reviewSnapshotOid</code> / <code>.reviewSnapshotRepoRoot</code>,
+      nullable, with null meaning &ldquo;no exact state is available&rdquo;.</li>
+    <li><code>refs/mission-control/review-snapshots/&lt;submissionId&gt;</code> and its retention
+      owner.</li>
+  </ul>
+  <h3>Established by Phase 3</h3>
+  <ul>
+    <li><code>PersonaReviewReply</code> and its bare-verdict tolerance, which is what keeps an
+      access-off review on the historical prompt and parse path.</li>
+    <li><code>REPOSITORY_ACCESS_UNAVAILABLE_PHASE</code> and its <code>BLOCKED_PHASE_CLAUSES</code>
+      label.</li>
+    <li><code>workflow_llm_calls.round</code>, distinct from <code>attempt</code> (the parse-retry
+      attempt within a round).</li>
+  </ul>
+
+  <h3>Ownership, stated because each is a plausible collision point</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Concern</th><th>Owner</th><th>Not touched by</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/shared/workflow.ts</code> Persona types</td><td>1</td><td>2, 3</td></tr>
+      <tr><td><code>src/shared/repository-query.ts</code></td><td>2</td><td>1</td></tr>
+      <tr><td><code>PersonaSnapshotSchema</code></td><td>1</td><td>2, 3</td></tr>
+      <tr><td><code>personas</code>, <code>persona_access_overrides</code></td><td>1</td><td>2, 3</td></tr>
+      <tr><td><code>workflow_submissions</code> snapshot columns, <code>workflow_repository_queries</code></td><td>2</td><td>1, 3 (writes rows only)</td></tr>
+      <tr><td><code>workflow_llm_calls.round</code></td><td>3</td><td>1, 2</td></tr>
+      <tr><td><code>reviewContract</code>, <code>buildPersonaPrompt</code></td><td>3</td><td>1, 2</td></tr>
+      <tr><td><code>personas/*.md</code> and the generated module</td><td>3</td><td>1, 2</td></tr>
+      <tr><td>Persona Editor</td><td>1</td><td>2, 3</td></tr>
+      <tr><td>Run detail</td><td>3</td><td>1, 2</td></tr>
+      <tr><td>Retry ladder and blocked phases</td><td>3</td><td>1, 2</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Final cross-phase audit</h2>
+  <p>Performed over the complete set after the last phase file was written.</p>
+  <ul>
+    <li><strong>Every approved decision is owned by exactly one phase.</strong> Checked against the
+      twelve-row decision table; there is no decision without an owner and none with two. The three
+      decisions split across phases (broker mechanism, auditability, limits) are split along a stated
+      seam - Phase 2 owns the operations, the values and the record; Phase 3 owns the loop, the
+      round budget and the surface - and each phase file names its half and its non-goals.</li>
+    <li><strong>Every consumer follows its prerequisite.</strong> Phase 3 consumes only contracts
+      Phase 1 and Phase 2 establish, and both are direct dependencies. Neither Phase 1 nor Phase 2
+      reads anything the other writes: Phase 1's reader takes a Persona, Phase 2's reader takes a
+      snapshot oid.</li>
+    <li><strong>Concurrent phases can merge in either order.</strong> Phases 1 and 2 both append to
+      <code>src/server/db.ts</code> (boot block and <code>migrate()</code>) and add methods to
+      <code>src/server/workflows/store.ts</code>. Every schema statement is
+      <code>CREATE TABLE IF NOT EXISTS</code>, <code>CREATE INDEX IF NOT EXISTS</code> or
+      <code>addColumn</code>, all idempotent and order-independent, so the composed schema is identical
+      under either order and under a single upgrade that spans both. The expected conflict is textual
+      adjacency in two append-only regions, resolved by keeping both hunks; there is no semantic
+      conflict, and neither phase's tests read the other's tables.</li>
+    <li><strong>The final state matches the source plan without undocumented cleanup.</strong> Walked
+      the plan's ten design sections against the phase files: the setting (1), snapshot and publication
+      (1), exact review state (2), broker protocol (2 for ops, 3 for envelope), the round loop (3),
+      security model (2 for enforcement, 3 for prompt-side framing), retry and blocking (3), Persona
+      Editor (1), limits (2 for values, 3 for round budget), audit and observability (2 for record, 3
+      for surface). Nothing in the plan is unassigned, and no phase depends on a later phase to repair
+      a knowingly broken state.</li>
+  </ul>
+
+  <h3>Reconciliations made while writing the later phases</h3>
+  <p>Each is already appended to the affected file's audit record.</p>
+  <ol>
+    <li><code>REPOSITORY_QUERY_LIMITS</code> carries <code>maxRounds</code> and
+      <code>maxQueriesPerRound</code> in Phase 2 even though only Phase 3 consumes them. One budget
+      belongs in one file; splitting it would let the halves drift. Phase 2's tests exercise them, so
+      they are not dead.</li>
+    <li>Snapshot-creation failure is <strong>non-fatal</strong> in Phase 2 and <strong>fatal</strong>
+      in Phase 3 for an access-enabled Persona. Inverting it would let a feature nobody enabled fail
+      existing runs the moment Phase 2 merged. The asymmetry is stated in both files.</li>
+    <li>The publish-time published-graph byte guard was placed in Phase 1, not Phase 3, because Phase
+      1 is the phase that widens the published snapshot; a guard added later would leave a window in
+      which the field shipped without it.</li>
+    <li>The built-in Persona Markdown correction and the <code>reviewContract</code> access-on variant
+      were moved out of Phase 1 into Phase 3. Both change what a reviewer is told, and Phase 1 changes
+      no review behaviour; landing them early would also fire the outdated-snapshot signal on built-ins
+      a phase before anything justified it.</li>
+    <li>The attempt-wide wall-clock budget is Phase 3's, not Phase 2's: it is a property of the loop,
+      not of a read. <code>PERSONA_TIMEOUT_MS</code> keeps its existing meaning as a per-call budget so
+      no single-call review changes.</li>
+  </ol>
+
+  <h2>Final verification strategy</h2>
+  <p>Each phase runs <code>npm test</code>, <code>npm run typecheck</code>, <code>npm run lint</code>,
+  <code>npm run build</code> and <code>npm run smoke</code>; Phases 1 and 3 additionally run
+  <code>npm run test:e2e</code> because they change UI surfaces. Focused single-file runs use the
+  suite's loader preamble (<code>--import ./test/setup-state.mjs --import tsx</code>), which is not
+  optional.</p>
+  <p>After Phase 3 merges, three properties are the ones worth re-checking end to end, because each
+  spans phases and no single phase's tests can assert it alone:</p>
+  <ol>
+    <li><strong>An access-off Persona is byte-identical to before the feature.</strong> Prompt string,
+      parse path, provider options, and both capture fingerprints. This is what makes the feature safe
+      to ship to installations that never enable it.</li>
+    <li><strong>An access-on Persona never returns a verdict without the repository.</strong> Exercised
+      through the browser with the snapshot removed, ending in
+      <code>repository_access_unavailable</code> after the retry ladder.</li>
+    <li><strong>Claude and Codex produce the same review capability.</strong> The same fixture change,
+      the same Persona, both runners, the same operation set reaching the reader - the regression
+      test for the parity decision, and the one that would catch a future change reintroducing a
+      provider grant.</li>
+  </ol>
+</main>
+</body>
+</html>

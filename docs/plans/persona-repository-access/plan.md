@@ -4,6 +4,8 @@ Status: Approved for phased implementation
 Repository: `ai-harness`
 Implementation scope: planning only in this task
 
+Supersession: This Markdown source replaces the daemon-side broker design from planning PR #770. The approved architecture is the local repository MCP and portable exact-state artifact described below; the earlier implementation tasks were cancelled and must not be revived.
+
 ## Outcome
 
 Allow an operator to enable read-only access to the complete submitted Git worktree on an individual Workflow Persona. During a review, either a Claude or Codex Persona runs once inside an isolated review workload and makes multiple typed repository queries through a local MCP repository server before returning its verdict. The MCP server reads a portable immutable representation of the exact submitted checkout, applies one provider-neutral security policy, and records an audit event for every operation, denial, truncation, cancellation, and failure.

@@ -82,7 +82,7 @@ Apply these rules:
 Number phase files in a topological presentation order. Numbering does not imply serialization:
 independent `phase-2-*` and `phase-3-*` files may both depend only on Phase 1 and run concurrently.
 
-### A phase that has to land in more than one repository
+### A phase that targets or lands in another repository
 
 Nearly every plan lives in one repository and every phase produces one pull request; that is the
 case above and it is unchanged. Occasionally a phase cannot be made operable inside one
@@ -93,16 +93,23 @@ repository it actually changed**; the phase is done when all of them have merged
 the task waits for. Do not split such a phase into one task per repository: that is two agents
 editing two halves of one contract with no shared context, and each half is unreviewable alone.
 
-Two consequences for the plan you are writing:
+Resolve each phase's repository set while writing the plan:
 
 - Say so in the phase file. Name every repository the phase touches, and state per repository what
   lands there and what breaks if it merges without its siblings. The phase's exit criteria cover
   the whole set.
-- **You cannot schedule it here.** `create_task` files a task in the calling session's repository
-  only. A multi-repo phase must be dispatched from the dashboard with its repositories attached, so
-  schedule the phases you can, and report the multi-repo one by name with the repositories it needs
-  so the human dispatches it deliberately. Never quietly file it as a single-repo task: it would
-  dispatch an agent that can see one side of the change.
+- A phase implemented only in the source-plan repository omits `repository`; current-repository
+  behavior remains the default.
+- A phase implemented only in repository B sets B as `repository`. When its plan files live in
+  source repository A, add A to `additionalRepositories`, mark A context-only in the phase file and
+  task intent, and require no changes there. The attachment makes the published plan paths readable
+  without turning context into implementation scope.
+- An inseparable A+B phase is one task with a deliberate primary in `repository` and the remaining
+  repositories in `additionalRepositories`. It still opens one pull request per repository it
+  actually changes and completes only after all of those pull requests merge.
+- Selectors may be absolute local checkout paths or unique repository directory names. Never guess
+  between duplicate names, fall back to A, or omit an attachment after a resolution or capability
+  refusal.
 
 ## Write the artifacts beside the source plan
 
@@ -171,7 +178,8 @@ not resolve carries no instructions at all.
 
 Then use the Mission Control MCP tool `create_task` once per phase, in the same topological order as
 the index. The tool deliberately creates a ship task in the backlog with the default agent and no
-model or effort override.
+model or effort override. Its result echoes the canonical primary and attached repository paths;
+check those paths against the phase before creating anything that depends on the task.
 
 For a one-shot plan, create exactly one task for Phase 1. Keep the normal index, phase file, task
 pointers, publication gate, and verification contract; one-shot changes the execution count, not the
@@ -228,6 +236,14 @@ For each call:
 - Keep implementation detail out of the task text. Do not embed the phase Markdown, file inventories,
   numbered step lists, schema or API definitions, or acceptance checklists. Those live in the phase
   file, which the agent reads.
+- Set `repository` and `additionalRepositories` from the phase's repository analysis:
+  - omit both for work wholly in the source-plan repository;
+  - for B-only work whose plan lives in A, set B as primary and attach A as context-only;
+  - for inseparable multi-repository work, choose the primary deliberately and attach every other
+    repository the implementation must change.
+- Confirm the canonical repository set returned by `create_task` matches the intended set. A short
+  name can be accepted only when Mission Control finds exactly one local repository with that
+  directory name.
 - Set `dependsOnTaskIds` to the returned task ids of that phase's direct prerequisites. Do not flatten
   the graph into a serial chain. Parallel phases should share prerequisites and not depend on one
   another.
@@ -254,9 +270,25 @@ A well-formed `intent` reads like a person asking for the feature:
 > scheduling UI and the catalog. Run the verification that phase file specifies, then open a
 > reviewable pull request - its merge releases the dependent phase tasks.
 
-If task creation fails, stop creating tasks that depend on it. Report the failure and every task id
-already created; never recreate successful tasks speculatively, because duplicate implementation
-tasks are worse than an incomplete graph.
+For a phase implemented in `docs-site` whose plan files live in `mission-control`, the corresponding
+call keeps the same concise intent and adds repository scope rather than copying the phase document:
+
+```text
+create_task({
+  title: "Implement Documentation Publishing - Phase 2: Render published guides",
+  intent: "Render the approved guides in docs-site. Read docs/plans/documentation-publishing/plan.md, docs/plans/documentation-publishing/phased-plan.md, and docs/plans/documentation-publishing/phase-2-render-published-guides.md in the attached mission-control checkout first. The phase file is the proposed route, not a specification; adapt with judgement and record deviations in the pull request. Mission-control is context-only and must not be changed. Implement only Phase 2, preserve its contracts, run its verification, and open the reviewable docs-site pull request.",
+  repository: "docs-site",
+  additionalRepositories: ["mission-control"],
+  dependsOnTaskIds: ["<phase-1-task-id>"],
+  dependsOnCurrentSession: true,
+})
+```
+
+If repository resolution, harness capability validation, or task creation fails, stop creating tasks
+that depend on it. Report the unscheduled phase, the exact failure, and every task id already
+created. Never fall back to the source repository, drop an attachment, or recreate successful tasks
+speculatively, because a wrongly scoped or duplicate implementation task is worse than an incomplete
+graph.
 
 ## Ship the artifacts and watch the pull request
 

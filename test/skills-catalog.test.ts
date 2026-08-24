@@ -294,6 +294,14 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(text, /dependsOnTaskIds/);
   assert.match(text, /dependsOnCurrentSession` to `true` on every call/);
   assert.match(text, /Do not flatten\s+the graph into a serial chain/);
+  assert.match(text, /repository` and `additionalRepositories/);
+  assert.match(text, /B as `repository`/);
+  assert.match(text, /context-only/);
+  assert.match(text, /canonical repository set returned by `create_task`/);
+  assert.match(text, /Report the unscheduled phase/);
+  assert.match(text, /Never fall back to the source repository, drop an attachment/);
+  assert.doesNotMatch(text, /You cannot schedule it here/);
+  assert.doesNotMatch(text, /must be dispatched from the dashboard/);
 
   // Small work stays one-shot even when it crosses layers. Larger work is split only when the
   // effort, complexity, and execution order make another merge unit safer for a mid-tier model.
@@ -321,7 +329,12 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.ok(start >= 0 && end > start, "create_task should be registered before request_input");
   const tool = mcp.slice(start, end);
   assert.match(tool, /dependsOnCurrentSession/);
-  assert.match(tool, /http\("\/mcp\/tasks"/);
+  assert.match(tool, /repository:/);
+  assert.match(tool, /additionalRepositories:/);
+  assert.match(tool, /MAX_TASK_EXTRA_REPOS/);
+  assert.match(tool, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
+  assert.match(tool, /res\.status === 404/);
+  assert.doesNotMatch(tool, /404[\s\S]*http\("\/mcp\/tasks"/, "selectors never retry legacy");
   assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
   assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
 });

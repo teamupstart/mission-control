@@ -157,6 +157,29 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
 });
 
+test("create_task publishes bounded repository selectors and never falls back to legacy", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const start = source.indexOf('server.registerTool(\n  "create_task"');
+  const end = source.indexOf("// This is the replacement", start);
+  assert.ok(start >= 0 && end > start, "the create_task registration is present");
+  const registration = source.slice(start, end);
+
+  assert.match(registration, /repository: z/);
+  assert.match(registration, /additionalRepositories: z/);
+  assert.match(registration, /\.max\(MAX_TASK_EXTRA_REPOS\)/);
+  assert.match(registration, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
+  assert.match(registration, /targetRepository: repository/);
+  assert.match(registration, /res\.status === 404/);
+  assert.match(registration, /no task was created/);
+  assert.doesNotMatch(
+    registration,
+    /res\.status === 404[\s\S]*http\("\/mcp\/tasks"/,
+    "a selector-bearing call must not be retried after an old daemon's 404",
+  );
+  assert.match(registration, /repository: task\.repoRoot/);
+  assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
+});
+
 test("product issue registration requires public confirmation and empty attachments", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const start = source.indexOf('server.registerTool(\n  "report_product_issue"');

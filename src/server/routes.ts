@@ -47,6 +47,8 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpCreateTaskV2Schema,
+  type McpCreateTaskV2,
   McpAdoptPipelineRunSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
@@ -204,7 +206,6 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
-  capabilitiesFor,
   harnessOffersRuntime,
   interruptUnsupportedWhy,
   workQueueBlockedReason,
@@ -245,7 +246,6 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import {
   getHarnessesConfig,
   HarnessesConfigError,
-  resolveTaskAgent,
   setHarnessesConfig,
 } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -394,8 +394,8 @@ import {
   resolveRepoRoot,
   resolveTaskExtraRepoRoots,
   resolveTaskRepoRoot,
-  resolveTaskRepoSet,
 } from "./repos.ts";
+import { prepareTaskRepositories } from "./task-repository-preparation.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   readSubmissionImageBody,
@@ -3549,23 +3549,30 @@ export function buildApp(
     return c.json({ id: review.id, sessionId: session.id });
   });
 
-  app.post("/mcp/tasks", async (c) => {
-    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const parsed = await parseBody(c, McpCreateTaskSchema);
-    if (!parsed.ok) return parsed.res;
+  async function createMcpTask(
+    c: Context,
+    data: McpCreateTaskV2,
+    allowShortNames: boolean,
+  ) {
     const {
       env,
       sessionId,
       cwd,
-      repoRoot: requestedRoot,
       dependsOnTaskIds,
       dependsOnCurrentSession,
-    } = parsed.data;
-    // The door this matters most at: the caller is an agent, and it passes its own cwd,
-    // which for every session we dispatch is a pooled worktree. See `resolveTaskRepoRoot`.
-    const resolved = await resolveTaskRepoRoot(requestedRoot);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
-    const repoRoot = resolved.repoRoot;
+    } = data;
+    const shortNameSelectors = !allowShortNames
+      ? "none"
+      : data.targetRepository === undefined
+        ? "extras"
+        : "all";
+    const prepared = await prepareTaskRepositories({
+      primary: data.targetRepository ?? data.repoRoot,
+      extras: data.additionalRepositories,
+      kind: "ship",
+      shortNameSelectors,
+    });
+    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
 
     const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
       type: "task",
@@ -3579,13 +3586,14 @@ export function buildApp(
 
     try {
       const task = tasks.create({
-        repoRoot,
-        title: parsed.data.title,
-        intent: parsed.data.intent,
+        repoRoot: prepared.repoRoot,
+        extraRepoRoots: prepared.extraRepoRoots,
+        title: data.title,
+        intent: data.intent,
         kind: "ship",
-        // No agent: an agent filing work through MCP has no opinion about which harness
-        // runs it, so it takes whatever `ship` is configured to run on. Naming "claude"
-        // here was that opinion, expressed by accident.
+        // Resolved during repository preparation so the capability check and stored pin
+        // cannot observe different ship-kind defaults.
+        agent: prepared.agent,
         backlog: true,
         dependencies,
       });
@@ -3594,6 +3602,26 @@ export function buildApp(
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;
     }
+  }
+
+  app.post("/mcp/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    // Preserve the selector-free endpoint for older bundles. The caller's own repoRoot still
+    // walks a pooled worktree back to its main checkout through the shared preparation door.
+    return createMcpTask(
+      c,
+      { ...parsed.data, targetRepository: undefined, additionalRepositories: [] },
+      false,
+    );
+  });
+
+  app.post("/mcp/v2/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskV2Schema);
+    if (!parsed.ok) return parsed.res;
+    return createMcpTask(c, parsed.data, true);
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -5957,27 +5985,21 @@ export function buildApp(
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
     const workflowId = resolveTaskWorkflowId(parsed.data.workflowId);
-    const resolved = await resolveTaskRepoSet(parsed.data.repoRoot, parsed.data.extraRepoRoots);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
-    const repoRoot = resolved.repoRoot;
-    const extraRepoRoots = resolved.extraRepoRoots;
-    // Resolved HERE rather than left to `TaskManager.create`, because the three checks below
+    const prepared = await prepareTaskRepositories({
+      primary: parsed.data.repoRoot,
+      extras: parsed.data.extraRepoRoots,
+      kind: parsed.data.kind,
+      agent: parsed.data.agent,
+      shortNameSelectors: "none",
+    });
+    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    const { repoRoot, extraRepoRoots, agent } = prepared;
+    // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
     // is exactly the case where that is the kind's answer rather than Claude. Passed on
     // explicitly, so the route and the task agree by construction rather than by both
     // running the same resolution and hoping the config did not move between them.
-    const agent = resolveTaskAgent(parsed.data.kind, parsed.data.agent);
-    // The harness has to be able to hold write access outside its cwd, or the secondary
-    // worktrees would be provisioned and then be unreachable to the agent standing in the
-    // primary. Refused here as well as hidden in the modal, so the capability gates the
-    // API rather than only the button.
-    if (extraRepoRoots.length > 0 && !capabilitiesFor(agent).multiRepoDispatch) {
-      return c.json(
-        { error: `${agent} cannot be given write access to more than one repo` },
-        400,
-      );
-    }
     if (workflowId) {
       const manager = workflowManager();
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

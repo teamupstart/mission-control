@@ -208,12 +208,14 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
 
 test("the planning PR merge both publishes the plan files and releases the phase task", async () => {
   const { repo, origin } = gitRepo("published-phase-task");
+  const { repo: targetRepo } = gitRepo("published-phase-target");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
 
   // The task text the skill publishes, and the exact paths it will name. An author knows
   // both before scheduling, which is what makes the pre-flight check below possible.
-  const published = representativePhaseIntent();
+  const published = `${representativePhaseIntent()}\n\nThe source-plan repository is attached as context-only and must not be changed.`;
+  assert.match(published, /context-only/);
   const referenced = referencedPlanPaths(published);
   assert.deepEqual(referenced.toSorted(), [
     "docs/plans/recurring-missions/phase-1-durable-schedule-foundation.md",
@@ -289,7 +291,7 @@ test("the planning PR merge both publishes the plan files and releases the phase
   assert.ok(episode);
 
   const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
-  const response = await app.request("/mcp/tasks", {
+  const response = await app.request("/mcp/v2/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
     body: JSON.stringify({
@@ -297,6 +299,8 @@ test("the planning PR merge both publishes the plan files and releases the phase
       sessionId: "planning-agent-session",
       cwd: repo,
       repoRoot: repo,
+      targetRepository: targetRepo,
+      additionalRepositories: [repo],
       title: "Implement Recurring Missions - Phase 1: Durable schedule foundation",
       intent: published,
       dependsOnTaskIds: [],
@@ -310,6 +314,12 @@ test("the planning PR merge both publishes the plan files and releases the phase
   // the dispatcher later reads `intent` off of to build the agent's prompt.
   const stored = tasks.get(created.id);
   assert.ok(stored, "the published task should be retrievable from the store");
+  assert.equal(stored.repoRoot, targetRepo, "repository B is the implementation primary");
+  assert.deepEqual(
+    stored.extraRepos.map((entry) => entry.repoRoot),
+    [repo],
+    "source repository A is attached for context",
+  );
   assertPublishedIntentContract(stored.intent);
   assert.deepEqual(
     referencedPlanPaths(stored.intent).toSorted(),
@@ -328,7 +338,7 @@ test("the planning PR merge both publishes the plan files and releases the phase
 
   // 4. BEFORE the delivery condition: the files are not on the default branch an implementing
   //    agent would receive, and the task is correspondingly gated. One condition governs both.
-  const receiving = join(repos, "receiving-checkout");
+  const receiving = join(repos, "receiving-source-context");
   execFileSync("git", ["clone", "-q", origin, receiving]);
   for (const path of referenced) {
     assert.equal(

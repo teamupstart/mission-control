@@ -89,6 +89,16 @@ one-shot task, even when that work crosses application layers. The HTML Plans re
 this as its final selectable follow-up; choosing it passes the approved plan and submitted decisions
 into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
+Repository analysis now drives each phase task's `create_task` selectors. Work in the source-plan
+repository keeps the current-repository default. Work implemented only in repository B makes B the
+primary; when its plan files remain in source repository A, A is attached and marked context-only so
+the implementing agent can read the published paths without being asked to change A. An inseparable
+A+B phase becomes one multi-repo task with a deliberate primary and opens one pull request per
+repository it actually changes. Every phase still depends on the planning session, so the task
+cannot launch until the merge publishes those plan paths. A selector or harness-capability refusal
+stops dependent task creation; the procedure reports the unscheduled phase and ids already created
+instead of falling back to A or dropping an attachment.
+
 **A `plan` task depends on both of those rows, and this is where it differs from a scout.** The
 contract a [plan task](dispatch-and-backlog.md) is delivered *points at* HTML Plans and Phased
 Plan instead of restating them, so with either row switched off - or the master switch off -

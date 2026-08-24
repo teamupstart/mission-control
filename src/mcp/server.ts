@@ -32,6 +32,7 @@ import {
   PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
+import { MAX_TASK_EXTRA_REPOS } from "@shared/protocol.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -319,11 +320,14 @@ server.registerTool(
   {
     title: "Schedule an implementation task",
     description:
-      "Create one ship task in the Mission Control backlog for the current repository. " +
+      "Create one ship task in the Mission Control backlog. It targets the current repository " +
+      "unless an absolute local checkout path or unique repository directory name is supplied, " +
+      "and it can attach additional local repositories to the same task. " +
       "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
-      "prerequisites keep the new task backlogged until their pull requests merge. Returns the " +
-      "new task id for later calls.",
+      "prerequisites keep the new task backlogged until their pull requests merge. Repository " +
+      "validity is checked locally; Git and the repository host enforce push and pull-request " +
+      "authority later. Returns the new task id and canonical repository set.",
     inputSchema: {
       title: z.string().min(1).max(200).describe("Specific task title shown on the backlog card"),
       intent: z
@@ -334,6 +338,23 @@ server.registerTool(
             "read and follow, and the verification bar. This text becomes the agent's prompt and is " +
             "read as the requester's explicit requirement, so keep it concise and leave step-by-step " +
             "detail in the referenced files rather than restating it here",
+        ),
+      repository: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Primary repository as an absolute local checkout path or a unique repository directory " +
+            "name. Omit it to use the calling session's current repository",
+        ),
+      additionalRepositories: z
+        .array(z.string().trim().min(1))
+        .max(MAX_TASK_EXTRA_REPOS)
+        .optional()
+        .describe(
+          "Repositories to attach, each as an absolute local checkout path or unique repository " +
+            "directory name",
         ),
       dependsOnTaskIds: z
         .array(z.string().min(1))
@@ -346,9 +367,18 @@ server.registerTool(
         .describe("Make the session calling this tool a direct prerequisite of the new task"),
     },
   },
-  async ({ title, intent, dependsOnTaskIds, dependsOnCurrentSession }) => {
+  async ({
+    title,
+    intent,
+    repository,
+    additionalRepositories,
+    dependsOnTaskIds,
+    dependsOnCurrentSession,
+  }) => {
     try {
-      const res = await http("/mcp/tasks", "POST", {
+      const explicitRepositories =
+        repository !== undefined || additionalRepositories !== undefined;
+      const body = {
         env: ENV,
         sessionId: SESSION_ID,
         cwd: process.cwd(),
@@ -357,16 +387,44 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
-      });
-      if (!res.ok) return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
+      };
+      const res = await http(
+        explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
+        "POST",
+        explicitRepositories
+          ? {
+              ...body,
+              targetRepository: repository,
+              additionalRepositories: additionalRepositories ?? [],
+            }
+          : body,
+      );
+      if (explicitRepositories && res.status === 404) {
+        return textResult(
+          "Could not create task: this Mission Control daemon does not support repository " +
+            "selectors. Update or restart Mission Control and retry; no task was created.",
+          true,
+        );
+      }
+      if (!res.ok) {
+        return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
+      }
 
-      const task = (await res.json()) as { id: string; title: string; status: string };
+      const task = (await res.json()) as {
+        id: string;
+        title: string;
+        status: string;
+        repoRoot: string;
+        extraRepos: Array<{ repoRoot: string }>;
+      };
       return textResult(
         JSON.stringify(
           {
             id: task.id,
             title: task.title,
             status: task.status,
+            repository: task.repoRoot,
+            additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
             dependsOnTaskIds,
             dependsOnCurrentSession,
           },

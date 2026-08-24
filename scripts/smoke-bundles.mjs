@@ -262,7 +262,7 @@ async function smokeMcp() {
           if (msg.error) return done({ error: `it refused tools/list (${msg.error.message})` });
           const tools = msg.result?.tools;
           if (!Array.isArray(tools)) return done({ error: "its tools/list answer carried no tool array" });
-          done({ tools: tools.map((t) => t.name).filter((n) => typeof n === "string") });
+          done({ tools });
         }
       }
     });
@@ -290,7 +290,9 @@ async function smokeMcp() {
 
   const declared = await declaredMcpTools();
   if (!declared) return;
-  const published = new Set(result.tools);
+  const published = new Set(
+    result.tools.map((tool) => tool.name).filter((name) => typeof name === "string"),
+  );
   const missing = declared.filter((t) => !published.has(t));
   const extra = [...published].filter((t) => !declared.includes(t));
   if (missing.length) {
@@ -308,7 +310,34 @@ async function smokeMcp() {
     );
   }
   if (missing.length || extra.length) return;
+  const createTask = result.tools.find((tool) => tool.name === "create_task");
+  const properties = createTask?.inputSchema?.properties;
+  if (!properties?.repository || !properties?.additionalRepositories) {
+    fail(
+      "the built create_task schema does not publish repository and additionalRepositories - " +
+        "the daemon supports cross-repository tasks but the bundled agent tool cannot request one",
+    );
+    return;
+  }
+  const extraRepoLimit = await declaredTaskExtraRepoLimit();
+  if (extraRepoLimit === null) return;
+  if (properties.additionalRepositories.maxItems !== extraRepoLimit) {
+    fail(
+      "the built create_task schema does not preserve MAX_TASK_EXTRA_REPOS from the shared contract",
+    );
+    return;
+  }
   console.log(`[smoke] mcp bundle publishes all ${declared.length} declared tools`);
+}
+
+async function declaredTaskExtraRepoLimit() {
+  const source = await readFile(resolve("src/shared/protocol.ts"), "utf8");
+  const value = /export const MAX_TASK_EXTRA_REPOS = (\d+);/.exec(source)?.[1];
+  if (!value) {
+    fail("MAX_TASK_EXTRA_REPOS could not be read out of src/shared/protocol.ts");
+    return null;
+  }
+  return Number(value);
 }
 
 /**

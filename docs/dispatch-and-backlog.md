@@ -139,6 +139,15 @@ Some work does not fit in one repo: a contract change and its consumers, a locks
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.
 
+Mission MCP agents can create the same repository set with `create_task`. Omitting repository
+selectors keeps the caller's main checkout as primary. `repository` selects another primary and
+`additionalRepositories` attaches secondaries; each accepts an absolute local checkout path or a
+directory name that is unique in the workspace scan. A short name with no match is refused with an
+absolute-path remedy, while an ambiguous name is refused with every sorted canonical candidate.
+Absolute paths need not be under a workspace scan root. The whole set is canonicalized, checked for
+collisions and duplicates, and checked against the effective ship harness before any task or
+dependency is stored.
+
 One dispatch then produces **one** session, not one per repo:
 
 - Its working directory is the **primary** repo's worktree. Every existing correlation -
@@ -165,8 +174,9 @@ the dispatch fails rather than starting an agent with half its repositories.
 
 Two consequences worth knowing:
 
-- **Foreman needs every repo allowlisted.** A multi-repo task is schedulable by the backlog
-  autopilot only when *all* of its repositories are in the Foreman allowlist, not just the
+- **Foreman needs every repo allowlisted.** Creating a backlog row, or manually dispatching it,
+  does not grant Foreman unattended launch authority. The backlog autopilot schedules a multi-repo
+  task only when *all* of its repositories are in Foreman's separate allowlist, not just the
   primary. Consent for one project is not consent for another.
 - **Multi-repo tasks are dispatch-only.** They cannot be dragged onto an agent that is
   already running. The extra worktrees, and the agent's write access to them, are granted
@@ -443,6 +453,13 @@ source](#task-sources-pulling-work-into-the-backlog) sweep - resolves what you g
 the **main checkout**. A linked worktree resolves to the repo that owns it, so an agent
 calling `create_task` from `$MISSION_HOME/worktree-pools/<pool>/<slot>` files against the main
 checkout that owns it.
+
+For MCP creation, that current-repository path remains the default. An explicit primary or
+attachment is an address, not an authorization grant: Mission Control verifies that every target is
+a reachable local Git main checkout and echoes the canonical paths it stores. It does not clone a
+remote, probe a push, cache a collaborator role, or infer repository-host permission. A later push
+or pull-request attempt is where the configured Git credentials and repository host accept or refuse
+the write.
 
 That walk-back is what makes the rest of the app agree with itself. A task's repo is what
 [Foreman's allowlist](foreman.md#foreman-auto-responder) is asked about before autopilot will

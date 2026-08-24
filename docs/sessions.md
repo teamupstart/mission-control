@@ -1576,11 +1576,19 @@ The MCP tools are:
   options (radios / checkboxes) and **block** until the human submits their choices or
   dismisses that decision set without an answer
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
-- `create_task(title, intent, dependsOnTaskIds?, dependsOnCurrentSession?)` - add a ship task
-  for the current repo to the backlog with the default agent/model/effort, returning its id so
-  later tasks can carry durable dependency edges. The calling agent is usually standing in a
-  worktree; the task is filed against the **repo that owns it** - see [A task's repo is the
-  repo, not the worktree](dispatch-and-backlog.md#a-tasks-repo-is-the-repo-not-the-worktree)
+- `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
+  dependsOnCurrentSession?)` - add a ship task to the backlog with the default
+  agent/model/effort, returning its id and canonical repository set so later tasks can carry
+  durable dependency edges. Omit the selectors to keep the calling repository as primary.
+  Otherwise, each selector is an absolute local checkout path or a unique repository directory
+  name; `repository` changes the primary and `additionalRepositories` attaches the rest. A linked
+  worktree resolves to the **repo that owns it**, including an absolute path outside the configured
+  workspace scan - see [A task's repo is the repo, not the
+  worktree](dispatch-and-backlog.md#a-tasks-repo-is-the-repo-not-the-worktree). Ambiguous names
+  are refused with their canonical candidates. Selector-bearing calls use the atomic versioned
+  creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
+  fields. This validation proves local Git identity only: ordinary push and pull-request operations
+  remain where Git and the repository host enforce write authority.
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without

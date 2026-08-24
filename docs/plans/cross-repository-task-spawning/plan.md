@@ -142,9 +142,10 @@ focused server helper that:
 - checks `multiRepoDispatch` when secondaries are present; and
 - returns normalized `CreateTaskInput` repository fields or a user-facing refusal.
 
-Use it from both `POST /api/tasks` and `POST /mcp/tasks`. The MCP route continues to own its special
-dependency conversion, especially `dependsOnCurrentSession`, then calls `TaskManager.create` with
-`backlog: true`, the server-resolved effective agent, and no caller-supplied model or effort opinion.
+Use it from `POST /api/tasks`, legacy `POST /mcp/tasks`, and versioned `POST /mcp/v2/tasks`. The MCP
+handlers continue to own their special dependency conversion, especially `dependsOnCurrentSession`,
+then call `TaskManager.create` with `backlog: true`, the server-resolved effective agent, and no
+caller-supplied model or effort opinion.
 
 The caller's session identity remains based on `env`, `sessionId`, and `cwd`. Selecting repository B
 must not make Mission Control look for the planning session in B or weaken the current-session

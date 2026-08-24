@@ -353,14 +353,14 @@ else:
 
 | `op` | Arguments | Executed as |
 |---|---|---|
-| `read_file` | `path`, `startLine?`, `lineCount?` | `cat-file --batch-check` on `<snapshotOid>:<path>` for type and size, then the blob |
+| `read_file` | `path`, `startLine?`, `lineCount?`, `stage?` | `cat-file --batch-check` on `<snapshotOid>:<path>` for type and size, then the blob; `stage: "index"` reads the pinned index tree instead, so a staged-then-modified path's staged bytes stay reachable |
 | `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n <snapshotOid>`; unpinned, `git grep` searches the live working tree |
 | `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z <snapshotOid>` filtered by the shared matcher |
 | `git_status` | - | `git diff --name-status <headSha> <snapshotOid>` plus the complete `--porcelain=v2` status persisted at capture; the tree alone cannot express staged-versus-worktree |
 | `git_diff` | `path?`, `base?` | `git diff --no-ext-diff --no-textconv <base or headSha> <snapshotOid>`, the base defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of `<snapshotOid>`; allowlisted before generation |
 | `git_show` | `rev`, `path?` | `git show --no-ext-diff --no-textconv <rev>`, where `rev` is proven an ancestor of `<snapshotOid>`; allowlisted before generation, with the commit message fetched separately from the patch |
 | `git_log` | `path?`, `maxEntries?` | `git log <snapshotOid> --max-count=N --format=<NUL-separated>`; unpinned, `git log` walks live `HEAD`; a supplied `path` is validated and denied like any other; no `-p`, `--name-only`, `--name-status` or `--stat` |
-| `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --no-ext-diff --no-textconv --porcelain <snapshotOid> -- <path>`; unpinned, `git blame` reads the live worktree file |
+| `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --no-ext-diff --no-textconv --porcelain <snapshotOid> -- <path>`; its `filename`/`previous` headers name other paths and are denylist-filtered; unpinned, `git blame` reads the live worktree file |
 
 Every result is `{ ok: true, ... , truncated: boolean }` or
 `{ ok: false, code: RepositoryQueryDenialCode, detail }`, with the denial codes an appended-only
@@ -449,9 +449,10 @@ defences on what remains.
    silently substitute, two refuse, and a reviewer cannot tell from the response - so the argv for
    every op spells its revision and a mechanical test over the built argv asserts it, rather than
    the guarantee resting on prose.
-3. **No filesystem access at all.** Every read is a git object read against one immutable
-   commit. Traversal, absolute paths, host files and `.git` internals are structurally absent -
-   verified at the git layer, not asserted.
+3. **No filesystem access at all.** Every read is a git object read against one of two immutable
+   commits - the snapshot tree, or the index tree that preserves staged bytes. Traversal, absolute
+   paths, host files and `.git` internals are structurally absent - verified at the git layer, not
+   asserted.
 4. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
    absolute, NUL-bearing, and any path with a `.` or `..` segment; reject `.git` as a leading
    segment. Paths are matched as bytes against the tree listing and never normalized, because git

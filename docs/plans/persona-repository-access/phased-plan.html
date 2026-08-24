@@ -569,6 +569,27 @@
       flag. Stated rather than papered over: the staged blob’s <em>content</em> is not separately
       retrievable, because nothing pins it - decision 7 asks for the content of all four categories,
       which the merged tree provides.</li>
+    <li><strong>Staged blobs are pinned, so decision 7 is literally true</strong> (Phase 2). The
+      porcelain recorded the index oid but nothing kept that object alive, so a staged-then-modified
+      path&rsquo;s staged bytes were unretrievable after release or <code>gc</code>. I had called that
+      out of scope, reading decision 7 as asking only for merged content; the plain reading is the
+      other one - it lists &ldquo;staged &hellip; content&rdquo;, and for a mixed-index path that is
+      different bytes. Capture now also writes the index tree and pins it under a sibling ref, and
+      <code>read_file</code> takes <code>stage: "worktree" | "index"</code>. A sibling ref rather than
+      a second parent, because a second parent would enter the snapshot&rsquo;s ancestry and
+      <code>merge-base --is-ancestor</code> is what <code>git_show</code> and <code>git_diff</code>
+      gate on.</li>
+    <li><strong>The safety declaration is a set of required handlings, not one class</strong>
+      (Phase 2). <code>read_file</code> and <code>git_blame</code> had no output class at all while
+      the <code>Record</code> was specified as total, so it could not have compiled - a gap left by
+      item 15, which removed the <code>single-path</code> class and never re-homed those two. Fixing
+      it turned up why a single label keeps failing: <code>git blame --porcelain</code> emits
+      <code>filename</code> and <code>previous</code> headers naming <em>other</em> paths (verified,
+      even with <code>--no-renames</code>), so blame carries both file content and paths and needs two
+      handlings. The declaration is now <code>ReadonlySet&lt;RepositorySafetyStep&gt;</code> per op,
+      with an empty set as a real answer for <code>read_file</code> - stated so &ldquo;nothing
+      declared&rdquo; cannot be confused with &ldquo;not yet classified&rdquo;, which is the confusion
+      that produced this.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

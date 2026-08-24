@@ -107,8 +107,10 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
 
 - `REPOSITORY_QUERY_OPS = ["read_file", "search_text", "list_paths", "git_status", "git_diff", "git_show", "git_log", "git_blame"] as const`
   and `RepositoryQuery`, a discriminated union on `op` with the arguments the plan's table names.
-- `REPOSITORY_OP_OUTPUT: Record<RepositoryQueryOp, "content" | "path" | "metadata">` - what an op's
-  **output** may carry, as a total `Record` so a new op **cannot compile** without stating it. This
+- `REPOSITORY_OP_SAFETY: Record<RepositoryQueryOp, ReadonlySet<RepositorySafetyStep>>` - which
+  handlings each op's output requires, as a total `Record` so a new op **cannot compile** without
+  stating them. A **set**, because an op whose output carries more than one kind of thing needs more
+  than one handling, and `git_blame` is one. This
   is the same enforcement idiom `LLM_RUNNERS` uses on `LlmRunnerId` and
   `SESSION_FIELD_COMPARATORS` uses on a new `Session` field, and it is here for a demonstrated
   reason rather than a stylistic one: the per-op version of this rule failed three times in review -
@@ -219,6 +221,14 @@ guarantee that a retried round cannot double-write its audit.
      fault above, and it discards the attempt and retries through the cold path, which is seeded
      from `headSha` and correct by construction. The difference set is normally empty or tiny, so
      this costs one `ls-tree` and a sorted comparison.
+  2c. `write-tree` on the copied index **before** `add -A`, giving the **index tree** - the
+     staged version of every path. Verified essentially free: one extra `write-tree` on an index
+     already in hand, and for a staged-then-modified file the two trees genuinely differ
+     (`STAGED-VERSION` versus `WORKTREE-VERSION`). Committed and pinned under
+     `refs/mission-control/review-index/<submissionId>`, a **sibling** ref rather than a second
+     parent of the snapshot commit: a second parent would put the index commit into the snapshot's
+     ancestry, and `merge-base --is-ancestor` is what `git_show` and `git_diff` gate on, so it
+     would silently widen what those ops accept.
   4b. capture `git status --porcelain=v2 -z --untracked-files=all`, bounded by
      `statusPorcelainBytes`, and return it with a truncation flag for the manager to persist beside
      the oid. Taken in the same window as the tree, so the two describe one instant.
@@ -238,8 +248,11 @@ guarantee that a retried round cannot double-write its audit.
   7. clean up the temp index on every path.
   Never touch `GIT_INDEX_FILE` for the live index, never write into the worktree, and never run
   anything that could check out a tree.
-- `deleteReviewSnapshot(repoRoot, submissionId)` - `update-ref -d`, idempotent.
-- `sweepOrphanReviewSnapshots(repoRoots, liveSubmissionIds)` - `for-each-ref` under the namespace,
+- `deleteReviewSnapshot(repoRoot, submissionId)` - `update-ref -d` for **both** refs, the
+  snapshot and the index tree, idempotent. One function deletes both so retention cannot free one and
+  leak the other.
+- `sweepOrphanReviewSnapshots(repoRoots, liveSubmissionIds)` - `for-each-ref` under **both**
+  namespaces,
   delete any ref whose submission id is not live. Called once at daemon start, bounded.
 
 ### 4. Capture integration - `src/server/workflows/context.ts`
@@ -326,7 +339,7 @@ Order of checks per query, and the order is the contract:
    reading.
 6. **Execute** - the argv from the plan's table, through `run` with a per-operation timeout.
 7. **Post-filter** - re-apply the path validator and the denylist to every path in the **result**
-   of every `path`-class op, and only those. This is what makes the denylist real for that class;
+   of every op declaring `filter-emitted-paths`, and only those. This is what makes the denylist real for that class;
    `claude-grant.ts` already documents why a rule that guards only arguments protects nothing it
    names. It is sufficient for `path` and **only** `path`, because each of those ops emits a path
    beside its own content or no content at all, so dropping the line drops the content with it.
@@ -340,6 +353,23 @@ Order of checks per query, and the order is the contract:
     reader's `audit` identity, the `round` this `execute` was given, and the `ordinal` the reader
     assigned. The write happens on **every** exit path including a refusal at step 2 or 3, so a
     denial is as auditable as a success - which is what decision 11 asks for.
+
+**The staged version is retrievable, because decision 7 names it.** `read_file` takes
+`stage: "worktree" | "index"`, defaulting to `worktree`. `worktree` reads the snapshot tree;
+`index` reads the index tree pinned at
+`refs/mission-control/review-index/<submissionId>`. Both go through the identical validation,
+denylist, mode classification and size pre-flight - the index tree is not a privileged view, it is a
+second tree with the same rules.
+
+An earlier draft persisted only the porcelain's index *oid* and said the staged content was out of
+scope. That was wrong on the plain reading: decision 7 lists "committed, staged, unstaged, and
+untracked content", and for a staged-then-modified path the staged and unstaged bytes are different
+content, both named. Pinning the index tree makes the sentence literally true instead of nearly
+true, and it costs one `write-tree` and one ref.
+
+`git_status` remains the op that reports the *classification* (`MM`, `AM`) from the persisted
+porcelain; `read_file` with `stage` is how the two versions' *bytes* are reached. Neither replaces
+the other.
 
 ### `git_status` needs a persisted status; the tree cannot reconstruct one
 
@@ -381,12 +411,10 @@ returned a wrong answer for any mixed staged/unstaged submission.
 porcelain (complete unless flagged). Both are post-filtered through the denylist as a `path`-class
 result.
 
-**One limit stated rather than implied.** The persisted porcelain preserves the *classification* and
-the staged blob's oid, but the staged blob's **content** is not separately retrievable: it is not in
-the snapshot tree, and nothing pins it, so `git gc` may prune it. `read_file` serves the worktree
-version, which is what the tree holds. Pinning staged blobs as well would be a second snapshot
-mechanism for a distinction decision 7 does not ask for - it asks for the *content* of committed,
-staged, unstaged and untracked work, which the merged tree provides.
+**Both versions are durable.** The persisted porcelain carries the classification and the index
+oid; the index tree pinned beside the snapshot carries the staged **bytes**, so neither depends on
+the worktree surviving and `git gc` cannot prune either. This paragraph previously said the staged
+content was out of scope; that was a misreading of decision 7, corrected in round 13.
 
 ### One list of flags the argv builder refuses
 
@@ -496,18 +524,52 @@ denied at steps 2 and 3, before anything runs, whatever its output class. That i
 `git_blame`, `git_log`, `git_diff`'s `path`, and the globs on `search_text` and `list_paths`. There
 is no op for which a supplied path is exempt, and no output class that excuses one.
 
-**Output axis - `REPOSITORY_OP_OUTPUT`.** What the result may carry, and therefore how it is made
-safe:
+**Output axis - `REPOSITORY_OP_SAFETY`, and it is a SET, not a single class.** Two rounds of review
+found ops that a single-valued class could not describe, and the second time it was because the
+question "which one class is this?" has no answer for an op whose output carries more than one kind
+of thing. So each op declares **which handlings it requires**, and an op needing two gets two:
 
-| Class | Ops | How its result is made safe |
+```ts
+REPOSITORY_OP_SAFETY: Record<RepositoryQueryOp, ReadonlySet<RepositorySafetyStep>>
+// RepositorySafetyStep = "allowlist-before-generate" | "filter-emitted-paths" | "fixed-metadata-format"
+```
+
+| Op | Required handlings | Why exactly those |
 |---|---|---|
-| `content` | `git_diff`, `git_show` | The allowlisted pipeline below. Nothing denied is ever generated. |
-| `path` | `search_text`, `list_paths`, `git_status` | Step 7's post-filter. Each emits a path beside its own content, or no content, so dropping the line drops the content. |
-| `metadata` | `git_log` | A fixed server-chosen `--format` carrying no path and no file content. See below. |
+| `read_file` | *(none beyond the universal input check)* | One validated path in, that file's bytes out. No other path can enter the response. |
+| `search_text` | `filter-emitted-paths` | Line-per-match: every path appears beside its own content, so dropping the line drops the content. |
+| `list_paths` | `filter-emitted-paths` | Paths only, no content. |
+| `git_status` | `filter-emitted-paths` | Name-status and porcelain: paths only. |
+| `git_log` | `fixed-metadata-format` | No path field and no diff line by construction; see the metadata policy below. |
+| `git_diff` | `allowlist-before-generate` | A patch is one blob of content with no path line to drop. |
+| `git_show` | `allowlist-before-generate` | Same. |
+| `git_blame` | `filter-emitted-paths` | **Both** kinds: the line text is the requested file's, but the porcelain headers name *other* paths. See below. |
 
-A total `Record` over the op list still forces every op to declare its class, and that enforcement
-is why this is a class rule rather than a per-op one: the per-op version failed three times in
-review - `git_diff`, then `git_show` with the identical content hole, then `git_log` misfiled here.
+An empty set is a real answer and `read_file` is the only op that has one - stated explicitly so
+"no handling declared" cannot be confused with "not yet classified", which is exactly the gap that
+left `read_file` and `git_blame` unclassified when this was a single-valued class.
+
+A total `Record` over the op list still forces every op to declare, and that enforcement is why
+this is a class rule rather than a per-op one: the per-op version failed in review for `git_diff`,
+then `git_show` with the identical content hole, then `git_log` misfiled, then `read_file` and
+`git_blame` with no class at all.
+
+**`git_blame` emits paths, so it is not a "one path in, one file's bytes out" op.** Verified -
+`git blame --porcelain` writes `filename` and `previous` headers, and after a rename they name the
+*earlier* path, with `--no-renames` making no difference:
+
+```
+$ git blame --no-renames --porcelain HEAD -- renamed.txt | grep -E '^(filename|previous)'
+filename f.txt
+previous c73d2119... f.txt
+```
+
+So a blame on an allowed path can name a denied one in a header. It therefore takes
+`filter-emitted-paths` like any other path-emitting op: every path in a `filename` or `previous`
+header is re-validated and re-denied, and a header naming a denied path is dropped rather than the
+whole op refused, since the line attribution itself is legitimate. This was not in the review
+finding - it turned up while checking what class `git_blame` actually belongs in, which is the
+argument for making the declaration a set rather than guessing a single label.
 
 **The `metadata` policy, since "post-filter handles it" was never true for it.** `git_log` emits
 `%H`, author, commit time and subject, NUL-separated - verified to contain no path field and no diff
@@ -671,6 +733,16 @@ look viable.
   created. Verified that without the flags those three invoke it 3, 2 and 3 times respectively, so
   this fails loudly against the original argv. Assert `--textconv` is refused if it reaches the
   argv builder.
+- **The staged-version tests.** A staged-then-modified file: `read_file` with
+  `stage: "index"` returns the staged bytes and with `stage: "worktree"` returns the worktree bytes,
+  both **after the worktree directory is deleted** and after `git gc --prune=now`, which is the whole
+  point of pinning the index tree. The denylist applies identically to both stages - a denied path is
+  refused with `stage: "index"` too, since a second tree must not become a second way in. A
+  submission with a clean index returns identical bytes for both stages rather than erroring.
+- **The blame header test.** After a rename, `git_blame` on the new path must not emit a
+  `filename` or `previous` header naming a **denied** old path; the header is dropped while the
+  line attribution survives. Verified that `--no-renames` does not suppress those headers, so this
+  cannot be delegated to a flag.
 - **The status tests.** A submission with a staged-then-modified file records `AM` and the index oid
   in `review_status_porcelain`, and `git_status` reports that classification **after the worktree
   is deleted** - the case the tree alone cannot answer. A status over `statusPorcelainBytes` sets
@@ -701,7 +773,8 @@ look viable.
   forbidding them.
 - **The adversarial content-class tests, which are their own group because path-shaped assertions do
   not cover a content-bearing response.** Run **the whole group against every `content` op** -
-  table-driven over `REPOSITORY_OP_OUTPUT`, so adding a third content op inherits the suite instead
+  table-driven over `REPOSITORY_OP_SAFETY`, so an op declaring `allowlist-before-generate` inherits
+  the suite instead
   of needing someone to remember it. That table-driven shape is the test-side half of the same
   lesson: `git_show` had this hole because `git_diff`'s fix was written as a one-op fix.
   Against a snapshot holding an untracked non-ignored `.env`, a `k/id_rsa`, a binary file and an
@@ -853,6 +926,28 @@ Phase 3 may rely on, and must not change:
   writes every row - so Phase 3's non-goal stands unchanged; what changed is that it now has the
   data the contract always required. The reader also owning `ordinal` removes a class of bug the
   first shape invited, where two subsystems counting independently collide on the unique index.
+- **Reconciliation record, review round 13.** Two findings, both accepted, and one further leak found
+  while checking the second.
+  1. **Staged blobs were not reachable.** The porcelain recorded the index oid but nothing kept that
+     object alive, so for a staged-then-modified path the staged bytes were unretrievable after
+     release or `gc`. I had called that out of scope on the reading that decision 7 asks only for
+     merged content; the plain reading is the other one - it lists "staged ... content" and for a
+     mixed-index path that is different bytes from the unstaged version. Capture now also writes the
+     **index tree** (`write-tree` on the copied index before `add -A`, verified essentially free)
+     and pins it under `refs/mission-control/review-index/<submissionId>`. `read_file` takes
+     `stage: "worktree" | "index"`. The sibling ref is deliberate: a second *parent* would put the
+     index commit in the snapshot's ancestry, and `merge-base --is-ancestor` is what `git_show` and
+     `git_diff` gate on, so it would silently widen what those ops accept.
+  2. **`read_file` and `git_blame` had no output class**, while the `Record` was specified as total -
+     so the declaration could not have compiled. That gap was mine from round 9, where splitting the
+     axes removed the `single-path` class and never re-homed those two on the output axis.
+  3. **Found while fixing (2): `git_blame` emits other paths.** `--porcelain` writes `filename` and
+     `previous` headers, and after a rename they name the *earlier* path - verified, with
+     `--no-renames` making no difference. So blame on an allowed path can name a denied one, and it
+     needs path filtering rather than being a "one path in, one file's bytes out" op. That is why the
+     safety declaration is now a **set** of required handlings rather than one class: the question
+     "which single class is this?" has no answer for an op emitting two kinds of thing, and guessing
+     one is what produced both this and the round-9 `git_log` misfiling.
 - **Reconciliation record, review round 7.** `git_show` with an allowed ancestor `rev` and no
   `path` emits that commit's whole patch, so a commit touching a denied path leaked its content -
   the identical hole round 5 fixed in `git_diff`, left behind in the sibling op because round 5's

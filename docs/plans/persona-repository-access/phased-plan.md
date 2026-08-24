@@ -410,6 +410,24 @@ reintroduce and neither is caught by the guards that look like they should catch
     blob's *content* is not separately retrievable, because nothing pins it - decision 7 asks for the
     content of all four categories, which the merged tree provides.
 
+21. **Staged blobs are pinned, so decision 7 is literally true** (Phase 2). The porcelain recorded
+    the index oid but nothing kept that object alive, so a staged-then-modified path's staged bytes
+    were unretrievable after release or `gc`. I had called that out of scope, reading decision 7 as
+    asking only for merged content; the plain reading is the other one - it lists "staged ...
+    content", and for a mixed-index path that is different bytes. Capture now also writes the index
+    tree and pins it under a sibling ref, and `read_file` takes `stage: "worktree" | "index"`. A
+    sibling ref rather than a second parent, because a second parent would enter the snapshot's
+    ancestry and `merge-base --is-ancestor` is what `git_show` and `git_diff` gate on.
+22. **The safety declaration is a set of required handlings, not one class** (Phase 2).
+    `read_file` and `git_blame` had no output class at all while the `Record` was specified as total,
+    so it could not have compiled - a gap left by reconciliation 15, which removed the `single-path`
+    class and never re-homed those two. Fixing it turned up why a single label keeps failing:
+    `git blame --porcelain` emits `filename` and `previous` headers naming *other* paths (verified,
+    even with `--no-renames`), so blame carries both file content and paths and needs two handlings.
+    The declaration is now `ReadonlySet<RepositorySafetyStep>` per op, with an empty set as a real
+    answer for `read_file` - stated so "nothing declared" cannot be confused with "not yet
+    classified", which is the confusion that produced this.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

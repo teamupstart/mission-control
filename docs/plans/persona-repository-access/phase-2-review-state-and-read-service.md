@@ -70,7 +70,10 @@ reason for the design.
   snapshot oid to either invalidates every existing run.
 - **Measured git behaviour** (this repository, git 2.50.1):
   - `cp .git/index $TMP` then `GIT_INDEX_FILE=$TMP git add -A`: **34 ms**, 2,633 paths. Cold
-    (`read-tree HEAD` then `add -A`): 729 ms. Live worktree and live index unchanged either way.
+    (`read-tree <commit>` then `add -A`): 729 ms. Live worktree and live index unchanged either way.
+    The cost is the same whichever commit seeds the cold path - it is dominated by re-hashing, not by
+    the seed - so seeding from the captured `headSha` rather than `HEAD` is free. The timing was
+    originally taken with `HEAD`, which is where that mistake entered the plan.
   - `git rev-parse --git-path refs/mission-control/...` resolves into the **common** `.git/refs`;
     `HEAD` resolves per-worktree. So the ref survives linked-worktree removal.
   - `git gc --prune=now` keeps the snapshot commit while the ref exists.
@@ -173,10 +176,36 @@ guarantee that a retried round cannot double-write its audit.
 - `reviewSnapshotRef(submissionId)` - the one place the ref name is spelled.
 - `createReviewSnapshot({ repoRoot, checkout, headSha, submissionId })`:
   1. resolve `--git-common-dir` and `--git-dir` (argv arrays, never a shell);
-  2. copy the checkout's live index to a temp path, falling back to `read-tree HEAD` into an empty
-     temp index when the copy fails - the fast path is 34 ms and the fallback is 729 ms, and the
-     fallback must exist because a fresh or repaired worktree may have no readable index;
-  3. `add -A`, `write-tree`, `commit-tree -p <headSha>`, `update-ref`. **`commit-tree` runs with an
+  2. copy the checkout's live index to a temp path, falling back to
+     **`read-tree <headSha>`** - the captured commit, never `HEAD` - into an empty temp index when
+     the copy fails. The fast path is 34 ms and the fallback is 729 ms, and the fallback must exist
+     because a fresh or repaired worktree may have no readable index.
+     **Never `HEAD` here.** It is the third place in this plan where live `HEAD` stood in for the
+     captured commit, and this one is silent: if the worktree advanced or was reassigned between
+     capture and the fallback, seeding from `HEAD` omits paths that were **tracked at the captured
+     commit but match a `.gitignore` pattern**, because `add -A` will not re-add an ignored path
+     that the seeded index does not already track. Verified - a `build/config.json` force-added at
+     the captured commit and untracked by a later one vanishes from the snapshot entirely:
+
+     ```
+     seeded from live HEAD:        .gitignore  app.ts
+     seeded from captured headSha: .gitignore  app.ts  build/config.json
+     ```
+
+     **And the existing parent assertion cannot catch it**, which is why this is called out rather
+     than left to that guard: `commit-tree -p <headSha>` sets the parent correctly however the index
+     was seeded, so the parent check passes on a tree that is missing submitted content.
+  3. `add -A`, then `write-tree`.
+  4. **Verify the tree before committing it, rather than trusting the seed.** Copying the live index
+     is what buys the 34 ms, but that index reflects whatever the checkout currently tracks, so the
+     fast path carries the same hazard as the fallback. Compare
+     `git ls-tree -r --name-only <headSha>` against the written tree, and for every path tracked at
+     capture but absent from the tree, require that it is also absent from the worktree on disk. A
+     genuine deletion satisfies that; a path still on disk that disappeared from the tree is the
+     fault above, and it discards the attempt and retries through the cold path, which is seeded
+     from `headSha` and correct by construction. The difference set is normally empty or tiny, so
+     this costs one `ls-tree` and a sorted comparison.
+  5. `commit-tree -p <headSha>`, then `update-ref`. **`commit-tree` runs with an
      explicit daemon-owned identity** in its environment - `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
      `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` - and never relies on repository or global config.
      Verified: with no identity configured, `commit-tree` exits non-zero with "Author identity
@@ -185,9 +214,11 @@ guarantee that a retried round cannot double-write its audit.
      The explicit identity also fixes provenance in the opposite case: on a machine that *does* have
      config, the operator would otherwise be recorded as the author of an object the daemon wrote.
      Constants live beside `reviewSnapshotRef` so one module owns the namespace and the identity;
-  4. assert the resulting commit's parent equals `headSha`, and return
-     `{ oid, repoRoot }` or a typed failure naming which step failed;
-  5. clean up the temp index on every path.
+  6. assert the resulting commit's parent equals `headSha`, and return
+     `{ oid, repoRoot }` or a typed failure naming which step failed. This assertion is cheap and
+     kept, but note what it does **not** cover: the parent is correct by construction because it is
+     passed explicitly, so step 4 is the check that the *tree* is right;
+  7. clean up the temp index on every path.
   Never touch `GIT_INDEX_FILE` for the live index, never write into the worktree, and never run
   anything that could check out a tree.
 - `deleteReviewSnapshot(repoRoot, submissionId)` - `update-ref -d`, idempotent.
@@ -416,6 +447,14 @@ look viable.
   - the snapshot still reads after the worktree directory is deleted;
   - the snapshot still reads after `git gc --prune=now`;
   - the cold-index fallback produces the same tree as the seeded path;
+  - **a path tracked at the captured commit but matching a `.gitignore` pattern survives into the
+    snapshot even after the checkout advances past it.** Force-add `build/config.json` under a
+    `build/` ignore rule, capture that commit as `headSha`, then `git rm --cached` it in a later
+    commit while leaving the file on disk. The snapshot must still contain it. This is the
+    regression for seeding from live `HEAD`, and it fails loudly against the original wording;
+  - the same fixture exercises the **step-4 tree verification** directly: seed a temp index from the
+    advanced commit on purpose, and assert the verification rejects the resulting tree rather than
+    committing it, since the parent assertion would have passed;
   - **snapshot creation succeeds in a repository with no `user.name` or `user.email`** - build the
     fixture with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_SYSTEM=/dev/null` so the ambient
     operator config cannot mask the failure, and assert the commit's recorded author and committer
@@ -608,3 +647,16 @@ Phase 3 may rely on, and must not change:
   the way: `git show`'s default format prints the commit message into the same stream the header
   verifier parses, and a message can contain a forged `diff --git` line (verified), so metadata and
   patch are now separate invocations and step 5 anchors at line start.
+- **Reconciliation record, review round 8.** The cold-index fallback said `read-tree HEAD` while the
+  snapshot is required to represent the captured `headSha` - the **third** appearance of live `HEAD`
+  standing in for the captured commit, after `git_diff`'s default base in round 4. This one is
+  silent rather than merely wrong: verified, a path force-added at the captured commit under a
+  `.gitignore` pattern vanishes from the snapshot entirely when the seed comes from an advanced
+  `HEAD`, because `add -A` will not re-add an ignored path the seeded index does not already track.
+  The fallback now seeds from `headSha`. Two things came out of looking at it properly: the fast
+  path carries the same hazard, since a copied live index reflects current tracking - so a step-4
+  tree verification was added, comparing paths tracked at capture against the written tree and
+  requiring any absentee to be absent from disk too; and the pre-existing parent assertion is blind
+  to all of it, because `commit-tree -p <headSha>` sets the parent correctly however the index was
+  seeded. Recording that explicitly, because "we already assert the parent" is exactly the reasoning
+  that would let this back in.

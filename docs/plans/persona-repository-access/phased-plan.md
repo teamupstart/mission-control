@@ -277,8 +277,21 @@ file's audit record:
    not of a read. `PERSONA_TIMEOUT_MS` keeps its existing meaning as a per-call budget so no
    single-call review changes.
 
-**Reconciliations from automated review of the planning pull request.** Four findings, all real
-defects in the artifacts, all fixed without moving an approved decision:
+**Reconciliations from automated review of the planning pull request.** Every finding was a real
+defect in the artifacts, and every one was fixed without moving an approved decision.
+
+Two patterns repeated often enough to be worth naming for the implementers, because both are easy to
+reintroduce and neither is caught by the guards that look like they should catch it:
+
+- **Live `HEAD` standing in for the captured `headSha`.** Three separate places (reconciliations 10
+  and 14). The snapshot exists precisely because the checkout is mutable, so any code path that asks
+  git for `HEAD` after capture has reintroduced the problem the design exists to solve. The captured
+  sha is always in hand; use it. Note that the parent assertion on the snapshot commit does **not**
+  detect this, because the parent is passed explicitly.
+- **Fixing a content leak in one op and leaving its sibling.** `git_diff` then `git_show`
+  (reconciliations 12 and 13). This is why output class is now a total `Record` over the op list and
+  the adversarial suite is table-driven over it: the class rule and the test shape are the fix, not
+  the two individual patches.
 
 6. **Every caller-supplied revision is ancestry-constrained, not just `git_show`'s** (Phase 2).
    `git_diff`'s `base` was left free, which would let an access-enabled Persona name another branch
@@ -329,7 +342,16 @@ defects in the artifacts, all fixed without moving an approved decision:
     table-driven over that record so a future content op inherits it rather than needing to be
     remembered. `git_show` also fetches its commit message separately from its patch, because a
     message is attacker-controlled text that can contain a forged `diff --git` line (verified).
-14. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
+14. **The cold index fallback seeds from the captured `headSha`, and the tree is verified** (Phase 2).
+    The fallback said `read-tree HEAD` while the snapshot must represent the captured commit - the
+    third appearance of live `HEAD` standing in for it. Silent rather than merely wrong: verified, a
+    path force-added at capture under a `.gitignore` pattern vanishes from the snapshot when the seed
+    comes from an advanced `HEAD`, because `add -A` will not re-add an ignored path the seeded index
+    does not track. The fast path carries the same hazard, since a copied live index reflects current
+    tracking, so a tree verification now compares paths tracked at capture against the written tree
+    and requires any absentee to be absent from disk too. The pre-existing parent assertion is blind
+    to all of it - `commit-tree -p <headSha>` sets the parent correctly however the index was seeded.
+15. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
     `{ repoRoot, snapshotOid, headSha, budget }` while the same phase required it to write a row per
     operation under a unique `(node_attempt_id, round, ordinal)`, and Phase 3 was forbidden from
     writing rows - so as written, nothing could persist a brokered query. The reader is now built

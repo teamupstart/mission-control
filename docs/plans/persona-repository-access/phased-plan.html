@@ -427,8 +427,22 @@
   </ol>
 
   <h3>Reconciliations from automated review of the planning pull request</h3>
-  <p>Four findings, all real defects in the artifacts, all fixed without moving an approved
-  decision.</p>
+  <p>Every finding was a real defect in the artifacts, and every one was fixed without moving an
+  approved decision.</p>
+  <p>Two patterns repeated often enough to be worth naming for the implementers, because both are
+  easy to reintroduce and neither is caught by the guard that looks like it should catch it:</p>
+  <ul>
+    <li><strong>Live <code>HEAD</code> standing in for the captured <code>headSha</code></strong> -
+      three separate places (items 10 and 14). The snapshot exists precisely because the checkout is
+      mutable, so any code path that asks git for <code>HEAD</code> after capture has reintroduced
+      the problem the design exists to solve. The captured sha is always in hand; use it. The parent
+      assertion on the snapshot commit does <strong>not</strong> detect this, because the parent is
+      passed explicitly.</li>
+    <li><strong>Fixing a content leak in one op and leaving its sibling</strong> -
+      <code>git_diff</code> then <code>git_show</code> (items 12 and 13). This is why output class is
+      now a total <code>Record</code> over the op list and the adversarial suite is table-driven over
+      it: the class rule and the test shape are the fix, not the two individual patches.</li>
+  </ul>
   <ol start="6">
     <li><strong>Every caller-supplied revision is ancestry-constrained, not just
       <code>git_show</code>'s</strong> (Phase 2). <code>git_diff</code>'s <code>base</code> was left

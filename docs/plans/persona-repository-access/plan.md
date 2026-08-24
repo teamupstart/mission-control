@@ -130,7 +130,8 @@ repository:
 | Step | Result |
 |---|---|
 | `cp .git/index $TMP` then `GIT_INDEX_FILE=$TMP git add -A` | **34 ms**, 2,633 paths |
-| cold temp index (`read-tree HEAD` then `add -A`) | 729 ms |
+| cold temp index (`read-tree <headSha>` then `add -A`) | 729 ms |
+| the same cold seed taken from live `HEAD` after the checkout advanced | silently drops a path tracked at capture but matching a `.gitignore` pattern |
 | live worktree and live index after the run | unchanged (`git status` byte-identical) |
 | `git rev-parse --git-path refs/mission-control/review-snapshots/x` | resolves into the **common** `.git/refs`, not the per-worktree dir |
 | `git gc --prune=now` with the ref set | snapshot commit still `cat-file -t` reachable |
@@ -268,9 +269,14 @@ unstaged and untracked - parented on the captured `HEAD`, pinned by a ref under
 `refs/mission-control/review-snapshots/<submissionId>`.
 
 ```
-cp <worktree>/.git/index $TMP          # seeds the stat cache: 34 ms instead of 729 ms
+# Fast path seeds the stat cache from the live index: 34 ms instead of 729 ms.
+# The cold fallback seeds from the CAPTURED headSha, never live HEAD - seeding from a
+# moved HEAD silently drops paths tracked at capture that match a .gitignore pattern.
+cp <worktree>/.git/index $TMP           # or: GIT_INDEX_FILE=$TMP git read-tree <headSha>
 GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
 GIT_INDEX_FILE=$TMP git write-tree
+# Then verify the tree: every path tracked at <headSha> is in it, or gone from disk too.
+# The parent assertion below cannot cover this - the parent is passed explicitly.
 # Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
 # clone that never set user.email would fail every snapshot - and on a machine that did set
 # it, the operator would be recorded as the author of an object the daemon wrote.

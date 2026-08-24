@@ -230,7 +230,8 @@
     <thead><tr><th>Step</th><th>Result</th></tr></thead>
     <tbody>
       <tr><td><code>cp .git/index $TMP</code> then <code>GIT_INDEX_FILE=$TMP git add -A</code></td><td><strong>34&nbsp;ms</strong>, 2,633 paths</td></tr>
-      <tr><td>cold temp index (<code>read-tree HEAD</code> then <code>add -A</code>)</td><td>729&nbsp;ms</td></tr>
+      <tr><td>cold temp index (<code>read-tree &lt;headSha&gt;</code> then <code>add -A</code>)</td><td>729&nbsp;ms</td></tr>
+      <tr><td>the same cold seed taken from live <code>HEAD</code> after the checkout advanced</td><td><span class="no">silently drops</span> a path tracked at capture but matching a <code>.gitignore</code> pattern</td></tr>
       <tr><td>live worktree and live index after the run</td><td>unchanged (<code>git status</code> byte-identical)</td></tr>
       <tr><td><code>git rev-parse --git-path refs/mission-control/review-snapshots/x</code></td><td>resolves into the <strong>common</strong> <code>.git/refs</code>, not the per-worktree dir</td></tr>
       <tr><td><code>git gc --prune=now</code> with the ref set</td><td>snapshot commit still reachable</td></tr>
@@ -374,9 +375,14 @@ export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";
   repository's object database: a commit whose tree is the worktree exactly as submitted -
   committed, staged, unstaged and untracked - parented on the captured <code>HEAD</code>,
   pinned by a ref under <code>refs/mission-control/review-snapshots/&lt;submissionId&gt;</code>.</p>
-<pre><code>cp &lt;worktree&gt;/.git/index $TMP          # seeds the stat cache: 34 ms instead of 729 ms
+<pre><code># Fast path seeds the stat cache from the live index: 34 ms instead of 729 ms.
+# The cold fallback seeds from the CAPTURED headSha, never live HEAD - seeding from a
+# moved HEAD silently drops paths tracked at capture that match a .gitignore pattern.
+cp &lt;worktree&gt;/.git/index $TMP           # or: GIT_INDEX_FILE=$TMP git read-tree &lt;headSha&gt;
 GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
 GIT_INDEX_FILE=$TMP git write-tree
+# Then verify the tree: every path tracked at &lt;headSha&gt; is in it, or gone from disk too.
+# The parent assertion below cannot cover this - the parent is passed explicitly.
 # Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
 # clone that never set user.email would fail every snapshot - and on a machine that did set
 # it, the operator would be recorded as the author of an object the daemon wrote.

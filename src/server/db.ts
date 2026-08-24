@@ -4,6 +4,12 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
+import {
+  APP_CONFIG_ENTRIES,
+  type AppConfigEntry,
+  type AppConfigInput,
+  type AppConfigValue,
+} from "@shared/app-config-entries.ts";
 import { DB_PATH, envVar } from "./config.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
@@ -1323,7 +1329,8 @@ export function openDb(): DatabaseSync {
       ON workflow_submissions(trigger_key);
 
     -- Mutable, conversation-owned evidence remains separate from immutable submissions.
-    -- Filesystem locators are server-only and never enter context_json or API responses.
+    -- Source roots and inline bodies are server-only. Child-supplied locators may enter the
+    -- staged-evidence API, but never immutable context_json without capture and validation.
     CREATE TABLE IF NOT EXISTS workflow_evidence_owners (
       note_key              TEXT PRIMARY KEY,
       generation            INTEGER NOT NULL DEFAULT 0,
@@ -1348,6 +1355,7 @@ export function openDb(): DatabaseSync {
       source_root           TEXT NOT NULL,
       source_locator        TEXT NOT NULL,
       inline_content        TEXT,
+      episode_key           TEXT,
       display_name          TEXT NOT NULL,
       caption               TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
@@ -3138,6 +3146,9 @@ function migrate(d: DatabaseSync): void {
   // bounded content is already present at registration and therefore must survive until capture.
   // NULL means every historical row and every path/image source exactly as before.
   addColumn(d, "workflow_evidence_staging", "inline_content", "TEXT");
+  // Evidence belongs to the resolved human-intent episode current at registration.
+  // NULL preserves legacy rows and unresolved intent without inventing provenance.
+  addColumn(d, "workflow_evidence_staging", "episode_key", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -8919,7 +8930,7 @@ export function sdkOwnedNoteKey(noteKey: string, now = Date.now()): boolean {
 }
 
 /** Where the last observed OTLP export is remembered, so a restart does not forget it. */
-const OTEL_SEEN_KEY = "costOtelLastSeen";
+const OTEL_SEEN_ENTRY = APP_CONFIG_ENTRIES.costOtelLastSeen;
 
 /**
  * How often the last-seen stamp is actually persisted.
@@ -8951,17 +8962,17 @@ const OTEL_SEEN_WRITE_THROTTLE_MS = 60_000;
  * Arrival is what the flag claims to measure, so arrival is what it measures.
  */
 export function noteOtelExportSeen(now: number): void {
-  const previous = getAppConfig<number>(OTEL_SEEN_KEY);
+  const previous = getAppConfig(OTEL_SEEN_ENTRY);
   // One comparison, two properties, and both are wanted. It throttles a rewrite that is sooner
   // than the granularity anything reads, AND it refuses to move the stamp BACKWARDS - a clock
   // that steps back must not be able to age a live exporter into looking dead.
   if (typeof previous === "number" && now - previous < OTEL_SEEN_WRITE_THROTTLE_MS) return;
-  setAppConfig(OTEL_SEEN_KEY, now);
+  setAppConfig(OTEL_SEEN_ENTRY, now);
 }
 
 /** When an OTLP export was last observed arriving, or null if one never has. */
 export function lastOtelExportSeenAt(): number | null {
-  const stored = getAppConfig<number>(OTEL_SEEN_KEY);
+  const stored = getAppConfig(OTEL_SEEN_ENTRY);
   return typeof stored === "number" ? stored : null;
 }
 
@@ -10651,14 +10662,16 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
 
 // ---- generic app config (Foreman config, future singletons) ----
 
-/** Read a JSON-encoded config blob by key, or undefined when unset/corrupt. */
-export function getAppConfig<T>(key: string): T | undefined {
-  const r = openDb().prepare(`SELECT value FROM app_config WHERE key = ?`).get(key) as
+/** Read a registered JSON-encoded config blob, or undefined when unset/corrupt JSON. */
+export function getAppConfig<Entry extends AppConfigEntry>(
+  entry: Entry,
+): AppConfigValue<Entry> | undefined {
+  const r = openDb().prepare(`SELECT value FROM app_config WHERE key = ?`).get(entry.key) as
     | { value: string }
     | undefined;
   if (!r) return undefined;
   try {
-    return JSON.parse(r.value) as T;
+    return JSON.parse(r.value) as AppConfigValue<Entry>;
   } catch {
     return undefined;
   }
@@ -10697,13 +10710,16 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
     .run(noteKey, generation, now);
 }
 
-export function setAppConfig(key: string, value: unknown): void {
+export function setAppConfig<Entry extends AppConfigEntry>(
+  entry: Entry,
+  value: AppConfigInput<Entry>,
+): void {
   openDb()
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
-    .run(key, JSON.stringify(value));
+    .run(entry.key, JSON.stringify(value));
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----

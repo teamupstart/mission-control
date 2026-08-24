@@ -332,6 +332,19 @@ Workflow belongs only at its final N-to-one handoff.
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
+Each row is the checkout's **directory name**, not its path: every repo under one workspace
+root shares a long leading prefix, and a list of paths as narrow as the field ellipsizes away
+the only part that tells two rows apart. The full path is on the row's tooltip, and it is
+still what the field itself holds.
+
+Where two offered checkouts share a name, those rows add **one more folder name** underneath -
+never a path, which would put the shared prefix straight back: `~/a/api` and `~/b/api` are
+told apart by `a` and `b`. Which folder that is gets chosen rather than fixed - the colliding
+rows walk up together and stop at the first level whose names actually differ, so
+`~/x/shared/api` and `~/y/shared/api` are labelled `x` and `y` instead of `shared` twice. A
+group that never separates falls back to the immediate parent, and a checkout with no folder
+above it at all carries no second line rather than a stand-in for one - a stand-in would be a
+path. The full path is still one hover away.
 
 It opens on **the repo your last dispatch went to**, since work comes in runs - three
 tasks into the same checkout, then a switch - and that's one fewer field to fill in for
@@ -905,8 +918,11 @@ turning one on a much smaller decision than [GitHub Inspector](inspector-and-shi
 [Shipping](inspector-and-shipping.md#shipping-yolo-mode): the worst a broken source can do is put junk in a list you
 then read and delete. The sweep itself never auto-dispatches. Once filed, a task follows the
 separately configured [backlog autopilot](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet)
-like any other backlog row. That is why each source can turn **Allow backlog autopilot** off
-and make all of its future tasks arrive parked for review instead.
+like any other backlog row - and a new source files them **parked**, with **Allow backlog
+autopilot** off, so a sweep's twenty-five rows are a list you triage rather than work that
+starts dispatching before you have read a title. Enabling a row is you saying yes to that
+row; turn **Allow backlog autopilot** on for a source whose upstream is already curated and
+every later sweep of it files ready-to-schedule tasks instead.
 
 Work goes the other way exactly once, and only when you send it: **[Push a task to
 GitHub](#push-a-task-to-github)**, from a backlog task's own editor. That is a per-task
@@ -926,7 +942,7 @@ turning it on is consent. Per source:
 | **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
-| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. Turn **Allow backlog autopilot** off to make new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually |
+| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
 import { isWrapupPayload } from "../src/shared/queue.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
+import type { WorkflowStagedEvidenceList } from "../src/shared/workflow.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
@@ -1605,6 +1606,362 @@ process.stdin.on("end", () => {
 /** The PR-demanding objective a dispatched ship task actually carries. */
 const SHIP_GOAL = "make the uploader retry on a 500, then open a reviewable pull request";
 const shipGoalRecord = { ...goalRecord, objective: SHIP_GOAL, prompt: SHIP_GOAL, focus: SHIP_GOAL };
+
+interface FixedGap {
+  id: string;
+  severity: "blocking" | "advisory";
+  kind: "incomplete" | "untested" | "standards" | "regression" | "unverified";
+  path: string;
+  detail: string;
+  fix: string;
+}
+
+function mkFixedVerdictClaude(verdict: {
+  complete: boolean;
+  summary: string;
+  gaps: FixedGap[];
+}): { bin: string; log: string; prompt: string } {
+  const dir = tmp("fake-claude-evidence-verdict-");
+  const log = join(dir, "calls.log");
+  const prompt = join(dir, "prompt.txt");
+  const bin = join(dir, "claude");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, Date.now() + "\\n");
+  fs.writeFileSync(${JSON.stringify(prompt)}, Buffer.concat(chunks));
+  process.stdout.write(JSON.stringify({ result: JSON.stringify(${JSON.stringify(verdict)}) }));
+});
+`,
+  );
+  chmodSync(bin, 0o755);
+  writeFileSync(log, "");
+  return { bin, log, prompt };
+}
+
+function registeredCommandEvidence(
+  episodeKey: string | null = "intent:1:1",
+  clientItemId = "focused-check",
+): WorkflowStagedEvidenceList {
+  return {
+    generation: 4,
+    images: [],
+    artifacts: [{
+      id: `evidence-${clientItemId}`,
+      clientItemId,
+      sourceKind: "command",
+      sourceLocator: `command:${clientItemId}`,
+      episodeKey,
+      displayName: `${clientItemId}.txt`,
+      caption: `${clientItemId} passed`,
+      repositoryScope: "repo-01",
+      mimeType: "text/plain",
+      bytes: 321,
+      sha256: "a".repeat(64),
+      generation: 4,
+      createdAt: 1_725_000_000_000,
+      updatedAt: 1_725_000_000_001,
+    }],
+  };
+}
+
+async function runShipEvidenceScenario(input: {
+  verdict: { complete: boolean; summary: string; gaps: FixedGap[] };
+  evidence?: WorkflowStagedEvidenceList;
+  evidenceStatus?: number;
+  claimReason?: "no_binding" | "manual_trigger";
+  stopOn: "claim" | "consume" | "none";
+}): Promise<{ stub: Stub; out: string; prompt: string; log: string }> {
+  const repo = tmp("pw-evidence-repo-");
+  const fake = mkFixedVerdictClaude(input.verdict);
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "ship", workflowId: "workflow-review" }),
+  });
+  const stopAt = Date.now() - 120_000;
+  let queue = mkQueue(repo);
+  let evidenceFailureAt = 0;
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: stopAt }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: shipGoalRecord };
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/up.ts b/up.ts\n+retry();\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      if (input.evidenceStatus && input.evidenceStatus !== 200) evidenceFailureAt = Date.now();
+      return input.evidenceStatus && input.evidenceStatus !== 200
+        ? { status: input.evidenceStatus, json: { error: "evidence unavailable" } }
+        : { status: 200, json: input.evidence ?? { generation: 0, images: [], artifacts: [] } };
+    }
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: { messages: [{ role: "user", text: SHIP_GOAL, tools: [] }], truncated: false },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") {
+      return { status: 200, json: { docs: [], truncated: false } };
+    }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      if (input.claimReason) return { status: 200, json: { claimed: false, reason: input.claimReason } };
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.expectedWorkCycle.generation,
+        promptedDecision: {
+          logicalKey: "agent-1",
+          generation: body.expectedWorkCycle.generation,
+          outcome: "workflow_claimed",
+          summary: "claimed",
+          gaps: [],
+          decidedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      return {
+        status: 200,
+        json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" },
+      };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as {
+        generation: number;
+        decision?: { outcome: "held"; summary: string; gaps: { id: string; path: string; detail: string }[] };
+      };
+      queue = {
+        ...queue,
+        promptedConsumedGeneration: body.generation,
+        promptedDecision: body.decision
+          ? {
+            logicalKey: "agent-1",
+            generation: body.generation,
+            outcome: body.decision.outcome,
+            summary: body.decision.summary,
+            gaps: body.decision.gaps,
+            decidedAt: Date.now(),
+          }
+          : null,
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 8_000,
+    until: input.stopOn === "claim"
+      ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
+      : input.stopOn === "consume"
+        ? () => stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length > 0
+        : () => evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250,
+  });
+  await stub.close();
+  return { stub, out, prompt: fake.prompt, log: fake.log };
+}
+
+const UNVERIFIED_GAP: FixedGap = {
+  id: "verification-output-unavailable",
+  severity: "blocking",
+  kind: "unverified",
+  path: "",
+  detail: "the implementation appears done, but verification output cannot be confirmed",
+  fix: "provide verification output",
+};
+
+test("same-episode registered evidence is fenced into the prompt and a clean verdict claims", async () => {
+  const result = await runShipEvidenceScenario({
+    verdict: { complete: true, summary: "the implementation and verification are complete", gaps: [] },
+    evidence: registeredCommandEvidence(),
+    stopOn: "claim",
+  });
+  const prompt = readFileSync(result.prompt, "utf8");
+  const fence = prompt.indexOf("BEGIN UNTRUSTED EVIDENCE");
+  assert.ok(fence > 0, result.out);
+  assert.ok(prompt.indexOf("1 evidence item is registered for this work") < fence, result.out);
+  assert.ok(prompt.indexOf("| 1 | command | 4 | 1725000000000 | 321 |") < fence, result.out);
+  assert.ok(prompt.indexOf("command:focused-check") > fence, result.out);
+  assert.ok(prompt.indexOf("focused-check passed") > fence, result.out);
+
+  const claims = result.stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(claims.length, 1, result.out);
+  const claim = claims[0];
+  assert.ok(claim);
+  assert.equal(
+    (claim.body as { summary?: string }).summary,
+    "the implementation and verification are complete",
+  );
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0, result.out);
+  assert.equal(claudeCalls(result.log).length, 1, result.out);
+});
+
+test("the verification-evidence fallback claims only at its structural and verdict floor", async () => {
+  const stale = registeredCommandEvidence("intent:9:9", "stale-proof");
+  const legacy = registeredCommandEvidence(null, "legacy-proof");
+  const cases: Array<{
+    name: string;
+    verdict: { complete: boolean; summary: string; gaps: FixedGap[] };
+    evidence?: WorkflowStagedEvidenceList;
+    claimReason?: "no_binding" | "manual_trigger";
+    stopOn: "claim" | "consume";
+    claimAttempts: number;
+    consumes: number;
+    fallback: boolean;
+    heldFallback?: boolean;
+    excludes?: string[];
+  }> = [
+    {
+      name: "all blocking gaps are unverified",
+      verdict: { complete: true, summary: "done except for visible verification output", gaps: [UNVERIFIED_GAP] },
+      evidence: registeredCommandEvidence(),
+      stopOn: "claim",
+      claimAttempts: 1,
+      consumes: 0,
+      fallback: true,
+    },
+    {
+      name: "another blocking gap remains",
+      verdict: {
+        complete: true,
+        summary: "verification and a regression remain",
+        gaps: [
+          UNVERIFIED_GAP,
+          { ...UNVERIFIED_GAP, id: "regression", kind: "regression", detail: "the retry broke uploads" },
+        ],
+      },
+      evidence: registeredCommandEvidence(),
+      stopOn: "consume",
+      claimAttempts: 0,
+      consumes: 1,
+      fallback: false,
+    },
+    {
+      name: "the implementation verdict is incomplete",
+      verdict: { complete: false, summary: "implementation remains", gaps: [UNVERIFIED_GAP] },
+      evidence: registeredCommandEvidence(),
+      stopOn: "consume",
+      claimAttempts: 0,
+      consumes: 1,
+      fallback: false,
+    },
+    {
+      name: "no evidence was registered",
+      verdict: { complete: true, summary: "proof is unavailable", gaps: [UNVERIFIED_GAP] },
+      stopOn: "consume",
+      claimAttempts: 0,
+      consumes: 1,
+      fallback: false,
+    },
+    {
+      name: "only stale and legacy evidence exists",
+      verdict: { complete: true, summary: "proof is unavailable", gaps: [UNVERIFIED_GAP] },
+      evidence: { generation: 4, images: [], artifacts: [...stale.artifacts, ...legacy.artifacts] },
+      stopOn: "consume",
+      claimAttempts: 0,
+      consumes: 1,
+      fallback: false,
+      excludes: ["stale-proof", "legacy-proof"],
+    },
+    {
+      name: "no binding cannot run the authoritative workflow",
+      verdict: { complete: true, summary: "done except for visible verification output", gaps: [UNVERIFIED_GAP] },
+      evidence: registeredCommandEvidence(),
+      claimReason: "no_binding",
+      stopOn: "consume",
+      claimAttempts: 1,
+      consumes: 1,
+      fallback: false,
+      heldFallback: true,
+    },
+    {
+      name: "a Manual binding cannot run the authoritative workflow automatically",
+      verdict: { complete: true, summary: "done except for visible verification output", gaps: [UNVERIFIED_GAP] },
+      evidence: registeredCommandEvidence(),
+      claimReason: "manual_trigger",
+      stopOn: "consume",
+      claimAttempts: 1,
+      consumes: 1,
+      fallback: false,
+      heldFallback: true,
+    },
+  ];
+
+  for (const entry of cases) {
+    const result = await runShipEvidenceScenario(entry);
+    const claims = result.stub.to("POST", "/api/sessions/s1/workflow-completion");
+    const consumes = result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+    assert.equal(claims.length, entry.claimAttempts, `${entry.name}\n${result.out}`);
+    assert.equal(consumes.length, entry.consumes, `${entry.name}\n${result.out}`);
+    if (entry.fallback) {
+      const claim = claims[0];
+      assert.ok(claim);
+      assert.match(
+        (claim.body as { summary?: string }).summary ?? "",
+        /^verification-evidence fallback: done except for visible verification output$/,
+        entry.name,
+      );
+    }
+    if (entry.excludes) {
+      const prompt = readFileSync(result.prompt, "utf8");
+      assert.match(prompt, /No evidence is registered for this work/);
+      for (const token of entry.excludes) assert.doesNotMatch(prompt, new RegExp(token));
+    }
+    if (entry.heldFallback) {
+      const consume = consumes[0];
+      assert.ok(consume, entry.name);
+      const decision = (consume.body as {
+        decision?: {
+          outcome: string;
+          gaps: Array<{ id: string; path: string; detail: string }>;
+        };
+      }).decision;
+      assert.equal(decision?.outcome, "held", entry.name);
+      assert.deepEqual(decision?.gaps, [{
+        id: UNVERIFIED_GAP.id,
+        path: UNVERIFIED_GAP.path,
+        detail: UNVERIFIED_GAP.detail,
+      }], entry.name);
+    }
+    assert.equal(claudeCalls(result.log).length, 1, entry.name);
+  }
+});
+
+test("a registered-evidence read failure neither verifies, consumes nor claims", async () => {
+  const result = await runShipEvidenceScenario({
+    verdict: { complete: true, summary: "would have completed", gaps: [] },
+    evidenceStatus: 500,
+    stopOn: "none",
+  });
+  assert.equal(result.stub.to("GET", "/api/sessions/s1/workflow-evidence").length, 1, result.out);
+  assert.equal(claudeCalls(result.log).length, 0, result.out);
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, result.out);
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0, result.out);
+});
 
 test("a ship objective that demands a PR still completes at the delivered boundary, and claims one workflow", async () => {
   // THE REPORTED DEADLOCK, end to end. Every dispatched ship task is told to stop before

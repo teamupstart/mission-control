@@ -1412,10 +1412,11 @@ saying a running session keeps what it launched with. It is a column-aligned cla
 assertion makes, and the block exists precisely because a rule that silently reaches half
 the fleet is worse than none - it is trusted and wrong.
 
-`session-chip.png` is the marker on a live session, and `session-chip-open.png` is the text
-that session actually received. That pair is the answer to "why is the agent behaving like
-this": on Claude the block rides the system prompt and never enters the transcript, so
-without the chip there is nothing anywhere to read.
+`session-chip.png` is the minimized pencil control on a live session with its **See standing
+instructions.** tooltip open, and `session-chip-open.png` is the text that session actually
+received. That pair is the answer to "why is the agent behaving like this": on Claude the
+block rides the system prompt and never enters the transcript, so without the control there
+is nothing anywhere to read.
 
 `dispatch-note-secondary.png` is the forecast on a two-repo dispatch whose **secondary**
 carries the rule and whose primary has none - the case where a note that previewed only the

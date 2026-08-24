@@ -1440,6 +1440,26 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "session_upsert", session: s });
   }
 
+  /**
+   * Atomically replace every settings-owned Library projection after a restore commit.
+   * Phase 3 supplies the one global invalidation later; this boundary emits no row burst.
+   */
+  replaceSettingsCatalogs(catalogs: {
+    personas: readonly PersonaView[];
+    sessionActions: readonly SessionAction[];
+    workflowCommands: readonly WorkflowCommandView[];
+    workflows: readonly WorkflowSummary[];
+  }): void {
+    const personas = new Map(catalogs.personas.map((row) => [row.id, row]));
+    const sessionActions = new Map(catalogs.sessionActions.map((row) => [row.id, row]));
+    const workflowCommands = new Map(catalogs.workflowCommands.map((row) => [row.slot, row]));
+    const workflows = new Map(catalogs.workflows.map((row) => [row.id, row]));
+    this.personas = personas;
+    this.sessionActions = sessionActions;
+    this.workflowCommands = workflowCommands;
+    this.workflowSummaries = workflows;
+  }
+
   // ---- workflow Persona catalog ----
 
   /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: the Command catalog is where an executable argv now LIVES, and this file
 // is the one that opens a database written by a build that had no such table. Two things can
@@ -182,7 +183,7 @@ test("the legacy commands import once, as overrides, with no global default inve
   // And the old list is gone from `app_config`, so there is exactly one durable copy of an
   // argv the daemon will execute.
   assert.equal(
-    "checkCommands" in (getAppConfig<Record<string, unknown>>("workflows") ?? {}),
+    "checkCommands" in (getAppConfig(APP_CONFIG_ENTRIES.workflows) ?? {}),
     false,
   );
 });

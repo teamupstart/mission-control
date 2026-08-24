@@ -84,17 +84,21 @@ test("a source ships switched off - adding one is configuration, enabling it is 
   assert.equal(parsed.maxPerSweep, DEFAULT_MAX_PER_SWEEP);
   assert.equal(parsed.defaults.priority, null, "nothing infers a priority");
   assert.deepEqual(parsed.defaults.labels, []);
-  assert.equal(parsed.defaults.enabled, true, "existing sources remain eligible for autopilot");
+  // And what it FILES ships parked, for the same reason the source itself does. A sweep is a
+  // machine deciding something upstream is work; the autopilot dispatching it before anyone
+  // read a title is a decision nobody made, and one you can only take back by catching each
+  // session already running.
+  assert.equal(parsed.defaults.enabled, false, "swept tasks arrive parked for review");
 });
 
-test("a source can default every swept task to disabled", () => {
+test("a source whose upstream is curated can default every swept task to enabled", () => {
   const parsed = TaskSourceInstanceSchema.parse({
     id: "s1",
     kind: "github-issues",
     repoRoot: "/repo",
-    defaults: { enabled: false },
+    defaults: { enabled: true },
   });
-  assert.equal(parsed.defaults.enabled, false);
+  assert.equal(parsed.defaults.enabled, true);
 });
 
 // A mistyped interval must not let a source hammer someone else's API, nor park itself

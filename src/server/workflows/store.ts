@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
+import { canonicalSettingsBackupJson } from "@shared/settings-backups.ts";
 import type {
   CreatePersona,
   CreateSessionAction,
@@ -137,6 +138,13 @@ import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
 import { workflowLog } from "./log.ts";
 import { repeatOffenders } from "./repeat-offender.ts";
+import type {
+  SettingsBackupPersona,
+  SettingsBackupSessionAction,
+  SettingsBackupWorkflowCommand,
+  SettingsBackupWorkflowDefinition,
+  SettingsBackupWorkflowVersion,
+} from "../settings-backups/catalogs.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -1052,6 +1060,7 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
   inline_content: nullableText.optional().default(null),
+  episode_key: nullableText.optional().default(null),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
@@ -1122,6 +1131,7 @@ export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenc
     ...row,
     evidence_kind: row.evidence_kind ?? "image",
     inline_content: row.inline_content ?? null,
+    episode_key: row.episode_key ?? null,
   };
 }
 
@@ -1925,6 +1935,14 @@ export interface WorkflowRetentionResult {
   compactedRunIds: string[];
   deletedRunIds: string[];
   failedRunCount: number;
+}
+
+export interface WorkflowSettingsCatalogRestore {
+  personas: readonly SettingsBackupPersona[];
+  sessionActions: readonly SettingsBackupSessionAction[];
+  workflowCommands: readonly SettingsBackupWorkflowCommand[];
+  workflows: readonly SettingsBackupWorkflowDefinition[];
+  workflowVersions: readonly SettingsBackupWorkflowVersion[];
 }
 
 export type WorkflowExternalClaimResult =
@@ -2803,8 +2821,340 @@ export class WorkflowStore {
    * Everything `fn` writes must go through THIS handle. Two connections to one file are two
    * transactions, and the second one's write would sit outside the rollback this promises.
    */
-  transact<T>(fn: () => T): T {
-    return transaction(this.db, fn);
+  transact<T>(fn: (db: DatabaseSync) => T): T {
+    return transaction(this.db, () => fn(this.db));
+  }
+
+  /**
+   * Forward-restore every operator-owned workflow catalog through this store's connection.
+   * The caller owns the outer transaction; this method never opens a nested one.
+   */
+  restoreSettingsCatalogsInTransaction(
+    staged: WorkflowSettingsCatalogRestore,
+    now = Date.now(),
+  ): void {
+    const canonical = (value: unknown): string => canonicalSettingsBackupJson(value);
+    const builtinPersonaIds = new Set(this.builtins.map((row) => row.id));
+    const builtinActionIds = new Set(this.builtinActions.map((row) => row.id));
+    const builtinWorkflowIds = new Set(
+      this.builtinWorkflows.map((row) => row.definition.id),
+    );
+    const personaContent = (value: Persona | SettingsBackupPersona): unknown => {
+      const {
+        id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
+        builtin: _builtin, ...content
+      } = value;
+      return content;
+    };
+    const actionContent = (value: SessionAction | SettingsBackupSessionAction): unknown => {
+      const {
+        id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
+        builtin: _builtin, ...content
+      } = value;
+      return content;
+    };
+    const commandContent = (value: WorkflowCommandView | SettingsBackupWorkflowCommand): unknown => {
+      const { revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt, ...content } = value;
+      return content;
+    };
+    const workflowContent = (
+      value: WorkflowDefinition | SettingsBackupWorkflowDefinition,
+    ): unknown => {
+      const {
+        id: _id, draftRevision: _draftRevision, createdAt: _createdAt,
+        updatedAt: _updatedAt, builtin: _builtin, ...content
+      } = value;
+      return content;
+    };
+
+    const currentPersonas = (this.db.prepare(`SELECT * FROM personas`).all() as unknown[])
+      .map((row) => parsePersonaRow(row));
+    const currentPersonaById = new Map(currentPersonas.map((row) => [row.id, row]));
+    const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
+    const writePersona = this.db.prepare(
+      `INSERT INTO personas (
+         id, name, normalized_name, description, guidance_md, runner_id, model_id,
+         revision, archived_at, created_at, updated_at, import_provenance_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name=excluded.name, normalized_name=excluded.normalized_name,
+         description=excluded.description, guidance_md=excluded.guidance_md,
+         runner_id=excluded.runner_id, model_id=excluded.model_id,
+         revision=excluded.revision, archived_at=excluded.archived_at,
+         updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
+    );
+    for (const row of staged.personas) {
+      const current = currentPersonaById.get(row.id);
+      const revision = current ? Math.max(current.revision, row.revision) + 1 : Math.max(1, row.revision);
+      writePersona.run(
+        row.id,
+        row.name,
+        row.normalizedName,
+        row.description,
+        row.guidanceMarkdown,
+        row.runner,
+        row.model,
+        revision,
+        row.archivedAt,
+        current?.createdAt ?? row.createdAt,
+        current ? now : row.updatedAt,
+        row.provenance === null ? null : JSON.stringify(row.provenance),
+      );
+    }
+    const archivePersona = this.db.prepare(
+      `UPDATE personas SET archived_at = ?, updated_at = ?, revision = revision + 1
+        WHERE id = ? AND archived_at IS NULL`,
+    );
+    for (const row of currentPersonas) {
+      if (
+        !builtinPersonaIds.has(row.id)
+        && !stagedPersonaIds.has(row.id)
+        && row.archivedAt === null
+      ) {
+        archivePersona.run(now, now, row.id);
+      }
+    }
+
+    const currentActions = (this.db.prepare(`SELECT * FROM session_actions`).all() as unknown[])
+      .map((row) => parseSessionActionRow(row));
+    const currentActionById = new Map(currentActions.map((row) => [row.id, row]));
+    const stagedActionIds = new Set(staged.sessionActions.map((row) => row.id));
+    const writeAction = this.db.prepare(
+      `INSERT INTO session_actions (
+         id, name, normalized_name, description, prompt_md, required_skill_id,
+         completion_kind, revision, archived_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name=excluded.name, normalized_name=excluded.normalized_name,
+         description=excluded.description, prompt_md=excluded.prompt_md,
+         required_skill_id=excluded.required_skill_id, completion_kind=excluded.completion_kind,
+         revision=excluded.revision, archived_at=excluded.archived_at,
+         updated_at=excluded.updated_at`,
+    );
+    for (const row of staged.sessionActions) {
+      const current = currentActionById.get(row.id);
+      const revision = current ? Math.max(current.revision, row.revision) + 1 : Math.max(1, row.revision);
+      writeAction.run(
+        row.id,
+        row.name,
+        row.normalizedName,
+        row.description,
+        row.promptMarkdown,
+        row.requiredSkillId,
+        row.completion.kind,
+        revision,
+        row.archivedAt,
+        current?.createdAt ?? row.createdAt,
+        current ? now : row.updatedAt,
+      );
+    }
+    const archiveAction = this.db.prepare(
+      `UPDATE session_actions SET archived_at = ?, updated_at = ?, revision = revision + 1
+        WHERE id = ? AND archived_at IS NULL`,
+    );
+    for (const row of currentActions) {
+      if (
+        !builtinActionIds.has(row.id)
+        && !stagedActionIds.has(row.id)
+        && row.archivedAt === null
+      ) {
+        archiveAction.run(now, now, row.id);
+      }
+    }
+
+    this.seedWorkflowCommandsInTransaction(now);
+    for (const row of staged.workflowCommands) {
+      const current = this.workflowCommandInTransaction(row.slot);
+      if (canonical(commandContent(current)) === canonical(commandContent(row))) continue;
+      const revision = Math.max(current.revision, row.revision) + 1;
+      const previousOverrides = new Map(
+        this.workflowCommandOverrideRows(row.slot).map((item) => [item.repo_root, item.created_at]),
+      );
+      this.db.prepare(
+        `UPDATE workflow_commands
+            SET default_command_json = ?, max_runs = ?, revision = ?, updated_at = ?
+          WHERE slot = ?`,
+      ).run(
+        row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
+        row.maxRuns,
+        revision,
+        now,
+        row.slot,
+      );
+      this.db.prepare(`DELETE FROM workflow_command_overrides WHERE slot = ?`).run(row.slot);
+      const insertOverride = this.db.prepare(
+        `INSERT INTO workflow_command_overrides
+           (slot, repo_root, command_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const override of row.overrides) {
+        insertOverride.run(
+          row.slot,
+          override.repoRoot,
+          JSON.stringify(override.command),
+          previousOverrides.get(override.repoRoot) ?? now,
+          now,
+        );
+      }
+    }
+
+    const currentWorkflows = (this.db.prepare(`SELECT * FROM workflow_definitions`).all() as unknown[])
+      .map((row) => parseWorkflowDefinitionRow(row));
+    const currentWorkflowById = new Map(currentWorkflows.map((row) => [row.id, row]));
+    const stagedWorkflowIds = new Set(staged.workflows.map((row) => row.id));
+    const maxSourceRevision = this.db.prepare(
+      `SELECT COALESCE(MAX(source_draft_revision), 0) AS value
+         FROM workflow_versions WHERE workflow_id = ?`,
+    );
+    const stagedSourceHighWater = new Map<string, number>();
+    for (const version of staged.workflowVersions) {
+      stagedSourceHighWater.set(
+        version.workflowId,
+        Math.max(stagedSourceHighWater.get(version.workflowId) ?? 0, version.sourceDraftRevision),
+      );
+    }
+    const writeWorkflow = this.db.prepare(
+      `INSERT INTO workflow_definitions (
+         id, name, normalized_name, description, draft_graph_json,
+         completion_policy_json, resumption_policy, binding_defaults_json,
+         draft_revision, current_version_id, archived_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name=excluded.name, normalized_name=excluded.normalized_name,
+         description=excluded.description, draft_graph_json=excluded.draft_graph_json,
+         completion_policy_json=excluded.completion_policy_json,
+         resumption_policy=excluded.resumption_policy,
+         binding_defaults_json=excluded.binding_defaults_json,
+         draft_revision=excluded.draft_revision, current_version_id=NULL,
+         archived_at=excluded.archived_at, updated_at=excluded.updated_at`,
+    );
+    for (const row of staged.workflows) {
+      const current = currentWorkflowById.get(row.id);
+      const highWater = Number((maxSourceRevision.get(row.id) as { value: number }).value);
+      const draftRevision = Math.max(
+        current?.draftRevision ?? 0,
+        row.draftRevision,
+        highWater,
+        stagedSourceHighWater.get(row.id) ?? 0,
+      ) + 1;
+      writeWorkflow.run(
+        row.id,
+        row.name,
+        row.normalizedName,
+        row.description,
+        JSON.stringify(row.draft),
+        JSON.stringify(row.completionPolicy),
+        row.resumptionPolicy,
+        JSON.stringify(row.bindingDefaults),
+        draftRevision,
+        row.archivedAt,
+        current?.createdAt ?? row.createdAt,
+        current ? now : row.updatedAt,
+      );
+    }
+    for (const row of currentWorkflows) {
+      if (
+        builtinWorkflowIds.has(row.id)
+        || stagedWorkflowIds.has(row.id)
+        || row.archivedAt !== null
+      ) continue;
+      const highWater = Number((maxSourceRevision.get(row.id) as { value: number }).value);
+      this.db.prepare(
+        `UPDATE workflow_definitions
+            SET archived_at = ?, updated_at = ?, draft_revision = ?
+          WHERE id = ?`,
+      ).run(now, now, Math.max(row.draftRevision, highWater) + 1, row.id);
+    }
+
+    const versionByNumber = this.db.prepare(
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
+    );
+    const versionByDraft = this.db.prepare(
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
+    );
+    const insertVersion = this.db.prepare(
+      `INSERT INTO workflow_versions (
+         id, workflow_id, version, source_draft_revision, graph_json,
+         completion_policy_json, resumption_policy, binding_defaults_json, published_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of staged.workflowVersions) {
+      const byId = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(row.id);
+      if (byId) {
+        if (canonical(parseWorkflowVersionRow(byId)) !== canonical(row)) {
+          throw new Error(`Immutable workflow version ${row.id} changed during restore`);
+        }
+        continue;
+      }
+      const sameNumber = versionByNumber.get(row.workflowId, row.version);
+      const sameDraft = versionByDraft.get(row.workflowId, row.sourceDraftRevision);
+      if (sameNumber || sameDraft) {
+        throw new Error(`Immutable workflow version uniqueness changed during restore`);
+      }
+      insertVersion.run(
+        row.id,
+        row.workflowId,
+        row.version,
+        row.sourceDraftRevision,
+        JSON.stringify(row.graph),
+        JSON.stringify(row.completionPolicy),
+        row.resumptionPolicy,
+        JSON.stringify(row.bindingDefaults),
+        row.publishedAt,
+      );
+    }
+
+    const pointWorkflow = this.db.prepare(
+      `UPDATE workflow_definitions SET current_version_id = ? WHERE id = ?`,
+    );
+    for (const row of staged.workflows) {
+      if (row.currentVersionId !== null) {
+        const version = this.db.prepare(`SELECT workflow_id FROM workflow_versions WHERE id = ?`)
+          .get(row.currentVersionId) as { workflow_id: string } | undefined;
+        if (!version || version.workflow_id !== row.id) {
+          throw new Error(`Workflow ${row.id} current version no longer resolves`);
+        }
+      }
+      pointWorkflow.run(row.currentVersionId, row.id);
+    }
+
+    const personas = this.listPersonasInTransaction();
+    const sessionActions = this.listSessionActionsInTransaction();
+    for (const row of staged.workflows) {
+      const restored = this.mustWorkflow(row.id);
+      const validation = this.validateDraft(restored, { personas, sessionActions });
+      if (!validation.valid) throw new Error(`Workflow ${row.id} failed final restore validation`);
+    }
+    for (const row of staged.personas) {
+      const restored = this.mustPersona(row.id);
+      if (canonical(personaContent(restored)) !== canonical(personaContent(row))) {
+        throw new Error(`Persona ${row.id} failed final restore validation`);
+      }
+    }
+    for (const row of staged.sessionActions) {
+      const restored = this.mustSessionAction(row.id);
+      if (canonical(actionContent(restored)) !== canonical(actionContent(row))) {
+        throw new Error(`Session Action ${row.id} failed final restore validation`);
+      }
+    }
+    for (const row of staged.workflowCommands) {
+      if (canonical(commandContent(this.workflowCommandInTransaction(row.slot)))
+        !== canonical(commandContent(row))) {
+        throw new Error(`Command ${row.slot} failed final restore validation`);
+      }
+    }
+    for (const row of staged.workflows) {
+      const restored = this.mustWorkflow(row.id);
+      if (canonical(workflowContent(restored)) !== canonical(workflowContent(row))) {
+        throw new Error(`Workflow ${row.id} failed final restore validation`);
+      }
+    }
+    for (const row of staged.workflowVersions) {
+      const restored = this.getWorkflowVersionById(row.id);
+      if (!restored || canonical(restored) !== canonical(row)) {
+        throw new Error(`Workflow version ${row.id} failed final restore validation`);
+      }
+    }
   }
 
   /** `replaceLegacyCommandOverrides`, for a caller that already opened the transaction. */
@@ -3900,6 +4250,7 @@ export class WorkflowStore {
     noteKey: string,
     items: readonly WorkflowStagedEvidenceWrite[],
     now = Date.now(),
+    episodeKey: string | null = null,
   ): WorkflowStagedEvidenceList {
     return transaction(this.db, () => {
       this.db.prepare(
@@ -3922,6 +4273,7 @@ export class WorkflowStore {
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
           && row.inline_content === (item.inlineContent ?? null)
+          && row.episode_key === episodeKey
           && row.display_name === item.displayName
           && row.caption === item.caption
           && row.repository_scope === item.repositoryScope
@@ -3992,15 +4344,16 @@ export class WorkflowStore {
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
            id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
-           inline_content, display_name, caption, repository_scope, mime_type, bytes, sha256,
-           generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+           inline_content, episode_key, display_name, caption, repository_scope, mime_type, bytes,
+           sha256, generation, state, reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
            evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
            inline_content = excluded.inline_content,
+           episode_key = excluded.episode_key,
            display_name = excluded.display_name,
            caption = excluded.caption,
            repository_scope = excluded.repository_scope,
@@ -4023,6 +4376,7 @@ export class WorkflowStore {
           item.sourceRoot,
           item.sourceLocator,
           item.inlineContent ?? null,
+          episodeKey,
           item.displayName,
           item.caption,
           item.repositoryScope,
@@ -4053,6 +4407,8 @@ export class WorkflowStore {
         id: row.id,
         clientItemId: row.client_item_id,
         sourceKind: row.source_kind as WorkflowStagedEvidenceImage["sourceKind"],
+        sourceLocator: row.source_locator,
+        episodeKey: row.episode_key,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -4068,6 +4424,8 @@ export class WorkflowStore {
           id: row.id,
           clientItemId: row.client_item_id,
           sourceKind: row.source_kind as WorkflowStagedEvidenceTextArtifact["sourceKind"],
+          sourceLocator: row.source_locator,
+          episodeKey: row.episode_key,
           displayName: row.display_name,
           caption: row.caption,
           repositoryScope: row.repository_scope,

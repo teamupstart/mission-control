@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: the dashboard's preferences have to be durable, and the dashboard has
 // to be able to tell "never configured" from "configured to the defaults".
@@ -45,7 +46,7 @@ test("the guided dispatch default and an explicit off preference both round-trip
   // which is what `.default()` on the field buys, and the reason adding a preference owes
   // no migration. Backward: what an operator turns off is what comes back after the default
   // moves on.
-  setAppConfig("ui", { layout: "board" });
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board" });
   assert.equal(getUiConfig().guidedDispatch, true);
   setUiConfig({ guidedDispatch: false });
   const config = getUiConfig();
@@ -66,16 +67,16 @@ test("a key from a retired preference is dropped rather than carried forever", (
   // `usageBarCollapsed` folded the topbar's second row, which the spend popover retired.
   // The schema is not `.strict()`, so a config saved by an older build still OPENS - the
   // dead key is simply not read back out. This is the whole migration.
-  setAppConfig("ui", { layout: "board", usageBarCollapsed: true });
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board", usageBarCollapsed: true } as never);
   const config = getUiConfig();
   assert.equal(config.layout, "board");
   assert.ok(!("usageBarCollapsed" in config));
 });
 
 test("a stored Cards preference is rewritten to Console", () => {
-  setAppConfig("ui", { layout: "grid", richText: false });
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "grid", richText: false } as never);
   assert.equal(getUiConfig().layout, "console");
-  assert.deepEqual(getAppConfig("ui"), {
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.ui), {
     ...UI_CONFIG_DEFAULTS,
     richText: false,
   });

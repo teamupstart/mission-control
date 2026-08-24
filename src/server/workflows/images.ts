@@ -324,6 +324,7 @@ export async function stageAgentWorkflowEvidence(input: {
   artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   now?: number;
+  episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const writes: WorkflowStagedEvidenceWrite[] = [];
@@ -429,6 +430,9 @@ export async function stageAgentWorkflowEvidence(input: {
       sourceKind: "command",
       evidenceKind: "text",
       sourceRoot: selected.realRoot,
+      // The staged-evidence API and Foreman prompt expose this locator. Keep it opaque:
+      // a command line may carry inline credentials or secret-bearing arguments. The exact
+      // command remains only in the bounded captured artifact the agent explicitly registered.
       sourceLocator: `command:${commandOutput.clientItemId}`,
       inlineContent: content,
       displayName: cleanDisplayName(`${commandOutput.clientItemId}-command-output.txt`),
@@ -439,7 +443,7 @@ export async function stageAgentWorkflowEvidence(input: {
       sha256: createHash("sha256").update(data).digest("hex"),
     });
   }
-  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now);
+  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now, input.episodeKey ?? null);
 }
 
 export async function stageUploadedWorkflowEvidence(input: {
@@ -449,6 +453,7 @@ export async function stageUploadedWorkflowEvidence(input: {
   fallbackRoot: string | null;
   images: readonly WorkflowUploadEvidenceLocator[];
   now?: number;
+  episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const writes: WorkflowStagedEvidenceWrite[] = [];
@@ -479,7 +484,7 @@ export async function stageUploadedWorkflowEvidence(input: {
       sha256: inspected.sha256,
     });
   }
-  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now);
+  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now, input.episodeKey ?? null);
 }
 
 /** Browser submit is synchronous today; resolve the same issued roots without changing it. */
@@ -490,6 +495,7 @@ export function stageUploadedWorkflowEvidenceSync(input: {
   fallbackRoot: string | null;
   images: readonly WorkflowUploadEvidenceLocator[];
   now?: number;
+  episodeKey?: string | null;
 }): WorkflowStagedEvidenceList {
   const roots = scoutRepoSlots(input.task, input.fallbackRoot).map((repo) => ({
     ...repo,
@@ -524,7 +530,7 @@ export function stageUploadedWorkflowEvidenceSync(input: {
       sha256: inspected.sha256,
     });
   }
-  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now);
+  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now, input.episodeKey ?? null);
 }
 
 export function stageRetainedWorkflowEvidence(input: {
@@ -534,6 +540,7 @@ export function stageRetainedWorkflowEvidence(input: {
   fallbackRoot: string | null;
   locator: WorkflowRetainedEvidenceLocator;
   now?: number;
+  episodeKey?: string | null;
 }): WorkflowStagedEvidenceList {
   const record = input.store.submissionImageRecord(input.locator.imageId);
   if (!record || record.availability !== "retained") {
@@ -559,7 +566,7 @@ export function stageRetainedWorkflowEvidence(input: {
     mimeType: inspected.mimeType,
     bytes: inspected.bytes,
     sha256: inspected.sha256,
-  }], input.now);
+  }], input.now, input.episodeKey ?? null);
 }
 
 async function inspectReservedSource(item: WorkflowReservedEvidence): Promise<InspectedImage> {

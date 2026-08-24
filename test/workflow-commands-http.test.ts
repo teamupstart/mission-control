@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: HTTP is the write boundary for an argv the daemon will EXECUTE, and there
 // are now two doors into one catalog - the dedicated Command routes and the legacy workflow
@@ -27,7 +28,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 function fixture() {
   clearWorkflowTables(db);
-  setAppConfig("workflows", {});
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, {});
   const registry = new Registry();
   const commands = new WorkflowCommandManager(registry, new WorkflowStore(db));
   const app = buildApp(

@@ -309,7 +309,13 @@ test("typing filters by name, and ↵ takes the repo it reaches", async ({ dashb
   // first 28 characters, so the letters an operator reaches for first returned everything.
   await dashboard.keyboard.type("second");
   await expect(repoList(dashboard).getByRole("option")).toHaveCount(1);
-  await expect(repoList(dashboard).getByRole("option")).toHaveText(daemon.secondRepo);
+  // The row says the checkout's NAME - a list of paths as narrow as this field ellipsizes
+  // away the part that tells two repos apart. The whole path is still on the row, as the
+  // description its tooltip paints, and is still what taking the row writes below.
+  await expect(repoList(dashboard).getByRole("option")).toHaveText("second-repo");
+  await expect(repoList(dashboard).getByRole("option")).toHaveAccessibleDescription(
+    daemon.secondRepo,
+  );
 
   await dashboard.keyboard.press("Enter");
 
@@ -326,7 +332,7 @@ test("clicking a repo in the list answers the question too", async ({ dashboard,
   // The mouse path, and the rule it keeps is phase 2's: a question answered through its own
   // control moves the pass on. Left to `onChange` alone this wrote the repo and left the pass
   // parked on a question it had just answered.
-  await repoList(dashboard).getByRole("option", { name: daemon.secondRepo }).click();
+  await repoList(dashboard).getByRole("option", { name: "second-repo", exact: true }).click();
 
   await expect(repoField(dialog)).toHaveValue(daemon.secondRepo);
   await expect(rail(dialog).getByRole("button", { name: "Repo: second-repo" })).toBeVisible();

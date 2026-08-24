@@ -22,6 +22,7 @@ import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { isLlmRunnerId } from "@shared/llm.ts";
 import { providerOwningModel } from "@shared/model.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { getBacklogPlan } from "../backlog.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
@@ -37,8 +38,8 @@ import { foremanInstructionsView } from "./instructions.ts";
 // depth and disposition counts are derived from the registry the daemon already
 // holds - so the dashboard's status is honest without the worker pushing it.
 
-const CONFIG_KEY = "foreman";
-const LEASE_KEY = "foreman.lease";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.foreman;
+const LEASE_ENTRY = APP_CONFIG_ENTRIES.foremanLease;
 
 /**
  * How long a lease survives without a renewal - 3 missed renewals at the worker's
@@ -110,7 +111,7 @@ function migrateStoredForemanConfig(value: unknown): unknown {
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getForemanConfig(): ForemanConfig {
   return ForemanConfigSchema.parse(
-    migrateStoredForemanConfig(getAppConfig<unknown>(CONFIG_KEY) ?? {}),
+    migrateStoredForemanConfig(getAppConfig(CONFIG_ENTRY) ?? {}),
   );
 }
 
@@ -128,7 +129,7 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
     ...pinRoleProviders(cur, patch),
     backlogDefaultModel: { ...cur.backlogDefaultModel, ...(patch.backlogDefaultModel ?? {}) },
   });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 
@@ -260,28 +261,28 @@ export function foremanGroupRunner(cfg: ForemanConfig = getForemanConfig()): Llm
  * takeover automatic when the leader crashes or is Ctrl-C'd.
  */
 export function claimForemanLease(workerId: string, now = Date.now()): ForemanLeaseResult {
-  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  const cur = getAppConfig(LEASE_ENTRY);
   const held = cur && cur.expiresAt > now;
   if (held && cur.workerId !== workerId) {
     return { leader: false, expiresAt: cur.expiresAt, holder: cur.workerId };
   }
   const next: ForemanLease = { workerId, expiresAt: now + LEASE_TTL_MS };
-  setAppConfig(LEASE_KEY, next);
+  setAppConfig(LEASE_ENTRY, next);
   return { leader: true, expiresAt: next.expiresAt, holder: workerId };
 }
 
 /** Release the lease if we hold it, so a standby takes over at once rather than
  *  waiting out the TTL. Best-effort: a crash just lets the lease expire. */
 export function releaseForemanLease(workerId: string): void {
-  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  const cur = getAppConfig(LEASE_ENTRY);
   if (cur?.workerId === workerId) {
-    setAppConfig(LEASE_KEY, { workerId, expiresAt: 0 });
+    setAppConfig(LEASE_ENTRY, { workerId, expiresAt: 0 });
     if (plannerHealthReport?.workerId === workerId) plannerHealthReport = null;
   }
 }
 
 function liveLease(now: number): ForemanLease | null {
-  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  const cur = getAppConfig(LEASE_ENTRY);
   return cur && cur.expiresAt > now ? cur : null;
 }
 

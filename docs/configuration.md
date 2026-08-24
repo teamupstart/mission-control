@@ -3,7 +3,7 @@
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
-| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, native worktree pools, and disposable Git worktrees) |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
 | `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repository picker |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
@@ -148,6 +148,11 @@ must stay true, because with it false every datapoint arrives with no session id
 of it can be attributed. If you have set it to `false` yourself, the daemon says so at
 startup and the Cost panel says so on screen.
 
+On every daemon start, Mission Control also reconciles this owned telemetry block from the
+persisted Cost intent. The edit is idempotent and best-effort. This repairs a file that drifted or
+was copied with the state database, while an unreadable settings file is left untouched and logged
+for the operator to fix.
+
 > **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
 > Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
 > one is set - so a hook or MCP server installed under an older name keeps reporting without
@@ -168,6 +173,33 @@ startup and the Cost panel says so on screen.
 > repo: `npm run install-service` (the launchd label becomes `com.mission-control.daemon`;
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
+
+## Automatic settings snapshots
+
+After the daemon successfully starts serving, it ensures one logical snapshot for the current
+local calendar date. It rechecks through the day and writes no second generation for that date.
+A date when the daemon never runs has no fabricated backup; the next launch captures the current
+date and current settings.
+
+Snapshots live at `$MISSION_HOME/backups/settings`, which is
+`~/.mission-control/backups/settings` by default. An isolated `MISSION_HOME` therefore gets an
+isolated snapshot library and never reads or writes the default one. The directory is mode `0700`
+and each JSON file is mode `0600`. The files contain private machine configuration, including
+absolute repository paths and imported Persona provenance, so treat copies with the same care as
+the rest of `MISSION_HOME`.
+
+Format v1 includes normalized values for every registered setting, including schema defaults,
+plus every active or archived operator-owned Persona, session action, Workflow definition, its
+immutable published versions, and all four Command slots. Built-in catalog items are supplied by
+the application and are not copied. Snapshots also exclude tasks, queues, schedules, sessions,
+workflow bindings and runs, reviews, telemetry and spend history, operational away or lease state,
+derived reload generations, credentials, tokens, and environment secrets.
+
+The daemon publishes a sibling temporary file atomically, verifies its schema and SHA-256 digest,
+then applies retention. It keeps the newest 90 `daily` files and, independently, the newest 10
+`pre_restore` safety files. The daemon now contains the internal transactional restore engine that
+uses the safety writer, but it remains dormant: there is still no restore route, event, or UI until
+the final exposure phase.
 
 ## Commands
 

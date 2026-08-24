@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // Foreman's standing instructions are the prose half of its configuration, and this file is
 // about where that prose comes from: the markdown shipped with the app until the operator
@@ -50,7 +51,7 @@ test("the built-in view returns the exact shipped default with a stable ETag", a
   assert.equal(first.text, text);
   assert.equal(first.defaultText, text);
   assert.equal(first.etag, second.etag);
-  assert.equal(getAppConfig<unknown>("foreman.instructions"), null);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), null);
 });
 
 test("a custom view preserves whitespace, line endings, Unicode, and storage bytes exactly", async () => {
@@ -67,7 +68,7 @@ test("a custom view preserves whitespace, line endings, Unicode, and storage byt
   assert.match(changed.view.defaultText, /Correctness first/);
   assert.equal(m.foremanInstructionsView().text, exact);
   assert.equal(m.foremanInstructionsView().etag, changed.view.etag);
-  assert.equal(getAppConfig<string>("foreman.instructions"), exact);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), exact);
 });
 
 test("ETags preserve lone UTF-16 surrogates as distinct exact text", async () => {
@@ -84,7 +85,7 @@ test("ETags preserve lone UTF-16 surrogates as distinct exact text", async () =>
   assert.ok(!stale.ok);
   assert.deepEqual(stale.current, second.view);
   assert.equal(m.foremanInstructionsView().text, "\ud801");
-  assert.equal(getAppConfig<string>("foreman.instructions"), "\ud801");
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), "\ud801");
 });
 
 test("custom text identical to the seed remains source-distinct from built-in", async () => {
@@ -108,14 +109,14 @@ test("an empty stored value is intentional none, while reset restores built-in",
   assert.equal(cleared.view.source, "none");
   assert.equal(cleared.view.text, "");
   assert.match(cleared.view.defaultText, /Correctness first/);
-  assert.equal(getAppConfig<string>("foreman.instructions"), "");
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), "");
 
   const reset = m.updateForemanInstructions({ expectedEtag: cleared.view.etag, reset: true });
   assert.ok(reset.ok);
   assert.equal(reset.view.source, "builtin");
   assert.equal(reset.view.text, builtin.text);
   assert.equal(reset.view.etag, builtin.etag);
-  assert.equal(getAppConfig<unknown>("foreman.instructions"), null);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), null);
 });
 
 test("a stale mutation returns the current view and performs no storage write", async () => {
@@ -134,7 +135,7 @@ test("a stale mutation returns the current view and performs no storage write", 
   assert.ok(!stale.ok);
   assert.deepEqual(stale.current, changed.view);
   assert.equal(m.foremanInstructionsView().text, "Current document\r\n");
-  assert.equal(getAppConfig<string>("foreman.instructions"), "Current document\r\n");
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.foremanInstructions), "Current document\r\n");
 });
 
 test("a missing seed is empty built-in and remains distinct from intentional none", async () => {

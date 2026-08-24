@@ -8,6 +8,7 @@ import {
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
   type StandingInstructionsConfig,
 } from "@shared/standing-instructions.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
 // The durable half of repository standing instructions: one machine-wide default plus a
@@ -22,7 +23,7 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 // schema-validated blob and zod defaults apply on every read, so an installation that has
 // never seen this key reads the shipped empty document.
 
-const CONFIG_KEY = "instructions.standing";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.standingInstructions;
 const ETAG_NAMESPACE = "mission-control:standing-instructions:v1";
 
 export type StandingInstructionsMutation =
@@ -69,7 +70,7 @@ function instructionsEtag(config: StandingInstructionsConfig): string {
  */
 export function standingInstructionsConfig(): StandingInstructionsConfig {
   const parsed = StandingInstructionsConfigSchema.safeParse(
-    getAppConfig<unknown>(CONFIG_KEY) ?? {},
+    getAppConfig(CONFIG_ENTRY) ?? {},
   );
   return parsed.success ? parsed.data : { default: "", repositories: {} };
 }
@@ -121,6 +122,6 @@ export function updateStandingInstructions(
     default: update.default ?? current.default,
     repositories,
   };
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return { ok: true, view: viewOf(next) };
 }

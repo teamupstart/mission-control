@@ -233,6 +233,29 @@ for (const [name, nextName, kind] of cases) {
   });
 }
 
+test("a dismissed diff reports dismissal without inventing a verdict", () => {
+  const result = reviewToolResult({
+    id: "review-dismissed",
+    sessionId: "session-1",
+    kind: "diff",
+    title: "Review the patch",
+    body: "diff --git a/a.ts b/a.ts",
+    status: "dismissed",
+    response: null,
+    resolvedBy: "human",
+    createdAt: 1,
+    resolvedAt: 2,
+  } satisfies ReviewItem);
+
+  assert.deepEqual(
+    {
+      reportsDismissal: /dismiss/i.test(result.text),
+      reportsVerdict: /APPROVED|CHANGES REQUESTED/.test(result.text),
+    },
+    { reportsDismissal: true, reportsVerdict: false },
+  );
+});
+
 // ---- staying alive long enough that nobody has to ask twice ------------------------------
 
 // What is at stake: the duplicate cards in the review queue.

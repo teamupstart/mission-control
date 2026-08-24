@@ -65,19 +65,21 @@ export function reviewToolResult(review: ReviewItem): { text: string; isError: b
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
   }
-  if (review.kind === "diff") {
-    const verdict = review.status === "approved" ? "APPROVED" : "CHANGES REQUESTED";
-    const note = review.response ? `\nReviewer note: ${review.response}` : "";
-    return { text: `${verdict}${note}`, isError: false };
-  }
   if (review.status === "dismissed") {
     return {
       text:
         review.kind === "plan-decisions"
           ? "Decision request dismissed without a response."
-          : "Input request dismissed without a response.",
+          : review.kind === "input"
+            ? "Input request dismissed without a response."
+            : "Review dismissed without a response.",
       isError: false,
     };
+  }
+  if (review.kind === "diff") {
+    const verdict = review.status === "approved" ? "APPROVED" : "CHANGES REQUESTED";
+    const note = review.response ? `\nReviewer note: ${review.response}` : "";
+    return { text: `${verdict}${note}`, isError: false };
   }
   return {
     text:

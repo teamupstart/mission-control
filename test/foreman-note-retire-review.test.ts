@@ -123,7 +123,8 @@ test("dismissing the question retires the note as well", () => {
   // Declining to choose is still closing the ask: the child is released and Foreman's
   // suggestion answers nothing. Leaving the note up would ask the human to decide something
   // they have just explicitly declined to decide.
-  // Only a review with selectable options may be dismissed, so it is created with some.
+  // Keep selectable options here because this fixture represents the recommendation Foreman
+  // attached to the review; dismissal itself is available to every review kind.
   const { registry, reviews, reviewId } = blockedOnReview("rv-dismiss", "input", [
     {
       id: "q",

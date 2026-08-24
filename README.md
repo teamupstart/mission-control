@@ -62,6 +62,12 @@ Foreman turns carry their purple provenance from the chat log into the terminal,
 reviews separate the original request, each missing item, its suggested fix, and the safety note
 instead of presenting the whole review as one flat paste.
 
+Every review prompt created through the bundled Mission MCP server can be dismissed from its
+card, including free-text and option-based questions, plan decisions, shared plans, and diff
+reviews. Dismiss resolves only that review, records no fabricated answer or verdict, and releases
+the blocked tool call when one is waiting. **Close (esc)** only hides the review queue and resolves
+nothing. See [the review channel MCP reference](docs/sessions.md#review-channel-mcp).
+
 ## Dispatch with context
 
 Start a task in the right repository, choose its harness and runtime, and decide whether the

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -201,6 +201,114 @@ test("a typed answer appears in the conversation as the text submitted", async (
   // No form is invented for a question that never offered one.
   await expect(answer.locator(".review-answer-options")).toHaveCount(0);
   await expect(answer).toHaveCSS("border-left-color", ATTENTION_GOLD);
+});
+
+test("a free-text question can be dismissed without supplying an answer", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  await ask(daemon, {
+    kind: "input",
+    title: "What should the retry budget be?",
+    body: "What should the retry budget be?",
+  });
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await card.getByRole("button", { name: "to review" }).click();
+
+  const form = dashboard.getByRole("dialog", { name: "Review request" });
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "review-dismissal");
+    mkdirSync(evidenceDir, { recursive: true });
+    await dashboard.screenshot({
+      path: join(evidenceDir, "free-text-review-dismissed.png"),
+      fullPage: true,
+    });
+  }
+
+  await form.getByRole("button", { name: "Dismiss" }).click();
+
+  await expect(card.getByRole("button", { name: /to review/ })).toHaveCount(0);
+});
+
+test("a diff review can be dismissed without supplying a verdict", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  await ask(daemon, {
+    kind: "diff",
+    title: "Review the retry budget change",
+    body: [
+      "diff --git a/src/retry.ts b/src/retry.ts",
+      "--- a/src/retry.ts",
+      "+++ b/src/retry.ts",
+      "@@ -1 +1 @@",
+      "-export const retries = 2;",
+      "+export const retries = 3;",
+    ].join("\n"),
+  });
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await card.getByRole("button", { name: "to review" }).click();
+
+  const form = dashboard.getByRole("dialog", { name: "Review request" });
+  const dismiss = form.getByRole("button", { name: "Dismiss" });
+  await expect(dismiss).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "review-dismissal");
+    mkdirSync(evidenceDir, { recursive: true });
+    await dashboard.screenshot({
+      path: join(evidenceDir, "diff-review-dismissal.png"),
+      fullPage: true,
+    });
+  }
+
+  await dismiss.click();
+
+  await expect(card.getByRole("button", { name: /to review/ })).toHaveCount(0);
+});
+
+test("a plan review can be dismissed without supplying a verdict", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  await ask(daemon, {
+    kind: "plan",
+    title: "Review the retry budget rollout",
+    body: [
+      "# Retry budget rollout",
+      "",
+      "1. Increase the retry budget from two attempts to three.",
+      "2. Watch the worker error rate for one hour.",
+    ].join("\n"),
+  });
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await card.getByRole("button", { name: "to review" }).click();
+
+  const form = dashboard.getByRole("dialog", { name: "Review request" });
+  const dismiss = form.getByRole("button", { name: "Dismiss" });
+  await expect(dismiss).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "review-dismissal");
+    mkdirSync(evidenceDir, { recursive: true });
+    await dashboard.screenshot({
+      path: join(evidenceDir, "plan-review-dismissal.png"),
+      fullPage: true,
+    });
+  }
+
+  await dismiss.click();
+
+  await expect(card.getByRole("button", { name: /to review/ })).toHaveCount(0);
 });
 
 test("your answer is told apart from your own turn and from Foreman's", async ({

@@ -1575,7 +1575,7 @@ The MCP tools are:
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or
   dismisses that decision set without an answer
-- `request_review(title, diff)` - show a diff and **block** for approve / changes
+- `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
   dependsOnCurrentSession?)` - add a ship task to the backlog with the default
   agent/model/effort, returning its id and canonical repository set so later tasks can carry
@@ -1589,10 +1589,10 @@ The MCP tools are:
   creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
   fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
-- `request_input(question, options?)` - ask a question and **block** for the answer.
+- `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
-  submitting it; without them, a text box
+  `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
+  can be dismissed without sending an answer
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -1647,10 +1647,10 @@ resubmit it.
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
-Each option-based question or plan decision set is an independent review. Dismiss resolves
-only that review, persists without a fabricated answer, and releases its blocked tool call.
-These reviews keep the session under **Needs you** while any set remains pending; submitting
-or dismissing the final set clears that review-based signal.
+Each blocking review request is independent. Dismiss resolves only that review, persists
+without a fabricated answer or verdict, and releases its blocked tool call. These reviews keep
+the session under **Needs you** while any request remains pending; answering, deciding, or
+dismissing the final request clears that review-based signal.
 
 **A blocking tool waits as long as you do, and asking twice does not queue twice.** Every tool
 marked **block** above is waiting on a person, which can be minutes or hours. The MCP client in

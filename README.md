@@ -123,6 +123,15 @@ support this; the dispatch modal offers the control only for a harness that does
 tasks are dispatch-only - they cannot be dropped onto an agent that is already running,
 because the extra worktrees and the write access to them are granted when a session starts.
 
+Agents using the bundled Mission MCP server can add the same work to the backlog with
+`create_task`. Omitting repository selectors keeps the calling repository as primary.
+`repository` selects another primary and `additionalRepositories` attaches the rest; each accepts
+an absolute local checkout path or a directory name that is unique in the workspace index. Mission
+Control resolves the complete set to canonical main-checkout paths and checks the selected ship
+harness before storing anything. This local validation does not clone repositories or grant remote
+write access. Foreman's unattended-launch allowlist remains separate, and Git plus the repository
+host enforce push and pull-request authority when delivery reaches them.
+
 Each of those pull requests is tracked on its own. The card and the console list one line per
 repository with that repository's pull request and its state, so a task spanning three repos
 never collapses to a single link. **A multi-repo task completes only when every repository it

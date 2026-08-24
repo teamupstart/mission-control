@@ -719,28 +719,63 @@ export const ProductIssuePreflightSchema = z.object({
 });
 
 /**
+ * How many SECONDARY repositories one request may attach.
+ *
+ * A sanity bound on a request body rather than a product limit on how many repositories a
+ * task may coordinate - nothing downstream reads it as a maximum. Named because several
+ * request surfaces bound the same launch manifest and must not carry private copies.
+ */
+export const MAX_TASK_EXTRA_REPOS = 8;
+
+const McpCreateTaskBaseSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().min(1),
+  repoRoot: z.string().min(1),
+  title: z.string().min(1).max(200),
+  intent: z.string().min(1),
+  dependsOnTaskIds: z.array(z.string().min(1)).max(50).optional().default([]),
+  dependsOnCurrentSession: z.boolean().optional().default(false),
+});
+
+const mcpTaskDependenciesAreBounded = ({
+  dependsOnTaskIds,
+  dependsOnCurrentSession,
+}: {
+  dependsOnTaskIds: string[];
+  dependsOnCurrentSession: boolean;
+}) => dependsOnTaskIds.length + (dependsOnCurrentSession ? 1 : 0) <= 50;
+
+const mcpTaskDependencyRefinement = {
+  path: ["dependsOnTaskIds"],
+  message: "at most 50 task dependencies are allowed",
+};
+
+/**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same
  * pane/session/cwd evidence as the review channel; the MCP child never guesses a
  * Mission Control session id.
  */
-export const McpCreateTaskSchema = z
-  .object({
-    env: EnvSchema,
-    sessionId: z.string().nullable().optional().default(null),
-    cwd: z.string().min(1),
-    repoRoot: z.string().min(1),
-    title: z.string().min(1).max(200),
-    intent: z.string().min(1),
-    dependsOnTaskIds: z.array(z.string().min(1)).max(50).optional().default([]),
-    dependsOnCurrentSession: z.boolean().optional().default(false),
-  })
-  .refine(
-    ({ dependsOnTaskIds, dependsOnCurrentSession }) =>
-      dependsOnTaskIds.length + (dependsOnCurrentSession ? 1 : 0) <= 50,
-    { path: ["dependsOnTaskIds"], message: "at most 50 task dependencies are allowed" },
-  );
+export const McpCreateTaskSchema = McpCreateTaskBaseSchema.refine(
+  mcpTaskDependenciesAreBounded,
+  mcpTaskDependencyRefinement,
+);
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
+
+/**
+ * Selector-bearing MCP task creation. This shape has its own route so an older daemon cannot
+ * strip fields it does not know and create a valid-looking task in the wrong repository.
+ */
+export const McpCreateTaskV2Schema = McpCreateTaskBaseSchema.extend({
+  targetRepository: z.string().trim().min(1).optional(),
+  additionalRepositories: z
+    .array(z.string().trim().min(1))
+    .max(MAX_TASK_EXTRA_REPOS)
+    .optional()
+    .default([]),
+}).refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
+export type McpCreateTaskV2 = z.infer<typeof McpCreateTaskV2Schema>;
 
 /** The MCP tool exposes only the provider slug; its launch capability carries identity. */
 export const McpAdoptPipelineRunSchema = z.object({
@@ -942,16 +977,6 @@ export const HarnessModelCatalogQuerySchema = z
   .object({ refresh: z.literal("1").optional() })
   .strict();
 
-
-/**
- * How many SECONDARY repositories one request may attach.
- *
- * A sanity bound on a request body rather than a product limit on how many repositories a
- * task may coordinate - nothing downstream reads it as a maximum. Named because a second
- * surface now bounds the same list: the standing-instructions preview, which is asked about
- * one launch's whole manifest and would otherwise carry its own copy of the number.
- */
-export const MAX_TASK_EXTRA_REPOS = 8;
 
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of

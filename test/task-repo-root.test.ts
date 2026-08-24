@@ -146,6 +146,32 @@ test("MCP create_task from inside a pooled worktree files against the repo that 
   assert.notEqual(created.repoRoot, worktree);
 });
 
+test("an explicit absolute selector outside workspace scan roots walks back to its owner", async () => {
+  const caller = repoWithWorktree("selector-caller");
+  const target = repoWithWorktree("selector-target");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+
+  const res = await app.request("/mcp/v2/tasks", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
+    body: JSON.stringify({
+      env: {},
+      cwd: caller.worktree,
+      repoRoot: caller.worktree,
+      targetRepository: target.worktree,
+      title: "Work elsewhere",
+      intent: "Implement the other repository's phase",
+    }),
+  });
+
+  assert.equal(res.status, 200);
+  const created = (await res.json()) as { repoRoot: string };
+  assert.equal(created.repoRoot, target.main);
+  assert.notEqual(created.repoRoot, target.worktree);
+});
+
 test("a task cannot be created or edited into a root with no main checkout", async () => {
   const { main } = repoWithWorktree("refuse-http");
   const tree = join(scratch, "refuse-tree");

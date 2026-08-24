@@ -177,8 +177,8 @@ sessions and every other kind are judged exactly as before. See
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow
 evidence from the current resolved intent episode. Mission Control states the registered count,
-kind, generation, timestamp and size as trusted structure; session-chosen names, paths or
-commands, and captions remain inside the untrusted evidence fence. Evidence from an older work
+kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
+and captions remain inside the untrusted evidence fence. Evidence from an older work
 generation remains usable within the same intent episode, while legacy unstamped evidence and
 evidence from another episode are excluded. A zero count explicitly leaves the evidence-registration
 clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
@@ -186,6 +186,8 @@ the items cover what the task requested. If the implementation is complete and e
 only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
 `foreman_complete` Workflow anyway. The Workflow runs the authoritative checks; a Manual binding,
 no binding, no registered evidence, an incomplete verdict, or any other blocking gap still holds.
+Command evidence uses an opaque public locator, so a raw command with inline credentials cannot
+enter the staging API or Foreman prompt; the exact command remains in its bounded captured artifact.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,

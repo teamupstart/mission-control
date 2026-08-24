@@ -430,7 +430,10 @@ export async function stageAgentWorkflowEvidence(input: {
       sourceKind: "command",
       evidenceKind: "text",
       sourceRoot: selected.realRoot,
-      sourceLocator: commandOutput.command,
+      // The staged-evidence API and Foreman prompt expose this locator. Keep it opaque:
+      // a command line may carry inline credentials or secret-bearing arguments. The exact
+      // command remains only in the bounded captured artifact the agent explicitly registered.
+      sourceLocator: `command:${commandOutput.clientItemId}`,
       inlineContent: content,
       displayName: cleanDisplayName(`${commandOutput.clientItemId}-command-output.txt`),
       caption: commandOutput.caption.trim(),

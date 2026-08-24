@@ -1654,7 +1654,7 @@ function registeredCommandEvidence(
       id: `evidence-${clientItemId}`,
       clientItemId,
       sourceKind: "command",
-      sourceLocator: "node --test focused.test.ts",
+      sourceLocator: `command:${clientItemId}`,
       episodeKey,
       displayName: `${clientItemId}.txt`,
       caption: `${clientItemId} passed`,
@@ -1805,7 +1805,7 @@ test("same-episode registered evidence is fenced into the prompt and a clean ver
   assert.ok(fence > 0, result.out);
   assert.ok(prompt.indexOf("1 evidence item is registered for this work") < fence, result.out);
   assert.ok(prompt.indexOf("| 1 | command | 4 | 1725000000000 | 321 |") < fence, result.out);
-  assert.ok(prompt.indexOf("node --test focused.test.ts") > fence, result.out);
+  assert.ok(prompt.indexOf("command:focused-check") > fence, result.out);
   assert.ok(prompt.indexOf("focused-check passed") > fence, result.out);
 
   const claims = result.stub.to("POST", "/api/sessions/s1/workflow-completion");

@@ -405,7 +405,7 @@ test("completed command output is staged directly and frozen as immutable text e
       commandOutputs: [{
         kind: "command",
         clientItemId: "focused-regression",
-        command: "node --test focused.test.ts",
+        command: "ACCESS_TOKEN=inline-test-credential node --test focused.test.ts",
         exitCode: 0,
         output,
         caption: "The focused regression passed",
@@ -416,7 +416,8 @@ test("completed command output is staged directly and frozen as immutable text e
     });
     assert.equal(staged.artifacts.length, 1);
     assert.equal(staged.artifacts[0]?.sourceKind, "command");
-    assert.equal(staged.artifacts[0]?.sourceLocator, "node --test focused.test.ts");
+    assert.equal(staged.artifacts[0]?.sourceLocator, "command:focused-regression");
+    assert.doesNotMatch(JSON.stringify(staged), /inline-test-credential/);
     assert.equal(staged.artifacts[0]?.episodeKey, "intent:3:4");
     assert.equal(staged.artifacts[0]?.displayName, "focused-regression-command-output.txt");
 
@@ -448,13 +449,16 @@ test("completed command output is staged directly and frozen as immutable text e
     );
     const reserved = store.listReservedWorkflowEvidence(created.submission.id)[0];
     assert.equal(reserved?.sourceKind, "command");
-    assert.match(reserved?.inlineContent ?? "", /^Command: node --test focused\.test\.ts/m);
+    assert.match(
+      reserved?.inlineContent ?? "",
+      /^Command: ACCESS_TOKEN=inline-test-credential node --test focused\.test\.ts/m,
+    );
 
     const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 4);
     assert.equal(captured.length, 1);
     assert.equal(
       captured[0]?.content,
-      `Command: node --test focused.test.ts\nExit code: 0\nOutput:\n${output}`,
+      `Command: ACCESS_TOKEN=inline-test-credential node --test focused.test.ts\nExit code: 0\nOutput:\n${output}`,
     );
     assert.equal(captured[0]?.sha256, staged.artifacts[0]?.sha256);
   } finally {

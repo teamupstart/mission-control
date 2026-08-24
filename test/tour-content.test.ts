@@ -97,6 +97,14 @@ test("malformed authored copy fails before a tour can start", () => {
     ["# Tour\n\n## Stage\nCopy.\n", /needs a stage comment/],
     ["# Tour\n\n## Stage\n<!-- stage: one -->\n", /has no description/],
     [
+      "# Tour\n\n## Stage\n<!-- stage: one -->\nCopy.\n\n- **Chat** Description.\n",
+      /malformed definition list entry/,
+    ],
+    [
+      "# Tour\n\n## Stage\n<!-- stage: one -->\nCopy.\n\n- **Chat:**\n",
+      /malformed definition list entry/,
+    ],
+    [
       "# Tour\n\n## One\n<!-- stage: same -->\nCopy.\n\n## Two\n<!-- stage: same -->\nCopy.\n",
       /repeats stage same/,
     ],

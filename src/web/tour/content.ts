@@ -16,6 +16,7 @@ export class TourContentError extends Error {}
 
 const STAGE_MARKER = /^<!--\s*stage:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*-->$/;
 const DETAIL = /^-\s+\*\*(.+?):\*\*\s+(.+)$/;
+const BULLET = /^-(?:\s+|$)/;
 
 function prose(lines: readonly string[]): string {
   const paragraphs: string[] = [];
@@ -43,13 +44,19 @@ function parseStageBody(slug: string, stageId: string, lines: readonly string[])
   let readingDetails = false;
 
   for (const raw of lines) {
-    const match = DETAIL.exec(raw.trim());
+    const line = raw.trim();
+    const match = DETAIL.exec(line);
     if (match) {
       readingDetails = true;
       details.push({ label: match[1]!.trim(), description: match[2]!.trim() });
       continue;
     }
-    if (readingDetails && raw.trim()) {
+    if (BULLET.test(line)) {
+      throw new TourContentError(
+        `tour ${slug} stage ${stageId} has a malformed definition list entry`,
+      );
+    }
+    if (readingDetails && line) {
       throw new TourContentError(
         `tour ${slug} stage ${stageId} has prose after its definition list`,
       );

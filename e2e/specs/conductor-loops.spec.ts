@@ -254,7 +254,22 @@ test.describe("managed Pipeline run adoption", () => {
     daemonEnv: {
       CLAUDECODE: "nested-e2e-parent",
       MISSION_PIPELINE_TICK_MS: "1000",
-      MISSION_POLL_MS: "400",
+      // Passive terminal discovery, back ON for this block alone - the provider worker it
+      // adopts is a real tmux session, and nothing else can see it.
+      //
+      // But SLOWLY. Discovery is a machine-wide sweep: two full `ps` reads plus a cwd
+      // inspection per pid, and at 400ms that is two and a half of them a second inside the
+      // daemon this test is also asking to launch an Agent SDK host. Under a loaded box the
+      // host loses that race and exits during its own startup, which the task correctly
+      // reports as "the managed Agent SDK host ended before Conductor created pipeline run"
+      // - a real failure of a test that only ever meant to watch an adoption.
+      //
+      // It is also the reason a trace of this failing showed a REAL `claude` session from the
+      // developer's machine carded inside this throwaway daemon, which is exactly what the
+      // fixture's own `MISSION_POLL_MS: "0"` says to avoid. Discovery still has to run here,
+      // so it cannot be zero; it can be slow enough to stop starving the daemon, and the
+      // worker is still adopted well inside every window below.
+      MISSION_POLL_MS: "1500",
     },
   });
   test.skip(tmuxMissing, "tmux is not installed on this machine");

@@ -156,6 +156,25 @@ const flag = (name) => {
 if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   process.stdout.write(refusal + "\\n");
   process.stdout.write("run \`conduct-ts inline --help\` for the verbs it carries\\n");
+} else if (argv[0] === "engineer" && flag("idea") !== null) {
+  // The ENGINEER SESSION, and it has to stay up.
+  //
+  // Mission Control spawns an engineer --idea <intent> host and then waits for
+  // Conductor to create that intent's pipeline run. The real engine holds an interactive
+  // agent open for as long as that takes. This fake used to match no branch at all for the
+  // verb, so it printed nothing and exited immediately - and a host that ends before the run
+  // appears is a task the daemon correctly FAILS, with "the managed Agent SDK host ended
+  // before Conductor created pipeline run".
+  //
+  // A spec asserting on that host therefore passed only by sampling it faster than the exit
+  // could propagate, which is luck the machine grants or withholds. Idling instead makes the
+  // host as durable as the thing it stands in for, so the assertion is about adoption rather
+  // than about scheduling. Teardown is the same graceful stop every other fake honours:
+  // closing stdin ends it.
+  process.stdin.resume();
+  process.stdin.on("close", () => process.exit(0));
+  process.stdin.on("end", () => process.exit(0));
+  setInterval(() => {}, 1 << 30);
 } else if (argv[0] === "engineer" && argv[1] === "projects") {
   let projects = [];
   const path = process.env.MC_E2E_CONDUCTOR_PROJECTS;

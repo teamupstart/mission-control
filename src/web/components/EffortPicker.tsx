@@ -96,7 +96,13 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    const onScroll = () => setOpen(false);
+    // Fixed positioning does not track a scrolling card, so FOLLOW the anchor rather than
+    // closing. Closing looks tidy and is wrong: the conversation under this chip auto-scrolls
+    // whenever the agent streams a line, so on the one session an operator most wants to
+    // retune - a busy one - the menu was being snatched away between the click that opened it
+    // and the click that would have chosen a level. `RepoCombobox` already repositions for
+    // exactly this reason; this is the same rule, applied to the same problem.
+    const onScroll = place;
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, true);

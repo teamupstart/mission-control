@@ -234,13 +234,53 @@ the one you are editing, instead of a drill-in that hid the other three while yo
 the one that failed. Adding a source is an inline form above that list; it still resolves the
 repo before the source exists, and the source still starts switched off.
 
-**Conductor** is the newest, and it is the one category whose subject is somebody else's
-software - which is also why it is the one category that is **conditional**. An operator with
-no engine installed and no stored Conductor configuration gets no row, no panel and no palette
-entry, and the hash falls back like an unknown category; every other category configures
-Mission Control and therefore exists for everyone. The exact condition is
-in [Pipelines](pipelines.md) and not restated here - a second copy of a rule is a second thing to
-keep true. It is the consent surface for observing an external SDLC engine - see
+**Standing instructions** is where an operator writes text that every session Mission
+Control opens into a given checkout receives. It fills the intersection nothing else covered:
+`AGENTS.md` is per-repository but committed, so it reaches every teammate on every machine,
+and Foreman's instructions are machine-local but global and never reach a session at all.
+This is per-repository **and** machine-local, which is why its badge is *This machine*: the
+daemon acts locally, and nothing is written to `~/` or sent to GitHub.
+
+The panel holds a machine-wide **Every repository** box plus one card per configured
+checkout. Two distinctions are load-bearing and the chips render both. An **absent** key
+inherits the machine-wide default; a key stored **empty** is still an `override` and means
+"send nothing for this repository", which beats that default. Clearing a box and pressing
+**Use global default** are therefore two different gestures with two different outcomes - the
+button removes the key, the empty box stores one. Resolution is longest-path-match on the
+canonical repo-rooted path, so a monorepo package's rule beats the monorepo's, and a
+subdirectory is a legitimate key.
+
+Each card carries a **reach** block, and it is not decoration. It states, per harness *and*
+runtime, which sessions get the text and by which mechanism - a system-prompt append on
+`claude · terminal` and `claude · sdk`, developer instructions on `codex · sdk`, and ordinary
+turn-one prose on the two pairs with no channel of their own. It also states the three
+answers an operator would otherwise have to guess at: sessions started outside Mission
+Control are not reachable, Mission Control's own Foreman/Inspector/Persona review prompts are
+out of scope, and sessions **already running keep what they launched with**. That last one is
+about *when* rather than *where*: a live process's system prompt cannot be rewritten, so an
+edit reaches the next session rather than the five already open. A standing instruction that
+silently reaches half the fleet is worse than none, because it is trusted and wrong.
+
+The rule is visible in two more places, both read-only, and they deliberately read different
+sources. The **dispatch note** forecasts what a launch will send and reads live configuration
+for every attached repository, so a two-repo dispatch whose secondary carries the rule is told
+so. The **session header chip** records what that session was actually given and reads only
+its immutable launch snapshot - never live configuration, because a session outlives the
+setting that launched it and a chip that re-resolved would quote it text it never saw. Both
+name the *mechanism* as well as the size, because on Claude the text rides the system prompt
+and never enters the transcript, so a marker that only said "sent" would send an operator
+searching a conversation for something that was never in it. Neither is editable: one editor,
+in Settings, is the point.
+
+**Conductor** is the one category whose subject is somebody else's software. It is
+**not** conditional, and that is the current rule for every category:
+[change contracts](agent-guides/change-contracts.md#registries) states that categories are
+unconditional destinations, so the rail, the arrow-key walk, the valid routes, the palette and
+the render tests all read one registry with no availability filter. A destination for software
+that is not installed explains that inside its own panel; a local visibility check is how a
+panel becomes reachable from search but absent from the rail, or how a valid deep link
+unexpectedly falls back to Display. It is the consent surface for observing an external SDLC
+engine - see
 [Pipelines](pipelines.md) - and it is built out of three cards because three different things
 can be false: the engine may not be installed, the master switch may be off, and a repository
 may not be switched on. An operator who sees no pipelines has to be able to tell which,

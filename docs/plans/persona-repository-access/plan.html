@@ -808,12 +808,26 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
   </ul>
 
   <h2>Documentation</h2>
-  <p><code>docs/workflows.md</code> gains the Persona setting, the capability and denial list, the
-  limits, the publish-freeze rule and the built-in override; <code>docs/security.md</code> gains the
-  trust boundary and the layered defences; <code>docs/models.md</code> notes the round-loop cost
-  model; <code>docs/architecture.md</code> and <code>docs/database-and-migrations.md</code> gain the
-  new tables and columns. Built-in Persona Markdown under <code>personas/</code> is corrected where it
-  asserts &ldquo;you have no repository tools&rdquo;, which is a generated-source edit
+  <p>Each page is owned by the phase that introduces the behaviour it documents:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Page</th><th>What it gains</th><th>Phase</th></tr></thead>
+    <tbody>
+      <tr><td><code>docs/workflows.md</code></td><td>The Persona setting, the capability and denial list, the limits, the publish-freeze rule, the built-in override and its Duplicate-the-workflow limitation; then the review behaviour, the blocked phase and the audit surface</td><td>1, then 3</td></tr>
+      <tr><td><code>docs/security.md</code></td><td>A pointer that access exists and is off by default; then the full trust boundary and layered defences; then the prompt-side framing</td><td>1, 2, 3</td></tr>
+      <tr><td><code>docs/database-and-migrations.md</code></td><td>The column, the override table, the snapshot columns, the audit table and the ref namespace</td><td>1, 2</td></tr>
+      <tr><td><code>docs/worktrees-and-checks.md</code></td><td>That a review's repository view is a snapshot commit and is therefore unaffected by worktree reclamation</td><td>2</td></tr>
+      <tr><td><code>docs/models.md</code></td><td>The round-loop cost model</td><td>3</td></tr>
+      <tr><td><code>docs/event-stream.md</code></td><td>The per-round aggregate event kinds, if it enumerates them</td><td>3</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><code>docs/architecture.md</code> is deliberately <strong>not</strong> in that list. It is a
+  52-line component index that points at the technical pages rather than describing tables or
+  subsystems, so this feature has nothing to add to it, and adding a line would make a page whose job
+  is orientation slightly worse at it.</p>
+  <p>Built-in Persona Markdown under <code>personas/</code> is corrected in Phase 3 where it asserts
+  &ldquo;you have no repository tools&rdquo;, which is a generated-source edit
   (<code>npm run personas</code>), and one that marks published snapshots of those built-ins outdated
   - the honest consequence, recorded rather than avoided.</p>
 

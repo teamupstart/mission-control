@@ -590,13 +590,26 @@ Every layer is used for what only it can say.
 
 ## Documentation
 
-`docs/workflows.md` gains the Persona setting, the capability and denial list, the limits, the
-publish-freeze rule and the built-in override; `docs/security.md` gains the trust boundary and
-the layered defences; `docs/models.md` notes the round-loop cost model; `docs/architecture.md`
-and `docs/database-and-migrations.md` gain the new tables and columns. Built-in Persona Markdown
-under `personas/` is corrected where it asserts "you have no repository tools", which is a
-generated-source edit (`npm run personas`), and one that marks published snapshots of those
-built-ins outdated - the honest consequence, recorded rather than avoided.
+Each page is owned by the phase that introduces the behaviour it documents:
+
+| Page | What it gains | Phase |
+|---|---|---|
+| `docs/workflows.md` | The Persona setting, the capability and denial list, the limits, the publish-freeze rule, the built-in override and its Duplicate-the-workflow limitation; then the review behaviour, the blocked phase and the audit surface | 1, then 3 |
+| `docs/security.md` | A pointer that access exists and is off by default; then the full trust boundary and layered defences; then the prompt-side framing | 1, 2, 3 |
+| `docs/database-and-migrations.md` | The column, the override table, the snapshot columns, the audit table and the ref namespace | 1, 2 |
+| `docs/worktrees-and-checks.md` | That a review's repository view is a snapshot commit and is therefore unaffected by worktree reclamation | 2 |
+| `docs/models.md` | The round-loop cost model | 3 |
+| `docs/event-stream.md` | The per-round aggregate event kinds, if it enumerates them | 3 |
+
+`docs/architecture.md` is deliberately **not** in that list. It is a 52-line component index that
+points at the technical pages rather than describing tables or subsystems, so this feature has
+nothing to add to it, and adding a line would make a page whose job is orientation slightly worse
+at it.
+
+Built-in Persona Markdown under `personas/` is corrected in Phase 3 where it asserts "you have no
+repository tools", which is a generated-source edit (`npm run personas`), and one that marks
+published snapshots of those built-ins outdated - the honest consequence, recorded rather than
+avoided.
 
 ## Out of scope
 

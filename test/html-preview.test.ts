@@ -68,6 +68,8 @@ test("the preview keyboard bridge is inert until Files arms it", () => {
   assert.match(bridge, /event\.key==="Tab"[\s\S]*preventDefault\(\)[\s\S]*event\.shiftKey[\s\S]*action:"exit"/);
   assert.match(bridge, /event\.key==="Escape"[\s\S]*action:"exit"/);
   assert.match(bridge, /event\.key==="u"\|\|event\.key==="d"[\s\S]*innerHeight/);
+  assert.match(bridge, /event\.target\.isContentEditable/);
+  assert.doesNotMatch(bridge, /\[contenteditable=/);
 });
 
 test("the comment bridge announces itself, so arming it is never a guess about timing", () => {

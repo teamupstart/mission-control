@@ -50,6 +50,7 @@ const REPORT_HTML = `<!doctype html>
     <h1>SSE reconnect audit</h1>
     <p id="verdict">Reconnects are bounded</p>
     <a href="#verdict">Jump to the reconnect verdict</a>
+    <div contenteditable aria-label="Preview scratchpad"></div>
   </section>
   <section style="height: 100vh">
     <h2>Reconnect details</h2>
@@ -269,6 +270,27 @@ test("Preview u and d paginate a rendered report by one page", async ({
   await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(0);
   await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
   await shoot(dashboard, "preview-page-up");
+});
+
+test("Preview page keys stand down in a bare contenteditable field", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  const body = report.locator("body");
+  const scratchpad = report.locator('[contenteditable][aria-label="Preview scratchpad"]');
+  await scratchpad.focus();
+  await expect(scratchpad).toBeFocused();
+  await dashboard.keyboard.press("d");
+
+  await expect(scratchpad).toHaveText("d");
+  expect(await body.evaluate(() => window.scrollY)).toBe(0);
 });
 
 test("an HTML report opens rendered, and its source only on request", async ({

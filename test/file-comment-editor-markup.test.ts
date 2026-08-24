@@ -183,8 +183,8 @@ test("the toolbar offers a Comment control, off, with its in-surface key on its 
     "the Comment control must publish its key and its off state",
   );
   assert.ok(
-    hasTooltip(html, "Comment on a line: click a line number to write one"),
-    "the control has to say what it does",
+    hasTooltip(html, "Comment on a line: click a line number, or a block of the preview"),
+    "the control has to say what it does - now including the rendered surfaces",
   );
   assert.match(html, /<kbd class="kb-hint">m<\/kbd>/, "the keycap teaches the chord");
 });
@@ -469,6 +469,7 @@ function composerState(over: Partial<FileCommentComposerState> = {}): FileCommen
     path: "docs/a.md",
     revision: "rev-a",
     line: 3,
+    surface: "editor",
     startLine: 3,
     endLine: 3,
     quote: "line two says something",

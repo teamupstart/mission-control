@@ -26,9 +26,12 @@ import {
   deleteFileComment,
   editFileCommentMessage,
   reorderFileComments,
+  resolveHtmlBlockAnchor,
   setFileCommentStatus,
 } from "../lib/api.ts";
-import { Markdown } from "./Markdown.tsx";
+import { boundQuote, sliceLines } from "@shared/file-comment-anchor.ts";
+import type { HtmlBlockPathStep } from "@shared/protocol.ts";
+import { Markdown, type MarkdownBlockRange } from "./Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
@@ -38,7 +41,10 @@ import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 // The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
 // neither surface can quietly weaken the CSP or the sandbox for its own documents.
 import {
+  HTML_PREVIEW_BLOCK_MESSAGE,
+  HTML_PREVIEW_COMMENT_MESSAGE,
   HTML_PREVIEW_LINK_MESSAGE,
+  HTML_PREVIEW_READY_MESSAGE,
   HTML_PREVIEW_SANDBOX,
   HTML_PREVIEW_SCROLL_MESSAGE,
   htmlPreviewSource,
@@ -216,9 +222,10 @@ export function FileWorkspace({
    * other, and the reader comments without leaving Preview. It is read-only - Preview is
    * the view they chose, and `e` is one key away if they meant to edit.
    *
-   * Phase 5 still owns markers ON the rendered document itself. This is the surface that
-   * makes the control work in Preview at all; that is the surface that makes the rendered
-   * half clickable too.
+   * The rendered half is clickable too, and that is where a comment in Preview actually
+   * starts: hover a paragraph, heading, table, code block or diagram and its own control
+   * appears. What it opens is the composer in THIS column, at the line the block came from -
+   * so the reader sees, in source, exactly what their comment is anchored to.
    */
   const commentSourceShowing = commentsActive && !sourceShowing && buffer?.document.text != null;
   const commentSurfaceShowing = sourceShowing || commentSourceShowing;
@@ -307,10 +314,22 @@ export function FileWorkspace({
   const [preparedPreview, setPreparedPreview] = useState<{
     path: string;
     text: string;
+    revision: string | null;
   } | null>(null);
-  const previewText = buffer && preparedPreview?.path === buffer.document.path
-    ? preparedPreview.text
-    : (buffer?.text ?? "");
+  const prepared = buffer && preparedPreview?.path === buffer.document.path
+    ? preparedPreview
+    : null;
+  const previewText = prepared ? prepared.text : (buffer?.text ?? "");
+  /**
+   * The revision `previewText` was taken from, which is NOT always the buffer's.
+   *
+   * The preparation above is debounced, so during that window the live buffer has moved on
+   * and the reader is still looking at the older render. A comment anchored to that render
+   * has to be stamped with the revision it was actually sliced from: `reanchor()` skips the
+   * quote search entirely when the revisions match, so pairing an older quote with the newer
+   * revision would assert the text is still where it was without ever checking.
+   */
+  const previewRevision = prepared ? prepared.revision : (buffer?.document.revision ?? null);
   const imageSource = useMemo(() => {
     if (mode !== "preview" || buffer?.document.kind !== "image") return null;
     return buffer.document.image?.mediaType === "image/svg+xml" && buffer.document.text !== null
@@ -323,15 +342,16 @@ export function FileWorkspace({
     const timer = setTimeout(() => {
       const text = buffer?.text ?? "";
       const path = buffer?.document.path ?? "";
+      const revision = buffer?.document.revision ?? null;
       if (buffer?.document.kind !== "html") {
-        setPreparedPreview({ path, text });
+        setPreparedPreview({ path, text, revision });
         return;
       }
       void inlinePreviewStyles(text, buffer.document.path, async (assetPath) => {
         const result = await api.readFile(session.id, assetPath, abort.signal);
         return result.ok ? result.file.text : null;
       }, abort.signal).then((next) => {
-        if (live) setPreparedPreview({ path, text: next });
+        if (live) setPreparedPreview({ path, text: next, revision });
       });
     }, 180);
     return () => {
@@ -339,7 +359,13 @@ export function FileWorkspace({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [buffer?.document.kind, buffer?.document.path, buffer?.text, session.id]);
+  }, [
+    buffer?.document.kind,
+    buffer?.document.path,
+    buffer?.document.revision,
+    buffer?.text,
+    session.id,
+  ]);
   /**
    * The receiving half of PREVIEW_LINK_SCRIPT: a click inside the sandbox arrives here
    * as an href, and either names a checkout file - which gets selected, exactly as a
@@ -595,6 +621,238 @@ export function FileWorkspace({
     // the nearest line that says something, below it or above it.
     setThreadError("This file has no text to anchor a comment to.");
   }, [buffer?.text, draft, openThreadOnLine, threadLines]);
+
+  /*
+   * ---- commenting on the RENDERED document ----
+   *
+   * Comment mode already puts the source beside a preview, so a reader can point at line 84
+   * without leaving the view they chose. This is the other half: pointing at the PARAGRAPH.
+   *
+   * Both surfaces end in the same place - `draft.openRange`, opening phase 2's composer in
+   * the source column, at the line the block came from - and neither invents a way to
+   * anchor. A comment made in Preview is a comment on source lines, exactly as one made in
+   * the Editor is, because that is a property of the model rather than of the surface.
+   *
+   * They differ only in who does the parse. Markdown carries `node.position` down from the
+   * parser that rendered it, so the range is already known in this tab. HTML is inside an
+   * opaque sandbox this origin cannot read, so the frame reports WHERE it was clicked and
+   * the daemon resolves that against a parse5 tree of the same file.
+   */
+
+  // Both taken off the controller by name, because both are `useCallback`-stable while the
+  // controller OBJECT is rebuilt every render. Depending on the object would make the handler
+  // below a new function each time, which the `Markdown` memo compares by identity - so the
+  // whole preview would re-highlight on every workspace render.
+  const openRange = draft.openRange;
+  const dismissDraftForBlock = draft.dismiss;
+  /**
+   * What a click on a rendered block does, once its source range is known.
+   *
+   * A block the reader has already commented on opens that thread instead of a second
+   * composer, which is what clicking a commented LINE does in the Editor. One rule for both
+   * surfaces: pointing at something you have already said something about takes you to what
+   * you said.
+   */
+  const commentOnBlock = useCallback((
+    anchor: { startLine: number; endLine: number; quote: string },
+    surface: "markdown" | "html",
+    revision?: string | null,
+  ): void => {
+    if (threadLines.has(anchor.startLine)) {
+      openThreadOnLine(anchor.startLine);
+      return;
+    }
+    setOpenThreadId(null);
+    dismissDraftForBlock();
+    if (openRange({ ...anchor, surface, revision })) {
+      setThreadError(null);
+      return;
+    }
+    setThreadError("That block has no source text to anchor a comment to.");
+  }, [dismissDraftForBlock, openRange, openThreadOnLine, threadLines]);
+
+  /**
+   * A block of the rendered Markdown, anchored to the source it was rendered FROM.
+   *
+   * `previewText` rather than `buffer.text`, and the difference is the point: the positions
+   * came from the parse of what is on screen, which is the debounced copy. Slicing the newer
+   * buffer would quote text the reader was not looking at.
+   *
+   * `previewRevision` travels with it for the same reason, and it is the half that is easy to
+   * drop: quote and revision have to describe ONE snapshot. Stamping this quote with the live
+   * buffer's revision instead would tell `reanchor()` the file has not moved since - which is
+   * exactly the case where it trusts the stored lines and never looks for the quote.
+   */
+  const commentOnMarkdownBlock = useCallback((range: MarkdownBlockRange): void => {
+    commentOnBlock(
+      { ...range, quote: boundQuote(sliceLines(previewText, range.startLine, range.endLine)) },
+      "markdown",
+      previewRevision,
+    );
+  }, [commentOnBlock, previewRevision, previewText]);
+
+  const markdownShowing = buffer?.document.kind === "markdown" && mode === "preview";
+  const htmlShowing = buffer?.document.kind === "html" && mode === "preview";
+  /*
+   * One identity for the whole time comment mode is on, held behind a ref.
+   *
+   * `commentOnMarkdownBlock` is a new function on every render - it depends on
+   * `commentOnBlock`, which depends on `openThreadOnLine`, which closes over a draft
+   * controller rebuilt every time. Passing it straight through as `blockAnchor` would make
+   * `markdownPropsEqual` report "not equal" on every parent render, and the memo it guards
+   * exists because the remark -> rehype -> highlight pipeline behind it is real work. A
+   * reader sitting in comment mode reading a long spec is precisely the case that memo is
+   * for, so the prop has to be stable while the freshest handler still runs.
+   *
+   * The ref is refreshed during render rather than in an effect, so the very first click
+   * after a state change already calls the new closure. `blockClickRef` below does the same
+   * thing for the HTML bridge, for the same reason.
+   */
+  const markdownBlockRef = useRef(commentOnMarkdownBlock);
+  markdownBlockRef.current = commentOnMarkdownBlock;
+  const stableMarkdownBlockAnchor = useCallback((range: MarkdownBlockRange): void => {
+    markdownBlockRef.current(range);
+  }, []);
+  /**
+   * Absent, not a no-op, when comment mode is off.
+   *
+   * `undefined` is the opt-in signal `Markdown` uses, and it is what keeps every block
+   * rendering as bare markup for the nine callers that never pass it - and for this one,
+   * whenever the reader is only reading. Two values, both stable: this constant and
+   * `undefined`, so toggling the mode is the only thing that re-parses.
+   */
+  const markdownBlockAnchor = commentsActive && markdownShowing
+    ? stableMarkdownBlockAnchor
+    : undefined;
+
+  /** Whether the sandboxed preview should be treating a click as a comment right now. */
+  const htmlCommenting = commentsActive && htmlShowing;
+  /*
+   * Arming the frame, from BOTH directions, because either one alone loses.
+   *
+   * Telling it when the reader toggles the mode is the obvious half, and it is not enough: a
+   * `srcDoc` document that reloads - which it does whenever the file changes - comes back with
+   * a fresh bridge that was never told anything. Telling it on the iframe's `load` is not
+   * enough either, and this is the subtle one: a load event can fire for the `about:blank`
+   * that precedes the real document, so a message sent then reaches a window that is about to
+   * be replaced and is simply lost. The symptom is comment mode reading ON in the toolbar and
+   * being OFF inside the frame, where a click does nothing and says nothing.
+   *
+   * So the bridge announces itself when it is live, and this answers with the current state.
+   * The ref is what lets that answer be current without re-subscribing on every toggle.
+   */
+  const armFrame = useCallback((enabled: boolean): void => {
+    const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+      ".file-content .html-preview",
+    );
+    frame?.contentWindow?.postMessage({ type: HTML_PREVIEW_COMMENT_MESSAGE, enabled }, "*");
+  }, []);
+  const commentingRef = useRef(htmlCommenting);
+  commentingRef.current = htmlCommenting;
+  useEffect(() => {
+    armFrame(htmlCommenting);
+  }, [armFrame, htmlCommenting]);
+  useEffect(() => {
+    if (!previewPath) return;
+    const onReady = (event: MessageEvent): void => {
+      if ((event.data as { type?: unknown } | null)?.type !== HTML_PREVIEW_READY_MESSAGE) return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      armFrame(commentingRef.current);
+    };
+    window.addEventListener("message", onReady);
+    return () => window.removeEventListener("message", onReady);
+  }, [armFrame, previewPath]);
+
+  /**
+   * The receiving half of the comment bridge, and a sibling of the link handler above.
+   *
+   * `event.source` is matched against THIS workspace's iframe for that handler's reason: the
+   * extracted files window renders a second `FileWorkspace`, and neither may act on the
+   * other's clicks.
+   *
+   * The refusal is shown rather than swallowed. There is exactly one - the reported path does
+   * not resolve against the current source, which means the file changed under a render still
+   * on screen - and the daemon's sentence names the reload that fixes it.
+   */
+  /*
+   * The handler reaches its own latest self through a ref, and that is a correctness fix
+   * rather than a tidy-up.
+   *
+   * `commentOnBlock` is rebuilt whenever `openThreadOnLine` is, and that is rebuilt on EVERY
+   * render, because the draft controller it closes over is a fresh object each time. With the
+   * handler in this effect's dependency list, the listener was therefore torn down and
+   * resubscribed on every render - and any render landing during the resolve request dropped
+   * the answer on the floor. A click that produced neither a composer nor a refusal, at a
+   * rate set by whatever else happened to re-render the workspace in those few milliseconds.
+   *
+   * Subscribed on the three facts that really define this listener, then, and called through
+   * a ref that is refreshed during render, so it is always the current closure.
+   */
+  const blockClickRef = useRef(commentOnBlock);
+  blockClickRef.current = commentOnBlock;
+  /*
+   * Which click the reader is still waiting on.
+   *
+   * Resolving a block is a round trip, and two clicks in quick succession are two of them
+   * with no ordering between the answers. The older one arriving second used to win: it
+   * dismissed the composer the newer click had already opened and put up its own, so the
+   * reader ended up writing about a block they had moved on from - and nothing on screen
+   * said so. Every click takes the next number, and an answer is applied only if its number
+   * is still the current one.
+   *
+   * A counter rather than an `AbortController` because the stale answer must be dropped even
+   * when it has already arrived, and abandoning it here is the same thing to the daemon: the
+   * route only reads.
+   */
+  const blockRequests = useRef(0);
+  const previewRevisionRef = useRef(previewRevision);
+  previewRevisionRef.current = previewRevision;
+  useEffect(() => {
+    if (!htmlCommenting || !previewPath) return;
+    let live = true;
+    const onMessage = (event: MessageEvent): void => {
+      const data = event.data as { type?: unknown; path?: unknown } | null;
+      if (data?.type !== HTML_PREVIEW_BLOCK_MESSAGE || !Array.isArray(data.path)) return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      const blockPath = data.path as HtmlBlockPathStep[];
+      blockRequests.current += 1;
+      const request = blockRequests.current;
+      void resolveHtmlBlockAnchor(session.id, {
+        path: previewPath,
+        blockPath,
+        // The revision the iframe's document was built from. The daemon refuses if the file
+        // it reads is not that one, because a path can still resolve against a file whose
+        // TEXT has changed underneath it - same tags, same positions, different words.
+        revision: previewRevisionRef.current,
+      }).then((result) => {
+        // Now only false when the reader really has left this file or turned the mode off,
+        // which is the one case where an answer is genuinely no longer wanted.
+        if (!live || request !== blockRequests.current) return;
+        if (!result.ok) {
+          setThreadError(result.error);
+          return;
+        }
+        blockClickRef.current(
+          { startLine: result.startLine, endLine: result.endLine, quote: result.quote },
+          "html",
+          // The revision the daemon sliced the quote out of, which is a fact the browser's
+          // buffer may not have caught up with yet. See `FileCommentRangeAnchor`.
+          result.revision,
+        );
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => {
+      live = false;
+      window.removeEventListener("message", onMessage);
+    };
+  }, [htmlCommenting, previewPath, session.id]);
 
   /** Answers whether the reply landed, so a rejected one keeps its text to retry. */
   const reply = useCallback(async (threadId: string, body: string): Promise<boolean> => {
@@ -868,7 +1126,7 @@ export function FileWorkspace({
             <div className="file-comment-controls">
               <Tooltip
                 label={commentable
-                  ? "Comment on a line: click a line number to write one"
+                  ? "Comment on a line: click a line number, or a block of the preview"
                   : buffer.document.kind === "image"
                   ? "An image has no lines to comment on"
                   : "This file has no source to comment on"}
@@ -942,13 +1200,24 @@ export function FileWorkspace({
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && buffer.document.kind !== "image" && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
-            <iframe className="html-preview file-preview-reader" tabIndex={-1} title={`Preview of ${buffer.document.path}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(previewText)} />
+            <iframe
+              className="html-preview file-preview-reader"
+              tabIndex={-1}
+              title={`Preview of ${buffer.document.path}`}
+              sandbox={HTML_PREVIEW_SANDBOX}
+              srcDoc={htmlPreviewSource(previewText)}
+            />
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
-            <article className="file-markdown-preview file-preview-reader markdown" tabIndex={-1} aria-label={`Preview of ${buffer.document.path}`}>
+            <article
+              className={`file-markdown-preview file-preview-reader markdown${markdownBlockAnchor ? " is-commenting" : ""}`}
+              tabIndex={-1}
+              aria-label={`Preview of ${buffer.document.path}`}
+            >
               <Markdown
                 diagramRenderers={FILES_DIAGRAM_RENDERERS}
                 diagramDocumentKey={buffer.document.path}
+                blockAnchor={markdownBlockAnchor}
               >
                 {previewText}
               </Markdown>

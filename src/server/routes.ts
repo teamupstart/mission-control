@@ -353,7 +353,10 @@ import {
   activeWorkflowOwnsSession,
   followupPrs,
 } from "./foreman/review-followup.ts";
-import { decideShipShepherd } from "./foreman/ship-shepherd.ts";
+import {
+  decideImmediateHeldGapDelivery,
+  decideShipShepherd,
+} from "./foreman/ship-shepherd.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -4757,7 +4760,7 @@ export function buildApp(
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,
     );
-    const decision = decideShipShepherd({
+    const recoveryInput = {
       session,
       queue,
       humanOwnsSession:
@@ -4770,7 +4773,10 @@ export function buildApp(
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
       recoveryMinutes: cfg.shipRecoveryMinutes,
       now: Date.now(),
-    });
+    };
+    const decision = parsed.data.deliveryRoute === "immediate-held"
+      ? decideImmediateHeldGapDelivery(recoveryInput)
+      : decideShipShepherd(recoveryInput);
     if (
       decision.kind === "skip"
       || decision.reason !== parsed.data.reason

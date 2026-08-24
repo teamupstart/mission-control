@@ -195,7 +195,7 @@ generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `r
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
-**The pre-PR ship shepherd recovers only invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
 ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
@@ -203,6 +203,14 @@ settled-idle work cycle. A human ask, a work-queue item, a pending turn, an acti
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
+
+When prompted completion records a real held verdict for an eligible managed ship task, Foreman
+does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
+and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the
+existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery, live-mode, and
+repository-trust gate above. A task-less session or any session a human owns remains silent. The
+quiet-window shepherd is unchanged and remains the backstop when immediate delivery could not be
+claimed or reached no pane.
 
 Known states use structural instructions: relay the verifier's held gaps, resume an empty
 checkout, or continue an already-authorized direct shipping handoff whose pull request did not
@@ -214,8 +222,9 @@ human. A repeated verification infrastructure failure escalates without a recove
 Transient reviewer or evidence failures claim no recovery attempt. They are recorded on the
 session, retried after a one-minute cooldown, and escalate after three consecutive failures.
 
-Foreman claims each exact recovery in the daemon before typing. Sends one, two, and three wait
-the configured first window, then fixed **40-minute** and **80-minute** intervals. After the third
+Foreman claims each exact recovery in the daemon before typing. A held-gap first send is immediate;
+other first sends wait for the configured quiet window. Sends two and three retain the fixed
+**40-minute** and **80-minute** intervals. After the third
 send the next due pass records a visible escalation and types nothing. A confirmed non-delivery
 releases the same attempt for retry; an unknown delivery remains spent so a lost response cannot
 become a duplicate send after restart. Every attempt and escalation uses the existing session

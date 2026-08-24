@@ -18,6 +18,7 @@ import type {
   PromptedDirectHandoffKind,
   ReviewItem,
   Session,
+  SessionDiff,
   SessionQueue,
   WorkItem,
 } from "@shared/types.ts";
@@ -109,7 +110,10 @@ import {
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 import { runPipelineTriage } from "./pipeline-triage.ts";
 import { reviewShipRecovery } from "./ship-recovery-review.ts";
-import { decideShipShepherd } from "./ship-shepherd.ts";
+import {
+  decideImmediateHeldGapDelivery,
+  decideShipShepherd,
+} from "./ship-shepherd.ts";
 import type { ShipShepherdDecision } from "./ship-shepherd.ts";
 import type { WorkflowStagedEvidenceList } from "@shared/workflow.ts";
 
@@ -514,7 +518,7 @@ async function main(): Promise<void> {
       if (!cfg.enabled || !isLeader) break;
 
       try {
-        if (await processTarget(client, cfg, session, reviews)) advanced = true;
+        if (await processTarget(client, cfg, session, reviews, nudgedThisPass)) advanced = true;
       } catch (err) {
         log(`error processing ${session.name} (${session.id}): ${String(err)}`);
       }
@@ -1067,6 +1071,61 @@ async function runReviewFollowup(
  * delivery remains claimed. Only an InjectError that positively says nothing landed is
  * released for the exact same-attempt retry.
  */
+type ShipRecoveryDeliveryRoute = NonNullable<PromptedRecoveryClaim["deliveryRoute"]>;
+
+interface ShipRecoveryCandidate {
+  session: Session;
+  task: NonNullable<Session["task"]>;
+  queue: SessionQueue;
+  diff: SessionDiff;
+  decision: Exclude<ShipShepherdDecision, { kind: "skip" }>;
+}
+
+/** Resolve the worker's advisory recovery snapshot through one shared set of reads. */
+async function resolveShipRecoveryCandidate(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  sessions: Session[],
+  deliveryRoute: ShipRecoveryDeliveryRoute,
+): Promise<ShipRecoveryCandidate | null> {
+  const task = session.task;
+  if (!task || task.kind !== "ship") return null;
+
+  // Queue and Workflow are durable owners outside the card snapshot. Failure to read
+  // either holds this candidate: missing evidence can never become permission to type.
+  const [queue, workflowRuns] = await Promise.all([
+    client.queue(session.id).catch(() => undefined),
+    client.workflowRuns(noteKeyOf(session)).catch(() => undefined),
+  ]);
+  if (queue === undefined || queue === null || workflowRuns === undefined) return null;
+
+  // Diff errors also hold. Treating "could not inspect" as empty would route a dirty,
+  // ambiguous checkout into the structural empty instruction and erase the only branch
+  // that requires judgment.
+  const diff = await client.diff(session.id).catch(() => null);
+  if (!diff?.ok) return null;
+
+  const input = {
+    session,
+    queue,
+    humanOwnsSession:
+      reportBucket(session, sessions) === "needs-you"
+      || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
+    workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
+    hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+    diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
+    featureEnabled: cfg.keepShipTasksMoving,
+    mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+    recoveryMinutes: cfg.shipRecoveryMinutes,
+    now: Date.now(),
+  };
+  const decision = deliveryRoute === "immediate-held"
+    ? decideImmediateHeldGapDelivery(input)
+    : decideShipShepherd(input);
+  return decision.kind === "skip" ? null : { session, task, queue, diff, decision };
+}
+
 async function runShipShepherd(
   client: ForemanClient,
   cfg: ForemanConfig,
@@ -1085,38 +1144,16 @@ async function runShipShepherd(
 
   for (const session of sessions) {
     if (alreadyTouched.has(session.id)) continue;
-    const task = session.task;
-    if (!task || task.kind !== "ship") continue;
-
-    // Queue and Workflow are durable owners outside the card snapshot. Failure to read
-    // either holds this candidate: missing evidence can never become permission to type.
-    const [queue, workflowRuns] = await Promise.all([
-      client.queue(session.id).catch(() => undefined),
-      client.workflowRuns(noteKeyOf(session)).catch(() => undefined),
-    ]);
-    if (queue === undefined || workflowRuns === undefined) continue;
-
-    // Diff errors also hold. Treating "could not inspect" as empty would route a dirty,
-    // ambiguous checkout into the structural empty instruction and erase the only branch
-    // that requires judgment.
-    const diff = await client.diff(session.id).catch(() => null);
-    if (!diff?.ok) continue;
-
-    let decision = decideShipShepherd({
+    const candidate = await resolveShipRecoveryCandidate(
+      client,
+      cfg,
       session,
-      queue,
-      humanOwnsSession:
-        reportBucket(session, sessions) === "needs-you"
-        || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
-      workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
-      hasTaskOwnedOpenPr: followupPrs(session).length > 0,
-      diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
-      featureEnabled: cfg.keepShipTasksMoving,
-      mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
-      recoveryMinutes: cfg.shipRecoveryMinutes,
-      now: Date.now(),
-    });
-    if (decision.kind === "skip") continue;
+      sessions,
+      "shepherd",
+    );
+    if (!candidate) continue;
+    const { task, queue, diff } = candidate;
+    let { decision } = candidate;
 
     let payload = decision.kind === "recover" ? decision.payload : null;
     let terminalSummary = decision.kind === "escalate" ? decision.summary : null;
@@ -1206,117 +1243,143 @@ async function runShipShepherd(
       }
     }
 
-    if (decision.kind === "recover" && !payload) continue;
-    const summary = oneLine(
-      decision.kind === "escalate" ? decision.summary : payload!,
-      600,
+    const delivered = await deliverShipRecovery(
+      client,
+      { session, task, queue, diff, decision },
+      payload,
+      "shepherd",
     );
-    const claim = recoveryClaim(task.id, queue!.noteKey, decision, summary);
-    const claimedQueue = await client.claimShipRecovery(session.id, claim).catch((err) => {
-      log(`${session.name}: pre-PR recovery claim refused (${String(err)})`);
-      return null;
-    });
-    if (!claimedQueue) continue;
-
-    if (decision.kind === "escalate") {
-      touched.add(session.id);
-      await recordShipRecovery(client, session, decision, {
-        delivery: "escalated",
-        detail: decision.summary,
-        sentText: null,
-      });
-      log(`${session.name}: escalated pre-PR recovery (${reasonLabel(decision.reason)})`);
-      continue;
-    }
-
-    // One last delivery-channel/owner check after the durable mark and immediately before
-    // injection. Embedded sessions have no pane token: their supervisor handle is the
-    // reachable channel, so pane identity is conditional just as it is for queue delivery.
-    // Since the claim is already unknown, aborting here must positively release it. A
-    // later pass retries the same identity rather than spending an attempt that sent none.
-    const [freshCfg, freshSessions] = await Promise.all([
-      client.getConfig().catch(() => null),
-      client.sessions().catch(() => null),
-    ]);
-    const fresh = freshSessions ? resolveLiveSession(freshSessions, noteKeyOf(session)) : null;
-    const freshRuns = fresh
-      ? await client.workflowRuns(noteKeyOf(fresh)).catch(() => null)
-      : null;
-    const freshQueue = fresh ? await client.queue(fresh.id).catch(() => null) : null;
-    if (
-      !freshCfg
-      || !freshSessions
-      || !fresh
-      || !freshRuns
-      || !freshQueue
-      || !isLeader
-      || !freshCfg.enabled
-      || !freshCfg.keepShipTasksMoving
-      || fresh.task?.id !== task.id
-      || !["running", "dispatching"].includes(fresh.task.status)
-      || fresh.foremanInvite === null
-      || !fresh.hooksSeen
-      || !hasPane(fresh)
-      || (paneKeyOf(session) !== null && paneKeyOf(fresh) !== paneKeyOf(session))
-      || reportBucket(fresh, freshSessions) === "needs-you"
-      || Boolean(fresh.note && noteAwaitsYou(fresh.note.disposition))
-      || activeWorkflowOwnsSession(freshRuns)
-      || followupPrs(fresh).length > 0
-      || fresh.pendingTurns.length > 0
-      || freshQueue.items.length > 0
-      || freshQueue.promptedRecovery?.marker !== claim.marker
-      || freshQueue.promptedRecovery?.lastDelivery !== "unknown"
-      || fresh.workCycle?.logicalKey !== claim.logicalKey
-      || fresh.workCycle.generation !== claim.generation
-      || fresh.workCycle.active
-      || fresh.workCycle.completedAt === null
-      || !settledIdle(fresh, Date.now(), freshCfg.shipRecoveryMinutes * 60_000)
-      || !foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot)
-    ) {
-      await releaseShipRecovery(client, session.id, claim);
-      await recordShipRecovery(client, session, decision, {
-        delivery: "confirmed undelivered",
-        detail: payload!,
-        sentText: null,
-      });
-      continue;
-    }
-
-    try {
-      await client.inject(fresh.id, payload!);
-    } catch (err) {
-      const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
-      if (confirmedUndelivered) {
-        await releaseShipRecovery(client, fresh.id, claim);
-      } else {
-        touched.add(session.id);
-        touched.add(fresh.id);
-      }
-      await recordShipRecovery(client, fresh, decision, {
-        delivery: confirmedUndelivered ? "confirmed undelivered" : "delivery unknown",
-        detail: payload!,
-        sentText: null,
-      });
-      log(`${fresh.name}: pre-PR recovery delivery failed (${String(err)})`);
-      continue;
-    }
-
-    // Confirmation is useful audit, but its failure never frees the already-unknown claim.
-    // The child received the turn; a second send would be the harmful side of the ambiguity.
-    await client.resolveShipRecoveryDelivery(fresh.id, {
-      ...claim,
-      delivery: "delivered",
-    });
-    touched.add(session.id);
-    touched.add(fresh.id);
-    await recordShipRecovery(client, fresh, decision, {
-      delivery: "delivered",
-      detail: payload!,
-      sentText: payload!,
-    });
-    log(`${fresh.name}: sent pre-PR recovery attempt ${decision.attempt}/3 (${reasonLabel(decision.reason)})`);
+    for (const id of delivered) touched.add(id);
   }
 
+  return touched;
+}
+
+/**
+ * The single claim -> refresh -> inject -> resolve -> audit delivery path. Both the
+ * quiet-window shepherd and prompted hold route spend attempts through this helper.
+ */
+async function deliverShipRecovery(
+  client: ForemanClient,
+  candidate: ShipRecoveryCandidate,
+  payload: string | null,
+  deliveryRoute: ShipRecoveryDeliveryRoute,
+): Promise<Set<string>> {
+  const touched = new Set<string>();
+  const { session, task, queue, decision } = candidate;
+  if (decision.kind === "recover" && !payload) return touched;
+
+  const summary = oneLine(
+    decision.kind === "escalate" ? decision.summary : payload!,
+    600,
+  );
+  const claim = recoveryClaim(task.id, queue.noteKey, decision, summary, deliveryRoute);
+  const claimedQueue = await client.claimShipRecovery(session.id, claim).catch((err) => {
+    log(`${session.name}: pre-PR recovery claim refused (${String(err)})`);
+    return null;
+  });
+  if (!claimedQueue) return touched;
+
+  if (decision.kind === "escalate") {
+    touched.add(session.id);
+    await recordShipRecovery(client, session, decision, {
+      delivery: "escalated",
+      detail: decision.summary,
+      sentText: null,
+    });
+    log(`${session.name}: escalated pre-PR recovery (${reasonLabel(decision.reason)})`);
+    return touched;
+  }
+
+  // One last delivery-channel/owner check after the durable mark and immediately before
+  // injection. Embedded sessions have no pane token: their supervisor handle is the
+  // reachable channel, so pane identity is conditional just as it is for queue delivery.
+  // Since the claim is already unknown, aborting here must positively release it. A
+  // later pass retries the same identity rather than spending an attempt that sent none.
+  const [freshCfg, freshSessions] = await Promise.all([
+    client.getConfig().catch(() => null),
+    client.sessions().catch(() => null),
+  ]);
+  const fresh = freshSessions ? resolveLiveSession(freshSessions, noteKeyOf(session)) : null;
+  const freshRuns = fresh
+    ? await client.workflowRuns(noteKeyOf(fresh)).catch(() => null)
+    : null;
+  const freshQueue = fresh ? await client.queue(fresh.id).catch(() => null) : null;
+  const settleMs = deliveryRoute === "immediate-held"
+    ? 0
+    : (freshCfg?.shipRecoveryMinutes ?? 0) * 60_000;
+  if (
+    !freshCfg
+    || !freshSessions
+    || !fresh
+    || !freshRuns
+    || !freshQueue
+    || !isLeader
+    || !freshCfg.enabled
+    || !freshCfg.keepShipTasksMoving
+    || fresh.task?.id !== task.id
+    || !["running", "dispatching"].includes(fresh.task.status)
+    || fresh.foremanInvite === null
+    || !fresh.hooksSeen
+    || !hasPane(fresh)
+    || (paneKeyOf(session) !== null && paneKeyOf(fresh) !== paneKeyOf(session))
+    || reportBucket(fresh, freshSessions) === "needs-you"
+    || Boolean(fresh.note && noteAwaitsYou(fresh.note.disposition))
+    || activeWorkflowOwnsSession(freshRuns)
+    || followupPrs(fresh).length > 0
+    || fresh.pendingTurns.length > 0
+    || freshQueue.items.length > 0
+    || freshQueue.promptedRecovery?.marker !== claim.marker
+    || freshQueue.promptedRecovery?.lastDelivery !== "unknown"
+    || fresh.workCycle?.logicalKey !== claim.logicalKey
+    || fresh.workCycle.generation !== claim.generation
+    || fresh.workCycle.active
+    || fresh.workCycle.completedAt === null
+    || !settledIdle(fresh, Date.now(), settleMs)
+    || !foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot)
+  ) {
+    await releaseShipRecovery(client, session.id, claim);
+    await recordShipRecovery(client, session, decision, {
+      delivery: "confirmed undelivered",
+      detail: payload!,
+      sentText: null,
+    });
+    return touched;
+  }
+
+  try {
+    await client.inject(fresh.id, payload!);
+  } catch (err) {
+    const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
+    if (confirmedUndelivered) {
+      await releaseShipRecovery(client, fresh.id, claim);
+    } else {
+      touched.add(session.id);
+      touched.add(fresh.id);
+    }
+    await recordShipRecovery(client, fresh, decision, {
+      delivery: confirmedUndelivered ? "confirmed undelivered" : "delivery unknown",
+      detail: payload!,
+      sentText: null,
+    });
+    log(`${fresh.name}: pre-PR recovery delivery failed (${String(err)})`);
+    return touched;
+  }
+
+  // Confirmation is useful audit, but its failure never frees the already-unknown claim.
+  // The child received the turn; a second send would be the harmful side of the ambiguity.
+  await client.resolveShipRecoveryDelivery(fresh.id, {
+    ...claim,
+    delivery: "delivered",
+  });
+  touched.add(session.id);
+  touched.add(fresh.id);
+  await recordShipRecovery(client, fresh, decision, {
+    delivery: "delivered",
+    detail: payload!,
+    sentText: payload!,
+  });
+  log(`${fresh.name}: sent pre-PR recovery attempt ${decision.attempt}/3 (${reasonLabel(decision.reason)})`);
   return touched;
 }
 
@@ -1407,6 +1470,7 @@ function recoveryClaim(
   logicalKey: string,
   decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
   payloadSummary: string,
+  deliveryRoute: ShipRecoveryDeliveryRoute,
 ): PromptedRecoveryClaim {
   return {
     taskId,
@@ -1420,6 +1484,7 @@ function recoveryClaim(
     attempt: decision.attempt,
     marker: decision.marker,
     payloadSummary,
+    deliveryRoute,
   };
 }
 
@@ -1568,6 +1633,7 @@ async function processTarget(
   cfg: ForemanConfig,
   session: Session,
   reviews: ReviewItem[],
+  touchedThisPass: Set<string>,
 ): Promise<boolean> {
   // Re-resolve the target against a FRESH session list before deciding ANYTHING - including
   // whether this session is here because it needs you - through the same
@@ -1630,7 +1696,7 @@ async function processTarget(
     // and the trigger's guards both live in the row we failed to read. Decide nothing
     // and re-decide next tick.
     if (!read) return false;
-    return await processPromptedWrapup(client, cfg, fresh, live, queue);
+    return await processPromptedWrapup(client, cfg, fresh, live, queue, touchedThisPass);
   }
 
   const qcfg = queueConfig(cfg);
@@ -1901,6 +1967,7 @@ async function processPromptedWrapup(
   session: Session,
   live: Session[],
   queue: SessionQueue | null,
+  touchedThisPass: Set<string>,
 ): Promise<boolean> {
   const pcfg = promptedConfig(cfg);
 
@@ -2236,6 +2303,35 @@ async function processPromptedWrapup(
   ) return false;
 
   if (plan.kind === "hold") {
+    if (
+      cfg.keepShipTasksMoving
+      && current.session.task?.kind === "ship"
+      && ["running", "dispatching"].includes(current.session.task.status)
+    ) {
+      const latestSessions = await client.sessions().catch(() => null);
+      const latest = latestSessions
+        ? resolveLiveSession(latestSessions, current.candidate.logicalKey)
+        : null;
+      if (latest && latestSessions) {
+        const recovery = await resolveShipRecoveryCandidate(
+          client,
+          cfg,
+          latest,
+          latestSessions,
+          "immediate-held",
+        );
+        if (recovery) {
+          const payload = recovery.decision.kind === "recover" ? recovery.decision.payload : null;
+          const delivered = await deliverShipRecovery(
+            client,
+            recovery,
+            payload,
+            "immediate-held",
+          );
+          for (const id of delivered) touchedThisPass.add(id);
+        }
+      }
+    }
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
     return true;
   }

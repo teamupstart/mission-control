@@ -642,6 +642,25 @@
       interface, or silently report tree-derived state as complete. The same one-list-not-its-sibling
       habit as item 23; the durable answer here is that the reader reads no row at all, so anything it
       needs has to arrive in the factory object where its absence is a type error.</li>
+    <li><strong>The index tree is derived from its ref, not persisted</strong> (Phases 2 and 3). Item
+      21 pinned the index tree and 27 added <code>indexTreeOid</code> to the reader&rsquo;s inputs, and
+      nothing ever returned or stored it - so Phase 3 had no durable source for a required factory
+      input. The review offered persisting it or making ref resolution an explicit contract; I took the
+      second, because the ref name is a pure function of the submission id, so there is no fifth column
+      to keep in step with the reader&rsquo;s inputs - and that pair is precisely what produced the
+      finding. The reader resolves it once at construction. A missing ref yields the new
+      <code>stage_unavailable</code> denial, deliberately <strong>not</strong>
+      <code>unavailable</code>, which since item 26 aborts the attempt: a submission captured before
+      this phase has no index ref, and that is not a reason to fail its review.</li>
+    <li><strong>The round envelope schema stays browser-safe</strong> (Phase 3). The envelope was
+      specified to reuse <code>PersonaVerdictInputSchema</code> from
+      <code>src/server/workflows/verdict.ts</code> - impossible twice over, since
+      <code>src/shared</code> imports nothing from <code>src/server</code> (verified, the boundary is
+      clean today, so this would have been the first violation and the web bundle would have broken)
+      and the schema is not exported at all. The tolerant schema moves to
+      <code>src/shared/protocol.ts</code> beside the strict <code>PersonaVerdictSchema</code> it is the
+      sibling of, and the server parser imports it, keeping <code>normalizePersonaVerdict</code> and
+      the id cross-checks server-side.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

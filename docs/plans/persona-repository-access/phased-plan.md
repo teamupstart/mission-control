@@ -477,6 +477,23 @@ reintroduce and neither is caught by the guards that look like they should catch
     answer here is that the reader reads no row at all, so anything it needs has to arrive in the
     factory object where its absence is a type error.
 
+28. **The index tree is derived from its ref, not persisted** (Phases 2 and 3). Reconciliation 21
+    pinned the index tree and 27 added `indexTreeOid` to the reader's inputs, and nothing ever
+    returned or stored it - so Phase 3 had no durable source for a required factory input. The
+    review offered persisting it or making ref resolution an explicit contract; I took the second,
+    because the ref name is a pure function of the submission id, so there is no fifth column to keep
+    in step with the reader's inputs - and that pair is precisely what produced the finding. The
+    reader resolves it once at construction. A missing ref yields the new `stage_unavailable` denial,
+    deliberately **not** `unavailable`, which since 26 aborts the attempt: a submission captured
+    before this phase has no index ref, and that is not a reason to fail its review.
+29. **The round envelope schema stays browser-safe** (Phase 3). The envelope was specified to reuse
+    `PersonaVerdictInputSchema` from `src/server/workflows/verdict.ts` - impossible twice over, since
+    `src/shared` imports nothing from `src/server` (verified, the boundary is clean today, so this
+    would have been the first violation and the web bundle would have broken) and the schema is not
+    exported at all. The tolerant schema moves to `src/shared/protocol.ts` beside the strict
+    `PersonaVerdictSchema` it is the sibling of, and the server parser imports it, keeping
+    `normalizePersonaVerdict` and the id cross-checks server-side.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

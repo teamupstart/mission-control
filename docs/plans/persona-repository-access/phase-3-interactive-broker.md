@@ -16,7 +16,7 @@ visible in run detail.
 
 - **Direct phase dependencies: Phase 1 and Phase 2.** Both must be merged.
 - From Phase 1: `PersonaSnapshot.repositoryAccess`, non-optional after parse.
-- From Phase 2: `createRepositoryReader({ ..., indexTreeOid, statusPorcelain, statusTruncated, audit: { runId, submissionId, nodeAttemptId }, recordQuery, ... })`
+- From Phase 2: `createRepositoryReader({ ..., statusPorcelain, statusTruncated, audit: { runId, submissionId, nodeAttemptId }, recordQuery, ... })`
   and `execute(query, { round })`, the query/result/denial vocabulary, `REPOSITORY_QUERY_LIMITS`,
   and `WorkflowSubmission.reviewSnapshotOid`. **One reader per Persona attempt**: it carries the
   audit identity, so building it once per attempt rather than once per round or once per query is
@@ -26,7 +26,9 @@ visible in run detail.
 
 In scope:
 
-- The round envelope contract and its schema.
+- The round envelope contract and its schema, including moving `PersonaVerdictInputSchema` from
+  `src/server/workflows/verdict.ts` to `src/shared/protocol.ts` so the envelope can reference it
+  without `src/shared` importing a server module.
 - The broker round loop, its budget accounting, its cancellation checks and its termination rule.
 - Engine wiring: which attempts use the broker, and how a failure is classified.
 - `workflow_llm_calls.round`.
@@ -110,10 +112,20 @@ Re-verify at implementation; these were true at planning time.
 
 - `PersonaReviewReply = { action: "query"; queries: RepositoryQuery[] } | { action: "verdict"; verdict: PersonaVerdict }`,
   in shared, beside the query vocabulary Phase 2 established.
-- The Zod schema for it, reusing `PersonaVerdictInputSchema`'s tolerant shape from
-  `src/server/workflows/verdict.ts` for the verdict arm so a reply that would have parsed as a
-  bare verdict still parses inside the envelope. Bound `queries` by
-  `REPOSITORY_QUERY_LIMITS.maxQueriesPerRound`.
+- The Zod schema for it. The verdict arm reuses the **tolerant** verdict shape so a reply that would
+  have parsed as a bare verdict still parses inside the envelope - but that shape currently lives as a
+  **module-private** `const PersonaVerdictInputSchema` in `src/server/workflows/verdict.ts`, a server
+  module. It is not importable from `src/shared/` twice over: the boundary forbids it
+  (`src/shared` imports nothing from `src/server` today, and the web bundle would break), and it is
+  not exported in the first place.
+  **So move the schema, not the parser.** `PersonaVerdictInputSchema` moves to
+  `src/shared/protocol.ts`, beside the strict `PersonaVerdictSchema` it is the tolerant sibling of -
+  which is where it should have been, since the two describe one wire shape at two strictnesses.
+  `src/server/workflows/verdict.ts` imports it and keeps what is genuinely server-side:
+  `normalizePersonaVerdict`, the clipping, and the image/artifact/check id cross-checks. A contained
+  move with no behaviour change, and `test/workflow-contracts.test.ts` can then assert the tolerant
+  and strict schemas agree on a canonical verdict, which nothing does today.
+  Bound `queries` by `REPOSITORY_QUERY_LIMITS.maxQueriesPerRound`.
 - A **backward-compatible extractor**: a raw reply that is a bare `PersonaVerdict` (no `action`
   key) is read as `{ action: "verdict", verdict }`. Two reasons, and the second is the important
   one: it keeps a Persona with access **off** on a byte-identical prompt and a byte-identical parse
@@ -180,9 +192,10 @@ final round cannot ask for more.
 
 - After resolving `node.persona`, branch on `node.persona.repositoryAccess`:
   - `"off"`: the existing single `runStructured` call, untouched.
-  - `"read"`: resolve the submission's `reviewSnapshotOid`, `reviewSnapshotRepoRoot`, index tree oid,
-    `reviewStatusPorcelain` and `reviewStatusTruncated`, and pass all of them to the reader - it reads
-    no row itself. If the snapshot oid or repo root is missing, or the repository root no longer exists, or the reader cannot open the snapshot,
+  - `"read"`: resolve the submission's `reviewSnapshotOid`, `reviewSnapshotRepoRoot`,
+    `reviewStatusPorcelain` and `reviewStatusTruncated`, and pass them to the reader - it reads no row
+    itself, and it derives the index tree from its own ref. If the snapshot oid or repo root is
+    missing, or the repository root no longer exists, or the reader cannot open the snapshot,
     call `handleInfrastructureFailure` with a reason naming the repository - **before any provider
     call**, so a review that cannot be done costs nothing.
   - otherwise build the reader and call the broker.

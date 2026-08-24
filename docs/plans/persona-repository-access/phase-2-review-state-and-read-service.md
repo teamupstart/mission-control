@@ -118,7 +118,7 @@ Browser-safe, no `node:` imports, because the audit surface renders these shapes
   whose safety argument did not apply to it. A `Record` makes the omission a type error.
   It describes **output only**. Validation of a supplied path is universal and independent of it -
   see *Two axes* below, and note that conflating the two is what produced the `git_log` hole.
-- `REPOSITORY_DENIAL_CODES = ["not_found", "not_a_file", "sensitive_path", "path_invalid", "symlink", "submodule", "binary", "too_large", "unsupported_rev", "invalid_argument", "budget_exhausted", "unavailable", "cancelled"] as const`.
+- `REPOSITORY_DENIAL_CODES = ["not_found", "not_a_file", "sensitive_path", "path_invalid", "symlink", "submodule", "binary", "too_large", "unsupported_rev", "invalid_argument", "budget_exhausted", "stage_unavailable", "unavailable", "cancelled"] as const`.
   Appended-only; the strings reach durable audit rows.
 - `RepositoryQueryResult`: `{ ok: true; op; ...payload; bytes; truncated; omittedBytes }` or
   `{ ok: false; op; code; detail }`.
@@ -266,6 +266,22 @@ guarantee that a retried round cannot double-write its audit.
   7. clean up the temp index on every path.
   Never touch `GIT_INDEX_FILE` for the live index, never write into the worktree, and never run
   anything that could check out a tree.
+- `resolveReviewIndexTree(repoRoot, submissionId)` - `rev-parse` the pinned index ref to its tree,
+  or `null` when the ref is absent. **This is the durable source of the index tree, and it is a
+  function of the submission id rather than a persisted column.** The ref name is
+  `refs/mission-control/review-index/<submissionId>`, so nothing has to be stored to find it, and
+  there is no fifth column to keep in step with the reader's inputs - which is exactly the pair that
+  produced this finding. The reader calls it **once at construction** and caches the result, so a
+  staged read costs no extra process.
+  Asymmetric with the snapshot oid on purpose, and worth stating rather than leaving as an apparent
+  inconsistency: the snapshot oid is persisted because Phase 3 must decide *before* building a reader
+  whether the review can proceed, and because it is the durable record of exactly what was reviewed.
+  The index tree is a secondary view reached only through a live reader, so deriving it is strictly
+  less state for the same guarantee.
+  A `null` result is **policy, not infrastructure**: every `stage: "index"` read returns
+  `stage_unavailable`, reported to the reviewer as data. It must not be `unavailable`, which since
+  round 16 aborts the attempt - a submission captured before this phase existed has no index ref, and
+  that is not a reason to fail its review.
 - `deleteReviewSnapshot(repoRoot, submissionId)` - `update-ref -d` for **both** refs, the
   snapshot and the index tree, idempotent. One function deletes both so retention cannot free one and
   leak the other.
@@ -276,7 +292,9 @@ guarantee that a retried round cannot double-write its audit.
 ### 4. Capture integration - `src/server/workflows/context.ts`
 
 Create the snapshot immediately after `readRepositoryEvidence` inside `readWorkflowContextRaw`,
-and return `{ oid, repoRoot }` on the existing `WorkflowRawCaptureRead` so the manager can persist
+and return `{ oid, indexTreeOid, repoRoot }` on the existing `WorkflowRawCaptureRead` - the index
+tree oid is returned for the capture-time assertion and the log line, **not** for persistence, since
+the reader derives it from the ref - so the manager can persist
 it in the same write that persists the raw evidence.
 
 Two hard constraints:
@@ -315,8 +333,6 @@ createRepositoryReader({
   repoRoot,
   snapshotOid,
   headSha,
-  // The index tree, so read_file can serve stage: "index".
-  indexTreeOid,
   // The persisted porcelain and its truncation flag. git_status answers from these once the
   // worktree is gone, so they have to arrive through the interface rather than being fetched
   // from persistence by the reader - which would make the reader depend on the store.
@@ -333,7 +349,8 @@ createRepositoryReader({
 ```
 
 Everything durable the reader needs arrives in that object. It reads no row itself: `git_status`
-answers from `statusPorcelain`, and `read_file` with `stage: "index"` from `indexTreeOid`. An
+answers from `statusPorcelain`, and `read_file` with `stage: "index"` from the index tree the
+reader resolves for itself (below). An
 earlier draft persisted both and then omitted them here, which left `git_status` with no contract
 path to the data it was specified to answer from - it would have had to reach into persistence
 outside its own interface, or silently fall back to tree-derived state and report it as complete.
@@ -871,6 +888,11 @@ look viable.
   created. Verified that without the flags those three invoke it 3, 2 and 3 times respectively, so
   this fails loudly against the original argv. Assert `--textconv` is refused if it reaches the
   argv builder.
+- **The index-ref derivation tests.** A reader built for a submission whose index ref exists serves
+  `stage: "index"`; one built for a submission with **no** index ref returns `stage_unavailable` for
+  every staged read and - the assertion that matters - **does not abort the attempt**, since a
+  submission captured before this phase has no such ref. Resolution happens once per reader, asserted
+  by counting `rev-parse` invocations across several staged reads.
 - **The staged-version tests.** A staged-then-modified file: `read_file` with
   `stage: "index"` returns the staged bytes and with `stage: "worktree"` returns the worktree bytes,
   both **after the worktree directory is deleted** and after `git gc --prune=now`, which is the whole
@@ -1012,7 +1034,7 @@ Phase 3 may rely on, and must not change:
 - `RepositoryQuery`, `RepositoryQueryResult`, `REPOSITORY_DENIAL_CODES` and
   `REPOSITORY_QUERY_LIMITS` as the provider-neutral vocabulary. Phase 3 adds the **envelope**
   around them, not the operations.
-- `createRepositoryReader({ ..., indexTreeOid, statusPorcelain, statusTruncated, audit, recordQuery, ... }).execute(query, { round })`
+- `createRepositoryReader({ ..., statusPorcelain, statusTruncated, audit, recordQuery, ... }).execute(query, { round })`
   as the only way to reach the repository. Everything durable it needs arrives in that object; it
   reads no row itself, so Phase 3 supplies the submission's persisted values rather than the reader
   reaching into the store, and `unavailable` as the only code meaning infrastructure. Phase 3

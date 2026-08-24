@@ -29262,3 +29262,362 @@ body.foreman-sidecar-open .modal-backdrop {
 .feedback-created-action {
   text-decoration: none;
 }
+
+/* ---- Standing instructions -------------------------------------------------
+   The operator's own words, per repository, sent to every session Mission Control
+   opens into that checkout. Reuses `settings-section` / `settings-hint` /
+   `settings-error` / `kb-row` vocabulary rather than inventing a second one, so the
+   panel reads as a peer of Worktrees and Task sources instead of a guest.
+   ------------------------------------------------------------------------- */
+.si-settings {
+  min-width: 0;
+}
+
+.si-group {
+  margin-top: 26px;
+}
+
+.si-count {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* A monospace box, because the content is markdown a person will align by eye, and
+   because a proportional face makes a 2,000-character rule impossible to scan. */
+.si-textarea {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 9px 11px;
+  resize: vertical;
+  width: 100%;
+}
+
+.si-textarea:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+
+.si-card-meta {
+  align-items: baseline;
+  color: var(--muted);
+  display: flex;
+  font-size: 10.5px;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 5px;
+}
+
+.si-counter {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Over the ceiling the daemon will refuse at, said before the Save is pressed rather
+   than after it comes back 400. */
+.si-counter-over {
+  color: var(--danger);
+  font-weight: 640;
+}
+
+.si-format {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.si-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.si-add {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* The field carries a full path, so it takes the row rather than the shrink-to-fit width
+   `.combobox` defaults to - a box that ellipses its own placeholder cannot show the
+   subdirectory key this feature exists to make configurable. Capped so it does not run the
+   full width of a wide panel, where the caret would end up far from the Add beside it. */
+.si-add .combobox {
+  flex: 1 1 auto;
+  max-width: 460px;
+  min-width: 0;
+}
+
+.si-empty {
+  margin-top: 14px;
+}
+
+.si-unanswered {
+  margin-top: 12px;
+}
+
+/* ---- One repository's card ---- */
+.si-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.si-card-conflict {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+
+.si-card-head {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 9px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.si-card-head:hover {
+  background: color-mix(in oklab, var(--fg) 4%, transparent);
+}
+
+.si-disclosure {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  width: 12px;
+}
+
+.si-card-name {
+  font-weight: 600;
+}
+
+.si-card-body {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+
+.si-chip {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.si-chip-override {
+  border-color: color-mix(in oklab, var(--select) 34%, var(--border));
+  color: var(--select);
+  background: color-mix(in oklab, var(--select) 9%, transparent);
+}
+
+.si-chip-unsaved {
+  border-color: color-mix(in oklab, var(--attention) 34%, var(--border));
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+
+.si-conflict {
+  margin-top: 12px;
+}
+
+.si-conflict-theirs {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+/* ---- The reach block ----
+   Not decoration. It states, per harness AND runtime, which sessions get the text and by
+   which mechanism, and when a change takes effect - the honest answer to the questions a
+   standing instruction otherwise leaves an operator guessing at. A rule that silently
+   reaches half the fleet is worse than none: it is trusted and wrong. */
+.si-reach {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.si-reach-head {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 640;
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.si-reach-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.si-reach-row {
+  align-items: baseline;
+  display: grid;
+  font-size: 11px;
+  gap: 10px;
+  grid-template-columns: 12px minmax(0, 9rem) minmax(0, 10rem) minmax(0, 1fr);
+}
+
+.si-reach-glyph {
+  font-size: 10px;
+  text-align: center;
+}
+
+.si-reach-yes {
+  color: var(--idle);
+}
+
+.si-reach-no {
+  color: var(--muted);
+}
+
+.si-reach-pair {
+  font-family: var(--mono);
+}
+
+.si-reach-channel,
+.si-reach-note {
+  color: var(--muted);
+}
+
+.si-reach-detail {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+/* The three non-harness rows span the pair and channel columns: their subject is a
+   sentence, not a two-token identifier, and gridding it into a 9rem column would wrap
+   "sessions started outside Mission Control" into three lines beside an empty cell. */
+.si-reach-exclusion .si-reach-subject {
+  grid-column: 2 / 4;
+}
+
+/* ---- The two read-only markers ---- */
+/* Shares `.dispatch-wait-note`'s box, and deliberately NOT its tone. That amber is the
+   form's caution colour - it means something about this dispatch needs a decision. This note
+   reports a rule the operator wrote on purpose and needs no answer, so it takes the neutral
+   panel treatment: a note the eye can skip is right, and a false alarm beside two real ones
+   is how the real ones stop being read. */
+.si-note {
+  align-items: stretch;
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--fg);
+  flex-direction: column;
+}
+
+.si-note-line {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+}
+
+.si-note-view {
+  margin-left: auto;
+}
+
+.si-delivery {
+  margin-top: 8px;
+}
+
+.si-delivery-head {
+  align-items: baseline;
+  display: flex;
+  gap: 7px;
+  margin: 0;
+}
+
+.si-delivery-heading {
+  font-weight: 620;
+}
+
+.si-delivery-summary {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 3px 0 0;
+}
+
+.si-delivery-detail {
+  font-family: var(--mono);
+}
+
+.si-delivery-sources {
+  color: var(--muted);
+  font-size: 11px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.si-delivery-text {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 9px 11px;
+  white-space: pre-wrap;
+}
+
+.si-delivery-note {
+  color: var(--muted);
+  font-size: 10.5px;
+  margin: 6px 0 0;
+}
+
+.si-session-chip {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 10.5px;
+  gap: 5px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.si-session-chip:hover {
+  border-color: color-mix(in oklab, var(--select) 40%, var(--border));
+  color: var(--fg);
+}
+
+.si-session-modal {
+  max-width: 720px;
+}

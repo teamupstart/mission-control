@@ -12,6 +12,7 @@ import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
+import { StandingInstructionsPanel } from "./StandingInstructionsPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { checksArmedReading } from "../lib/trust.ts";
@@ -26,6 +27,7 @@ import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
 import { useTaskSources } from "../useTaskSources.ts";
+import { useStandingInstructions } from "../useStandingInstructions.ts";
 import { useConductor } from "../useConductor.ts";
 import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
 import type { LayoutMode } from "../lib/layout.ts";
@@ -288,6 +290,10 @@ export function SettingsPage({
   // Only while its own permanent category is actually on screen. Opening unrelated Settings
   // destinations must not probe an external engine or fetch the workspace catalog.
   const conductor = useConductor(shown === "conductor");
+  // Gated on its own category for `useConductor`'s reason, and one more: this panel holds
+  // uncommitted text, so a poll running while the operator is elsewhere is pure noise
+  // against a document only this panel edits.
+  const standingInstructions = useStandingInstructions(shown === "standing-instructions");
   // Owned here for the same reason as the four above: nothing outside this page reads the
   // Workflow config, so it polls only while the page is open. Its poll is load-bearing
   // rather than tidy - the health strip, retention readout and health card are what it
@@ -540,6 +546,8 @@ export function SettingsPage({
         return <WorktreeSettingsPanel state={worktrees} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
+      case "standing-instructions":
+        return <StandingInstructionsPanel state={standingInstructions} />;
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":

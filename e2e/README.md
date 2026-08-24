@@ -1388,6 +1388,45 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frames to the pull request; they are never committed.
 
+### A standing instruction, and the sessions it does and does not reach
+
+`e2e/.artifacts/settings-standing-instructions/` carries five frames from
+`specs/settings-standing-instructions.spec.ts`. The feature writes a rule an agent will
+**obey**, so the pictures are of the two claims a person has to be able to check: that the
+rule is where they put it, and that the panel is honest about who gets it.
+
+`empty.png` is the shipped state - nothing configured, and the panel saying so rather than
+looking broken. `rule-saved.png` is a rule stored against one repository, with the
+`override` chip that separates it from a checkout inheriting the machine-wide default.
+`reach-block.png` is the one worth the most: all eight rows at once, the five harness ·
+runtime pairs with the exact mechanism each uses, both deliberate exclusions, and the line
+saying a running session keeps what it launched with. It is a column-aligned claim no DOM
+assertion makes, and the block exists precisely because a rule that silently reaches half
+the fleet is worse than none - it is trusted and wrong.
+
+`session-chip.png` is the marker on a live session, and `session-chip-open.png` is the text
+that session actually received. That pair is the answer to "why is the agent behaving like
+this": on Claude the block rides the system prompt and never enters the transcript, so
+without the chip there is nothing anywhere to read.
+
+`dispatch-note-secondary.png` is the forecast on a two-repo dispatch whose **secondary**
+carries the rule and whose primary has none - the case where a note that previewed only the
+primary would say nothing is coming while the launch sends the block.
+
+No model tokens are spent: every agent binary is redirected at a fake, and the delivery is
+read back from the session's launch snapshot rather than from any model output.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/settings-standing-instructions.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### Copy local, in the notice that decides what happens to your edits
 
 `e2e/.artifacts/file-conflict-copy-local/` carries two frames from

@@ -107,6 +107,7 @@ import {
   useEnsembleLaunch,
 } from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
+import { StandingInstructionsNote } from "./StandingInstructionsNote.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
 
@@ -3017,6 +3018,17 @@ function DispatchModal({
             </span>
           </p>
         ))}
+
+        {/* What the operator's OWN configuration will send, for every attached repository
+            in manifest order - not only the primary. Live config, because nothing has
+            happened yet, and read-only: one editor, in Settings, is the point. Renders
+            nothing at all when no attached checkout has a rule, so a dispatch that was
+            never going to carry one looks exactly as it did before this feature existed. */}
+        <StandingInstructionsNote
+          repoRoots={[draft.repoRoot.trim(), ...attachedRepoRoots(draft)].filter(Boolean)}
+          agent={draft.agent}
+          storedRuntime={defaults?.sessionRuntime?.[draft.agent]}
+        />
 
         {error && <p className="dispatch-error">{error}</p>}
       </div>

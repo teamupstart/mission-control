@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import type { Page } from "@playwright/test";
+import { WORKFLOW_COMMAND_UNKNOWN } from "../../src/shared/workflow.ts";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -710,9 +711,19 @@ test("a refused save keeps its conflict until the stream actually catches up", a
     });
   });
 
+  // The editor has to be showing the STORED slot before it is edited. `goto` resolves and
+  // the heading renders from the route parameter alone, well before the slot's own fetch
+  // lands - and Save is gated on `!baseline || !dirty`, so an edit typed into that gap is
+  // overwritten by the arriving baseline, leaving the draft clean and the button disabled
+  // for the rest of the test. The revision line is the honest readiness fact: it reads
+  // "Waiting for the daemon" for exactly the window in which that happens.
+  await expect(dashboard.locator(".wf-command-revision")).not.toHaveText(WORKFLOW_COMMAND_UNKNOWN);
+
   const field = dashboard.getByLabel("Default command");
   await field.fill("npm run build");
-  await dashboard.getByRole("button", { name: "Save Command" }).click();
+  const save = dashboard.getByRole("button", { name: "Save Command" });
+  await expect(save).toBeEnabled();
+  await save.click();
 
   const conflict = dashboard.locator(".wf-command-conflict");
   await expect(conflict).toBeVisible();

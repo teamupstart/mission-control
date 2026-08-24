@@ -137,6 +137,18 @@ test("a Codex effort chosen mid-turn reads as pending and settles on the next tu
   await chip.click();
   const menu = dashboard.getByRole("menu", { name: "Reasoning effort" });
   await expect(menu).toBeVisible();
+
+  // The conversation under this chip auto-scrolls every time the agent streams a line, and a
+  // busy session is exactly when an operator reaches for this menu. The menu has to survive
+  // that: it follows the chip rather than closing, so the click that opened it and the click
+  // that picks a level are not separated by a scroll nobody asked for.
+  const beforeScroll = await menu.boundingBox();
+  await card.locator(".turn-user").first().evaluate((el) => el.scrollIntoView());
+  await dashboard.mouse.wheel(0, 120);
+  await expect(menu).toBeVisible();
+  expect(await menu.boundingBox()).not.toBeNull();
+  note(`the menu survived a scroll of the streaming conversation (was at ${beforeScroll?.y ?? "?"})`);
+
   await menu.getByRole("menuitemradio", { name: "high" }).click();
   await expect(menu).toBeHidden();
 

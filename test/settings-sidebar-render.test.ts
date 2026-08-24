@@ -109,6 +109,7 @@ const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
 const CONDUCTOR_ONLY = /Conductor commissioning progress/; // the Conductor panel's setup path
+const STANDING_INSTRUCTIONS_ONLY = /A rule here beats the default/; // the repositories group's rule
 
 test("the rail lists every category exactly once", () => {
   const html = render("display", { settingsStatus: status() });
@@ -358,6 +359,32 @@ test("Task sources is a category of its own: its panel shows, the others don't",
 // that silently fails to render is one whose repository switches nobody can see or turn off,
 // while the daemon goes on reading whatever was last consented to. It is the only consent in
 // the app whose subject is somebody else's software.
+// Standing instructions is the category whose subject is a rule an agent will OBEY. Its
+// reachability is worth its own assertion for a reason the other panels do not have: this is
+// the ONLY place the rule can be read. A panel that silently fails to render leaves the
+// stored text still being delivered to every session with nowhere to see it, which is
+// exactly the "debugging an instruction you cannot see" failure the whole feature is built
+// to prevent.
+test("Standing instructions is a category of its own: its panel shows, the others don't", () => {
+  const html = render("standing-instructions");
+  assert.match(html, STANDING_INSTRUCTIONS_ONLY);
+  assert.doesNotMatch(html, SKILLS_ONLY);
+  assert.doesNotMatch(html, COST_ONLY);
+  assert.match(
+    html,
+    /settings-nav-item is-active"[^>]*><span[^>]*>\u270e<\/span>Standing instructions/,
+  );
+});
+
+// A static render is the pre-poll state, so this panel has not heard from the daemon yet.
+// Drawing an empty repository list there would tell an operator that no checkout has a rule
+// while the daemon may hold four - and this is the panel where believing that is expensive.
+test("with no answer from the daemon, the Standing instructions panel says so rather than showing an empty list", () => {
+  const html = render("standing-instructions");
+  assert.match(html, /daemon has not answered yet/);
+  assert.doesNotMatch(html, /No repository has a rule of its own/);
+});
+
 test("Conductor is a category of its own: its panel shows, the others don't", () => {
   const html = render("conductor", { settingsStatus: status() });
   assert.match(html, CONDUCTOR_ONLY);

@@ -1622,6 +1622,7 @@ function mkFixedVerdictClaude(verdict: {
   complete: boolean;
   summary: string;
   gaps: FixedGap[];
+  resolved?: string[];
 }): { bin: string; log: string; prompt: string } {
   const dir = tmp("fake-claude-evidence-verdict-");
   const log = join(dir, "calls.log");
@@ -1672,19 +1673,32 @@ function registeredCommandEvidence(
 }
 
 async function runShipEvidenceScenario(input: {
-  verdict: { complete: boolean; summary: string; gaps: FixedGap[] };
+  verdict: { complete: boolean; summary: string; gaps: FixedGap[]; resolved?: string[] };
   evidence?: WorkflowStagedEvidenceList;
   evidenceStatus?: number;
   claimReason?: "no_binding" | "manual_trigger";
   stopOn: "claim" | "consume" | "none";
+  generation?: number;
+  priorDecision?: NonNullable<SessionQueue["promptedDecision"]>;
 }): Promise<{ stub: Stub; out: string; prompt: string; log: string }> {
   const repo = tmp("pw-evidence-repo-");
   const fake = mkFixedVerdictClaude(input.verdict);
+  const generation = input.generation ?? 1;
   const session = mkSession(repo, {
     task: mkTaskSummary({ kind: "ship", workflowId: "workflow-review" }),
+    workCycle: {
+      logicalKey: "agent-1",
+      generation,
+      active: false,
+      completedAt: Date.now() - 120_000,
+      updatedAt: Date.now() - 120_000,
+    },
   });
   const stopAt = Date.now() - 120_000;
-  let queue = mkQueue(repo);
+  let queue = mkQueue(repo, input.priorDecision ? {
+    promptedConsumedGeneration: input.priorDecision.generation,
+    promptedDecision: input.priorDecision,
+  } : {});
   let evidenceFailureAt = 0;
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
@@ -1822,6 +1836,79 @@ test("same-episode registered evidence is fenced into the prompt and a clean ver
   assert.equal(claudeCalls(result.log).length, 1, result.out);
 });
 
+test("matching-episode held gaps reach the next verifier and persist live strikes", async () => {
+  const repeatedGap: FixedGap = {
+    id: "retry-test",
+    severity: "blocking",
+    kind: "untested",
+    path: "test/retry.test.ts",
+    detail: "Cover the 500 retry.",
+    fix: "Add the focused retry test.",
+  };
+  const priorDecision: NonNullable<SessionQueue["promptedDecision"]> = {
+    logicalKey: "agent-1",
+    generation: 1,
+    episodeKey: "intent:1:1",
+    outcome: "held",
+    summary: "the retry test is missing",
+    gaps: [{
+      id: repeatedGap.id,
+      severity: repeatedGap.severity,
+      kind: repeatedGap.kind,
+      path: repeatedGap.path,
+      detail: repeatedGap.detail,
+      strikes: 0,
+    }],
+    heldRound: 1,
+    decidedAt: 1,
+  };
+
+  const repeated = await runShipEvidenceScenario({
+    verdict: { complete: false, summary: "the retry test is still missing", gaps: [repeatedGap] },
+    generation: 2,
+    priorDecision,
+    stopOn: "consume",
+  });
+  const repeatedPrompt = readFileSync(repeated.prompt, "utf8");
+  assert.match(repeatedPrompt, /This is fix round 1/);
+  assert.match(repeatedPrompt, /id: retry-test \(asked 0x already\)/);
+  const repeatedConsume = repeated.stub.to(
+    "POST",
+    "/api/sessions/s1/queue/wrapup/prompted",
+  )[0];
+  assert.ok(repeatedConsume);
+  const repeatedDecision = (repeatedConsume.body as {
+    decision?: { gaps: Array<Record<string, unknown>> };
+  }).decision;
+  assert.deepEqual(repeatedDecision?.gaps, [{
+    id: "retry-test",
+    severity: "blocking",
+    kind: "untested",
+    path: "test/retry.test.ts",
+    detail: "Cover the 500 retry.",
+    strikes: 1,
+  }], repeated.out);
+
+  const resolved = await runShipEvidenceScenario({
+    verdict: {
+      complete: false,
+      summary: "the named retry gap was resolved",
+      gaps: [repeatedGap],
+      resolved: [repeatedGap.id],
+    },
+    generation: 2,
+    priorDecision,
+    stopOn: "consume",
+  });
+  const resolvedConsume = resolved.stub.to(
+    "POST",
+    "/api/sessions/s1/queue/wrapup/prompted",
+  )[0];
+  assert.ok(resolvedConsume);
+  const resolvedDecision = (resolvedConsume.body as { decision?: { gaps: unknown[] } }).decision;
+  assert.deepEqual(resolvedDecision?.gaps, [], resolved.out);
+});
+
 test("the verification-evidence fallback claims only at its structural and verdict floor", async () => {
   const stale = registeredCommandEvidence("intent:9:9", "stale-proof");
   const legacy = registeredCommandEvidence(null, "legacy-proof");
@@ -1945,8 +2032,11 @@ test("the verification-evidence fallback claims only at its structural and verdi
       assert.equal(decision?.outcome, "held", entry.name);
       assert.deepEqual(decision?.gaps, [{
         id: UNVERIFIED_GAP.id,
+        severity: UNVERIFIED_GAP.severity,
+        kind: UNVERIFIED_GAP.kind,
         path: UNVERIFIED_GAP.path,
         detail: UNVERIFIED_GAP.detail,
+        strikes: 0,
       }], entry.name);
     }
     assert.equal(claudeCalls(result.log).length, 1, entry.name);

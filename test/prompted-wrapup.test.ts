@@ -4,6 +4,7 @@ import {
   PromptedFailureTracker,
   decidePromptedWrapup,
   planPromptedWrapup,
+  promptedVerificationHistory,
 } from "../src/server/foreman/prompted-wrapup.ts";
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
 import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
@@ -191,6 +192,74 @@ test("a settled, instrumented, goal-carrying session with no queue is a candidat
   const r = decide();
   assert.equal(r.kind, "check");
   assert.equal(r.kind === "check" && r.objective, GOAL);
+});
+
+test("prompted verification carries only matching-episode durable gap history forward", () => {
+  const heldDecision: NonNullable<SessionQueue["promptedDecision"]> = {
+    logicalKey: "agent-1",
+    generation: 1,
+    episodeKey: "intent:1:1",
+    outcome: "held",
+    summary: "the retry test is still missing",
+    gaps: [{
+      id: "retry-test",
+      severity: "blocking",
+      kind: "untested",
+      path: "test/retry.test.ts",
+      detail: "Cover the 500 retry.",
+      strikes: 2,
+    }],
+    heldRound: 3,
+    decidedAt: NOW - 2,
+  };
+  const storedQueue = mkQueue({
+    promptedConsumedGeneration: 1,
+    promptedDecision: heldDecision,
+  });
+  const candidate = decide({
+    session: mkSession({ workCycle: {
+      logicalKey: "agent-1",
+      generation: 2,
+      active: false,
+      completedAt: NOW - 1,
+      updatedAt: NOW - 1,
+    } }),
+    queue: storedQueue,
+  });
+  assert.equal(candidate.kind, "check");
+  if (candidate.kind !== "check") return;
+  const history = promptedVerificationHistory(storedQueue, candidate);
+  assert.equal(history.round, 3);
+  assert.deepEqual(history.priorGaps.map(({ id, severity, kind, path, detail, strikes }) => ({
+    id,
+    severity,
+    kind,
+    path,
+    detail,
+    strikes,
+  })), [{
+    id: "retry-test",
+    severity: "blocking",
+    kind: "untested",
+    path: "test/retry.test.ts",
+    detail: "Cover the 500 retry.",
+    strikes: 2,
+  }]);
+
+  assert.deepEqual(promptedVerificationHistory(mkQueue({
+    promptedDecision: { ...heldDecision, episodeKey: "intent:9:9" },
+  }), candidate), { round: 0, priorGaps: [] });
+  const legacy = mkQueue({
+    promptedDecision: {
+      logicalKey: "agent-1",
+      generation: 1,
+      outcome: "held",
+      summary: "legacy hold",
+      gaps: [{ id: "retry-test", path: "test/retry.test.ts", detail: "Cover it." }],
+      decidedAt: NOW - 2,
+    },
+  });
+  assert.deepEqual(promptedVerificationHistory(legacy, candidate), { round: 0, priorGaps: [] });
 });
 
 test("a prompted scout episode retires without verification or automatic shipping", () => {

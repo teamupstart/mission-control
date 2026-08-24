@@ -1390,10 +1390,15 @@ export type PromptedCompletionOutcome = (typeof PROMPTED_COMPLETION_OUTCOMES)[nu
 export interface PromptedCompletionGap {
   /** The verifier's stable slug for the problem. */
   id: string;
+  /** Additive verifier detail used to carry the same gap across completion cycles. */
+  severity?: GapSeverity;
+  kind?: GapKind;
   /** Repo-relative path the gap is about, or "" when the verifier named none. */
   path: string;
   /** What is missing, concretely. Bounded at the schema, because it may later be typed. */
   detail: string;
+  /** How many later held verdicts have repeated this gap. */
+  strikes?: number;
 }
 
 /**
@@ -1408,11 +1413,15 @@ export interface PromptedCompletionGap {
 export interface PromptedCompletionDecision {
   logicalKey: string;
   generation: number;
+  /** Intent episode this decision judged. Absent on legacy projections. */
+  episodeKey?: string | null;
   outcome: PromptedCompletionOutcome;
   /** Bounded human-readable reason: the verifier's summary, or why no verdict exists. */
   summary: string;
   /** Blocking gaps, non-empty only for `held`. Bounded in count and length. */
   gaps: PromptedCompletionGap[];
+  /** Consecutive held decisions in this episode, including this one. */
+  heldRound?: number;
   decidedAt: number;
 }
 
@@ -1450,6 +1459,8 @@ export interface PromptedRecoveryState {
   taskId: string;
   logicalKey: string;
   generation: number;
+  /** Intent episode owning the attempt budget. Absent on legacy projections. */
+  episodeKey?: string | null;
   /** Phase 1 decision identity, or null for a legacy consumed generation. */
   decisionGeneration: number | null;
   decisionOutcome: PromptedCompletionOutcome | null;

@@ -3601,8 +3601,11 @@ export const PromptedCompletionDispositionSchema = z.object({
     .array(
       z.object({
         id: z.string().min(1).max(PROMPTED_DECISION_GAP_ID_MAX),
+        severity: z.enum(["blocking", "advisory"]).optional(),
+        kind: z.enum(["incomplete", "untested", "standards", "regression", "unverified"]).optional(),
         path: z.string().max(PROMPTED_DECISION_GAP_PATH_MAX).default(""),
         detail: z.string().min(1).max(PROMPTED_DECISION_GAP_DETAIL_MAX),
+        strikes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
       }),
     )
     .max(PROMPTED_DECISION_GAPS_MAX)
@@ -3646,6 +3649,7 @@ const PromptedRecoveryIdentitySchema = z.object({
   taskId: z.string().min(1).max(200),
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200).nullable().optional(),
   decisionGeneration: z.number().int().min(1).nullable(),
   decisionOutcome: z.enum(PROMPTED_COMPLETION_OUTCOMES).nullable(),
   reason: z.enum(PROMPTED_RECOVERY_REASONS),

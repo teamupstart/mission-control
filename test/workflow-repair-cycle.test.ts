@@ -560,6 +560,7 @@ test("an item-less session resumes prompted completion through a new natural wor
     assert.deepEqual(guard(h.noteKey).promptedDecision, {
       logicalKey: h.noteKey,
       generation: 1,
+      episodeKey: "intent:1:1",
       outcome: "workflow_claimed",
       summary: "complete",
       gaps: [],

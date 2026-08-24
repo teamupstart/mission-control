@@ -1,4 +1,4 @@
-import type { Session, SessionGoal, SessionQueue } from "@shared/types.ts";
+import type { Session, SessionGoal, SessionQueue, TrackedGap } from "@shared/types.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
@@ -105,6 +105,46 @@ export type PromptedCandidate =
 export function promptedIntentKey(intent: SessionGoal): string {
   return resolvedSessionIntent(intent)?.episodeKey ??
     `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
+}
+
+/** Durable verifier history that is safe to carry into a later completed generation. */
+export function promptedVerificationHistory(
+  queue: SessionQueue | null,
+  candidate: Extract<PromptedCandidate, { kind: "check" }>,
+): { round: number; priorGaps: TrackedGap[] } {
+  const decision = queue?.promptedDecision;
+  if (
+    decision?.outcome !== "held"
+    || decision.episodeKey !== candidate.episodeKey
+    || decision.generation >= candidate.generation
+    || !Number.isSafeInteger(decision.heldRound)
+    || (decision.heldRound ?? 0) < 1
+  ) {
+    return { round: 0, priorGaps: [] };
+  }
+
+  const round = decision.heldRound!;
+  const priorGaps = decision.gaps.flatMap((gap): TrackedGap[] => {
+    if (
+      !gap.kind
+      || !gap.severity
+      || !Number.isSafeInteger(gap.strikes)
+      || (gap.strikes ?? -1) < 0
+    ) return [];
+    return [{
+      id: gap.id,
+      severity: gap.severity,
+      kind: gap.kind,
+      path: gap.path,
+      detail: gap.detail,
+      // Only the verifier-history rendering consumes this projection. The fix and
+      // first-seen fields are queue-item delivery facts and are not persisted here.
+      fix: gap.detail,
+      strikes: gap.strikes!,
+      firstSeenRound: Math.max(0, round - 1),
+    }];
+  });
+  return { round, priorGaps };
 }
 
 /**

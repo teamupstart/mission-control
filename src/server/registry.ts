@@ -7714,6 +7714,7 @@ export class Registry extends EventEmitter {
       noteKey: input.logicalKey,
       sessionCwd: session.cwd,
       generation: input.generation,
+      episodeKey: input.expectedIntent.episodeKey,
       ask: input.ask,
       // The authorizing episode is the one this boundary just RE-VERIFIED against the
       // live goal, not the one the caller sent. `sessionIntentMatches` above already

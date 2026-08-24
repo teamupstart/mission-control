@@ -71,11 +71,13 @@ function decision(
   return {
     logicalKey: NOTE_KEY,
     generation,
+    episodeKey: "intent:1:1",
     outcome,
     summary: outcome === "held" ? "A focused test is still missing." : "",
     gaps: outcome === "held"
       ? [{ id: "test-gap", path: "test/widget.test.ts", detail: "Cover the retry branch." }]
       : [],
+    ...(outcome === "held" ? { heldRound: generation } : {}),
     decidedAt: NOW - 25 * 60_000,
   };
 }
@@ -84,6 +86,7 @@ function input(over: Partial<Parameters<typeof decideShipShepherd>[0]> = {}) {
   return {
     session: session(),
     queue: queue(),
+    episodeKey: "intent:1:1",
     humanOwnsSession: false,
     workflowOwnsSession: false,
     hasTaskOwnedOpenPr: false,
@@ -107,6 +110,7 @@ function recovery(
     taskId: "task-1",
     logicalKey: NOTE_KEY,
     generation: 1,
+    episodeKey: "intent:1:1",
     decisionGeneration: promptedDecision?.generation ?? null,
     decisionOutcome: promptedDecision?.outcome ?? null,
     reason,
@@ -335,6 +339,116 @@ test("unknown delivery advances on the fixed 40 and 80 minute schedule", () => {
   }));
   assert.equal(escalated.kind, "escalate");
   if (escalated.kind === "escalate") assert.equal(escalated.attempt, 4);
+});
+
+test("three held cycles share one episode budget across generation bumps", () => {
+  const held1 = decision("held", 1);
+  const first = recovery("held_gaps", 1, "delivered", NOW, held1);
+  const held2 = decision("held", 2);
+  const second = decideImmediateHeldGapDelivery(input({
+    session: session({ workCycle: {
+      logicalKey: NOTE_KEY,
+      generation: 2,
+      active: false,
+      completedAt: NOW - 1,
+      updatedAt: NOW - 1,
+    } }),
+    queue: queue({ promptedConsumedGeneration: 2, promptedDecision: held2, promptedRecovery: first }),
+  }));
+  assert.equal(second.kind, "recover");
+  if (second.kind !== "recover") return;
+  assert.equal(second.attempt, 2);
+
+  const secondState: PromptedRecoveryState = {
+    ...first,
+    generation: 2,
+    decisionGeneration: 2,
+    attempt: 2,
+    marker: second.marker,
+    nextEligibleAt: NOW,
+  };
+  const held3 = decision("held", 3);
+  const third = decideImmediateHeldGapDelivery(input({
+    session: session({ workCycle: {
+      logicalKey: NOTE_KEY,
+      generation: 3,
+      active: false,
+      completedAt: NOW - 1,
+      updatedAt: NOW - 1,
+    } }),
+    queue: queue({ promptedConsumedGeneration: 3, promptedDecision: held3, promptedRecovery: secondState }),
+  }));
+  assert.equal(third.kind, "recover");
+  if (third.kind !== "recover") return;
+  assert.equal(third.attempt, 3);
+
+  const thirdState: PromptedRecoveryState = {
+    ...secondState,
+    generation: 3,
+    decisionGeneration: 3,
+    attempt: 3,
+    marker: third.marker,
+    nextEligibleAt: NOW,
+  };
+  const exhausted = decideImmediateHeldGapDelivery(input({
+    session: session({ workCycle: {
+      logicalKey: NOTE_KEY,
+      generation: 3,
+      active: false,
+      completedAt: NOW - 1,
+      updatedAt: NOW - 1,
+    } }),
+    queue: queue({ promptedConsumedGeneration: 3, promptedDecision: held3, promptedRecovery: thirdState }),
+  }));
+  assert.equal(exhausted.kind, "escalate");
+  if (exhausted.kind === "escalate") assert.equal(exhausted.attempt, 4);
+});
+
+test("a new episode resets recovery while legacy state keeps generation-scoped behavior", () => {
+  const held2 = decision("held", 2);
+  const prior = recovery("held_gaps", 2, "delivered", NOW, decision("held", 1));
+  const currentSession = session({ workCycle: {
+    logicalKey: NOTE_KEY,
+    generation: 2,
+    active: false,
+    completedAt: NOW - 1,
+    updatedAt: NOW - 1,
+  } });
+
+  assert.deepEqual(decideImmediateHeldGapDelivery(input({
+    episodeKey: "intent:1:2",
+    queue: queue({ promptedDecision: decision("held", 1), promptedRecovery: prior }),
+  })), {
+    kind: "skip",
+    why: "prompted completion or another owner still owns this state",
+  }, "an older episode's decision cannot drive recovery after a new prompt");
+
+  const newEpisode = decideImmediateHeldGapDelivery(input({
+    episodeKey: "intent:1:2",
+    session: currentSession,
+    queue: queue({ promptedConsumedGeneration: 2, promptedDecision: {
+      ...held2,
+      episodeKey: "intent:1:2",
+    }, promptedRecovery: prior }),
+  }));
+  assert.equal(newEpisode.kind, "recover");
+  if (newEpisode.kind === "recover") assert.equal(newEpisode.attempt, 1);
+
+  const legacy = { ...prior };
+  delete legacy.episodeKey;
+  const sameGeneration = decideImmediateHeldGapDelivery(input({
+    session: session(),
+    queue: queue({ promptedDecision: decision("held", 1), promptedRecovery: legacy }),
+  }));
+  assert.equal(sameGeneration.kind, "recover");
+  if (sameGeneration.kind === "recover") assert.equal(sameGeneration.attempt, 3);
+
+  const laterGeneration = decideImmediateHeldGapDelivery(input({
+    session: currentSession,
+    queue: queue({ promptedConsumedGeneration: 2, promptedDecision: held2, promptedRecovery: legacy }),
+  }));
+  assert.equal(laterGeneration.kind, "recover");
+  if (laterGeneration.kind === "recover") assert.equal(laterGeneration.attempt, 1);
 });
 
 test("a confirmed non-delivery retries the same attempt and marker", () => {

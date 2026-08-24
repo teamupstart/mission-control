@@ -17,6 +17,8 @@ export const SHIP_RECOVERY_LATER_DELAYS_MS = [40 * 60_000, 80 * 60_000] as const
 export interface ShipShepherdInput {
   session: Session;
   queue: SessionQueue | null;
+  /** Current daemon-resolved intent episode, or null when intent is unavailable. */
+  episodeKey: string | null;
   /** Full-fleet report/input ownership, already resolved by the caller. */
   humanOwnsSession: boolean;
   workflowOwnsSession: boolean;
@@ -36,6 +38,7 @@ export type ShipShepherdDecision =
       kind: "recover";
       reason: Exclude<PromptedRecoveryReason, "verification_failed">;
       generation: number;
+      episodeKey: string | null;
       attempt: number;
       marker: string;
       payload: string | null;
@@ -46,6 +49,7 @@ export type ShipShepherdDecision =
       kind: "escalate";
       reason: PromptedRecoveryReason;
       generation: number;
+      episodeKey: string | null;
       attempt: 4;
       marker: string;
       summary: string;
@@ -76,16 +80,21 @@ export function recoveryStateMatches(
     taskId: string;
     logicalKey: string;
     generation: number;
+    episodeKey: string | null;
     reason: PromptedRecoveryReason;
     decision: PromptedCompletionDecision | null;
   },
 ): boolean {
-  return state.taskId === input.taskId
-    && state.logicalKey === input.logicalKey
+  const sameEpisode = typeof state.episodeKey === "string"
+    && state.episodeKey === input.episodeKey;
+  const sameLegacyIdentity = typeof state.episodeKey !== "string"
     && state.generation === input.generation
-    && state.reason === input.reason
     && state.decisionGeneration === (input.decision?.generation ?? null)
     && state.decisionOutcome === (input.decision?.outcome ?? null);
+  return state.taskId === input.taskId
+    && state.logicalKey === input.logicalKey
+    && state.reason === input.reason
+    && (sameEpisode || sameLegacyIdentity);
 }
 
 /**
@@ -146,7 +155,7 @@ function decideShipRecovery(
   if (!settledIdle(s, now, settleMs)) return skip("the quiet window is not due");
   if (!input.mayActLive) return skip("Foreman is not live in a trusted repository");
 
-  const cause = recoveryCause(queue, cycle.generation, input.diffHasChanges);
+  const cause = recoveryCause(queue, cycle.generation, input.diffHasChanges, input.episodeKey);
   if (!cause) return skip("prompted completion or another owner still owns this state");
   const terminalMarker = shipRecoveryMarker({
     taskId: task.id,
@@ -169,6 +178,7 @@ function decideShipRecovery(
     taskId: task.id,
     logicalKey: queue.noteKey,
     generation: cycle.generation,
+    episodeKey: input.episodeKey,
     reason: cause.reason,
     decision: cause.decision,
   })) {
@@ -195,6 +205,7 @@ function decideShipRecovery(
       kind: "escalate",
       reason: cause.reason,
       generation: cycle.generation,
+      episodeKey: input.episodeKey,
       attempt: 4,
       marker: shipRecoveryMarker({
         taskId: task.id,
@@ -212,6 +223,7 @@ function decideShipRecovery(
       kind: "escalate",
       reason: cause.reason,
       generation: cycle.generation,
+      episodeKey: input.episodeKey,
       attempt: 4,
       marker,
       summary: escalationSummary(cause),
@@ -223,6 +235,7 @@ function decideShipRecovery(
     kind: "recover",
     reason: cause.reason,
     generation: cycle.generation,
+    episodeKey: input.episodeKey,
     attempt,
     marker,
     payload: structuralPayload(cause),
@@ -235,8 +248,12 @@ function recoveryCause(
   queue: SessionQueue,
   generation: number,
   diffHasChanges: boolean,
+  episodeKey: string | null,
 ): RecoveryCause | null {
   const decision = queue.promptedDecision;
+  // A new accepted human prompt owns the session now. New-shape decisions prove which
+  // earlier episode they judged; legacy decisions retain their historical behavior.
+  if (typeof decision?.episodeKey === "string" && decision.episodeKey !== episodeKey) return null;
   if (decision?.outcome === "verification_failed") return { reason: "verification_failed", decision };
   if (decision?.outcome === "held" && decision.generation === generation) {
     return { reason: "held_gaps", decision };

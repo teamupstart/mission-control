@@ -196,9 +196,11 @@ logical keys.
 ### Pre-PR ship recovery projection
 
 `foreman_queues.prompted_recovery` is a validated current projection for the bounded ship
-shepherd. It stores task id, logical key, current completed work-cycle generation, the Phase 1
-decision identity when one exists, append-only reason, attempt, deterministic marker, claim time,
-next eligibility, delivery knowledge, and a bounded payload summary. It is not history;
+shepherd. It stores task id, logical key, intent episode, current completed work-cycle generation,
+the Phase 1 decision identity when one exists, append-only reason, attempt, deterministic marker,
+claim time, next eligibility, delivery knowledge, and a bounded payload summary. The episode keys
+the reason-specific attempt budget across later generations, while the generation stays in the
+marker as the per-delivery idempotency identity. It is not history;
 `foreman_episodes` remains the append-only audit.
 
 The Foreman worker's fleet pass orders PR follow-through before ship recovery, then excludes every
@@ -213,6 +215,10 @@ Recovery reasons are structural except `idle_ambiguous`. A newly consumed `held`
 eligible managed ship task may claim and deliver its structural gaps in the same worker pass, using
 the same daemon projection and delivery path as the shepherd without waiting for the first quiet
 window. Human-driven sessions remain silent, and the shepherd remains the later backstop.
+The prompted decision stores its intent episode and held-round count. A later generation in the
+same episode feeds the prior gaps and strikes into verification, and the daemon increments the
+held round at its single consume write point. Decisions and recovery projections without episode
+metadata retain legacy generation-scoped behavior and never acquire cross-generation continuity.
 `idle_ambiguous` invokes the existing Review model
 through a fresh tool-less call and records spend under `foreman:ship-recovery`. The parsed output is
 post-checked against the pre-PR authority boundary. No recovery model can add repository scope or

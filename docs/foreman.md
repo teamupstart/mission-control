@@ -192,6 +192,10 @@ enter the staging API or Foreman prompt; the exact command remains in its bounde
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
 `empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
+New decisions also carry the intent episode and consecutive held round. Each persisted gap keeps
+its verifier kind, severity, and strike count, so the next completed generation in that same
+episode can show the verifier which demands have already survived a recovery turn. A legacy
+decision without episode metadata remains readable but feeds no verifier history.
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
@@ -231,6 +235,11 @@ become a duplicate send after restart. Every attempt and escalation uses the exi
 drawer and fleet decision ledger, where its reason, attempt, delivery result, next wait, quiet age,
 and completion context remain inspectable. The shepherd stops permanently for that task as soon
 as any task-owned pull request is observed; ordinary PR follow-through owns the later phase.
+The three-send budget belongs to the task, logical conversation, intent episode, and recovery
+reason. Work-cycle generations remain part of each delivery marker, so markers are still exact
+per-delivery idempotency keys, but a hold-deliver-hold cycle in one episode advances the existing
+budget instead of starting again at attempt one. A newly accepted human prompt creates a new
+episode, retires the old gap history, and starts a fresh budget.
 
 **Settings → Foreman** groups its durable controls into four tabs: **Posture** for the cheap
 tier, **Models** for the provider and four Foreman roles, **Launches** for the three

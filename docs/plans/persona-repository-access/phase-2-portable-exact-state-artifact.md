@@ -15,7 +15,7 @@ Estimated gross non-test implementation: **1,350-1,750 lines**.
 - Phase 1 has merged.
 - The planning PR has merged.
 - Phase 1's provider parity gate passed for both Claude and Codex.
-- Re-read `plan.md`, `phased-plan.md`, and Phase 1's final contracts before editing.
+- The approved source plan, `phased-plan.md`, and Phase 1's merged contracts are the controlling inputs for this phase.
 
 Direct dependency: **Phase 1 only**. The planning-session dependency is carried by the Mission Control task separately.
 

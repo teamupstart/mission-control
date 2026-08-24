@@ -14,7 +14,7 @@ Estimated gross non-test implementation: **1,500-1,900 lines**.
 - The planning PR has merged.
 - Phase 1 provider parity remains green for both providers.
 - Phase 2 artifact round trips and cleanup reconciliation remain green.
-- Re-read `plan.md`, `phased-plan.md`, and both earlier phase handoffs before editing.
+- The approved source plan, `phased-plan.md`, and both earlier merged handoffs are the controlling inputs for this phase.
 
 Direct dependency: **Phase 2 only**. Phase 1 is transitive.
 

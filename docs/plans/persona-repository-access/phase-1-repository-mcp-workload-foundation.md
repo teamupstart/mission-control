@@ -12,7 +12,7 @@ Estimated gross non-test implementation: **1,950-2,550 lines**.
 
 - The planning PR containing `plan.md`, `phased-plan.md`, and this file has merged.
 - No implementation phase dependency.
-- Re-read the approved source plan and `phased-plan.md` before editing.
+- The approved source plan and `phased-plan.md` are the controlling planning context for this phase.
 - Verify the current Claude and Codex SDK APIs and launch configuration in the checked-out revision. Do not rely on the planning checkout's line numbers.
 
 ## Scope

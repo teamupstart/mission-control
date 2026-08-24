@@ -167,6 +167,11 @@ test("create_task publishes bounded repository selectors and never falls back to
   assert.match(registration, /repository: z/);
   assert.match(registration, /additionalRepositories: z/);
   assert.match(registration, /\.max\(MAX_TASK_EXTRA_REPOS\)/);
+  assert.match(
+    registration,
+    /repository !== undefined \|\| Boolean\(additionalRepositories\?\.length\)/,
+    "an explicitly empty attachment list keeps the legacy current-repository route",
+  );
   assert.match(registration, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
   assert.match(registration, /targetRepository: repository/);
   assert.match(registration, /res\.status === 404/);

@@ -377,7 +377,7 @@ server.registerTool(
   }) => {
     try {
       const explicitRepositories =
-        repository !== undefined || additionalRepositories !== undefined;
+        repository !== undefined || Boolean(additionalRepositories?.length);
       const body = {
         env: ENV,
         sessionId: SESSION_ID,

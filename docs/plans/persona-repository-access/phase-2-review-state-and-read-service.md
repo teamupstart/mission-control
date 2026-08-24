@@ -227,7 +227,9 @@ guarantee that a retried round cannot double-write its audit.
      **And the existing parent assertion cannot catch it**, which is why this is called out rather
      than left to that guard: `commit-tree -p <headSha>` sets the parent correctly however the index
      was seeded, so the parent check passes on a tree that is missing submitted content.
-  3. `add -A`, then `write-tree`.
+  3. `add -A`, then `write-tree` - **both with every configured `filter.*.clean` and
+     `filter.*.process` overridden**, per *Capture neutralises content filters* below. Without it the
+     stored bytes are the filter's output, not the submitted content.
   4. **Verify the tree before committing it, rather than trusting the seed.** Copying the live index
      is what buys the 34 ms, but that index reflects whatever the checkout currently tracks, so the
      fast path carries the same hazard as the fallback. Compare
@@ -313,6 +315,13 @@ createRepositoryReader({
   repoRoot,
   snapshotOid,
   headSha,
+  // The index tree, so read_file can serve stage: "index".
+  indexTreeOid,
+  // The persisted porcelain and its truncation flag. git_status answers from these once the
+  // worktree is gone, so they have to arrive through the interface rather than being fetched
+  // from persistence by the reader - which would make the reader depend on the store.
+  statusPorcelain,        // Uint8Array | null
+  statusTruncated,        // boolean
   // Identity for every row this reader writes. One reader, one attempt.
   audit: { runId, submissionId, nodeAttemptId },
   // Narrow writer, defaulted in production to the store's insertRepositoryQueryAudit.
@@ -322,6 +331,12 @@ createRepositoryReader({
 })
 // => { execute(query, { round }): Promise<RepositoryQueryResult>, close(): void }
 ```
+
+Everything durable the reader needs arrives in that object. It reads no row itself: `git_status`
+answers from `statusPorcelain`, and `read_file` with `stage: "index"` from `indexTreeOid`. An
+earlier draft persisted both and then omitted them here, which left `git_status` with no contract
+path to the data it was specified to answer from - it would have had to reach into persistence
+outside its own interface, or silently fall back to tree-derived state and report it as complete.
 
 `round` is the **only** positional value `execute` takes, because it is the only one Phase 3 knows
 and the reader cannot: the loop owns rounds. **`ordinal` is the reader's own**, a monotonic counter
@@ -436,6 +451,50 @@ oid; the index tree pinned beside the snapshot carries the staged **bytes**, so 
 the worktree surviving and `git gc` cannot prune either. This paragraph previously said the staged
 content was out of scope; that was a misreading of decision 7, corrected in round 13.
 
+### Capture neutralises content filters, or the snapshot is not the submitted bytes
+
+`git add -A` runs a configured `filter.<name>.clean` for paths a `.gitattributes` in the change
+under review selects. This is the round-12 driver problem on the **capture** side, and it is worse
+there, because a clean filter does not merely execute - it **rewrites the content that gets
+stored**. Measured, with a filter mapping `SECRET` to `REDACTED`:
+
+| | filter invocations | bytes in the snapshot |
+|---|---|---|
+| `git add -A` as originally specified | **2** | `value=REDACTED-original` |
+| with every clean filter overridden to `cat` | **0** | `value=SECRET-original` |
+
+The second row is the submitted content; the first is not. So the original specification broke
+decision 7 outright, not only decision 5.
+
+**The fix keeps the fast path.** Clean filters are *enumerable*, so they can be neutralised by
+configuration rather than by abandoning `add -A` for plumbing:
+
+```
+git config --get-regexp '^filter\.'      # discover every configured driver
+# then, for the capture invocations only:
+git -c filter.<name>.clean=cat -c filter.<name>.process= ... read-tree / add -A
+```
+
+Verified this preserves everything that matters: the original bytes, and the file modes -
+`100644`, `100755` for an executable, `120000` for a symlink - which a hand-rolled
+`hash-object`/`update-index` path would have had to reconstruct itself.
+
+**`filter.<name>.process` must be neutralised too, and it is the dangerous one.** git-lfs uses
+`process`, not `clean`. Enumerating only `.clean` would have missed it entirely - and a `process`
+driver speaks a long-running protocol, so a mismatched one does not fail, it **hangs**: the
+verification fixture for this had to be killed after two minutes with `git add` still waiting on a
+handshake. Capture therefore neutralises `clean` and `process`, and the capture invocations carry
+`run`'s timeout so a hang is reported as a capture failure rather than stalling the daemon.
+`smudge` is checkout-side and unreachable here - nothing ever checks a tree out - and is overridden
+anyway so the question does not have to be re-asked.
+
+**What "exact submitted state" does and does not mean, said precisely.** With filters neutralised
+the snapshot holds the worktree's bytes. It does **not** override the `text`/`eol` attributes, so a
+repository with `* text=auto` records the line endings git itself would commit rather than the
+worktree's CRLF. That is deliberate: those bytes are what the change contains in git's own model,
+`git diff` reports no difference for them, and a reviewer reading the tree sees what a commit would.
+The claim is "the bytes git would record for this change", not "a byte-for-byte image of the
+directory" - and the difference is worth stating because I had been writing the latter.
 ### Paths are bytes end to end, and the durable columns are BLOBs
 
 Step 2 already says "match as **bytes**; never normalize, because git paths are bytes and
@@ -822,6 +881,11 @@ look viable.
   `filename` or `previous` header naming a **denied** old path; the header is dropped while the
   line attribution survives. Verified that `--no-renames` does not suppress those headers, so this
   cannot be delegated to a flag.
+- **The clean-filter fixture.** Configure `filter.myfilter.clean` mapping a marker to a
+  replacement, select it from `.gitattributes`, and assert the snapshot contains the **original**
+  bytes and the filter binary never ran. Then the same with `filter.myfilter.process` configured, to
+  pin that `process` is neutralised as well - the case git-lfs uses, and the one that hangs rather
+  than failing if it is missed. Assert file modes survive: `100644`, `100755`, `120000`.
 - **The non-UTF-8 path tests**, which are cheap to build and were the gap this class hid in. Use
   `git mktree` to put a path with bytes `ff fe` into the tree, so the fixture needs no filesystem
   support for it. Then: the persisted porcelain round-trips byte-for-byte out of the BLOB column; the
@@ -948,8 +1012,10 @@ Phase 3 may rely on, and must not change:
 - `RepositoryQuery`, `RepositoryQueryResult`, `REPOSITORY_DENIAL_CODES` and
   `REPOSITORY_QUERY_LIMITS` as the provider-neutral vocabulary. Phase 3 adds the **envelope**
   around them, not the operations.
-- `createRepositoryReader({ ..., audit, recordQuery, ... }).execute(query, { round })` as the only
-  way to reach the repository, and `unavailable` as the only code meaning infrastructure. Phase 3
+- `createRepositoryReader({ ..., indexTreeOid, statusPorcelain, statusTruncated, audit, recordQuery, ... }).execute(query, { round })`
+  as the only way to reach the repository. Everything durable it needs arrives in that object; it
+  reads no row itself, so Phase 3 supplies the submission's persisted values rather than the reader
+  reaching into the store, and `unavailable` as the only code meaning infrastructure. Phase 3
   builds **one reader per Persona attempt**, supplying that attempt's
   `{ runId, submissionId, nodeAttemptId }`, and passes only the `round` per call.
 - The reader owning validation, denial, bounds, scrubbing and audit, so Phase 3 never re-implements

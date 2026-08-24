@@ -16,7 +16,7 @@ visible in run detail.
 
 - **Direct phase dependencies: Phase 1 and Phase 2.** Both must be merged.
 - From Phase 1: `PersonaSnapshot.repositoryAccess`, non-optional after parse.
-- From Phase 2: `createRepositoryReader({ ..., audit: { runId, submissionId, nodeAttemptId }, recordQuery, ... })`
+- From Phase 2: `createRepositoryReader({ ..., indexTreeOid, statusPorcelain, statusTruncated, audit: { runId, submissionId, nodeAttemptId }, recordQuery, ... })`
   and `execute(query, { round })`, the query/result/denial vocabulary, `REPOSITORY_QUERY_LIMITS`,
   and `WorkflowSubmission.reviewSnapshotOid`. **One reader per Persona attempt**: it carries the
   audit identity, so building it once per attempt rather than once per round or once per query is
@@ -140,6 +140,15 @@ The loop:
    `reader.execute(query, { round })`, in order, stopping the batch when the round or attempt byte
    budget is spent and marking the remainder `budget_exhausted` so the reviewer is told rather than
    left guessing.
+   **An `unavailable` result aborts the whole attempt immediately.** It is the one denial code that
+   means infrastructure rather than policy, so it must not be folded into the transcript and handed
+   back to the model: the loop returns a `failed` result at once and the engine routes it through
+   `handleInfrastructureFailure`. Every other code - `sensitive_path`, `not_found`, `binary`,
+   `budget_exhausted` and the rest - is data the reviewer reads and keeps working from.
+   Getting this wrong is not a cosmetic difference. A git timeout mid-review would otherwise appear
+   in the transcript as "that query did not work", the model would reasonably proceed on what it had,
+   and the attempt would produce a **verdict reached without the repository** - which is precisely
+   what decision 8 forbids, arrived at by a path that looks like normal operation.
 5. **The final round is explicit.** At `maxRounds - 1`, the appended instruction states that this
    is the last round and a verdict is required. A `query` reply on the final round, or a reply that
    will not parse after `runStructured`'s ladder, is a `failed` result - never a fail verdict.
@@ -171,8 +180,9 @@ final round cannot ask for more.
 
 - After resolving `node.persona`, branch on `node.persona.repositoryAccess`:
   - `"off"`: the existing single `runStructured` call, untouched.
-  - `"read"`: resolve the submission's `reviewSnapshotOid` and `reviewSnapshotRepoRoot`. If either
-    is missing, or the repository root no longer exists, or the reader cannot open the snapshot,
+  - `"read"`: resolve the submission's `reviewSnapshotOid`, `reviewSnapshotRepoRoot`, index tree oid,
+    `reviewStatusPorcelain` and `reviewStatusTruncated`, and pass all of them to the reader - it reads
+    no row itself. If the snapshot oid or repo root is missing, or the repository root no longer exists, or the reader cannot open the snapshot,
     call `handleInfrastructureFailure` with a reason naming the repository - **before any provider
     call**, so a review that cannot be done costs nothing.
   - otherwise build the reader and call the broker.
@@ -254,6 +264,13 @@ fencing on fetched content, scrubbing, and the fact that a denial is reported to
   - the loop terminates at `maxRounds` and a `query` reply on the final round is an infrastructure
     failure, never a fail verdict;
   - a reply that will not parse after the ladder is an infrastructure failure;
+  - **an `unavailable` returned on round 3 of 8, after two successful rounds, aborts the attempt**:
+    no further provider call is made, no verdict is produced, and the engine blocks in
+    `repository_access_unavailable` after the retry ladder. Assert the negative explicitly - that the
+    transcript handed to any later round does **not** contain the failed query - because the failure
+    mode is a plausible-looking review that quietly proceeded without the repository;
+  - every other denial code on round 3 does **not** abort: the loop continues and the code reaches the
+    reviewer as data, which is the distinction that keeps a denial from behaving like an outage;
   - cancellation between rounds stops the loop and starts no further provider call;
   - per-round and per-attempt byte budgets stop a batch mid-way and mark the remainder
     `budget_exhausted`;
@@ -311,7 +328,10 @@ Agent SDK one-shot, which is the production default) from `-p` (the print escape
   code path.
 - An access-off Persona's prompt and parse path are byte-identical to before this feature.
 - A missing or unreadable snapshot retries and then blocks in `repository_access_unavailable`, with
-  a readable operator label, and never produces a verdict.
+  a readable operator label, and never produces a verdict. **The same for an `unavailable` arising
+  mid-loop**, after the reader was built successfully and rounds have already run - a late failure is
+  as fatal as an early one, because a verdict reached without the repository is the thing being
+  prevented, not a particular failure timing.
 - The loop terminates, is cancellable, and respects per-query, per-round, per-attempt and
   wall-clock budgets, marking every truncation.
 - Run detail shows the operations, bytes, denials and truncations for a brokered attempt.
@@ -349,6 +369,14 @@ This is the final phase. What it establishes for future work:
   earlier phases' entries. All three are `addColumn`/`CREATE TABLE IF NOT EXISTS`, so the composed
   `migrate()` is order-independent and idempotent, and a database upgraded across all three in one
   step lands the same schema as one upgraded phase by phase.
+- **Reconciliation record, review round 16.** The loop treated only a missing snapshot or a failed
+  reader construction as infrastructure, and said nothing about an `unavailable` arising *mid-loop*.
+  As written, a git timeout on round 3 would have been folded into the transcript like any other
+  denial, the model would have proceeded on what it had, and the attempt could have produced a verdict
+  reached without the repository - decision 8 broken by a path that looks like normal operation. Now
+  `unavailable` aborts the attempt at once and routes through `handleInfrastructureFailure`, with a
+  test that asserts the negative: the failed query never reaches a later round's transcript. Every
+  other code stays data, which is the distinction that keeps a denial from behaving like an outage.
 - **Reconciliation record**: the attempt-wide wall-clock budget was added here rather than in
   Phase 2 because it is a property of the loop, not of a read. `PERSONA_TIMEOUT_MS` keeps its
   meaning as a per-call budget so no existing single-call review changes.

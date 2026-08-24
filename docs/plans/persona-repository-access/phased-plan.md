@@ -455,6 +455,28 @@ reintroduce and neither is caught by the guards that look like they should catch
     the output form allows. A non-UTF-8 path is reported to the reviewer with a marker and is
     unaddressable, so `read_file` on the mangled spelling fails closed.
 
+25. **Capture neutralises content filters** (Phase 2). `git add -A` runs a configured
+    `filter.<name>.clean` for paths a submitted `.gitattributes` selects, and a clean filter rewrites
+    what gets stored. Measured: two invocations and `value=REDACTED-original` in the snapshot as
+    specified, versus zero and `value=SECRET-original` with the filters overridden - so this broke
+    decision 7, not only decision 5. `filter.*.process` is neutralised too: it is what git-lfs uses,
+    enumerating only `.clean` would have missed it, and a mismatched `process` driver **hangs**
+    `git add` rather than failing, so the capture calls carry a timeout as well. The fix is
+    configuration rather than plumbing, which keeps the 34 ms fast path and preserves file modes.
+26. **An `unavailable` mid-loop aborts the attempt** (Phase 3). The loop treated only a missing
+    snapshot or a failed reader construction as infrastructure. A git timeout on round 3 would have
+    been folded into the transcript like a denial, the model would have proceeded on what it had, and
+    the attempt could have produced a verdict reached without the repository - decision 8 broken by a
+    path that looks like normal operation. `unavailable` now aborts at once; every other code stays
+    data.
+27. **The reader receives the persisted status and index tree** (Phases 2 and 3). Reconciliations 20
+    and 21 persisted the porcelain and the index tree, and neither was added to
+    `createRepositoryReader`'s inputs - so `git_status` had no contract path to the data it answers
+    from and would have had to reach into persistence outside its interface, or silently report
+    tree-derived state as complete. The same one-list-not-its-sibling habit as 23; the durable
+    answer here is that the reader reads no row at all, so anything it needs has to arrive in the
+    factory object where its absence is a type error.
+
 ## Final verification strategy
 
 Each phase runs `npm test`, `npm run typecheck`, `npm run lint`, `npm run build` and

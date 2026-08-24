@@ -667,6 +667,19 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       form supports it; and a path that is not valid UTF-8 is reported to the reviewer with a marker and
       is deliberately <strong>unaddressable</strong>, so <code>read_file</code> on the mangled spelling
       fails closed rather than serving a different file that decoded the same way.</li>
+    <li><strong>Capture neutralises content filters, or the snapshot is not the submitted
+      bytes.</strong> <code>git add -A</code> runs a configured <code>filter.&lt;name&gt;.clean</code>
+      for paths a submitted <code>.gitattributes</code> selects, and a clean filter does not merely
+      execute - it <strong>rewrites what gets stored</strong>. Measured with a filter mapping
+      <code>SECRET</code> to <code>REDACTED</code>: as originally specified, two filter invocations and
+      <code>value=REDACTED-original</code> in the snapshot; with every clean filter overridden to
+      <code>cat</code>, zero invocations and <code>value=SECRET-original</code>. So the first form
+      broke decision 7, not only decision 5. Capture enumerates configured drivers and neutralises
+      <code>filter.*.clean</code> <strong>and</strong> <code>filter.*.process</code> - the latter is
+      what git-lfs uses, and a mismatched <code>process</code> driver <em>hangs</em>
+      <code>git add</code> rather than failing, so the capture invocations also carry a timeout. File
+      modes survive (<code>100644</code>, <code>100755</code>, <code>120000</code>), which a
+      hand-rolled plumbing path would have had to rebuild.</li>
     <li><strong>Every git invocation disables configured conversion drivers.</strong>
       <code>git</code> executes a program from repository configuration while producing a patch -
       <code>.gitattributes</code> in the change under review selects a driver, and

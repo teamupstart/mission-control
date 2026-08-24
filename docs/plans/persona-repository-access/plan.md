@@ -443,7 +443,17 @@ defences on what remains.
    `-z` wherever the output form supports it; and a path that is not valid UTF-8 is reported to the
    reviewer with a marker and is deliberately **unaddressable**, so `read_file` on the mangled
    spelling fails closed rather than serving a different file that decoded the same way.
-2. **Every git invocation disables configured conversion drivers.** `git` executes a program from
+2. **Capture neutralises content filters, or the snapshot is not the submitted bytes.** `git add -A`
+   runs a configured `filter.<name>.clean` for paths a submitted `.gitattributes` selects, and a
+   clean filter does not merely execute - it **rewrites what gets stored**. Measured with a filter
+   mapping `SECRET` to `REDACTED`: as originally specified, two filter invocations and
+   `value=REDACTED-original` in the snapshot; with every clean filter overridden to `cat`, zero
+   invocations and `value=SECRET-original`. So the first form broke decision 7, not only decision 5.
+   Capture enumerates configured drivers and neutralises `filter.*.clean` **and**
+   `filter.*.process` - the latter is what git-lfs uses, and a mismatched `process` driver *hangs*
+   `git add` rather than failing, so the capture invocations also carry a timeout. File modes survive
+   (`100644`, `100755`, `120000`), which a hand-rolled plumbing path would have had to rebuild.
+3. **Every git invocation disables configured conversion drivers.** `git` executes a program from
    repository configuration while producing a patch - `.gitattributes` in the change under review
    selects a driver, and `diff.<name>.textconv`/`.command` maps it to a command an operator may
    legitimately have configured. An argv array at the outer call does not deliver decision 5's
@@ -452,7 +462,7 @@ defences on what remains.
    invocation passes `--no-ext-diff --no-textconv`, `--textconv` is a forbidden flag, and the argv
    test asserts it - their absence produces a well-formed answer, so no output reveals that a
    program ran.
-3. **Every git invocation names an explicit snapshot-derived revision.** Listed first because
+4. **Every git invocation names an explicit snapshot-derived revision.** Listed first because
    omitting one does not fail - it silently reads live state, differently per command. Measured:
    `git log` walks live `HEAD`, and `git grep` and `git blame` read the live **working tree** rather
    than any commit, which is the worst case since that directory may have been reset and reassigned
@@ -460,18 +470,18 @@ defences on what remains.
    silently substitute, two refuse, and a reviewer cannot tell from the response - so the argv for
    every op spells its revision and a mechanical test over the built argv asserts it, rather than
    the guarantee resting on prose.
-4. **No filesystem access at all.** Every read is a git object read against one of two immutable
+5. **No filesystem access at all.** Every read is a git object read against one of two immutable
    commits - the snapshot tree, or the index tree that preserves staged bytes. Traversal, absolute
    paths, host files and `.git` internals are structurally absent - verified at the git layer, not
    asserted.
-5. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
+6. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
    absolute, NUL-bearing, and any path with a `.` or `..` segment; reject `.git` as a leading
    segment. Paths are matched as bytes against the tree listing and never normalized, because git
    paths are bytes and a normalization step would make two spellings resolve to one object.
    This is **universal and independent of what the op's output looks like** - the two are separate
    axes, and treating them as one is what once let `git_log -- .env` through: it was filed under an
    output class that filters paths out of results, so nothing checked the path it was handed.
-6. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
+7. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
    `DENY_PATHS` (`src/server/inspector/worker.ts:295`) and **strengthened**: the Inspector
    denies `**/.git/config`, this denies `.git/**` outright, and the list is applied to the
    *results* of `search_text` and `list_paths` as well as to the arguments of `read_file`. A
@@ -480,7 +490,7 @@ defences on what remains.
    lines, so a `Read(...)`-only list protects nothing it names." The measurement above is why
    this layer survives the move to git objects: an untracked, non-ignored `.env` **is** in the
    snapshot tree.
-7. **Every op declares an output class, and a content-bearing one is allowlisted before it is
+8. **Every op declares an output class, and a content-bearing one is allowlisted before it is
    generated rather than filtered after.** Filtering paths out of a result works for an op that
    emits a path beside its own content - drop the line and the content goes with it. It does
    **not** work for `git_diff` or `git_show`, whose output is one blob carrying file content.
@@ -500,18 +510,18 @@ defences on what remains.
    ancestry check - it was a genuine ancestor of the snapshot. Ancestry answers "is this revision
    part of what was submitted"; the denylist answers "may this path be read". Neither substitutes
    for the other.
-8. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
+9. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
    and `160000` as `submodule`. A symlink's blob content is its target string, so serving it as
    file content would hand the reviewer an arbitrary host path under a repository-relative name.
-9. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
+10. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
    an oversize blob is refused as `too_large` before a byte is read; `git grep -I` skips binary
    content (verified).
-10. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
+11. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
    over every broker response. Its own comment makes the trade explicit - "a mangled example is
    a nuisance, a published credential is an incident" - and it applies with more force here,
    because a verdict's evidence quotes can reach a public pull request through the feedback
    packet.
-11. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
+12. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
    (`src/server/review/prompt.ts`), so repository content the reviewer fetched carries the same
    `-untrusted` fence as the diff it came from.
 

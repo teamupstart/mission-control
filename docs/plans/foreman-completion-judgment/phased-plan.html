@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: Foreman completion judgment and recovery fixes</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d21; --muted: #5c6470; --line: #d9dde3;
+    --card: #f5f7f9; --accent: #2f6fed; --bad: #c0392b; --good: #1e7a46; --code-bg: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b; --fg: #e6e9ed; --muted: #9aa4b0; --line: #333a43;
+      --card: #1d2229; --accent: #6b9dff; --bad: #ff7b6b; --good: #57c684; --code-bg: #232a32;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 2.5rem 1.25rem 5rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 52rem; margin: 0 auto; }
+  h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 0.4rem; }
+  h2 { font-size: 1.22rem; margin: 2.3rem 0 0.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
+  p { margin: 0.7rem 0; }
+  .kicker { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1.1rem; }
+  code { background: var(--code-bg); border-radius: 4px; padding: 0.1em 0.35em; font: 0.86em ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; margin: 1rem 0; }
+  .scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  ul li, ol li { margin: 0.35rem 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem; margin: 1.2rem 0; }
+  .muted { color: var(--muted); }
+  .svgwrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; }
+  svg text { font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .small { font-size: 10.5px; fill: var(--muted); }
+  svg .box { fill: var(--bg); stroke: var(--accent); stroke-width: 1.3; rx: 6; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Phased implementation index · docs/plans/foreman-completion-judgment · 2026-08-24</p>
+  <h1>Foreman completion judgment and recovery fixes - phases</h1>
+  <p>Source plan: <a href="plan.html"><code>plan.md</code></a>. Source finding:
+  <code>docs/reports/foreman-completion-detection-stall/report.html</code> (archived; the plan's
+  Problem section stands alone).</p>
+
+  <h2>Incorporated human decisions (2026-08-24)</h2>
+  <ol>
+    <li><strong>Auto-submit on verification-evidence-only holds: included in Phase 1.</strong></li>
+    <li><strong>Phase 2 authority: reuse <code>keepShipTasksMoving</code></strong> - no new knob.</li>
+    <li><strong>Follow-up: phased implementation</strong> - this index and its phase files.</li>
+  </ol>
+
+  <h2>Sizing and phase count</h2>
+  <p>Estimated non-test implementation lines: Phase 1 ~200-250, Phase 2 ~120-160, Phase 3
+  ~130-170; total ~450-580. Three phases because each boundary isolates a distinct risk class in
+  the repository's most safety-critical worker: Phase 1 changes <em>what the verifier sees and
+  claims</em> (judgment and prompt-injection surface), Phase 2 changes <em>when text is typed into
+  live sessions</em> (delivery safety), Phase 3 changes <em>persisted-state keying</em>
+  (compatibility). Each leaves the repository operable and independently testable.</p>
+
+  <h2>Phases and dependencies</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+    <tr><td>1</td><td>Evidence-grounded verification and the auto-submit fallback</td>
+      <td><code>phase-1-evidence-grounded-verification.md</code></td><td>none</td></tr>
+    <tr><td>2</td><td>Immediate held-gap delivery for managed ship tasks</td>
+      <td><code>phase-2-immediate-held-gap-delivery.md</code></td><td>Phase 1</td></tr>
+    <tr><td>3</td><td>Episode-scoped convergence and escalation</td>
+      <td><code>phase-3-episode-scoped-convergence-escalation.md</code></td><td>Phase 2</td></tr>
+  </table></div>
+  <div class="svgwrap">
+    <svg viewBox="0 0 820 96" width="820" height="96" role="img" aria-label="Serial dependency graph: Phase 1 then Phase 2 then Phase 3">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>
+      </defs>
+      <rect class="box" x="12" y="22" width="240" height="52"/>
+      <text x="26" y="44">Phase 1</text>
+      <text x="26" y="62" class="small">evidence-grounded verification</text>
+      <rect class="box" x="296" y="22" width="240" height="52"/>
+      <text x="310" y="44">Phase 2</text>
+      <text x="310" y="62" class="small">immediate held-gap delivery</text>
+      <rect class="box" x="580" y="22" width="228" height="52"/>
+      <text x="594" y="44">Phase 3</text>
+      <text x="594" y="62" class="small">convergence and escalation</text>
+      <path class="arrow" d="M252,48 L292,48"/>
+      <path class="arrow" d="M536,48 L576,48"/>
+    </svg>
+  </div>
+  <p class="muted">Serial; no concurrency group. All three phases edit the prompted hold path in
+  <code>src/server/foreman/worker.ts</code>; Phase 1's fallback changes which holds remain for
+  Phase 2 to deliver, and Phase 3 re-keys the attempt accounting Phase 2 relocates. Merge order
+  equals phase order.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <ul>
+    <li><strong>C1</strong> (Phase 1): <code>VerifyInput.registeredEvidence</code> and the
+    structural evidence-registration statement; metadata above the untrusted fence, captions
+    inside it.</li>
+    <li><strong>C2</strong> (Phase 1): the additive gap kind <code>unverified</code> - "the change
+    looks done; only proof of verification is missing".</li>
+    <li><strong>C3</strong> (Phase 2 entry point, Phase 3 keying): one daemon-owned recovery
+    ledger; an attempt counts once per delivery from either route.</li>
+    <li><strong>C4</strong> (all): consume-before-type ordering, post-model-call candidate
+    refresh, injection fencing, and the worker-never-touches-SQLite boundary.</li>
+  </ul>
+
+  <h2>Verification strategy</h2>
+  <p>Each phase runs its focused suites plus <code>npm run typecheck</code>,
+  <code>npm run lint</code>, and the full <code>npm test</code> before its pull request. No phase
+  changes a UI surface, so no new <code>e2e/</code> spec is required. The end state is validated by
+  the worker-level tests named in the source plan's success criteria, spread across the phases that
+  introduce them.</p>
+
+  <div class="card">
+    <p><strong>Investigated findings and the cross-phase audit record</strong> are in
+    <code>phased-plan.md</code>, the authoritative Markdown source of this page. The phase files
+    are the only place implementation detail lives; each stands alone for an agent arriving with
+    nothing but its path.</p>
+  </div>
+</main>
+</body>
+</html>

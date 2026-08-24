@@ -135,11 +135,18 @@ test("the autopilot readout partitions the backlog: ready + blocked + disabled",
     }),
   );
   r.upsertTask(mkTask({ id: "auto-off", title: "Parked", enabled: false }));
+  r.upsertTask(
+    mkTask({
+      id: "auto-retry",
+      title: "Retry manually",
+      error: "git fetch origin failed: Permission denied (publickey)",
+    }),
+  );
 
   const { autopilot } = foremanStatus(r);
   const backlog = r.listTasks().filter((t) => t.status === "backlog").length;
   assert.equal(autopilot.disabled, 1);
-  assert.equal(autopilot.blocked, 1, "only the item an unmet dependency holds up");
+  assert.equal(autopilot.blocked, 2, "dependency and manual-retry gates are not ready");
   assert.equal(autopilot.ready, 2, "the free item and the one it waits on");
   assert.equal(autopilot.ready + autopilot.blocked + autopilot.disabled, backlog);
 });

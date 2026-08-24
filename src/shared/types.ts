@@ -1632,10 +1632,10 @@ export interface ForemanStatus {
     active: number;
     /** The configured ceiling (`maxSessions`). */
     max: number;
-    /** Enabled backlog items with every dependency satisfied - what autopilot may take next. */
+    /** Enabled, error-free backlog items with every dependency satisfied. */
     ready: number;
     /**
-     * ENABLED backlog items waiting on another task.
+     * ENABLED backlog items withheld by a dependency or a carried launch error.
      *
      * Counted over the enabled ones only, so `ready + blocked + disabled` is the whole
      * backlog. Folding the disabled items in here would report work somebody

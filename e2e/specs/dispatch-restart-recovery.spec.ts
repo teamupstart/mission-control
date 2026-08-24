@@ -176,6 +176,7 @@ test("a live git preflight failure returns to Backlog with its error and retries
     await expect(card).toBeVisible();
     await expect(card.getByRole("status")).toContainText("could not freeze");
     await expect(card.getByRole("status")).toContainText("git fetch origin failed");
+    await expect(card.getByText("next up", { exact: true })).toHaveCount(0);
     await expect(retry).toBeVisible();
     await expect(retry).toBeEnabled();
     await captureLiveFailure(dashboard);

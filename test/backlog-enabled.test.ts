@@ -81,6 +81,20 @@ test("a disabled item is skipped for 'next up' even when the plan puts it first"
   assert.equal(nextUpTaskId([off, on], mkPlan([[off.id, []], [on.id, []]])), on.id);
 });
 
+test("a backlog launch error is skipped for ready and next up until a manual retry", () => {
+  const retry = mkTask({ error: "git fetch origin failed: Permission denied (publickey)" });
+  const on = mkTask();
+  const plan = mkPlan([[retry.id, []], [on.id, []]]);
+
+  assert.deepEqual(readyBacklog([retry, on], plan).map((task) => task.id), [on.id]);
+  assert.equal(nextUpTaskId([retry, on], plan), on.id);
+  assert.deepEqual(
+    readyBacklog([{ ...retry, error: null }, on], plan).map((task) => task.id),
+    [retry.id, on.id],
+    "entering a manual dispatch clears the gate and restores ordinary ordering",
+  );
+});
+
 test("disabling the whole backlog leaves nothing ready, and no plan makes it ready", () => {
   const tasks = [mkTask({ enabled: false }), mkTask({ enabled: false })];
   assert.deepEqual(readyBacklog(tasks, mkPlan(tasks.map((t) => [t.id, []]))), []);

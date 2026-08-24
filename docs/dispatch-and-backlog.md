@@ -558,10 +558,13 @@ runtime starts. For a backlog-capable task kind, that narrow state returns to th
 the exact live failure or restart explanation on its card and a normal launch control. A failed
 remote-default fetch, including broken Git or SSH authentication to `origin`, is therefore fixed
 and retried from the Board instead of disappearing into terminal history. Its next launch starts
-with a new dispatch timestamp. A task kind that cannot appear in Backlog remains failed even in
-this resource-free state. Deterministic launch refusals outside that resource phase also remain
-failed, and once any launch resource exists recovery keeps the conservative behavior below
-instead of assuming whether an agent or checkout survived.
+with a new dispatch timestamp. While the card carries that error, it is excluded from Foreman's
+ready list and is not marked `next up`, so unattended scheduling cannot retry a persistent Git or
+SSH failure in a loop. A manual launch clears the error as the new dispatch starts. A task kind
+that cannot appear in Backlog remains failed even in this resource-free state. Deterministic
+launch refusals outside that resource phase also remain failed, and once any launch resource
+exists recovery keeps the conservative behavior below instead of assuming whether an agent or
+checkout survived.
 
 ### When a task's agent goes away
 

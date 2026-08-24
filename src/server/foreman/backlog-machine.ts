@@ -355,18 +355,32 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     // the count disagree with the board's blocked chips.
     const index = backlogIndex(tasks, plan);
     const off = allowed.filter((t) => !t.enabled).length;
+    // A launch error carried back to the backlog is an explicit manual-retry gate. Do
+    // not count it as a dependency failure: the exact error is already on the card, and
+    // calling it blocked would send the operator looking for an edge that does not exist.
+    const retry = allowed.filter((t) => t.enabled && t.error !== null).length;
     // Blocked is asked of the ENABLED items only. A parked item is not held up by
     // anything - it is switched off - and blaming a dependency graph for it is the same
     // misdirection the allowlist ordering above exists to avoid, one layer in.
-    const blocked = allowed.filter((t) => t.enabled && blockersIn(t, index).length > 0).length;
-    if (blocked === 0 && off > 0) {
+    const blocked = allowed.filter(
+      (t) => t.enabled && t.error === null && blockersIn(t, index).length > 0,
+    ).length;
+    if (blocked === 0 && retry > 0) {
+      return {
+        kind: "none",
+        why:
+          "every schedulable backlog item needs operator action " +
+          `(${retry} manual retry${off > 0 ? `, ${off} disabled` : ""})`,
+      };
+    }
+    if (blocked === 0 && off > 0 && retry === 0) {
       return { kind: "none", why: `every schedulable backlog item is disabled (${off} disabled)` };
     }
     return {
       kind: "none",
       why:
         `every schedulable backlog item is waiting on another task (${blocked} blocked` +
-        `${off > 0 ? `, ${off} disabled` : ""})`,
+        `${off > 0 ? `, ${off} disabled` : ""}${retry > 0 ? `, ${retry} manual retry` : ""})`,
     };
   }
 

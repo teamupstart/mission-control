@@ -143,7 +143,8 @@ launch control visible together. The same run deliberately persists stale branch
 metadata to prove those descriptive fields do not hide an otherwise resource-free dispatch.
 `git-preflight-recovery-backlog.png` drives the live half of the same boundary by making the
 fixture repository's `origin` unreachable, then shows the exact fetch error and enabled launch
-control on the restored Backlog card before the test repairs `origin` and retries successfully.
+control on the restored Backlog card, without a `next up` marker, before the test repairs
+`origin` and retries successfully.
 The real command output belongs at
 `e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt`.
 

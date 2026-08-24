@@ -337,7 +337,7 @@ test("a dependency still in the backlog reads as waiting", () => {
   assert.equal(b?.title, dep.title);
 });
 
-test("a pre-provision failure returned to backlog stays retryable instead of becoming a dead blocker", () => {
+test("a pre-provision failure waits for manual retry instead of becoming ready or a dead blocker", () => {
   const prerequisite = mkTask({
     status: "backlog",
     error: "git fetch origin failed: Permission denied (publickey)",
@@ -348,8 +348,8 @@ test("a pre-provision failure returned to backlog stays retryable instead of bec
   assert.equal(blockersFor(dependent, plan, [prerequisite, dependent])[0]?.state, "waiting");
   assert.deepEqual(
     readyBacklog([prerequisite, dependent], plan).map((task) => task.id),
-    [prerequisite.id],
-    "the failed prerequisite itself is the work to retry next",
+    [],
+    "the failed prerequisite stays manually retryable without entering autopilot",
   );
 });
 

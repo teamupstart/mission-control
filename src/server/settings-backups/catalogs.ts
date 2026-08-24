@@ -102,6 +102,12 @@ export const SettingsBackupWorkflowVersionSchema = z.object({
   publishedAt: timestamp,
 }).strict();
 
+export type SettingsBackupPersona = z.infer<typeof SettingsBackupPersonaSchema>;
+export type SettingsBackupSessionAction = z.infer<typeof SettingsBackupSessionActionSchema>;
+export type SettingsBackupWorkflowCommand = z.infer<typeof SettingsBackupWorkflowCommandSchema>;
+export type SettingsBackupWorkflowDefinition = z.infer<typeof SettingsBackupWorkflowDefinitionSchema>;
+export type SettingsBackupWorkflowVersion = z.infer<typeof SettingsBackupWorkflowVersionSchema>;
+
 const SettingsBackupPersonasSchema = catalog(SettingsBackupPersonaSchema);
 const SettingsBackupSessionActionsSchema = catalog(SettingsBackupSessionActionSchema);
 const SettingsBackupWorkflowCommandsSchema = catalog(SettingsBackupWorkflowCommandSchema);

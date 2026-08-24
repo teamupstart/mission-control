@@ -40,7 +40,7 @@ export type SettingsBackupRead =
       snapshot: SettingsBackupEnvelopeV1;
     }
   | {
-      status: "produced_by_newer_build" | "corrupt" | "unreadable";
+      status: "produced_by_newer_build" | "corrupt" | "unreadable" | "not_found";
       id: string;
       filename: string;
       size: number | null;
@@ -160,6 +160,9 @@ export class SettingsBackupStore {
       }
       return { status: "ready", id, filename, size, modifiedAt, snapshot };
     } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return { status: "not_found", id, filename, size, modifiedAt, reason: "Snapshot was not found" };
+      }
       return { status: "unreadable", id, filename, size, modifiedAt, reason: boundedReason(error) };
     }
   }

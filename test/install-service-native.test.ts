@@ -178,8 +178,8 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
       `const signal = process.env.SERVICE_TEST_SIGNAL;\n` +
-      `record({ stage: "build-start", pid: process.pid });\n` +
       `process.on(signal, () => { record({ stage: "build-signal", pid: process.pid, signal }); process.exit(0); });\n` +
+      `record({ stage: "build-start", pid: process.pid });\n` +
       `setInterval(() => {}, 1_000);\n`,
   );
   writeFileSync(

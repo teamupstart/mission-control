@@ -29,11 +29,13 @@ function migrateRetiredLayout(raw: unknown): unknown {
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
-export function getUiConfig(): UiConfig {
+export function getUiConfig(persistMigration = true): UiConfig {
   const stored = getAppConfig(CONFIG_ENTRY);
   const migrated = migrateRetiredLayout(stored ?? {});
   const config = UiConfigSchema.parse(migrated);
-  if (migrated !== stored && stored !== undefined) setAppConfig(CONFIG_ENTRY, config);
+  if (persistMigration && migrated !== stored && stored !== undefined) {
+    setAppConfig(CONFIG_ENTRY, config);
+  }
   return config;
 }
 

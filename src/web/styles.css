@@ -29975,21 +29975,28 @@ body.foreman-sidecar-open .modal-backdrop {
 .si-session-chip {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  border: 0;
+  border-radius: 3px;
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
+  flex: none;
   font: inherit;
-  font-size: 10.5px;
-  gap: 5px;
-  padding: 2px 7px;
-  white-space: nowrap;
+  font-size: 12px;
+  height: 14px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 14px;
 }
 
 .si-session-chip:hover {
-  border-color: color-mix(in oklab, var(--select) 40%, var(--border));
   color: var(--fg);
+}
+
+.si-session-chip:focus-visible {
+  outline: 1px solid var(--select);
+  outline-offset: 2px;
 }
 
 .si-session-modal {

@@ -16,6 +16,7 @@ import {
   queueRowText,
   reviewAnnouncement,
   reviewQueue,
+  unreadAgentReplies,
   unsentMessage,
 } from "../src/web/lib/fileComments.ts";
 
@@ -181,4 +182,38 @@ test("a running review with nothing out says so rather than naming a comment", (
     reviewAnnouncement(review({ state: "running" }), [thread()]),
     "Review running. 1 comment waiting.",
   );
+});
+
+// ---- the Files tab's pip ----
+
+test("the pip counts unread AGENT replies, and never the human's own queue", () => {
+  const threads = [
+    thread({
+      id: "t1",
+      status: "answered",
+      messages: [message(), message({ id: "m2", author: "agent", body: "done" })],
+    }),
+    // Queued comments are the human's own work. A pip counting these would light up the
+    // moment they wrote one, saying "somebody needs you" about a note they just typed.
+    thread({ id: "t2", status: "queued", messages: [message({ id: "m3" })] }),
+  ];
+  assert.equal(unreadAgentReplies(threads, "s1"), 1);
+  assert.equal(unreadAgentReplies(threads, "other-session"), 0, "bounded to one session");
+});
+
+test("a reply that has been read, and a thread that has been closed, raise nothing", () => {
+  const read = thread({
+    id: "t1",
+    status: "answered",
+    messages: [message(), message({ id: "m2", author: "agent", readAt: 9 })],
+  });
+  assert.equal(unreadAgentReplies([read], "s1"), 0);
+  // A resolved thread is a conversation the person has already closed; re-raising a pip for
+  // it would make closing a thread the one action that cannot be finished.
+  const closed = thread({
+    id: "t2",
+    status: "resolved",
+    messages: [message(), message({ id: "m3", author: "agent" })],
+  });
+  assert.equal(unreadAgentReplies([closed], "s1"), 0);
 });

@@ -63,7 +63,7 @@ test("the Workflows pane names its empty state", () => {
 });
 
 test("Workflows sits between Work queue and Diff", () => {
-  const tabs = detailTabs({ queueCount: 0 });
+  const tabs = detailTabs({ queueCount: 0, fileReplyCount: 0 });
   assert.deepEqual(
     tabs.map((tab) => tab.id),
     ["conversation", "queue", "workflows", "diff", "files"],
@@ -72,12 +72,19 @@ test("Workflows sits between Work queue and Diff", () => {
     tabs.map((tab) => tab.label),
     ["Conversation", "Work queue", "Workflows", "Diff", "Files"],
   );
-  assert.equal(detailTabs({ queueCount: 4 })[1]?.pip, 4);
+  assert.equal(detailTabs({ queueCount: 4, fileReplyCount: 0 })[1]?.pip, 4);
+  // Files takes the AGENT-REPLY count, not the review's queue depth: comments still waiting
+  // to go out are the human's own work, and a pip counting those would light up as they typed
+  // them. The two counts are independent, which is what this pins.
+  const both = detailTabs({ queueCount: 4, fileReplyCount: 2 });
+  assert.equal(both.find((tab) => tab.id === "files")?.pip, 2);
+  assert.equal(both.find((tab) => tab.id === "queue")?.pip, 4);
+  assert.equal(detailTabs({ queueCount: 9, fileReplyCount: 0 }).find((t) => t.id === "files")?.pip, 0);
 });
 
 test("every detail tab has a registered keybinding action", () => {
   const ids = new Set(ACTIONS.map((action) => action.id));
-  for (const tab of detailTabs({ queueCount: 0 })) {
+  for (const tab of detailTabs({ queueCount: 0, fileReplyCount: 0 })) {
     assert.ok(ids.has(tab.action), tab.id);
   }
 });

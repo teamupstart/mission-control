@@ -1593,6 +1593,17 @@ The MCP tools are:
   so `attachmentUploadIds` must be empty. Success returns the exact issue URL, a CLI refusal says
   retrying is safe, and an unknown outcome says to check GitHub before trying again
 - `report_status(activity)` - update the session's activity line
+- `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
+  left on a file, in the thread it was written in (non-blocking). `commentId` is the handle
+  the delivered message printed - `MC-a41f.2`, the comment's per-session short id plus which
+  delivery of it this answers - and never a uuid, because the handle is the only comment
+  identifier an agent is ever shown. The answer appears in that thread, on that line, without
+  a refresh, and it releases the next comment in the review. It is resolved inside the session
+  the call arrived from, so the same handle in two sessions reaches each session's own comment.
+  A reply naming an earlier delivery is still filed - it is a real answer - but advances
+  nothing. `addressed` says the agent actually changed the code or document; it marks the
+  thread handled and never closes it, because only a person resolves a comment. See
+  [Walk the agent through your review](ui.md#walk-the-agent-through-your-review)
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository

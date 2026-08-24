@@ -24,7 +24,7 @@ import { reanchor, type FileCommentAnchor } from "@shared/file-comment-anchor.ts
 import { isOutstandingThreadStatus } from "@shared/file-comments.ts";
 import { messageBlockReason } from "@shared/pane.ts";
 import { settledIdle } from "@shared/session.ts";
-import { renderFileCommentPayload } from "./file-comment-payload.ts";
+import { openingDeliveryHandle, renderFileCommentPayload } from "./file-comment-payload.ts";
 
 /**
  * How long a session must sit settled-idle before a comment it never answered is given up on.
@@ -53,6 +53,27 @@ const TICK_MS = 1_000;
  */
 export interface FileCommentWalkthroughPort {
   now(): number;
+  /**
+   * The MCP tool THIS session can answer a comment through, or null when it cannot.
+   *
+   * Asked per session, and asked of the bundle rather than of the launch, because that is the
+   * half that can honestly be established - the same reading `TaskManager` already applies
+   * before it resets a scout's checkout. Whether a particular process registered our server is
+   * a property of a process we did not necessarily start: a dispatch carried `--mcp-config`,
+   * an operator's own session reaches the same server only if they installed the integration,
+   * and nothing here can interrogate that child. What CAN be established is whether the bundle
+   * publishes the tool at all, and whether it is the same build this session started with.
+   *
+   * Null is not a degraded answer, it is the tool-less rendering: the payload then cites the
+   * comment's id and asks for it back in the next turn, which is what the transcript fallback
+   * reads. Naming a tool the session cannot call would be the failure `FINAL_INSTRUCTION`
+   * documents - an instruction the loop cannot honour is one it follows into silence.
+   *
+   * A port member rather than an import, so this file still opens no database, touches no pane
+   * and knows nothing about how a launch registers an MCP server - which is what lets the whole
+   * advance machine be driven from a fake port.
+   */
+  replyTool(sessionId: string): Promise<string | null>;
   /** The session, for `canMessage` and for the settled-idle question. Null once it is gone. */
   session(sessionId: string): Session | null;
   /** The review's run state. Never null: an absent row reads as `idle`. */
@@ -114,6 +135,29 @@ export interface FileCommentWalkthroughPort {
   submit(sessionId: string, text: string): { ok: boolean; turnId: string | null; error: string | null };
   /** The `pending_turns` row this thread is correlated to, or null once it is gone. */
   pendingTurn(sessionId: string, turnId: string): PendingTurn | null;
+  /**
+   * What this session said, in prose, at or after `since` - newest turn first, and bounded.
+   *
+   * The read behind the tool-less fallback. A session an operator started without the Mission
+   * Control integration has no reply tool at all, and free text is the only thing that works
+   * everywhere. Asked once, at the moment the grace window gives up on a comment, rather than
+   * by a watcher: the read is bounded to the transcript's tail and costs nothing until a
+   * comment has actually timed out.
+   *
+   * **`since` is a filter this port owes its caller, not a hint.** It is the moment the
+   * comment being answered actually reached the agent, and it is what keeps a thread's SECOND
+   * timeout from re-reading the turn its first timeout already filed - the tail window still
+   * contains that turn, and only its timestamp says it belongs to the earlier delivery. A turn
+   * the transcript recorded with no usable timestamp cannot be placed against `since` at all,
+   * so it is omitted rather than guessed at.
+   *
+   * Deliberately a plain read: WHICH of these turns answers WHICH comment is decided by the
+   * state machine, so the rule is covered by the fake port rather than by each implementation
+   * of it.
+   */
+  agentTurnsSince(sessionId: string, since: number): string[];
+  /** File a fallback reply on a thread as the agent. Changes no status and no queue position. */
+  appendAgentReply(threadId: string, body: string): FileCommentThread | null;
 }
 
 /** The reasons a review stops, in one place so the UI and the tests read the same sentences. */
@@ -320,6 +364,19 @@ export class FileCommentWalkthrough {
     this.resumeIfPausedFor(sessionId, this.outstandingDelivery(sessionId, turnId));
   }
 
+  /**
+   * The agent answered the outstanding comment through the reply tool, and the route has
+   * ALREADY released the turn durably.
+   *
+   * Nothing is passed in and nothing is decided here: the release is a transaction on
+   * `file_comment_threads`, and this only asks the machine to look again now rather than
+   * within the second. Phase 3's time-based advance stays exactly as it was underneath -
+   * this makes the queue move on a real completion, it does not replace the floor.
+   */
+  onCommentAnswered(sessionId: string): void {
+    if (this.running.has(sessionId)) void this.tick(sessionId);
+  }
+
   /** A session reported activity, or settled. The time-based advance re-asks itself. */
   onSessionChanged(sessionId: string): void {
     if (this.running.has(sessionId)) void this.tick(sessionId);
@@ -495,6 +552,12 @@ export class FileCommentWalkthrough {
     // Which threads this pass is about to re-anchor, captured BEFORE the await for the
     // comparison after it.
     const reanchored = new Set(threads.filter((t) => t.status === "queued").map((t) => t.id));
+    // Resolved ABOVE the delivery boundary deliberately. It is an await, so it widens the
+    // window the block below exists to close - which costs nothing, because that block re-asks
+    // every question that can make a send unsafe and this is not one of them. What this decides
+    // is one LINE of the payload, and it is a property of a file on disk and a process start,
+    // neither of which the queue or the conversation can change underneath it.
+    const replyTool = await this.port.replyTool(sessionId);
     const missing = await this.reanchorQueue(sessionId, threads);
 
     // ---- the delivery boundary ----
@@ -549,7 +612,7 @@ export class FileCommentWalkthrough {
       return;
     }
 
-    this.send(sessionId, current, now.startedAt);
+    this.send(sessionId, current, now.startedAt, replyTool);
   }
 
   /**
@@ -598,7 +661,7 @@ export class FileCommentWalkthrough {
     // tuple precisely so the next comment can take the turn without colliding on the
     // single-flight index. The thread is not lost - it keeps its anchor, its marker, and the
     // absence of a reply is what the marker shows.
-    this.settle(thread.id);
+    this.settle(sessionId, thread.id);
     return "advanced";
   }
 
@@ -614,11 +677,53 @@ export class FileCommentWalkthrough {
    * thread goes back to the tail and its next turn carries THAT message rather than the
    * opening comment.
    */
-  private settle(threadId: string): void {
+  private settle(sessionId: string, threadId: string): void {
+    // The tool-less fallback, asked at the one moment it is worth paying for: this comment
+    // has just run out its grace window, so either the agent answered it somewhere this
+    // daemon cannot see, or it did not answer at all. It is filed and NOTHING else moves -
+    // the timeout below is what advances the queue, exactly as it did before this existed.
+    const timedOut = this.port.threadWithHistory(threadId);
+    if (timedOut) this.fileTranscriptReply(sessionId, timedOut);
+
     const settled = this.port.markUnanswered(threadId);
     if (!settled) return;
     const full = this.port.threadWithHistory(threadId) ?? settled;
     if (nextMessage(full)) this.port.requeueAtTail(threadId);
+  }
+
+  /**
+   * Recover an answer from the conversation for a session with no reply tool.
+   *
+   * **Scoped to the delivery being answered, never deduped by text.** A thread that times out
+   * twice reads two overlapping tail windows, so the second read can still see the turn the
+   * first one filed - and the obvious guard, skipping a recovered answer whose text already
+   * appears on the thread, silently discards a REAL second answer whenever the agent says
+   * something as ordinary as "Done." twice. That is the fallback failing at exactly the thing
+   * it exists to do, with no error and nothing on screen: the human's follow-up reads as
+   * unanswered when it was answered.
+   *
+   * The delivery is the honest key. An assistant turn recorded BEFORE this comment reached the
+   * agent cannot be an answer to it, whatever it says, and a thread's next delivery is always
+   * later than the turn its previous timeout recovered - the requeue happens at that timeout.
+   * So the window alone separates the two, and two distinct answers that happen to read
+   * identically are both kept.
+   *
+   * The FIRST matching turn in the window, newest first: a thread delivered once and answered
+   * twice wants the agent's latest word on it.
+   */
+  private fileTranscriptReply(sessionId: string, thread: FileCommentThread): void {
+    // Nothing on this thread has provably reached the agent, so no turn can be an answer to
+    // it. Unreachable from `settle`, which only runs on a confirmed delivery, and stated here
+    // because it is what makes the window below a real bound rather than "everything".
+    const deliveredAt = lastDeliveredAt(thread);
+    if (deliveredAt === null) return;
+    for (const text of this.port.agentTurnsSince(sessionId, deliveredAt)) {
+      // Matched HERE rather than in the port, so "an assistant turn that opens with this
+      // thread's handle" is one rule the fake port cannot quietly implement differently.
+      if (openingDeliveryHandle(text)?.shortId !== thread.shortId) continue;
+      this.port.appendAgentReply(thread.id, text);
+      return;
+    }
   }
 
   /**
@@ -674,7 +779,12 @@ export class FileCommentWalkthrough {
   }
 
   /** Render this comment's turn and hand it to the outbox. */
-  private send(sessionId: string, head: FileCommentThread, startedAt: number | null): void {
+  private send(
+    sessionId: string,
+    head: FileCommentThread,
+    startedAt: number | null,
+    replyTool: string | null,
+  ): void {
     const thread = this.port.threadWithHistory(head.id) ?? head;
     const next = nextMessage(thread);
     if (!next) {
@@ -696,6 +806,7 @@ export class FileCommentWalkthrough {
       ordinal: next.ordinal,
       position: sent + 1,
       total: sent + queued,
+      replyTool,
     });
 
     const result = this.port.submit(sessionId, rendered.payload);

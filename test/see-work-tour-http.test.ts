@@ -158,6 +158,44 @@ test("an early tour exit cancels provisioning before recording Tour demo", async
   assert.equal(current.outcome, "Tour demo");
 });
 
+test("a cancel that left resources behind still records the tour's outcome", async () => {
+  // `TaskManager.cancel` answers `ok: false` when the task WAS cancelled but its worktree
+  // teardown could not reclaim everything - contention on the pool, a lease still held. That
+  // is a warning about trees, not a refusal to cancel, and the route used to return on it and
+  // never record the outcome. The task was then left `cancelled` with a null outcome, which is
+  // exactly the leftover a tour promises not to produce; it reached CI as an e2e failure whose
+  // row still carried its `worktreePath` and `worktreeLeaseId`.
+  const calls: string[] = [];
+  let current = tourTask({ status: "dispatching" });
+  const tasks = {
+    get(id: string) { return id === current.id ? current : undefined; },
+    async cancel() {
+      calls.push("cancel");
+      current = { ...current, status: "cancelled" };
+      return { ok: false as const, error: "task cancelled, but its resources remain tracked: lease busy" };
+    },
+    async complete(_id: string, outcome: string) {
+      calls.push(`complete:${outcome}`);
+      current = { ...current, status: "done", outcome };
+      return current;
+    },
+  } as unknown as TaskManager;
+  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+
+  const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317" },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ["cancel", "complete:Tour demo"], "the completion still runs");
+  assert.equal(current.status, "done");
+  assert.equal(current.outcome, "Tour demo");
+  // Not swallowed either: the leftover trees are the operator's problem to see.
+  const body = (await response.json()) as { ok: boolean; warning?: string };
+  assert.equal(body.ok, true);
+  assert.match(String(body.warning), /resources remain tracked/);
+});
+
 test("the same cleanup doorway recognizes and closes the Chat preview", async () => {
   const calls: string[] = [];
   let current = tourTask({

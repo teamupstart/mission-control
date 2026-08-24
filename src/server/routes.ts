@@ -91,6 +91,7 @@ import {
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
   FileCommentReviewControlSchema,
+  RespondToFileCommentsSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
@@ -3460,6 +3461,46 @@ export function buildApp(
     return c.json({ id: review.id, detached: true });
   });
 
+  /**
+   * The agent's answer to one line comment. Phase 4's whole door.
+   *
+   * In the `/mcp/reviews` shape - token, `parseBody`, `findSessionByEnv` - and deliberately
+   * NOT behind `requireLoopback`: `/mcp/*` is reached by an MCP child that may not present a
+   * loopback `host`, and the token is the gate there. Non-blocking by construction: it posts
+   * and answers, because an agent must never wait on a human here.
+   *
+   * The session is established BEFORE the handle is resolved, and that order is the whole
+   * safety property: `short_id` is unique per session, so resolving it inside the session
+   * that just authenticated is what stops a reply landing on another session's identically
+   * named thread.
+   */
+  app.post("/mcp/file-comments/replies", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const unavailable = fileCommentsUnavailable(c);
+    if (unavailable) return unavailable;
+    const parsed = await parseBody(c, RespondToFileCommentsSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, cwd, commentId, body, addressed } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId, cwd);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    try {
+      const reply = fileComments!.agentReply(session.id, commentId, body, addressed);
+      // Only a released turn is worth waking the walkthrough for. It advances on its own
+      // timer regardless, so this is what turns "within ten seconds" into "immediately" -
+      // and the walkthrough re-reads everything durably, so nothing is passed to it.
+      if (reply.released) fileCommentWalkthrough?.onCommentAnswered(session.id);
+      return c.json({
+        sessionId: session.id,
+        threadId: reply.thread.id,
+        commentId: reply.thread.shortId,
+        status: reply.thread.status,
+        released: reply.released,
+      });
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
+  });
+
   app.post("/mcp/status", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, StatusSchema);
@@ -5853,9 +5894,18 @@ export function buildApp(
     }
 
     let session = task.sessionId ? registry.getSession(task.sessionId) : null;
+    // A cancel that could not reclaim every resource still CANCELLED the task; its `ok: false`
+    // reports leftover trees, not a refusal. Returning on it abandoned the completion this
+    // route exists to perform, leaving the tour's own task closed as `cancelled` with a null
+    // outcome - and worktree teardown contends with the pool, so that is an ordinary outcome
+    // on a loaded machine rather than an exceptional one. The warning is carried to the
+    // response instead, where the caller can see it without losing the outcome.
+    let resourceWarning: string | null = null;
     if (!session && task.status !== "done") {
       const cancelled = await tasks.cancel(id);
-      if (!cancelled.ok) return c.json(cancelled, 500);
+      if (!cancelled.ok) {
+        resourceWarning = cancelled.error ?? "the task's resources remain tracked";
+      }
     }
     const completed = await tasks.complete(id, recipe.outcome);
     if (!completed) return c.json({ ok: false, error: "no such task" }, 404);
@@ -5881,7 +5931,7 @@ export function buildApp(
         }
       }
     }
-    return c.json({ ok: true, task: completed });
+    return c.json({ ok: true, task: completed, ...(resourceWarning ? { warning: resourceWarning } : {}) });
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

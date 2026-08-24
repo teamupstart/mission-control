@@ -561,6 +561,74 @@ server.registerTool(
   },
 );
 
+// Answer one line comment a human left on a file, in the thread it was written in.
+//
+// Non-blocking and `share_plan`-shaped: no `extra`, no long poll. The agent posts its answer
+// and carries on with the work the comment asked for - waiting on a human here would stall the
+// very turn the comment exists to steer.
+server.registerTool(
+  "respond_to_file_comments",
+  {
+    title: "Answer a line comment",
+    description:
+      "Answer a line comment Mission Control delivered, quoting the id it was delivered " +
+      "with. The answer appears in that comment's thread, on that line, for the human to " +
+      "read, and it is what releases the next comment in the review. Returns immediately " +
+      "without waiting.",
+    inputSchema: {
+      commentId: z
+        .string()
+        .describe(
+          "The id the comment was delivered with, exactly as the message printed it - " +
+            "'MC-a41f.2', short id and delivery ordinal. NOT a uuid. The trailing ordinal " +
+            "is what says which delivery you are answering, so quote the whole thing.",
+        ),
+      body: z.string().describe("Your answer, as the human will read it in the thread"),
+      addressed: z
+        .boolean()
+        .optional()
+        .describe(
+          "True when you actually changed the code or document this comment asked about. " +
+            "It marks the thread as handled for the human; only they can resolve it.",
+        ),
+    },
+  },
+  async ({ commentId, body, addressed }) => {
+    try {
+      const res = await http("/mcp/file-comments/replies", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        commentId,
+        body,
+        addressed,
+      });
+      const result = (await res.json()) as {
+        commentId?: string;
+        released?: boolean;
+        error?: string;
+      };
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused this answer (${res.status}): ${result.error ?? "unknown refusal"}`,
+          true,
+        );
+      }
+      // The two outcomes read differently on purpose. A reply that released the turn means
+      // the next comment is on its way; one that did not is a late answer to a comment the
+      // review has already moved past, and saying so is what stops the agent waiting for a
+      // comment that is not coming because of this call.
+      return textResult(
+        result.released
+          ? `Answered ${result.commentId}. The next comment follows if the review has one.`
+          : `Answered ${result.commentId}. It was not the comment currently out with you, so it advanced nothing.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 server.registerTool(
   "adopt_pipeline_run",
   {

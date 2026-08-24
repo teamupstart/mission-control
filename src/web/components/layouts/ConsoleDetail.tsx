@@ -56,6 +56,7 @@ import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
+import { unreadAgentReplies } from "../../lib/fileComments.ts";
 
 type Tab = DetailTabId;
 
@@ -391,7 +392,16 @@ export function ConsoleDetail({
   // by the whitespace JSX leaves between children.
   const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
 
-  const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
+  // The Files pip. Derived from the same durable threads the tab itself renders, so the
+  // integrated tab and the extracted Files window agree about what is unread.
+  const fileReplyCount = useMemo(
+    () => unreadAgentReplies(view.fileCommentThreads ?? [], session.id),
+    [session.id, view.fileCommentThreads],
+  );
+  const tabs = useMemo(
+    () => detailTabs({ queueCount, fileReplyCount }),
+    [fileReplyCount, queueCount],
+  );
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
   // Tab/Shift+Tab walk this tab strip left to right, driven from App's one global key

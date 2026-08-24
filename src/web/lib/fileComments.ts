@@ -199,6 +199,37 @@ export function isPersistableBody(body: string): boolean {
  * `QUEUE_POSITION_THREAD_STATUSES` names - so the comment currently out with the agent is
  * still in this list, at the head, which is where a reader expects to find it.
  */
+/**
+ * Agent replies this session has received and nobody has read yet - the Files tab's pip.
+ *
+ * **Replies, not queue depth.** How many comments are still queued is the human's OWN work,
+ * and a badge counting it would light up the moment they wrote a comment, saying "somebody
+ * needs you" about a note they just typed. What deserves attention is an answer that arrived
+ * while they were looking somewhere else.
+ *
+ * Read from the durable `readAt` stamp rather than from browser state, for the reason drafts
+ * are durable: the integrated Files tab and the extracted Files window are two instances that
+ * converge only through the daemon, so a badge kept in one of them would be wrong in the
+ * other. Expanding a thread clears it, for both, in the same frame.
+ *
+ * Terminal threads are excluded. An `orphaned` thread has left the collection anyway, and a
+ * `resolved` one is a conversation the person has already closed - re-raising a pip for it
+ * would make closing a thread the one action that cannot be finished.
+ */
+export function unreadAgentReplies(
+  threads: readonly FileCommentThread[],
+  sessionId: string,
+): number {
+  let unread = 0;
+  for (const thread of threads) {
+    if (thread.sessionId !== sessionId || isTerminalThreadStatus(thread.status)) continue;
+    for (const message of thread.messages) {
+      if (message.author === "agent" && message.readAt === null) unread += 1;
+    }
+  }
+  return unread;
+}
+
 export function reviewQueue(
   threads: readonly FileCommentThread[],
   sessionId: string,

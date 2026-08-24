@@ -25,17 +25,35 @@ function step(page: Page, title: string) {
   return page.getByRole("dialog", { name: title }).or(page.getByRole("status", { name: title }));
 }
 
-/** Every temporary task the tour created is closed with its own fixed outcome. */
+/**
+ * Every temporary task the tour created is closed with its own fixed outcome.
+ *
+ * Two deliberate departures from the obvious `.every(...)` / `.toBe(true)` spelling:
+ *
+ * - **An explicit timeout.** `expect.poll` defaults to five seconds. Exiting a tour closes its
+ *   tasks through a daemon round trip, and on a CI runner sharing four cores between three
+ *   Playwright workers that has taken longer than five - which failed this spec on `main`
+ *   while the cleanup itself was fine. Thirty seconds matches the `toBeHidden` waits either
+ *   side of it. It is a ceiling, not a delay: a clean run still returns on the first poll.
+ * - **It returns the offending rows, not a boolean.** `true !== false` names neither the task
+ *   that was still open nor what state it was in, so the failure said nothing about whether
+ *   cleanup was slow or broken. An empty-array assertion prints the row.
+ */
 async function expectToursCleaned(daemon: DaemonHandle): Promise<void> {
-  await expect.poll(async () => {
-    const tasks = await api<Array<{ title: string; status: string; outcome: string | null }>>(
-      daemon,
-      "/api/tasks",
-    );
-    return tasks
-      .filter((task) => task.title === "Tour conversation" || task.title === "Tour demo")
-      .every((task) => task.status === "done" && task.outcome === task.title);
-  }).toBe(true);
+  await expect
+    .poll(
+      async () => {
+        const tasks = await api<Array<{ title: string; status: string; outcome: string | null }>>(
+          daemon,
+          "/api/tasks",
+        );
+        return tasks
+          .filter((task) => task.title === "Tour conversation" || task.title === "Tour demo")
+          .filter((task) => task.status !== "done" || task.outcome !== task.title);
+      },
+      { message: "a task the tour created was left open", timeout: 30_000 },
+    )
+    .toEqual([]);
 }
 
 test("both entry points are drawn from the tour registry, and start the same one tour", async ({

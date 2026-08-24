@@ -6505,3 +6505,30 @@ export const FileCommentReviewControlSchema = z
     path: ["reason"],
   });
 export type FileCommentReviewControlBody = z.infer<typeof FileCommentReviewControlSchema>;
+
+/**
+ * The agent answering one delivered line comment, through `respond_to_file_comments`.
+ *
+ * The MCP door, not the dashboard's: `AppendFileCommentMessageSchema` above deliberately
+ * refuses `agent`, because that route is reachable by any loopback caller and a forged reply
+ * would render as the agent's answer. This one is token-guarded and resolves its session
+ * through `findSessionByEnv` before anything is written, which is what makes `agent` an
+ * attribution rather than a claim.
+ *
+ * `commentId` is the HANDLE the payload printed - `MC-a41f.2` - and never the row's uuid.
+ * That is the only comment identifier an agent is ever shown. It is bounded but not shaped
+ * here: `parseDeliveryHandle` owns the spelling, beside the function that mints it, so the
+ * two cannot drift into a handle the payload prints and the schema refuses.
+ *
+ * `addressed` is a suggestion the agent acted on it, never a closure - only a person resolves
+ * a thread - so it writes a timestamp and moves no status.
+ */
+export const RespondToFileCommentsSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  commentId: z.string().trim().min(1).max(64),
+  body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+  addressed: z.boolean().optional().default(false),
+});
+export type RespondToFileCommentsBody = z.infer<typeof RespondToFileCommentsSchema>;

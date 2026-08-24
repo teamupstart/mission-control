@@ -392,6 +392,10 @@ const STEPS: readonly Step[] = [
         : context.navigation.showWorkflow()
     ),
     ready: (context) => context.runtime.run !== null && context.element !== null,
+    // The same clause `resolve` already gates on above, restated so the engine can skip
+    // Driver's element wait on a fleet with no qualifying run instead of burning the full
+    // timeout finding out what this line already knows.
+    attainable: (context) => context.runtime.run !== null,
     fallback: (context) =>
       context.runtime.run
         ? "The run is opening. Back, Next, and Exit remain available."
@@ -426,6 +430,9 @@ const STEPS: readonly Step[] = [
     },
     ready: (context) =>
       hasLiveRun(context) && context.runtime.runSessionLive && context.element !== null,
+    // Same clause as `resolve` above: a run with no live session is never going to grow a
+    // ladder to wait for, so the engine can say so immediately instead of polling for one.
+    attainable: (context) => hasLiveRun(context) && context.runtime.runSessionLive,
     fallback: (context) => {
       const run = context.runtime.run;
       if (!run) {

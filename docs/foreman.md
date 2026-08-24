@@ -175,6 +175,18 @@ The contract comes from the task's durable `Kind`, never from transcript prose, 
 sessions and every other kind are judged exactly as before. See
 [work queues](work-queues.md) for the whole prompted path.
 
+For a dispatched `ship` task, that verifier also receives the session's registered Workflow
+evidence from the current resolved intent episode. Mission Control states the registered count,
+kind, generation, timestamp and size as trusted structure; session-chosen names, paths or
+commands, and captions remain inside the untrusted evidence fence. Evidence from an older work
+generation remains usable within the same intent episode, while legacy unstamped evidence and
+evidence from another episode are excluded. A zero count explicitly leaves the evidence-registration
+clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
+the items cover what the task requested. If the implementation is complete and every blocking gap
+only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
+`foreman_complete` Workflow anyway. The Workflow runs the authoritative checks; a Manual binding,
+no binding, no registered evidence, an incomplete verdict, or any other blocking gap still holds.
+
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
 `empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.

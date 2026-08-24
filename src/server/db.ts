@@ -1329,7 +1329,8 @@ export function openDb(): DatabaseSync {
       ON workflow_submissions(trigger_key);
 
     -- Mutable, conversation-owned evidence remains separate from immutable submissions.
-    -- Filesystem locators are server-only and never enter context_json or API responses.
+    -- Source roots and inline bodies are server-only. Child-supplied locators may enter the
+    -- staged-evidence API, but never immutable context_json without capture and validation.
     CREATE TABLE IF NOT EXISTS workflow_evidence_owners (
       note_key              TEXT PRIMARY KEY,
       generation            INTEGER NOT NULL DEFAULT 0,
@@ -1354,6 +1355,7 @@ export function openDb(): DatabaseSync {
       source_root           TEXT NOT NULL,
       source_locator        TEXT NOT NULL,
       inline_content        TEXT,
+      episode_key           TEXT,
       display_name          TEXT NOT NULL,
       caption               TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
@@ -3144,6 +3146,9 @@ function migrate(d: DatabaseSync): void {
   // bounded content is already present at registration and therefore must survive until capture.
   // NULL means every historical row and every path/image source exactly as before.
   addColumn(d, "workflow_evidence_staging", "inline_content", "TEXT");
+  // Evidence belongs to the resolved human-intent episode current at registration.
+  // NULL preserves legacy rows and unresolved intent without inventing provenance.
+  addColumn(d, "workflow_evidence_staging", "episode_key", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what

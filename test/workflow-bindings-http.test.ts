@@ -166,6 +166,8 @@ test("session evidence routes expose and remove staging before a binding exists"
     caption: "Stale proof must be visible before the first binding",
     id: "staged-prebinding-evidence",
     sourceKind: "agent",
+    sourceLocator: ".evidence/prebinding-proof.png",
+    episodeKey: null,
     displayName: "prebinding-proof.png",
     repositoryScope: "repo-01",
     mimeType: "image/png",
@@ -175,7 +177,7 @@ test("session evidence routes expose and remove staging before a binding exists"
     createdAt: 100,
     updatedAt: 100,
   }]);
-  assert.doesNotMatch(JSON.stringify(packet), /sourceRoot|sourceLocator|\.evidence/);
+  assert.doesNotMatch(JSON.stringify(packet), /sourceRoot|inlineContent/);
 
   const removed = await request(
     app,

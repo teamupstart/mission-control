@@ -1164,7 +1164,7 @@ export type WorkItemState =
 /** How badly a gap misses: ONLY `blocking` drives a fix round. */
 export type GapSeverity = "blocking" | "advisory";
 
-export type GapKind = "incomplete" | "untested" | "standards" | "regression";
+export type GapKind = "incomplete" | "untested" | "standards" | "regression" | "unverified";
 
 /**
  * One shortfall the verifier found, with the strike count that decides when to

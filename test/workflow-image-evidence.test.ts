@@ -412,9 +412,12 @@ test("completed command output is staged directly and frozen as immutable text e
         repositoryScope: "repo-01",
       }],
       now: 1,
+      episodeKey: "intent:3:4",
     });
     assert.equal(staged.artifacts.length, 1);
     assert.equal(staged.artifacts[0]?.sourceKind, "command");
+    assert.equal(staged.artifacts[0]?.sourceLocator, "node --test focused.test.ts");
+    assert.equal(staged.artifacts[0]?.episodeKey, "intent:3:4");
     assert.equal(staged.artifacts[0]?.displayName, "focused-regression-command-output.txt");
 
     const binding = store.insertBinding({
@@ -842,6 +845,19 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       })).status,
       403,
     );
+    registry.upsertGoal("image-session", {
+      text: "Preserve the image evidence",
+      source: "heuristic",
+      objective: "Preserve the image evidence",
+      prompt: "Preserve the image evidence",
+      focus: "Preserve the image evidence",
+      relationship: "initial",
+      rationale: "fixture",
+      objectiveVersion: 3,
+      promptRevision: 4,
+      resolvedPromptRevision: 4,
+      pendingPrompts: [],
+    }, 7);
     const reattached = manager.reattachRetainedEvidence(leadBinding.id, {
       imageId: leadImages[0]!.id,
       clientItemId: "historical-screen",
@@ -849,6 +865,7 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       repositoryScope: "repo-01",
     }, 7);
     assert.equal(reattached.images[0]?.sourceKind, "retained");
+    assert.equal(reattached.images[0]?.episodeKey, "intent:3:4");
     const unrelatedBinding = store.insertBinding({
       id: "image-binding-unrelated",
       workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,

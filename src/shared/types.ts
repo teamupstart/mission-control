@@ -2858,6 +2858,7 @@ export interface KeepAwakeStatus {
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
+  | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
       sessions: Session[];

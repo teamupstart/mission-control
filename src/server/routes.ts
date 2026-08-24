@@ -253,6 +253,17 @@ import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
 import { HTML_BLOCK_STALE_REASON, resolveHtmlBlockAnchor } from "./html-block-anchor.ts";
 import { progressOf, type FileCommentWalkthrough } from "./file-comment-walkthrough.ts";
 import type { ProductIssueService } from "./product-issues.ts";
+import type { SettingsBackupService } from "./settings-backups/service.ts";
+import {
+  SETTINGS_BACKUP_LIMITS,
+  SETTINGS_BACKUP_RETENTION,
+  SettingsBackupIdSchema,
+  SettingsRestoreRequestSchema,
+  type SettingsBackupPublicItem,
+  type SettingsRestorePreview,
+  type SettingsRestorePreviewResult,
+  type SettingsRestoreResult,
+} from "@shared/settings-backups.ts";
 import type { WorktreeManager } from "./worktrees/manager.ts";
 import {
   WorktreeOperationError,
@@ -938,6 +949,8 @@ export function buildApp(
   fileComments?: FileCommentManager,
   /** The walkthrough. Optional for the same reason `fileComments` is; its routes answer 503. */
   fileCommentWalkthrough?: FileCommentWalkthrough,
+  /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
+  settingsBackups?: SettingsBackupService,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -2920,6 +2933,166 @@ export function buildApp(
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
   app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
+
+  const backupUnavailable = (c: Context) => c.json({
+    error: "service_unavailable" as const,
+    message: "Settings backup service is unavailable",
+  }, 503);
+  const backupFailure = (c: Context, _error: unknown) => c.json({
+    error: "service_error" as const,
+    message: "Settings backup operation failed",
+  }, 500);
+  const redactLocalPaths = (message: string): string => message.replace(
+    /(^|[\s("'`])((?:[A-Za-z]:\\|~\/|\/)[^\s"'`<>]*)/g,
+    "$1[local path]",
+  ).slice(0, SETTINGS_BACKUP_LIMITS.errorCharacters);
+  const publicPreview = (preview: SettingsRestorePreview): SettingsRestorePreview => ({
+    ...preview,
+    exclusions: preview.exclusions.map(redactLocalPaths),
+    warnings: preview.warnings.map(redactLocalPaths),
+    blockers: preview.blockers.map(redactLocalPaths),
+  });
+  const publicPreviewResult = (
+    result: SettingsRestorePreviewResult,
+  ): SettingsRestorePreviewResult => {
+    if (result.status === "ready" || result.status === "preflight_blocked") {
+      return { ...result, preview: publicPreview(result.preview) };
+    }
+    return {
+      ...result,
+      reason: result.status === "io_error"
+        ? "Snapshot could not be read"
+        : redactLocalPaths(result.reason),
+    };
+  };
+  const publicRestoreResult = (result: SettingsRestoreResult): SettingsRestoreResult => {
+    if (result.status === "restored") {
+      return { ...result, warnings: result.warnings.map(redactLocalPaths) };
+    }
+    if (result.status === "in_progress") return result;
+    if (result.status === "preflight_blocked") {
+      return { ...result, preview: publicPreview(result.preview) };
+    }
+    if (result.status === "io_error") {
+      return { ...result, reason: "Snapshot could not be read" };
+    }
+    if (result.status === "restore_failed") {
+      return { ...result, reason: "Restore failed and current settings were preserved" };
+    }
+    return { ...result, reason: redactLocalPaths(result.reason) };
+  };
+  const publicBackupItem = (
+    item: ReturnType<SettingsBackupService["list"]>[number],
+  ): SettingsBackupPublicItem | null => {
+    if (item.status === "not_found") return null;
+    if (item.status === "ready") {
+      return {
+        status: item.status,
+        id: item.id,
+        size: item.size,
+        modifiedAt: new Date(item.modifiedAt).toISOString(),
+        kind: item.kind,
+        createdAt: item.createdAt,
+        localDate: item.localDate,
+        appVersion: item.appVersion,
+        counts: item.counts,
+        digest: item.digest,
+      };
+    }
+    return {
+      status: item.status,
+      id: item.id,
+      size: item.size,
+      modifiedAt: item.modifiedAt === null ? null : new Date(item.modifiedAt).toISOString(),
+      reason: item.status === "unreadable"
+        ? "Snapshot could not be read"
+        : redactLocalPaths(item.reason),
+    };
+  };
+
+  app.get("/api/settings-backups", (c) => {
+    if (!settingsBackups) return backupUnavailable(c);
+    try {
+      const snapshots = settingsBackups.list()
+        .map(publicBackupItem)
+        .filter((item): item is SettingsBackupPublicItem => item !== null);
+      return c.json({
+        status: "available" as const,
+        snapshots,
+        retention: {
+          daily: SETTINGS_BACKUP_RETENTION.daily,
+          preRestore: SETTINGS_BACKUP_RETENTION.pre_restore,
+        },
+        lastSuccessfulSnapshot: snapshots.find((item) => item.status === "ready") ?? null,
+        lastError: settingsBackups.lastError
+          ? { at: settingsBackups.lastError.at, message: "Automatic settings snapshot failed" }
+          : null,
+      });
+    } catch (error) {
+      return backupFailure(c, error);
+    }
+  });
+
+  app.get("/api/settings-backups/:id/preview", (c) => {
+    if (!settingsBackups) return backupUnavailable(c);
+    const id = SettingsBackupIdSchema.safeParse(c.req.param("id"));
+    if (!id.success) return c.json({ status: "not_found", reason: "Snapshot was not found" }, 404);
+    try {
+      const result = publicPreviewResult(settingsBackups.previewRestore(id.data));
+      switch (result.status) {
+        case "ready": return c.json(result);
+        case "not_found": return c.json(result, 404);
+        case "preflight_blocked": return c.json(result, 409);
+        case "incompatible":
+        case "io_error": return c.json(result, 422);
+      }
+    } catch (error) {
+      return backupFailure(c, error);
+    }
+  });
+
+  app.post(
+    "/api/settings-backups/:id/restore",
+    bodyLimit({
+      maxSize: 4 * 1024,
+      onError: (c) => c.json({
+        error: "invalid_request" as const,
+        message: "Restore request is too large",
+      }, 413),
+    }),
+    async (c) => {
+    if (!settingsBackups) return backupUnavailable(c);
+    const id = SettingsBackupIdSchema.safeParse(c.req.param("id"));
+    if (!id.success) return c.json({ status: "not_found", reason: "Snapshot was not found" }, 404);
+    const parsed = await parseBody(c, SettingsRestoreRequestSchema);
+    if (!parsed.ok) {
+      return c.json({ error: "invalid_request", message: "Restore confirmation is invalid" }, 400);
+    }
+    try {
+      const serviceResult = await settingsBackups.restore(id.data, parsed.data.expectedDigest);
+      const result = publicRestoreResult(serviceResult);
+      switch (result.status) {
+        case "restored":
+          registry.emitSettingsRestored({
+            snapshotId: result.snapshotId,
+            restoredAt: result.restoredAt,
+            requestId: parsed.data.requestId,
+          });
+          return c.json(result);
+        case "not_found": return c.json(result, 404);
+        case "in_progress":
+        case "stale_digest":
+        case "preflight_blocked": return c.json(result, 409);
+        case "incompatible":
+        case "io_error": return c.json(result, 422);
+        case "restore_failed": return c.json(result, 500);
+      }
+    } catch (error) {
+      return backupFailure(c, error);
+    }
+    },
+  );
+
   app.get("/events", sseHandler(registry));
   // Live transcript for the session detail (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));

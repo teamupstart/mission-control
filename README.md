@@ -193,7 +193,8 @@ See [Skills and settings](docs/skills-and-settings.md).
 ## Keep local settings recoverable
 
 Mission Control automatically keeps versioned logical snapshots of the settings and reusable
-Library definitions that shape local behavior.
+Library definitions that shape local behavior. **Settings → Restore** provides a redacted preview,
+exact confirmation, an automatic safety snapshot, and a draft-preserving notice in other windows.
 
 See [Automatic settings snapshots](docs/configuration.md#automatic-settings-snapshots) for the
 authoritative format, lifecycle, storage, scope, exclusions, and retention contract.

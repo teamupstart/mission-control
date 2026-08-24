@@ -57,3 +57,25 @@ needs to say that such a collection moved, it emits a content-free invalidation 
 (`harnesses_config_changed`, `archive_changed`) and the hook keeps a revision counter
 that the owning view watches. Those counters are bumped on reconnect as well as on the event,
 because a collection that rides no snapshot has nothing for a reconnect to restore.
+
+Settings restore uses a separate invalidation-only frame. After the restore transaction has
+committed and synchronous catalog reconciliation has completed, the route emits exactly one
+`settings_restored` event containing only `snapshotId`, `restoredAt`, and the initiating
+`requestId`. It is deliberately absent from the reconnect snapshot and from `LINE_INPUT_EVENTS`:
+it does not carry configuration or execution state, and it never causes the Line to refold.
+
+The request id separates two window behaviors. The initiating window suppresses the notice,
+hydrates its UI configuration cache, and reloads. Any other open window records the latest event
+and draws a persistent **Reload now** notice without changing Library state or discarding drafts.
+No snapshot payload, setting value, prompt, command, allowlist, or path crosses the event stream.
+
+The loopback HTTP surface is likewise bounded:
+
+| Route | Result |
+| --- | --- |
+| `GET /api/settings-backups` | Public metadata, compatibility, retention, and last backup status |
+| `GET /api/settings-backups/:id/preview` | Digest-bound redacted changes, exclusions, warnings, and blockers |
+| `POST /api/settings-backups/:id/restore` | Phase 2 transaction result after exact confirmation and reconciliation |
+
+These routes consume the verified snapshot service. They do not parse snapshot payloads or repeat
+digest, preflight, transaction, rollback, or reconciliation logic at the HTTP boundary.

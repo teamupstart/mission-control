@@ -476,6 +476,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  *
  * A new event type is NOT automatically a member. Adding one means asking whether it names
  * a store the strip reads; if it does, it belongs here and in `LineFoldInput`.
+ * `settings_restored` is deliberately absent: it invalidates browser configuration and
+ * catalogs, none of which is a Line fold input.
  */
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
@@ -1114,6 +1116,15 @@ export class Registry extends EventEmitter {
    */
   emitArchiveChanged(): void {
     this.emitEvent({ type: "archive_changed" });
+  }
+
+  /** Announce one fully committed, reconciled settings restore to every open dashboard. */
+  emitSettingsRestored(event: {
+    snapshotId: string;
+    restoredAt: string;
+    requestId: string;
+  }): void {
+    this.emitEvent({ type: "settings_restored", ...event });
   }
 
   getSession(id: string): Session | undefined {

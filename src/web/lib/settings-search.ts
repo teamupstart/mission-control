@@ -310,6 +310,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("cost"),
   },
   {
+    id: "restore-settings",
+    label: "Restore settings",
+    description: "Preview and restore an owner-only automatic snapshot.",
+    category: "restore",
+    anchor: "restore/snapshots",
+    keywords: ["backup", "snapshot", "recovery", "rollback", "safety"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
     id: "foreman-tier",
     label: "Cheap tier",
     description: "Whether the Foreman answers the easy prompts itself - off, shadow, or on.",

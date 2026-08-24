@@ -27,6 +27,8 @@ import { dropSessionDrafts } from "./lib/drafts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
+import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
+import { observeSettingsRestored } from "./lib/settings-restore-coordinator.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -163,6 +165,8 @@ export interface MissionState {
    * skew waiting to happen; carrying the number costs nothing and starts no polling.
    */
   archivesRevision: number;
+  /** Latest restore committed by another window. Notice only, never an automatic mutation. */
+  settingsRestoreNotice: SettingsRestoredEvent | null;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -209,6 +213,7 @@ export function useEventStream(): MissionState {
   const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [worktreesRevision, setWorktreesRevision] = useState(0);
   const [archivesRevision, setArchivesRevision] = useState(0);
+  const [settingsRestoreNotice, setSettingsRestoreNotice] = useState<SettingsRestoredEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -500,6 +505,9 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        case "settings_restored":
+          if (observeSettingsRestored(msg) === "external") setSettingsRestoreNotice(msg);
+          break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
           // grows a variant this switch doesn't handle. Without it the new variant
@@ -548,6 +556,7 @@ export function useEventStream(): MissionState {
     harnessesRevision,
     worktreesRevision,
     archivesRevision,
+    settingsRestoreNotice,
     connected,
     hasSnapshot,
   };

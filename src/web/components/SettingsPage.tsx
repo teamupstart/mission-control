@@ -5,6 +5,7 @@ import { useSkills } from "../useSkills.ts";
 import { useInspector } from "../useInspector.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
+import { RestoreSettingsPanel } from "./RestoreSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
@@ -586,6 +587,8 @@ export function SettingsPage({
         );
       case "cost":
         return <CostSettingsPanel state={cost} />;
+      case "restore":
+        return <RestoreSettingsPanel />;
       case "inspector":
         return <InspectorSettingsPanel state={inspector} onNavigate={navigateWithAnchor} />;
       case "shipping":

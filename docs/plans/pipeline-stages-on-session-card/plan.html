@@ -47,7 +47,8 @@
 <h2>What ships</h2>
 <div class="grid">
 <section class="panel span-6 step"><h3>The caption row</h3>
-<p><code>&#8632; &lt;slug&gt;</code>, the current phase as one word, and <code>n/N</code> counted over the run's own sequential steps. The slug keeps today's click target - it opens the run in Runs.</p></section>
+<p><code>&#8632; &lt;slug&gt;</code>, the current phase as one word, and <code>n/N</code> counted over the run's own sequential steps. The slug keeps today's click target - it opens the run in Runs.</p>
+<p>It also carries an <strong>extras marker</strong>, present only when the run holds steps that cannot own a segment - a name this build cannot place, or an out-of-band step the run actually ran. Its popover lists them and says why they have no segment. Absent on the ordinary run.</p></section>
 <section class="panel span-6 step"><h3>The bar</h3>
 <ul>
 <li>Five segments, one per phase, about 7px tall.</li>
@@ -109,7 +110,7 @@
 <ul><li><code>pipelinePhaseStatus</code> reads only step state, never a gate verdict - so no gate fetch.</li><li>Out-of-band steps have no slot in the sequence, so they never go inside a segment. Drawing one there would claim the run walked past something never on its path.</li></ul></section>
 <section class="panel span-6 warn"><h3>The step list is per repository, not a fixed 22</h3>
 <p>The frozen table is a display copy and never an authority. The tolerance is not theoretical: ai-conductor builds its effective step list from config, and <strong>its own config disables <code>manual_test</code> and inserts two custom SHIP steps</strong>. A card observing that repository sees names the table does not contain.</p>
-<ul><li>Segment widths come from <code>run.steps</code>. A hardcoded 22, or a hardcoded 1/1/9/5/6 split, is a bug on the repository this feature was built to watch.</li><li>Counters read the run's own sequential steps.</li><li>A step with no placeable phase still counts in <code>n/N</code> - it is a step the run really has. It is never silently dropped from the total.</li></ul></section>
+<ul><li>Segment widths come from <code>run.steps</code>. A hardcoded 22, or a hardcoded 1/1/9/5/6 split, is a bug on the repository this feature was built to watch.</li><li>Counters read the run's own sequential steps.</li><li>A step with no placeable phase still counts in <code>n/N</code> - it is a step the run really has - and is readable in the extras marker. <strong>Anything the meter counts must be readable somewhere on the meter</strong>; a phase popover cannot show it, because it lists only that phase's steps.</li></ul></section>
 </div>
 <div class="grid">
 <section class="panel span-6"><h3>Extending Tooltip, and what that has to respect</h3>

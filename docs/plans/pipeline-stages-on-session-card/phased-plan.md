@@ -71,11 +71,15 @@ repository's comment-heavy style:
 
 | Area | Estimate |
 | --- | --- |
-| New phase-meter leaf under `src/web/pipelines/` | 150-200 |
-| `src/web/styles.css` - meter, segments, tones, hatch, ring, rich bubble | 100-130 |
+| New phase-meter leaf under `src/web/pipelines/` | 175-230 |
+| `src/web/styles.css` - meter, segments, tones, hatch, ring, extras marker, rich bubble | 110-145 |
 | `src/web/components/Tooltip.tsx` - additive node arm plus bubble class | 30-45 |
 | `SessionTile.tsx`, `BoardView.tsx`, `board-card.ts` | 25-35 |
-| **Total** | **~305-410** |
+| **Total** | **~340-455** |
+
+Revised in review round 1: the extras marker for unplaceable and out-of-band steps added roughly
+25 component lines and 15 of CSS. It does not change the phase count - the reasoning below turns
+on there being no foundational layer to land first, which the addition does not affect.
 
 Assumptions: the existing fold is imported rather than reimplemented (which is a hard requirement
 of the phase, not an optimisation); CSS is counted as implementation; `docs/pipelines.md` prose
@@ -147,14 +151,16 @@ change should inherit rather than relitigate. Stated here so they are findable f
 - The board-card registry id is the persisted operator preference (`hiddenDisplayItems` stores
   ids), so renaming it later is a preference migration.
 - The tolerance rules are load-bearing: geometry from `run.steps`, unknown steps counted in the
-  total, out-of-band steps never given a segment.
+  total and readable in the extras marker, out-of-band steps never given a segment and never
+  counted in the total. The rule behind them is **anything the meter counts must be readable
+  somewhere on the meter** - a later surface that adds a count without a home breaks it.
 
 ## Final verification strategy
 
 Owned by Phase 1 and listed in full in its file. In summary:
 
 - Fold tests over a mid-run, halted, all-skipped S-tier, stale/kicked-back, unknown-step,
-  one-step-phase, and empty-step-list run.
+  out-of-band-step, one-step-phase, no-extras, and empty-step-list run.
 - A test asserting segment tones come from `pipelinePhaseStatus`, which is what stops a second
   fold appearing later.
 - `board-tile-render`, `board-card-items` and `tooltip-coverage` stay green, plus a new `Tooltip`

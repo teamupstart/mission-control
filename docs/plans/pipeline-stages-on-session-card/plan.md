@@ -40,6 +40,10 @@ for a session carrying `Session.pipeline`.
 
 - **A caption row**: `⇶ <slug>`, the current phase as one word, and `n/N` counted over the run's
   own sequential steps. The slug keeps today's click target - it opens the run in Runs.
+- **An extras marker in that caption row**, present only when the run carries steps that cannot
+  own a segment - a step this build cannot place, or an out-of-band step the run actually ran.
+  It is the explicit home for both piles, with its own popover listing them and saying why they
+  have no segment. Absent on the ordinary run, which carries neither.
 - **A five-segment bar**, about 7px tall. One segment per phase in `PIPELINE_PHASES` order.
   - Segment **width** is proportional to how many steps that phase holds *in this run*, with a
     `min-width` floor so a one-step phase stays visible and hittable.
@@ -120,9 +124,16 @@ Two consequences worth stating:
 
 - `pipelinePhaseStatus` reads only `step.state`, never a gate verdict. So the card needs **no
   gate fetch** - gate verdicts stay detail-only, exactly as `src/shared/pipeline.ts` intends.
-- `pipelineStrip` returns out-of-band steps in their own pile. The meter draws **five phase
-  segments only**; an out-of-band step has no slot in the sequence, so putting it inside a
-  segment would claim the run walked past something that was never on its path.
+- `pipelineStrip` returns out-of-band and unplaceable steps in **their own two piles**, and
+  neither appears in any phase's `steps`. The meter draws **five phase segments only** - an
+  out-of-band step has no slot in the sequence, so putting it inside a segment would claim the
+  run walked past something that was never on its path, and an unknown step has no phase to be
+  put in at all. Because a phase popover lists only that phase's steps, both piles need a
+  location of their own or they are invisible: that is the **extras marker** above. The two
+  piles also differ in the arithmetic, which the marker has to respect - `pipelineEyebrow`
+  counts an unknown step in `N` (its filter drops only *known* out-of-band steps) and excludes
+  an out-of-band one, so the marker reports the unknown steps as part of the total and the
+  out-of-band ones as beside it.
 
 ### Extending `Tooltip` is the popover, and the reason is what it already does
 
@@ -194,9 +205,9 @@ Three rules follow:
    built to watch.
 2. Counters read the run's own sequential steps, which is what `pipelineEyebrow` already does.
 3. A step this build cannot place has no phase, so it cannot go in a segment. The meter must
-   still account for it: the caption's `n/N` counts it, because it is a step the run really has.
-   Its state reaches the operator through the popover of the phase the run is in, or through the
-   run detail - never by being silently dropped from the total.
+   still account for it: the caption's `n/N` counts it, because it is a step the run really has,
+   and the **extras marker** is where its name and state are readable. Counting a step in the
+   total while giving it nowhere to be read is the failure this rule exists to prevent.
 
 ### Only externally driven workers draw it
 
@@ -271,7 +282,7 @@ console rail row or detail band, and no meter on a managed Pipeline host.
 ## Follow-up
 
 The operator selected **Create phased implementation plan**. The work was sized at roughly
-305-410 non-test implementation lines and decomposed into a **single phase**, because the feature
+340-455 non-test implementation lines and decomposed into a **single phase**, because the feature
 is entirely browser-side and has no schema, migration, route or SSE frame to land first.
 
 - Index: [`phased-plan.md`](phased-plan.md) (rendered: [`phased-plan.html`](phased-plan.html))

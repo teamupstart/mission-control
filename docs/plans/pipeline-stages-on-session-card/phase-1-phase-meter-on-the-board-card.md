@@ -87,9 +87,26 @@ Two consequences that shape the implementation:
 
 - `pipelinePhaseStatus` reads only `step.state`. It never looks at a gate verdict, so
   **`pipelineStrip` can be called with an empty `gates` array** and the card needs no fetch.
-- `pipelineStrip` returns out-of-band steps in their own pile. The meter draws the five phase
-  segments only. An out-of-band step has no slot in the sequence, so putting it in a segment
-  would claim the run walked past something that was never on its path.
+- `pipelineStrip` returns **two piles that appear in no phase**: `outOfBand` (known steps
+  dispatched in response to something) and `unknown` (names this build cannot place). The
+  `phases` filter is `!row.outOfBand && row.phase === phase`, and an unknown row's `phase` is
+  `null`, so neither pile can match a phase. The meter draws the five phase segments only - an
+  out-of-band step has no slot in the sequence, and an unknown step has no phase to be put in.
+- **Therefore a phase popover cannot surface either pile**, because it lists only that phase's
+  `steps`. Both need a location of their own or they are counted and invisible. That location is
+  the extras marker in step 2.
+- The two piles differ in the arithmetic, and the meter must not paper over it.
+  `pipelineEyebrow` filters on the step's `outOfBand` flag read through `pipelineStepInfo`
+  (`:357`), and for an unknown step that lookup returns `null`, so the optional chain yields
+  `undefined` and the step is **kept**. So `N` counts unknown steps and excludes known
+  out-of-band ones.
+- `pipelineEyebrow` also already has an honest arm for a run sitting on an unknown step: its
+  phase word becomes the literal `"Unknown step"` rather than a guessed phase (`:363`). The
+  caption inherits that; do not replace it with a nearest-phase guess.
+- On the projection side, `foldSteps` includes an out-of-band step **only when the run actually
+  ran it** (`src/server/pipelines/conductor/normalize.ts:99`). So the out-of-band pile is empty
+  on an ordinary run and non-empty exactly when it matters - `remediate` after a SHIP gate
+  blocked, which is a state worth seeing from the board.
 
 `PipelineStatus` is `{ tone, label, tooltip?, skipKind?, degraded? }` with
 `PIPELINE_STATUS_TONES = ["running","waiting","passed","failed","stopped"]`
@@ -236,6 +253,17 @@ Render:
   - The slug keeps today's affordance: a button that calls `onOpen` and stops propagation, so
     clicking it opens the run in Runs instead of drilling into the console. `PipelineChip`
     (`session-bits.tsx:285`) is the existing pattern for exactly this.
+- **An extras marker**, in the caption row, rendered **only** when `outOfBand` or `unknown` is
+  non-empty. This is the explicit home for the two piles that own no segment.
+  - One affordance rather than two rows: a compact count plus a `Tooltip` whose popover lists
+    those steps with their states from `pipelineStepStatus`, grouped so the reader learns *why*
+    each has no segment - the unknown ones as names this build does not know, shown in the state
+    the engine reported, and the out-of-band ones as steps dispatched in response to something
+    rather than walked past in sequence.
+  - Say which side of the arithmetic each group is on: the unknown steps are inside the caption's
+    `N`, the out-of-band ones are beside it. A reader who counts the segments and compares them
+    to `N` must not be left with an unexplained discrepancy.
+  - Absent entirely on the ordinary run. Do not render an empty marker or a zero.
 - **The bar**: five segments in `PIPELINE_PHASES` order.
   - `flex-grow` is that phase's step count **from this run**. Never a hardcoded `1/1/9/5/6`.
   - A fill element inside each segment, width = `finished / total` as a percentage.
@@ -254,7 +282,10 @@ Tolerance rules, all three from the findings:
 
 - Geometry from `run.steps`.
 - A step with no placeable phase still counts in `n/N`. It is a step the run really has, so it
-  must not vanish from the total. It has no segment, which is correct.
+  must not vanish from the total. It has no segment, which is correct - and it is readable in the
+  extras marker, which is what stops "counted in the total" from meaning "invisible".
+- An out-of-band step the run ran is **not** in `n/N` and has no segment, so the extras marker is
+  its only home on this card.
 - Return `null` for a run whose sequential step list is empty, rather than drawing an empty bar.
 
 ### 3. The registry entry
@@ -332,7 +363,11 @@ why it can merge in any order relative to unrelated work.
     pass;
   - a **stale / kicked-back** run, asserting `waiting` rather than `passed`;
   - a run whose steps include **names absent from the frozen table**, asserting they are counted
-    in the total and that the five segments still render;
+    in the total, that the five segments still render, and that the extras marker names them -
+    counted-but-unreadable is the specific bug this case exists to catch;
+  - a run carrying an **out-of-band step it actually ran** (`remediate`), asserting it gets no
+    segment, is excluded from `N`, and is readable in the extras marker;
+  - a run with **neither pile**, asserting the extras marker is absent rather than empty or zero;
   - a run with a **one-step phase**, asserting the `min-width` floor is expressed rather than
     left to flex;
   - an **empty** step list, asserting the component renders nothing.
@@ -391,6 +426,8 @@ and at a narrow one. Attach the images to the pull request; never commit them.
   unchanged.
 - `SessionPipelineLink` and every SSE frame are unchanged; `test/pipeline-sse.test.ts` still
   passes with its wire budget untouched.
+- No step present in `run.steps` is counted without being readable: a name this build cannot
+  place, and an out-of-band step the run ran, are both reachable from the card.
 - `docs/pipelines.md` describes what the card now draws.
 - Visual evidence attached to the pull request.
 - No `data-testid` added, no `title` attribute added, no new hex colour in `styles.css`.
@@ -408,7 +445,9 @@ rather than relitigate:
 - The board-card registry entry id is the operator-visible name for this region. Renaming it
   would be a persisted-preference change, since `hiddenDisplayItems` stores ids.
 - The tolerance rules are load-bearing, not defensive: geometry from `run.steps`, unknown steps
-  counted, out-of-band steps never given a segment.
+  counted in `N` and readable in the extras marker, out-of-band steps never given a segment and
+  never counted in `N`. The general rule behind them: **anything the meter counts must be
+  readable somewhere on the meter.**
 
 ## Cross-phase audit record
 
@@ -422,6 +461,24 @@ rather than relitigate:
   non-goals), externally driven workers only (step 4's gate and the non-goals).
 - **No inherited contracts**, since there is no prior phase. No later phase depends on this one
   inside this plan.
+- **Review round 1 - unplaceable steps had no rendering location.** GitHub Inspector found that
+  a step `pipelineStrip` cannot place appears in no phase's `steps`, so the per-phase popovers
+  could never show it, while the caption still counted it in `n/N`. Verified against the code and
+  confirmed: the `phases` filter is `!row.outOfBand && row.phase === phase`, an unknown row's
+  `phase` is `null`, and `pipelineEyebrow`'s filter keeps unknown steps in the total because
+  `pipelineStepInfo` returns `null` for them. The plan's claim that such a step "reaches the
+  operator through the popover of the phase the run is in" was **false**.
+
+  Checking the same class of defect turned up a second instance the review did not name: a known
+  **out-of-band** step the run actually ran is in no phase *and* excluded from `N`, so it was
+  invisible too - and `foldSteps` includes one exactly when it matters (`remediate` after a
+  blocked SHIP gate).
+
+  Resolved by adding an **extras marker** to the caption row as the explicit, and only, home for
+  both piles, present only when a pile is non-empty. The general rule is now stated in the
+  downstream handoff: anything the meter counts must be readable somewhere on the meter. Fixture
+  cases and an exit criterion were added for both piles and for the absent case. This changed no
+  adopted decision and no phase boundary; the source plan and its rendering were updated to match.
 - **Assumption checked against the repository rather than the source plan**: the source plan said
   the card "joins a map it is already being passed", and this was confirmed concretely -
   `pipelineRunByKey` reaches `BoardView` today and `pipelineRunKeyOf` accepts a

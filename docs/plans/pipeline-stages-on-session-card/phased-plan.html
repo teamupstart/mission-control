@@ -22,7 +22,7 @@
 <h2>Shape of the work</h2>
 <div class="grid">
 <section class="panel span-3"><div class="metric">1 phase</div><p>One merge unit, one pull request, one repository.</p></section>
-<section class="panel span-3"><div class="metric">~305-410</div><p>Estimated non-test implementation lines, CSS included.</p></section>
+<section class="panel span-3"><div class="metric">~340-455</div><p>Estimated non-test implementation lines, CSS included.</p></section>
 <section class="panel span-3 good"><div class="metric">0 migrations</div><p>No schema, persisted field, route, SSE frame, or MCP tool.</p></section>
 <section class="panel span-3 good"><div class="metric">6 files</div><p>Plus one new leaf component and one documentation section.</p></section>
 </div>
@@ -49,13 +49,13 @@
 
 <h2>Sizing estimate</h2>
 <div class="table-wrap"><table><thead><tr><th>Area</th><th class="num">Lines</th></tr></thead><tbody>
-<tr><td>New phase-meter leaf under <code>src/web/pipelines/</code></td><td class="num">150-200</td></tr>
-<tr><td><code>src/web/styles.css</code> - meter, segments, tones, hatch, ring, rich bubble</td><td class="num">100-130</td></tr>
+<tr><td>New phase-meter leaf under <code>src/web/pipelines/</code></td><td class="num">175-230</td></tr>
+<tr><td><code>src/web/styles.css</code> - meter, segments, tones, hatch, ring, extras marker, rich bubble</td><td class="num">110-145</td></tr>
 <tr><td><code>src/web/components/Tooltip.tsx</code> - additive node arm plus bubble class</td><td class="num">30-45</td></tr>
 <tr><td><code>SessionTile.tsx</code>, <code>BoardView.tsx</code>, <code>board-card.ts</code></td><td class="num">25-35</td></tr>
-<tr><td><strong>Total</strong></td><td class="num"><strong>~305-410</strong></td></tr>
+<tr><td><strong>Total</strong></td><td class="num"><strong>~340-455</strong></td></tr>
 </tbody></table></div>
-<p class="muted">Assumptions: the existing fold is imported rather than reimplemented (a hard requirement of the phase, not an optimisation); CSS counted as implementation; documentation prose and all test files excluded. A planning signal, not a promise about diff size.</p>
+<p class="muted">Revised in review round 1: the extras marker for unplaceable and out-of-band steps added roughly 25 component lines and 15 of CSS, and does not change the phase count. Assumptions: the existing fold is imported rather than reimplemented (a hard requirement of the phase, not an optimisation); CSS counted as implementation; documentation prose and all test files excluded. A planning signal, not a promise about diff size.</p>
 
 <h2>Why one phase</h2>
 <p class="lead">The estimate is above the 200-line one-shot threshold, so the default of one phase has to be justified rather than assumed.</p>
@@ -90,14 +90,14 @@
 <li>The meter reads <code>pipelineStrip</code> / <code>pipelinePhaseStatus</code>. Extending it to the console rail row, the detail band, or a managed Pipeline host is a rendering change at the leaf's call sites - not a new fold, and not a wire change.</li>
 <li><code>SessionPipelineLink</code> stays as it is. The pattern for "the card needs more about a run" is the client-side join, not a wider session frame.</li>
 <li>The board-card registry id is the persisted operator preference (<code>hiddenDisplayItems</code> stores ids), so renaming it later is a preference migration.</li>
-<li>The tolerance rules are load-bearing: geometry from <code>run.steps</code>, unknown steps counted in the total, out-of-band steps never given a segment.</li>
+<li>The tolerance rules are load-bearing: geometry from <code>run.steps</code>, unknown steps counted in the total and readable in the extras marker, out-of-band steps never given a segment and never counted in the total. The rule behind them is <strong>anything the meter counts must be readable somewhere on the meter</strong> - a later surface that adds a count without a home breaks it.</li>
 </ul></section>
 </div>
 
 <h2>Final verification strategy</h2>
 <p>Owned by Phase 1 and listed in full in <a href="phase-1-phase-meter-on-the-board-card.md">its file</a>.</p>
 <ul class="checks">
-<li>Fold tests over a mid-run, halted, all-skipped S-tier, stale/kicked-back, unknown-step, one-step-phase, and empty-step-list run.</li>
+<li>Fold tests over a mid-run, halted, all-skipped S-tier, stale/kicked-back, unknown-step, out-of-band-step, one-step-phase, no-extras, and empty-step-list run.</li>
 <li>A test asserting segment tones come from <code>pipelinePhaseStatus</code> - what stops a second fold appearing later.</li>
 <li><code>board-tile-render</code>, <code>board-card-items</code> and <code>tooltip-coverage</code> stay green.</li>
 <li>A new <code>Tooltip</code> node-arm test asserting the description node is plain text.</li>

@@ -52,7 +52,7 @@ export function isScoutTask(task: Pick<Task, "kind">): boolean {
 export function scoutReportAppendix(slots: readonly ArchiveRepoSlot[]): string {
   const lines = [
     SCOUT_APPENDIX_MARKER,
-    "This is a scout task. The deliverable is the answer, written as one page - not a change,",
+    "This is a scout task. The deliverable is the answer, written as one to five pages - not a change,",
     "and not a wall of chat text. Mission Control archives that page and the evidence you name,",
     "and the archive outlives this session, its checkout, and this task card. Assistant prose and",
     "tool traffic are NOT archived; only bounded human prompt context is retained as provenance,",

@@ -44,10 +44,8 @@ run is started, and no model is called - and a machine with no ended No-Mistakes
 same two stops against the built-in graph instead. Neither tour stores progress, and both
 restore the page, the asset, and the control you started from when you exit.
 
-Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
-and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
-<kbd>⇥</kbd> to enter the rendered preview; once it has focus, <kbd>↑</kbd> and <kbd>↓</kbd>
-scroll the page.
+For Files workspace behavior and controls, see the
+[UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).
 
 **Comment** turns on comment mode, so you can leave a comment on a line the way you would on a
 pull request, and **Review** walks the agent through those comments one at a time - one comment

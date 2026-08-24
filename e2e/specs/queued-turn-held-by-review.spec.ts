@@ -31,7 +31,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("queued-turn-held-by-review");
 
-/** The fake holds this exact prompt open for five seconds. */
+/** The fake holds this exact prompt long enough to queue two messages under contention. */
+const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
+/** The ordinary five-second hold is sufficient when this spec queues only one message. */
 const HELD_TURN = "hold the current turn open";
 /** The fake answers this one by raising `AskUserQuestion` and blocking on it. */
 const ASK_TURN = "ask me which linter to use";
@@ -90,11 +92,12 @@ test("a queued message says the open review is what is holding it, and stops say
 
   // The scenario as an operator meets it, and the reason it is built in this order: the
   // composer REFUSES text while a dialog is open, so a message can only be under one by
-  // having been queued before it. A five-second held turn gives that window without a race.
-  await composer.fill(HELD_TURN);
+  // having been queued before it. This scenario's longer held turn keeps both submissions
+  // inside that window even when the full gate's other workers are contending for the host.
+  await composer.fill(REVIEW_HELD_TURN);
   await composer.press("Enter");
   await expect(
-    card.locator(".turn-user:not(.pending-turn)").getByText(HELD_TURN, { exact: true }),
+    card.locator(".turn-user:not(.pending-turn)").getByText(REVIEW_HELD_TURN, { exact: true }),
   ).toBeVisible();
 
   await composer.fill(ASK_TURN);

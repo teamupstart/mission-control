@@ -30,8 +30,9 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  */
 
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
-const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
-const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
+const PREVIEW_KEYBOARD_MESSAGE = "mission:file-preview-keyboard";
+const PREVIEW_SCROLL_SCRIPT = `let missionKeyboard=false;addEventListener("message",event=>{if(event.source===parent){if(event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number"){scrollBy({top:event.data.top});return}if(event.data?.type==="${PREVIEW_KEYBOARD_MESSAGE}")missionKeyboard=event.data.enabled===true}});document.addEventListener("keydown",event=>{if(!missionKeyboard)return;const plain=!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const typing=event.target instanceof Element&&Boolean(event.target.closest("input,textarea,select,[contenteditable='true']"));if(plain&&(event.key==="u"||event.key==="d")&&!typing){event.preventDefault();event.stopImmediatePropagation();scrollBy({top:(event.key==="d"?1:-1)*innerHeight});return}if(event.key==="Tab"){event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*");return}if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*")}},true)`;
+const PREVIEW_SCROLL_SCRIPT_HASH = "A/SCT/PE+hyPlf/Cfk/PIUDHQ9526WJlNFg/3W4pLks=";
 /**
  * What counts as a block, decided by the layout the browser actually produced.
  *
@@ -167,6 +168,8 @@ const PREVIEW_CSP =
 export const HTML_PREVIEW_LINK_MESSAGE = PREVIEW_LINK_MESSAGE;
 /** The message the parent posts down to scroll a preview it cannot reach into. */
 export const HTML_PREVIEW_SCROLL_MESSAGE = PREVIEW_SCROLL_MESSAGE;
+/** Keyboard bridge configuration and the exit request posted back by a Files preview. */
+export const HTML_PREVIEW_KEYBOARD_MESSAGE = PREVIEW_KEYBOARD_MESSAGE;
 /**
  * The message the parent posts down to arm or disarm comment mode inside a preview.
  *

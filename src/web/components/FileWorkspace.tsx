@@ -45,6 +45,7 @@ import {
   HTML_PREVIEW_BLOCK_MESSAGE,
   HTML_PREVIEW_COMMENT_MESSAGE,
   HTML_PREVIEW_LINK_MESSAGE,
+  HTML_PREVIEW_KEYBOARD_MESSAGE,
   HTML_PREVIEW_READY_MESSAGE,
   HTML_PREVIEW_SANDBOX,
   HTML_PREVIEW_SCROLL_MESSAGE,
@@ -66,31 +67,48 @@ export interface FileWorkspaceHandle {
   handleArrow: (direction: -1 | 1, fromReader: boolean) => boolean;
   /** Move keyboard focus from the file selection into the rendered preview. */
   focusPreview: () => boolean;
+  /** Return keyboard focus from the rendered preview to the selected file. */
+  focusFileList: () => boolean;
 }
 
-function scrollElement(element: HTMLElement, direction: -1 | 1): void {
-  element.scrollBy({ top: direction * Math.max(80, element.clientHeight * 0.18) });
+type FileReaderScrollDistance = "arrow" | "page";
+
+function scrollElement(
+  element: HTMLElement,
+  direction: -1 | 1,
+  distance: FileReaderScrollDistance,
+): void {
+  const top = distance === "page"
+    ? element.clientHeight
+    : Math.max(80, element.clientHeight * 0.18);
+  element.scrollBy({ top: direction * top });
 }
 
-export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boolean {
+export function scrollActiveFileReader(
+  root: ParentNode,
+  direction: -1 | 1,
+  distance: FileReaderScrollDistance = "arrow",
+): boolean {
   const contentReaders = root.querySelectorAll<HTMLElement>(
     ".file-content .cm-scroller, .file-content .file-markdown-preview, .file-content .file-image-preview, .file-content .file-compare pre",
   );
   if (contentReaders.length > 0) {
-    contentReaders.forEach((element) => scrollElement(element, direction));
+    contentReaders.forEach((element) => scrollElement(element, direction, distance));
     return true;
   }
   const preview = root.querySelector<HTMLIFrameElement>(".file-content .html-preview");
   if (preview?.contentWindow) {
     preview.contentWindow.postMessage({
       type: HTML_PREVIEW_SCROLL_MESSAGE,
-      top: direction * Math.max(80, preview.clientHeight * 0.18),
+      top: direction * (distance === "page"
+        ? preview.clientHeight
+        : Math.max(80, preview.clientHeight * 0.18)),
     }, "*");
     return true;
   }
   const list = root.querySelector<HTMLElement>(".file-list");
   if (!list) return false;
-  scrollElement(list, direction);
+  scrollElement(list, direction, distance);
   return true;
 }
 
@@ -113,6 +131,14 @@ function previewReader(root: ParentNode): HTMLElement | null {
 function previewHasFocus(preview: HTMLElement): boolean {
   const active = document.activeElement;
   return active === preview || (active instanceof HTMLElement && preview.contains(active));
+}
+
+function focusCurrentFileRow(root: ParentNode): boolean {
+  const row = root.querySelector<HTMLButtonElement>('.file-row[aria-selected="true"]');
+  if (!row) return false;
+  row.focus({ preventScroll: true });
+  row.scrollIntoView({ block: "nearest" });
+  return true;
 }
 
 export function FileWorkspace({
@@ -242,7 +268,13 @@ export function FileWorkspace({
         || event.ctrlKey
         || event.metaKey
         || event.shiftKey
-        || (event.key !== "e" && event.key !== "p" && event.key !== "m")
+        || (
+          event.key !== "e"
+          && event.key !== "p"
+          && event.key !== "m"
+          && event.key !== "u"
+          && event.key !== "d"
+        )
       ) return;
       if (
         isTypingTarget(event.target)
@@ -251,10 +283,15 @@ export function FileWorkspace({
       const editorAvailable = previewable && buffer?.document.editable === true;
       if ((event.key === "p" && !previewable) || (event.key === "e" && !editorAvailable)) return;
       if (event.key === "m" && !commentable) return;
+      const pageDirection = event.key === "u" ? -1 : event.key === "d" ? 1 : null;
+      if (pageDirection !== null && (!previewable || mode !== "preview")) return;
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (event.key === "m") {
+      if (pageDirection !== null) {
+        const root = workspaceRef.current;
+        if (root) scrollActiveFileReader(root, pageDirection, "page");
+      } else if (event.key === "m") {
         if (commentsActive) setCommentMode(false);
         else enterCommentMode();
       } else if (event.key === "p") {
@@ -273,6 +310,7 @@ export function FileWorkspace({
     enterCommentMode,
     extracted,
     isOverlayOpen,
+    mode,
     previewable,
     session.id,
   ]);
@@ -763,6 +801,7 @@ export function FileWorkspace({
       ".file-content .html-preview",
     );
     frame?.contentWindow?.postMessage({ type: HTML_PREVIEW_COMMENT_MESSAGE, enabled }, "*");
+    frame?.contentWindow?.postMessage({ type: HTML_PREVIEW_KEYBOARD_MESSAGE, enabled: true }, "*");
   }, []);
   const commentingRef = useRef(htmlCommenting);
   commentingRef.current = htmlCommenting;
@@ -782,6 +821,24 @@ export function FileWorkspace({
     window.addEventListener("message", onReady);
     return () => window.removeEventListener("message", onReady);
   }, [armFrame, previewPath]);
+
+  // A sandbox is a separate browsing context, so its keydown events never bubble to App.
+  // The armed bridge claims only Preview's fixed navigation keys and sends exit back here,
+  // where focus can return to the selected file without exposing the frame's document.
+  useEffect(() => {
+    if (!previewPath) return;
+    const onKeyboard = (event: MessageEvent): void => {
+      const data = event.data as { type?: unknown; action?: unknown } | null;
+      if (data?.type !== HTML_PREVIEW_KEYBOARD_MESSAGE || data.action !== "exit") return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      focusCurrentFileRow(workspaceRef.current!);
+    };
+    window.addEventListener("message", onKeyboard);
+    return () => window.removeEventListener("message", onKeyboard);
+  }, [previewPath]);
 
   /**
    * The receiving half of the comment bridge, and a sibling of the link handler above.
@@ -984,6 +1041,13 @@ export function FileWorkspace({
       preview.focus({ preventScroll: true });
       return true;
     },
+    focusFileList: () => {
+      const root = workspaceRef.current;
+      if (!root || !previewable || mode !== "preview") return false;
+      const preview = previewReader(root);
+      if (!preview || !previewHasFocus(preview)) return false;
+      return focusCurrentFileRow(root);
+    },
   }), [mode, previewable, selectedPath, shown]);
 
   function choose(path: string): void {
@@ -994,11 +1058,7 @@ export function FileWorkspace({
   useEffect(() => {
     if (!focusSelectedFile.current) return;
     focusSelectedFile.current = false;
-    const row = workspaceRef.current?.querySelector<HTMLButtonElement>(
-      '.file-row[aria-selected="true"]',
-    );
-    row?.focus({ preventScroll: true });
-    row?.scrollIntoView({ block: "nearest" });
+    if (workspaceRef.current) focusCurrentFileRow(workspaceRef.current);
   }, [selectedPath]);
 
   const launch = useCallback(async (path: string, target: OpenTargetId): Promise<void> => {

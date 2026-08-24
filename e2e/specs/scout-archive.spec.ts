@@ -355,10 +355,7 @@ test("completing a submitted scout closes it, and the archive survives its task"
   await expect(dialog).toBeHidden({ timeout: 10_000 });
 
   // Stop tracking the task entirely - the row, its worktree, and its session all go.
-  const removed = await fetch(`${daemon.baseURL}/api/tasks/${await taskId(daemon)}`, {
-    method: "DELETE",
-  });
-  expect(removed.ok, await removed.text()).toBeTruthy();
+  await removeScoutTask(daemon);
 
   // The answer is still here, still readable, still complete. That is the whole feature.
   const [after] = await archives(daemon);
@@ -409,6 +406,33 @@ async function taskId(daemon: DaemonHandle): Promise<string> {
   const scout = tasks.find((task) => task.kind === "scout");
   if (!scout) throw new Error(`no scout task on this daemon: ${JSON.stringify(tasks)}`);
   return scout.id;
+}
+
+/**
+ * Remove the settled scout after its agent has stopped releasing the checkout.
+ *
+ * The full suite deliberately creates heavy process churn. On macOS, the conservative
+ * worktree guard can observe a process in `ps` while `lsof` is temporarily unable to return
+ * its cwd and refuse that one cleanup attempt. The refusal is the safe product behavior;
+ * retrying the operator action is the matching browser-test behavior.
+ */
+async function removeScoutTask(daemon: DaemonHandle): Promise<void> {
+  const id = await taskId(daemon);
+  let lastError = "";
+  await expect
+    .poll(async () => {
+      const removed = await fetch(`${daemon.baseURL}/api/tasks/${id}`, { method: "DELETE" });
+      if (removed.ok) return true;
+      lastError = await removed.text();
+      if (
+        !lastError.includes("could not reclaim task resources") &&
+        !lastError.includes("resources are being cleaned up")
+      ) {
+        throw new Error(lastError);
+      }
+      return false;
+    }, { timeout: 30_000, message: "the settled scout task should become safe to remove" })
+    .toBe(true);
 }
 
 /*
@@ -712,10 +736,7 @@ test("a finished scout keeps its concise title and ordered human prompt context"
   await expect(completeDialog).toBeVisible();
   await completeDialog.getByRole("button", { name: "Complete & close" }).click();
   await expect(completeDialog).toBeHidden({ timeout: 10_000 });
-  const removed = await fetch(`${daemon.baseURL}/api/tasks/${await taskId(daemon)}`, {
-    method: "DELETE",
-  });
-  expect(removed.ok, await removed.text()).toBeTruthy();
+  await removeScoutTask(daemon);
   await expect(card, "the live scout is gone before its archive is read").toBeHidden({
     timeout: 15_000,
   });

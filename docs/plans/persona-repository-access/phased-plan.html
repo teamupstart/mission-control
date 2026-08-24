@@ -176,7 +176,7 @@
       </div>
       <div class="phase">
         <div class="num">2</div>
-        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, content digest, isolated materialization, persistence, retention, and startup reconciliation.</span></div>
+        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, digest ownership, per-submission claims, isolated materialization, zero-claim cleanup, and startup reconciliation.</span></div>
       </div>
       <div class="phase">
         <div class="num">3</div>
@@ -194,7 +194,7 @@
             <tr><td>Repository MCP operations, cursors, policy, bounds, audit emission</td><td>950-1,200</td></tr>
             <tr><td>Claude/Codex workload adapters, supervisor, local executor</td><td>550-750</td></tr>
             <tr><td>Exact-state capture, sparse packaging, materialization, verification</td><td>1,150-1,450</td></tr>
-            <tr><td>Artifact persistence, cleanup, startup reconciliation</td><td>350-500</td></tr>
+            <tr><td>Artifact persistence, claims, cleanup, startup reconciliation</td><td>350-500</td></tr>
             <tr><td>Persona storage, built-in override, snapshot, publication identity</td><td>400-550</td></tr>
             <tr><td>Workflow workload/event/audit persistence and engine integration</td><td>550-750</td></tr>
             <tr><td>Editor, history, run detail, routes, logs, status</td><td>400-500</td></tr>
@@ -221,6 +221,7 @@
         <li>Record denied paths and object ids in the manifest without content.</li>
         <li>Pre-authorize literal paths before every content-producing Git invocation.</li>
         <li>Disable external diff, text conversion, filters, hooks, fetching, and network.</li>
+        <li>Own shared bytes by digest and delete them only after atomically releasing and rechecking the last submission claim.</li>
       </ol>
     </section>
 
@@ -231,7 +232,7 @@
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
             <tr><td>Phase 1</td><td>Closed operations, repository policy, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
-            <tr><td>Phase 2</td><td>Submission-owned sparse artifact, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, cleanup ownership</td><td>Phase 3</td></tr>
+            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, independent submission claims, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
             <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query audit paging, same-attempt evidence validation</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>
@@ -246,7 +247,7 @@
           <tbody>
             <tr><td>Shared repository contracts</td><td>Access modes, operations, schemas, events, budgets, evidence</td><td>Node/Git execution</td></tr>
             <tr><td>Repository MCP</td><td>Validation, read/Git operations, policy, cursors, bounds, local safe audit</td><td>Mission credentials, shell, writes, network</td></tr>
-            <tr><td>Artifact service</td><td>Exact capture, sparse packaging, digest, materialization, cleanup</td><td>Retry policy, provider behavior, UI</td></tr>
+            <tr><td>Artifact service</td><td>Exact capture, sparse packaging, digest records, submission claims, materialization, zero-claim cleanup</td><td>Retry policy, provider behavior, UI</td></tr>
             <tr><td>Workload supervisor/executor</td><td>Provider/MCP lifecycle, ordered events, cancellation, reconciliation</td><td>SQLite or Workflow transitions</td></tr>
             <tr><td>Workflow engine/store</td><td>Dispatch authority, event ingestion, retries, verdict/evidence validation</td><td>Repository body transport or direct path resolution</td></tr>
             <tr><td>Persona and run UI</td><td>Configuration disclosure, frozen-state and safe audit display</td><td>Security enforcement or response bodies</td></tr>
@@ -261,6 +262,7 @@
         <li>All twelve required design areas have one explicit owner and all consumers follow direct or transitive prerequisites.</li>
         <li>Access-off behavior retains the historical prompt, provider options, fingerprints, and verdict path.</li>
         <li>Read-enabled attempts never reconstruct from the live checkout or degrade to prompt-only review.</li>
+        <li>Shared artifact bytes survive release of any submission claim until the final active claim is atomically released and cleanup rechecks zero references.</li>
         <li>Repository bodies stay inside the workload; SQLite, logs, exports, SSE, and browser receive safe metadata only.</li>
         <li>Built-in overrides affect future operator-published versions, never shipped built-in versions.</li>
         <li>The local executor is a conformance implementation for a future remote adapter, not a hidden selection of remote infrastructure.</li>

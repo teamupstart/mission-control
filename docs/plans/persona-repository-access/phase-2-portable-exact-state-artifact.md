@@ -27,7 +27,7 @@ This phase owns:
 - exact capture of source base, HEAD/unborn state, index tree, worktree tree, status classifications, and allowed history;
 - content-addressed artifact storage under the Mission Control state directory;
 - digest verification and isolated materialization for the Phase 1 reader/MCP;
-- submission-owned snapshot metadata, cleanup intent, and store round trips;
+- digest-level artifact metadata, independent per-submission claims, zero-claim cleanup intent, and store round trips;
 - crash-safe candidate handling, startup reconciliation, retention integration, and operational logs;
 - a stable-capture extension seam that Phase 3 can activate without changing current behavior.
 
@@ -65,16 +65,18 @@ This phase does not:
 
 ### Artifact identity
 
-Add a server-owned `WorkflowRepositorySnapshot` domain type with:
+Add a server-owned `WorkflowRepositoryArtifact` domain type with:
 
-- submission id and repository identity;
+- content digest and repository identity;
 - artifact format version and policy version;
-- content digest and opaque local locator;
+- opaque local locator;
 - captured source base, HEAD/unborn state, index tree, and worktree tree identifiers;
 - canonical path classification manifest digest;
 - object/file/byte counts, allowed and denied counts;
 - state (`creating`, `ready`, `cleanup_pending`, `failed`) and timestamps;
 - last verification and cleanup error metadata.
+
+Add a `WorkflowRepositorySnapshotClaim` domain type with submission id, artifact digest, claim state (`active`, `release_pending`, `released`), and created/released timestamps. A submission has at most one active claim. Artifact bytes and locator belong to the digest-level record, never to an individual claim. Define `WorkflowRepositorySnapshot` as the validated join of one active claim and its ready artifact for callers that need the complete effective snapshot.
 
 The locator is opaque outside the artifact service. Shared workload requests carry it because a future executor must receive an artifact reference, but no provider or MCP request accepts or returns a host path.
 
@@ -109,10 +111,11 @@ The service owns all filesystem paths and namespace checks. Callers name submiss
 
 ### 1. Add schema and migration ownership
 
-In `src/server/db.ts`, create additive tables and indexes for snapshot metadata and retryable cleanup. A representative shape is:
+In `src/server/db.ts`, create additive tables and indexes for artifact metadata, durable claims, and retryable cleanup. A representative shape is:
 
-- `workflow_repository_snapshots`, unique by `submission_id`, with format/policy versions, digest, locator token, layer ids, manifest metadata, state, counts, errors, and timestamps;
-- `workflow_repository_snapshot_cleanup`, keyed by submission/snapshot ownership with requested/attempted timestamps and last error.
+- `workflow_repository_artifacts`, unique by content digest, with format/policy versions, locator token, layer ids, manifest metadata, state, counts, errors, and timestamps;
+- `workflow_repository_snapshot_claims`, unique by `submission_id`, referencing artifact digest with active/release state and timestamps;
+- `workflow_repository_artifact_cleanup`, keyed by artifact digest with requested/attempted timestamps and last error, valid only while no active claim exists.
 
 Use foreign keys and existing deletion/retention policy deliberately. Historical submissions have no row and continue to parse. Add every new column to both fresh schema and `migrate()` where applicable, and create indexes beside the migration that introduces their columns.
 
@@ -120,7 +123,7 @@ In `src/server/workflows/store.ts`:
 
 - add strict row schemas, parsers, domain types, writers, readers, state transitions, cleanup claims, and observability counts;
 - carry every persisted value through column, row schema, parser, domain type, and writer;
-- use transactions for ready-state ownership and cleanup-intent transitions;
+- use transactions for ready-state ownership, claim creation/release, and zero-claim cleanup-intent transitions;
 - never expose raw locator paths in browser-facing detail.
 
 ### 2. Capture exact repository identity and classifications
@@ -182,10 +185,10 @@ For an activated caller in Phase 3:
 3. build objects, classifications, manifest, and digest;
 4. resample HEAD, index/status, repository identity, and existing transcript/session boundary;
 5. discard the candidate and retry if any boundary changed;
-6. atomically promote the candidate into the digest namespace and persist ready ownership;
+6. atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's active claim in one database transaction;
 7. only then allow the submission to become `running`.
 
-If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove the orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending. Never guess ownership from a directory name alone.
+If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent claim instead of replacing them. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Never guess ownership or claim count from a directory name alone.
 
 Phase 2 tests invoke this seam directly. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
 
@@ -207,11 +210,12 @@ Materialization must succeed after the source worktree and its Git common direct
 
 Integrate with `src/server/workflows/retention.ts` and `WorkflowManager` startup/periodic ownership:
 
-- snapshots are owned by submissions and shared by all retries of that submission;
-- run-family retention or explicit deletion records cleanup intent before file deletion;
+- artifact bytes are owned by a digest-level record; each submission has an independent durable claim and all retries of that submission reuse it;
+- run-family retention or explicit deletion atomically moves that submission's claim through release state and enqueues digest cleanup only when the transaction observes no other active claim;
+- cleanup claims the zero-reference artifact, rechecks the absence of active submission claims in the deletion transaction, and abandons deletion if a concurrent capture acquired a claim;
 - failed deletion remains durable and retryable;
 - startup removes abandoned pending candidates and orphaned materializations only when their dedicated namespace and ownership marker are proven;
-- startup repairs ready-row/missing-artifact and artifact/no-row mismatches conservatively;
+- startup repairs ready-row/missing-artifact, artifact/no-row, claim/no-artifact, and zero-claim cleanup mismatches conservatively without deleting bytes referenced by any active claim;
 - never recurse-delete a user-supplied path, worktree, repository root, or Git common directory.
 
 Expose structured logs and status counts for active snapshots, bytes, seal/verify/materialize latency, failures by code, cleanup backlog, and orphan observations. Do not log file bodies, sensitive paths, or raw manifests.
@@ -219,7 +223,7 @@ Expose structured logs and status counts for active snapshots, bytes, seal/verif
 ## Data, API, migration, and compatibility
 
 - Additive SQLite tables only; no historical JSON rewrite.
-- Old submissions without snapshot rows remain valid and prompt-only.
+- Old submissions without claim rows remain valid and prompt-only.
 - Re-running migration is safe.
 - Fresh and pre-feature database schemas have identical final table/column/index sets.
 - Current Workflow submissions are not automatically captured because no production caller supplies the optional seal callback yet.
@@ -255,7 +259,9 @@ Required proofs:
 - an artifact still works after source checkout/common-dir deletion;
 - denied blob bodies and known secret markers do not appear anywhere under the artifact root;
 - Phase 1 MCP operations succeed for allowed content and deny sensitive content against the real artifact;
-- cleanup removes only owned artifacts and survives partial failure/restart;
+- two submissions can claim the same digest; releasing either claim preserves bytes and materialization for the other, while releasing the final claim permits retryable cleanup;
+- concurrent claim/release and cleanup races recheck the active-claim invariant and never prematurely delete shared bytes;
+- cleanup removes only proven zero-claim artifacts and survives partial failure/restart;
 - default-unused capture seam leaves all existing Workflow fingerprints and behavior unchanged.
 
 Run focused tests with the suite preamble, then:
@@ -274,7 +280,8 @@ npm run smoke
 - Original checkout removal does not affect materialization or MCP reads.
 - Denied blob bodies are absent from the artifact, including history packs.
 - Capture neither mutates the live index/worktree nor executes repository-configured programs.
-- Candidate promotion, database ownership, cleanup intent, and restart reconciliation are crash-safe and tested.
+- Candidate promotion, digest ownership, per-submission claims, zero-claim cleanup intent, and restart reconciliation are crash-safe and tested.
+- Releasing one of several active claims cannot delete shared bytes; releasing the final claim permits deletion only after the cleanup transaction rechecks zero active claims.
 - Historical submissions and all existing active Workflow behavior are unchanged.
 - Operational logs/counts are bounded and contain no repository bodies.
 - The phase pull request records any deviation and reasoning.
@@ -284,9 +291,9 @@ npm run smoke
 Phase 3 may rely on:
 
 - `WorkflowRepositoryArtifactService` as the only capture/materialize/verify/release/reconcile owner;
-- the snapshot store API and ready-state invariant;
+- the artifact/claim store API and active-claim plus ready-artifact invariant;
 - a ready snapshot's immutable digest and locator surviving original checkout release;
-- one submission-owned artifact reused by every retry;
+- one durable submission claim whose digest is reused by every retry, even when another submission claims the same artifact bytes;
 - typed unavailability on missing/corrupt/mismatched artifacts;
 - the optional stable-capture seal seam;
 - retention and startup reconciliation already handling snapshot files.
@@ -305,6 +312,6 @@ Phase 3 must not rewrite artifact files, query sparse objects directly, or add a
 - The artifact manifest implements Phase 1's final `RepositoryViewDescriptor` and policy version rather than inventing a second schema.
 - Sparse object packaging matches Phase 1's pre-allowlisted Git operations and missing-denied-blob tests.
 - The optional capture callback defaults off, preserving Phase 1 and historical Workflow behavior until Phase 3 owns activation.
-- Snapshot rows are keyed by submission, matching retry reuse and Phase 3 attempt/workload ownership.
+- Claim rows are keyed by submission for retry reuse and Phase 3 attempt/workload ownership, while artifact rows are keyed by digest for safe deduplication.
 - Locator opacity lets a future remote executor replace local-file resolution without changing Workflow or Persona semantics.
 - Cleanup lives in existing Workflow retention/startup ownership, so Phase 3 does not need a compensating delete path.

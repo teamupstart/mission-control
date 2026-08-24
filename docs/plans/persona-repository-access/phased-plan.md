@@ -73,7 +73,7 @@ Estimated gross non-test implementation: **4,800-6,200 lines**, excluding tests 
 | Repository MCP operations, cursors, policy, bounds, and local audit emission | 950-1,200 |
 | Claude/Codex workload adapters, supervisor, and local executor | 550-750 |
 | Exact-state capture, sparse artifact packaging, materialization, and verification | 1,150-1,450 |
-| Artifact persistence, cleanup, and startup reconciliation | 350-500 |
+| Artifact persistence, claims, cleanup, and startup reconciliation | 350-500 |
 | Persona storage, built-in override, snapshot, and publication identity | 400-550 |
 | Workflow workload/event/audit persistence and engine integration | 550-750 |
 | Persona Editor, version history, run detail, routes, logs, and status projection | 400-500 |
@@ -134,12 +134,12 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 ### Established by Phase 2, consumed by Phase 3
 
-- `WorkflowRepositorySnapshot` is submission-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, policy version, byte counts, state, and cleanup state.
+- `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, policy version, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
 - `WorkflowRepositoryArtifactService.seal`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points.
 - The artifact contains original commit/tree identities and allowed blobs but no sensitive blob bodies. Denied entries remain visible only as classified metadata.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
-- A database row owns every durable artifact. Cleanup intent is committed before filesystem deletion, and startup reconciliation deletes only paths whose ownership and digest are proven.
-- Historical submissions without a snapshot row remain valid prompt-only submissions. An access-enabled Phase 3 attempt requires a ready snapshot and never reconstructs from a live checkout.
+- A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
+- Historical submissions without an artifact claim row remain valid prompt-only submissions. An access-enabled Phase 3 attempt requires an active claim joined to a ready artifact and never reconstructs from a live checkout.
 
 ### Established by Phase 3
 
@@ -161,7 +161,7 @@ Independent review work inside a phase may run in parallel, but each phase is on
 | Repository MCP bundle and operations | 1 | add Mission tools, credentials, shell, writes, or network |
 | Provider workload adapters and local executor | 1 | widen general `LlmRunner` or bind interactive sessions |
 | Artifact format and exact layer capture | 2 | reconstruct from a current checkout or prompt diff |
-| Artifact persistence, cleanup, and reconciliation | 2 | delete files without durable ownership and cleanup state |
+| Artifact persistence, claims, cleanup, and reconciliation | 2 | delete files without a durable digest owner, atomically released claims, and a rechecked zero-claim state |
 | Persona setting and built-in override | 3 | mutate built-in guidance, runner, or model |
 | Publication fingerprint | 3 | rewrite historical version JSON or reuse a mismatched graph |
 | Workflow dispatch, retries, event ingestion, and verdict validation | 3 | treat WebSocket/SSE connection state as durable ownership |
@@ -180,7 +180,7 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 - Reconciled the sensitive-content and Git-history requirements with a sparse object artifact, not a normal bundle.
 - Kept original commit and tree ids so history results remain meaningful while denied blob bodies are physically absent.
-- Moved durable artifacts under submission ownership and made retries reuse the same digest.
+- Put artifact bytes under digest-level ownership, gave each submission a durable claim, and made retries reuse that claim. Releasing one submission cannot delete bytes while another active claim remains.
 - Left conditional capture activation to Phase 3 because Phase 2 has no published access setting yet. Phase 2 ships an unused but fully tested service rather than capturing every submission.
 
 ### Audit after Phase 3 design

@@ -68,7 +68,7 @@ At submission capture, the daemon seals a portable content-addressed artifact co
 The load-bearing flow is:
 
 1. The exact checkout passes the existing stable-capture checks.
-2. The snapshot owner writes the immutable layered Git artifact and canonical manifest, computes its digest, persists ownership, and only then marks repository access ready.
+2. The snapshot owner writes or verifies the immutable layered Git artifact and canonical manifest, computes its digest, atomically registers a digest-level artifact record plus the submission's ownership claim, and only then marks repository access ready.
 3. The Workflow engine creates a versioned workload request naming the attempt, frozen Persona, snapshot digest and locator, repository policy, deadline, and idempotency key.
 4. The local reference executor initially, or a future remote adapter later, materializes the artifact into an isolated workload and verifies its digest.
 5. The selected provider starts once with all built-in filesystem, shell, write, and network tools disabled and only the local repository MCP server registered.
@@ -107,7 +107,7 @@ Existing Personas, workflow snapshots, workflow versions, attempts, runs, and bu
 
 ## Portable exact-state repository artifact
 
-Create a Workflow repository-snapshot owner in `src/server/workflows/` backed by immutable Git objects, a canonical manifest, a portable artifact, and daemon-owned database metadata. A future executor must not need the original worktree path or Git common directory. The artifact is submission-owned and is the only repository input a Persona workload may receive.
+Create a Workflow repository-snapshot owner in `src/server/workflows/` backed by immutable Git objects, a canonical manifest, a portable artifact, and daemon-owned database metadata. A future executor must not need the original worktree path or Git common directory. Artifact bytes are owned by a durable digest-level record; each submission holds its own durable claim on that record. The claimed artifact is the only repository input a Persona workload may receive.
 
 ### Captured layers and manifest
 
@@ -119,17 +119,17 @@ The snapshot artifact stores:
 - an immutable tree and named artifact ref for the submitted working-tree state, including nonignored untracked files;
 - the history objects required for bounded show, log, and blame rooted at captured `HEAD`;
 - a canonical manifest that classifies each path as committed, staged, unstaged, untracked, deleted, symlink, submodule, binary, or sensitive-denied where applicable;
-- repository identity, artifact format version, policy version, content digest, capture fingerprint, byte counts, creation state, cleanup state, and timestamps.
+- repository identity, artifact format version, policy version, content digest, capture fingerprint, byte counts, artifact state, per-submission claim state, cleanup state, and timestamps.
 
 <!-- diagram:snapshot-layers -->
 
-Use a private temporary index, modeled on the ensemble snapshot implementation, so capture never mutates the operator's real index. Sealing happens inside `captureStableWorkflowContext`: sample the boundary, build candidate objects and manifest, resample status and identity, and commit database ownership only when both samples agree. Clean abandoned candidates and temporary indexes on mismatch.
+Use a private temporary index, modeled on the ensemble snapshot implementation, so capture never mutates the operator's real index. Sealing happens inside `captureStableWorkflowContext`: sample the boundary, build candidate objects and manifest, resample status and identity, and atomically commit or reuse the digest-level artifact record plus the submission claim only when both samples agree. Clean abandoned candidates and temporary indexes on mismatch.
 
-Package the required objects and canonical manifest into a content-addressed artifact whose digest covers every byte and semantic ref. The local executor may initially use a daemon-owned file locator, but the durable snapshot record and workload request expose an opaque artifact locator plus digest, never a live checkout path. A later remote publisher can replace the locator with a scoped artifact reference without changing Workflow or Persona contracts.
+Package the required objects and canonical manifest into a content-addressed artifact whose digest covers every byte and semantic ref. The digest-level record owns the daemon-controlled locator and bytes; a per-submission claim references that digest. Concurrent captures of identical state converge on one verified record while retaining independent claims. The workload request exposes an opaque artifact locator plus digest, never a live checkout path. A later remote publisher can replace the locator with a scoped artifact reference without changing Workflow or Persona contracts.
 
 Sensitive paths remain represented in the manifest as denied entries, but their blob contents are omitted from the portable workload artifact. This prevents a compromised provider process from bypassing the MCP policy by inspecting artifact files directly. The MCP server independently enforces the same policy, so omission and query denial are defense-in-depth layers rather than competing sources of truth.
 
-Artifacts are owned by the submission, not by one attempt, because every retry must see the same state. Retention or submission deletion records durable cleanup intent before removing the artifact and metadata through a retryable daemon-owned reconciler. Startup reconciliation repairs database/filesystem non-atomicity and deletes only artifacts in the dedicated Workflow namespace whose ownership is proven.
+Each submission owns a durable claim, not the shared artifact bytes, and every retry for that submission reuses its claimed digest. Retention or submission deletion atomically marks that claim released and enqueues digest cleanup only when no active submission claim remains. The retryable daemon-owned reconciler rechecks the zero-claim invariant in the deletion transaction before removing bytes and the digest record. Startup reconciliation repairs database/filesystem non-atomicity, restores or retires claims conservatively, and deletes only zero-claim artifacts in the dedicated Workflow namespace whose digest ownership is proven.
 
 If the artifact, digest, manifest, or materialized snapshot is unavailable or mismatched, repository-enabled Persona attempts are infrastructure failures. Attempts never reconstruct from the current live checkout and never receive the bounded prompt as a substitute for the missing repository view.
 
@@ -232,7 +232,7 @@ Classify failures consistently:
 - Missing or mismatched artifact, failed materialization, unreadable repository view, MCP process failure, workload launch failure, event-sequence gap, audit-write failure, provider failure, malformed final output, lost executor without resumable ownership, or exceeded attempt budget is an infrastructure failure.
 - Cancellation is terminal for the active work and records cancellation without scheduling a retry that contradicts the requested stop.
 
-Infrastructure failures use the current attempt lifecycle, including `retry_wait`, the existing maximum infrastructure-attempt count, restart recovery, and final blocked `infrastructure_error` state. Each retry dispatches a new workload against the same submission-owned artifact digest and frozen Persona snapshot. Restart recovery first reconciles a persisted workload with its executor and event cursor; it never starts a duplicate workload speculatively. There is no path from a repository-enabled snapshot to prompt-only execution.
+Infrastructure failures use the current attempt lifecycle, including `retry_wait`, the existing maximum infrastructure-attempt count, restart recovery, and final blocked `infrastructure_error` state. Each retry dispatches a new workload against the same artifact digest claimed by the submission and the same frozen Persona snapshot. Restart recovery first reconciles a persisted workload with its executor and event cursor; it never starts a duplicate workload speculatively. There is no path from a repository-enabled snapshot to prompt-only execution.
 
 ## Persona Editor and workflow UX
 
@@ -255,7 +255,7 @@ Migrations are additive, idempotent, and located beside the existing upgrade pat
 1. Add `personas.repository_access` with `none` default.
 2. Create `persona_builtin_overrides` with foreign identity validation against the in-memory built-in catalog at write time.
 3. Add and backfill `workflow_versions.source_snapshot_fingerprint`, then replace the old uniqueness index.
-4. Create submission repository artifact, cleanup, workload dispatch/event cursor, and query audit tables and indexes.
+4. Create digest-level repository artifact, per-submission artifact claim, zero-claim cleanup, workload dispatch/event cursor, and query audit tables and indexes.
 5. Extend JSON schemas with read-time defaults so historical graph and attempt JSON does not require destructive rewriting.
 
 Migration tests open representative pre-feature databases, including custom Personas, built-in workflow history, published custom workflows, runs, attempts, and LLM call audit rows. They prove that all old records parse as `none`, repeated migration is safe, old versions keep identity, identical republish is idempotent, and a changed resolved Persona snapshot creates a new immutable workflow version.
@@ -273,6 +273,7 @@ Migration tests open representative pre-feature databases, including custom Pers
 
 - Custom access updates and CAS conflicts; built-in override creation, update, removal, and immutable-field rejection.
 - Snapshot capture, portable reconstruction, and rollback under checkout mutation, Git failure, database failure, digest mismatch, restart reconciliation, retention, and cleanup retries.
+- Two submissions claiming the same digest, release of either claim while the other remains active, final-claim cleanup, concurrent claim/release, and crash recovery without premature byte deletion or leaked claims.
 - Publication hash backfill, identical republish, same-draft Persona access republish, historical parsing, and built-in version immutability.
 - Local reference workloads that make several MCP calls in one provider session, read several pages, recover from denial, cite returned evidence, and complete once.
 - Artifact, executor, MCP, and provider unavailability; cancellation; duplicate and gapped events; restart recovery; retry exhaustion; and proof that prompt-only fallback never occurs.
@@ -304,7 +305,7 @@ Use roles, labels, and visible copy only. Do not add `data-testid`, do not conta
 Update the existing Workflow and security documentation in the same implementation phases that introduce behavior:
 
 - `docs/workflows.md`: Persona configuration, publication freezing, built-in override behavior, retry semantics, and operator workflow.
-- `docs/workflow-system.md`: portable workload request, local MCP query flow, exact snapshot ownership, event ingestion, audit flow, and state transitions.
+- `docs/workflow-system.md`: portable workload request, local MCP query flow, digest artifact and submission-claim ownership, event ingestion, audit flow, and state transitions.
 - `docs/security.md`: artifact and workload trust boundaries, denied paths, symlink/submodule rules, scrubber reuse, and explicit non-capabilities.
 - `docs/troubleshooting.md`: artifact, workload, MCP, and event-stream failure signals, cleanup backlog, retry exhaustion, and safe diagnosis.
 - `docs/database-and-migrations.md` and `docs/agent-guides/architecture.md`: new durable owners and publication fingerprint where their current contracts require updates.
@@ -335,6 +336,7 @@ The feature is complete only when all of the following are true:
 - Publication freezes access in the exact Persona snapshot and can publish a new version after a Persona-only access change while preserving identical-publish idempotency.
 - Historical data reads as `none` without destructive rewrites or changed run outcomes.
 - The submission produces a content-addressed portable artifact that reconstructs committed, staged, unstaged, and applicable untracked state without the original worktree.
+- Identical artifacts may share digest-level bytes, but each submission has a durable claim; releasing one submission cannot delete bytes until the last active claim is released and cleanup rechecks that invariant atomically.
 - One review attempt starts one provider session that can execute multiple typed, pageable local MCP queries and then return one validated verdict.
 - Claude and Codex use the same MCP tool contract and security path with no direct filesystem, shell, write, or agent-visible network tools.
 - The local reference executor consumes a versioned portable workload request and produces ordered idempotent events suitable for a later remote adapter.

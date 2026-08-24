@@ -25,7 +25,7 @@ This phase owns the complete user-visible and durable integration:
 - persisted custom Persona access and built-in local override model;
 - frozen Persona snapshot value and publication identity/backward compatibility;
 - Persona routes, manager/store resolution, editor control, and disclosure;
-- conditional stable capture of one submission-owned artifact;
+- conditional stable capture of one submission claim on a digest-owned artifact;
 - durable workload ownership, ordered event ingestion, query audit metadata, and cancellation generation;
 - Workflow engine dispatch, provider parity, retry/exhaustion/recovery, and final verdict validation;
 - repository evidence references tied to successful same-attempt operations;
@@ -67,10 +67,10 @@ From Phase 1:
 
 From Phase 2:
 
-- `WorkflowRepositoryArtifactService` and snapshot store API;
-- ready snapshot invariant, immutable digest/locator, exact layer identities, and typed failure codes;
+- `WorkflowRepositoryArtifactService` and artifact/claim store API;
+- active submission claim joined to a ready digest-owned artifact, immutable digest/locator, exact layer identities, and typed failure codes;
 - optional stable-capture sealing seam;
-- submission ownership, retention, and startup reconciliation.
+- digest ownership, per-submission claims, retention, and startup reconciliation.
 
 ## Contracts established
 
@@ -177,7 +177,7 @@ If any Persona requires `read`:
 - pass Phase 2's sealer into the stable capture boundary with the already-created submission id;
 - require the artifact row to be `ready` before marking the submission `running`;
 - include the exact artifact digest in the access-enabled submission/workload identity while preserving existing evidence and repository fingerprints for access-off runs;
-- reuse one submission artifact across all read-enabled Personas and retries;
+- reuse one durable submission claim and its digest across all read-enabled Personas and retries;
 - never seal again from a moved live checkout after the submission is active.
 
 Capture/seal failures occur before a Persona attempt exists. Retry the stable capture/seal operation within its bounded capture policy, then block visibly as `repository_capture_unavailable` if no exact artifact can be established. The operator may resubmit when the checkout is stable. Do not manufacture a Persona attempt or prompt-only review without a snapshot.
@@ -233,7 +233,7 @@ Access-off verdicts retain the existing evidence union and validation behavior. 
 Use `handleInfrastructureFailure` for post-capture failures. Every retry:
 
 - creates a new node attempt/workload id;
-- uses the same submission artifact digest and frozen Persona snapshot;
+- uses the same artifact digest held by the submission claim and the same frozen Persona snapshot;
 - never reconstructs from the live checkout;
 - never falls back to `LlmRunner.run` prompt-only review.
 
@@ -396,7 +396,7 @@ A future adapter may replace local artifact resolution and event transport. It m
 - Conditional capture activates Phase 2 without changing access-off fingerprints or capturing every submission.
 - The engine dispatches Phase 1's workload instead of adding a repeated model-call broker.
 - Query audits persist Phase 1 safe metadata only; response bodies never cross into daemon state.
-- Retries reuse Phase 2's submission-owned digest and create new Phase 1 workload identities.
+- Retries reuse the digest held by Phase 2's durable submission claim and create new Phase 1 workload identities.
 - Built-in overrides affect future operator publication only, preserving generated built-in versions.
 - Run detail pages query audits separately, preserving existing event/LLM paging and compact SSE summaries.
 - Final browser coverage exercises contracts from all phases with both providers and no real model calls.

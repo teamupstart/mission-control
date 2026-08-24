@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { fetchSessionStandingInstructions } from "../lib/api.ts";
-import { MECHANISM_PROSE, deliverySummary } from "../lib/standing-instructions-view.ts";
 import { StandingInstructionsDeliveryView } from "./StandingInstructionsDelivery.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -41,27 +40,20 @@ export function StandingInstructionsChip({
   }, [sessionId]);
 
   if (!delivery?.text) return null;
-  const summary = deliverySummary(delivery.text, delivery.mechanism);
-  const prose = MECHANISM_PROSE[delivery.mechanism];
 
   return (
     <>
-      <Tooltip
-        label={`This session launched with standing instructions - ${summary}${
-          prose.inTranscript ? "" : ", which never appear in the conversation"
-        }`}
-      >
+      <Tooltip label="See standing instructions.">
         <button
           type="button"
           className="si-session-chip"
-          aria-label={`Standing instructions this session received - ${summary}`}
+          aria-label="See standing instructions"
           onClick={(event) => {
             event.stopPropagation();
             setOpen(true);
           }}
         >
           <span className="si-glyph" aria-hidden>&#9998;</span>
-          <span className="si-session-chip-label">standing instructions</span>
         </button>
       </Tooltip>
       {open && (

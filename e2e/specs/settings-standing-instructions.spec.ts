@@ -36,13 +36,19 @@ const EVIDENCE = artifactsDir("settings-standing-instructions");
 const RULE = "Never run E2E tests locally. Run npm test and let CI cover the browser layer.";
 
 /** Photograph a state this spec has already asserted on, behind `MC_E2E_EVIDENCE`. */
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(
+  page: Page,
+  name: string,
+  { preserveHover = false } = {},
+): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   // Off every control, pointer AND focus: `Tooltip` opens on either, and a bubble over the
   // card the picture is of makes the picture useless.
-  await page.mouse.move(0, 0);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  if (!preserveHover) {
+    await page.mouse.move(0, 0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  }
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
   // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-standing-instructions/${name}.png`);
@@ -252,10 +258,16 @@ test("a rule written in Settings reaches the very next dispatch", async ({
     .locator("button.rail-row")
     .first()
     .click();
-  await expect(
-    dashboard.getByRole("button", { name: /Standing instructions this session/ }),
-  ).toBeVisible();
-  await shoot(dashboard, "session-chip");
+  const chip = dashboard.getByRole("button", { name: "See standing instructions" });
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveText("✎");
+  const box = await chip.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeLessThanOrEqual(14);
+  expect(box!.height).toBeLessThanOrEqual(14);
+  await chip.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText("See standing instructions.");
+  await shoot(dashboard, "session-chip", { preserveHover: true });
 });
 
 // ---- 3. A repository with no rule dispatches without one ----
@@ -292,7 +304,7 @@ test("a repository with no rule dispatches with no standing instructions at all"
     .click();
   await expect(dashboard.locator(".console-detail")).toBeVisible();
   await expect(
-    dashboard.getByRole("button", { name: /Standing instructions this session/ }),
+    dashboard.getByRole("button", { name: "See standing instructions" }),
   ).toHaveCount(0);
 });
 
@@ -314,7 +326,7 @@ test("the session chip shows what that session received, and does not change whe
     .first()
     .click();
 
-  const chip = dashboard.getByRole("button", { name: /Standing instructions this session/ });
+  const chip = dashboard.getByRole("button", { name: "See standing instructions" });
   await expect(chip).toBeVisible();
   await chip.click();
   const modal = dashboard.getByRole("dialog", {
@@ -351,7 +363,7 @@ test("the session chip shows what that session received, and does not change whe
     .first()
     .click();
   await dashboard
-    .getByRole("button", { name: /Standing instructions this session/ })
+    .getByRole("button", { name: "See standing instructions" })
     .click();
   const after = dashboard.getByRole("dialog", {
     name: "Standing instructions this session received",

@@ -1,724 +1,401 @@
-# Persona repository access
+# Persona repository access for Workflow reviews
 
-Give selected Workflow Personas read-only access to the **complete Git worktree** of the
-change they are reviewing, through a provider-neutral query broker that ai-harness executes
-and audits against the exact submitted state.
+Status: Approved for phased implementation
+Repository: `ai-harness`
+Implementation scope: planning only in this task
 
-A rendered, self-contained version of this document sits beside it at `plan.html`.
+Supersession: This Markdown source replaces the daemon-side broker design from planning PR #770. The approved architecture is the local repository MCP and portable exact-state artifact described below; the earlier implementation tasks were cancelled and must not be revived.
 
-## The problem
+## Outcome
 
-A Persona review today sees a bounded text packet and nothing else. `readWorkflowContextRaw`
-(`src/server/workflows/context.ts:559`) freezes a diff clipped to `MAX_DIFF_BYTES` (800,000),
-up to 500 `git status` lines, a transcript window, standards documents, Check outcomes and
-registered evidence, and hands that to one `runner.run(prompt)` call
-(`src/server/workflows/engine.ts:1018`). The reviewer cannot open an unchanged file.
+Allow an operator to enable read-only access to the complete submitted Git worktree on an individual Workflow Persona. During a review, either a Claude or Codex Persona runs once inside an isolated review workload and makes multiple typed repository queries through a local MCP repository server before returning its verdict. The MCP server reads a portable immutable representation of the exact submitted checkout, applies one provider-neutral security policy, and records an audit event for every operation, denial, truncation, cancellation, and failure.
 
-Every shipped built-in says so in its own words. `code-quality-judge` states "You have no
-repository tools and the pull request does not exist yet". `code-risk-reviewer` is asked to
-judge whether a fix is durable - "ask whether that same failure stays reachable through a
-sibling path" - which is a question about code the diff does not contain.
-
-The Inspector already crossed this line and is the proof it matters: it holds
-`REVIEW_TOOLS = "Read,Grep,Glob"` (`src/server/inspector/worker.ts:280`) because "reviewing a
-diff without being able to open a file misses most of what matters (does this break a caller?
-is there a test?)". A Persona reviewing the *same* change locally gets none of that.
-
-The Inspector's mechanism cannot simply be reused, for three reasons this plan is shaped by:
-
-1. **It cannot reach Codex.** `codexRunner.sandbox` is `null`
-   (`src/server/llm/codex.ts:436`), so `grantRefusal` refuses every grant before spawning.
-   The Inspector's own comment records the consequence: "Codex currently cannot, so it reviews
-   the supplied diff without repository tools instead of silently accepting a weaker grant."
-   A native grant is a Claude-only feature.
-2. **It cannot see the submitted state.** A grant scopes tools to a `cwd`. That directory is a
-   pooled worktree that the daemon may hard-reset underneath a running review - see
-   *Verified findings* below. The Inspector already carries a `liveDir` fallback because
-   "the adopted `cwd` may be a transient session worktree that gets released and reused".
-3. **It cannot be audited.** A provider-executed `Read` is invisible to ai-harness. There is
-   no record of what was read, what was denied, or what was truncated.
+Repository access is an explicit capability, not an implicit provider tool grant. It provides repository file read, search, and glob plus server-owned Git status, diff, show, log, and blame. It never provides shell execution, file writes, agent-visible network access, unrestricted provider tools, host-file access, `.git` internals, or known secret-bearing file contents. The initial implementation uses a local executor shaped like a future remote workload. A future scheduling-middleware adapter can transport the same request, snapshot artifact, events, and result without changing Workflow semantics.
 
 ## Approved decisions
 
-These are settled. This plan implements them; it does not re-open them.
-
-| # | Decision |
-|---|---|
-| 1 | Access is configured separately on each Persona. |
-| 2 | Claude and Codex reviewers receive equivalent capabilities. |
-| 3 | A provider-neutral **interactive query broker**: the reviewer requests typed repository operations; ai-harness executes and audits them against the exact review checkout. |
-| 4 | Supported capabilities: read, search and glob across repository files, plus server-owned Git status, diff, show, log and blame. |
-| 5 | No arbitrary shell execution, file writes, network access, or direct unrestricted provider tools. |
-| 6 | Sensitive-path protections are preserved or strengthened. Repository-wide code access must not expose credentials, host files, `.git` internals, or known secret-bearing files. |
-| 7 | The repository view represents the exact submitted review state - committed, staged, unstaged and untracked. A detached checkout of the captured commit alone is insufficient. |
-| 8 | If the exact review checkout or the repository-read service is unavailable, block and retry the Persona attempt. Never silently fall back to prompt-only review. |
-| 9 | The access setting is frozen into the Persona snapshot at publish. Later Persona edits affect only newly published workflow versions. |
-| 10 | Built-in Personas stay immutable for guidance, runner and model, but a local repository-access override is configurable for them. |
-| 11 | Repository operations, denials, truncation and failures are auditable. |
-| 12 | Query and response limits protect reliability without preventing an expansive review of large changes. No single global character limit that silently excludes most of the worktree. |
-
-## Verified findings
-
-Measured against the worktree at planning time. Implementers re-verify; the numbers are
-recorded because three of them decide the design.
-
-**Persona storage and immutability.** `Persona` is
-`src/shared/workflow.ts:461`; the row is `personas` (`src/server/db.ts:1088`). A built-in is
-**not a row** - `BUILTIN_PERSONAS` is projected from compiled-in Markdown
-(`src/server/workflows/builtin-personas.ts:65`) and merged into every read through the store's
-private `withBuiltins` / `withAddressableBuiltins` / `builtinPersona`
-(`src/server/workflows/store.ts:2121-2133`). Immutability is enforced in exactly three store
-methods, as the first statement inside the transaction, returning `reason: "builtin"`:
-`insertPersona` (`:2222`), `updatePersonaCas` (`:2268`), `archivePersonaCas` (`:2322`). The
-route maps that to `409 persona_builtin` (`src/server/routes.ts:1379`). **There is no existing
-per-persona override mechanism for a built-in**, and none can be added by patching a row,
-because there is no row. `workflow_commands` / `workflow_command_overrides`
-(`src/server/db.ts:1157`, `:1173`) is the repository's own precedent for exactly this shape:
-shipped defaults in one place, local exceptions in a sidecar table keyed by the immutable
-identity.
-
-**Snapshot compatibility.** `PersonaSnapshot` (`src/shared/workflow.ts:1401`) is produced by
-the single projection `personaSnapshotOf` (`:1419`), used by both publishers - the store's
-`publishWorkflow` (`src/server/workflows/store.ts:3231`) and the built-in catalog's
-compile-time `publishBuiltinGraph` (`src/server/workflows/builtin-workflows.ts:148`). It is
-validated by `PersonaSnapshotSchema` (`src/shared/protocol.ts:3981`), a plain `z.object` -
-**strip mode**, verified against zod 3.25.76: unknown keys parse and are dropped, but every
-declared key is required. A new snapshot field must therefore carry `.default(...)`, or every
-already-published `workflow_versions.graph_json` row and every historical
-`workflow_node_attempts.persona_snapshot_json` row stops parsing and the version resolves to
-`null`.
-
-**The review is a single one-shot call, and no provider offers more.** `runInThread` is `null`
-on both runners (`src/server/llm/claude.ts:168`, `src/server/llm/codex.ts:430`). The default
-Claude transport is the Agent SDK (`src/shared/llm.ts:72`) and it pins `maxTurns: 1` for a
-tool-less schema-less run - the exact Persona shape. `codex exec` is one turn by construction
-(`features.shell_tool=false`, `features.unified_exec=false`,
-`src/server/llm/codex.ts:303-322`). `LlmRunOptions` (`src/shared/llm.ts:273`) has no field
-that could carry a tool definition or an MCP server, and no headless path passes
-`--mcp-config` or `-c mcp_servers.*`. The in-repo MCP server (`src/mcp/server.ts:213`) binds
-one stdio transport and is explicitly launch-scoped: "everything in this file is LAUNCH-scoped:
-it reaches sessions the dashboard dispatches and nothing else."
-
-**A pooled worktree can be reset underneath a running review.** `nativeWorktreeOwnerReferenced`
-(`src/server/worktrees/owners.ts:18`) consults `tasks`, `task_repos`, `workflow_check_leases`
-and `worktree_slots` - there is **no `workflow_runs` clause**. Task teardown calls
-`release(lease, { ownerAuthorized: true })` (`src/server/dispatcher.ts:2027`), which skips the
-domain check and leaves only process-occupancy as a gate; a server-side review holds no
-process in the tree. The workflow manager already records the consequence
-(`src/server/workflows/manager.ts:1163`): "a worktree can be reclaimed while its pull request
-is still open ... There is then genuinely nothing to review." **Any design that reads the live
-checkout during a review is reading a directory another subsystem is entitled to erase.**
-
-**Retry and blocking already exist.** `handleInfrastructureFailure`
-(`src/server/workflows/engine.ts`) records the attempt as `error`, schedules
-`MAX_INFRA_ATTEMPTS = 3` attempts with `retryBaseMs * 4 ** (attempt - 1)` backoff, and on
-exhaustion fails the submission and sets the run `blocked` with a phase string. Phases are
-free-form strings with a label map (`BLOCKED_PHASE_CLAUSES`,
-`src/web/workflows/run-model.ts:864`), and `CHECK_CLEANUP_UNRESOLVED_PHASE`
-(`src/server/workflows/engine.ts:92`) is the precedent for a distinct phase whose operator
-remedy differs.
-
-**Per-round accounting already exists.** The attempt's `StructuredAttemptObserver`
-(`src/server/workflows/engine.ts:973`) writes a `workflow_llm_calls` row per provider call
-with `purpose: "persona_review"`, byte counts and an error code, and its `start` hook already
-refuses to begin a new call once the run or submission stops being `running` - which is the
-cancellation seam a multi-round loop needs.
-
-**Git can materialize the exact dirty state, cheaply and immutably.** Measured on this
-repository:
-
-| Step | Result |
-|---|---|
-| `cp .git/index $TMP` then `GIT_INDEX_FILE=$TMP git add -A` | **34 ms**, 2,633 paths |
-| cold temp index (`read-tree <headSha>` then `add -A`) | 729 ms |
-| the same cold seed taken from live `HEAD` after the checkout advanced | silently drops a path tracked at capture but matching a `.gitignore` pattern |
-| live worktree and live index after the run | unchanged (`git status` byte-identical) |
-| `git rev-parse --git-path refs/mission-control/review-snapshots/x` | resolves into the **common** `.git/refs`, not the per-worktree dir |
-| `git gc --prune=now` with the ref set | snapshot commit still `cat-file -t` reachable |
-| `node_modules/` (gitignored) | absent from the tree |
-| an untracked, non-ignored `.env` | **present** in the tree |
-| a symlink | mode `120000`, blob content is the target string; not followed |
-| `git cat-file -p <snap>:../etc/passwd` | `fatal: '../etc/passwd' is outside repository` |
-| `git cat-file -p <snap>:/etc/passwd` | `fatal: path ... exists on disk, but not in <snap>` |
-| `git cat-file -p <snap>:.git/config` | `fatal: path ... exists on disk, but not in <snap>` |
-| `git grep`, `git log`, `git blame`, `git diff` against the snapshot commit | all work |
-| `git cat-file --batch-check` | returns `<oid> blob <size>` (or `missing`) **without reading bytes** |
-| `git ls-tree` with `:(glob)` pathspec | **not supported** - `pathspec magic not supported by this command` |
-| `git grep` with `:(glob)` pathspec | supported |
-
-## The design
-
-### 1. The setting, and where it lives
-
-One appended-only enum in `src/shared/workflow.ts`:
-
-```ts
-export const PERSONA_REPOSITORY_ACCESS_MODES = ["off", "read"] as const;
-export type PersonaRepositoryAccess = (typeof PERSONA_REPOSITORY_ACCESS_MODES)[number];
-export const DEFAULT_PERSONA_REPOSITORY_ACCESS: PersonaRepositoryAccess = "off";
-```
-
-Two values rather than a bag of per-capability booleans. The approved capability set
-(decision 4) is one coherent read-only grant; splitting it into eight toggles would offer an
-operator eight combinations nobody asked for and would put eight fields into every published
-snapshot. The list is appended-only for the reason every other durable enum in this repository
-is: the strings reach durable rows.
-
-Storage follows the `workflow_commands` precedent, because the two kinds of Persona are
-genuinely different objects:
-
-- **Operator Personas** get a column: `personas.repository_access TEXT NOT NULL DEFAULT 'off'`.
-  It is part of the row, so it participates in `revision`, in the CAS write path, in
-  Duplicate, and in import/export - none of which a sidecar table would give it.
-- **Built-in Personas** get a sidecar row:
-  `persona_access_overrides(persona_id TEXT PRIMARY KEY, repository_access TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at, updated_at)`.
-  A built-in has no row to carry the setting, and inventing one would make it operator data
-  and break the four properties `builtin-personas.ts` exists to guarantee.
-
-The override row carries **its own `revision`**, and that is not decoration. A built-in's
-`Persona.revision` is the synthetic constant `1` that `builtin-personas.ts` documents ("a build has
-exactly one copy of each document"), so it cannot serve as a compare-and-swap token: two dashboards
-changing the same built-in's access would both compare against `1`, both succeed, and the later
-write would silently discard the earlier one while each browser reported its own value as committed.
-The sidecar's revision is the token that makes that a refusal instead, exactly as
-`workflow_commands.revision` does for the shipped command slots.
-
-So the setting exposes one number with one meaning - **the revision of the record that stores it** -
-surfaced on `PersonaView` as `repositoryAccessRevision`:
-
-| Persona kind | `repositoryAccessRevision` is | A write |
-|---|---|---|
-| Operator row | the `personas` row's `revision` | CAS on the row, bumping it, as every other Persona edit does |
-| Built-in with an override | the override row's `revision` | CAS on the override row, bumping it |
-| Built-in with no override yet | `0` | inserts, and succeeds only if no row exists - so the concurrent first write is refused too |
-
-One private resolver in `WorkflowStore` applies overrides where built-ins are merged in, so
-every existing read path picks them up without a second merge rule to keep in step.
-
-The write path is a **new route**, `PUT /api/personas/:id/repository-access`, not a widening of
-`UpdatePersonaSchema`. `PATCH /api/personas/:id` keeps refusing a built-in outright, which is
-the whole of decision 10: guidance, runner and model stay immutable, and exactly one setting
-is locally configurable. Widening `PERSONA_EDIT_FIELDS` would have required per-field built-in
-logic inside the three store methods whose current strength is that they refuse before looking
-at any field.
-
-Two consequences of that separation, both deliberate:
-
-- The setting is **not part of the editor draft**. `PERSONA_DRAFT_FIELDS`
-  (`src/web/workflows/PersonaEditor.tsx:53`) and `personaUpdatePatch` are untouched, so
-  `reconcilePersonaSave`, the guidance CAS and the conflict banner keep their current shapes.
-  The control commits on change, for both kinds of Persona, and reports failure on the existing
-  `persona-error` line.
-- Committing on change is also the only shape that *works* for a built-in, which is the check
-  that confirms the separation rather than merely permitting it: a built-in renders no Save
-  button at all - the primary flips to `Duplicate to edit` (`:638-645`) and `save()` hard-returns
-  for `builtin` (`:518`) - so a setting that rode the draft would be unreachable on exactly the
-  Personas decision 10 exists for.
-
-The route body is revision-and-mode only, so it takes the existing small guard
-(`REVISION_ONLY_BODY_MAX_BYTES = 1024`, `src/server/routes.ts:532`) rather than
-`PERSONA_BODY_MAX_BYTES`, and it returns the same `personaFailure` envelope
-(`src/server/routes.ts:1379`) every other Persona mutation does - including
-`revision_conflict` with the current `PersonaView` attached, which is what lets the editor
-re-render the value that actually won, and minus the `builtin` arm, which is the one refusal
-this route must not make.
-
-### 2. Snapshot and publication
-
-`PersonaSnapshot` gains `repositoryAccess: PersonaRepositoryAccess`, produced by
-`personaSnapshotOf` so both publishers are covered by construction.
-`PersonaSnapshotSchema` declares it as
-`z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("off")`.
-
-`.default("off")` - not `.optional()` - is the load-bearing choice, and it satisfies decision 9
-exactly:
-
-- Every version published before this feature parses, and parses as `off`. A historical
-  workflow version does not silently acquire repository access because someone later ticked a
-  box. "Later Persona edits affect only newly published workflow versions" is enforced by the
-  absence of the key meaning `off`, not by a migration.
-- Every reader gets a non-optional value, so no call site has to decide what absent means.
-
-`personaSnapshotIsOutdated` (`src/shared/workflow.ts:1431`) gains an access comparison, so
-changing the setting marks published versions as outdated - which is the honest signal, and the
-one that tells an operator a re-publish is what makes the change take effect.
-
-**Built-in workflows are a documented limitation.** `publishBuiltinGraph` runs at module load
-and cannot read the database, so a shipped workflow's persona nodes always freeze
-`repositoryAccess: "off"`. An operator who wants a built-in reviewer to hold access uses the
-existing **Duplicate** gesture on the workflow (`src/web/workflows/WorkflowLibrary.tsx:578`)
-and publishes their own version, which snapshots the live catalog including the override. This
-is the same "Duplicate to customize" rule the product already teaches for built-in Personas,
-and it keeps a build's own app data free of machine-local state.
-
-**One pre-existing cliff, made explicit.** `validateWorkflowGraph` checks
-`graphJsonBytes` (500,000) against the **draft** graph, whose persona nodes carry only an id,
-while the published graph inlines up to 100,000 bytes of guidance per node and is read back
-through `parseJson`'s 500,000-byte cap. Six maximum-size Personas in one workflow publish
-cleanly today and then read back as `null` forever. This plan adds roughly thirty bytes per
-persona node, so it does not create the cliff - but because it widens the snapshot at all, the
-same change adds a publish-time byte check of the **published** graph against the read cap.
-That is a ten-line guard closing a latent data-loss path in a controlled file, and skipping it
-while touching the field would be the wrong trade.
-
-### 3. The exact submitted review state
-
-At capture time, the daemon writes a **review snapshot commit** into the repository's object
-database: a commit whose tree is the worktree exactly as submitted - committed, staged,
-unstaged and untracked - parented on the captured `HEAD`, pinned by a ref under
-`refs/mission-control/review-snapshots/<submissionId>`.
-
-```
-# Fast path seeds the stat cache from the live index: 34 ms instead of 729 ms.
-# The cold fallback seeds from the CAPTURED headSha, never live HEAD - seeding from a
-# moved HEAD silently drops paths tracked at capture that match a .gitignore pattern.
-cp <worktree>/.git/index $TMP           # or: GIT_INDEX_FILE=$TMP git read-tree <headSha>
-GIT_INDEX_FILE=$TMP git add -A          # respects .gitignore; never touches the live index
-GIT_INDEX_FILE=$TMP git write-tree
-# Then verify the tree: every path tracked at <headSha> is in it, or gone from disk too.
-# The parent assertion below cannot cover this - the parent is passed explicitly.
-# Explicit daemon identity: commit-tree exits "Author identity unknown" without one, so a
-# clone that never set user.email would fail every snapshot - and on a machine that did set
-# it, the operator would be recorded as the author of an object the daemon wrote.
-GIT_AUTHOR_NAME=... GIT_AUTHOR_EMAIL=... GIT_COMMITTER_NAME=... GIT_COMMITTER_EMAIL=... \
-  git commit-tree <tree> -p <headSha> -m "mission-control review snapshot <submissionId>"
-git update-ref refs/mission-control/review-snapshots/<submissionId> <commit>
-```
-
-The oid and the repository root are persisted on `workflow_submissions`. Every repository
-operation then runs against that commit, and the worktree is never read again.
-
-This answers decision 7 more completely than a checkout could, and it answers decision 8's
-availability problem structurally rather than by retrying into a race:
-
-- **It is the exact submitted state.** A detached checkout of the captured `HEAD` is missing
-  the staged, unstaged and untracked work, which for a session mid-repair is most of the
-  change. The snapshot tree contains all four.
-- **It is immutable and it outlives the checkout.** Refs under `refs/` live in the **common**
-  git directory (verified: `--git-path` resolves to the main `.git/refs`), and the ref makes
-  the objects reachable, so the snapshot survives `release()`'s hard reset, `removeSlot`, and
-  `git gc --prune=now` (all verified). This is the direct answer to the reclamation hazard:
-  the review no longer depends on a directory another subsystem may erase.
-- **No worktree is borrowed, so no lease is needed.** `check-lease.ts` exists because a check
-  runs a build in a tree; a repository read needs no tree at all. Reusing that machinery would
-  add a durable lease row, a holder token, a reclamation backoff ladder and a second consumer
-  of the pool, to solve a problem the object database does not have.
-- **The filesystem is not in the trust boundary.** There is no directory to escape from. Host
-  paths, `..`, absolute paths and `.git` internals are not denied by a rule that could have a
-  hole - they are absent from the namespace (all three verified to fail at the git layer).
-
-Lifecycle ownership is the submission's. The snapshot is created inside the existing bounded
-capture window in `readWorkflowContextRaw`, so the existing capture-boundary re-read and
-single retry already cover a worktree that moved mid-capture; the snapshot additionally
-asserts its parent is the captured `headSha`. The ref is deleted by the same retention path
-that prunes a submission's evidence. Neither `evidenceFingerprint` nor
-`repositoryFingerprint` includes the snapshot oid: they are identity and change-detection keys
-that trigger keys, idempotency and the unchanged-resubmission guard are built on, and folding a
-new input into them would invalidate every existing run.
-
-```mermaid
-flowchart LR
-  subgraph before["Before"]
-    W1[session worktree] -->|computeSessionDiff| C1[bounded diff text]
-    C1 --> S1[(workflow_submissions.context)]
-    S1 --> P1[one runner.run] --> V1[verdict]
-    W1 -.->|"released / hard reset<br/>no workflow_runs owner"| X1[gone]
-  end
-  subgraph after["After"]
-    W2[session worktree] -->|computeSessionDiff| C2[bounded diff text]
-    W2 -->|"temp index + write-tree<br/>+ commit-tree + update-ref"| G2[(snapshot commit<br/>in common .git)]
-    C2 --> S2[(workflow_submissions)]
-    G2 --> S2
-    W2 -.->|released / hard reset| X2[gone]
-    G2 -->|survives| B2[broker reads objects]
-    S2 --> B2
-  end
-```
-
-### 4. The broker protocol
-
-Provider-neutral, in `src/shared/`, so the browser can render an audit record and neither
-runner needs to know it exists.
-
-A reviewer's reply is one envelope, a discriminated union on `action`:
-
-```ts
-type PersonaReviewReply =
-  | { action: "query"; queries: RepositoryQuery[] }
-  | { action: "verdict"; verdict: PersonaVerdict };
-```
-
-A `RepositoryQuery` is a discriminated union on `op`, covering exactly decision 4 and nothing
-else:
-
-| `op` | Arguments | Executed as |
-|---|---|---|
-| `read_file` | `path`, `startLine?`, `lineCount?`, `stage?` | `cat-file --batch-check` on `<snapshotOid>:<path>` for type and size, then the blob; `stage: "index"` reads the pinned index tree instead, so a staged-then-modified path's staged bytes stay reachable |
-| `search_text` | `pattern`, `pathGlob?`, `fixedString?`, `maxMatches?` | `git grep -I -n <snapshotOid>`; unpinned, `git grep` searches the live working tree |
-| `list_paths` | `pathGlob`, `maxPaths?` | `git ls-tree -r -z <snapshotOid>` filtered by the shared matcher |
-| `git_status` | - | `git diff --name-status <headSha> <snapshotOid>` plus the complete `--porcelain=v2` status persisted at capture; the tree alone cannot express staged-versus-worktree |
-| `git_diff` | `path?`, `base?` | `git diff --no-ext-diff --no-textconv <base or headSha> <snapshotOid>`, the base defaulting to the captured `headSha` and never live `HEAD`; an explicit `base` must be an ancestor of `<snapshotOid>`; allowlisted before generation |
-| `git_show` | `rev`, `path?` | `git show --no-ext-diff --no-textconv <rev>`, where `rev` is proven an ancestor of `<snapshotOid>`; allowlisted before generation, with the commit message fetched separately from the patch |
-| `git_log` | `path?`, `maxEntries?` | `git log <snapshotOid> --max-count=N --format=<NUL-separated>`; unpinned, `git log` walks live `HEAD`; a supplied `path` is validated and denied like any other; no `-p`, `--name-only`, `--name-status` or `--stat` |
-| `git_blame` | `path`, `startLine?`, `lineCount?` | `git blame --no-ext-diff --no-textconv --porcelain <snapshotOid> -- <path>`; its `filename`/`previous` headers name other paths and are denylist-filtered; unpinned, `git blame` reads the live worktree file |
-
-Every result is `{ ok: true, ... , truncated: boolean }` or
-`{ ok: false, code: RepositoryQueryDenialCode, detail }`, with the denial codes an appended-only
-list: `not_found`, `not_a_file`, `sensitive_path`, `path_invalid`, `symlink`, `submodule`,
-`binary`, `too_large`, `unsupported_rev`, `invalid_argument`, `budget_exhausted`, `unavailable`,
-`cancelled`.
-
-A denial is **data, never an error**: the reviewer is told, in the response, that the path is
-denied and why, and goes on reviewing. Only `unavailable` is infrastructure, and it takes the
-attempt down the retry ladder rather than into a verdict.
-
-### 5. How one attempt makes many queries
-
-The broker is a **server-owned round loop** over the existing single-shot
-`LlmRunner.run(prompt)`. Each round re-sends the review prompt with the accumulated
-query-and-response transcript appended, and asks for either another query batch or the final
-verdict.
-
-```mermaid
-sequenceDiagram
-  participant E as WorkflowEngine
-  participant B as Repository broker
-  participant R as LlmRunner (claude or codex)
-  participant G as git objects (snapshot commit)
-  E->>B: run attempt (access = read)
-  loop bounded rounds
-    B->>B: cancelled? budget left?
-    B->>R: run(prompt + transcript so far)
-    R-->>B: {action:"query", queries:[...]} or {action:"verdict",...}
-    opt query
-      B->>G: typed op, path-validated and denylisted
-      G-->>B: bytes, bounded and marked if truncated
-      B->>B: audit row per operation
-    end
-  end
-  B-->>E: PersonaVerdict, or infrastructure failure
-```
-
-This is the design's central decision, and it is chosen because it is the only shape that
-satisfies decision 2:
-
-- **It needs nothing from either provider.** No new `LlmRunOptions` field, no MCP wire into
-  four transports, no `runInThread`, no turn-cap change. Claude and Codex become equivalent by
-  construction rather than by two adapters that must be kept in step - and Codex's `sandbox:
-  null` stops being relevant, because no grant is ever requested.
-- **It preserves the fresh-context guarantee.** `LlmRunner.run`'s contract is that every call
-  starts empty (`src/shared/llm.ts:377`); this loop keeps that literally true and carries
-  continuity in the prompt the daemon composes, so no cross-session context can bleed.
-- **It is auditable by construction.** Every operation is executed by ai-harness, so decision
-  11 is satisfied by the code path rather than by a provider's cooperation.
-- **It is cancellable between rounds.** The existing observer already refuses to start a call
-  once the run or submission stops being `running`.
-
-The cost is honest and worth stating: re-sending the transcript means the prompt grows with
-each round, so a review that uses all its rounds costs more input tokens than one that does
-not. Server-side prompt caching absorbs most of the repeat, and the round ceiling bounds the
-rest. The alternative - implementing `runInThread` for two providers - buys token efficiency
-in exchange for a resumable per-provider session, which is the exact mechanism the runner
-contract warns reintroduces cross-session bleed.
-
-Where the provider can validate the envelope shape it is asked to: `claudeRunner.structuredOutput`
-guarantees input shape, so the round schema is passed as `LlmRunOptions.schema` and
-`runStructured`'s `shapeGuaranteed` skips the redundant JSON re-prompt. Codex ignores it and
-the existing two-attempt parse ladder covers it. A reply that will not parse after the ladder
-is an infrastructure failure, exactly as today - never a fail verdict.
-
-### 6. Security model
-
-Decision 6 is met by removing the filesystem from the picture and then layering the existing
-defences on what remains.
-
-1. **Paths are bytes, end to end, and the durable columns are BLOBs.** Step 2's rule is "match as
-   bytes, never normalize" - and decoding a path into a JavaScript string is exactly that
-   normalization. Measured, it is lossy and collapsing: `bad-<ff><fe>.env` round-trips through UTF-8
-   as 15 bytes instead of 11, and `a<ff>b` and `a<fe>b` - two distinct paths - decode to the same
-   string. The collapse is the security-relevant half, since a denylist decision on a decoded string
-   is a decision about a different value. So path validation, the denylist and the glob matcher
-   compare **bytes**; the persisted status and the audit `path` are **BLOB** columns; every
-   invocation passes `-c core.quotePath=false` (verified: git otherwise emits `"q\377.txt"`) with
-   `-z` wherever the output form supports it; and a path that is not valid UTF-8 is reported to the
-   reviewer with a marker and is deliberately **unaddressable**, so `read_file` on the mangled
-   spelling fails closed rather than serving a different file that decoded the same way.
-2. **Capture neutralises content filters, or the snapshot is not the submitted bytes.** `git add -A`
-   runs a configured `filter.<name>.clean` for paths a submitted `.gitattributes` selects, and a
-   clean filter does not merely execute - it **rewrites what gets stored**. Measured with a filter
-   mapping `SECRET` to `REDACTED`: as originally specified, two filter invocations and
-   `value=REDACTED-original` in the snapshot; with every clean filter overridden to `cat`, zero
-   invocations and `value=SECRET-original`. So the first form broke decision 7, not only decision 5.
-   Capture enumerates configured drivers and neutralises `filter.*.clean` **and**
-   `filter.*.process` - the latter is what git-lfs uses, and a mismatched `process` driver *hangs*
-   `git add` rather than failing, so the capture invocations also carry a timeout. File modes survive
-   (`100644`, `100755`, `120000`), which a hand-rolled plumbing path would have had to rebuild.
-3. **Every git invocation disables configured conversion drivers.** `git` executes a program from
-   repository configuration while producing a patch - `.gitattributes` in the change under review
-   selects a driver, and `diff.<name>.textconv`/`.command` maps it to a command an operator may
-   legitimately have configured. An argv array at the outer call does not deliver decision 5's
-   no-shell boundary if git forks underneath it. Measured driver invocations without the flags:
-   `git diff` 3, `git show` 2, `git blame` **3**; `git grep` 0. So every content-producing
-   invocation passes `--no-ext-diff --no-textconv`, `--textconv` is a forbidden flag, and the argv
-   test asserts it - their absence produces a well-formed answer, so no output reveals that a
-   program ran.
-4. **Every git invocation names an explicit snapshot-derived revision.** Listed first because
-   omitting one does not fail - it silently reads live state, differently per command. Measured:
-   `git log` walks live `HEAD`, and `git grep` and `git blame` read the live **working tree** rather
-   than any commit, which is the worst case since that directory may have been reset and reassigned
-   to another task; `git cat-file` and `git ls-tree` refuse to run and so fail closed. Three of five
-   silently substitute, two refuse, and a reviewer cannot tell from the response - so the argv for
-   every op spells its revision and a mechanical test over the built argv asserts it, rather than
-   the guarantee resting on prose.
-5. **No filesystem access at all.** Every read is a git object read against one of two immutable
-   commits - the snapshot tree, or the index tree that preserves staged bytes. Traversal, absolute
-   paths, host files and `.git` internals are structurally absent - verified at the git layer, not
-   asserted.
-6. **Path validation before git is invoked, for every op that is given a path.** Reject empty,
-   absolute, NUL-bearing, and any path with a `.` or `..` segment; reject `.git` as a leading
-   segment. Paths are matched as bytes against the tree listing and never normalized, because git
-   paths are bytes and a normalization step would make two spellings resolve to one object.
-   This is **universal and independent of what the op's output looks like** - the two are separate
-   axes, and treating them as one is what once let `git_log -- .env` through: it was filed under an
-   output class that filters paths out of results, so nothing checked the path it was handed.
-7. **A sensitive-path denylist**, seeded from the repository-relative half of the Inspector's
-   `DENY_PATHS` (`src/server/inspector/worker.ts:295`) and **strengthened**: the Inspector
-   denies `**/.git/config`, this denies `.git/**` outright, and the list is applied to the
-   *results* of `search_text` and `list_paths` as well as to the arguments of `read_file`. A
-   matcher that only guarded arguments would be exactly the hole
-   `claude-grant.ts` already documents: "`Grep` takes an absolute path and prints the matching
-   lines, so a `Read(...)`-only list protects nothing it names." The measurement above is why
-   this layer survives the move to git objects: an untracked, non-ignored `.env` **is** in the
-   snapshot tree.
-8. **Every op declares an output class, and a content-bearing one is allowlisted before it is
-   generated rather than filtered after.** Filtering paths out of a result works for an op that
-   emits a path beside its own content - drop the line and the content goes with it. It does
-   **not** work for `git_diff` or `git_show`, whose output is one blob carrying file content.
-   Measured, both leak: an unrestricted diff over that snapshot emitted
-   `+SECRET=hunter2-should-never-be-seen`, and `git show` on an ancestor commit emitted the same
-   for a `.env` that commit introduced. So both resolve their changed-path set first with
-   `--name-only` (which carries no content), apply the denylist to that set, and generate content
-   only for an explicit `:(literal)` allowlist - then verify both sides of every `diff --git`
-   header before returning and refuse the whole operation rather than shipping a partly filtered
-   patch. The class lives in a total `Record` over the op list, so a new content-bearing op cannot
-   compile without declaring itself into that pipeline. `--no-renames` is explicit, because
-   `diff.renames=true` on the reviewing machine otherwise makes a header name a denied path and
-   makes the response shape depend on operator configuration; and `git_show` fetches its commit
-   message separately from its patch, because a message is attacker-controlled text and can contain
-   a forged `diff --git` line.
-   **Ancestry and the denylist are different checks.** The leaking `git_show` revision *passed* the
-   ancestry check - it was a genuine ancestor of the snapshot. Ancestry answers "is this revision
-   part of what was submitted"; the denylist answers "may this path be read". Neither substitutes
-   for the other.
-9. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
-   and `160000` as `submodule`. A symlink's blob content is its target string, so serving it as
-   file content would hand the reviewer an arbitrary host path under a repository-relative name.
-10. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
-   an oversize blob is refused as `too_large` before a byte is read; `git grep -I` skips binary
-   content (verified).
-11. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
-   over every broker response. Its own comment makes the trade explicit - "a mangled example is
-   a nuisance, a published credential is an incident" - and it applies with more force here,
-   because a verdict's evidence quotes can reach a public pull request through the feedback
-   packet.
-12. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
-   (`src/server/review/prompt.ts`), so repository content the reviewer fetched carries the same
-   `-untrusted` fence as the diff it came from.
-
-`REVIEW_SNAPSHOT_ONLY` currently tells every reviewer "do not look anything up". With access
-enabled that sentence is false, so `reviewContract` gains an opt-in variant that names the
-repository snapshot as part of the reviewed snapshot and the broker as the only way to reach it.
-When access is off the rendered string stays **byte-identical** to today, pinned by a test -
-four reviewers across two providers share that function and none of the other three is
-changing.
-
-### 7. Retry, blocking, and never falling back
-
-Decision 8 maps onto machinery that already exists. A missing snapshot, an unreadable object
-database, a vanished repository root or a git invocation that fails is an **infrastructure
-failure**, routed through `handleInfrastructureFailure`: the attempt is recorded `error`, up to
-`MAX_INFRA_ATTEMPTS` attempts are scheduled with the existing exponential backoff, and on
-exhaustion the submission fails and the run blocks.
-
-It blocks in a **distinct phase**, `repository_access_unavailable`, with its own
-`BLOCKED_PHASE_CLAUSES` entry, for the reason `CHECK_CLEANUP_UNRESOLVED_PHASE` is distinct
-from `infrastructure_error`: the operator's next move differs. "The provider call failed" is
-debugged; "the repository this review needs is gone" is answered by re-running against a live
-checkout.
-
-What must never happen, and is prevented by there being no such branch in the code: a Persona
-with `repositoryAccess: "read"` completing a review without the repository. Prompt-only is not
-a degraded mode of this feature; it is a different review, and passing it off as the configured
-one would silently weaken every gate an operator turned on.
-
-### 8. Persona Editor
-
-The setting joins the existing property-chip row beside Provider and Model
-(`src/web/workflows/PersonaEditor.tsx:750-802`), as a chip named `repository` with
-`controlLabel="Repository access"`. A chip is a `<button>` whose accessible name is
-`<name><value>` and whose popover is a `role="group"` named by `controlLabel`
-(`src/web/library/LibraryPropertyChip.tsx:151-161`), so the browser spec reaches it exactly as
-`persona-rail.spec.ts` already reaches Provider - `getByRole("button", { name: /^repository\b/ })`
-then `getByRole("group", { name: "Repository access" })`. On an unsaved draft the chip reads
-`resolves after save` and its control is disabled, following the Model chip.
-
-Its popover holds the choice and the disclosure, because this is the one Persona setting whose
-security boundary an operator has to be told rather than guess:
-
-- what is granted - read, search and glob over the exact submitted worktree, plus server-run
-  `status`, `diff`, `show`, `log` and `blame`;
-- what is not - no shell, no writes, no network, no provider tools;
-- what is denied - credential-shaped and secret-bearing paths, `.git` internals, symlinks and
-  submodules, with denials recorded;
-- what the state means - that the setting takes effect for **newly published** workflow
-  versions, so an existing version keeps the behaviour it was published with.
-
-For a built-in the chip is the single enabled control on an otherwise read-only editor, and it
-says so: the override is local to this machine, does not change the shipped guidance, and does
-not make the Persona editable. Everything else keeps `readOnly = archived || builtin`, the
-primary action stays `Duplicate to edit`, and `PersonaEditorStatus`'s built-in banner keeps its
-precedence over every other state. An archived Persona's chip stays disabled - the exception is
-for built-ins, not for read-only in general.
-
-No new `ServerEvent` is needed. `persona_upsert` already carries a `PersonaView`
-(`src/shared/types.ts:2977`), so a widened `Persona` reaches the browser through the existing
-frame and `useEventStream`'s exhaustiveness check stays untouched.
-
-### 9. Limits
-
-Decision 12 rules out one global character cap, so the budget is a small hierarchy - per
-operation, per round, per attempt - each of which announces truncation where it bites:
-
-| Limit | Value | Why |
-|---|---|---|
-| `maxRounds` | 8 | Enough to open a file, follow its callers, and check its test; bounded so a loop cannot run forever |
-| `maxQueriesPerRound` | 12 | Batching is what keeps round count low; a reviewer asks for a directory listing and six files at once |
-| `maxResponseBytesPerQuery` | 96,000 | Roughly a 2,500-line source file whole |
-| `maxRoundBytes` | 320,000 | A full batch of substantial files in one round |
-| `maxAttemptBytes` | 2,000,000 | The expansive-review budget: ~40 large files across the whole attempt |
-| `maxMatchesPerSearch` | 200 | A search is for locating code, not for exporting it |
-| `maxPathsPerList` | 4,000 | Comfortably above this repository's measured 2,633-path tree, so a whole-repository listing is complete rather than clipped |
-| `maxLogEntries` | 100 | Blame and log answer "why is this here", not "replay the history" |
-
-Truncation is never silent: an `ok` response carries `truncated: true` and the omitted byte
-count, `read_file` accepts `startLine`/`lineCount` so a clipped file can be paged rather than
-guessed at, and every truncation is written to the audit record.
-
-### 10. Audit and observability
-
-Decision 11 gets a durable table rather than only log lines, because "what did this reviewer
-read" is a question asked after the fact:
-`workflow_repository_queries(id, run_id, submission_id, node_attempt_id, round, ordinal, op, path, detail, outcome, denial_code, bytes, truncated, duration_ms, created_at)`.
-
-Alongside it: `workflow_llm_calls` gains a `round` column so a provider call can be placed in
-its round (`attempt` continues to mean the parse-retry attempt within a round), bounded
-aggregate `workflow_events` rows report per-round operation counts, denials and truncations on
-the run timeline, and run detail renders a per-attempt summary - operations, bytes, denials,
-truncations - so the cost and the reach of an access-enabled review are visible without a
-database query.
+The following decisions are requirements and are not open for reconsideration in this plan:
+
+- Repository access is configured independently on each Persona and defaults to `none`.
+- Claude and Codex reviewers receive the same MCP operations, limits, denials, retry behavior, and audit records.
+- ai-harness owns a provider-neutral repository MCP server that runs locally inside the Persona workload. Providers receive only its typed tools and do not receive unrestricted filesystem or provider tools.
+- The Persona uses one isolated session for the review and may call the local repository MCP repeatedly before returning one structured verdict.
+- Repository query contents stay inside the workload. Mission Control receives lifecycle events, safe audit metadata, and the final verdict, not file bodies returned by the MCP server.
+- The exact submitted state includes committed, staged, unstaged, and applicable untracked content.
+- Repository-read unavailability is an infrastructure failure. The attempt blocks and retries through the existing attempt policy without prompt-only fallback.
+- The access value is frozen into each published Persona snapshot. Later Persona edits affect only newly published workflow versions.
+- Built-in Persona guidance, runner, and model remain immutable. An operator can maintain a local repository-access override for each built-in Persona.
+- Sensitive-path protections must be at least as strong as the current Inspector protections.
+- Reliability limits must be explicit and pageable. One global character ceiling must not silently hide most of a large worktree.
+- Mission Control remains the durable Workflow and retry authority. A worker connection is transport only; ordered persisted events and idempotent commands provide reconnect and replay semantics.
+- The implementation must be remote-ready without selecting or integrating a remote scheduling platform in this feature. A local reference executor consumes the same portable workload contract that a later remote adapter will consume.
+
+## Current implementation findings
+
+The design below is based on the current checkout rather than historical line numbers.
+
+| Surface | Current contract | Required consequence |
+| --- | --- | --- |
+| `src/shared/workflow.ts` | `PersonaSnapshot` freezes guidance, runner, and model. `personaSnapshotOf` is the shared projection. | Add the closed repository-access mode to Persona and snapshot contracts through this projection. |
+| `src/shared/protocol.ts` | Persona and snapshot schemas are strict and currently have no repository-access field. | Add protocol validation and default old persisted snapshots to `none`. |
+| `src/server/db.ts` | Personas are persisted in one table; built-ins have no rows. Workflow versions are uniquely identified by workflow id and draft revision. | Add custom access persistence, a narrow built-in override table, snapshot migration support, and publication identity that includes resolved snapshots. |
+| `src/server/workflows/store.ts` | Publishing snapshots the resolved Persona catalog, but an existing draft revision returns its prior version before new Persona state is evaluated. | Build and fingerprint the resolved graph before idempotency lookup so a Persona access change can publish a new version from an otherwise unchanged draft. |
+| `src/server/workflows/context.ts` | Stable capture persists bounded prompt context after checking the live checkout boundary. | Seal and digest a portable repository snapshot artifact inside the same stable capture boundary before activating the run. |
+| `src/server/diff.ts` | Diff capture includes committed, staged, unstaged, and bounded untracked content for prompt context. | Reuse its source-base semantics, but do not reuse its prompt-oriented byte and untracked-file ceilings as the repository service. |
+| `src/server/git/ensemble-snapshot.ts` | A temporary index can capture the whole worktree into one immutable commit. | Reuse the isolation pattern, but preserve separate HEAD, index, and worktree layers rather than collapsing staged and unstaged content. |
+| `src/server/workflows/engine.ts` | A Persona makes one structured `LlmRunner.run` call and then emits a verdict. Infrastructure failures already retry and ultimately block. | Dispatch one versioned review workload, ingest its ordered events, validate its terminal verdict, and route workload or repository failures through the existing retry state machine. |
+| `src/server/llm/` | Headless runners support structured fresh calls but do not accept launch-scoped MCP configuration. Workflow calls grant no tools; only Claude Inspector has direct read tools. | Do not widen the general headless runner with filesystem access. Add a Persona workload runner that launches each provider with only the repository MCP server and a structured final-result contract. |
+| `src/server/harness/claude/`, `src/server/harness/codex/`, and `src/server/mission-mcp.ts` | Full Claude and Codex sessions already carry launch-scoped stdio MCP descriptors through provider-specific adapters. | Reuse the measured MCP configuration patterns behind a smaller workload-specific abstraction; do not couple Workflow execution to interactive session ownership. |
+| `src/server/inspector/` | Inspector already has deny globs and content scrubbing, but only Claude can enforce its direct tool grant. | Extract the reusable content policy while leaving Inspector behavior unchanged. Apply it inside the repository MCP server for both providers. |
+| `src/web/workflows/PersonaEditor.tsx` | All built-in fields are read-only. | Keep those fields locked while exposing only the local repository-access override. Explain the capability and its security boundary in the editor. |
+| Workflow tests and `e2e/` | Unit, integration, runner-contract, migration, and built-browser coverage exist. E2E providers are faked. | Extend each layer and cover both providers without spending model tokens or adding `data-testid`. |
+
+### Discrepancies resolved by this plan
+
+1. The existing check lease is a clean detached checkout at one commit. It cannot represent the submitted dirty worktree and is not the repository-read authority for this feature.
+2. The current prompt diff is useful context but intentionally truncates large changes. It cannot be treated as repository-wide access.
+3. A provider conversation thread is not available from the current shared headless runner contract, but both full session adapters already support launch-scoped MCP. This plan introduces one isolated Persona workload session rather than building a repeated fresh-call transcript loop.
+4. Publication idempotency currently keys only on workflow draft revision. Snapshot-aware publication identity is required to make a later Persona access edit effective without forcing an unrelated draft edit.
+5. Built-in workflow versions are app-owned immutable artifacts. A local built-in Persona override applies to future operator-published versions that resolve that Persona, not retroactively to shipped built-in workflow versions.
+6. Current Mission Control browser updates use a reconnecting SSE projection, not a durable remote workload protocol. The workload event contract therefore needs its own ids, sequence numbers, replay cursor, and idempotency rather than treating a WebSocket as state.
+
+## Target request and data flow
+
+At submission capture, the daemon seals a portable content-addressed artifact containing captured HEAD, staged index state, working-tree state including nonignored untracked files, and a classification manifest. During each enabled Persona attempt, the engine dispatches one isolated workload. Inside that workload, the provider calls a local stdio MCP repository server repeatedly and then returns one structured verdict. Repository results stay local; the workload supervisor emits ordered lifecycle and safe audit events to Mission Control.
+
+<!-- diagram:review-flow -->
+
+The load-bearing flow is:
+
+1. The exact checkout passes the existing stable-capture checks.
+2. The snapshot owner writes or verifies the immutable layered Git artifact and canonical manifest, computes its digest, atomically registers a digest-level artifact record plus the submission's ownership claim, and only then marks repository access ready.
+3. The Workflow engine creates a versioned workload request naming the attempt, frozen Persona, snapshot digest and locator, repository policy, deadline, and idempotency key.
+4. The local reference executor initially, or a future remote adapter later, materializes the artifact into an isolated workload and verifies its digest.
+5. The selected provider starts once with all built-in filesystem, shell, write, and network tools disabled and only the local repository MCP server registered.
+6. The provider calls MCP read/search/glob/Git tools repeatedly. The MCP server validates and audits each operation and reads only the materialized immutable snapshot.
+7. The workload supervisor emits ordered events and one terminal verdict through the executor contract. Mission Control persists them, rejects duplicates, and applies a verdict only while the Workflow attempt remains current.
+8. Snapshot, workload, provider, or MCP infrastructure failure follows the existing retry and blocked-run path. A denied query remains a normal auditable result the Persona may recover from.
+
+## Persisted Persona and built-in override model
+
+Use one closed shared enum with two values:
+
+- `none`: the current behavior and the default for all existing and new Personas.
+- `read`: enables the complete read-only repository MCP server.
+
+For operator-created Personas, add `repository_access TEXT NOT NULL DEFAULT 'none'` to `personas`. Continue to use the Persona revision for optimistic concurrency and snapshot freshness.
+
+For built-ins, add a narrow `persona_builtin_overrides` table keyed by built-in Persona id with only `repository_access`, its own monotonic revision, and timestamps. The table is local operator configuration and must not duplicate guidance, runner, model, or built-in definitions. Resolved Persona reads overlay this value onto the app-owned built-in record. An absent row resolves to `none`.
+
+Expose a dedicated repository-access mutation schema and route for both custom and built-in Personas. For custom Personas, the store updates the `personas` row under the existing revision contract. For built-ins, the same store operation validates the built-in id and updates only the override row. Existing general built-in edit routes continue to reject guidance, runner, and model changes.
+
+`PersonaSnapshot` gains `repositoryAccess`. `personaSnapshotOf` remains the only publication projection. `PersonaSnapshotSchema` defaults a missing persisted value to `none`, so old workflow graphs and attempt snapshots continue to parse. Snapshot freshness compares repository access for both custom and built-in Personas.
+
+## Publication and compatibility contract
+
+Publishing must identify the exact resolved graph rather than only the draft revision:
+
+1. Resolve the current Persona catalog, including local built-in overrides.
+2. Build the full publishable graph using `personaSnapshotOf`.
+3. Produce a deterministic hash of its canonical JSON.
+4. Reuse an existing version only when workflow id, source draft revision, and graph hash all match.
+5. Otherwise insert a new immutable version even if only a resolved Persona snapshot changed.
+
+Add a `source_snapshot_fingerprint` column to `workflow_versions`, backfill every existing row from its stored canonical `graph_json`, and replace the current two-column uniqueness with a three-column unique index. The migration must be additive and idempotent. Old graphs continue to resolve missing `repositoryAccess` as `none`, and their backfilled hash is stable after normalization.
+
+Existing Personas, workflow snapshots, workflow versions, attempts, runs, and built-in workflows retain prompt-only behavior. Shipped built-in workflow versions are not mutated by local overrides. The Version History surface marks a version out of date when the current resolved Persona access differs. To use an override with a shipped built-in workflow, the operator duplicates or otherwise publishes an operator-owned workflow version; the UI must state this boundary.
+
+## Portable exact-state repository artifact
+
+Create a Workflow repository-snapshot owner in `src/server/workflows/` backed by immutable Git objects, a canonical manifest, a portable artifact, and daemon-owned database metadata. A future executor must not need the original worktree path or Git common directory. Artifact bytes are owned by a durable digest-level record; each submission holds its own durable claim on that record. The claimed artifact is the only repository input a Persona workload may receive.
+
+### Captured layers and manifest
+
+The snapshot artifact stores:
+
+- source base commit used by Workflow diff semantics;
+- captured `HEAD`, with an explicit unborn-repository representation;
+- an immutable tree and named artifact ref for the submitted index state;
+- an immutable tree and named artifact ref for the submitted working-tree state, including nonignored untracked files;
+- the history objects required by `RepositoryHistoryPolicyV1`, rooted at captured `HEAD`, plus an explicit ordered retained-revision set and boundary metadata;
+- a canonical manifest that classifies each path as committed, staged, unstaged, untracked, deleted, symlink, submodule, binary, or sensitive-denied where applicable;
+- repository identity, artifact format version, policy version, content digest, capture fingerprint, byte counts, artifact state, per-submission claim state, cleanup state, and timestamps.
+
+<!-- diagram:snapshot-layers -->
+
+Use a private temporary index, modeled on the ensemble snapshot implementation, so capture never mutates the operator's real index. Sealing happens inside `captureStableWorkflowContext`: sample the boundary, build candidate objects and manifest, resample status and identity, and atomically commit or reuse the digest-level artifact record plus the submission claim only when both samples agree. Clean abandoned candidates and temporary indexes on mismatch.
+
+Package the required objects and canonical manifest into a content-addressed artifact whose digest covers every byte and semantic ref. The digest-level record owns the daemon-controlled locator and bytes; a per-submission claim references that digest. Concurrent captures of identical state converge on one verified record while retaining independent claims. The workload request exposes an opaque artifact locator plus digest, never a live checkout path. A later remote publisher can replace the locator with a scoped artifact reference without changing Workflow or Persona contracts.
+
+Sensitive paths remain represented in the manifest as denied entries, but their blob contents are omitted from the portable workload artifact. This prevents a compromised provider process from bypassing the MCP policy by inspecting artifact files directly. The MCP server independently enforces the same policy, so omission and query denial are defense-in-depth layers rather than competing sources of truth.
+
+Each submission owns a durable claim, not the shared artifact bytes, and every retry for that submission reuses its claimed digest. Retention or submission deletion atomically marks that claim released and enqueues digest cleanup only when no active submission claim remains. The retryable daemon-owned reconciler rechecks the zero-claim invariant in the deletion transaction before removing bytes and the digest record. Startup reconciliation repairs database/filesystem non-atomicity, restores or retires claims conservatively, and deletes only zero-claim artifacts in the dedicated Workflow namespace whose digest ownership is proven.
+
+If the artifact, digest, manifest, or materialized snapshot is unavailable or mismatched, repository-enabled Persona attempts are infrastructure failures. Attempts never reconstruct from the current live checkout and never receive the bounded prompt as a substitute for the missing repository view.
+
+## Local repository MCP server
+
+Implement a small stdio MCP server that runs inside each Persona workload. It is not an agent, remote query service, or Mission Control transport. It advertises only the approved repository tools, reads only the materialized snapshot named by an attempt-scoped launch descriptor, and reports safe audit metadata to its local workload supervisor.
+
+Define browser-safe tool input, output, cursor, policy, and audit metadata schemas in `src/shared/review.ts` or a focused shared Workflow review module. Reuse those schemas in the MCP server, workload event protocol, daemon ingestion, tests, and UI projections. The supported operation set is closed and exhaustive:
+
+| Operation | Required semantics |
+| --- | --- |
+| `read` | Return a bounded line or byte window from a repository-relative regular file, with a continuation cursor. |
+| `search` | Search literal text with explicit case behavior and optional validated path/glob scope, with match context and a cursor. Regular expressions are excluded initially to keep cost and denial behavior predictable. |
+| `glob` | Enumerate matching manifest paths with a cursor and type metadata. |
+| `git_status` | Return the captured path classifications, not the current checkout status. |
+| `git_diff` | Diff explicit captured layers: base to HEAD, HEAD to index, index to worktree, or base to worktree, optionally scoped to approved paths. |
+| `git_show` | Read metadata for captured HEAD or a retained revision. Patch mode compares a true root with the empty tree, compares a non-root commit only when its recorded first parent is retained, and otherwise returns `history_boundary` with no patch. Reject every other revision as `revision_out_of_range`. |
+| `git_log` | Traverse only the manifest's ordered retained-revision set, anchored at captured HEAD, with bounded count, cursor, optional approved path, and an explicit history-boundary marker. |
+| `git_blame` | Attribute a bounded line range for an approved regular file using only retained revisions, marking boundary attribution and truncation instead of consulting missing or host objects. |
+
+Every MCP response includes a stable operation id, status, structured result metadata, byte and item counts, `truncated`, an explicit `nextCursor` when more data is available, and a typed error or denial code. Each successful content-bearing result item also carries an opaque `evidenceHandleId`. The MCP emits matching safe handle metadata containing the snapshot/workload/operation identity, item ordinal, canonical approved path and exact line or diff range, policy version, and truncation state, but no excerpt or response body. Pagination cursors are opaque, integrity-checked tokens bound to snapshot digest, operation shape, and prior position so a provider cannot turn one cursor into a different request.
+
+The MCP process receives no Mission Control credential and no arbitrary network capability. Repository results stay between the provider and local MCP process. The MCP sends only bounded audit metadata to the workload supervisor over local IPC. The supervisor owns any authenticated connection or callback to Mission Control.
+
+## Persona workload request and event protocol
+
+Add a provider-neutral `PersonaWorkloadExecutor` boundary above provider launches. The initial `LocalPersonaWorkloadExecutor` runs on the Mission Control host but consumes the same portable request and produces the same events a future scheduling-middleware adapter will use.
+
+The versioned workload request includes:
+
+- workload id, Workflow attempt id, idempotency key, and protocol version;
+- frozen Persona snapshot, runner, model, prompt inputs, and immutable image references;
+- repository snapshot artifact locator, digest, and format version;
+- repository policy version, allowed operation ids, and layered budgets;
+- deadline and cancellation generation;
+- an attempt-scoped event sink descriptor that the local adapter may satisfy in-process and a remote adapter may satisfy through authenticated middleware.
+
+The ordered workload event union includes accepted, sandbox ready, repository verified, Persona started, repository query and evidence-handle metadata, progress, question or approval requests where later workflows allow them, terminal verdict, failure, and cancellation. Every event carries workload id, attempt id, monotonic sequence, event id, timestamp, and safe payload. Ingestion is idempotent by workload and sequence, detects gaps, and can resume from a persisted cursor.
+
+A WebSocket, HTTP stream, polling API, or other future connection is only a transport for this event protocol. Mission Control persists an event before projecting it to the dashboard or original session. The workload never writes the Mission Control database and never connects directly to a session terminal. Human questions and answers, if enabled later, use durable addressed events and idempotent commands mediated by Mission Control.
+
+## Multiple queries in one Persona session
+
+The workload starts the selected provider once with the normal Persona prompt, images, structured final-verdict schema, and exactly one registered MCP server. All built-in filesystem, shell, write, and network tools remain disabled. The provider calls the local MCP repeatedly during that one session and returns one final verdict.
+
+Provider-specific adapters may render MCP configuration differently, but both must consume one shared launch descriptor and expose the same tool inventory. The general `LlmRunner` remains unchanged for tool-less call sites. The implementation must prove through contract tests that both Claude and Codex can complete multiple MCP calls and schema-validated final output without any direct repository grant. If either provider cannot meet this contract, the phase stops for design review; it must not fall back to a provider-specific tool or the previous prompt-only path.
+
+The local reference executor gives current Workflows this behavior without waiting for a remote scheduler. A later remote executor changes only artifact publication, workload dispatch, event transport, and cancellation transport. It does not change Persona snapshots, MCP tools, repository security policy, evidence references, or Workflow retry semantics.
+
+## Security boundary
+
+The repository MCP server reads the materialized artifact through its canonical manifest and validated object ids. It never resolves a provider-supplied path against the sandbox host filesystem, the original checkout, or a Mission Control host path.
+
+### Path validation
+
+- Accept only normalized repository-relative POSIX paths.
+- Reject empty ambiguous paths where an operation requires a file, absolute paths, drive prefixes, NUL bytes, backslashes, overlong segments, `.` and `..` traversal, and normalization changes that alter identity.
+- Match pathspecs literally after validation. Never interpolate provider input into a shell string.
+- Treat path matching and sensitive segments case-insensitively where the checkout filesystem could do so.
+- Never expose `.git` or any nested Git administrative path.
+- Never follow symlinks. A symlink result may expose only its repository-stored target text and metadata after policy checks; it may not resolve that target.
+- Never traverse submodules. Return only the gitlink identity and approved metadata.
+- Restrict history operations to captured HEAD and the exact retained-revision set committed into the verified manifest. Never accept an arbitrary ref, revision expression, option-like argument, merely reachable object id, source-base anchor outside that set, or revision beyond the retained boundary.
+
+### Sensitive-path policy
+
+Move the current Inspector deny rules and secret scrubbing primitives into a shared repository content policy that both Inspector and the artifact builder/MCP server consume. Preserve current denials for `.env*`, credentials, private-key and certificate formats, `.npmrc`, `.netrc`, Git config and internals, host SSH/AWS/Claude/Mission Control state, and known secret-bearing names. Extend the policy across artifact packaging, file reads, search, glob, status, diff, show, log, and blame so filenames, history, or patch bodies cannot bypass a content denial.
+
+Return structured denial metadata and safe aggregate counts, never file contents or secret-bearing snippets. Apply the existing content scrubber as defense in depth to allowed text before it enters a provider prompt or audit summary. Audit records must not store response bodies.
+
+### Bounds and cancellation
+
+Use layered budgets rather than a single prompt character limit:
+
+- per-operation byte, line, match, file, history-count, and elapsed-time ceilings;
+- explicit pagination for every collection or large file response;
+- a generous attempt budget across operation count, cumulative served bytes, and wall-clock duration;
+- bounded MCP requests and responses so one tool call cannot monopolize the workload;
+- binary detection and a small metadata-only response unless the operation explicitly supports a safe bounded binary preview, which is out of scope initially.
+
+Initial constants should be centralized and testable. The implementation phase should validate practical defaults against large repository fixtures, targeting approximately 128 operations, 32 MiB cumulatively served, a 1 MiB maximum MCP response, and 15 minutes per Persona attempt. These are reliability defaults, not a promise that all cumulative data remains in the provider context. Every truncation must say what was omitted and how to continue.
+
+History retention uses the shared, versioned `RepositoryHistoryPolicyV1`, separate from per-query pagination:
+
+1. Captured `HEAD` is the sole traversal root; an unborn repository has an empty retained set.
+2. Walk the all-parent ancestry breadth-first. Queue parents in the order stored by each commit, producing a deterministic prefix without relying on commit timestamps.
+3. Retain at most 2,048 commits including `HEAD` and at most 512 MiB of unique allowed historical blob bodies not already required by the exact base, HEAD, index, or worktree layers. Before accepting each next commit, calculate its incremental allowed blobs; if either ceiling would be exceeded, stop the traversal rather than skipping that commit and creating holes.
+4. Include every commit and tree object plus every nonsensitive blob needed by the retained prefix. Omit sensitive blob bodies. Record the ordered retained ids, retained counts/bytes, frontier commits, omitted parent ids, and policy version in the digested manifest.
+5. Treat captured source base outside the retained set as a diff-layer anchor only. Its presence in the artifact does not make it valid for `git_show`, `git_log`, or `git_blame`.
+
+The oldest retained frontier is a shallow history boundary. `git_log` stops there, and `git_blame` returns boundary attribution with `historyTruncated: true`. `git_show` metadata remains available for every retained frontier commit. Patch mode has exactly three cases: a true root compares with the empty tree; a non-root whose recorded first parent is retained compares against that parent, even if another parent is omitted; and a non-root whose recorded first parent is omitted returns typed `history_boundary` with no patch. It never treats a non-root boundary commit as a root. Any requested revision outside the retained set returns the auditable `revision_out_of_range` denial. If capture cannot package every required allowed object for the selected set, sealing fails as infrastructure unavailable; it never silently shrinks the range or leaves an in-range query with a missing allowed blob.
+
+Propagate cancellation from the Workflow attempt through `PersonaWorkloadExecutor`, provider process, MCP process, Git child processes, blob reads, search iterators, and event persistence. Commands carry a cancellation generation and idempotency key so reconnect or duplication cannot revive older work. Cancellation terminates local processes, records cancelled events, and makes any later terminal verdict audit-only.
+
+## Audit and observability
+
+Add an append-only `workflow_repository_query_events` ledger keyed by attempt id and MCP operation sequence, plus bounded evidence-handle metadata keyed by opaque handle id. Each query record includes workload id, workload event sequence, snapshot digest, normalized operation kind, safe path or query hash metadata, start/end time, duration, outcome, denial/error code, item and byte counts, truncation, cursor presence, and cancellation state. Each handle record binds one actually returned item to its successful operation, canonical approved path/range, item ordinal, policy version, and truncation state. Do not store repository response bodies, excerpts, quote fields, sensitive query text, or provider secrets.
+
+Add durable workload dispatch and event state sufficient to make local and future remote execution share one lifecycle: request idempotency key, accepted executor identity, highest contiguous event sequence, terminal outcome, cancellation generation, and transport diagnostics. A duplicate event is ignored after equality validation; a conflicting duplicate or sequence gap is an infrastructure fault rather than guessed ordering.
+
+Extend existing Workflow run detail data and UI with a repository-query audit summary. Operators can inspect what operation ran, whether it was allowed, denied, truncated, failed, or cancelled, and how much data it returned. The view must not reproduce file bodies. Add structured server logs and status counts for capture latency/failure, query latency/outcome, retries caused by repository access, active snapshot count, and cleanup backlog.
+
+Extend Workflow evidence references with a metadata-only `repository` kind containing an operation id and `evidenceHandleId`. It has no quote, excerpt, or free-form path/range field. The engine resolves the handle against persisted safe metadata and accepts it only when it was minted for a successfully returned item from the same snapshot, workload, and node attempt; the UI may display the stored approved path/range metadata. A truncated item remains bound to only the exact returned range. A fabricated, duplicate-conflicting, denied, failed, cancelled, or unrelated handle is invalid. Existing prompt-only evidence remains valid for Personas with `none` access and for old runs. Ordinary reviewer prose remains part of the existing bounded/scrubbed final verdict, but it is not treated as a verified repository excerpt.
+
+## Failure and retry behavior
+
+Classify failures consistently:
+
+- Sensitive-path denial, invalid query, exhausted page, unsupported operation, `revision_out_of_range`, or `history_boundary` is an auditable MCP response. The Persona may issue a corrected query within the same attempt.
+- Missing or mismatched artifact, failed materialization, unreadable repository view, MCP process failure, workload launch failure, event-sequence gap, audit-write failure, provider failure, malformed final output, lost executor without resumable ownership, or exceeded attempt budget is an infrastructure failure.
+- Cancellation is terminal for the active work and records cancellation without scheduling a retry that contradicts the requested stop.
+
+Infrastructure failures use the current attempt lifecycle, including `retry_wait`, the existing maximum infrastructure-attempt count, restart recovery, and final blocked `infrastructure_error` state. Each retry dispatches a new workload against the same artifact digest claimed by the submission and the same frozen Persona snapshot. Restart recovery first reconciles a persisted workload with its executor and event cursor; it never starts a duplicate workload speculatively. There is no path from a repository-enabled snapshot to prompt-only execution.
+
+## Persona Editor and workflow UX
+
+The Persona Editor adds a clearly labeled repository-access control with `No repository access` and `Read-only repository access`. For built-ins, this control remains editable while guidance, runner, and model remain locked. Saving shows whether the value is stored on the Persona or as a local built-in override and uses the appropriate revision for conflict handling.
+
+The editor disclosure must state:
+
+- the Persona can query all non-sensitive files from the submitted repository state, including committed, staged, unstaged, and nonignored untracked content;
+- the Persona receives no shell, write, agent-visible network, host-file, `.git` internals, or direct provider-tool access;
+- known secret-bearing paths are denied and allowed text is scrubbed as defense in depth;
+- the setting is frozen only when a workflow version is published;
+- a built-in override does not mutate already shipped built-in workflow versions, so an operator-owned version must be published to use it.
+
+Version History displays the frozen access mode and uses it in out-of-date detection. Run detail displays whether repository access was enabled and links to the audit summary. Any visible control, copy, publication behavior, and audit state receives browser-level Playwright coverage against the built application.
 
 ## Migration and backward compatibility
 
-| Existing thing | What happens |
-|---|---|
-| Existing operator Personas | `addColumn(d, "personas", "repository_access", "TEXT NOT NULL DEFAULT 'off'")`. The column default **is** the true backfill, so no `UPDATE` follows the `ALTER` - the idiom `db.ts:1221-1227` documents. |
-| Existing built-in Personas | No override row, so they resolve to `off`. |
-| Already-published workflow versions | `graph_json` lacks the key; `.default("off")` parses it as `off`. No rewrite of any stored graph. |
-| Historical `workflow_node_attempts` rows | Same `.default("off")` path through `PersonaSnapshotSchema`. |
-| In-flight runs at upgrade | Pinned to their published version, which parses as `off`; behaviour is byte-identical to before. |
-| Existing submissions | `review_snapshot_oid` is nullable and null; a Persona with access off never asks for it, and one with access on cannot exist against a version published before the column did. |
-| A newer daemon's rows read by an older build | Zod strip mode drops the unknown key and nothing rewrites the column, so the field round-trips. |
-| Exported workflow versions | `manager.exportVersion` serializes the parsed version, so a re-import of an old export lands `off`. |
-| `reviewContract` output with access off | Byte-identical, pinned by a test. |
+Migrations are additive, idempotent, and located beside the existing upgrade path:
 
-## Testing strategy
+1. Add `personas.repository_access` with `none` default.
+2. Create `persona_builtin_overrides` with foreign identity validation against the in-memory built-in catalog at write time.
+3. Add and backfill `workflow_versions.source_snapshot_fingerprint`, then replace the old uniqueness index.
+4. Create digest-level repository artifact, per-submission artifact claim, zero-claim cleanup, workload dispatch/event cursor, and query audit tables and indexes.
+5. Extend JSON schemas with read-time defaults so historical graph and attempt JSON does not require destructive rewriting.
 
-Every layer is used for what only it can say.
+Migration tests open representative pre-feature databases, including custom Personas, built-in workflow history, published custom workflows, runs, attempts, and LLM call audit rows. They prove that all old records parse as `none`, repeated migration is safe, old versions keep identity, identical republish is idempotent, and a changed resolved Persona snapshot creates a new immutable workflow version.
 
-- **Unit (`test/`)**: the enum and its default; `personaSnapshotOf` including the field;
-  `PersonaSnapshotSchema` parsing a pre-feature snapshot as `off` **and** rejecting an unknown
-  mode; `personaSnapshotIsOutdated` reacting to an access change on both a row and a built-in;
-  path validation refusing absolute, `..`, NUL and `.git`; the denylist applied to arguments
-  **and** to search and list results; the glob matcher; every limit boundary; denial-code
-  mapping; `reviewContract` byte-equality when access is off.
-- **Persistence and migration**: modelled on the two existing patterns rather than invented.
-  `test/persona-migration.test.ts` hand-writes the pre-feature `personas` table (never importing
-  the current schema, since a fixture built from `db.ts` would create the new column itself), and
-  `test/session-action-migration.test.ts` hand-seeds a published `workflow_versions.graph_json`
-  in its old shape and asserts it still parses through the current store. This feature needs both:
-  a database built without `repository_access` opens, migrates, and reads `off` with guidance
-  bytes unchanged; a `graph_json` written before the field resolves with `repositoryAccess: "off"`
-  and its node ids intact; a second open is idempotent; the override table refuses a
-  non-built-in id; retention deletes the snapshot ref.
-  It also closes a **gap the investigation named**: nothing today seeds a `PersonaSnapshot`
-  written by a *newer* build - an unknown extra key inside `graph_json` - and asserts the current
-  parser tolerates it. Zod's strip mode makes that true; it has never been pinned, and it is the
-  property that lets this field ship without a rewrite of stored graphs. `test/workflow-publish.test.ts`
-  pins only the source-text shape of `publishWorkflow`, which the added field must keep passing.
-- **Runner contract (`test/llm-runner-contract.test.ts`)**: the broker requests **no** grant
-  and **no** tools from either runner, so the feature cannot regress into a provider-tool
-  grant; and the same round schema drives Claude and Codex identically, which is decision 2's
-  regression test.
-- **Integration (`test/workflow-engine.test.ts`, `test/workflow-context.test.ts`)**: a real
-  fixture repository with committed, staged, unstaged and untracked content; the snapshot
-  contains all four and excludes gitignored paths; the broker answers each op against it;
-  reading the snapshot still works after the worktree is removed; a multi-round attempt
-  terminates, is cancellable mid-loop, and records one audit row per operation; a missing
-  snapshot blocks in `repository_access_unavailable` after the retry ladder and **never**
-  produces a verdict.
-- **Security (`test/workflow-security.test.ts`)**: the existing home for "malicious Persona and
-  evidence content stays data inside the review contract" gains the broker's half - a crafted
-  repository path cannot leave the tree, a denied path is absent from every response shape, and a
-  fetched file arrives inside an `-untrusted` fence.
-- **Browser (`e2e/`)**: setting access in the Persona Editor and seeing it persist across reload;
-  the disclosure copy present in the popover; a built-in whose access chip is the only enabled
-  control while `Save` has count zero and the primary reads `Duplicate to edit`; and a full
-  access-enabled review round trip. All of it reaches the existing selector vocabulary -
-  `persona-rail.spec.ts` already drives a chip popover end to end - and the review is steered
-  through the existing marker channel: the fake Claude keys behaviour off a marker planted in
-  Persona guidance, and already persists a per-call counter in a file precisely because "each
-  review call is its own process", which is exactly what a two-round broker exchange needs.
+## Test strategy
 
-## Documentation
+### Unit and security tests
 
-Each page is owned by the phase that introduces the behaviour it documents:
+- Schema defaults, exhaustive MCP tool and workload-event unions, cursor integrity, artifact digest validation, budget accounting, event idempotency, metadata-only evidence-handle validation, and access freshness.
+- Path normalization, traversal, option injection, Unicode and case behavior, symlink and submodule handling, retained-revision validation, history frontier behavior, binary handling, and every sensitive-path family.
+- Layered Git fixtures that distinguish committed, staged, unstaged, deleted, renamed, untracked, ignored, symlink, submodule, and unborn-repository states.
+- Per-operation pagination and truncation without silent omissions.
+- Deterministic history selection at both ceilings, all-parent merge traversal, out-of-range revision denial, the three exhaustive `git_show` patch cases at the frontier, boundary log/blame semantics, and failure rather than silent range shrinkage when an in-range allowed object cannot be packaged.
+- Evidence handles are minted only for actually returned allowed items; forged, cross-attempt, mismatched-range, denied, failed, cancelled, and conflicting duplicate handles fail without persisting or reconstructing a quote.
 
-| Page | What it gains | Phase |
-|---|---|---|
-| `docs/workflows.md` | The Persona setting, the capability and denial list, the limits, the publish-freeze rule, the built-in override and its Duplicate-the-workflow limitation; then the review behaviour, the blocked phase and the audit surface | 1, then 3 |
-| `docs/security.md` | A pointer that access exists and is off by default; then the full trust boundary and layered defences; then the prompt-side framing | 1, 2, 3 |
-| `docs/database-and-migrations.md` | The column, the override table, the snapshot columns, the audit table and the ref namespace | 1, 2 |
-| `docs/worktrees-and-checks.md` | That a review's repository view is a snapshot commit and is therefore unaffected by worktree reclamation | 2 |
-| `docs/models.md` | The round-loop cost model | 3 |
-| `docs/event-stream.md` | The per-round aggregate event kinds, if it enumerates them | 3 |
+### Persistence, migration, and integration tests
 
-`docs/architecture.md` is deliberately **not** in that list. It is a 52-line component index that
-points at the technical pages rather than describing tables or subsystems, so this feature has
-nothing to add to it, and adding a line would make a page whose job is orientation slightly worse
-at it.
+- Custom access updates and CAS conflicts; built-in override creation, update, removal, and immutable-field rejection.
+- Snapshot capture, portable reconstruction, and rollback under checkout mutation, Git failure, database failure, digest mismatch, restart reconciliation, retention, and cleanup retries.
+- Two submissions claiming the same digest, release of either claim while the other remains active, final-claim cleanup, concurrent claim/release, and crash recovery without premature byte deletion or leaked claims.
+- Publication hash backfill, identical republish, same-draft Persona access republish, historical parsing, and built-in version immutability.
+- Local reference workloads that make several MCP calls in one provider session, read several pages, recover from denial, cite returned evidence, and complete once.
+- Artifact, executor, MCP, and provider unavailability; cancellation; duplicate and gapped events; restart recovery; retry exhaustion; and proof that prompt-only fallback never occurs.
+- Audit ordering, redaction, cardinality, and read APIs without response-body persistence.
 
-Built-in Persona Markdown under `personas/` is corrected in Phase 3 where it asserts "you have no
-repository tools", which is a generated-source edit (`npm run personas`), and one that marks
-published snapshots of those built-ins outdated - the honest consequence, recorded rather than
-avoided.
+### Runner-contract parity
 
-## Out of scope
+- The same fake repository MCP server drives Claude and Codex through the same sequence of tool calls and final verdict in one session.
+- Both providers receive the same workload launch descriptor, preserve required images and structured final output, and receive no direct filesystem, shell, write, or network tools.
+- Provider adapters expose only the expected MCP server, propagate timeout/cancellation, and reject malformed final output identically.
+- The local executor and a fake remote executor produce an identical ordered event contract, including reconnect replay and duplicate delivery.
 
-- Write access, shell execution, network access, or any provider tool grant.
-- Repository access for the Inspector, Foreman, ensembles, or Check nodes.
-- Cross-repository reads. One run is one repository, and `workflowCheckoutPath` is the single
-  place that says which.
-- Reading a session's live checkout at review time. The snapshot replaces it deliberately.
-- Fixing the pre-existing published-graph size cliff beyond the publish-time guard described
-  above; the guard prevents new data loss and the underlying read cap is left alone.
+### Browser E2E
 
-## Risks
+Add a focused spec under `e2e/specs/` using the existing fake Claude and Codex agents. It must cover:
 
-| Risk | Mitigation |
-|---|---|
-| Token cost of re-sent transcripts | Round and byte ceilings; provider-side prompt caching; per-attempt audit makes the cost visible rather than surprising |
-| A reviewer burning rounds without converging | `maxRounds` is a hard stop; the final round is asked for a verdict explicitly, and a non-verdict at the ceiling is an infrastructure failure, never a fail |
-| Snapshot creation slowing capture | Measured at 34 ms with a seeded index; the cold path is 729 ms and is the fallback when the live index cannot be copied |
-| Ref accumulation in an operator's repository | Refs are deleted by the same retention that prunes submission evidence, and a startup sweep removes refs with no live submission |
-| A crafted repository path or content steering the reviewer | Untrusted fencing on every response, the same framing the diff already carries, plus scrubbing and the denylist |
-| Snapshot content not matching the captured diff | Created inside the existing bounded capture window, parent asserted equal to the captured `headSha`, and covered by the existing boundary re-read and retry |
+- enabling custom Persona access and a built-in local override with accurate disclosure;
+- publishing and observing the frozen access mode and out-of-date behavior;
+- an exact dirty checkout that requires committed, staged, unstaged, and untracked queries to complete;
+- multiple repository queries in one Persona attempt for both providers;
+- a sensitive-path denial and a pageable/truncated result visible in the audit summary;
+- artifact, workload, or MCP unavailability leading to retry/blocked UI rather than a prompt-only verdict;
+- reload persistence and historical old-run rendering.
+
+Use roles, labels, and visible copy only. Do not add `data-testid`, do not contact real providers, and run against the built dashboard and daemon.
+
+## Documentation and operational readiness
+
+Update the existing Workflow and security documentation in the same implementation phases that introduce behavior:
+
+- `docs/workflows.md`: Persona configuration, publication freezing, built-in override behavior, retry semantics, and operator workflow.
+- `docs/workflow-system.md`: portable workload request, local MCP query flow, digest artifact and submission-claim ownership, event ingestion, audit flow, and state transitions.
+- `docs/security.md`: artifact and workload trust boundaries, denied paths, symlink/submodule rules, scrubber reuse, and explicit non-capabilities.
+- `docs/troubleshooting.md`: artifact, workload, MCP, and event-stream failure signals, cleanup backlog, retry exhaustion, and safe diagnosis.
+- `docs/database-and-migrations.md` and `docs/agent-guides/architecture.md`: new durable owners and publication fingerprint where their current contracts require updates.
+
+Operational validation includes large-change fixtures, capture/materialization/query latency logs, event lag and gap diagnostics, cleanup reconciliation after forced daemon or workload termination, and confirmation that audit records reveal failure reasons without leaking repository bodies.
+
+## Ownership boundaries
+
+| Owner | Owns | Must not own |
+| --- | --- | --- |
+| Shared Workflow contracts | Closed access modes, snapshot fields, workload/MCP/event schemas, evidence references | Node or Git execution |
+| Workflow store and DB | Persona settings, built-in overrides, publication fingerprint, artifact/workload/audit ledgers | Provider-specific request shaping |
+| Repository snapshot service | Exact layer capture, portable artifact, digest, manifest, cleanup reconciliation | Workflow retry policy or UI state |
+| Repository MCP server | Validation, path policy, Git/read operations, bounds, cursors, local query audit emission | Shell access, checkout writes, network, provider tools, Mission Control credentials |
+| Persona workload supervisor | Artifact verification/materialization, provider and MCP lifecycle, ordered events, cancellation | Workflow state transitions or database writes |
+| Persona workload executor | Versioned dispatch, executor reconciliation, event delivery, future remote transport seam | Repository query semantics or Persona policy |
+| Workflow engine | Dispatch authority, event ingestion, retry classification, terminal verdict validation | Direct filesystem resolution, provider-specific access, or remote transport details |
+| Provider workload adapters | One-session Claude and Codex launches with one MCP descriptor and final schema | Capability policy or separate MCP semantics |
+| Persona Editor and run detail | Configuration disclosure, snapshot visibility, audit summaries | Security enforcement |
+
+The daemon remains the sole SQLite writer. Provider processes receive repository access only through local MCP. Workload supervisors and future remote workers receive no database handle or original-worktree authority.
+
+## Acceptance criteria
+
+The feature is complete only when all of the following are true:
+
+- An operator can configure `none` or `read` independently on custom and built-in Personas, with only the local access override mutable on built-ins.
+- Publication freezes access in the exact Persona snapshot and can publish a new version after a Persona-only access change while preserving identical-publish idempotency.
+- Historical data reads as `none` without destructive rewrites or changed run outcomes.
+- The submission produces a content-addressed portable artifact that reconstructs committed, staged, unstaged, and applicable untracked state without the original worktree.
+- Identical artifacts may share digest-level bytes, but each submission has a durable claim; releasing one submission cannot delete bytes until the last active claim is released and cleanup rechecks that invariant atomically.
+- One review attempt starts one provider session that can execute multiple typed, pageable local MCP queries and then return one validated verdict.
+- Claude and Codex use the same MCP tool contract and security path with no direct filesystem, shell, write, or agent-visible network tools.
+- The local reference executor consumes a versioned portable workload request and produces ordered idempotent events suitable for a later remote adapter.
+- Repository query result bodies and evidence excerpts remain inside the workload; Mission Control persists only safe query/evidence-handle metadata, lifecycle events, and the ordinary bounded final verdict.
+- Protected paths, traversal, symlink following, submodule traversal, history beyond the manifest-retained range, shell, writes, network, and host files are impossible through the exposed contract.
+- Every query outcome, denial, truncation, cancellation, and failure is auditable without storing repository response bodies.
+- Artifact, workload, provider, or MCP unavailability retries and eventually blocks with infrastructure error, never silently degrading to prompt-only review.
+- Unit, integration, runner-contract, migration, and built-browser E2E suites cover the behavior and both providers.
+- Documentation explains capability, limitations, security, publication freezing, operations, and failure recovery.
+
+## Scope exclusions
+
+- Arbitrary shell commands or Git commands supplied by a model.
+- File writes, checkout mutation, commit creation on the operator branch, or agent-visible network access.
+- Direct unrestricted Claude or Codex repository tools.
+- Runtime changes to an already published Workflow version or an in-progress run.
+- Retroactive mutation of shipped built-in workflow versions.
+- Cross-repository review within one Workflow run.
+- Binary preview beyond safe metadata in the initial implementation.
+- Selection or integration of a remote sandbox, workload scheduling middleware, artifact store, WebSocket service, or cloud provider.
+- Direct broker or worker access to an original session terminal; Mission Control mediates all durable consequences.
+- Upload of repository artifacts outside the local executor until source-code handling, retention, encryption, workload identity, and remote API contracts are separately approved.
+
+## Verify-claims ledger
+
+### Verified current claims
+
+- Workflow Personas currently make one tool-less headless structured call, while full Claude and Codex session adapters already accept launch-scoped stdio MCP descriptors.
+- The current stable capture reads a bounded diff and status from the bound live checkout; the existing detached check worktree contains one commit and cannot preserve submitted staged, unstaged, and untracked distinctions.
+- Mission Control already treats a late Persona result after run cancellation as audit-only and already owns the Workflow retry state machine.
+- The browser's current reconnecting SSE projection is not a durable remote workload event protocol.
+
+### Pending technical proof
+
+- **Load-bearing, about 75% confidence:** both installed provider paths can complete multiple calls to one workload-scoped stdio MCP server and then produce the existing schema-validated verdict while every built-in repository, shell, write, and network tool remains disabled.
+  - Impact if wrong: the one-session MCP execution mechanism is not viable for both providers.
+  - Confirm by: mandatory provider contract prototypes and fake-agent coverage at the start of the foundation implementation phase.
+  - Gate: do not begin Persona/Workflow integration or introduce a provider-specific fallback until both providers pass. A failure returns the design to operator review.
+- **Not load-bearing for this feature, about 60% confidence:** a future middleware can accept the portable artifact reference, run the same workload contract, and carry ordered events and idempotent commands.
+  - Impact if wrong: the later adapter needs a polling or gateway layer, but the local executor and Workflow feature remain valid.
+  - Confirm by: the future scheduler API contract. No remote adapter is implemented here.
+- **Not load-bearing for this feature, about 60% confidence:** repository artifact upload will be permitted by source-code handling and retention policy.
+  - Impact if wrong: future execution must use an approved pull-through service, private deployment, or local executor.
+  - Confirm by: security and data-governance review before any remote artifact publication.
+
+Verify-claims verdict: the local remote-shaped plan may proceed with the provider MCP proof as a blocking foundation exit gate. Remote transport implementation remains out of scope and blocked on its platform and governance contracts.
+
+## Planning handoff
+
+The operator approved this local-MCP, remote-shaped workload design and asked for phased implementation scheduling. The accompanying phased plan uses three serial merge units: the workload/MCP foundation, the portable exact-state artifact, and the end-to-end Persona and Workflow integration. The actual remote scheduling adapter remains future work. No feature implementation belongs in this planning pull request.

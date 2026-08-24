@@ -8,6 +8,31 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("native-worktree-dispatch");
 
+/**
+ * How long a native dispatch is allowed to take to reach `running`.
+ *
+ * Every other spec dispatches into an already-warm checkout; this one is the only place a
+ * dispatch does real `git worktree` work in a pool - three times, once against a slot that
+ * has to be recycled and re-leased first. That is seconds of disk on a busy machine, so the
+ * implicit five-second poll is not a statement about the product, it is a statement about
+ * the runner. The two teardown polls below already carry an explicit window for the same
+ * reason; these are the matching pair.
+ */
+const DISPATCH_SETTLES_MS = 45_000;
+
+/**
+ * How long a confirmed Clean up may take to hand both leases back.
+ *
+ * This one reclaim tears down TWO pooled native worktrees - the primary and the attached
+ * repo - and each teardown is real git plus a process-occupancy scan the allocator will not
+ * skip. Measured end to end at 26 to 29 seconds with four suites on the box, and it does
+ * complete: instrumenting the failure showed the lease handed back 11 to 14 seconds AFTER
+ * the old fifteen-second window had already given up. So the assertion was reading "the
+ * reclaim is quick" when what it means, and all it should mean, is "the reclaim frees both
+ * leases".
+ */
+const RECLAIM_SETTLES_MS = 90_000;
+
 interface TaskSnapshot {
   id: string;
   title: string;
@@ -75,12 +100,15 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   dashboard,
   daemon,
 }) => {
+  // Three native dispatches, a kill, and a confirmed cleanup, each of them real git work on
+  // real trees. The default thirty seconds covers the browser, not the disk underneath it.
+  test.setTimeout(240_000);
   const firstIntent = "Prepare the first native multi repo change";
   const concurrentIntent = "Keep a concurrent native checkout active";
   const reusedIntent = "Reuse the released native multi repo slots";
 
   await dispatch(dashboard, daemon, firstIntent, [daemon.secondRepo]);
-  await expect.poll(() => taskFor(daemon, firstIntent)).toMatchObject({
+  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: DISPATCH_SETTLES_MS }).toMatchObject({
     status: "running",
     provider: "mission",
     worktreeLeaseId: expect.any(String),
@@ -115,7 +143,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   // A second live task in the primary repository must get a different slot. It stays active
   // while the first slot is returned and reused below, proving reuse never means sharing.
   await dispatch(dashboard, daemon, concurrentIntent);
-  await expect.poll(() => taskFor(daemon, concurrentIntent)).toMatchObject({
+  await expect.poll(() => taskFor(daemon, concurrentIntent), { timeout: DISPATCH_SETTLES_MS }).toMatchObject({
     status: "running",
     provider: "mission",
   });
@@ -142,12 +170,13 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   const firstRow = sitrep.locator(".report-row", { hasText: currentFirst.title });
   await firstRow.getByRole("button", { name: "Clean up" }).click();
   await firstRow.getByRole("button", { name: "Clean up" }).click();
-  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: 15_000 }).toMatchObject({
-    status: "failed",
-    worktreePath: null,
-    worktreeLeaseId: null,
-    extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
-  });
+  await expect.poll(() => taskFor(daemon, firstIntent), { timeout: RECLAIM_SETTLES_MS })
+    .toMatchObject({
+      status: "failed",
+      worktreePath: null,
+      worktreeLeaseId: null,
+      extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
+    });
   await expect(sitrep.locator(".report-row", { hasText: currentFirst.title })).toContainText("failed");
   await expect(
     sitrep.locator(".report-row", { hasText: currentFirst.title }).getByRole("button", { name: "Clean up" }),
@@ -157,7 +186,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   await dashboard.keyboard.press("Escape");
 
   await dispatch(dashboard, daemon, reusedIntent, [daemon.secondRepo]);
-  await expect.poll(() => taskFor(daemon, reusedIntent)).toMatchObject({
+  await expect.poll(() => taskFor(daemon, reusedIntent), { timeout: DISPATCH_SETTLES_MS }).toMatchObject({
     status: "running",
     provider: "mission",
     extraRepos: [{ provider: "mission" }],

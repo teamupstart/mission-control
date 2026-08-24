@@ -14,6 +14,7 @@ import {
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
+import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
@@ -466,6 +467,11 @@ export function ConsoleDetail({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
+        {/* What THIS session was given at launch, from its own immutable snapshot - never
+            from live configuration. A session outlives the setting that launched it, so a
+            chip that re-resolved would quote it text it never saw the moment the operator
+            edits the rule, which is exactly when they are most likely to be reading it. */}
+        <StandingInstructionsChip sessionId={session.id} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />

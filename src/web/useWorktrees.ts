@@ -70,7 +70,17 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     if (seq !== readSeq.current) return;
     setLoading(false);
     if (!next) {
-      setInventory(null);
+      // KEEP what we already observed. A refresh can fail for a moment - the daemon is busy
+      // shelling out to git for somebody else, a request is aborted - and throwing the last
+      // good inventory away for that turns every blip into a full outage: `disabled={!config}`
+      // greys out the whole panel, and the maximum-slots box falls back to its hardcoded 16,
+      // which is not the operator's setting and is not labelled as a placeholder. Somebody
+      // reading it is told their maximum is 16 when it is 4.
+      //
+      // The panel was already written for this: `inventory && error` renders the failure as a
+      // banner ABOVE data it still trusts, and `!inventory && error` is the real outage state.
+      // Only the second was ever reachable after a first successful load. Now both are, and
+      // which one an operator sees matches which thing actually happened.
       setError("Worktree inventory is unavailable.");
       return;
     }

@@ -58,12 +58,31 @@ async function failEnsemble(daemon: DaemonHandle): Promise<string> {
     )
     .toBe(2);
 
-  const members = (await json<Detail>(daemon, `/api/ensembles/${id}`)).members;
-  for (const member of members) {
-    await json(daemon, `/api/ensembles/${id}/actions`, {
-      kind: "withdraw_member",
-      memberId: member.id,
+  // Withdraw whatever is STILL active, re-reading between each one. Withdrawing the first
+  // member can already make a two-candidate barrier impossible, and a run that has ended for
+  // that reason ends its remaining members with it - so the second withdrawal is a race the
+  // fixture wins either way. Sending it blind lost that race as a 400 ("that member cannot be
+  // withdrawn right now"), which failed the test at the exact moment its setup had succeeded.
+  for (;;) {
+    const detail = await json<Detail>(daemon, `/api/ensembles/${id}`);
+    if (detail.run.status === "failed") break;
+    const active = detail.members.find((member) => member.status === "active");
+    if (!active) break;
+    const response = await fetch(`${daemon.baseURL}/api/ensembles/${id}/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "withdraw_member", memberId: active.id }),
     });
+    if (!response.ok) {
+      // Only the "it already ended" refusal is tolerable here; anything else is a real defect
+      // and has to fail loudly rather than spin this loop until the test times out.
+      const text = await response.text();
+      expect(
+        text,
+        `withdrawing ${active.id} answered ${response.status}: ${text}`,
+      ).toContain("ensemble_action_invalid");
+      break;
+    }
   }
   await expect
     .poll(async () => (await json<Detail>(daemon, `/api/ensembles/${id}`)).run.status, {

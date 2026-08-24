@@ -161,6 +161,15 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["skill", "slash command", "symlink", "catalog"],
   },
   {
+    id: "standing-instructions",
+    label: "Standing instructions",
+    icon: "✎",
+    blurb: "Text every session gets, per repository",
+    group: "sessions",
+    scope: "machine",
+    keywords: ["instruction", "prompt", "repository", "always", "rule", "preamble", "per-repo"],
+  },
+  {
     id: "cost",
     label: "Cost",
     icon: "$",

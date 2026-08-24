@@ -100,5 +100,12 @@
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
     }
+  },
+  "electronmon": {
+    "patterns": [
+      "!**/*",
+      "dist/main/**",
+      "dist/preload/**"
+    ]
   }
 }

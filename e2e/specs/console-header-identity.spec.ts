@@ -169,6 +169,13 @@ test("the permission mode leads the header cluster and the footer has given it u
   // copy of its label. The popover names itself, so this is a role-and-name assertion.
   await mode.click();
   await expect(dashboard.getByRole("menu", { name: "Permission mode" })).toBeVisible();
+
+  // A scroll is not a dismissal. The conversation this chip sits above auto-scrolls whenever
+  // the agent streams a line, so a picker that closed on scroll closed itself on exactly the
+  // sessions an operator opens it on. It follows the chip instead.
+  await dashboard.mouse.wheel(0, 120);
+  await expect(dashboard.getByRole("menu", { name: "Permission mode" })).toBeVisible();
+
   await dashboard.keyboard.press("Escape");
   await expect(dashboard.getByRole("menu", { name: "Permission mode" })).toBeHidden();
 

@@ -4,7 +4,20 @@ import { createHash } from "node:crypto";
 // The preview boundary moved out of the Files component into one shared module when Scouts
 // became a second surface rendering untrusted HTML. These assertions are unchanged: they are
 // the contract BOTH surfaces now inherit, so they must keep passing from their new home.
-import { htmlPreviewSource, inlinePreviewStyles } from "../src/web/lib/htmlPreview.ts";
+import {
+  HTML_PREVIEW_SANDBOX,
+  htmlPreviewSource,
+  inlinePreviewStyles,
+} from "../src/web/lib/htmlPreview.ts";
+
+/** One emitted bridge, found by a string only it contains. */
+function bridgeContaining(marker: string): string {
+  const bridge = [...htmlPreviewSource("ok").matchAll(/<script>([^<]+)<\/script>/g)]
+    .map((match) => match[1]!)
+    .find((script) => script.includes(marker));
+  assert.ok(bridge, `no bridge contains ${marker}`);
+  return bridge;
+}
 
 test("HTML preview prefixes a restrictive CSP before an existing head", () => {
   const source = htmlPreviewSource("<!doctype html><html><head><title>x</title></head><body>ok</body></html>");
@@ -20,21 +33,126 @@ test("every injected bridge is hash-authorized, and nothing else is", () => {
   // Recomputed from the emitted scripts rather than copied from the constants, so a
   // bridge edited without its hash - which fails invisibly, as a bridge that simply
   // does not run - fails HERE instead.
+  //
+  // THREE since the comment bridge landed. The extraction regex stops at the first `<`, so
+  // this also pins the constraint that keeps it working: no bridge body may contain a
+  // literal `<`. A comparison operator in one would truncate that script here and produce a
+  // hash mismatch - which is the loud failure, and far better than the quiet one.
   const source = htmlPreviewSource("ok");
   const scripts = [...source.matchAll(/<script>([^<]+)<\/script>/g)].map((match) => match[1]!);
-  assert.equal(scripts.length, 2);
+  assert.equal(scripts.length, 3);
+  for (const script of scripts) assert.doesNotMatch(script, /</, "no bridge contains a literal <");
   const allowed = [...source.matchAll(/'sha256-([^']+)'/g)].map((match) => match[1]!);
   const hashes = scripts.map((script) => createHash("sha256").update(script).digest("base64"));
   assert.deepEqual(allowed.toSorted(), hashes.toSorted());
 });
 
-test("HTML fragments stay opaque and authorize only the two bridges", () => {
+test("HTML fragments stay opaque and authorize only the three bridges", () => {
   const source = htmlPreviewSource("<h1>Hello</h1><script>alert(1)</script>");
   assert.match(source, /^<!doctype html><meta http-equiv="Content-Security-Policy"/);
   assert.doesNotMatch(source, /allow-same-origin/);
   assert.match(source, /event\.source===parent/);
   assert.match(source, /mission:file-preview-scroll/);
   assert.match(source, /mission:file-preview-link/);
+  assert.match(source, /mission:file-preview-comment/);
+  assert.match(source, /mission:file-preview-block/);
+  assert.match(source, /mission:file-preview-ready/);
+});
+
+test("the comment bridge announces itself, so arming it is never a guess about timing", () => {
+  // A `srcdoc` document can fire a load event for the `about:blank` before it, so a parent
+  // arming on load alone can post into a window that is about to be replaced - and the
+  // message is lost with it, leaving comment mode on in the toolbar and off in the frame.
+  // The ping is the LAST statement in the bridge, so it cannot be sent before the listeners
+  // above it are installed.
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /parent\.postMessage\(\{type:"mission:file-preview-ready"\}," ?\*"\)$/);
+});
+
+test("the sandbox is one exported constant, and it grants scripts and nothing else", () => {
+  // The whole reason `HTML_PREVIEW_SANDBOX` is exported rather than written at each iframe:
+  // a token added here is a token added to Files AND to Scouts, so it can only be added on
+  // purpose. `allow-scripts` alone runs the three hashed bridges.
+  assert.equal(HTML_PREVIEW_SANDBOX, "allow-scripts");
+});
+
+test("the comment bridge is inert until the parent that owns the frame enables it", () => {
+  const bridge = bridgeContaining("mission:file-preview-comment");
+  // Armed only by a message from `parent`, which is the same test the scroll bridge makes.
+  // Scouts never sends it, so an archived report behaves exactly as it did before this
+  // bridge existed - and no other frame or extension can arm it either.
+  assert.match(bridge, /event\.source!==parent/);
+  assert.match(bridge, /missionCommenting=event\.data\.enabled===true/);
+  // Every click path begins by checking that flag, so with comment mode off the bridge does
+  // not even look at where the click landed.
+  assert.match(bridge, /"click",event=>\{if\(!missionCommenting\)return/);
+});
+
+test("the comment bridge reports a structural path and never any text", () => {
+  const bridge = bridgeContaining("mission:file-preview-block");
+  // The path is element indices with tag names, walked up to `document.body` and no further.
+  // Starting at body is what makes it independent of the CSP meta, these three scripts, and
+  // a stylesheet this module inlined - all of which land in `<head>`.
+  assert.match(bridge, /node!==document\.body/);
+  assert.match(bridge, /index:\[\.\.\.owner\.children\]\.indexOf\(node\)/);
+  assert.match(bridge, /tag:node\.tagName\.toLowerCase\(\)/);
+  // Nothing that could carry document content up. A resolver that searched the source for a
+  // block's words would refuse most real blocks; see `resolveHtmlBlockAnchor`.
+  assert.doesNotMatch(bridge, /textContent|innerText|innerHTML|outerHTML/);
+  // No new capability: it reads its own document and posts to its own parent. No fetch, no
+  // navigation, no storage, no token.
+  assert.doesNotMatch(bridge, /fetch|XMLHttpRequest|location|localStorage|sessionStorage|cookie/);
+});
+
+test("what counts as a block is computed, not enumerated", () => {
+  // A tag allowlist is never finished. The one this replaced was missing `form`, `fieldset`,
+  // `address` and `dialog`, and no list can see a `span` a stylesheet made `display:block` -
+  // which reads to a person as a block and is a fair thing to point at. The preview renders
+  // arbitrary checkout HTML, so "anything I enumerated" is the wrong set.
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /getComputedStyle\(el\)\.display/);
+  assert.match(bridge, /shown!=="inline"&&shown!=="contents"&&shown!=="none"/);
+  // The elements the old list happened to name must not reappear as a list anywhere.
+  assert.doesNotMatch(
+    bridge,
+    /blockquote|figcaption|thead|tbody/,
+    "the bridge must not carry a tag allowlist",
+  );
+  // SVG is decided by tag on purpose: an `svg` computes to `inline`, and its internals are
+  // not CSS blocks at all, so display alone would skip the diagram or offer its strokes.
+  assert.match(bridge, /tagName\.toLowerCase\(\)==="svg"/);
+  // `body` bounds the walk - the whole document is not a block to comment on.
+  assert.match(bridge, /el!==document\.body/);
+});
+
+test("the hover outline sits on the one element a click would take", () => {
+  // The bridge marks that element itself. A CSS rule that restated the block definition in a
+  // selector could outline a different box from the one a click resolves to, and both halves
+  // would still "work" - the quiet kind of wrong. Computed display cannot be a selector at
+  // all, so there is nothing to restate.
+  const source = htmlPreviewSource("ok");
+  const styles = [...source.matchAll(/<style>([^<]+)<\/style>/g)].map((match) => match[1]!);
+  const style = styles.find((candidate) => candidate.includes("mission-comment-mode"))!;
+  assert.match(style, /html\.mission-comment-mode \.mission-comment-block\{/);
+  assert.doesNotMatch(style, /:has\(/, "no selector may restate which element is the block");
+  assert.doesNotMatch(style, /blockquote|figcaption|thead|tbody/);
+  // And the class it keys on is set by the bridge and nothing else.
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /classList\.add\("mission-comment-block"\)/);
+  assert.match(bridge, /classList\.remove\("mission-comment-block"\)/);
+});
+
+test("the comment bridge takes the click before the link bridge can navigate it", () => {
+  // Both listen on `document` in the capture phase, so registration order IS the behaviour:
+  // `stopImmediatePropagation` only reaches listeners registered after this one. A paragraph
+  // containing a link therefore takes a comment while comment mode is on.
+  const source = htmlPreviewSource("ok");
+  assert.ok(
+    source.indexOf("mission:file-preview-comment") < source.indexOf("mission:file-preview-link"),
+    "the comment bridge is injected before the link bridge",
+  );
+  const bridge = bridgeContaining("mission:file-preview-block");
+  assert.match(bridge, /event\.preventDefault\(\);event\.stopImmediatePropagation\(\)/);
 });
 
 test("the link bridge claims authored navigation before scrolling fragments or posting links", () => {

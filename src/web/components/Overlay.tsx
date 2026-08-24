@@ -61,6 +61,7 @@ export const OVERLAY_IDS = {
   worktreeAction: "worktree-action",
   tour: "tour",
   productIssue: "product-issue",
+  standingInstructions: "standing-instructions",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

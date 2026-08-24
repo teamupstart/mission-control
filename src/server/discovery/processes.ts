@@ -1,4 +1,4 @@
-import { run } from "../util/exec.ts";
+import { run, type RunResult } from "../util/exec.ts";
 import { normTty } from "./tty.ts";
 import { allHarnesses, harnessFor } from "../harness/index.ts";
 import type { Harness } from "../harness/types.ts";
@@ -258,6 +258,42 @@ export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid):
  * multi-token `lstart` at the tail (uid, pid, ppid, state, and tty are single tokens before it);
  * pass B puts the multi-token `command` at the tail. We join on pid.
  */
+/**
+ * How long a SYSTEM-WIDE `ps` may take before we stop believing its answer.
+ *
+ * `run`'s four-second default is sized for the small, targeted discovery commands it was
+ * written for. These two are neither: their cost grows with the machine's whole process
+ * table and with the argv length of everything on it, and the answer is consumed by
+ * `unknownReason`, which destructive worktree decisions correctly treat as a refusal.
+ *
+ * So impatience here does not degrade gracefully - it becomes "native worktree release
+ * refused: process listing failed", an operator watching Clean up decline to release a
+ * checkout that nothing is actually holding. Measured, `ps -A` answers in about 40ms on a
+ * thousand-process machine and stays under 300ms with forty of these running at once, so
+ * the four seconds was never about `ps` being slow. It is about the DAEMON: under real
+ * load its event loop stalls, and a timer that fires during the stall kills a read that had
+ * already finished. A wider window costs nothing on the normal path and takes that whole
+ * class of false refusal off the table, while leaving the fail-closed rule intact.
+ */
+const PS_TIMEOUT_MS = 30_000;
+
+/**
+ * Which way a `ps` read failed, in words an operator can act on.
+ *
+ * The old text was the child's stderr, or its exit code when that was empty. A killed
+ * child has neither: no stderr, and a code coerced to 1 - so every death-by-signal, our
+ * own timeout included, reached the dashboard as the bare and unactionable "process
+ * listing failed: exit 1". The two flags that distinguish them are already computed
+ * here; they were simply being thrown away one line before the only place that reads them.
+ */
+export function describeFailure(result: RunResult): string {
+  if (result.overflowed) return "the process listing was too large to buffer";
+  if (result.outcomeUnknown) {
+    return "the process listing was killed before it answered (timed out, or stopped from outside)";
+  }
+  return result.stderr.trim() || `exit ${result.code}`;
+}
+
 export interface ProcessSnapshot {
   processes: Proc[];
   /** Non-null when either system-wide ps read did not produce a complete answer. */
@@ -274,8 +310,8 @@ export interface ProcessSnapshot {
  */
 export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
   const [a, b] = await Promise.all([
-    run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="]),
-    run("ps", ["-Ao", "pid=,command="]),
+    run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
+    run("ps", ["-Ao", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
   ]);
 
   const commands = new Map<number, string>();
@@ -315,7 +351,7 @@ export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
   return {
     processes: procs,
     unknownReason: failed
-      ? `process listing failed: ${failed.stderr.trim() || `exit ${failed.code}`}`
+      ? `process listing failed: ${describeFailure(failed)}`
       : effectiveUid === null
         ? "process listing failed: effective user identity is unavailable"
         : null,

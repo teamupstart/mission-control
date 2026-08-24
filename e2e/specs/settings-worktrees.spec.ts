@@ -8,6 +8,16 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("settings-worktrees");
 
+/**
+ * How long an Execute is allowed to take to close its preview.
+ *
+ * A return is real git - a fetch, then a reset of a checkout on disk to the fetched remote
+ * default - so this window is about the disk, not about the dialog. Measured at six to eight
+ * seconds on a developer's machine, which is why the implicit five second one was a coin toss
+ * on a busy box and failed the same way on a clean tree.
+ */
+const EXECUTES_MS = 30_000;
+
 async function shoot(page: Page, name: string, fullPage = false): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -201,6 +211,10 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   dashboard,
   daemon,
 }) => {
+  // Two previews and a real return, and a return is `git fetch` plus a reset to the fetched
+  // remote default on a checkout on disk. That is seconds of git per Execute, so the default
+  // thirty is a budget for the browser and not for the work underneath it.
+  test.setTimeout(120_000);
   const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
     data: { repositoryPath: daemon.repo, label: "acknowledgement refresh" },
   });
@@ -226,7 +240,10 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   await expect(dirtyAcknowledgement).toHaveCount(0);
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   await preview.getByRole("button", { name: "Execute" }).click();
-  await expect(preview).toHaveCount(0);
+  // The dialog closes when the return has actually happened, and measuring it says the return
+  // takes six to eight seconds here - so the implicit five-second window was asserting that
+  // git is fast rather than that the preview closes. `EXECUTES_MS` is the honest one.
+  await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
 });
 
 /**
@@ -340,4 +357,50 @@ test("Settings Worktrees gives loading, empty, unavailable, and over capacity re
   await expect(rightSize).toHaveCount(0);
   await expect(overRow.getByRole("button", { name: "Preview right-size" })).toBeFocused();
   await overPage.close();
+});
+
+/**
+ * A refresh that fails is not an outage, and must not be drawn as one.
+ *
+ * The panel greys every control on `!config` and falls the maximum-slots box back to a
+ * hardcoded 16. So discarding a good inventory because ONE refresh failed does not merely
+ * lose detail - it tells an operator whose maximum is 4 that their maximum is 16, in an
+ * enabled-looking number field, with no marker saying the value is a placeholder. That is
+ * the failure worth a spec: not "the panel went blank", but "the panel lied about a
+ * setting". The real outage state - never having observed anything - still has to read as
+ * an outage, which is the second half of this test.
+ */
+test("a failed refresh keeps the observed inventory instead of blanking it to a placeholder", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const maxSlots = dashboard.getByLabel("Default maximum native slots");
+  await expect(maxSlots).toBeEnabled();
+  await maxSlots.fill("4");
+  await expect
+    .poll(async () => (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json())
+    .toMatchObject({ config: { maxSlots: 4 } });
+  await expect(maxSlots).toHaveValue("4");
+
+  // Exactly one refresh fails, the way a busy daemon drops one.
+  let failures = 0;
+  await dashboard.route("**/api/worktrees", async (route) => {
+    if (route.request().method() === "GET" && failures === 0) {
+      failures += 1;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+  // "Refresh" is the button's own text; the long sentence beside it is a Tooltip, which
+  // renders as `aria-describedby` and is deliberately NOT the accessible name.
+  await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
+
+  // The number the operator set is still the number on screen, and still editable. The
+  // banner says the refresh failed - above data the panel still trusts, not instead of it.
+  await expect(maxSlots).toHaveValue("4");
+  await expect(maxSlots).toBeEnabled();
+  await expect(dashboard.getByText("Worktree inventory is unavailable.")).toBeVisible();
+  await expect(dashboard.getByText("Pool capacity could not be observed.")).toHaveCount(0);
 });

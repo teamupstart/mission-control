@@ -135,6 +135,41 @@ actions, and preview-first cleanup without replacing task, check, Git, or proces
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
+## Give a repository standing instructions
+
+**Settings → Standing instructions** is one box per repository, in your own words, sent to
+every session Mission Control opens into that checkout. It fills the gap nothing else covers:
+`AGENTS.md` is per-repository but committed, so it reaches every teammate on every machine,
+and Foreman's instructions are machine-local but global and never reach a session at all.
+This is per-repository **and** local to this machine - nothing is written to `~/` and nothing
+is sent to GitHub.
+
+Write a rule and the very next session dispatched into that repository has it. Sessions
+already running keep what they launched with; a live process's system prompt cannot be
+rewritten, so an edit reaches the next session rather than the ones already open.
+
+A machine-wide **Every repository** box covers the checkouts with no rule of their own, and
+the longest matching path wins, so a monorepo package's rule beats the monorepo's. Two states
+that look alike are kept apart on purpose: a repository with **no** entry inherits the
+machine-wide default, while one whose box is **empty** sends nothing at all and beats that
+default. **Use global default** removes the entry; clearing the box does not.
+
+Each card carries a **reach** block stating, per harness and runtime, which sessions get the
+text and by which mechanism - a system prompt on Claude, developer instructions on an embedded
+Codex, turn-one prose where a harness has no channel of its own. It also names what this does
+**not** reach: sessions you started outside Mission Control, and Mission Control's own Foreman,
+Inspector and Persona review prompts. A rule that silently reached half the fleet would be
+worse than none, because it would be trusted and wrong.
+
+Two read-only markers make it visible where it matters. The dispatch form says what a launch
+will send, covering **every** attached repository rather than just the primary. A live
+session's header carries a chip showing what **that** session was actually given at launch,
+which does not change when you later edit the rule. Both name the mechanism as well as the
+size: on Claude the text rides the system prompt and never appears in the transcript, so
+without the chip there would be nothing anywhere to read.
+
+See [Skills and settings](docs/skills-and-settings.md).
+
 ## Build the operating system around the work
 
 The Library centralizes reusable workflows, personas, session actions, ensemble strategies,

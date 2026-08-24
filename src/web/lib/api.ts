@@ -23,6 +23,7 @@ import type {
   SessionFileEntry,
   SessionFileSaveResult,
   SessionQueue,
+  SessionRuntime,
   SkillsView,
   Task,
   TaskKind,
@@ -34,6 +35,7 @@ import type {
   AwayConfig,
   AwayConfigPatch,
   CreateFileCommentBody,
+  HtmlBlockAnchorBody,
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
@@ -62,10 +64,17 @@ import type {
   UpdateTask,
   TaskDependencyInput,
   EnsembleActionBody,
+  StandingInstructionsUpdate,
+  StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
 } from "@shared/protocol.ts";
-import { HarnessModelCatalogsSchema } from "@shared/protocol.ts";
+import {
+  HarnessModelCatalogsSchema,
+  StandingInstructionsConflictSchema,
+  StandingInstructionsViewSchema,
+} from "@shared/protocol.ts";
+import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type {
   WorktreeActionExecuteResult,
   WorktreeActionPreview,
@@ -375,6 +384,91 @@ export async function setPipelinesConfig(
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
+// ---- Repository standing instructions ----
+//
+// Four reads over Phase 1's routes, and the split between the last two is the point: the
+// dispatch note asks what a session WOULD get and reads live configuration, while the
+// session chip asks what a session DID get and reads that session's immutable launch
+// snapshot. Pointing both at the resolved route makes the chip start lying the first time
+// the operator edits a rule - which is exactly when they are most likely to be reading it.
+
+/** The whole document plus the compare-and-swap token a save must echo back. */
+export const fetchStandingInstructions = () =>
+  fetchJson<StandingInstructionsView>("/api/instructions");
+
+/**
+ * Compare-and-swap one patch onto the document.
+ *
+ * `409` is a first-class answer and carries the daemon's current view, so it is returned
+ * rather than flattened into an error string: the panel needs the newer document to say
+ * which repository moved underneath the operator.
+ */
+export async function saveStandingInstructions(
+  update: StandingInstructionsUpdate,
+): Promise<
+  | { ok: true; view: StandingInstructionsView }
+  | { ok: false; conflict: StandingInstructionsView }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch("/api/instructions", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(update),
+    });
+    const body = (await res.json().catch(() => null)) as unknown;
+    // Parsed rather than cast, the way `foremanProfileApi.ts` parses its twin. The panel
+    // adopts whatever comes back here as the baseline it compare-and-swaps future saves
+    // against, so an unreadable body must not become a baseline that quietly disagrees with
+    // the daemon - and the 409 branch below has to be able to tell a real conflict body from
+    // any other refusal that happens to arrive with that status.
+    if (res.ok) {
+      const parsed = StandingInstructionsViewSchema.safeParse(body);
+      if (parsed.success) return { ok: true, view: parsed.data };
+      return { ok: false, error: "the daemon returned an unreadable standing-instructions document" };
+    }
+    if (res.status === 409) {
+      const conflict = StandingInstructionsConflictSchema.safeParse(body);
+      if (conflict.success) return { ok: false, conflict: conflict.data.current };
+    }
+    const error = body && typeof body === "object" && "error" in body
+      && typeof body.error === "string"
+      ? body.error
+      : `HTTP ${res.status}`;
+    return { ok: false, error };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * What a session launched into these checkouts WOULD be sent, from live configuration.
+ *
+ * `repoPaths` repeats once per ATTACHED repository, in the launch manifest's order, because
+ * a launch composes a block for every one of them. Previewing only the primary would tell a
+ * two-repo dispatch that nothing is coming while the launch sends the secondary's rules -
+ * and a note saying "nothing" is the reason an operator stops looking.
+ */
+export const fetchResolvedStandingInstructions = (
+  repoPaths: readonly string[],
+  agent: AgentType,
+  runtime: SessionRuntime,
+  signal?: AbortSignal,
+) => {
+  const q = new URLSearchParams();
+  for (const path of repoPaths) q.append("repoPath", path);
+  q.set("agent", agent);
+  q.set("runtime", runtime);
+  return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
+};
+
+/** What THIS session was actually sent at launch. `null` covers the route's 404. */
+export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<StandingInstructionsDelivery>(
+    `/api/sessions/${encodeURIComponent(id)}/standing-instructions`,
+    signal,
+  );
+
 /**
  * The repositories being read, for the Pipelines rail's headings.
  *
@@ -1884,6 +1978,54 @@ export const createFileComment = (sessionId: string, body: CreateFileCommentBody
   fileCommentWrite(`/api/sessions/${encodeURIComponent(sessionId)}/file-comments`, {
     body: JSON.stringify(body),
   });
+
+/**
+ * Which SOURCE lines the block clicked in the HTML preview covers.
+ *
+ * A READ despite the POST - it writes nothing, and the create route is still the only way a
+ * comment comes into being. It is a POST because the structural path is a list.
+ *
+ * The refusal is passed through verbatim rather than replaced with a status code, because
+ * the daemon's sentence is the one a person can act on: it says the render is stale and to
+ * reload it, which is the only way this can honestly fail.
+ */
+export async function resolveHtmlBlockAnchor(
+  sessionId: string,
+  body: HtmlBlockAnchorBody,
+): Promise<
+  | { ok: true; startLine: number; endLine: number; quote: string; revision: string | null }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/html-block-anchor`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      startLine?: number;
+      endLine?: number;
+      quote?: string;
+      revision?: string | null;
+      error?: string;
+    };
+    if (!res.ok || typeof data.startLine !== "number" || typeof data.quote !== "string") {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      startLine: data.startLine,
+      endLine: data.endLine ?? data.startLine,
+      quote: data.quote,
+      revision: data.revision ?? null,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** Submit a draft, or put a replied-to thread back at the TAIL of the queue. One route. */
 export const queueFileComment = (threadId: string) =>

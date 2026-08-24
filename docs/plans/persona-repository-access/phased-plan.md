@@ -27,6 +27,24 @@ implements them; none is re-opened, and none was presented back to the operator 
 | Auditability | operations, denials, truncation and failures recorded | 2 (record) + 3 (surface) |
 | Limits | per-operation, per-round, per-attempt; no single global character cap | 2 (values) + 3 (round budget) |
 
+### Execution assignment
+
+All three phase tasks are scheduled on **Codex, `gpt-5.6-sol`, `high` reasoning effort**, at the
+operator's direction, rather than on the backlog default. `create_task` deliberately files a task
+with the default agent, model and effort, so this was applied afterwards through
+`POST /api/tasks/:id/update`, which is the documented route that accepts all three; dependency edges
+and task intents were verified unchanged by the patch.
+
+Two consequences the phase files now carry, because all three implementers are Codex:
+
+- `gpt-5.6-sol` is in the `codex` catalog (`src/shared/model.ts`) and its
+  `effort.levelsFor` admits the full `THINKING_LEVELS`, so `high` is a valid pairing rather than one
+  silently downgraded.
+- On macOS under `CODEX_SANDBOX=seatbelt`, `npm test` includes real Electron geometry tests and
+  needs the repository-prescribed scoped outside-sandbox approval. Each phase's verification section
+  says so rather than leaving three agents to rediscover it, following the precedent in
+  `docs/plans/test-db-isolation/` and `docs/plans/keep-awake-native-provider/`.
+
 ## Repository findings that shaped the phases
 
 Verified against the worktree at planning time; implementers re-verify. Three findings decided the

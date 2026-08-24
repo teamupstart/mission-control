@@ -265,6 +265,11 @@ Verification: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, 
 and `npm run test:e2e` (UI surface changed). One focused run for the new and touched files, with
 the loader preamble `--import ./test/setup-state.mjs --import tsx`.
 
+On macOS under `CODEX_SANDBOX=seatbelt`, `npm test` includes real Electron geometry tests: use the
+repository-prescribed scoped outside-sandbox approval rather than bypassing the preflight or adding
+Chromium flags. `npm run test:e2e` needs a successful `npm run build` first, and the Playwright
+browser, which `npm install` does not fetch - `npx playwright install chromium` once per machine.
+
 ## Merge and exit criteria
 
 - An operator can set repository access on an operator Persona and on a built-in, and the value

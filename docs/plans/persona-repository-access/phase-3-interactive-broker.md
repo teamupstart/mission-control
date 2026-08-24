@@ -267,7 +267,17 @@ fencing on fetched content, scrubbing, and the fact that a denial is reported to
   than a raw phase code. Spend no model tokens.
 
 Verification: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`,
-`npm run test:e2e`.
+`npm run test:e2e`. Focused runs use the loader preamble
+`--import ./test/setup-state.mjs --import tsx`.
+
+On macOS under `CODEX_SANDBOX=seatbelt`, `npm test` includes real Electron geometry tests: use the
+repository-prescribed scoped outside-sandbox approval rather than bypassing the preflight or adding
+Chromium flags. `npm run test:e2e` needs a successful `npm run build` first, and the Playwright
+browser, which `npm install` does not fetch - `npx playwright install chromium` once per machine.
+
+Spend no model tokens in `e2e/`: every agent binary is redirected at a fake, and a broker exchange
+must be answered on **both** headless paths, since the fake discriminates `--setting-sources=` (the
+Agent SDK one-shot, which is the production default) from `-p` (the print escape hatch).
 
 ## Merge and exit criteria
 

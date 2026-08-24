@@ -107,6 +107,28 @@
   </table>
   </div>
 
+  <h3>Execution assignment</h3>
+  <div class="callout">
+    <p>All three phase tasks are scheduled on <strong>Codex, <code>gpt-5.6-sol</code>,
+    <code>high</code> reasoning effort</strong>, at the operator's direction, rather than on the
+    backlog default. <code>create_task</code> deliberately files a task with the default agent, model
+    and effort, so this was applied afterwards through <code>POST /api/tasks/:id/update</code>, which
+    is the documented route that accepts all three; dependency edges and task intents were verified
+    unchanged by the patch.</p>
+    <p>Two consequences the phase files now carry, because all three implementers are Codex:</p>
+    <ul>
+      <li><code>gpt-5.6-sol</code> is in the <code>codex</code> catalog
+        (<code>src/shared/model.ts</code>) and its <code>effort.levelsFor</code> admits the full
+        <code>THINKING_LEVELS</code>, so <code>high</code> is a valid pairing rather than one silently
+        downgraded.</li>
+      <li>On macOS under <code>CODEX_SANDBOX=seatbelt</code>, <code>npm test</code> includes real
+        Electron geometry tests and needs the repository-prescribed scoped outside-sandbox approval.
+        Each phase's verification section says so rather than leaving three agents to rediscover it,
+        following the precedent in <code>docs/plans/test-db-isolation/</code> and
+        <code>docs/plans/keep-awake-native-provider/</code>.</li>
+    </ul>
+  </div>
+
   <h2>Repository findings that shaped the phases</h2>
   <p>Verified against the worktree at planning time; implementers re-verify. Three findings decided
   the shape, and each is the reason a phase exists where it does.</p>

@@ -294,7 +294,16 @@ look viable.
 
 Verification: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`.
 No UI surface changes in this phase, so `npm run test:e2e` is a regression check rather than a new
-spec.
+spec. Focused runs use the loader preamble `--import ./test/setup-state.mjs --import tsx`.
+
+On macOS under `CODEX_SANDBOX=seatbelt`, `npm test` includes real Electron geometry tests: use the
+repository-prescribed scoped outside-sandbox approval rather than bypassing the preflight or adding
+Chromium flags.
+
+One extra note for this phase specifically: its tests build real git repositories in a temp
+directory and shell out to `git`. Under a sandbox that restricts writes, those fixtures need a
+writable temp root, and the suite's own `MISSION_TEST_STATE` temp home is the model to follow.
+Never point a fixture at the operator's own checkout.
 
 ## Merge and exit criteria
 

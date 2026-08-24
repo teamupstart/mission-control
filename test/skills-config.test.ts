@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // The generation watermark and the apply transaction. Real db, real filesystem: the
 // invariant under test ("the generation moves only when the DISK moves") spans both,
@@ -299,7 +300,10 @@ test("drift says nothing when the catalog can't be read - it knows nothing to re
 });
 
 test("a config blob from a future build doesn't crash the panel", () => {
-  setAppConfig("skills", { enabled: true, skills: { alpha: true }, somethingNew: 42 });
+  setAppConfig(
+    APP_CONFIG_ENTRIES.skills,
+    { enabled: true, skills: { alpha: true }, somethingNew: 42 } as never,
+  );
   assert.equal(getSkillsConfig().enabled, true);
   assert.equal(getSkillsConfig().skills.alpha, true);
 });

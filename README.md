@@ -179,6 +179,14 @@ without the chip there would be nothing anywhere to read.
 
 See [Skills and settings](docs/skills-and-settings.md).
 
+## Keep local settings recoverable
+
+Mission Control automatically keeps versioned logical snapshots of the settings and reusable
+Library definitions that shape local behavior.
+
+See [Automatic settings snapshots](docs/configuration.md#automatic-settings-snapshots) for the
+authoritative format, lifecycle, storage, scope, exclusions, and retention contract.
+
 ## Build the operating system around the work
 
 The Library centralizes reusable workflows, personas, session actions, ensemble strategies,

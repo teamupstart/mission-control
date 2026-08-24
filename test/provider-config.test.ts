@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-provider-config-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -49,7 +50,7 @@ test("Foreman ships enabled with both wrap-up triggers, and still authorises not
 test("an operator who explicitly turned Foreman off keeps it off across the flip", () => {
   // The persisted blob an operator produces by switching Foreman off in Settings. `enabled` is
   // present, so the new default is never consulted for them.
-  setAppConfig("foreman", { enabled: false, wrapupTriggers: [] });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { enabled: false, wrapupTriggers: [] });
   const answered = getForemanConfig();
   assert.equal(answered.enabled, false);
   assert.deepEqual(
@@ -60,7 +61,7 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
 
   // A blob written before either field existed still upgrades onto the new defaults, which is
   // the case the flip is FOR.
-  setAppConfig("foreman", { mode: "dry-run" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { mode: "dry-run" });
   const upgraded = getForemanConfig();
   assert.equal(upgraded.enabled, true);
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
@@ -103,26 +104,26 @@ test("Foreman persists review-comment and CI follow-through independently", () =
 });
 
 test("Foreman preserves the old combined PR follow-through answer when adding CI", () => {
-  setAppConfig("foreman", { trackReviewFeedback: false });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { trackReviewFeedback: false });
   const optedOut = getForemanConfig();
   assert.equal(optedOut.trackReviewFeedback, false);
   assert.equal(optedOut.trackCiFailures, false);
 
-  setAppConfig("foreman", { trackReviewFeedback: true });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { trackReviewFeedback: true });
   assert.equal(getForemanConfig().trackCiFailures, true);
 
   // Once the split setting exists, it is an independent operator answer and must win.
-  setAppConfig("foreman", { trackReviewFeedback: false, trackCiFailures: true });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { trackReviewFeedback: false, trackCiFailures: true });
   const split = getForemanConfig();
   assert.equal(split.trackReviewFeedback, false);
   assert.equal(split.trackCiFailures, true);
 });
 
 test("Foreman upgrades removed automatic-review modes to Ask", () => {
-  setAppConfig("foreman", { wrapup: "retired-review-option" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { wrapup: "retired-review-option" } as never);
   assert.equal(getForemanConfig().wrapup, "ask");
 
-  setAppConfig("foreman", { wrapup: "workflow" });
+  setAppConfig(APP_CONFIG_ENTRIES.foreman, { wrapup: "workflow" } as never);
   assert.equal(getForemanConfig().wrapup, "ask");
 });
 

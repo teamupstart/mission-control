@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BacklogPlanSchema } from "@shared/protocol.ts";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { BacklogPlan } from "@shared/types.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // Where Foreman's reading of the backlog is kept: one row in `app_config`, exactly
@@ -10,7 +11,7 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 // same line notes and episodes draw against `Session` - and because a new table would
 // buy nothing over a value that is rewritten whole every time it changes.
 
-const PLAN_KEY = "backlog.plan";
+const PLAN_ENTRY = APP_CONFIG_ENTRIES.backlogPlan;
 
 /** What is on disk: the posted plan plus the daemon's own timestamp. */
 const StoredPlanSchema = BacklogPlanSchema.extend({
@@ -27,7 +28,7 @@ const StoredPlanSchema = BacklogPlanSchema.extend({
  * `dependsOn` reads as "nothing blocks this" and starts work out of order.
  */
 export function getBacklogPlan(): BacklogPlan | null {
-  const raw = getAppConfig<unknown>(PLAN_KEY);
+  const raw = getAppConfig(PLAN_ENTRY);
   if (raw === undefined) return null;
   const parsed = StoredPlanSchema.safeParse(raw);
   if (!parsed.success) return null;
@@ -61,6 +62,6 @@ export function setBacklogPlan(input: BacklogPlanInput, now = Date.now()): Backl
     note: input.note ?? null,
     generatedAt: now,
   };
-  setAppConfig(PLAN_KEY, plan);
+  setAppConfig(PLAN_ENTRY, plan);
   return plan;
 }

@@ -3,9 +3,10 @@ import {
   type WorktreesConfig,
   type WorktreesConfigPatch,
 } from "@shared/protocol.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
-const CONFIG_KEY = "worktrees";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.worktrees;
 
 /** Resolved policy for one physical Git common directory. */
 export interface WorktreePolicy {
@@ -16,7 +17,7 @@ export interface WorktreePolicy {
 
 /** The current policy, with default-on and max-16 defaults applied on every read. */
 export function getWorktreesConfig(): WorktreesConfig {
-  return WorktreesConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return WorktreesConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /**
@@ -43,7 +44,7 @@ export function setWorktreesConfig(patch: WorktreesConfigPatch): WorktreesConfig
     ...patch,
     repositories,
   });
-  setAppConfig(CONFIG_KEY, resolved);
+  setAppConfig(CONFIG_ENTRY, resolved);
   return resolved;
 }
 

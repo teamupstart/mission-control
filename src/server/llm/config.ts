@@ -20,6 +20,7 @@ import type {
   LlmRunnerId,
   ResolvedLlmRunner,
 } from "@shared/llm.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
 // The LLM config: a schema-validated blob over the `app_config` KV, mirroring
@@ -45,11 +46,11 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 // along would put the operator's real `claude` binary into the module graph of anything that
 // asks what provider a subsystem inherits. Reading a preference should not load a spawner.
 
-const CONFIG_KEY = "llm";
+const CONFIG_ENTRY = APP_CONFIG_ENTRIES.llm;
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getLlmConfig(): LlmConfig {
-  return LlmConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return LlmConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
 /**
@@ -74,7 +75,7 @@ export function setLlmConfig(patch: LlmConfigPatch): LlmConfig {
     // and the panel never has to round-trip the whole map to change one row.
     runners: { ...before.runners, ...pinOutgoingProvider(before, patch), ...patch.runners },
   });
-  setAppConfig(CONFIG_KEY, next);
+  setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
 

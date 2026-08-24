@@ -19,9 +19,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  * Two claims:
  *
  *  1. The kind is REACHABLE - offered by the add control with its own blurb, arriving
- *     switched off with the Jira fields (not the GitHub ones), and keeping its filter across
- *     a reload, which is what proves the config went to the daemon rather than into
- *     component state.
+ *     switched off (and filing parked tasks) with the Jira fields (not the GitHub ones), and
+ *     keeping its filter and its autopilot opt-in across a reload, which is what proves the
+ *     config went to the daemon rather than into component state.
  *  2. An unusable source SAYS SO. The empty-filter sentence comes from the real daemon here,
  *     because the whole feature exists so a misconfigured source is never a silent empty
  *     sweep. The credential sentences are then fulfilled locally: what the panel owes an
@@ -73,7 +73,7 @@ async function shoot(
   console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
 }
 
-test("a Jira source is addable, keeps its defaults, and can park swept tasks", async ({
+test("a Jira source is addable, files parked tasks, and keeps the defaults it is given", async ({
   page,
   daemon,
 }) => {
@@ -95,21 +95,23 @@ test("a Jira source is addable, keeps its defaults, and can park swept tasks", a
   // Off, always: adding a source is configuration and turning it on is consent.
   await expect(page.getByRole("checkbox", { name: "Sweep Jira on a schedule" })).not.toBeChecked();
 
-  // Existing behavior stays the default: swept work is eligible for Foreman until the
-  // operator explicitly parks this source's future tasks. The setting is per source and
-  // persists with the other task defaults.
+  // And so does what it FILES. A sweep is a machine deciding something upstream is work, and
+  // twenty-five rows the autopilot may start dispatching before anyone read a title is a
+  // decision nobody made - so swept tasks arrive parked, and enabling one is consent to that
+  // row. Turning the source's default on is the opt-out, per source, persisted with the
+  // other task defaults.
   const allowAutopilot = page.getByRole("checkbox", {
     name: "Allow backlog autopilot to schedule swept tasks",
   });
-  await expect(allowAutopilot).toBeChecked();
-  await allowAutopilot.uncheck();
+  await expect(allowAutopilot).not.toBeChecked();
+  await allowAutopilot.check();
   await expect
     .poll(async () => {
       const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
       const body = (await res.json()) as { sources?: { defaults?: { enabled?: boolean } }[] };
       return body.sources?.[0]?.defaults?.enabled;
     })
-    .toBe(false);
+    .toBe(true);
 
   // Compacting the repository name must not cost the row the action and health description
   // it already carried. The full path is appended to that description and painted on hover.
@@ -166,7 +168,7 @@ test("a Jira source is addable, keeps its defaults, and can park swept tasks", a
   await expect(page.getByLabel("Jira site")).toHaveValue("acme.atlassian.net");
   await expect(
     page.getByRole("checkbox", { name: "Allow backlog autopilot to schedule swept tasks" }),
-  ).not.toBeChecked();
+  ).toBeChecked();
   await shoot(page, "jira-source-configured");
 });
 

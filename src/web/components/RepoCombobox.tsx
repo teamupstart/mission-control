@@ -18,14 +18,15 @@ import { Tooltip } from "./Tooltip.tsx";
  * settings pane's `overflow-y: auto` no matter its z-index.
  *
  * It is exactly as wide as its input, and that is a constraint on CALLERS rather than
- * a limitation here. Repo paths share a long leading prefix - every one under a
- * workspace root begins with the same 28 characters - so a field too narrow for its
- * longest path ellipsizes precisely the component that tells two repos apart, in every
- * row at once. Sizing the list to its content instead was tried and reverted: it fixed
- * a narrow settings row by making the list overhang the dispatch modal's right edge,
- * which this component cannot know the bounds of. Give the field room in its own
- * layout (`.wf-settings-check-add` is the worked example) rather than letting the menu
- * escape it.
+ * a limitation here. Sizing the list to its content instead was tried and reverted: it
+ * fixed a narrow settings row by making the list overhang the dispatch modal's right
+ * edge, which this component cannot know the bounds of. Give the field room in its own
+ * layout (`.wf-settings-check-add` and `.ts-add .foreman-repo-add` are the worked
+ * examples) rather than letting the menu escape it.
+ *
+ * That width is why a row draws the checkout's NAME rather than its path - see
+ * `repoOptionLabels`. It does not make the constraint go away: a name is short, but a
+ * settings column that gives this field a third of 300px will still ellipsize one.
  *
  * Every optional prop is a fact the caller alone knows, and they fall into two
  * groups. Three are what a settings ROW needs and a modal field does not: which
@@ -43,8 +44,8 @@ import { Tooltip } from "./Tooltip.tsx";
  * The repos a query offers: by name, and by path only when no name matches.
  *
  * A plain substring match over the whole path is what this used to do, and it made the first
- * keystroke worth nothing. Every checkout in a workspace shares a long leading prefix - the 28
- * characters this file's own note above measures - so `a`, `e`, `o`, `r` and `s` each match
+ * keystroke worth nothing. Every checkout in a workspace shares a long leading prefix -
+ * `/Users/you/workspace/` is 28 characters on its own - so `a`, `e`, `o`, `r` and `s` each match
  * every path there is, and the list an operator is trying to narrow comes back the length it
  * started. Matching the NAME is what makes typing useful, and it is what the name is for.
  *
@@ -63,6 +64,107 @@ export function filterRepos(repos: readonly string[], query: string): string[] {
   if (!q) return [...repos];
   const byName = repos.filter((r) => repoLeaf(r).toLowerCase().includes(q));
   return byName.length > 0 ? byName : repos.filter((r) => r.toLowerCase().includes(q));
+}
+
+/**
+ * What each offered repo is CALLED in the list, and what (if anything) has to be said
+ * beside it to tell it from another row.
+ *
+ * The list used to draw the whole path in every row, which is precisely the thing an
+ * operator cannot read: repos under one workspace root share a long leading prefix, the
+ * menu is only as wide as its input, and the ellipsis therefore lands AFTER the shared
+ * part and BEFORE the directory name - so eight rows come back reading
+ * `/Users/jordanma…` and the one fact that distinguishes them is the part that got cut.
+ * The name is what an operator picks by, so the name is what the row leads with; the
+ * full path stays in the row's tooltip and in the input's own value, which is still the
+ * absolute path this widget writes.
+ *
+ * **Nothing here is ever a path**, including the hint. Two checkouts can share a basename
+ * (`~/a/api` and `~/b/api`), so a name alone is not always an identity - and where it is
+ * not, the row carries ONE MORE FOLDER NAME rather than the directory it sits in spelled
+ * out. A first pass did print that directory, and the case that killed it is the one a
+ * fixture reaches first: under a temp root the two rows read
+ * `/private/var/folders/1c/djbypfjn…/workspace/alpha`, which is the exact wall of shared
+ * prefix this function exists to get rid of, reintroduced one line lower.
+ *
+ * WHICH folder is chosen rather than assumed. The immediate parent is the usual answer and
+ * the one to picture, but `~/x/shared/api` and `~/y/shared/api` both sit in `shared`, so a
+ * hint fixed at one level would print the same word on both rows and disambiguate nothing.
+ * So the colliding group walks up together and stops at the first ancestor level whose
+ * names are all different, and every row in that group is labelled from that same level -
+ * one level for the group, so two rows are always comparing like with like.
+ *
+ * A row with no folder at that level carries NO HINT, rather than something standing in for
+ * one. `/api` beside `/srv/api` is the case: the second is `api` under `srv`, the first is
+ * `api` under nothing, and printing `/` for it would be a path on a row that must not hold
+ * one. Where a group cannot be separated at any level the walk simply ends and the hints are
+ * whatever the immediate parent gives - a weaker answer, and still never a path. The full
+ * path is one hover away, and that is what the tooltip is for.
+ *
+ * Computed against the OFFERED set rather than the whole known list: a collision the
+ * current query has already filtered away is not one the operator can see, and hinting it
+ * anyway would put a second line on rows that do not need one.
+ *
+ * Exported and pure for the same reason `filterRepos` is - it is the part of this widget
+ * a test can hold still.
+ */
+export function repoOptionLabels(
+  repos: readonly string[],
+): { repo: string; name: string; hint: string | null }[] {
+  const groups = new Map<string, string[]>();
+  for (const r of repos) {
+    const name = repoLeaf(r);
+    const group = groups.get(name);
+    if (group) group.push(r);
+    else groups.set(name, [r]);
+  }
+
+  const hints = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const segments = group.map((r) => r.replace(/\/+$/, "").split("/").filter(Boolean));
+    // How far up the shallowest member of the group can be asked to go. `- 1` because the
+    // last segment is the name itself, which is the thing that already matched.
+    const reach = Math.max(...segments.map((s) => s.length - 1));
+    let level = 1;
+    for (let up = 1; up <= reach; up++) {
+      const names = segments.map((s) => ancestor(s, up));
+      if (new Set(names).size === names.length) {
+        level = up;
+        break;
+      }
+    }
+    group.forEach((repo, i) => {
+      // A checkout sitting at the filesystem root has no folder above it to be named by, so
+      // it gets NO hint rather than a stand-in. `/` was that stand-in and it is a path, not
+      // a folder name - which is the one thing a row here may never draw. The row is still
+      // the more distinguishable of the pair for it: one `api` carries a folder and the
+      // other carries nothing, which is itself the difference between them.
+      const hint = ancestor(segments[i]!, level);
+      if (hint) hints.set(repo, hint);
+    });
+  }
+
+  return repos.map((repo) => ({
+    repo,
+    name: repoLeaf(repo),
+    hint: hints.get(repo) ?? null,
+  }));
+}
+
+/**
+ * The name of the folder `up` levels above a checkout, or null once the walk runs out.
+ *
+ * Null rather than a placeholder, because every non-null answer this returns is rendered and
+ * the invariant is that a rendered label is a FOLDER NAME. There is no string that stands in
+ * for "no folder" without breaking that - `/` was tried and it is a path.
+ *
+ * Null also participates in the distinctness test above, and correctly: two rows that both
+ * ran out at the same level are not told apart by it and the walk continues, while one that
+ * ran out beside one that did not is genuinely distinguishable and the walk can stop.
+ */
+function ancestor(segments: string[], up: number): string | null {
+  return segments[segments.length - 1 - up] ?? null;
 }
 
 /** Gap in px between the input and the dropdown. */
@@ -136,6 +238,9 @@ export function RepoCombobox({
   const listRef = useRef<HTMLUListElement>(null);
 
   const matches = filterRepos(repos, value);
+  // Names, plus one disambiguating folder name on the rows a name alone cannot tell apart.
+  // Derived from `matches` and not from `repos`, so the hint answers the list on screen.
+  const options = repoOptionLabels(matches);
   // Nothing to offer once the text already equals the only remaining match. `disabled` is
   // read here too, but only to cover the single render before the effect below lands: it
   // stops a live dropdown being painted over a field that has just stopped taking input.
@@ -271,8 +376,8 @@ export function RepoCombobox({
             ref={listRef}
             style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
           >
-            {matches.map((r, i) => (
-              <Tooltip key={r} label={r}>
+            {options.map(({ repo, name, hint }, i) => (
+              <Tooltip key={repo} label={repo}>
                 <li
                   role="option"
                   aria-selected={i === active}
@@ -281,10 +386,11 @@ export function RepoCombobox({
                   onMouseDown={(e) => {
                     // Pick before the input's blur fires, so the click registers.
                     e.preventDefault();
-                    choose(r);
+                    choose(repo);
                   }}
                 >
-                  {r}
+                  <span className="combobox-option-name">{name}</span>
+                  {hint && <span className="combobox-option-hint">{hint}</span>}
                 </li>
               </Tooltip>
             ))}

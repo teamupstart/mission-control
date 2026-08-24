@@ -401,8 +401,18 @@ export const TaskSourceDefaultsSchema = z.object({
   agent: z.enum(AGENT_TYPES).nullable().default(null),
   priority: z.enum(TASK_PRIORITIES).nullable().default(null),
   labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
-  /** Whether Foreman's backlog autopilot may schedule tasks this source files. */
-  enabled: z.boolean().default(true),
+  /**
+   * Whether Foreman's backlog autopilot may schedule tasks this source files.
+   *
+   * Defaults OFF, for the same reason a source itself does: a sweep is a machine deciding
+   * that something upstream is work, and an upstream tracker is not a queue anyone curated.
+   * Left on, the first sweep of a busy repo lands twenty-five rows the autopilot may start
+   * dispatching before an operator has read one of their titles - and the only way back is
+   * to catch each one already running. Parked instead, they arrive as a list to triage, and
+   * enabling a row is the operator saying yes to THAT row. A source whose upstream is
+   * already curated turns this on once, in the editor, and every later sweep honours it.
+   */
+  enabled: z.boolean().default(false),
 });
 export type TaskSourceDefaults = z.infer<typeof TaskSourceDefaultsSchema>;
 

@@ -194,9 +194,12 @@ Established by Phase 2, consumed by Phase 3:
 
 - `RepositoryQuery`, `RepositoryQueryResult`, `REPOSITORY_DENIAL_CODES`,
   `REPOSITORY_QUERY_LIMITS`, `matchesRepositoryGlob`, `REPOSITORY_DENY_GLOBS`.
-- `createRepositoryReader(...).execute(query)` as the **only** way to reach the repository. The
-  reader owns validation, denial, mode classification, bounds, scrubbing and the audit write, so
-  Phase 3 never re-implements a check and never writes an audit row itself.
+- `createRepositoryReader({ ..., audit, recordQuery, ... }).execute(query, { round })` as the
+  **only** way to reach the repository. The reader owns validation, denial, mode classification,
+  bounds, scrubbing, the audit write **and the `ordinal`**, so Phase 3 never re-implements a check,
+  never writes an audit row, and never numbers a sequence. It is built **once per Persona attempt**
+  and carries that attempt's `{ runId, submissionId, nodeAttemptId }`, which is what makes the
+  unique `(node_attempt_id, round, ordinal)` identity satisfiable at all.
 - `unavailable` as the only denial code meaning infrastructure.
 - `WorkflowSubmission.reviewSnapshotOid` / `.reviewSnapshotRepoRoot`, nullable, with null meaning
   "no exact state is available".
@@ -315,6 +318,13 @@ defects in the artifacts, all fixed without moving an approved decision:
     machine made a header name a denied path and made the response shape depend on operator config.
     The path-shaped denylist's genuine limit - content the change itself moved to an allowed path -
     is now stated rather than implied covered.
+13. **The reader carries per-attempt audit identity** (Phases 2 and 3). The factory took only
+    `{ repoRoot, snapshotOid, headSha, budget }` while the same phase required it to write a row per
+    operation under a unique `(node_attempt_id, round, ordinal)`, and Phase 3 was forbidden from
+    writing rows - so as written, nothing could persist a brokered query. The reader is now built
+    per attempt with that attempt's `{ runId, submissionId, nodeAttemptId }` and a narrow
+    `recordQuery` writer, takes `round` per `execute`, and assigns `ordinal` itself. Ownership did
+    not move; the reader had always been the writer, and it now has what the contract required.
 
 ## Final verification strategy
 

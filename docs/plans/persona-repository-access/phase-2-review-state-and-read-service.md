@@ -217,8 +217,39 @@ Two hard constraints:
 
 ### 6. Read service - `src/server/workflows/repository-read.ts` (new)
 
-`createRepositoryReader({ repoRoot, snapshotOid, headSha, budget })` returning
-`execute(query): Promise<RepositoryQueryResult>`, and a `close()` that abandons in-flight work.
+**A reader is created per Persona attempt and carries that attempt's audit identity**, because
+step 10 requires it to write one row per operation and `workflow_repository_queries` requires
+`(node_attempt_id, round, ordinal)` to be unique. A reader built only from
+`{ repoRoot, snapshotOid, headSha, budget }` could not satisfy either, and Phase 3 is forbidden
+from writing audit rows itself - so the identity has to arrive here:
+
+```ts
+createRepositoryReader({
+  repoRoot,
+  snapshotOid,
+  headSha,
+  // Identity for every row this reader writes. One reader, one attempt.
+  audit: { runId, submissionId, nodeAttemptId },
+  // Narrow writer, defaulted in production to the store's insertRepositoryQueryAudit.
+  // A callback rather than the store itself so the reader's own tests need no database.
+  recordQuery,
+  budget,
+})
+// => { execute(query, { round }): Promise<RepositoryQueryResult>, close(): void }
+```
+
+`round` is the **only** positional value `execute` takes, because it is the only one Phase 3 knows
+and the reader cannot: the loop owns rounds. **`ordinal` is the reader's own**, a monotonic counter
+per round, so Phase 3 cannot mis-number a sequence into a unique-index collision and the constraint
+holds by construction rather than by two subsystems agreeing to count the same way.
+
+Two facts that keep that identity unique, worth stating because they are exactly what a unique
+index punishes:
+
+- A **retried** Persona attempt is a new row with a new `randomUUID()` id - the engine's retry path
+  inserts `attempt + 1` under a fresh id - so a retry gets a fresh reader and cannot collide with
+  the attempt it replaced.
+- A **parse retry inside a round** re-calls the provider, not the reader, so it consumes no ordinal.
 
 Order of checks per query, and the order is the contract:
 
@@ -246,7 +277,10 @@ Order of checks per query, and the order is the contract:
 8. **Bound and mark** - clip to the per-query, per-round and per-attempt budgets, set
    `truncated` and `omittedBytes`. Never clip silently.
 9. **Scrub** - `scrubSecrets` over the response text.
-10. **Audit** - one row per operation, whatever the outcome.
+10. **Audit** - one row per operation, whatever the outcome, through `recordQuery` with this
+    reader's `audit` identity, the `round` this `execute` was given, and the `ordinal` the reader
+    assigned. The write happens on **every** exit path including a refusal at step 2 or 3, so a
+    denial is as auditable as a success - which is what decision 11 asks for.
 
 **Every caller-supplied revision is constrained to the snapshot's ancestry.** `git_show`'s `rev`
 and `git_diff`'s `base` each pass only when `merge-base --is-ancestor <rev> <snapshotOid>` succeeds,
@@ -399,6 +433,13 @@ look viable.
 - `test/workflow-db.test.ts`: the new columns and table exist with their indexes; the audit table
   has a validating typed row parser like every other workflow table; the unique index refuses a
   duplicate `(attempt, round, ordinal)`.
+- **The audit-identity tests**, which are what make the row writable at all: a reader built with
+  fixture `{ runId, submissionId, nodeAttemptId }` and driven across rounds 1, 2 and 3 writes rows
+  carrying that identity, with `ordinal` restarting at the first value in each round and increasing
+  monotonically within it; a **denied** query at step 2 or 3 writes a row too, with its
+  `denial_code` and zero `bytes`, so a refusal is as auditable as a success; two readers built for
+  two different attempt ids write rows that do not collide; and every row inserts through the unique
+  index without a conflict across the whole sequence.
 - A migration test: a hand-written pre-feature `workflow_submissions` opens, migrates, and reads
   with null snapshot columns and every other field unchanged; two opens are idempotent.
 - Retention: pruning a submission's evidence deletes its ref.
@@ -437,10 +478,14 @@ Phase 3 may rely on, and must not change:
 - `RepositoryQuery`, `RepositoryQueryResult`, `REPOSITORY_DENIAL_CODES` and
   `REPOSITORY_QUERY_LIMITS` as the provider-neutral vocabulary. Phase 3 adds the **envelope**
   around them, not the operations.
-- `createRepositoryReader(...).execute(query)` as the only way to reach the repository, and
-  `unavailable` as the only code meaning infrastructure.
+- `createRepositoryReader({ ..., audit, recordQuery, ... }).execute(query, { round })` as the only
+  way to reach the repository, and `unavailable` as the only code meaning infrastructure. Phase 3
+  builds **one reader per Persona attempt**, supplying that attempt's
+  `{ runId, submissionId, nodeAttemptId }`, and passes only the `round` per call.
 - The reader owning validation, denial, bounds, scrubbing and audit, so Phase 3 never re-implements
-  a check and never writes an audit row itself.
+  a check and never writes an audit row itself. It also owns `ordinal`, so Phase 3 never numbers
+  one - the unique `(node_attempt_id, round, ordinal)` identity is the reader's to keep, not a
+  convention two subsystems have to share.
 - `WorkflowSubmission.reviewSnapshotOid` being nullable, with null meaning "no exact state" -
   which is what Phase 3 turns into a blocking failure for an access-enabled Persona.
 - The ref namespace and its retention owner.
@@ -454,9 +499,10 @@ Phase 3 may rely on, and must not change:
   reader takes a snapshot oid, never a Persona.
 - **Against Phase 3**: `REPOSITORY_QUERY_LIMITS` carries `maxRounds`/`maxQueriesPerRound` even
   though only Phase 3 consumes them, deliberately - one budget in one file. Phase 3 adds
-  `workflow_llm_calls.round`, which this phase does not touch. The audit table's `round` and
-  `ordinal` are written by Phase 3's loop; this phase's tests exercise them with a synthetic round
-  number, so the columns are not dead.
+  `workflow_llm_calls.round`, which this phase does not touch. The audit table's `round` arrives
+  from Phase 3's loop per `execute` call and its `ordinal` is assigned by the reader; this phase's
+  tests build a reader with fixture identity and drive it across several rounds directly, so both
+  columns and the unique index are exercised here rather than only once Phase 3 lands.
 - **Reconciliation record**: snapshot-creation failure is non-fatal in this phase and fatal in
   Phase 3 for an access-enabled Persona. That asymmetry is intentional and stated in both files,
   because inverting it here would make a feature nobody enabled able to fail an existing run.
@@ -497,3 +543,14 @@ Phase 3 may rely on, and must not change:
   The path-shaped denylist's real limit - content the change itself moved to an allowed path - is
   now stated rather than papered over, because claiming the allowlist covers it would be a false
   guarantee in the security section.
+- **Reconciliation record, review round 6.** The reader factory was specified as
+  `createRepositoryReader({ repoRoot, snapshotOid, headSha, budget })` while step 10 required it to
+  write one audit row per operation and `workflow_repository_queries` required a unique
+  `(node_attempt_id, round, ordinal)` - identity the factory never received. Phase 3 was
+  simultaneously forbidden from writing audit rows, so as written **nothing** could persist a
+  brokered query. Fixed by making the reader per-attempt and giving it that attempt's
+  `{ runId, submissionId, nodeAttemptId }` plus a narrow `recordQuery` writer, with `round` passed
+  per `execute` call and `ordinal` owned by the reader. Ownership did not move - the reader still
+  writes every row - so Phase 3's non-goal stands unchanged; what changed is that it now has the
+  data the contract always required. The reader also owning `ordinal` removes a class of bug the
+  first shape invited, where two subsystems counting independently collide on the unique index.

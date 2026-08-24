@@ -332,10 +332,13 @@
     <li><code>RepositoryQuery</code>, <code>RepositoryQueryResult</code>,
       <code>REPOSITORY_DENIAL_CODES</code>, <code>REPOSITORY_QUERY_LIMITS</code>,
       <code>matchesRepositoryGlob</code>, <code>REPOSITORY_DENY_GLOBS</code>.</li>
-    <li><code>createRepositoryReader(...).execute(query)</code> as the <strong>only</strong> way to
-      reach the repository. The reader owns validation, denial, mode classification, bounds, scrubbing
-      and the audit write, so Phase 3 never re-implements a check and never writes an audit row
-      itself.</li>
+    <li><code>createRepositoryReader({ ..., audit, recordQuery, ... }).execute(query, { round })</code>
+      as the <strong>only</strong> way to reach the repository. The reader owns validation, denial,
+      mode classification, bounds, scrubbing, the audit write <strong>and the
+      <code>ordinal</code></strong>, so Phase 3 never re-implements a check, never writes an audit
+      row, and never numbers a sequence. It is built <strong>once per Persona attempt</strong> and
+      carries that attempt's <code>{ runId, submissionId, nodeAttemptId }</code>, which is what makes
+      the unique <code>(node_attempt_id, round, ordinal)</code> identity satisfiable at all.</li>
     <li><code>unavailable</code> as the only denial code meaning infrastructure.</li>
     <li><code>WorkflowSubmission.reviewSnapshotOid</code> / <code>.reviewSnapshotRepoRoot</code>,
       nullable, with null meaning &ldquo;no exact state is available&rdquo;.</li>
@@ -471,6 +474,15 @@
       denied path and made the response shape depend on operator config. The path-shaped denylist's
       genuine limit - content the change itself moved to an allowed path - is now stated rather than
       implied covered.</li>
+    <li><strong>The reader carries per-attempt audit identity</strong> (Phases 2 and 3). The factory
+      took only <code>{ repoRoot, snapshotOid, headSha, budget }</code> while the same phase required
+      it to write a row per operation under a unique
+      <code>(node_attempt_id, round, ordinal)</code>, and Phase 3 was forbidden from writing rows -
+      so as written, nothing could persist a brokered query. The reader is now built per attempt with
+      that attempt's <code>{ runId, submissionId, nodeAttemptId }</code> and a narrow
+      <code>recordQuery</code> writer, takes <code>round</code> per <code>execute</code>, and assigns
+      <code>ordinal</code> itself. Ownership did not move; the reader had always been the writer, and
+      it now has what the contract required.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

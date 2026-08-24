@@ -16,8 +16,11 @@ visible in run detail.
 
 - **Direct phase dependencies: Phase 1 and Phase 2.** Both must be merged.
 - From Phase 1: `PersonaSnapshot.repositoryAccess`, non-optional after parse.
-- From Phase 2: `createRepositoryReader(...).execute(query)`, the query/result/denial vocabulary,
-  `REPOSITORY_QUERY_LIMITS`, and `WorkflowSubmission.reviewSnapshotOid`.
+- From Phase 2: `createRepositoryReader({ ..., audit: { runId, submissionId, nodeAttemptId }, recordQuery, ... })`
+  and `execute(query, { round })`, the query/result/denial vocabulary, `REPOSITORY_QUERY_LIMITS`,
+  and `WorkflowSubmission.reviewSnapshotOid`. **One reader per Persona attempt**: it carries the
+  audit identity, so building it once per attempt rather than once per round or once per query is
+  part of the contract, not an optimisation.
 
 ## Scope
 
@@ -134,12 +137,17 @@ The loop:
    `providerJsonSchema`. Pass the existing observer so each round writes its own
    `workflow_llm_calls` row.
 4. `action: "verdict"` returns it. `action: "query"` executes each query through
-   `reader.execute`, in order, stopping the batch when the round or attempt byte budget is spent
-   and marking the remainder `budget_exhausted` so the reviewer is told rather than left guessing.
+   `reader.execute(query, { round })`, in order, stopping the batch when the round or attempt byte
+   budget is spent and marking the remainder `budget_exhausted` so the reviewer is told rather than
+   left guessing.
 5. **The final round is explicit.** At `maxRounds - 1`, the appended instruction states that this
    is the last round and a verdict is required. A `query` reply on the final round, or a reply that
    will not parse after `runStructured`'s ladder, is a `failed` result - never a fail verdict.
-6. Every round increments the audit `round`; every query within it increments `ordinal`.
+6. The loop passes the `round` and nothing else about audit identity. The reader was built for this
+   attempt and carries `{ runId, submissionId, nodeAttemptId }`; it assigns `ordinal` itself and
+   writes every row. **This phase never writes an audit row and never numbers an ordinal** - that is
+   Phase 2's, and a second counter here is how the unique
+   `(node_attempt_id, round, ordinal)` index gets violated.
 
 Termination is structural: rounds are bounded, byte budgets are monotonically consumed, and the
 final round cannot ask for more.
@@ -238,7 +246,10 @@ fencing on fetched content, scrubbing, and the fact that a denial is reported to
   - cancellation between rounds stops the loop and starts no further provider call;
   - per-round and per-attempt byte budgets stop a batch mid-way and mark the remainder
     `budget_exhausted`;
-  - the audit `(round, ordinal)` sequence is dense and unique;
+  - the audit rows carry the attempt's `{ runId, submissionId, nodeAttemptId }` and a `(round,
+    ordinal)` sequence that is dense and unique - asserted by reading the rows back, and by
+    checking the loop passes only `round` to `execute` so a second ordinal counter cannot appear
+    here;
   - the reader is closed on success, failure and cancellation.
 - `test/workflow-engine.test.ts`:
   - an access-off Persona takes the existing single-call path, byte-identically;
@@ -314,10 +325,11 @@ This is the final phase. What it establishes for future work:
   Markdown correction and the `reviewContract` variant, which Phase 1 deliberately left alone so
   the drift signal fires with the behaviour that justifies it rather than a phase early.
 - **Against Phase 2**: consumes the reader and the vocabulary without re-implementing a check,
-  a bound, a scrub or an audit write. It writes the `round` and `ordinal` values Phase 2's audit
-  table declares. It converts Phase 2's non-fatal snapshot failure into a fatal one **only** for an
-  access-enabled Persona - the asymmetry both files record, and the reason Phase 2 could merge
-  first without risking an existing run.
+  a bound, a scrub or an audit write. It **supplies** the attempt identity when it builds the
+  reader and the `round` on each `execute`; it writes no row and assigns no `ordinal`. It converts
+  Phase 2's non-fatal snapshot failure into a fatal one **only** for an access-enabled Persona -
+  the asymmetry both files record, and the reason Phase 2 could merge first without risking an
+  existing run.
 - **Schema ordering**: `workflow_llm_calls.round` is the only migration here, appended after both
   earlier phases' entries. All three are `addColumn`/`CREATE TABLE IF NOT EXISTS`, so the composed
   `migrate()` is order-independent and idempotent, and a database upgraded across all three in one

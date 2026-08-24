@@ -69,8 +69,8 @@ export interface LibraryTourNavigation {
 export const LIBRARY_TOUR_COMMAND_SLOT: WorkflowCheckSlot = "test";
 
 /**
- * The run the tour opens on: the newest FINISHED run of the built-in No-Mistakes Review whose
- * session is still here.
+ * The run the tour opens on: the newest terminal run of the CURRENT published version of the
+ * built-in No-Mistakes Review whose session is still here.
  *
  * Two clauses, not one. A run outlives the session it reviewed - `orphanBinding` nulls
  * `sessionId` when the session goes, and the summary keeps a durable `sessionName` for exactly
@@ -84,6 +84,14 @@ export const LIBRARY_TOUR_COMMAND_SLOT: WorkflowCheckSlot = "test";
  * other workflow need not carry any of the five stages the previous stop just walked - so a
  * wider net would catch mostly wrong fish and contradict the stop that introduced it.
  *
+ * The VERSION has to match for the same reason the id does. Published versions are immutable
+ * and older ones are kept forever, so a terminal run of version 9 can easily be the newest run
+ * on a machine whose built-in has since shipped version 10. Stops 11 and 12 walk the CURRENT
+ * version's stages and name its postures; opening a version 9 run two stops later would
+ * describe a different pipeline as the one just taught, which is worse than the fallback that
+ * points at the built-in graph still on screen. An unpublished built-in has no current version
+ * to agree with, so nothing qualifies and the run chapter falls back.
+ *
  * `workflowRunIsOpen` rather than a copy of the terminal-status tuple: that union is
  * append-only, and a surface carrying its own copy is how one reader keeps counting a finished
  * run as live.
@@ -91,9 +99,12 @@ export const LIBRARY_TOUR_COMMAND_SLOT: WorkflowCheckSlot = "test";
 export function selectLibraryTourRun(
   summaries: readonly WorkflowRunSummary[],
   liveSessionIds: ReadonlySet<string>,
+  currentVersion: number | null,
 ): LibraryTourRun | null {
+  if (currentVersion === null) return null;
   const newest = summaries.reduce<WorkflowRunSummary | null>((best, candidate) => {
     if (candidate.workflowId !== NO_MISTAKES_REVIEW_WORKFLOW_ID) return best;
+    if (candidate.workflowVersion !== currentVersion) return best;
     if (workflowRunIsOpen(candidate.status)) return best;
     if (candidate.sessionId === null || !liveSessionIds.has(candidate.sessionId)) return best;
     if (best === null) return candidate;

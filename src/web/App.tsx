@@ -884,10 +884,23 @@ export function App(): React.JSX.Element {
     });
   }, [sessions, tasks]);
 
+  /**
+   * The version of the built-in workflow the tour teaches, and so the only version whose runs
+   * it will open. Null until the catalog lands, or if the built-in is not published here.
+   */
+  const libraryTourWorkflowVersion = useMemo((): number | null => (
+    workflowSummaries.find((workflow) => workflow.id === NO_MISTAKES_REVIEW_WORKFLOW_ID)
+      ?.publishedVersion ?? null
+  ), [workflowSummaries]);
+
   /** The run the Library tour pins when it starts. The rule itself lives with the tour. */
   const pickLibraryTourRun = useCallback((): LibraryTourRun | null => (
-    selectLibraryTourRun(workflowRuns, new Set(sessions.map((session) => session.id)))
-  ), [sessions, workflowRuns]);
+    selectLibraryTourRun(
+      workflowRuns,
+      new Set(sessions.map((session) => session.id)),
+      libraryTourWorkflowVersion,
+    )
+  ), [libraryTourWorkflowVersion, sessions, workflowRuns]);
 
   /** Pin that run on this Library tour run. The tour creates nothing else to reclaim. */
   const beginLibraryRun = useCallback((): void => {

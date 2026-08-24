@@ -493,6 +493,14 @@ ladder that a completed one does, and the selector rejects only a run that is st
 workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a run
 of another workflow need not carry any of the five stages stop 11 just walked.
 
+**The version has to agree too.** Published versions are immutable and older ones are kept, so
+the newest terminal run on a machine can easily be a run of version 9 while the built-in has
+since shipped version 10. Stops 11 and 12 walk the *current* version's stages and postures, so
+a run of any other version does not qualify - describing a different pipeline as the one just
+taught is worse than the fallback, which points at the built-in graph still on screen. The rule
+is agreement with the current published version rather than the highest number, and a built-in
+with no published version at all leaves the run chapter in its fallback.
+
 Both clauses matter. A run outlives the session it reviewed - the binding is orphaned and the
 summary keeps a durable `sessionName` for exactly that case - so an ended run with no session
 left is the common case rather than the rare one, and stop 14 opens that session's Workflows

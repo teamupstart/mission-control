@@ -86,6 +86,9 @@ function contextFor(
   };
 }
 
+/** The built-in's current published version, which the fixture's runs are runs OF. */
+const CURRENT_VERSION = 10;
+
 const summary = (patch: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary => ({
   id: "run-1",
   bindingId: "binding-1",
@@ -329,6 +332,7 @@ test("run selection takes the newest terminal built-in run whose session is stil
       summary({ id: "newer", updatedAt: 20, sessionId: "session-2", sessionName: "Second" }),
     ],
     live,
+    CURRENT_VERSION,
   );
   assert.deepEqual(chosen, { id: "newer", sessionId: "session-2", sessionName: "Second" });
 });
@@ -336,43 +340,66 @@ test("run selection takes the newest terminal built-in run whose session is stil
 test("run selection refuses every summary that is not this exact finished workflow", () => {
   const live = new Set(["session-1"]);
   // Another workflow entirely, and an operator's own duplicate: a different id either way.
-  assert.equal(selectLibraryTourRun([summary({ workflowId: "wf-other" })], live), null);
+  assert.equal(selectLibraryTourRun([summary({ workflowId: "wf-other" })], live, CURRENT_VERSION), null);
   assert.equal(
-    selectLibraryTourRun([summary({ workflowId: "builtin-workflow:no-mistakes-review-copy" })], live),
+    selectLibraryTourRun([summary({ workflowId: "builtin-workflow:no-mistakes-review-copy" })], live, CURRENT_VERSION),
     null,
   );
   // Still running.
   const open: WorkflowRunStatus[] = ["running", "waiting_for_session", "blocked"];
   for (const status of open) {
-    assert.equal(selectLibraryTourRun([summary({ status })], live), null, status);
+    assert.equal(selectLibraryTourRun([summary({ status })], live, CURRENT_VERSION), null, status);
   }
   // Finished, but the session it reviewed is gone - which is the COMMON case for a finished
   // run, and the one that would strand the tour's last stop on a target that cannot mount.
-  assert.equal(selectLibraryTourRun([summary({ sessionId: null })], live), null);
-  assert.equal(selectLibraryTourRun([summary({ sessionId: "evicted" })], live), null);
-  assert.equal(selectLibraryTourRun([], live), null);
+  assert.equal(selectLibraryTourRun([summary({ sessionId: null })], live, CURRENT_VERSION), null);
+  assert.equal(selectLibraryTourRun([summary({ sessionId: "evicted" })], live, CURRENT_VERSION), null);
+  assert.equal(selectLibraryTourRun([], live, CURRENT_VERSION), null);
   // Every terminal status qualifies, because each of them is a run that has stopped moving.
   for (const status of WORKFLOW_RUN_TERMINAL_STATUSES) {
-    assert.equal(selectLibraryTourRun([summary({ status })], live)?.id, "run-1", status);
+    assert.equal(selectLibraryTourRun([summary({ status })], live, CURRENT_VERSION)?.id, "run-1", status);
   }
+});
+
+test("run selection refuses a newer run of an older published version", () => {
+  // Published versions are immutable and older ones are kept forever, so the newest terminal
+  // run on a machine can easily belong to a version the built-in has since moved past. Stops
+  // 11 and 12 walk the CURRENT version's stages; opening a version 9 run two stops later would
+  // present a different pipeline as the one just taught.
+  const live = new Set(["session-1"]);
+  const old = summary({ id: "v9", workflowVersion: 9, updatedAt: 99 });
+  const current = summary({ id: "v10", workflowVersion: 10, updatedAt: 1 });
+
+  // Even though it is newer by every other measure, the version 9 run does not qualify.
+  assert.equal(selectLibraryTourRun([old], live, CURRENT_VERSION), null);
+  assert.equal(selectLibraryTourRun([old, current], live, CURRENT_VERSION)?.id, "v10");
+  assert.equal(selectLibraryTourRun([current, old], live, CURRENT_VERSION)?.id, "v10");
+
+  // The rule is "agrees with the current version", not "is the highest number": on a machine
+  // still publishing version 9, the version 9 run is the right one and version 10 is not.
+  assert.equal(selectLibraryTourRun([old, current], live, 9)?.id, "v9");
+
+  // An unpublished built-in has no current version for a run to agree with, so the run
+  // chapter falls back rather than opening whatever happens to exist.
+  assert.equal(selectLibraryTourRun([old, current], live, null), null);
 });
 
 test("run selection is deterministic when two qualifying runs share a timestamp", () => {
   const live = new Set(["session-1"]);
   const a = summary({ id: "aaa", updatedAt: 5 });
   const b = summary({ id: "zzz", updatedAt: 5 });
-  assert.equal(selectLibraryTourRun([a, b], live)?.id, "zzz");
-  assert.equal(selectLibraryTourRun([b, a], live)?.id, "zzz");
+  assert.equal(selectLibraryTourRun([a, b], live, CURRENT_VERSION)?.id, "zzz");
+  assert.equal(selectLibraryTourRun([b, a], live, CURRENT_VERSION)?.id, "zzz");
 });
 
 test("the selected run carries the durable session name the summary already holds", () => {
   const live = new Set(["session-1"]);
-  assert.equal(selectLibraryTourRun([summary()], live)?.sessionName, "Fix the diff link");
+  assert.equal(selectLibraryTourRun([summary()], live, CURRENT_VERSION)?.sessionName, "Fix the diff link");
   // Absent rather than empty on an older daemon's payload, and read as "no name" rather than
   // as the string "undefined" in the fallback copy.
   const unnamed = summary();
   delete unnamed.sessionName;
-  assert.equal(selectLibraryTourRun([unnamed], live)?.sessionName, null);
+  assert.equal(selectLibraryTourRun([unnamed], live, CURRENT_VERSION)?.sessionName, null);
 });
 
 test("a registered target id is reachable under this tour's namespace and nobody else's", () => {

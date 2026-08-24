@@ -113,7 +113,7 @@ function uniqueGapIds<T extends { id: string }>(gaps: T[]): T[] {
 const GapSchema = z.object({
   id: z.string().min(1).transform(clampTo(GAP_ID_MAX)),
   severity: z.enum(["blocking", "advisory"]),
-  kind: z.enum(["incomplete", "untested", "standards", "regression"]),
+  kind: z.enum(["incomplete", "untested", "standards", "regression", "unverified"]),
   // Required, so the deterministic (path + detail) fingerprint backstop for a
   // reminted gap id always has something to key on.
   path: z.string().transform(clampTo(GAP_PATH_MAX)),

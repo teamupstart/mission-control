@@ -94,6 +94,7 @@ import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { BacklogPlannerCircuit } from "./planner-circuit.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
+import type { RegisteredEvidenceInput, RegisteredEvidenceItem } from "./queue-prompt.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
 import { configureClaudeRunnerTransport } from "../llm/claude.ts";
@@ -110,6 +111,7 @@ import { runPipelineTriage } from "./pipeline-triage.ts";
 import { reviewShipRecovery } from "./ship-recovery-review.ts";
 import { decideShipShepherd } from "./ship-shepherd.ts";
 import type { ShipShepherdDecision } from "./ship-shepherd.ts";
+import type { WorkflowStagedEvidenceList } from "@shared/workflow.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -1774,6 +1776,57 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
 }
 
 /**
+ * Admit only evidence registered under the intent episode being verified.
+ *
+ * A missing stamp is a legacy row, not proof of current work. The split between metadata and
+ * content mirrors the prompt's trust fence: only the former may render above it.
+ */
+function promptedRegisteredEvidence(
+  staged: WorkflowStagedEvidenceList | null,
+  episodeKey: string,
+): RegisteredEvidenceInput {
+  const items: Array<{ id: string; item: RegisteredEvidenceItem }> = [
+    ...(staged?.images ?? [])
+      .filter((item) => item.episodeKey === episodeKey)
+      .map((item) => ({
+        id: item.id,
+        item: {
+          metadata: {
+            evidenceKind: "image" as const,
+            workGeneration: item.generation,
+            createdAt: item.createdAt,
+            bytes: item.bytes,
+          },
+          content: {
+            displayName: item.displayName,
+            sourceLocator: item.sourceLocator,
+            caption: item.caption,
+          },
+        },
+      })),
+    ...(staged?.artifacts ?? [])
+      .filter((item) => item.episodeKey === episodeKey)
+      .map((item) => ({
+        id: item.id,
+        item: {
+          metadata: {
+            evidenceKind: item.sourceKind === "command" ? "command" as const : "artifact" as const,
+            workGeneration: item.generation,
+            createdAt: item.createdAt,
+            bytes: item.bytes,
+          },
+          content: {
+            displayName: item.displayName,
+            sourceLocator: item.sourceLocator,
+            caption: item.caption,
+          },
+        },
+      })),
+  ].sort((a, b) => a.item.metadata.createdAt - b.item.metadata.createdAt || a.id.localeCompare(b.id));
+  return { items: items.map(({ item }) => item), totalCount: items.length, truncated: false };
+}
+
+/**
  * Re-read every prompted safety gate after evidence work, especially after a verifier call.
  *
  * Running the pure decision again keeps queue precedence, human-attention, instrumentation,
@@ -1897,12 +1950,19 @@ async function processPromptedWrapup(
   // No base sha: the whole branch since it diverged is the unit of work, because a
   // pane-typed session has no per-item scope to anchor to. That is also why
   // `diffMayIncludeOtherWork` is true below - it always may.
-  const [diff, transcriptRead] = await Promise.all([
+  const completionContract = taskCompletionContract(session.task?.kind);
+  const [diff, transcriptRead, evidenceRead] = await Promise.all([
     client.diff(session.id).catch(() => null),
     client.transcriptSize(session.id).then(
       (value) => ({ ok: true as const, value }),
       () => ({ ok: false as const, value: null }),
     ),
+    completionContract
+      ? client.workflowEvidence(session.id).then(
+        (value) => ({ ok: true as const, value }),
+        () => ({ ok: false as const, value: null }),
+      )
+      : Promise.resolve({ ok: true as const, value: null }),
   ]);
   if (!diff || !diff.ok) {
     log(`${session.name}: prompted wrap-up held - could not read the diff`);
@@ -1912,7 +1972,14 @@ async function processPromptedWrapup(
     log(`${session.name}: prompted wrap-up held - could not read the transcript anchor`);
     return false;
   }
+  if (!evidenceRead.ok) {
+    log(`${session.name}: prompted wrap-up held - could not read registered evidence`);
+    return false;
+  }
   const transcriptAnchor = transcriptRead.value;
+  const registeredEvidence = completionContract
+    ? promptedRegisteredEvidence(evidenceRead.value, candidate.episodeKey)
+    : null;
 
   const intentGuard = {
     objective: candidate.objective,
@@ -2018,7 +2085,8 @@ async function processPromptedWrapup(
     // A personal session has no task and gets none, so the generic prompted trigger's
     // behavior is untouched - and so is every other task kind, because only `ship` has a
     // contract to give.
-    completionContract: taskCompletionContract(session.task?.kind),
+    completionContract,
+    registeredEvidence,
   }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify);
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
@@ -2055,10 +2123,18 @@ async function processPromptedWrapup(
   let current = await refreshPromptedCandidate(client, pcfg, candidate);
   if (!current || current.candidate.kind !== "check") return false;
 
-  if (
+  const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
+  const verificationEvidenceFallback = Boolean(
     result.verdict.complete
-    && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
-  ) {
+    && registeredEvidence
+    && registeredEvidence.totalCount > 0
+    && blockingGaps.length > 0
+    && blockingGaps.every((gap) => gap.kind === "unverified"),
+  );
+  if (result.verdict.complete && (blockingGaps.length === 0 || verificationEvidenceFallback)) {
+    const claimSummary = verificationEvidenceFallback
+      ? `verification-evidence fallback: ${result.verdict.summary}`
+      : result.verdict.summary;
     const claim = await tryWorkflowCompletionClaim(
       client,
       current.session.id,
@@ -2071,7 +2147,7 @@ async function processPromptedWrapup(
         intent: intentGuard,
         headSha: diff.headSha,
         transcriptAnchor,
-        summary: result.verdict.summary,
+        summary: claimSummary,
       }),
     );
     if (claim.kind === "failed") {
@@ -2082,7 +2158,7 @@ async function processPromptedWrapup(
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }
-    if (claim.result.reason === "manual_trigger") {
+    if (claim.result.reason === "manual_trigger" && !verificationEvidenceFallback) {
       // Preserve the active Manual binding and surface the verified boundary to the
       // human without starting direct PR shipping alongside that binding.
       current = await refreshPromptedCandidate(client, pcfg, candidate);
@@ -2092,13 +2168,16 @@ async function processPromptedWrapup(
           client,
           current.session,
           current.candidate,
-          { outcome: "asked", summary: result.verdict.summary, gaps: [] },
+          { outcome: "asked", summary: claimSummary, gaps: [] },
           { ask: true },
         ))
       ) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
     }
+    // An evidence fallback is safe only when the authoritative Workflow was actually
+    // claimed. A Manual binding or no binding cannot run those checks, so retain the
+    // blocking unverified gaps and fall through to the ordinary hold plan below.
     current = await refreshPromptedCandidate(client, pcfg, candidate);
     if (!current || current.candidate.kind !== "check") return false;
   }

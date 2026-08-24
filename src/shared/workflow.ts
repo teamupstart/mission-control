@@ -262,6 +262,10 @@ export interface WorkflowStagedEvidenceImage {
   id: string;
   clientItemId: string;
   sourceKind: "agent" | "upload" | "retained";
+  /** Child-supplied registration locator; consumers must keep it inside evidence fences. */
+  sourceLocator: string;
+  /** Resolved intent episode at registration, or null for legacy/unresolved evidence. */
+  episodeKey: string | null;
   displayName: string;
   caption: string;
   repositoryScope: WorkflowEvidenceRepositoryScope;
@@ -277,6 +281,10 @@ export interface WorkflowStagedEvidenceTextArtifact {
   id: string;
   clientItemId: string;
   sourceKind: "agent" | "command";
+  /** Child-supplied path or command; consumers must keep it inside evidence fences. */
+  sourceLocator: string;
+  /** Resolved intent episode at registration, or null for legacy/unresolved evidence. */
+  episodeKey: string | null;
   displayName: string;
   caption: string;
   repositoryScope: WorkflowEvidenceRepositoryScope;

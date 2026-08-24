@@ -35,6 +35,16 @@ function gapAt(v: z.infer<typeof QueueVerdictSchema>, n: number) {
   return g;
 }
 
+test("the additive unverified kind parses without changing the existing gap vocabulary", () => {
+  for (const kind of ["incomplete", "untested", "standards", "regression", "unverified"] as const) {
+    const verdict = parseOk(
+      { complete: kind === "unverified", summary: "classified", gaps: [gap({ kind })] },
+      `${kind} remains a valid gap kind`,
+    );
+    assert.equal(gapAt(verdict, 0).kind, kind);
+  }
+});
+
 test("an over-long detail is clamped, not rejected - a COMPLETE verdict survives verbosity", () => {
   // The prompt never even states a `detail` cap: it documents `<= 600 chars` for
   // `fix` alone and asks for "what is missing, concretely", which invites length.

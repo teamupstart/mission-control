@@ -3475,7 +3475,7 @@ export const SetWorkItemStateSchema = z
         z.object({
           id: z.string().min(1),
           severity: z.enum(["blocking", "advisory"]),
-          kind: z.enum(["incomplete", "untested", "standards", "regression"]),
+          kind: z.enum(["incomplete", "untested", "standards", "regression", "unverified"]),
           path: z.string(),
           detail: z.string(),
           fix: z.string(),

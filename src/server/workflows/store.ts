@@ -1052,6 +1052,7 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
   inline_content: nullableText.optional().default(null),
+  episode_key: nullableText.optional().default(null),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
@@ -1122,6 +1123,7 @@ export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenc
     ...row,
     evidence_kind: row.evidence_kind ?? "image",
     inline_content: row.inline_content ?? null,
+    episode_key: row.episode_key ?? null,
   };
 }
 
@@ -3900,6 +3902,7 @@ export class WorkflowStore {
     noteKey: string,
     items: readonly WorkflowStagedEvidenceWrite[],
     now = Date.now(),
+    episodeKey: string | null = null,
   ): WorkflowStagedEvidenceList {
     return transaction(this.db, () => {
       this.db.prepare(
@@ -3922,6 +3925,7 @@ export class WorkflowStore {
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
           && row.inline_content === (item.inlineContent ?? null)
+          && row.episode_key === episodeKey
           && row.display_name === item.displayName
           && row.caption === item.caption
           && row.repository_scope === item.repositoryScope
@@ -3992,15 +3996,16 @@ export class WorkflowStore {
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
            id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
-           inline_content, display_name, caption, repository_scope, mime_type, bytes, sha256,
-           generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+           inline_content, episode_key, display_name, caption, repository_scope, mime_type, bytes,
+           sha256, generation, state, reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
            evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
            inline_content = excluded.inline_content,
+           episode_key = excluded.episode_key,
            display_name = excluded.display_name,
            caption = excluded.caption,
            repository_scope = excluded.repository_scope,
@@ -4023,6 +4028,7 @@ export class WorkflowStore {
           item.sourceRoot,
           item.sourceLocator,
           item.inlineContent ?? null,
+          episodeKey,
           item.displayName,
           item.caption,
           item.repositoryScope,
@@ -4053,6 +4059,8 @@ export class WorkflowStore {
         id: row.id,
         clientItemId: row.client_item_id,
         sourceKind: row.source_kind as WorkflowStagedEvidenceImage["sourceKind"],
+        sourceLocator: row.source_locator,
+        episodeKey: row.episode_key,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -4068,6 +4076,8 @@ export class WorkflowStore {
           id: row.id,
           clientItemId: row.client_item_id,
           sourceKind: row.source_kind as WorkflowStagedEvidenceTextArtifact["sourceKind"],
+          sourceLocator: row.source_locator,
+          episodeKey: row.episode_key,
           displayName: row.display_name,
           caption: row.caption,
           repositoryScope: row.repository_scope,

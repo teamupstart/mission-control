@@ -235,9 +235,14 @@ Order of checks per query, and the order is the contract:
    reading.
 6. **Execute** - the argv from the plan's table, through `run` with a per-operation timeout.
 7. **Post-filter** - re-apply the path validator and the denylist to every path in the **result**
-   of `search_text`, `list_paths`, `git_status`, `git_diff`, `git_log` and `git_blame`. This is the
+   of `search_text`, `list_paths`, `git_status`, `git_log` and `git_blame`. This is the
    step that makes the denylist real; `claude-grant.ts` already documents why a rule that guards
    only arguments protects nothing it names.
+   **This step is sufficient only because each of those five emits paths beside their own content,
+   or no content at all** - `search_text` is line-per-match, `list_paths` and `git_status` are
+   name-only, `git_log` is metadata, and `git_blame` takes its single path as an argument validated
+   at step 2. Dropping the line drops the content with it. **`git_diff` is deliberately absent from
+   that list and must not be added to it** - see *Content-bearing output* below.
 8. **Bound and mark** - clip to the per-query, per-round and per-attempt budgets, set
    `truncated` and `omittedBytes`. Never clip silently.
 9. **Scrub** - `scrubSecrets` over the response text.
@@ -249,6 +254,53 @@ and are otherwise refused as `unsupported_rev`. Without that check a revision is
 reference into the whole object database - another branch, another task's work, any object the
 repository happens to hold - and a diff taken against one returns files that were never in the
 submitted state, which defeats the exact-submitted-state boundary this phase exists to draw.
+
+### Content-bearing output: `git_diff` is allowlisted before it runs
+
+A unified diff is **one blob that carries file content**, not a list of paths beside content. So
+filtering paths out of a finished patch is not the same operation as filtering a path list, and a
+denylist applied after the fact has already lost. Measured on a fixture snapshot containing an
+untracked, non-ignored `.env` and a `k/id_rsa`:
+
+```
+$ git diff <headSha> <snapshot> | grep -n 'hunter2\|BEGIN PRIVATE KEY'
+7:+SECRET=hunter2-should-never-be-seen
+21:+-----BEGIN PRIVATE KEY-----
+```
+
+Both files are in the snapshot tree - which the plan already establishes as the reason the denylist
+survives the move to git objects - so an unrestricted `git_diff` hands their contents to the broker.
+
+`git_diff` therefore runs as two invocations, and **content is never generated for a denied path**:
+
+1. **Paths first, no content.** `git diff --no-renames -z --name-only <base> <snapshot>` yields the
+   changed path set and nothing else.
+2. **Validate and deny** that set through steps 2 and 3 above. Record how many paths were dropped.
+3. **Nothing surviving** returns an ok, empty patch with `filtered: true` and the dropped count -
+   not an error, because "every changed file is denied" is an answer.
+4. **Content second, allowlisted.** `git diff --no-renames <base> <snapshot> -- ':(literal)<path>'…`
+   over the surviving paths only, batched so argv stays bounded, results concatenated in path order.
+   Verified: the same fixture yields zero occurrences of either secret.
+5. **Verify before returning.** Re-extract the paths from every `diff --git a/<x> b/<y>` header in
+   the produced patch and re-check **both** sides against the validator and the denylist. A header
+   that fails, or that cannot be parsed into two paths, refuses the whole operation as
+   `sensitive_path` rather than returning a partially filtered patch. Generating nothing denied is
+   the guarantee; this is the assertion that the guarantee held.
+
+`--no-renames` is **explicit, not inherited**. With the operator's `diff.renames=true` the same
+fixture emits `diff --git a/.env b/notsecret.txt` - a header naming a denied path, whose shape
+depends on the reviewing machine's git config. Passing `--no-renames` makes every path its own
+section and the response shape independent of configuration. The broker also never passes `-c` or
+`--cc`, so combined-diff headers cannot arise; step 5 refuses any header form it cannot parse, so
+they could not slip through unnoticed if they did.
+
+**The honest limit, stated because overclaiming here would be worse than the gap.** This guarantees
+that a *denied path* contributes no section. It does not stop content the submitted work itself
+moved to an *allowed* path: rename `.env` to `notsecret.txt` in the change under review and its
+bytes are reachable - but reachable exactly as `read_file("notsecret.txt")` already makes them,
+because the denylist is path-shaped by construction. That is the documented boundary of a
+path-shaped rule, with `scrubSecrets` as the imperfect content-shaped layer behind it, and it is not
+made better or worse by `git_diff`. Do not describe the allowlist as preventing it.
 
 **`git_diff`'s default base is the captured `headSha` - the snapshot commit's own parent - and
 never live `HEAD`.** This is the same hazard the whole phase exists to answer, so it must not be
@@ -323,6 +375,21 @@ look viable.
   `git_diff`'s `base` is refused as `unsupported_rev` **and** that the refusal body contains none of
   that file's content or path. A test that only checks the code would still pass if the
   implementation refused after running the diff.
+- **The adversarial `git_diff` content tests, which are their own group because path-shaped
+  assertions do not cover a content-bearing response.** Against a snapshot holding an untracked
+  non-ignored `.env`, a `k/id_rsa`, a binary file and an ordinary changed source file:
+  - a whole-repository `git_diff` returns the source file's hunks and **zero bytes** of the `.env`
+    or `id_rsa` content - assert on the secret *values*, not on the paths, since a path-only
+    assertion passes against an implementation that filtered headers and kept hunks;
+  - no `diff --git` header in the response names a denied path on **either** side;
+  - `filtered` is set and the dropped count matches the number of denied changed paths;
+  - a diff in which *every* changed path is denied returns ok-and-empty with `filtered: true`,
+    not an error;
+  - the same assertions hold with `diff.renames=true` set on the fixture repository, pinning that
+    the response does not depend on the operator's git config;
+  - a fabricated patch containing a denied header, fed through the step-5 verifier directly, is
+    refused as `sensitive_path` - the guarantee is "never generated", and this is the test that the
+    assertion behind it actually fires rather than being dead code.
 - Also assert the positive half, so the check is not simply "refuse everything": a `base` that *is*
   an ancestor - the snapshot's parent, and the merge base against the default branch - succeeds and
   returns the expected paths.
@@ -415,3 +482,18 @@ Phase 3 may rely on, and must not change:
      explicit daemon-owned author and committer, which also stops the operator being recorded as the
      author of an object the daemon wrote. Fixture tests null out global and system config so
      ambient operator settings cannot mask the failure.
+- **Reconciliation record, review round 5.** The step-7 post-filter was specified as applying to
+  "every path in the result" of six ops including `git_diff`, which is wrong for that one op and only
+  that one: a unified diff is a single blob carrying file content, so there is no path line to drop
+  that takes the content with it. Measured, an unrestricted `git diff` over a snapshot holding an
+  untracked non-ignored `.env` emitted `+SECRET=hunter2-should-never-be-seen` and
+  `+-----BEGIN PRIVATE KEY-----` straight into the response. `git_diff` now resolves its path set
+  first with `--name-only` (no content), denies within that set, and generates content only for an
+  explicit `:(literal)` allowlist - so nothing denied is ever produced - then verifies both sides of
+  every `diff --git` header before returning and refuses the whole op rather than shipping a
+  partially filtered patch. `--no-renames` became explicit in the same change, because
+  `diff.renames=true` on the reviewing machine made a header name a denied path and made the
+  response shape depend on operator configuration. The op set and decision 4 are unchanged.
+  The path-shaped denylist's real limit - content the change itself moved to an allowed path - is
+  now stated rather than papered over, because claiming the allowlist covers it would be a false
+  guarantee in the security section.

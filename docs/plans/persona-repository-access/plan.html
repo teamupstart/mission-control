@@ -665,6 +665,20 @@ git update-ref refs/mission-control/review-snapshots/&lt;submissionId&gt; &lt;co
       absolute path and prints the matching lines, so a <code>Read(...)</code>-only list protects
       nothing it names.&rdquo; The measurement above is why this layer survives the move to git
       objects: an untracked, non-ignored <code>.env</code> <strong>is</strong> in the snapshot tree.</li>
+    <li><strong>A content-bearing response is allowlisted before it is generated, not filtered
+      after.</strong> Filtering paths out of a result works for every op that emits a path beside its
+      own content - drop the line and the content goes with it. It does <strong>not</strong> work for
+      <code>git_diff</code>, whose output is one blob carrying file content: measured, an
+      unrestricted diff over that same snapshot emitted
+      <code>+SECRET=hunter2-should-never-be-seen</code> and
+      <code>+-----BEGIN PRIVATE KEY-----</code> directly into the response. So <code>git_diff</code>
+      resolves its changed-path set first with <code>--name-only</code> (which carries no content),
+      applies the denylist to that set, and generates content only for an explicit
+      <code>:(literal)</code> allowlist - then verifies both sides of every
+      <code>diff --git</code> header before returning and refuses the whole operation rather than
+      shipping a partly filtered patch. <code>--no-renames</code> is passed explicitly, because
+      <code>diff.renames=true</code> on the reviewing machine otherwise makes a header name a denied
+      path and makes the response shape depend on operator configuration.</li>
     <li><strong>Modes are classified, links are never followed.</strong> Mode <code>120000</code> is
       denied as <code>symlink</code> and <code>160000</code> as <code>submodule</code>. A symlink's
       blob content is its target string, so serving it as file content would hand the reviewer an

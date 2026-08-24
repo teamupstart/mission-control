@@ -304,6 +304,17 @@ defects in the artifacts, all fixed without moving an approved decision:
     clone that never set `user.email` would have failed every snapshot and blocked every
     access-enabled Persona. It also fixes provenance the other way: the operator would otherwise be
     recorded as author of an object the daemon wrote.
+12. **`git_diff` is allowlisted before it runs, not filtered after** (Phase 2). The post-filter step
+    listed `git_diff` alongside five path-emitting ops, which is wrong for a response that is one
+    blob of file content: measured, an unrestricted diff over a snapshot holding an untracked
+    non-ignored `.env` emitted `+SECRET=hunter2-should-never-be-seen` and
+    `+-----BEGIN PRIVATE KEY-----` into the response. The path set is now resolved first with
+    `--name-only`, denied within, and content generated only for an explicit `:(literal)` allowlist,
+    with both sides of every `diff --git` header verified before anything is returned.
+    `--no-renames` became explicit at the same time, because `diff.renames=true` on the reviewing
+    machine made a header name a denied path and made the response shape depend on operator config.
+    The path-shaped denylist's genuine limit - content the change itself moved to an allowed path -
+    is now stated rather than implied covered.
 
 ## Final verification strategy
 

@@ -442,18 +442,29 @@ defences on what remains.
    lines, so a `Read(...)`-only list protects nothing it names." The measurement above is why
    this layer survives the move to git objects: an untracked, non-ignored `.env` **is** in the
    snapshot tree.
-4. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
+4. **A content-bearing response is allowlisted before it is generated, not filtered after.**
+   Filtering paths out of a result works for every op that emits a path beside its own content -
+   drop the line and the content goes with it. It does **not** work for `git_diff`, whose output is
+   one blob carrying file content: measured, an unrestricted diff over that same snapshot emitted
+   `+SECRET=hunter2-should-never-be-seen` and `+-----BEGIN PRIVATE KEY-----` directly into the
+   response. So `git_diff` resolves its changed-path set first with `--name-only` (which carries no
+   content), applies the denylist to that set, and generates content only for an explicit
+   `:(literal)` allowlist - then verifies both sides of every `diff --git` header before returning
+   and refuses the whole operation rather than shipping a partly filtered patch. `--no-renames` is
+   passed explicitly, because `diff.renames=true` on the reviewing machine otherwise makes a header
+   name a denied path and makes the response shape depend on operator configuration.
+5. **Modes are classified, links are never followed.** Mode `120000` is denied as `symlink`
    and `160000` as `submodule`. A symlink's blob content is its target string, so serving it as
    file content would hand the reviewer an arbitrary host path under a repository-relative name.
-5. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
+6. **Binary refusal without reading.** `cat-file --batch-check` yields type and size first, so
    an oversize blob is refused as `too_large` before a byte is read; `git grep -I` skips binary
    content (verified).
-6. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
+7. **Per-operation output scrubbing.** `scrubSecrets` (`src/server/inspector/scrub.ts`) runs
    over every broker response. Its own comment makes the trade explicit - "a mangled example is
    a nuisance, a published credential is an incident" - and it applies with more force here,
    because a verdict's evidence quotes can reach a public pull request through the feedback
    packet.
-7. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
+8. **Untrusted framing.** Every response is delivered inside an `untrustedBlock`
    (`src/server/review/prompt.ts`), so repository content the reviewer fetched carries the same
    `-untrusted` fence as the diff it came from.
 

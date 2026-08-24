@@ -294,6 +294,11 @@ reintroduce and neither is caught by the guards that look like they should catch
   stated as universal rather than per-class, and why the adversarial suites are table-driven over the
   op list: the class rules and the test shape are the fix, not the three individual patches. When
   reviewing a new op, check **both** axes - what it is handed, and what its output can carry.
+- **Updating one list and not its sibling list.** The boot block versus `migrate()`
+  (reconciliation 23), the class table versus the op set (22), the op argv versus its siblings (18).
+  Three different pairs, one habit. Where a fact has to appear in two places, the durable answer has
+  been a test that derives one from the other rather than a note asking the next author to remember -
+  the `table_info` set comparison, the argv assertion, the total `Record`.
 - **Fixing the instance the review pointed at, and not its siblings elsewhere.** The same failure in
   a different register, and the reason it is called out separately: a reader-directed instruction was
   removed from `plan.md` in reconciliation 9 and left standing in the pull request description, which
@@ -427,6 +432,16 @@ reintroduce and neither is caught by the guards that look like they should catch
     The declaration is now `ReadonlySet<RepositorySafetyStep>` per op, with an empty set as a real
     answer for `read_file` - stated so "nothing declared" cannot be confused with "not yet
     classified", which is the confusion that produced this.
+
+23. **Every persisted column has a migration, and a test that cannot go stale** (Phases 1 and 2).
+    The boot block grew to four `workflow_submissions` columns in reconciliation 20 while the
+    `migrate(d)` instruction still said "the two `addColumn` calls". This is the failure mode the
+    repository's own migration comment describes: `CREATE TABLE` supplies the column to a fresh
+    database, so every test and every developer machine looks fine, and only an existing
+    installation is broken. All four are now named. Closed as a class by a test that compares the
+    `PRAGMA table_info` column set of a migrated pre-feature database against a fresh one - it names
+    no column, so it does not go stale as columns are added, and it is the assertion that would have
+    caught this. Each phase adds it for the tables it owns, so the two stay independent.
 
 ## Final verification strategy
 

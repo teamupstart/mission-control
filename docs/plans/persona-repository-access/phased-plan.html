@@ -445,6 +445,12 @@
       than per-class, and why the adversarial suites are table-driven over the op list: the class
       rules and the test shape are the fix, not the three individual patches. When reviewing a new
       op, check <strong>both</strong> axes - what it is handed, and what its output can carry.</li>
+    <li><strong>Updating one list and not its sibling list</strong> - the boot block versus
+      <code>migrate()</code> (item 23), the class table versus the op set (22), the op argv versus its
+      siblings (18). Three different pairs, one habit. Where a fact has to appear in two places, the
+      durable answer has been a test that derives one from the other rather than a note asking the next
+      author to remember - the <code>table_info</code> set comparison, the argv assertion, the total
+      <code>Record</code>.</li>
     <li><strong>Fixing the instance the review pointed at, and not its siblings elsewhere</strong> -
       the same failure in a different register, and the reason it is called out separately: a
       reader-directed instruction was removed from <code>plan.md</code> in item 9 and left standing in
@@ -590,6 +596,16 @@
       with an empty set as a real answer for <code>read_file</code> - stated so &ldquo;nothing
       declared&rdquo; cannot be confused with &ldquo;not yet classified&rdquo;, which is the confusion
       that produced this.</li>
+    <li><strong>Every persisted column has a migration, and a test that cannot go stale</strong>
+      (Phases 1 and 2). The boot block grew to four <code>workflow_submissions</code> columns in item
+      20 while the <code>migrate(d)</code> instruction still said &ldquo;the two <code>addColumn</code>
+      calls&rdquo;. This is the failure mode the repository&rsquo;s own migration comment describes:
+      <code>CREATE TABLE</code> supplies the column to a fresh database, so every test and every
+      developer machine looks fine, and only an existing installation is broken. All four are now
+      named. Closed as a class by a test that compares the <code>PRAGMA table_info</code> column set
+      of a migrated pre-feature database against a fresh one - it names no column, so it does not go
+      stale as columns are added, and it is the assertion that would have caught this. Each phase adds
+      it for the tables it owns, so the two stay independent.</li>
   </ol>
 
   <h2>Final verification strategy</h2>

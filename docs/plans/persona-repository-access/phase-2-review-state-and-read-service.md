@@ -183,7 +183,21 @@ CREATE INDEX IF NOT EXISTS idx_workflow_repository_queries_run
   ON workflow_repository_queries(run_id, created_at);
 ```
 
-In `migrate(d)`, the two `addColumn` calls. Create the run index in `migrate()` only if it names a
+In `migrate(d)`, **one `addColumn` per column this phase adds to `workflow_submissions` - all
+four**, not just the snapshot pair:
+
+```ts
+addColumn(d, "workflow_submissions", "review_snapshot_oid", "TEXT");
+addColumn(d, "workflow_submissions", "review_snapshot_repo_root", "TEXT");
+addColumn(d, "workflow_submissions", "review_status_porcelain", "TEXT");
+addColumn(d, "workflow_submissions", "review_status_truncated", "INTEGER NOT NULL DEFAULT 0");
+```
+
+An earlier draft said "the two `addColumn` calls" and was never updated when the status columns were
+added to the boot block in round 12. The consequence is invisible on a fresh install and total on an
+upgrade: `CREATE TABLE` supplies the column to a new database, so every test and every developer
+machine looks fine, while an existing installation never gets it and the capture write fails or the
+`git_status` read finds nothing. Create the run index in `migrate()` only if it names a
 just-added column - the constraint `db.ts:1245-1249` documents. The unique index is the durability
 guarantee that a retried round cannot double-write its audit.
 
@@ -813,7 +827,19 @@ look viable.
   two different attempt ids write rows that do not collide; and every row inserts through the unique
   index without a conflict across the whole sequence.
 - A migration test: a hand-written pre-feature `workflow_submissions` opens, migrates, and reads
-  with null snapshot columns and every other field unchanged; two opens are idempotent.
+  with null snapshot **and status** columns and every other field unchanged; two opens are idempotent.
+- **The boot-block/migration pair check**, following `test/persona-migration.test.ts:153` and its
+  reasoning verbatim - the omission is invisible at runtime on a fresh database, because
+  `CREATE TABLE` supplies the column, so the only place it shows is the source. For each of the four
+  columns, assert it appears in the `workflow_submissions` `CREATE TABLE` block **and** in a
+  matching `addColumn` call.
+- **And the general guard, which is what actually closes this class.** Open a hand-seeded pre-feature
+  database, run `migrate()`, and assert its `PRAGMA table_info` column set for
+  `workflow_submissions` is **equal** to a fresh database's - failing with the difference. Same for
+  `workflow_repository_queries`. This names no column, so it keeps working for every column added
+  later without anyone maintaining a list, and it is the assertion that would have caught this
+  finding. The named pair check above stays as well: it localises the failure to the missing
+  `addColumn` line, where the set-equality test only says the sets differ.
 - Retention: pruning a submission's evidence deletes its ref.
 
 Verification: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`.
@@ -928,6 +954,12 @@ Phase 3 may rely on, and must not change:
   first shape invited, where two subsystems counting independently collide on the unique index.
 - **Reconciliation record, review round 13.** Two findings, both accepted, and one further leak found
   while checking the second.
+  0. *(Round 14, recorded here because it is the same class as several of these.)* The boot block
+     grew to four `workflow_submissions` columns in round 12 while the `migrate(d)` instruction still
+     said "the two `addColumn` calls". Invisible on a fresh install - `CREATE TABLE` supplies the
+     column, so every test passes - and total on an upgrade. Fixed by naming all four, and closed as a
+     class by a test that compares the `PRAGMA table_info` column set of a migrated pre-feature
+     database against a fresh one, which names no column and so cannot go stale.
   1. **Staged blobs were not reachable.** The porcelain recorded the index oid but nothing kept that
      object alive, so for a staged-then-modified path the staged bytes were unretrievable after
      release or `gc`. I had called that out of scope on the reading that decision 7 asks only for

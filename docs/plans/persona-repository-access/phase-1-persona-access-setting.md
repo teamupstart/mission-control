@@ -275,8 +275,15 @@ matching the existing `PersonaMutation` shape. No new reason codes.
   `400`; an oversize body is refused before schema parsing.
 - `test/persona-migration.test.ts`: a hand-written pre-feature `personas` table (not imported from
   `db.ts`) opens, migrates, and reads `repositoryAccess: "off"` with guidance bytes, revision and
-  timestamps unchanged; both the fresh `CREATE TABLE` and the migration name the column; two
-  opens are idempotent.
+  timestamps unchanged; both the fresh `CREATE TABLE` and the migration name the column, following
+  `test/persona-migration.test.ts:153` and its reasoning - a fresh database gets the column from
+  `CREATE TABLE`, so a runtime assertion passes even when the `addColumn` is missing and only an
+  upgrade suffers; two opens are idempotent.
+- **The general guard.** Open a hand-seeded pre-feature database, run `migrate()`, and assert its
+  `PRAGMA table_info` column set for `personas` **equals** a fresh database's, failing with the
+  difference. It names no column, so it does not go stale as columns are added later, and it is the
+  shape that catches a boot-block change whose `addColumn` was forgotten. Phase 2 adds the same guard
+  for its own tables; each phase covers the tables it owns, so neither depends on the other.
 - **New**, closing a gap the investigation named: a `workflow_versions.graph_json` hand-seeded in
   the pre-feature shape resolves with `repositoryAccess: "off"` and its node ids intact; the same
   row with an **unknown extra key** inside the persona snapshot also resolves, proving strip mode

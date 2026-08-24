@@ -42,6 +42,7 @@ const FOREMAN: ForemanState = {
   backlogPlan: null,
   episodes: [],
   update: async () => true,
+  refresh: async () => {},
   error: null,
 };
 const COST: CostState = { status: null, update: async () => {}, error: null };

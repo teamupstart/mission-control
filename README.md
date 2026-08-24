@@ -20,9 +20,11 @@ choose, and the defaults draw the card the previous release drew.
 
 Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
 per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
-One tour runs at a time. The temporary **See the work** product tour is the one registered
-today; **Start See the work tour** is its palette command.
-If the fleet is empty, the tour starts one temporary Chat conversation and uses its real Board
+One tour runs at a time, and two are registered.
+
+**See the work** teaches the operating half - the Line, the Board, one session's desk, and a
+task from dispatch through review to completion.
+If the fleet is empty, it starts one temporary Chat conversation and uses its real Board
 drill-in to show the session desk. Its Dispatch sequence
 then fills the real task input, explains the **None** Workflow choice, and waits for the
 operator to click the highlighted **Dispatch now** button while the rest of the form stays
@@ -30,6 +32,15 @@ visible. Its final step opens the real Complete dialog with the outcome prefille
 demo**, so the operator can inspect **Run a retro first** and **Complete & close**. Those dialog
 actions stay disabled during the preview; the tour owns its fixed cleanup and never runs a
 retro.
+
+**Author what runs** teaches the authoring half, in dependency order: Personas, Actions,
+Commands, then the workflow that composes all three. It walks fifteen stops through the Library
+on shipped built-ins, ends on **No-Mistakes Review**, and then follows one already-ended run of
+that workflow - completed, cancelled or failed alike - into the Runs page and its session's
+**Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
+run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
+same two stops against the built-in graph instead. Neither tour stores progress, and both
+restore the page, the asset, and the control you started from when you exit.
 
 Open a session's **Files** tab to browse its workspace. In **Preview** mode, <kbd>↑</kbd>
 and <kbd>↓</kbd> change the selected file instead of moving through the session rail. Press
@@ -260,6 +271,39 @@ Beyond the agents in the cards, Mission Control makes a few model calls of its o
 untitled dispatch, refining a Goal, narrating the away digest, reviewing a pull request. Those
 run through a local CLI you are already logged in to, so there is no API key anywhere in this
 path, and **Settings → Models** picks which provider does that work.
+
+**Every app-owned model choice with a fixed place in this app is on that one page**, in three
+groups - the background jobs, Foreman's four roles, and the GitHub Inspector's review - so one
+screen answers *what is this app spending on its own work, and on whose account?* Foreman's
+provider and its Review, Verify, Triage and Backlog models used to live in Foreman's own panel
+and the Inspector's review model in its own; both panels keep every other setting and now point
+here.
+
+A Persona's model and an Ensemble judge's are deliberately not here, and are not an exception to
+that: there is one per row and no fixed number of them, so they are a field on a definition you
+wrote rather than a setting this app owns a slot for. The page says so itself, at the bottom.
+
+Each row carries its own provider as well as its own model, and Foreman's four are no longer one
+choice: its grid leads with an **All roles** row, so the deep pair can run on one account while
+the cheap pair runs on another. A row on *Inherit* follows the row above it - a Foreman role
+follows **All roles**, and everything else follows the app-wide picker, then
+`MISSION_LLM_RUNNER`, then the shipped default. Pinning a model pins its provider, so changing
+the picker re-resolves only the rows still inheriting. That pin is recorded only by a write that
+reaches the pair - saving that row's model, or moving the row above it - so editing an unrelated
+setting never converts an inheriting row into a pinned one. A pair that turns up anyway, from an
+older blob or a hand edit, is refused when the call is resolved rather than spawned, and the row
+names the model id it had to drop.
+
+**One upgrade note.** An unset GitHub Inspector provider used to resolve to a literal `claude`,
+which made it the one subsystem that ignored the app-wide picker and `MISSION_LLM_RUNNER`. It now
+follows the same ladder as everything else, so **if you were relying on that fallback this changes
+which provider the Inspector spawns** - set its provider explicitly to keep Claude.
+
+The models Foreman *launches a backlog task with* are a different question - they choose what a
+launched agent runs as, not what Foreman itself spends - and stay under
+**Settings → Foreman → Launches**.
+
+![Mission Control model settings](docs/images/models.png)
 
 Each provider also has a *transport*: how the daemon talks to that CLI. Both are stored in the
 `llm` config, both can be pinned from the environment, and both resolve the same way - the saved

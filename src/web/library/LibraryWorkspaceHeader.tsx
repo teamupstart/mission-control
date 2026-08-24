@@ -158,6 +158,7 @@ export function LibraryWorkspaceHeader({
   subtitle,
   meta,
   primary,
+  primaryRef,
   menuLabel,
   actions = [],
 }: {
@@ -177,6 +178,14 @@ export function LibraryWorkspaceHeader({
   meta?: React.ReactNode;
   /** The one verb this screen is for. Absent only where no verb is promotable. */
   primary?: LibraryPrimaryAction;
+  /**
+   * A semantic ref the owning surface may attach to that promoted button.
+   *
+   * Five surfaces render this header, so which one a guided tour means is the caller's to
+   * say. Absent everywhere else, and the button's element, class, label, disabled state, and
+   * tooltip are identical either way.
+   */
+  primaryRef?: React.Ref<HTMLButtonElement>;
   menuLabel: string;
   actions?: readonly LibraryMenuAction[];
 }): React.JSX.Element {
@@ -190,7 +199,12 @@ export function LibraryWorkspaceHeader({
       <div className="lib-work-actions">
         {primary && (
           <Tooltip label={primary.hint}>
-            <button className="btn" disabled={primary.disabled} onClick={primary.onClick}>
+            <button
+              className="btn"
+              ref={primaryRef}
+              disabled={primary.disabled}
+              onClick={primary.onClick}
+            >
               {primary.label}
             </button>
           </Tooltip>

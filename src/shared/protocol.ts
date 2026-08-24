@@ -1473,8 +1473,27 @@ export type SetGoal = z.infer<typeof SetGoalSchema>;
  * following the FOREMAN_REVIEW_TIMEOUT_MS precedent.
  */
 export const ForemanConfigSchema = z.object({
-  /** Provider used for every Foreman model call. */
-  runner: z.enum(LLM_RUNNER_IDS).optional(),
+  /**
+   * Foreman's GROUP-LEVEL provider: the one every role that has not chosen its own runs on.
+   *
+   * Not "every Foreman model call" any more. Each of the four roles carries a `*Runner` key
+   * beside its `*Model` key, and `resolveForemanRunner` ranks role, then this, then the
+   * app-wide ladder. Empty means Foreman itself never chose, which hands the question to
+   * that app-wide answer rather than to a literal `"claude"` - which would drop the env
+   * layer for the one subsystem that also runs in its own process.
+   *
+   * Permissive on READ - a string with `.catch("")` rather than the enum it used to be - for
+   * the reason `LlmConfig.runner` spells out at length: this value is PERSISTED, so a
+   * downgrade or a withdrawn provider leaves a stored id this build cannot resolve, and an
+   * enum here would degrade it to empty before `resolveForemanRunner` ever saw it, making
+   * the fallback read back as the operator's own pick. A string reaches the resolver intact
+   * and is REPORTED. The `.catch` still guards a persisted non-string, which would otherwise
+   * fail the whole parse and take Foreman down over a preference - recovering to ABSENT,
+   * which is the same fact as empty here and is what every rung of the ladder treats a blank
+   * value as. The PATCH below stays strict, so a bad value from the panel is a 400 rather
+   * than a silent no-op.
+   */
+  runner: z.string().optional().catch(undefined),
   /**
    * Whether Foreman is switched on at all. On by default, and that authorises far less than
    * it sounds like.
@@ -1523,6 +1542,11 @@ export const ForemanConfigSchema = z.object({
    */
   triageModel: z.string().optional(),
   /**
+   * Provider for the Tier 1 triage call alone. Empty inherits `runner`, then the app-wide
+   * ladder. Read tolerance and write strictness exactly as `runner` above.
+   */
+  triageRunner: z.string().optional().catch(undefined),
+  /**
    * Model id for the full reviewer - the call that judges a stuck session's pending
    * question. Falls back to FOREMAN_REVIEW_MODEL, then an Opus default.
    *
@@ -1532,6 +1556,14 @@ export const ForemanConfigSchema = z.object({
    */
   reviewModel: z.string().optional(),
   /**
+   * Provider for the full reviewer alone. Empty inherits `runner`, then the app-wide ladder.
+   *
+   * Its own key rather than a shared one because the four roles have genuinely different
+   * cost profiles - see `FOREMAN_MODEL_SPECS` - and the deep pair is exactly what an
+   * operator wants to move onto a different account from the cheap pair.
+   */
+  reviewRunner: z.string().optional().catch(undefined),
+  /**
    * Model id for the work-queue verifier - the call that reads a diff and decides
    * whether an item is done. Falls back to FOREMAN_VERIFY_MODEL, then an Opus default.
    *
@@ -1540,6 +1572,8 @@ export const ForemanConfigSchema = z.object({
    * is long, and doing that must not also cheapen the reviewer.
    */
   verifyModel: z.string().optional(),
+  /** Provider for the work-queue verifier alone. Empty inherits `runner`, then app-wide. */
+  verifyRunner: z.string().optional().catch(undefined),
   /**
    * How many rounds the SAME gap may survive before the item escalates. Counted
    * per gap, not per attempt, so an agent working through several distinct gaps
@@ -1710,17 +1744,32 @@ export const ForemanConfigSchema = z.object({
    * call over prose the human wrote, not a bucketing.
    */
   backlogModel: z.string().optional(),
+  /** Provider for the backlog dependency planner alone. Empty inherits `runner`, then app-wide. */
+  backlogRunner: z.string().optional().catch(undefined),
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
+
+/** A provider id, or the empty string meaning "inherit". Strict, because this is a WRITE. */
+const ForemanRunnerOverrideSchema = z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]);
 
 /**
  * Partial update of the Foreman config from the dashboard.
  *
  * `backlogDefaultModel` is spelled out rather than inherited from `.partial()`:
  * the server merges it per harness, so a Claude edit cannot erase a Codex choice.
+ *
+ * The five provider fields are respelled for the opposite reason: the read schema's
+ * tolerance is exactly wrong for a write. `.catch("")` would turn an unknown provider id
+ * from the panel into a silent inherit - the select reverts on the next poll and nothing
+ * says why - where a 400 is a refusal the operator can read.
  */
 export const ForemanConfigPatchSchema = ForemanConfigSchema.partial()
   .extend({
+    runner: ForemanRunnerOverrideSchema.optional(),
+    reviewRunner: ForemanRunnerOverrideSchema.optional(),
+    verifyRunner: ForemanRunnerOverrideSchema.optional(),
+    triageRunner: ForemanRunnerOverrideSchema.optional(),
+    backlogRunner: ForemanRunnerOverrideSchema.optional(),
     backlogDefaultModel: z
       .object({
         claude: ModelIdSchema.nullable().optional(),
@@ -2018,8 +2067,15 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * three deliberate acts, and the first two are reversible without anyone else seeing.
  */
 export const InspectorConfigSchema = z.object({
-  /** Provider used for reviews and follow-up replies. */
-  runner: z.enum(LLM_RUNNER_IDS).optional(),
+  /**
+   * Provider used for reviews and follow-up replies. Empty means the Inspector never chose,
+   * which hands the question to the app-wide ladder (`llm` config, then `MISSION_LLM_RUNNER`,
+   * then the shipped default) - NOT to a literal `"claude"`, which is what it used to
+   * resolve to and which silently dropped the env layer for this one subsystem.
+   *
+   * Permissive on read, strict on write - see `ForemanConfig.runner` for the full argument.
+   */
+  runner: z.string().optional().catch(undefined),
   enabled: z.boolean().default(false),
   /**
    * `dry-run` still adopts PRs, reviews them, and records what it WOULD say - which is
@@ -2058,11 +2114,10 @@ export const InspectorConfigSchema = z.object({
 });
 export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
 
-/** Partial update of the Inspector config from the dashboard. */
-export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
-);
+/** Partial update of the Inspector config from the dashboard. Strict provider, as Foreman's. */
+export const InspectorConfigPatchSchema = InspectorConfigSchema.partial()
+  .extend({ runner: ForemanRunnerOverrideSchema.optional() })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
 /**

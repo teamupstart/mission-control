@@ -30,11 +30,20 @@ export type LibraryChipState =
   | "overridden";
 
 export function LibraryPropertyChips({
+  containerRef,
   children,
 }: {
+  /**
+   * A semantic ref the owning surface may attach to this row.
+   *
+   * Optional, and absent everywhere except where a guided tour has to spotlight the chips of
+   * ONE surface: three surfaces render this component, so the ref belongs to the caller
+   * rather than to the shared row. Nothing else about the markup changes when it is absent.
+   */
+  containerRef?: React.Ref<HTMLDivElement>;
   children: React.ReactNode;
 }): React.JSX.Element {
-  return <div className="lib-props">{children}</div>;
+  return <div className="lib-props" ref={containerRef}>{children}</div>;
 }
 
 export function LibraryPropertyChip({

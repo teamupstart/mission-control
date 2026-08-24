@@ -112,7 +112,9 @@ function state(over: Partial<InspectorState> = {}): InspectorState {
     config: InspectorConfigSchema.parse({ enabled: true, mode: "dry-run" }),
     inspections: [],
     model: null,
+    runner: null,
     update: async () => true,
+    refresh: async () => {},
     resolveFindings: async () => true,
     error: null,
     ...over,
@@ -140,49 +142,26 @@ test("the reviewed-repos section is a grant count that deep-links to Trust, not 
   assert.doesNotMatch(html, /aria-label="Stop reviewing/);
 });
 
-test("the panel has a model field, and shows what would actually run", () => {
-  // Without this the operator has no way to see or change the review model, which is how
-  // an unnamed `--model` went unnoticed for the life of the feature.
+// The provider select and the model picker moved to Settings > Models, where every call this
+// app makes on the operator's account is answerable in one screen. What has to be true HERE is
+// the negative - neither control is still rendered, so two panels cannot write the same keys
+// and search cannot have two places to send one operator - plus a pointer a bookmark survives.
+// The controls themselves are asserted in `foreman-models-panel.test.ts`.
+test("the model and provider controls are gone, leaving a pointer to Models", () => {
   const html = render();
-  assert.match(html, /id="inspector-model"/);
-  assert.match(html, new RegExp(INSPECTOR_MODEL_SPEC.fallback));
+  assert.doesNotMatch(html, /id="inspector-model"/);
+  assert.doesNotMatch(html, /id="inspector-provider"/);
+  assert.doesNotMatch(html, /data-anchor="inspector\/model"/);
+  assert.doesNotMatch(html, /data-anchor="inspector\/provider"/);
+  assert.match(html, /Open it in Models/);
 });
 
-test("the model blurb is still printed under the field - Foreman's tooltip-only mode did not leak", () => {
-  // `ModelField.blurb` defaults to "block"; only the Foreman panel passes "hover". This
-  // panel must keep the visible paragraph, not just the tooltip's hidden copy.
-  assert.match(render(), /<p class="settings-hint foreman-model-blurb">Reviews each push/);
-});
-
-test("GitHub Inspector can select Codex and offers only Codex catalog models", () => {
-  const html = render(state({
-    config: InspectorConfigSchema.parse({ enabled: true, runner: "codex", model: "" }),
-    model: { id: "gpt-5.6-sol", source: "default" },
-  }));
-  assert.match(html, /id="inspector-provider"/);
-  assert.match(html, /<option value="codex" selected="">Codex<\/option>/);
-  assert.match(html, /<select[^>]*id="inspector-model"/);
-  assert.match(html, /GPT-5\.6 Sol/);
-  assert.doesNotMatch(html, /Claude Sonnet/);
-});
-
-test("an env var outranking the box is named, not silently obeyed", () => {
-  // The browser cannot see the daemon's environment, so this sentence exists only because
-  // the daemon reports the resolution. A panel showing `config || default` would print a
-  // model the env is overriding.
-  const html = render(state({ model: { id: "claude-opus-4-8", source: "env" } }));
-  assert.match(html, new RegExp(INSPECTOR_MODEL_SPEC.envVar));
-});
-
-test("the operator's own model is shown without a source line explaining it", () => {
-  const html = render(
-    state({
-      config: InspectorConfigSchema.parse({ model: "claude-haiku-4-5" }),
-      model: { id: "claude-haiku-4-5", source: "config" },
-    }),
-  );
-  assert.match(html, /claude-haiku-4-5/);
-  assert.doesNotMatch(html, /Shipped default/);
+test("the trade the provider choice makes is still stated where the posture is", () => {
+  // The one sentence that had to stay: which provider reviews decides WHAT IT CAN READ, and
+  // that is a fact about this subsystem's posture rather than about a model picker.
+  const html = render();
+  assert.match(html, /Claude receives read-only tools scoped to the worktree/);
+  assert.match(html, /Codex reviews the supplied\s+diff without repository tools/);
 });
 
 test("retired rows are marked so a finished list cannot read as a backlog", () => {
@@ -203,15 +182,15 @@ test("retired rows are marked so a finished list cannot read as a backlog", () =
 // IS the requirement: a free-text box invites a Claude id while Codex is selected, which
 // the config route accepts (`ModelIdSchema` owns parser-safe persisted syntax, not catalog
 // membership) and which then fails at spawn time, once, in a log nobody is reading.
-test("the model is a picker filtered by the provider, never a free-text box", () => {
+test("no catalog leaks back into this panel through the posture copy", () => {
+  // The shape argument above now belongs to the Models page. What this panel must not do is
+  // grow a second, unfiltered way to name a model - which is exactly what a free-text box
+  // added back "just for the Inspector" would be.
   const html = render(
     state({ config: InspectorConfigSchema.parse({ enabled: true, runner: "codex" }) }),
   );
-  assert.match(html, /<select[^>]*id="inspector-model"/);
   assert.doesNotMatch(html, /<input[^>]*id="inspector-model"/);
-  // Filtered: Codex's catalog, and none of Claude's.
-  assert.match(html, /GPT-5\.6 Sol/);
-  assert.doesNotMatch(html, /Opus 5/);
+  assert.doesNotMatch(html, /GPT-5\.6 Sol/);
 });
 
 // Who gets the Resolve control, and who must not.

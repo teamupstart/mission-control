@@ -169,8 +169,19 @@ export type QueueVerifyResult =
 export const DEFAULT_VERIFY_MODEL = FOREMAN_MODEL_SPECS.verify.fallback;
 
 /** The verifier's model from config, then env, then the Opus default. */
-export function verifyModel(cfg: { verifyModel?: string; runner?: LlmRunnerId }): string {
-  return resolveForemanModel("verify", cfg, process.env, cfg.runner ?? "claude").id;
+export function verifyModel(
+  cfg: { verifyModel?: string },
+  /**
+   * The provider this role RESOLVED to, supplied by the caller.
+   *
+   * Required, and not defaulted to `cfg.runner`, for the reason `model` is required on the
+   * call below: the ladder now has three rungs and its bottom one - the app-wide answer -
+   * sits behind an env layer this process cannot see. Re-deriving it here would make the
+   * worker and the settings panel able to disagree about the very pair being spawned.
+   */
+  runner: LlmRunnerId,
+): string {
+  return resolveForemanModel("verify", cfg, process.env, runner).id;
 }
 
 /**

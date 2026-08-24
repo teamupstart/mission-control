@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import type { InspectorInspection } from "@shared/types.ts";
 import type { ResolvedModel } from "@shared/model-choice.ts";
+import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import {
   api,
   fetchInspectorConfig,
@@ -32,11 +33,22 @@ export interface InspectorState {
    */
   model: ResolvedModel | null;
   /**
+   * The provider the review call resolves to, and which layer chose it. Null until the
+   * daemon answers.
+   *
+   * From the daemon rather than from `config.runner`, because an unset value now inherits
+   * the app-wide ladder and the env layer under it is invisible here - reading the config
+   * would print a provider the Inspector is not using.
+   */
+  runner: ResolvedLlmRunner | null;
+  /**
    * Apply a patch, resolving to whether the daemon accepted it. Callers editing a field
    * ignore the boolean; Trust waits on it so it retires a staged repo only once its first
    * grant here has actually landed (see `ForemanState.update`).
    */
   update: (patch: InspectorConfigPatch) => Promise<boolean>;
+  /** Re-read config and status now, for a change made to a blob this hook does not own. */
+  refresh: () => Promise<void>;
   /**
    * Close the findings on one pull request, and refresh the list so the row says so.
    *
@@ -54,6 +66,7 @@ export function useInspector(): InspectorState {
   const [config, setConfigState] = useState<InspectorConfig | null>(null);
   const [inspections, setInspections] = useState<InspectorInspection[]>([]);
   const [model, setModel] = useState<ResolvedModel | null>(null);
+  const [runner, setRunner] = useState<ResolvedLlmRunner | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
@@ -91,7 +104,10 @@ export function useInspector(): InspectorState {
       // The resolved model IS raced by a write - it is derived from the config a `PUT`
       // may have just changed - so it takes the same guard, or committing a model would
       // flash the old id back for a poll interval.
-      if (status && writes.current === at) setModel(status.model);
+      if (status && writes.current === at) {
+        setModel(status.model);
+        setRunner(status.runner);
+      }
       if (c && writes.current === at) setConfig(c);
     };
     void tick();
@@ -100,6 +116,24 @@ export function useInspector(): InspectorState {
       alive = false;
       clearInterval(id);
     };
+  }, [setConfig]);
+
+  /**
+   * Re-read config and status now, without writing anything.
+   *
+   * The Inspector's resolved provider and model now follow the app-wide picker when it has
+   * chosen nothing of its own, and that picker lives in another blob behind another hook - so
+   * moving it changes this row with no Inspector write to hang a re-read on.
+   */
+  const reread = useCallback(async (): Promise<void> => {
+    const at = (writes.current += 1);
+    const [c, status] = await Promise.all([fetchInspectorConfig(), fetchInspectorStatus()]);
+    if (writes.current !== at) return;
+    if (status) {
+      setModel(status.model);
+      setRunner(status.runner);
+    }
+    if (c) setConfig(c);
   }, [setConfig]);
 
   /**
@@ -123,19 +157,15 @@ export function useInspector(): InspectorState {
         return false;
       }
       setError(null);
-      const at = (writes.current += 1);
       // The status comes back with the config, not on the next poll: a committed model
       // has to re-resolve NOW, or the source line under the box goes on saying "Shipped
-      // default" for up to `POLL_MS` after you typed an override into it.
-      const [c, status] = await Promise.all([fetchInspectorConfig(), fetchInspectorStatus()]);
-      // A newer write superseded this one's REFETCH, so drop that; the write itself still
-      // committed on the server, so it succeeded from this caller's point of view.
-      if (writes.current !== at) return true;
-      if (status) setModel(status.model);
-      if (c) setConfig(c);
+      // default" for up to `POLL_MS` after you typed an override into it. A newer write that
+      // supersedes the refetch drops it; the write itself still committed on the server, so
+      // it succeeded from this caller's point of view.
+      await reread();
       return true;
     },
-    [setConfig],
+    [reread, setConfig],
   );
 
   const resolveFindings = useCallback(async (prKey: string): Promise<boolean> => {
@@ -150,5 +180,5 @@ export function useInspector(): InspectorState {
     return true;
   }, []);
 
-  return { config, inspections, model, update, resolveFindings, error };
+  return { config, inspections, model, runner, update, refresh: reread, resolveFindings, error };
 }

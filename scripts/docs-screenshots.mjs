@@ -74,7 +74,23 @@ const SCREENSHOTS = [
   {
     name: "inspector",
     route: "#/settings/inspector",
-    ready: (page) => page.getByText("Inspector", { exact: true }).first(),
+    // The card heading, not a bare `getByText("Inspector")`: the panel's own copy says
+    // "GitHub Inspector" everywhere and nothing on the page is ever exactly "Inspector", so
+    // that predicate could only ever have matched by accident.
+    ready: (page) =>
+      page.getByRole("heading", { name: "GitHub Inspector", exact: true, level: 2 }),
+  },
+  {
+    // Settings > Models, framed on Foreman's grid rather than on the top of the page.
+    // The figure's subject is the per-role provider and model rows - what the README calls
+    // the answer to "what is this app spending, and on whose account?" - and the top of the
+    // page is the app-wide picker and the background jobs, which it is not about.
+    name: "models",
+    route: "#/settings/models",
+    ready: (page) => page.getByRole("combobox", { name: "Foreman Review provider" }),
+    prepare: async (page) => {
+      await page.locator('[data-anchor="models/foreman"]').scrollIntoViewIfNeeded();
+    },
   },
 ];
 

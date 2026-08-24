@@ -84,6 +84,7 @@ function html(over: Partial<ForemanState> = {}): string {
     backlogPlan: null,
     episodes: [],
     update: async () => true,
+    refresh: async () => {},
     error: null,
     ...over,
   };
@@ -197,15 +198,18 @@ test("the Foreman groups are one accessible roving tab set with every panel moun
   assert.equal((out.match(/role="tablist"/g) ?? []).length, 1);
   assert.match(out, /role="tablist"[^>]*aria-label="Foreman configuration groups"/);
 
+  // Derived from the group table rather than counted by hand, so the Models tab's departure
+  // to Settings > Models - and any future group - is a change in one place.
+  const tabs = FOREMAN_SETTINGS_TABS.length;
   const strip = out.slice(out.indexOf('role="tablist"'), out.indexOf('role="tabpanel"'));
-  assert.equal((strip.match(/role="tab"/g) ?? []).length, 4);
+  assert.equal((strip.match(/role="tab"/g) ?? []).length, tabs);
   assert.equal((strip.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.equal((strip.match(/tabindex="0"/g) ?? []).length, 1);
-  assert.equal((strip.match(/tabindex="-1"/g) ?? []).length, 3);
+  assert.equal((strip.match(/tabindex="-1"/g) ?? []).length, tabs - 1);
 
   const panels = [...out.matchAll(/<div[^>]*role="tabpanel"[^>]*>/g)].map((match) => match[0]);
-  assert.equal(panels.length, 4);
-  assert.equal(panels.filter((panel) => panel.includes('hidden=""')).length, 3);
+  assert.equal(panels.length, tabs);
+  assert.equal(panels.filter((panel) => panel.includes('hidden=""')).length, tabs - 1);
   for (const group of FOREMAN_SETTINGS_TABS) {
     assert.ok(
       panels.some(
@@ -220,20 +224,14 @@ test("the Foreman groups are one accessible roving tab set with every panel moun
 
 // ---- the anchors are a public contract -------------------------------------------------
 
-// `settings-search.ts` points at two of these by name and `settings-sidebar-render.test.ts`
+// `settings-search.ts` points at these by name and `settings-sidebar-render.test.ts`
 // enforces uniqueness, but neither notices an anchor that simply stopped being rendered -
-// which is what a whole-panel rewrite is most likely to do. Seven model anchors is the
-// number that was there before this change, and it stays seven.
+// which is what a whole-panel rewrite is most likely to do.
 test("every settings anchor survives the console rewrite", () => {
   const out = html();
   for (const anchor of [
     "foreman/cheap-tier",
-    "foreman/provider",
     "foreman/live-repos",
-    "foreman/model-review",
-    "foreman/model-verify",
-    "foreman/model-triage",
-    "foreman/model-backlog",
     "foreman/backlog-model-claude",
     "foreman/backlog-model-codex",
     "foreman/backlog-model-pi",
@@ -241,8 +239,16 @@ test("every settings anchor survives the console rewrite", () => {
   ]) {
     assert.match(out, new RegExp(`data-anchor="${anchor.replace("/", "\\/")}"`), `${anchor} is gone`);
   }
-  // Four Foreman roles plus three backlog harnesses, unchanged by the redraw.
-  assert.equal((out.match(/data-anchor="foreman\/(model|backlog-model)-/g) ?? []).length, 7);
+  // Three backlog harnesses and nothing else. Foreman's own provider and its four role models
+  // moved to Settings > Models, so `foreman/provider` and `foreman/model-*` are deliberately
+  // ABSENT here - an anchor still rendered under Foreman would be a second owner of a control
+  // that now lives on another page, and search would have two places to send one operator.
+  assert.equal((out.match(/data-anchor="foreman\/(model|backlog-model)-/g) ?? []).length, 3);
+  for (const gone of ["foreman/provider", "foreman/model-review", "foreman/model-backlog"]) {
+    assert.doesNotMatch(out, new RegExp(`data-anchor="${gone.replace("/", "\\/")}"`), gone);
+  }
+  // What is left in its place: a pointer a bookmark can still land on, from any tab.
+  assert.match(out, /Open them in Models/);
 });
 
 // ---- the shadow column -----------------------------------------------------------------

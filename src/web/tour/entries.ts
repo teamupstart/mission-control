@@ -58,9 +58,40 @@ const SEE_WORK_ENTRY: TourEntry = {
   entryRoute: { page: "fleet" },
 };
 
+const LIBRARY_ENTRY: TourEntry = {
+  id: "library",
+  title: "Author what runs",
+  settings: {
+    tooltip: "Tour the Library: Personas, Actions, Commands, and the workflow that reviews",
+    ariaLabel: "Start Author what runs tour",
+    heading: "Author what runs",
+    hint: "Start the Library guided tour",
+  },
+  palette: {
+    rowId: "command:library-tour",
+    title: "Start Author what runs tour",
+    detail: "Walk the Library - Personas, Actions, Commands - and the review that follows work.",
+    keywords: [
+      "tour",
+      "product tour",
+      "onboarding",
+      "library",
+      "persona",
+      "action",
+      "command",
+      "workflow",
+      "review",
+      "no-mistakes",
+    ],
+    hint: "Start the guided Library authoring tour.",
+  },
+  // The shelves index, not a shelf: the tour's first stop is the page that names all six.
+  entryRoute: { page: "library" },
+};
+
 /** Every tour Mission Control offers, in the order its entry points list them. */
 export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
-  const entries = [SEE_WORK_ENTRY];
+  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (seen.has(entry.id)) throw new Error(`duplicate tour entry ${entry.id}`);

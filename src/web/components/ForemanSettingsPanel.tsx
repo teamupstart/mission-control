@@ -3,13 +3,9 @@ import type { ForemanState } from "../useForeman.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { fetchForemanEpisode } from "../lib/api.ts";
-import { ModelField, ModelSuggestions } from "./ModelField.tsx";
+import { ModelField } from "./ModelField.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
-import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
-import type { ForemanConfigPatch } from "@shared/protocol.ts";
-import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { ForemanEpisode, ForemanEpisodeSummary, NoteDisposition } from "@shared/types.ts";
 import type { ModelChoiceSpec } from "@shared/model-choice.ts";
@@ -417,10 +413,6 @@ export function ForemanSettingsPanel({
   jumpRequestId?: number | null;
 }): React.JSX.Element {
   const { config, status, episodes, update, error } = state;
-  // The provider actually in force, not `config.runner ?? "claude"`. An unset `runner`
-  // falls to the app-wide ladder, whose env layer the browser cannot see - so the daemon
-  // reports the resolution and this renders it. See `ForemanStatus.runner`.
-  const runner = config?.runner ?? status?.runner ?? "claude";
   const allowlist = config?.repoAllowlist ?? [];
   const triage = config?.triage ?? "shadow";
   const enabled = config?.enabled ?? false;
@@ -552,6 +544,31 @@ export function ForemanSettingsPanel({
             </Tooltip>
           </ConsoleCard>
 
+          {/* The pointer left behind by the Models tab, and deliberately OUTSIDE the tab
+              strip rather than inside a tab of its own. A bookmark or a keyboard walk that
+              expected the models here now lands on Posture, so the line has to be visible
+              from whichever tab you arrive on - and it carries no `data-anchor`, because an
+              anchor whose only content is a signpost is a search result that jumps to a
+              sentence rather than to a control. Search points at the Models page instead. */}
+          <p className="settings-hint foreman-models-moved">
+            Foreman's provider and its four models - Review, Verify, Triage and the Backlog
+            dependency planner - now live with every other model this app spends on, and each
+            one can run on a provider of its own.{" "}
+            <Tooltip label="Open Settings > Models and flash Foreman's rows">
+              <button
+                type="button"
+                className="settings-link"
+                onClick={() => onNavigate("models", "models/foreman")}
+              >
+                Open them in Models →
+              </button>
+            </Tooltip>
+          </p>
+          <p className="settings-hint foreman-models-moved">
+            The models Foreman launches a backlog <em>task</em> with are a different question
+            and stay on <strong>Launches</strong> below.
+          </p>
+
           <div
             className="sc-tabs"
             role="tablist"
@@ -624,75 +641,6 @@ export function ForemanSettingsPanel({
                   </p>
                 )}
               </fieldset>
-            </ConsoleCard>
-          </div>
-
-          <div
-            id="foreman-settings-panel-models"
-            role="tabpanel"
-            aria-labelledby="foreman-settings-tab-models"
-            hidden={tab !== "models"}
-          >
-            <ConsoleCard title="Models">
-              <p className="settings-hint">
-                Foreman Provider controls all four model roles: Review, Verify, Triage, and
-                the Backlog dependency planner.
-              </p>
-              <div className="sc-field" data-anchor="foreman/provider">
-                <label className="sc-field-label" htmlFor="foreman-provider">
-                  Provider
-                </label>
-                <Tooltip label="Runs every Foreman model role through this provider. Foreman spawns a fresh, isolated call for each. Review and Verify are the expensive ones; Triage and Backlog are deliberately cheaper.">
-                  <select
-                    id="foreman-provider"
-                    className="field-input sc-input"
-                    value={runner}
-                    disabled={!config}
-                    onChange={(e) => {
-                      const next = e.target.value as (typeof LLM_RUNNER_IDS)[number];
-                      void update({
-                        runner: next,
-                        reviewModel: "",
-                        verifyModel: "",
-                        triageModel: "",
-                        backlogModel: "",
-                      });
-                    }}
-                  >
-                    {LLM_RUNNER_IDS.map((r) => (
-                      <option key={r} value={r}>
-                        {AGENT_IDENTITY[r].label}
-                      </option>
-                    ))}
-                  </select>
-                </Tooltip>
-              </div>
-
-              <div className="sc-field sc-model">
-                <ModelSuggestions providerLabel={AGENT_IDENTITY[runner].label} />
-                {FOREMAN_MODEL_ROLES.map((role) => (
-                  <ModelField
-                    key={role}
-                    anchor={`foreman/model-${role}`}
-                    id={`foreman-model-${role}`}
-                    spec={FOREMAN_MODEL_SPECS[role]}
-                    value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
-                    resolved={status?.models?.[role]}
-                    runner={runner}
-                    disabled={!config}
-                    blurb="hover"
-                    onCommit={(next) =>
-                      // An empty box is a cleared override, and must be STORED as empty so
-                      // the env/default ladder takes over again - not dropped from the patch,
-                      // which would leave the old value in place and look like the edit
-                      // didn't stick.
-                      void update({
-                        [FOREMAN_MODEL_SPECS[role].configKey]: next,
-                      } as ForemanConfigPatch)
-                    }
-                  />
-                ))}
-              </div>
             </ConsoleCard>
           </div>
 

@@ -37,10 +37,13 @@ test("config wins over env, env wins over the shipped default", () => {
   assert.deepEqual(resolveInspectorModel({ model: "from-config" }, "from-env"), {
     id: "from-config",
     source: "config",
+    // Custom ids belong to no catalog, so the pairing guard has nothing to refuse.
+    unsupported: null,
   });
   assert.deepEqual(resolveInspectorModel({ model: undefined }, "from-env"), {
     id: "from-env",
     source: "env",
+    unsupported: null,
   });
 });
 
@@ -75,6 +78,7 @@ test("Codex is a valid Inspector provider with a Codex default model", () => {
   assert.deepEqual(resolveInspectorModel(cfg, undefined, "codex"), {
     id: "gpt-5.6-sol",
     source: "default",
+    unsupported: null,
   });
 });
 

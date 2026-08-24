@@ -108,6 +108,7 @@ import {
 import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
 import { moveWorkflowRunSelection } from "./run-navigation.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /**
  * Watching a run.
@@ -1657,6 +1658,8 @@ export function WorkflowRunView({
   const personaNodeIds = new Set((version?.graph.nodes ?? [])
     .filter((node) => node.kind === "persona")
     .map((node) => node.id));
+  /** The guided tour's handle on the worklist. Inert unless a tour is running. */
+  const tourWorklistRef = useTourTargetRef<HTMLElement>("library:run-worklist");
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
   const [worklistFocus, setWorklistFocus] = useState<{
     runId: string;
@@ -2182,7 +2185,7 @@ export function WorkflowRunView({
         </section>
       )}
 
-      <section className="wf-run-section" aria-label="Review worklist">
+      <section className="wf-run-section" aria-label="Review worklist" ref={tourWorklistRef}>
         <h4>Review worklist</h4>
         {/* Keyed on the run so selecting another run resets the list, and on a pipeline-tile
             request so repeated clicks remount with that node as the initial worklist choice. */}

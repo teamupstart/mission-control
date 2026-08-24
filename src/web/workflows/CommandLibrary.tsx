@@ -29,6 +29,7 @@ import {
 import { LibraryWorkspaceHeader } from "../library/LibraryWorkspaceHeader.tsx";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { workflowRequest, WorkflowApiError } from "./workflowApi.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -455,6 +456,14 @@ export function CommandLibrary({
    * discard the operator has just answered for - the same reason `replaceLibrarySelection`
    * bypasses the gate in the other direction.
    */
+  /*
+   * The guided tour's three semantic handles on this screen: the rule that applies where no
+   * override matches, the row that writes an exception, and the promoted verb that saves both
+   * at once. Registration is inert unless a tour is running.
+   */
+  const tourDefaultRef = useTourTargetRef<HTMLTableRowElement>("library:command-default");
+  const tourOverridesRef = useTourTargetRef<HTMLTableRowElement>("library:command-overrides");
+  const tourSaveRef = useTourTargetRef<HTMLButtonElement>("library:command-save");
   const routedSlot = isSlot(initialSlot) ? initialSlot : null;
   const routedRef = useRef(routedSlot);
   useEffect(() => {
@@ -714,6 +723,7 @@ export function CommandLibrary({
               disabled: !baseline || saving || !dirty,
               onClick: () => void save(),
             }}
+            primaryRef={tourSaveRef}
             /* No overflow menu, and that is the fixed catalog again rather than an omission:
                there is no Copy, Download, Duplicate or Archive for a slot that ships with the
                product. `LibraryOverflowMenu` draws nothing for an empty action list, so the
@@ -851,7 +861,7 @@ export function CommandLibrary({
                     an unrelated list. It is a rule - the one that applies where nothing more
                     specific matches - and the layout now says so instead of leaving an
                     operator to infer it from two headings. */}
-                <tr className="wf-command-rule is-default">
+                <tr className="wf-command-rule is-default" ref={tourDefaultRef}>
                   <th scope="row" className="wf-command-rule-scope">
                     <strong>Every repository</strong>
                     <span className="wf-command-rule-note">
@@ -930,7 +940,7 @@ export function CommandLibrary({
                 {/* Visibly an add row. It sat flush against the saved exceptions before, in
                     the same list, so the two empty boxes read as a third override somebody
                     had half-configured rather than as the way to write a fourth. */}
-                <tr className="wf-command-rule is-add">
+                <tr className="wf-command-rule is-add" ref={tourOverridesRef}>
                   <td className="wf-command-rule-scope">
                     <label className="sr-only" htmlFor="workflow-command-override-path">
                       Repository path

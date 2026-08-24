@@ -1496,9 +1496,32 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     return { status: 200, json: null };
   });
 
-  // Long enough for the cap (three ticks ~4s apart) plus room for a fourth that must
-  // not happen.
-  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 20000 });
+  // Runs until the retirement lands and one further unhurried tick has passed with
+  // nothing else spent, rather than for a fixed 20s.
+  //
+  // The cap is three ticks IDLE_MS apart, so how long reaching it takes is a property of
+  // the machine, not of the feature: under a loaded full-suite run the worker had spent
+  // only two of its three strikes when the fixed window closed, and the assertions below
+  // then read a half-finished run as a regression. The "no fourth attempt" claim is
+  // unchanged - a fourth strike could only arrive within one more idle interval of the
+  // third, and `IDLE_SETTLE_MS` is still waited out here - but it is now measured against the
+  // worker's own pace instead of against a guess about the host's. The ceiling is only
+  // reached when the retirement never lands at all, which is the regression the count
+  // assertion below then reports.
+  const QUIET_MS = IDLE_SETTLE_MS;
+  let retiredAt = 0;
+  const retired = (): boolean => stub.calls.some((c) => c.path.endsWith("/wrapup/prompted"));
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 60_000,
+    until: () => {
+      if (!retired()) return false;
+      if (retiredAt === 0) retiredAt = Date.now();
+      return Date.now() - retiredAt > QUIET_MS;
+    },
+  });
   await stub.close();
 
   const calls = claudeCalls(fake.log);

@@ -5,7 +5,10 @@ import { FOREMAN_SETTINGS_TABS } from "../../src/web/lib/foreman-settings-tabs.t
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-const GROUPS = ["Posture", "Models", "Launches", "Safety"] as const;
+// No "Models": Foreman's provider and its four role models moved to Settings > Models, where
+// every app-owned model choice is answerable in one screen. The pointer they left behind sits
+// OUTSIDE this strip, so a bookmark that expected the tab still finds the way.
+const GROUPS = ["Posture", "Launches", "Safety"] as const;
 
 function declaredCount(name: (typeof GROUPS)[number]): number {
   const group = FOREMAN_SETTINGS_TABS.find((candidate) => candidate.label === name);
@@ -55,10 +58,6 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
         await expect(panel(dashboard, name).getByRole("group", { name: "Cheap tier" }))
           .toBeVisible();
         break;
-      case "Models":
-        await expect(panel(dashboard, name).getByRole("combobox", { name: "Provider" }))
-          .toBeVisible();
-        break;
       case "Launches":
         await expect(panel(dashboard, name).getByRole("combobox", { name: "Claude backlog tasks" }))
           .toBeVisible();
@@ -87,7 +86,7 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
     console.log(`OBSERVED Foreman control heights: ${JSON.stringify(Object.fromEntries(heights))}`);
   }
 
-  await tab(dashboard, "Models").click();
+  await tab(dashboard, "Launches").click();
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.locator(".settings-section.sc-section").screenshot({
@@ -96,29 +95,25 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
   }
 });
 
-test("a model field's explanation is not printed but arrives on focus", async ({
+test("the departed Models tab leaves a pointer that is reachable from any tab", async ({
   dashboard,
   daemon,
 }) => {
+  // A bookmark or a keyboard walk that expected the Models tab now lands on Posture. The
+  // signpost therefore sits outside the tab strip - inside a tabpanel it would be hidden
+  // exactly when it is needed - and it has to actually navigate, not just read as prose.
   await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
-  await tab(dashboard, "Models").click();
-  const review = panel(dashboard, "Models").getByRole("combobox", { name: "Review" });
-  await expect(review).toBeVisible();
+  await expect(tab(dashboard, "Models" as never)).toHaveCount(0);
+  await expect(controls(dashboard).getByRole("combobox", { name: "Review" })).toHaveCount(0);
 
-  // The explanation is the field's accessible description - announced with the control
-  // whether or not a pointer ever hovers it...
-  await expect(review).toHaveAccessibleDescription(
-    /Judges a stuck session's pending question/,
-  );
-  // ...and it paints as the tooltip when the field takes keyboard focus.
-  await review.focus();
-  await expect(dashboard.locator(".tooltip", {
-    hasText: "Judges a stuck session's pending question",
-  }))
-    .toHaveText(/Judges a stuck session's pending question/);
+  const pointer = controls(dashboard).getByRole("button", { name: "Open them in Models →" });
+  await expect(pointer).toBeVisible();
+  await tab(dashboard, "Safety").click();
+  await expect(pointer, "the pointer is buried in one tab").toBeVisible();
 
-  // What earned the shorter column: the explanation no longer prints under the field.
-  await expect(panel(dashboard, "Models").locator(".foreman-model-blurb")).toHaveCount(0);
+  await pointer.click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/settings/models");
+  await expect(dashboard.getByRole("combobox", { name: "Foreman Review provider" })).toBeVisible();
 });
 
 test("the Foreman tabs use selection-following-focus keyboard navigation", async ({
@@ -127,15 +122,15 @@ test("the Foreman tabs use selection-following-focus keyboard navigation", async
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
   const posture = tab(dashboard, "Posture");
-  const models = tab(dashboard, "Models");
+  const launches = tab(dashboard, "Launches");
 
   await posture.focus();
   await posture.press("ArrowRight");
-  await expect(models).toBeFocused();
-  await expect(models).toHaveAttribute("aria-selected", "true");
-  await expect(panel(dashboard, "Models")).toBeVisible();
+  await expect(launches).toBeFocused();
+  await expect(launches).toHaveAttribute("aria-selected", "true");
+  await expect(panel(dashboard, "Launches")).toBeVisible();
 
-  await models.press("Home");
+  await launches.press("Home");
   await expect(posture).toBeFocused();
   await expect(posture).toHaveAttribute("aria-selected", "true");
   await expect(panel(dashboard, "Posture")).toBeVisible();

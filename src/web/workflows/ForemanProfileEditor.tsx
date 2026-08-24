@@ -21,6 +21,7 @@ import {
   FOREMAN_PROFILE_DESCRIPTION,
   foremanInstructionsSourceLabel,
   foremanProviderLabel,
+  foremanRoleProviderLabels,
   type ForemanProfileSummary,
 } from "../lib/foreman-profile.ts";
 import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
@@ -419,6 +420,9 @@ export function ForemanProfileEditor({
   const lineSeparator = useMemo(() => foremanProfileLineSeparator(draft), [draft]);
   const source = loaded ? foremanInstructionsSourceLabel(loaded.source) : "Loading";
   const provider = foremanProviderLabel(summary);
+  // Every distinct provider actually in force across the four roles - which since each role
+  // may carry its own is no longer guaranteed to be one.
+  const providers = foremanRoleProviderLabels(summary);
 
   return (
     <article className="persona-editor foreman-profile-editor">
@@ -479,7 +483,11 @@ export function ForemanProfileEditor({
         >
           {(close) => (
             <div className="foreman-profile-summary">
-              <p>All four roles run through {provider}.</p>
+              <p>
+                {providers.length > 1
+                  ? `The four roles run through ${providers.join(" and ")}.`
+                  : `All four roles run through ${provider}.`}
+              </p>
               <dl>
                 {FOREMAN_MODEL_ROLES.map((role) => (
                   <div key={role}>

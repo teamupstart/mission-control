@@ -6,6 +6,8 @@ import { ACTIVITY_CAP, describeRequest } from "./prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
+import { DEFAULT_LLM_RUNNER_ID } from "@shared/llm.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
@@ -476,6 +478,16 @@ interface TriageWindow {
 export interface TriageDeps {
   transcript(id: string, turns: number): Promise<TriageWindow>;
   runModel(prompt: string, model: string, schema: Record<string, unknown>): Promise<string>;
+  /**
+   * The provider the triage ROLE resolved to, which is also the one `runModel` spawns.
+   *
+   * It rides the deps rather than being re-derived from the config, because the ladder's
+   * bottom rung is the app-wide answer and only the daemon can see its env layer - and
+   * because the model id and the provider have to come from the same place or the pair
+   * handed to `runModel` is one nobody chose. Defaulted, so a caller that has only ever had
+   * one provider (every test fixture) keeps compiling; the worker always passes its own.
+   */
+  runner?: LlmRunnerId;
 }
 
 /**
@@ -537,9 +549,9 @@ export function triagePosture(triage: unknown): TriagePosture {
   }
 }
 
-/** The triage model from config, then env, then the Haiku default. */
-export function triageModel(cfg: ForemanConfig): string {
-  return resolveForemanModel("triage", cfg, process.env, cfg.runner ?? "claude").id;
+/** The triage model from config, then env, then the Haiku default - against ITS provider. */
+export function triageModel(cfg: ForemanConfig, runner: LlmRunnerId = DEFAULT_LLM_RUNNER_ID): string {
+  return resolveForemanModel("triage", cfg, process.env, runner).id;
 }
 
 /**
@@ -616,7 +628,7 @@ export async function triageSession(
 
   let raw: string;
   try {
-    raw = await deps.runModel(buildTriagePrompt(input), triageModel(cfg), TRIAGE_REPORT_JSON_SCHEMA);
+    raw = await deps.runModel(buildTriagePrompt(input), triageModel(cfg, deps.runner), TRIAGE_REPORT_JSON_SCHEMA);
   } catch (err) {
     return { kind: "route-up", reason: `tier1-failed: ${String(err)}` };
   }

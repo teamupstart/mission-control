@@ -2,6 +2,7 @@ import type { Session } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { WorkflowLadderPanel } from "../workflows/WorkflowLadder.tsx";
+import { useTourRunTargetRef } from "../tour/target-context.tsx";
 import { PipelineLadder } from "../pipelines/PipelineLadder.tsx";
 import { usePipelineRunDetail } from "../pipelines/usePipelineRunDetail.ts";
 
@@ -48,6 +49,15 @@ export function SessionWorkflowsPane({
   /** Open the pipeline run in Runs. Absent means the host cannot, so nothing is drawn. */
   onOpenPipelineRun?: () => void;
 }): React.JSX.Element {
+  /*
+   * The guided tour's handle on THIS ladder - the one in a session's Workflows tab, for the
+   * run the tour selected. The Board tile draws the same component and deliberately does not
+   * pass this, so a tile cannot answer for the desk.
+   */
+  const tourLadderRef = useTourRunTargetRef<HTMLElement>(
+    "library:session-workflow-ladder",
+    run?.id,
+  );
   const link = session.pipeline;
   // Hooks run unconditionally, so this is called on every session including the ones with no
   // pipeline at all - which is why it takes nulls and answers `loading` without a request.
@@ -72,7 +82,12 @@ export function SessionWorkflowsPane({
   return (
     <>
       {run && (
-        <WorkflowLadderPanel run={run} session={session} onOpenRun={() => onOpenRun(run.id)} />
+        <WorkflowLadderPanel
+          run={run}
+          session={session}
+          sectionRef={tourLadderRef}
+          onOpenRun={() => onOpenRun(run.id)}
+        />
       )}
       {!run && <p className="detail-empty">No workflow is bound to this session.</p>}
     </>

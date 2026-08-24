@@ -209,7 +209,11 @@ compare-and-set. This makes the worker's earlier snapshot advisory rather than a
 injection results stay claimed across worker and daemon restarts; only a positive non-delivery may
 release the exact same attempt.
 
-Recovery reasons are structural except `idle_ambiguous`. That one invokes the existing Review model
+Recovery reasons are structural except `idle_ambiguous`. A newly consumed `held` decision for an
+eligible managed ship task may claim and deliver its structural gaps in the same worker pass, using
+the same daemon projection and delivery path as the shepherd without waiting for the first quiet
+window. Human-driven sessions remain silent, and the shepherd remains the later backstop.
+`idle_ambiguous` invokes the existing Review model
 through a fresh tool-less call and records spend under `foreman:ship-recovery`. The parsed output is
 post-checked against the pre-PR authority boundary. No recovery model can add repository scope or
 authorize commit, push, pull-request creation, merge, cleanup, another task, or a human answer.

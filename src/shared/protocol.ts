@@ -3672,6 +3672,8 @@ export const PromptedRecoveryStateSchema = PromptedRecoveryIdentitySchema.extend
 /** Claim one exact recovery attempt before anything reaches the child session. */
 export const PromptedRecoveryClaimSchema = PromptedRecoveryIdentitySchema.extend({
   payloadSummary: z.string().max(PROMPTED_RECOVERY_PAYLOAD_SUMMARY_MAX),
+  /** Selects which daemon policy admitted the claim; it is request context, not ledger identity. */
+  deliveryRoute: z.enum(["shepherd", "immediate-held"]).optional(),
 });
 export type PromptedRecoveryClaim = z.infer<typeof PromptedRecoveryClaimSchema>;
 

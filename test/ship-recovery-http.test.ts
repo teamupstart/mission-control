@@ -44,10 +44,13 @@ const workflows = new WorkflowManager(registry);
 const app = buildApp(registry, reviews, tasks, queues, undefined, undefined, workflows);
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
-function seed(): { sessionId: string; noteKey: string; taskId: string } {
-  const sessionId = "ship-recovery-session";
-  const noteKey = "ship-recovery-conversation";
-  const taskId = "ship-recovery-task";
+function seed(
+  suffix = "",
+  decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
+): { sessionId: string; noteKey: string; taskId: string } {
+  const sessionId = `ship-recovery-session${suffix}`;
+  const noteKey = `ship-recovery-conversation${suffix}`;
+  const taskId = `ship-recovery-task${suffix}`;
   const discovered: DiscoveredSession = {
     syntheticId: sessionId,
     agent: "claude",
@@ -92,7 +95,7 @@ function seed(): { sessionId: string; noteKey: string; taskId: string } {
     generation: 1,
     ask: false,
     directHandoff: null,
-    decision: null,
+    decision,
     now: Date.now() - 2 * 60_000,
   }), true);
   setForemanConfig({
@@ -194,4 +197,65 @@ test("the daemon revalidates, claims, releases, and suppresses pre-PR recovery o
     body: JSON.stringify(claim),
   });
   assert.equal(withPr.status, 409, "an observed task-owned PR suppresses every recovery");
+});
+
+test("the daemon admits immediate held-gap claims through the existing recovery ledger", async () => {
+  const heldDecision = {
+    outcome: "held" as const,
+    summary: "A focused retry test is missing.",
+    gaps: [{ id: "retry-test", path: "test/retry.test.ts", detail: "Cover the 500 path." }],
+  };
+  const { sessionId, noteKey, taskId } = seed("-immediate", heldDecision);
+  const identity = {
+    taskId,
+    logicalKey: noteKey,
+    generation: 1,
+    decisionGeneration: 1,
+    decisionOutcome: "held" as const,
+    reason: "held_gaps" as const,
+    attempt: 1,
+  };
+  const claim = {
+    ...identity,
+    marker: shipRecoveryMarker(identity),
+    payloadSummary: "Deliver the held completion gaps.",
+  };
+
+  setForemanConfig({
+    enabled: true,
+    mode: "live",
+    repoAllowlist: [repo],
+    keepShipTasksMoving: false,
+    shipRecoveryMinutes: 20,
+  });
+  const disabled = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ ...claim, deliveryRoute: "immediate-held" }),
+  });
+  assert.equal(disabled.status, 409, "the existing keepShipTasksMoving flag governs immediate delivery");
+
+  setForemanConfig({ keepShipTasksMoving: true });
+  const quietWindow = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(claim),
+  });
+  assert.equal(quietWindow.status, 409, "the ordinary shepherd route still waits for its quiet window");
+
+  const immediate = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ ...claim, deliveryRoute: "immediate-held" }),
+  });
+  assert.equal(immediate.status, 200, await immediate.clone().text());
+  const queue = (await immediate.json()) as {
+    promptedRecovery: { reason: string; attempt: number; lastDelivery: string } | null;
+  };
+  assert.deepEqual(queue.promptedRecovery, {
+    ...queue.promptedRecovery,
+    reason: "held_gaps",
+    attempt: 1,
+    lastDelivery: "unknown",
+  });
 });

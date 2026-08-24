@@ -230,6 +230,11 @@ and remote review state visible beside the work that produced it.
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
+With **Settings → Foreman → Safety → Keep pre-PR ship tasks moving** enabled, an
+invited managed ship task that completion review holds receives its reviewed blocking gaps in
+the same Foreman worker pass. The existing quiet-window shepherd remains the backstop under the
+same setting. Human-driven and task-less sessions keep their silent hold and are not nudged.
+
 **Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
 Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts
 a worktree, or types into a session. What it files arrives **parked**, with that source's

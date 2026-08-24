@@ -337,6 +337,8 @@ function cfg(over: Record<string, unknown> = {}): Record<string, unknown> {
     maxFixRounds: 10,
     wrapupTriggers: ["prompted"],
     wrapup: "ask",
+    keepShipTasksMoving: true,
+    shipRecoveryMinutes: 20,
     autoBacklog: false,
     ...over,
   };
@@ -2070,7 +2072,7 @@ test("a ship objective that demands a PR still completes at the delivered bounda
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
-test("a genuinely unfinished ship task still holds, and the hold's reason survives the consume", async () => {
+test("a genuinely unfinished managed ship task receives its held gaps in the same pass", async () => {
   // The other half of the boundary: deferring the pull request must not defer anything
   // else. This verifier answers incomplete for a reason that has nothing to do with the
   // PR, so the hold stands - and now says what it believed was missing, which is the state
@@ -2106,6 +2108,7 @@ process.stdin.on("end", () => {
   const session = mkSession(repo, { task: mkTaskSummary({ kind: "ship", workflowId: null }) });
   const stopAt = Date.now() - 120_000;
   let queue = mkQueue(repo);
+  let deliveredAt = 0;
 
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
@@ -2119,6 +2122,7 @@ process.stdin.on("end", () => {
     }
     if (p === "/api/reviews") return { status: 200, json: [] };
     if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/workflow-runs") return { status: 200, json: { items: [] } };
     if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
     if (p === "/api/sessions/s1/goal") return { status: 200, json: shipGoalRecord };
     if (p === "/api/sessions/s1/diff") {
@@ -2162,12 +2166,61 @@ process.stdin.on("end", () => {
       };
       return { status: 200, json: { ok: true } };
     }
+    if (p === "/api/sessions/s1/queue/ship-recovery/claim") {
+      const body = JSON.parse(raw) as {
+        taskId: string;
+        logicalKey: string;
+        generation: number;
+        decisionGeneration: number | null;
+        decisionOutcome: "held" | null;
+        reason: "held_gaps";
+        attempt: number;
+        marker: string;
+        payloadSummary: string;
+        deliveryRoute?: string;
+      };
+      queue = {
+        ...queue,
+        promptedRecovery: {
+          taskId: body.taskId,
+          logicalKey: body.logicalKey,
+          generation: body.generation,
+          decisionGeneration: body.decisionGeneration,
+          decisionOutcome: body.decisionOutcome,
+          reason: body.reason,
+          attempt: body.attempt,
+          marker: body.marker,
+          payloadSummary: body.payloadSummary,
+          claimedAt: Date.now(),
+          nextEligibleAt: Date.now() + 40 * 60_000,
+          lastDelivery: "unknown",
+        },
+        updatedAt: Date.now(),
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/ship-recovery/delivery") {
+      assert.ok(queue.promptedRecovery);
+      queue = {
+        ...queue,
+        promptedRecovery: { ...queue.promptedRecovery, lastDelivery: "delivered" },
+        updatedAt: Date.now(),
+      };
+      deliveredAt = Date.now();
+      return { status: 200, json: queue };
+    }
     if (p === "/api/sessions/s1/queue/wrapup") return { status: 200, json: { ok: true } };
     if (p === "/api/sessions/s1/inject") return { status: 200, json: { ok: true } };
     return { status: 200, json: null };
   });
 
-  const out = await runWorker({ port: stub.port, claudeBin: bin, claudeLog: log, ms: 12000 });
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: bin,
+    claudeLog: log,
+    ms: 20_000,
+    until: () => deliveredAt !== 0 && Date.now() - deliveredAt >= IDLE_SETTLE_MS,
+  });
   await stub.close();
 
   const consumes = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
@@ -2182,8 +2235,38 @@ process.stdin.on("end", () => {
   // reason the task is stuck.
   assert.deepEqual(decision?.gaps.map((g) => g.id), ["retry-untested"], out);
 
-  // Still quiet. This phase records the reason; it types nothing back.
-  assert.equal(stub.calls.filter((c) => c.path.endsWith("/inject")).length, 0, out);
+  const claims = stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim");
+  const injects = stub.to("POST", "/api/sessions/s1/inject");
+  const deliveries = stub.to("POST", "/api/sessions/s1/queue/ship-recovery/delivery");
+  assert.equal(claims.length, 1, `the held gaps did not spend exactly one recovery attempt\n${out}`);
+  assert.equal(
+    (claims[0]!.body as { deliveryRoute?: string }).deliveryRoute,
+    "immediate-held",
+    "the claim must ask the daemon to apply immediate-held policy",
+  );
+  assert.equal(injects.length, 1, `the held gaps were not delivered exactly once\n${out}`);
+  assert.match(
+    (injects[0]!.body as { text?: string }).text ?? "",
+    /src\/up\.ts: no test covers the 500 retry/,
+  );
+  assert.equal(deliveries.length, 1, `delivery was not resolved exactly once\n${out}`);
+  assert.equal(
+    (deliveries[0]!.body as { delivery?: string }).delivery,
+    "delivered",
+  );
+  assert.ok(
+    stub.calls.indexOf(consumes[0]!) < stub.calls.indexOf(claims[0]!),
+    "the held verdict must be consumed before its recovery attempt is claimed",
+  );
+  assert.ok(
+    stub.calls.indexOf(claims[0]!) < stub.calls.indexOf(injects[0]!),
+    "the recovery attempt must be claimed before held gaps are injected",
+  );
+  assert.equal(queue.promptedRecovery?.attempt, 1, "the daemon ledger owns one attempt");
+  assert.equal(queue.promptedRecovery?.lastDelivery, "delivered");
+  const episodes = stub.to("POST", "/api/sessions/s1/foreman-episode");
+  assert.equal(episodes.length, 1, `one ship-recovery episode should audit the delivery\n${out}`);
+  assert.equal((episodes[0]!.body as { situation?: string }).situation, "ship-recovery");
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
 });

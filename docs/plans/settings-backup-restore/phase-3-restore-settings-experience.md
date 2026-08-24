@@ -161,6 +161,11 @@ When `useEventStream` receives `settings_restored`:
 - keep the notice across navigation until the user reloads;
 - never automatically reload or replace client draft state.
 
+Keep the latest event's three public scalar fields as a bounded reconnect marker. The first
+snapshot establishes a window's baseline without showing a notice. A later snapshot with a new
+marker recovers an event missed while the stream was disconnected and follows the same initiating
+versus external request-id behavior above.
+
 Place the notice at the application shell so it is visible from Settings and Library. Reuse the
 existing app-banner visual language and expose a reachable Reload now button with an accessible
 name. If more than one external restore arrives, the latest metadata replaces the notice without

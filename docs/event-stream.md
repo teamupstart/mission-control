@@ -61,12 +61,17 @@ because a collection that rides no snapshot has nothing for a reconnect to resto
 Settings restore uses a separate invalidation-only frame. After the restore transaction has
 committed and synchronous catalog reconciliation has completed, the route emits exactly one
 `settings_restored` event containing only `snapshotId`, `restoredAt`, and the initiating
-`requestId`. It is deliberately absent from the reconnect snapshot and from `LINE_INPUT_EVENTS`:
-it does not carry configuration or execution state, and it never causes the Line to refold.
+`requestId`. The incremental event is deliberately absent from `LINE_INPUT_EVENTS`: it does not
+carry configuration or execution state, and it never causes the Line to refold. The reconnect
+snapshot carries only the latest event's same three public scalars as a bounded marker. A fresh
+window baselines that marker because it already loaded current settings; a reconnecting window
+compares it with the marker from before the stream gap and recovers a missed invalidation.
 
 The request id separates two window behaviors. The initiating window suppresses the notice,
 hydrates its UI configuration cache, and reloads. Any other open window records the latest event
 and draws a persistent **Reload now** notice without changing Library state or discarding drafts.
+If the initiating request's HTTP result was ambiguous, the same request-id ownership check applies
+to a changed reconnect marker, so that window hydrates and reloads instead of becoming a peer.
 No snapshot payload, setting value, prompt, command, allowlist, or path crosses the event stream.
 
 The loopback HTTP surface is likewise bounded:

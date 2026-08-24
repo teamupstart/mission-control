@@ -236,6 +236,7 @@ import {
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
@@ -903,6 +904,12 @@ export class Registry extends EventEmitter {
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
+   * One bounded reconnect marker for the latest restore completed by this daemon.
+   * It is set before the single incremental event is emitted, so a dashboard that was
+   * disconnected for that event can compare the next snapshot with its prior marker.
+   */
+  private latestSettingsRestore: SettingsRestoredEvent | null = null;
+  /**
    * The current Keep Awake observation, held for the snapshot and emitted on change.
    *
    * Held rather than computed: the manager owns the child process and pushes every
@@ -993,6 +1000,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
+    latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
       sessions: [...this.sessions.values()],
@@ -1030,6 +1038,7 @@ export class Registry extends EventEmitter {
       // and a daemon that just started holds the seeded `off` - which is exactly the
       // restart-reset a reconnecting dashboard must converge on.
       keepAwake: this.keepAwake,
+      latestSettingsRestore: this.latestSettingsRestore,
     };
   }
 
@@ -1124,7 +1133,9 @@ export class Registry extends EventEmitter {
     restoredAt: string;
     requestId: string;
   }): void {
-    this.emitEvent({ type: "settings_restored", ...event });
+    const restored: SettingsRestoredEvent = { type: "settings_restored", ...event };
+    this.latestSettingsRestore = restored;
+    this.emitEvent(restored);
   }
 
   getSession(id: string): Session | undefined {

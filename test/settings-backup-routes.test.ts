@@ -254,6 +254,7 @@ test("restore requires the exact confirmation and emits once only after reconcil
     restoredAt: "2026-08-24T12:05:00.000Z",
     requestId,
   }]);
+  assert.deepEqual(registry.snapshot().latestSettingsRestore, events[0]);
 });
 
 test("refused and failed restores preserve status mapping and emit nothing", async () => {
@@ -280,5 +281,6 @@ test("refused and failed restores preserve status mapping and emit nothing", asy
     });
     assert.equal(response.status, status);
     assert.deepEqual(events, []);
+    assert.equal(registry.snapshot().latestSettingsRestore, null);
   }
 });

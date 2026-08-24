@@ -23,6 +23,7 @@ import {
   finishSettingsRestore,
   observeSettingsRestored,
   reloadAfterSettingsRestore,
+  settingsRestoreMarkerChanged,
 } from "../src/web/lib/settings-restore-coordinator.ts";
 
 const digest = "a".repeat(64);
@@ -180,6 +181,23 @@ test("a retry cannot orphan an earlier restore with an ambiguous transport resul
   assert.equal(reloads, 1);
 
   assert.equal(observeSettingsRestored({ ...first, requestId: retryId }), "external");
+  assert.equal(reloads, 1);
+});
+
+test("a reconnect detects a restore missed during the stream gap without alerting a fresh window", () => {
+  const restore = {
+    type: "settings_restored" as const,
+    snapshotId: "daily-2026-08-24" as const,
+    restoredAt: "2026-08-24T12:05:00.000Z",
+    requestId: "00000000-0000-4000-8000-000000000021",
+  };
+  assert.equal(settingsRestoreMarkerChanged(restore, null, false), false);
+  assert.equal(settingsRestoreMarkerChanged(restore, restore.requestId, true), false);
+  assert.equal(settingsRestoreMarkerChanged(restore, null, true), true);
+
+  let reloads = 0;
+  beginSettingsRestore(restore.requestId, () => { reloads += 1; });
+  assert.equal(observeSettingsRestored(restore), "initiating");
   assert.equal(reloads, 1);
 });
 

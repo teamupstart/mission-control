@@ -7,6 +7,15 @@ interface PendingRestore {
 
 const pending = new Map<string, PendingRestore>();
 
+/** A first snapshot is a baseline; only a changed marker after a stream gap is invalidation. */
+export function settingsRestoreMarkerChanged(
+  marker: SettingsRestoredEvent | null,
+  previousRequestId: string | null,
+  hasPreviousSnapshot: boolean,
+): marker is SettingsRestoredEvent {
+  return hasPreviousSnapshot && marker !== null && marker.requestId !== previousRequestId;
+}
+
 /** Register before POST so a fast SSE event cannot be misidentified as another window's. */
 export function beginSettingsRestore(requestId: string, onCommitted: () => void): void {
   pending.set(requestId, { requestId, onCommitted });

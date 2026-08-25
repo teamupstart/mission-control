@@ -60,9 +60,12 @@ tests with the required scoped outside-sandbox approval; do not bypass the
 preflight or add Chromium flags.
 
 `npm test` runs six test files concurrently by default. Set
-`MISSION_TEST_CONCURRENCY` to override that local worker count. CI pins its own
-two-worker value in `.github/workflows/ci.yml`, so the hosted runner tuning does
-not depend on the local fallback.
+`MISSION_TEST_CONCURRENCY` to override that local worker count. CI pins two workers
+on its default `ubuntu-latest` runner. After runner-group access is granted, setting
+the repository Actions variable `MISSION_CONTROL_CI_RUNNER` to exactly `ubuntu-8core`
+switches the heavy jobs and their unit and Playwright limits to eight together. Unset
+or other values fail safe to the standard runner, so hosted tuning does not depend on
+the local fallback.
 
 ## Test layers
 
@@ -107,7 +110,9 @@ also need `npm run test:e2e` with a matching spec.
 CI runs three jobs in parallel, reporting as five checks: `gates` (typecheck and lint),
 `unit (node 24)` and `unit (node 26)` (tests, build, and smoke), and `e2e (shard 1/2)`
 and `e2e (shard 2/2)` (the browser suite, on Node 24 only). Lint is a CI job, so it no
-longer passes silently when it is skipped locally.
+longer passes silently when it is skipped locally. See
+[the larger-runner activation contract](README.md#keep-ci-runnable-while-enabling-larger-runners)
+before changing `MISSION_CONTROL_CI_RUNNER`.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

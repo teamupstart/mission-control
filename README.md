@@ -375,6 +375,25 @@ npm run dev
 Open `http://127.0.0.1:5173`. For the desktop shell, demo mode, hooks, state locations, and
 the full verification path, use the setup guide below.
 
+## Keep CI runnable while enabling larger runners
+
+The `gates` job always runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy `unit` and `e2e`
+jobs also default to that repository-accessible runner with two workers, so an unset or
+mistyped configuration variable cannot strand CI waiting for a runner the repository cannot
+use.
+
+The optional larger-runner mode has one activation switch. First grant this repository access
+to the existing `ubuntu-8core` runner group in `teamupstart/Github_Org_Settings_TF`. After that
+grant is applied, set the repository Actions variable `MISSION_CONTROL_CI_RUNNER` to exactly
+`ubuntu-8core`. That value atomically moves the four heavy jobs to the larger runner and raises
+their unit and Playwright worker limits to eight. Do not set the variable before the access
+grant. Removing it, or setting any other value, rolls those jobs back to `ubuntu-latest` and
+two workers.
+
+The larger-runner mode is a performance experiment, not a claim that the five-minute target
+has already been met. Accept it only after a live workflow completes all five checks green in
+five minutes or less, measured from workflow creation through completion.
+
 ## Choose how the app's own model calls are made
 
 Beyond the agents in the cards, Mission Control makes a few model calls of its own - naming an

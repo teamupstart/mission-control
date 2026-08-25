@@ -59,6 +59,12 @@ const MEASURE = `() => {
         + ' .line-bl-title, .line-bl-meta, .line-bl-marks',
       ),
     ].map((el) => el.scrollWidth - el.clientWidth))),
+    // The Backlog identity stack has one clipped status line. Measured separately from
+    // the row's other fields so a long title cannot make an unbounded notice look safe.
+    noticeOverflows: rows.map((row) => {
+      const notice = row.querySelector('.line-bl-notice .backlog-task-notice-copy');
+      return notice ? notice.scrollWidth - notice.clientWidth : null;
+    }),
     firstRowTop: first ? Math.round(first.top) : null,
     // The shell body the drawer must not overflow.
     shellBodyHeight: shellBody

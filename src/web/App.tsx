@@ -82,6 +82,7 @@ import {
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import type { BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
   OverlayHost,
@@ -511,6 +512,10 @@ export function App(): React.JSX.Element {
       }));
     },
     [navigate],
+  );
+  const openForemanTrust = useCallback(
+    (): void => openSettingsAnchor("trust", "trust/matrix"),
+    [openSettingsAnchor],
   );
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
@@ -1791,6 +1796,17 @@ export function App(): React.JSX.Element {
   // so a card that reports only the MODE would explain a queue that isn't running by
   // describing what Foreman would do if it were running at all.
   const foremanEnabled = foreman.config?.enabled ?? false;
+  // Null until BOTH reads land. A missing status cannot prove that a live worker owns the
+  // lease, and a missing config cannot prove which repositories it may act in.
+  const backlogTrust: BacklogTrustView | null = foreman.config && foreman.status
+    ? {
+        enabled: foreman.config.enabled,
+        mode: foreman.config.mode,
+        running: foreman.status.running,
+        autoBacklog: foreman.config.autoBacklog,
+        repoAllowlist: foreman.config.repoAllowlist,
+      }
+    : null;
 
   // The board's columns as ids, so the arrow keys can cross between them. Read off the same
   // `orderSessions` result the board renders - not a second grouping pass - so navigation
@@ -2007,6 +2023,8 @@ export function App(): React.JSX.Element {
     tasks,
     backlog: visibleBacklog,
     backlogPlan: foreman.backlogPlan,
+    backlogTrust,
+    onManageForemanTrust: openForemanTrust,
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,
@@ -2883,7 +2901,7 @@ export function App(): React.JSX.Element {
             onCheckUpstream={personaDrift.refresh}
             onOpenForemanModels={() => openSettingsAnchor("models", "models/foreman")}
             onOpenForemanPosture={() => openSettingsAnchor("foreman", "foreman/cheap-tier")}
-            onOpenForemanTrust={() => openSettingsAnchor("trust", "trust/matrix")}
+            onOpenForemanTrust={openForemanTrust}
             onOpenForemanControl={() => setForemanOpenRequest((request) => request + 1)}
             initialPersonaId={libraryAssetId}
             startNew={libraryCreating}
@@ -3423,6 +3441,8 @@ export function App(): React.JSX.Element {
             autopilot={foreman.status?.autopilot ?? null}
             autopilotLaunches={foremanEnabled && foremanMode === "live"}
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
+            backlogTrust={backlogTrust}
+            onManageTrust={openForemanTrust}
             onClose={closeLineDrawer}
             onEditTask={openTaskEditor}
             onOpenSitrep={() => {
@@ -3640,6 +3660,8 @@ export function App(): React.JSX.Element {
                   sessions={sessions}
                   tasks={tasks}
                   backlogPlan={foreman.backlogPlan}
+                  backlogTrust={backlogTrust}
+                  onManageTrust={openForemanTrust}
                   onClose={() => setReportOpen(false)}
                   onOpenReviews={(id) => {
                     setReportOpen(false);

@@ -46,9 +46,23 @@ export function taskReposAllowlisted(
   task: { repoRoot: string; extraRepos: readonly { repoRoot: string }[] },
   allowlist: readonly string[],
 ): boolean {
-  return (
-    cwdAllowlisted(task.repoRoot, allowlist)
-    && task.extraRepos.every((entry) => cwdAllowlisted(entry.repoRoot, allowlist))
+  return missingTaskRepoRoots(task, allowlist).length === 0;
+}
+
+/**
+ * The task repositories not covered by an allowlist, in dispatch order.
+ *
+ * This is the named explanation for `taskReposAllowlisted`, not a second matcher. The
+ * primary repository leads because it is the task's home; attached repositories follow in
+ * the order the task carries them. Keeping the list here lets a browser explain exactly
+ * which consent grants are missing without restating path-boundary semantics in React.
+ */
+export function missingTaskRepoRoots(
+  task: { repoRoot: string; extraRepos: readonly { repoRoot: string }[] },
+  allowlist: readonly string[],
+): string[] {
+  return [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].filter(
+    (repoRoot) => !cwdAllowlisted(repoRoot, allowlist),
   );
 }
 

@@ -23,6 +23,8 @@ export function mkSessionView(
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
+    backlogTrust: null,
+    onManageForemanTrust: () => {},
     selectedId: session.id,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},

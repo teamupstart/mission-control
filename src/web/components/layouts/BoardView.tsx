@@ -239,6 +239,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onEdit={props.onEditTask}
         onOpenSchedule={props.onOpenSchedule}
         scheduleNameById={props.scheduleNameById}
+        backlogTrust={props.backlogTrust}
+        onManageTrust={props.onManageForemanTrust}
       />
 
       {groups

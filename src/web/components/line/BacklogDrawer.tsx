@@ -13,13 +13,16 @@ import type { BacklogPlan, ForemanStatus, Task, TaskPriority } from "@shared/typ
 import { api } from "../../lib/api.ts";
 import {
   autopilotReadout,
+  backlogTaskNotice,
   blockedLabel,
   blockersNeedYou,
   plannerFacts,
+  type BacklogTaskNoticeView,
+  type BacklogTrustView,
   type PlannerFact,
 } from "../../lib/backlog-copy.ts";
 import { relativeTime } from "../../lib/format.ts";
-import { DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
+import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
@@ -147,6 +150,8 @@ function BacklogRow({
   onSetPriority,
   onReschedule,
   onComplete,
+  notice,
+  onManageTrust,
 }: {
   row: Row;
   /**
@@ -164,6 +169,8 @@ function BacklogRow({
   onSetPriority: (next: TaskPriority | null) => void;
   onReschedule: (deadId: string) => void;
   onComplete: (deadId: string) => void;
+  notice: BacklogTaskNoticeView | null;
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   const { task, band, blockers, deadBlockers } = row;
   const nextUp = planner !== null;
@@ -196,6 +203,13 @@ function BacklogRow({
         <span className="line-bl-meta">
           {[task.kind, task.agent, relativeTime(task.createdAt, now)].filter(Boolean).join(" · ")}
         </span>
+        {/* The drawer completes the same task-status position Board and Sitrep already had.
+            It stays one clipped identity line so the fixed row and three-row cap do not move. */}
+        <BacklogTaskNotice
+          notice={notice}
+          className="line-bl-notice"
+          onManageTrust={onManageTrust}
+        />
       </span>
       <span className="line-bl-marks">
         {/* The mark, and the way into the reasoning behind it. Phase 1 drew a static pill
@@ -312,6 +326,8 @@ export function BacklogDrawer({
   onEditTask,
   onOpenSitrep,
   onSetAutoBacklog,
+  backlogTrust = null,
+  onManageTrust,
 }: {
   tasks: Task[];
   backlogPlan: BacklogPlan | null;
@@ -324,6 +340,9 @@ export function BacklogDrawer({
   onOpenSitrep: () => void;
   /** Resolves false when Foreman refuses the patch, which the drawer then reports. */
   onSetAutoBacklog: (next: boolean) => Promise<boolean>;
+  backlogTrust?: BacklogTrustView | null;
+  /** Open the Trust matrix after dismissing this drawer. */
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   // Per-task rather than one flag for the panel: two rows are two decisions, and a switch
   // that went inert because somebody launched a different task reads as a broken control.
@@ -410,6 +429,13 @@ export function BacklogDrawer({
           true,
           true,
         ), "could not complete that task"),
+      notice: backlogTaskNotice(row.task, backlogTrust),
+      onManageTrust: onManageTrust
+        ? () => {
+            onClose();
+            onManageTrust();
+          }
+        : undefined,
     };
   };
 

@@ -29,7 +29,11 @@ Object.defineProperty(globalThis, "fetch", {
 store.set("ai-harness.layout", "board");
 
 const { hydrateUiConfig } = await import("../src/web/lib/uiConfig.ts");
-const { consumeGuidedTour, GUIDED_TOUR_PERSIST_RETRY_MS } = await import("../src/web/lib/guided-tour.ts");
+const {
+  canStartGuidedTour,
+  consumeGuidedTour,
+  GUIDED_TOUR_PERSIST_RETRY_MS,
+} = await import("../src/web/lib/guided-tour.ts");
 
 test("rescuing settings from a legacy product name consumes the guided tour", async () => {
   await hydrateUiConfig();
@@ -64,4 +68,9 @@ test("a failed guided-tour consumption schedules a durable retry", async () => {
   retry();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(attempts, 2);
+});
+
+test("a consumed session cannot reopen the tour while persistence retries", () => {
+  assert.equal(canStartGuidedTour(true, false), true);
+  assert.equal(canStartGuidedTour(true, true), false);
 });

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { UiConfigPatch } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./uiConfig.ts";
 
@@ -6,6 +6,11 @@ export const GUIDED_TOUR_PERSIST_RETRY_MS = 1_000;
 
 type Persist = (patch: UiConfigPatch) => Promise<boolean>;
 type Schedule = (callback: () => void, delay: number) => unknown;
+
+/** A tour that opened in this dashboard session stays consumed even while its PUT retries. */
+export function canStartGuidedTour(persisted: boolean, consumedThisSession: boolean): boolean {
+  return persisted && !consumedThisSession;
+}
 
 /**
  * Record the consumed onboarding state, retrying if the daemon was temporarily unavailable.
@@ -32,9 +37,12 @@ export function consumeGuidedTour(
  * while a cold browser cache still contains only the shipped defaults.
  */
 export function useGuidedTour(): [enabled: boolean, hydrated: boolean, consume: () => void] {
-  const enabled = useUiConfig().guidedTour;
+  const persisted = useUiConfig().guidedTour;
   const hydrated = useUiConfigHydrated();
+  const consumedThisSession = useRef(false);
+  const enabled = canStartGuidedTour(persisted, consumedThisSession.current);
   const consume = useCallback(() => {
+    consumedThisSession.current = true;
     consumeGuidedTour();
   }, []);
   return [enabled, hydrated, consume];

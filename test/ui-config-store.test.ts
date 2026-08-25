@@ -41,17 +41,21 @@ test("an unset key reads as the shipped defaults", () => {
   assert.equal(config.guidedTour, true);
 });
 
-test("the guided dispatch default and an explicit off preference both round-trip", () => {
-  // Two directions, one key. Forward: a config saved by a build that had never heard of
-  // this preference still opens, and reads as the shipped default rather than throwing -
-  // which is what `.default()` on the field buys, and the reason adding a preference owes
-  // no migration. Backward: what an operator turns off is what comes back after the default
-  // moves on.
+test("an existing profile before guided-tour onboarding remains off after upgrade", () => {
+  // A stored record identifies an upgraded profile, unlike an absent record for a new profile.
+  // The upgrade writes the explicit off value back so later reads retain that distinction.
   setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board" });
-  assert.equal(getUiConfig().guidedDispatch, true);
+  const upgraded = getUiConfig();
+  assert.equal(upgraded.guidedDispatch, true);
+  assert.equal(upgraded.guidedTour, false);
+  assert.equal(
+    (getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>).guidedTour,
+    false,
+  );
   setUiConfig({ guidedDispatch: false });
   const config = getUiConfig();
   assert.equal(config.guidedDispatch, false);
+  assert.equal(config.guidedTour, false);
   assert.equal(config.layout, "board", "an unrelated patch cleared the layout");
 });
 
@@ -80,6 +84,7 @@ test("a stored Cards preference is rewritten to Console", () => {
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.ui), {
     ...UI_CONFIG_DEFAULTS,
     richText: false,
+    guidedTour: false,
   });
 });
 

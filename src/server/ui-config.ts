@@ -28,10 +28,23 @@ function migrateRetiredLayout(raw: unknown): unknown {
     : raw;
 }
 
+/**
+ * Guided-tour onboarding is for a profile with no UI config yet, not every profile upgraded
+ * from a build before this key existed. A missing key on an existing record is therefore an
+ * explicit off migration, while `undefined` still reaches the schema's shipped true default.
+ */
+function migrateGuidedTour(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return "guidedTour" in stored ? raw : { ...stored, guidedTour: false };
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getUiConfig(persistMigration = true): UiConfig {
   const stored = getAppConfig(CONFIG_ENTRY);
-  const migrated = migrateRetiredLayout(stored ?? {});
+  const migrated = stored === undefined
+    ? {}
+    : migrateGuidedTour(migrateRetiredLayout(stored));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
     setAppConfig(CONFIG_ENTRY, config);

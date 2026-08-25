@@ -2790,8 +2790,9 @@ export const UI_CONFIG_DEFAULTS = {
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
-  // A fresh profile begins with the product orientation. The dashboard clears this after
-  // it launches the tour, so this is an onboarding default rather than a recurring modal.
+  // A profile with no UI config begins with the product orientation. Existing configs missing
+  // this new key migrate it to false in `server/ui-config.ts`, and the dashboard clears a true
+  // value after it launches the tour, so this is onboarding rather than a recurring modal.
   guidedTour: true,
   trustStaged: [],
   /**

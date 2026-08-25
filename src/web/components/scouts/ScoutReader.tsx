@@ -102,6 +102,8 @@ export function ScoutReader({
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  /** Prompt context is open on arrival; collapsing it is per-archive and not persisted. */
+  const [promptsOpen, setPromptsOpen] = useState(true);
   const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
   const copyBundle = useCopyFeedback({ resetOn: detail?.key ?? null });
   const [opening, setOpening] = useState(false);
@@ -118,12 +120,14 @@ export function ScoutReader({
   const activeIdRef = useRef<string | null>(null);
 
   const artifacts = useMemo(() => detail?.artifacts ?? [], [detail]);
+  const promptCount = detail?.prompts?.entries.length ?? 0;
   // The primary report opens by default; a scout's answer is the point of the page.
   const activeId = selectedArtifactId ?? detail?.primaryArtifactId ?? artifacts[0]?.id ?? null;
   const active = artifacts.find((artifact) => artifact.id === activeId) ?? null;
   activeIdRef.current = activeId;
 
   useEffect(() => setSelectedArtifactId(null), [detail?.key]);
+  useEffect(() => setPromptsOpen(true), [detail?.key]);
 
   const releaseUrl = useCallback((): void => {
     if (objectUrl.current) {
@@ -377,31 +381,51 @@ export function ScoutReader({
           // Markdown or HTML preview behavior used by report artifacts below.
           <section className="scouts-prompt-context" aria-labelledby="scouts-prompt-context-heading">
             <h2 id="scouts-prompt-context-heading" className="scouts-prompt-context-heading">
-              Prompt context
+              <Tooltip label={promptsOpen ? "Hide prompt context" : "Show prompt context"}>
+                <button
+                  type="button"
+                  className="scouts-prompt-disclosure"
+                  aria-expanded={promptsOpen}
+                  onClick={() => setPromptsOpen((open) => !open)}
+                >
+                  <span className="scouts-prompt-caret" aria-hidden>{promptsOpen ? "\u25be" : "\u25b8"}</span>
+                  Prompt context
+                  <span className="mono scouts-prompt-count">
+                    {promptCount} prompt{promptCount === 1 ? "" : "s"}
+                  </span>
+                </button>
+              </Tooltip>
             </h2>
-            {detail.prompts.truncated ? (
+            {promptsOpen && detail.prompts.truncated ? (
               <p className="scouts-prompt-truncated">
                 This trail is incomplete. Older or oversized prompt text was omitted when the
                 archive was created.
               </p>
             ) : null}
-            <ol className="scouts-prompt-list">
-              {detail.prompts.entries.map((entry, index) => (
-                <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>
-                  <div className="scouts-prompt-entry-meta">
-                    <span className="scouts-prompt-label">
-                      {entry.kind === "initial" ? "Original request" : "Follow-up"}
-                    </span>
-                    {entry.kind === "follow_up" && entry.at ? (
-                      <time className="scouts-prompt-time" dateTime={entry.at}>
-                        {promptTimeLabel(entry.at)}
-                      </time>
-                    ) : null}
-                  </div>
-                  <p className="scouts-prompt-text">{entry.text}</p>
-                </li>
-              ))}
-            </ol>
+            {promptsOpen ? (
+              <ol className="scouts-prompt-list">
+                {detail.prompts.entries.map((entry, index) => (
+                  <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>
+                    <div className="scouts-prompt-entry-meta">
+                      <span className="scouts-prompt-label">
+                        {entry.kind === "initial" ? "Original request" : "Follow-up"}
+                      </span>
+                      {entry.kind === "follow_up" && entry.at ? (
+                        <time className="scouts-prompt-time" dateTime={entry.at}>
+                          {promptTimeLabel(entry.at)}
+                        </time>
+                      ) : null}
+                    </div>
+                    {/*
+                      Capped at eight lines and scrolled on its own. A scout's opening request
+                      is routinely a page of dispatch text, and letting it set this section's
+                      height pushed the report - the answer someone came for - off screen.
+                    */}
+                    <p className="scouts-prompt-text" tabIndex={0}>{entry.text}</p>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
           </section>
         ) : null}
 

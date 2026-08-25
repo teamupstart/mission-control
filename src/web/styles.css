@@ -29399,19 +29399,55 @@ body.foreman-sidecar-open .modal-backdrop {
    single rule echoes the evidence spine because both encode sequence, while the quiet
    labels keep the request subordinate to the scout's answer below. */
 .scouts-prompt-context {
+  /* Named because the bounded prompt body paints its own scroll shadows in it, and a shadow
+     that fades to a DIFFERENT colour than the surface behind it is a visible seam. */
+  --prompt-surface: color-mix(in oklab, var(--panel-2) 34%, var(--panel));
   flex: none;
   min-width: 0;
   padding: 15px 22px 16px;
   border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in oklab, var(--panel-2) 34%, var(--panel));
+  background: var(--prompt-surface);
 }
 .scouts-prompt-context-heading {
-  margin: 0 0 8px;
+  margin: 0;
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+  color: var(--dim);
+}
+/* The heading IS the disclosure. Collapsing the ledger is how a reader who already knows
+   what they asked gets the report to the top of the pane. */
+.scouts-prompt-disclosure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 8px;
+  padding: 2px 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.scouts-prompt-disclosure:hover { color: var(--fg); }
+/* Collapsed, the heading is the whole section - no gap left behind for a hidden ledger. */
+.scouts-prompt-disclosure[aria-expanded="false"] { margin-bottom: 0; }
+.scouts-prompt-disclosure:focus-visible { outline: 2px solid var(--select); outline-offset: 3px; border-radius: 4px; }
+.scouts-prompt-caret {
+  width: 8px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--dim);
+}
+.scouts-prompt-count {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
   color: var(--dim);
 }
 .scouts-prompt-list {
@@ -29471,15 +29507,46 @@ body.foreman-sidecar-open .modal-backdrop {
   line-height: 1.4;
   color: var(--dim);
 }
+/* Eight lines, then this box scrolls instead of the pane. `line-height` is unitless, so
+   8 * 1.65em is exactly eight of these lines whatever the font size becomes, and the
+   padding is excluded from the cap by `content-box`. Focusable because a scroll container
+   a mouse can reach and a keyboard cannot is a trap for the longest prompts. */
 .scouts-prompt-text {
   min-width: 0;
   margin: 0;
+  box-sizing: content-box;
+  max-height: calc(1.65em * 8);
+  padding-right: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.scouts-prompt-text:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; border-radius: 4px; }
+/* Scroll shadows: the two covers are pinned to the box and the two shadows to the content,
+   so each edge darkens only while there is text past it. A macOS overlay scrollbar appears
+   only while the wheel is moving, so without this an eight-line box at rest looks like the
+   whole prompt. */
+.scouts-prompt-text {
+  background:
+    linear-gradient(var(--prompt-surface) 40%, transparent) center top,
+    linear-gradient(transparent, var(--prompt-surface) 60%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.45), transparent) center top,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.45), transparent) center bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 22px, 100% 22px, 100% 9px, 100% 9px;
+  background-attachment: local, local, scroll, scroll;
+}
+.scouts-prompt-text::-webkit-scrollbar { width: 8px; }
+.scouts-prompt-text::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 4px;
+}
+.scouts-prompt-text::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--fg) 38%, transparent); }
 .scouts-prompt-truncated {
   max-width: 78ch;
   margin: 0 0 8px;

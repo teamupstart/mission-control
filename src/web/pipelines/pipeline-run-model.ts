@@ -3,7 +3,6 @@ import {
   PIPELINE_KICKBACK_TARGETS,
   PIPELINE_PHASES,
   PIPELINE_RUN_GROUPS,
-  pipelinePhaseOfStep,
   pipelineRepoKey,
   pipelineStepInfo,
   sortByPipelineStep,
@@ -493,7 +492,24 @@ export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | n
   const sequential = pipelineSequentialSteps(run);
   if (sequential.length === 0) return null;
   const strip = pipelineStrip(run.provider, run.steps, []);
-  const current = run.lastStep ? pipelinePhaseOfStep(run.provider, run.lastStep) : null;
+
+  const lastInfo = run.lastStep ? pipelineStepInfo(run.provider, run.lastStep) : null;
+  /**
+   * The phase the run is IN, and therefore the one segment that gets the ring - derived only
+   * from a step the bar can honestly point at, which means sequential AND placeable.
+   *
+   * The out-of-band exclusion is the whole reason this is not `pipelinePhaseOfStep`. A known
+   * out-of-band step still carries a registry phase (`remediate` is filed under SHIP), but
+   * `pipelineStrip` deliberately puts it in no phase's `steps` - drawing it inside one would
+   * say the run walked past something that was never on its path. Reading its phase back for
+   * the ring reintroduced exactly that claim from the other end: a run remediating after a
+   * blocked SHIP gate captioned SHIP and ringed a SHIP segment with nothing started in it.
+   *
+   * So an out-of-band current step rings nothing, the same answer the unknown-step case
+   * already gave. The step itself is not lost: it is named, with its state and a `current`
+   * marker, in the extras marker that is the only home either pile has.
+   */
+  const current = lastInfo && !lastInfo.outOfBand ? lastInfo.phase : null;
 
   const halt = run.halt
     ? {
@@ -541,9 +557,27 @@ export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | n
           : null,
   }));
 
-  const info = run.lastStep ? pipelineStepInfo(run.provider, run.lastStep) : null;
+  // The caption names where the run is, and it declines to name a phase in the two cases where
+  // there honestly is not one. `Out of band` is this repository's own word for the second of
+  // them - `PipelineLadder` heads the same pile with it - and it is the honest answer for a
+  // step that was dispatched in response to something rather than walked to in sequence.
   const caption =
-    run.lastStep === null ? "Not started" : info ? info.phase : "Unknown step";
+    run.lastStep === null
+      ? "Not started"
+      : lastInfo === null
+        ? "Unknown step"
+        : lastInfo.outOfBand
+          ? "Out of band"
+          : lastInfo.phase;
+  // An out-of-band step has no segment to borrow a tone from, so it lends its OWN. Without
+  // this a run actively remediating captioned grey, which reads as nothing happening - the
+  // same class of lie as drawing a halted run as building.
+  const outOfBandTone =
+    lastInfo?.outOfBand && run.lastStep
+      ? pipelineStepStatus(
+          run.steps.find((step) => step.name === run.lastStep)?.state ?? "pending",
+        ).tone
+      : null;
   return {
     segments,
     caption,
@@ -556,7 +590,7 @@ export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | n
     // placeable phase - has no status to borrow and stays neutral.
     captionTone: halt
       ? "failed"
-      : segments.find((segment) => segment.current)?.status.tone ?? "stopped",
+      : segments.find((segment) => segment.current)?.status.tone ?? outOfBandTone ?? "stopped",
     halt,
     done: sequential.filter((step) => step.state === "done" || step.state === "skipped").length,
     total: sequential.length,

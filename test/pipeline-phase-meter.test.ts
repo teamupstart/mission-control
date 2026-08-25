@@ -417,6 +417,79 @@ test("an out-of-band step the run ran gets no segment, is not in the total, and 
   const html = render(remediated);
   assert.match(html, /Remediate/);
   assert.match(html, /Not counted in the 5/);
+
+  // AND IT RINGS NO PHASE. `remediate` carries a registry phase of its own - it is filed
+  // under SHIP - so reading that phase back for the ring reintroduced from the other end the
+  // exact claim `pipelineStrip` refuses to make by excluding it from every segment: that the
+  // run walked into SHIP. It did not; it was sent back to fix something.
+  assert.deepEqual(
+    view.segments.filter((segment) => segment.current).map((segment) => segment.phase),
+    [],
+    "an out-of-band current step ringed a phase the run has not entered",
+  );
+  assert.equal(view.caption, "Out of band");
+  assert.doesNotMatch(html, /is-now/);
+  // The step is not lost by declining to place it: the extras marker names it, its state, and
+  // that it is the one the run is on - which is the whole "anything the meter states must be
+  // readable somewhere on the meter" rule applied to the step the caption stopped naming.
+  assert.ok(html.includes("Remediate running (current)"), "the current step became unreadable");
+});
+
+test("an out-of-band current step lends its own tone, rather than reading as idle", () => {
+  // The sharper version of the case above: here NO SHIP step has failed, so SHIP is entirely
+  // pending and ringing it was unambiguously a lie about where the run is. It also pins the
+  // tone, because the first fix drew this caption grey - and grey on an actively remediating
+  // run is the same class of lie as drawing a halted run as building.
+  const view = pipelinePhaseMeter(
+    run({
+      steps: steps({
+        worktree: "done",
+        memory: "done",
+        explore: "done",
+        build: "done",
+        build_review: "failed",
+        remediate: "in_progress",
+        finish: "pending",
+      }),
+      lastStep: "remediate",
+      group: "halted",
+    }),
+  )!;
+  assert.equal(view.caption, "Out of band");
+  assert.equal(view.captionTone, "running", "the out-of-band step's own state is the tone");
+  const ship = view.segments.find((segment) => segment.phase === "SHIP")!;
+  assert.equal(ship.current, false);
+  assert.equal(ship.finished, 0);
+  assert.equal(ship.status.tone, "stopped", "SHIP has not started and still says so");
+  // The failure is where it actually is, and it is the phase that keeps the halt's home.
+  assert.equal(view.segments.find((segment) => segment.phase === "BUILD")!.status.tone, "failed");
+});
+
+test("a halted run on an out-of-band step blames no phase for the halt", () => {
+  // The halt attribution follows the same rule as the ring: the phase that failed if there is
+  // one, and otherwise the phase the run is IN - which an out-of-band step is not. Here BUILD
+  // failed, so it keeps the sentence; the point is that SHIP does not acquire it by owning
+  // `remediate` in the registry.
+  const view = pipelinePhaseMeter(
+    run({
+      steps: steps({
+        worktree: "done",
+        build_review: "failed",
+        remediate: "in_progress",
+        finish: "pending",
+      }),
+      lastStep: "remediate",
+      halt: { class: "needs-human", reason: "the review found two blocking defects" },
+      group: "halted",
+    }),
+  )!;
+  assert.deepEqual(
+    view.segments.filter((segment) => segment.footer !== null).map((segment) => segment.phase),
+    ["BUILD"],
+  );
+  // And the halt is still stated at the run's own level regardless of any of that.
+  assert.equal(view.halt?.reason, "the review found two blocking defects");
+  assert.equal(view.captionTone, "failed");
 });
 
 test("a run with neither pile draws no extras marker at all, rather than an empty one", () => {

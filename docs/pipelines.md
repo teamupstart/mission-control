@@ -475,6 +475,16 @@ A correlated card carries:
   skip explanation on a phase that was cut short by the run's tier or track. A caption above it
   names the phase in a word and counts finished steps over the run's own total.
 
+  The ring and that caption word are both derived only from a step the bar can honestly point
+  at - one that is in the sequence and that this build can place. A run on a step it cannot
+  place captions `Unknown step`, and a run on an **out-of-band** step - one dispatched in
+  response to something, such as `remediate` after a blocked gate - captions `Out of band`.
+  Neither rings anything. That matters because an out-of-band step still carries a phase in the
+  frozen step table (`remediate` is filed under SHIP), so reading it back would ring a phase the
+  run never entered - the same claim the strip refuses to make when it keeps such a step out of
+  every phase. The step itself stays readable in the extras marker, with its state and a
+  `current` marker.
+
   **A halt is stated on the caption, not on a segment**, and it is stated whenever the run
   carries one. That is deliberate and it is the one place a run-level fact outranks the bar's
   arithmetic: a segment's tone is the phase fold's answer about that phase's *step states*, and

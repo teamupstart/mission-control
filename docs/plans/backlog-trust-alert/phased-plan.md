@@ -106,8 +106,8 @@ Phase 1 owns all pure, render, browser, geometry, documentation, and build verif
 review should read the live scenario end to end:
 
 1. seed a current worker lease and live, armed Foreman config with the task repository omitted;
-2. prove each backlog surface exposes the same status notice and missing repository in the existing
-   task-error position;
+2. prove each backlog surface exposes the same non-live notice and missing repository in the
+   existing task-error position, while persisted recovery retains its status semantics;
 3. prove dependency marks coexist, parked rows stay silent, and persisted errors win the slot;
 4. use **Manage trust**, grant the repository through existing state, and observe every affected
    notice disappear after normal polling;
@@ -120,5 +120,7 @@ review should read the live scenario end to end:
 - No phase introduces a temporary API, schema, duplicated matcher, or dead UI surface.
 - Human correction reconciled: the plan reuses the established task-error notification position
   and leaves the stopped-prerequisite popover unchanged.
+- Accessibility reconciliation: derived trust posture is non-live even though it shares the visual
+  position with transient recovery status.
 - The one scheduled implementation task depends directly on the active planning session so its
   referenced paths cannot release before this plan reaches the default branch.

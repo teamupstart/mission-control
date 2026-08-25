@@ -247,7 +247,7 @@
             <p class="task-title">Phase 1: App skeleton</p>
             <div class="marks"><span class="tag">on</span><span class="tag">priority</span></div>
             <div class="meta"><span>ship</span><span>codex</span><span>2m ago</span></div>
-            <div class="notice" role="status">Autopilot cannot schedule this task: <span class="repo">calendar-buddy</span> is not trusted for Foreman. Manual launch still works. <button class="notice-action" type="button">Manage trust</button></div>
+            <div class="notice">Autopilot cannot schedule this task: <span class="repo">calendar-buddy</span> is not trusted for Foreman. Manual launch still works. <button class="notice-action" type="button">Manage trust</button></div>
             <button class="launch" type="button">launch new agent</button>
           </div>
           <div class="reuse-note">
@@ -259,7 +259,7 @@
         <ul>
           <li>Reuse the existing status-line placement, wrapping, type, and attention tone.</li>
           <li>Persisted <code>task.error</code> wins the slot over the derived trust posture.</li>
-          <li>Use <code>role="status"</code>, not <code>role="alert"</code>, for persistent multi-row state.</li>
+          <li>Give derived trust copy no live-region role; only transient persisted recovery retains <code>role="status"</code>.</li>
           <li>Keep Trust as the only place that edits and confirms repository grants.</li>
           <li>Leave the stopped-prerequisite triangle and popover unchanged.</li>
         </ul>
@@ -327,7 +327,7 @@
         <ul>
           <li>Gate state, primary and attached repos, parked/error suppression, and dependency coexistence.</li>
           <li>The same notice projection in the existing status position on Board, Backlog drawer, and Sitrep.</li>
-          <li>Persisted-error precedence, singular/plural copy, <code>role="status"</code>, and attention versus danger tones.</li>
+          <li>Persisted-error precedence, singular/plural copy, non-live trust semantics, retained recovery <code>role="status"</code>, and attention versus danger tones.</li>
         </ul>
         <pre><code>node --test --import ./test/setup-state.mjs --import tsx \
   test/backlog-trust-alert.test.ts test/backlog-trust-alert-render.test.ts</code></pre>

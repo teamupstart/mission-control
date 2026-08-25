@@ -128,12 +128,14 @@ In `src/web/components/session-bits.tsx`:
 1. Add a small `BacklogTaskNotice` presentation beside the other shared backlog leaves, or share a
    typed notice model if each host must retain its native row markup. Accept copy, tone, and an
    optional `onManageTrust` remedy without owning Foreman or task state.
-2. Render the explanation as persistent status text, not a triangle or popover. Use repository
-   leaves in the visible sentence and canonical paths in tooltip or accessible text where needed.
+2. Render the explanation as persistent inline text, not a triangle, popover, or live region. Use
+   repository leaves in the visible sentence and canonical paths in tooltip or accessible text
+   where needed.
 3. State `Manual launch still works.` and offer a compact inline **Manage trust** action at the end
    of the same notice. Stop card click and drag propagation before routing.
-4. Keep `role="status"`; do not add `role="alert"`, `data-testid`, local dismissal, open state,
-   outside-click handling, or Escape handling.
+4. Give derived trust copy no `role="status"` or `role="alert"`, and keep its action outside any
+   live region. Persisted recovery copy alone retains its existing `role="status"`. Do not add
+   `data-testid`, local dismissal, open state, outside-click handling, or Escape handling.
 5. Resolve notice precedence once: persisted `task.error` wins, otherwise the trust hold appears,
    otherwise the slot is absent.
 
@@ -215,7 +217,8 @@ Add focused test files or extend the nearest owned suites to prove:
 - Board, Backlog drawer, and Sitrep contain the same projected notice in their task-status slot;
 - singular/plural status copy and repository order are stable;
 - persisted `task.error` wins the slot and remains visible on all three surfaces;
-- every persistent notice uses `role="status"`, not `role="alert"`;
+- derived trust notices use no live-region role, while persisted recovery notices retain
+  `role="status"` and no notice uses `role="alert"`;
 - trust uses attention styling while persisted errors retain each host's existing tone and stopped
   dependencies retain their danger styling.
 
@@ -234,8 +237,9 @@ Add or extend an e2e spec using semantic selectors only:
    that omits the fixture task repository.
 2. Seed a ready task and a dependent task. Confirm both notices exist while the dependent still
    says `after <task>`.
-3. Exercise the inline notice on Board, Backlog drawer, and Sitrep. Assert its status semantics,
-   missing repository, manual-launch sentence, and Trust action.
+3. Exercise the inline notice on Board, Backlog drawer, and Sitrep. Assert non-live trust semantics,
+   missing repository, manual-launch sentence, and Trust action; separately preserve the existing
+   recovery status semantics.
 4. Activate **Manage trust** and assert `#/settings/trust` plus the matrix anchor.
 5. Grant or patch the repository through existing behavior, wait for the config poll, and prove the
    notices disappear without reload.
@@ -293,6 +297,9 @@ bypass the all-repositories allowlist contract.
   is the reuse point. The discarded triangle popover belonged to stopped-prerequisite remediation,
   not passive scheduling posture. This phase now preserves that distinction and fills the drawer's
   existing task-error visibility gap.
+- Accessibility reconciliation: trust reuses the line's visual position without inheriting
+  `role="status"`; only transient persisted recovery remains a live region, and the Trust action is
+  outside it.
 - Compatibility audit: the new named helper preserves the existing boolean API, the feature uses
   already-shipped task/config/status data, and no consumer waits on a new server contract.
 - Final audit: the one-phase graph has no concurrency or merge-order contradiction; its only

@@ -81,15 +81,15 @@ missing grant.
 
 ### Copy and interaction
 
-Use the same reading position and persistent-status semantics as a recoverable dispatch error:
+Use the same reading position and explanatory pattern as a recoverable dispatch error:
 
 > Autopilot cannot schedule this task: calendar-buddy is not trusted for Foreman. Manual launch
 > still works. Manage trust
 
 For multi-repo tasks, name only missing repository leaves in task order. Put canonical paths in
-tooltips or accessible text when duplicate leaves need disambiguation. The notice uses
-`role="status"`, not `role="alert"`, because it is persistent state that may appear on several
-tasks at once.
+tooltips or accessible text when duplicate leaves need disambiguation. The derived trust notice is
+ordinary non-live content with no `role="status"` or `role="alert"`: loading or polling may make
+several rows eligible together, and announcing each one would flood assistive technology.
 
 **Manage trust** is a compact inline text action at the end of the notice. It stops card click and
 drag propagation, then deep-links to the existing Trust matrix. Granting trust remains a confirmed
@@ -97,9 +97,11 @@ Settings action, not a one-click grant inside the task. Manual launch stays on t
 row control.
 
 Persisted `task.error` owns the slot when present. A failed or interrupted launch is more specific
-than a trust posture and already explains its recovery. The derived trust notice appears only when
-that stronger reason is absent. Do not write the trust explanation into `task.error`, add dismissed
-state, or optimistically remove it after navigation.
+than a trust posture and already explains its recovery. It retains the existing `role="status"`
+semantics because it is a transient recovery update. The derived trust notice appears only when
+that stronger reason is absent, and its **Manage trust** action stays outside any live region. Do
+not write the trust explanation into `task.error`, add dismissed state, or optimistically remove it
+after navigation.
 
 ## Visual direction
 
@@ -111,7 +113,8 @@ Backlog:
   the Backlog drawer identity stack;
 - use `--attention` amber because a repository grant needs operator action, while persisted launch
   errors keep precedence and each host's existing tone;
-- inherit the current small text, wrapping, spacing, typography, and `role="status"` behavior;
+- inherit the current small text, wrapping, spacing, and typography, but not the transient
+  recovery line's live-region semantics;
 - make the missing repository leaf the signature detail, with canonical paths available for
   disambiguation;
 - keep **Manage trust** visually subordinate as an inline remedy, not a new chip, icon, or panel.
@@ -179,9 +182,9 @@ flowchart LR
   and the optional Trust remedy without owning scheduling state.
 - Feed persisted `task.error` and the derived trust hold through one precedence helper so Board,
   Backlog drawer, and Sitrep cannot show competing task notices.
-- Keep the Board notice in the current `.bl-recovery` position and preserve its wrapping and
-  `role="status"` contract. Generalize the class name only if that improves ownership without
-  restyling existing recovery copy.
+- Keep the Board notice in the current `.bl-recovery` position and preserve its wrapping. Existing
+  recovery copy retains `role="status"`; derived trust copy and its action remain non-live.
+  Generalize the class name only if that improves ownership without restyling recovery copy.
 - Generalize Sitrep's `.report-task-error` line into danger and attention variants in the same
   position. Add the missing equivalent to the Backlog drawer identity stack without changing the
   drawer's fixed row height.
@@ -219,8 +222,9 @@ flowchart LR
   suppression, and coexistence with a dependency.
 - Add a render test proving Board, Backlog drawer, and Sitrep place the same derived notice in their
   established task-notification positions and that allowed tasks render none.
-- Pin singular/plural copy, missing-repo ordering, `role="status"`, no `role="alert"`, and the
-  attention versus persisted-error tone and precedence.
+- Pin singular/plural copy, missing-repo ordering, no live-region role on trust, retained
+  `role="status"` on persisted recovery, and the attention versus persisted-error tone and
+  precedence.
 - Extend the dispatch-restart recovery coverage to ensure persisted `task.error` still occupies the
   slot and suppresses the trust notice.
 - Run focused tests with the repository's required preload:
@@ -234,8 +238,8 @@ flowchart LR
 
 - Add a Playwright case, using fake agents only, that seeds a live Foreman heartbeat and
   config with autopilot on but the task repository absent from the allowlist.
-- On the Board, Backlog drawer, and Sitrep, locate the inline status, assert the repository and
-  manual-launch copy, and activate **Manage trust**.
+- On the Board, Backlog drawer, and Sitrep, locate the inline notice by its text and Trust action,
+  assert the repository and manual-launch copy, and activate **Manage trust**.
 - Assert navigation reaches `#/settings/trust` and the Trust matrix anchor is visible.
 - Grant the repository through the existing Trust control or config route and assert the
   notice disappears after the polled config update without reloading.

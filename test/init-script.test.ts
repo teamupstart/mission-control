@@ -7,16 +7,27 @@ import { join } from "node:path";
 const repo = join(import.meta.dirname, "..");
 const script = join(repo, "scripts", "init.mjs");
 
-test("the local test default matches CI's explicit tuned concurrency", () => {
+test("the local test default and CI runner tuning are explicit", () => {
   const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
   };
   const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
+  const e2eConfig = readFileSync(join(repo, "e2e", "playwright.config.ts"), "utf8");
   const testCommand = pkg.scripts.test;
 
   assert.ok(testCommand);
   assert.match(testCommand, /--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-6\}/);
   assert.match(workflow, /^\s+MISSION_TEST_CONCURRENCY: '6'$/m);
+  assert.match(e2eConfig, /^  workers: 4,$/m);
+});
+
+test("CI right-sizes Upstart Linux runners", () => {
+  const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
+
+  assert.doesNotMatch(workflow, /blacksmith/i);
+  assert.match(workflow, /^  gates:\n    name:.*\n    runs-on: ubuntu-latest$/m);
+  assert.match(workflow, /^  unit:\n    name:.*\n    runs-on: ubuntu-4cpu-32ram-150ssd$/m);
+  assert.match(workflow, /^  e2e:\n    name:.*\n    runs-on: ubuntu-4cpu-32ram-150ssd$/m);
 });
 
 test("init dry-run has no external worktree installer or configuration step", () => {

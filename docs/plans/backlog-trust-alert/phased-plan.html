@@ -60,14 +60,14 @@
     <header>
       <p class="eyebrow">Merge-aware implementation plan</p>
       <h1>One vertical slice. One reviewable merge.</h1>
-      <p class="lede">The matcher, explanation, shared control, three render sites, tests, and documentation stay together so the repository never carries an unused policy helper or a UI that guesses at trust.</p>
+      <p class="lede">The matcher, notice projection, three established task-status positions, tests, and documentation stay together so the repository never carries an unused policy helper or a UI that guesses at trust.</p>
     </header>
     <main>
       <section id="source">
         <h2>Approved source</h2>
         <p>Source: <a href="plan.md"><code>docs/plans/backlog-trust-alert/plan.md</code></a>. The submitted follow-up selected <strong>Create phased implementation plan</strong>. The feature direction has no unresolved product choices.</p>
         <div class="metrics">
-          <div class="metric"><strong>220–320</strong><span>estimated non-test implementation lines</span></div>
+          <div class="metric"><strong>150–230</strong><span>estimated non-test implementation lines</span></div>
           <div class="metric"><strong>1</strong><span>implementation and merge phase</span></div>
           <div class="metric"><strong>0</strong><span>new endpoints or migrations</span></div>
         </div>
@@ -78,23 +78,25 @@
           <li>The scheduler already gates through browser-safe <code>taskReposAllowlisted</code> before capacity.</li>
           <li>App already holds tasks, Foreman config, worker status, and the allowlist.</li>
           <li>The current layout props already carry related Foreman state.</li>
-          <li><code>DeadBlockerButton</code> establishes the shared warning interaction across all backlog surfaces.</li>
+          <li>Board and Sitrep already render persisted <code>task.error</code> in the inline task-status position.</li>
+          <li>The Backlog drawer omits that existing notification line and must add it without changing fixed row geometry.</li>
+          <li><code>DeadBlockerButton</code> remains the separate active resolver for stopped prerequisites.</li>
           <li>The existing Settings anchor owns navigation to the Trust matrix.</li>
           <li><code>backlog-copy.ts</code> is the browser-side owner for cross-surface scheduling language.</li>
         </ol>
-        <p class="callout"><strong>Clarification:</strong> worker liveness gates the task warning. A true but secondary trust warning must not hide the more immediate fact that no Foreman worker is running.</p>
+        <p class="callout"><strong>Human correction:</strong> the existing task-error status line is the reuse point. The discarded triangle popover belongs to stopped-prerequisite remediation. Persisted task errors win the slot, and worker liveness still gates the derived trust notice.</p>
       </section>
       <section id="phase">
         <h2>Phase index</h2>
         <div class="scroll">
           <table>
             <thead><tr><th>Phase</th><th>Outcome</th><th>Direct dependencies</th></tr></thead>
-            <tbody><tr><td>1</td><td>Task-local trust warning on Board, Backlog drawer, and Sitrep</td><td>none</td></tr></tbody>
+            <tbody><tr><td>1</td><td>Reuse the task-error notification position for trust notices on Board, Backlog drawer, and Sitrep</td><td>none</td></tr></tbody>
           </table>
         </div>
         <div class="phase">
           <h3><a href="phase-1-task-local-trust-warning.md">Phase 1: Task-local trust warning</a></h3>
-          <p>Names missing repository grants from the shared matcher, renders one attention-tone control on all three task surfaces, routes to Trust, and owns all tests, docs, and runtime evidence.</p>
+          <p>Names missing repository grants from the shared matcher, resolves persisted-error precedence, renders the notice in all three task-status positions, routes to Trust, and owns all tests, docs, and runtime evidence.</p>
         </div>
       </section>
       <section id="graph">
@@ -122,9 +124,9 @@
         <h2>Final compatibility contracts</h2>
         <ul>
           <li><code>allowlist.ts</code> remains the only path and all-repositories authority.</li>
-          <li>Warnings derive from loaded browser state and persist nothing.</li>
-          <li>Parked and launch-error tasks retain their existing single explanations.</li>
-          <li>Dependencies may coexist with the trust warning.</li>
+          <li>Notices derive from loaded browser state and persist nothing.</li>
+          <li>Parked tasks stay silent, while persisted launch errors win the notice slot.</li>
+          <li>Dependencies may coexist with the trust notice.</li>
           <li>Trust remains the sole grant editor; manual dispatch and scheduling behavior do not change.</li>
         </ul>
       </section>
@@ -132,9 +134,9 @@
         <h2>Final verification</h2>
         <ol>
           <li>Seed live worker state, armed autopilot, and an omitted task repository.</li>
-          <li>Verify the same accessible warning on Board, Backlog drawer, and Sitrep.</li>
-          <li>Verify dependency coexistence plus parked/error suppression.</li>
-          <li>Navigate to Trust, grant access, and observe warnings disappear after normal polling.</li>
+          <li>Verify the same status notice in the existing notification position on Board, Backlog drawer, and Sitrep.</li>
+          <li>Verify dependency coexistence, parked suppression, and persisted-error precedence.</li>
+          <li>Navigate to Trust, grant access, and observe notices disappear after normal polling.</li>
           <li>Run typecheck, lint, unit and Electron tests, build, smoke, and Playwright with fake agents.</li>
         </ol>
       </section>

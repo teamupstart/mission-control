@@ -6,6 +6,7 @@ import {
   REQUIRED_REMOTE_HOST,
   appsDirProblem,
   canonicalRemoteUrl,
+  existingCloneCommands,
   newestStableRelease,
   remoteProblem,
   stagingPaths,
@@ -119,22 +120,22 @@ test("the receipt records a release tag only when the installed ref is one", () 
 });
 
 test("a remote URL yields its host, repository, and transport", () => {
-  assert.deepEqual(parseRemote("git@github.com:mancej-cyc/ai-harness.git"), {
+  assert.deepEqual(parseRemote("git@github.com:teamupstart/mission-control.git"), {
     host: REQUIRED_REMOTE_HOST,
     slug: CANONICAL_REPO,
     transport: "ssh",
   });
-  assert.deepEqual(parseRemote("ssh://git@github.com/mancej-cyc/ai-harness.git"), {
+  assert.deepEqual(parseRemote("ssh://git@github.com/teamupstart/mission-control.git"), {
     host: REQUIRED_REMOTE_HOST,
     slug: CANONICAL_REPO,
     transport: "ssh",
   });
-  assert.deepEqual(parseRemote("https://github.com/mancej-cyc/ai-harness"), {
+  assert.deepEqual(parseRemote("https://github.com/teamupstart/mission-control"), {
     host: REQUIRED_REMOTE_HOST,
     slug: CANONICAL_REPO,
     transport: "https",
   });
-  assert.deepEqual(parseRemote("https://GitHub.com:443/mancej-cyc/ai-harness.git"), {
+  assert.deepEqual(parseRemote("https://GitHub.com:443/teamupstart/mission-control.git"), {
     host: REQUIRED_REMOTE_HOST,
     slug: CANONICAL_REPO,
     transport: "https",
@@ -147,11 +148,11 @@ test("a remote URL yields its host, repository, and transport", () => {
 test("a remote carrying the right owner and name from the wrong host is refused", () => {
   // The slug is not identity. This remote is about to be fetched and force-checked-out.
   assert.equal(
-    remoteProblem({ url: "ssh://git@github.com/mancej-cyc/ai-harness.git", repo: CANONICAL_REPO }),
+    remoteProblem({ url: "ssh://git@github.com/teamupstart/mission-control.git", repo: CANONICAL_REPO }),
     null,
   );
   assert.equal(
-    remoteProblem({ url: "https://github.com/mancej-cyc/ai-harness", repo: CANONICAL_REPO }),
+    remoteProblem({ url: "https://github.com/teamupstart/mission-control", repo: CANONICAL_REPO }),
     null,
   );
   assert.match(
@@ -164,9 +165,36 @@ test("a remote carrying the right owner and name from the wrong host is refused"
   );
   assert.match(
     String(remoteProblem({ url: `https://github.com/${FORK}`, repo: CANONICAL_REPO })),
-    /is someone-else\/ai-harness, not mancej-cyc\/ai-harness/,
+    /is someone-else\/ai-harness, not teamupstart\/mission-control/,
   );
   assert.match(String(remoteProblem({ url: "", repo: CANONICAL_REPO })), /not a git remote URL/);
+});
+
+test("the updater-owned clone's former canonical remote is accepted for migration", () => {
+  assert.deepEqual(
+    existingCloneCommands({
+      url: "ssh://git@github.com/mancej-cyc/ai-harness.git",
+      repo: CANONICAL_REPO,
+      clone: "/state/app-src",
+    }),
+    {
+      problem: null,
+      commands: [
+        [
+          "git",
+          [
+            "-C",
+            "/state/app-src",
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://git@github.com/teamupstart/mission-control.git",
+          ],
+        ],
+        ["git", ["-C", "/state/app-src", "fetch", "--tags", "--prune", "origin"]],
+      ],
+    },
+  );
 });
 
 test("the clone keeps the caller's transport and the canonical repository", () => {
@@ -181,6 +209,13 @@ test("a non-canonical origin is refused, and the message names both repositories
   assert.ok(problem?.includes(FORK));
   assert.ok(problem?.includes(CANONICAL_REPO));
   assert.ok(problem?.includes("--from-origin"));
+});
+
+test("the former canonical origin resolves to the current canonical repository", () => {
+  assert.deepEqual(
+    resolveInstallRepo({ originSlug: "mancej-cyc/ai-harness", originHost: REQUIRED_REMOTE_HOST }),
+    { repo: CANONICAL_REPO, problem: null },
+  );
 });
 
 test("--from-origin is the only way past the refusal, and the receipt records the fork", () => {

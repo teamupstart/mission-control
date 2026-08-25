@@ -16,5 +16,7 @@ export interface InstallReceipt {
 }
 
 export const CANONICAL_REPO: string;
+export const FORMER_CANONICAL_REPO: string;
+export function isTrustedInstallRepo(repo: string): boolean;
 export const INSTALL_RECEIPT_SCHEMA: number;
 export function validateReceipt(value: unknown): string | null;

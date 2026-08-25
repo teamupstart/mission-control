@@ -19,7 +19,13 @@
  * it runs in when `--repo` is omitted - so a second, drifting copy is a trust hole rather
  * than a duplication smell. Not user-configurable.
  */
-export const CANONICAL_REPO = "mancej-cyc/ai-harness";
+export const CANONICAL_REPO = "teamupstart/mission-control";
+export const FORMER_CANONICAL_REPO = "mancej-cyc/ai-harness";
+
+/** Whether a receipt came from the current canonical repository or its exact former slug. */
+export function isTrustedInstallRepo(repo) {
+  return repo === CANONICAL_REPO || repo === FORMER_CANONICAL_REPO;
+}
 
 /**
  * Current receipt schema. Append-only: add optional fields under the same number, or

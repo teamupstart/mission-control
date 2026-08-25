@@ -12,7 +12,10 @@ import {
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { CANONICAL_REPO } from "../shared/install-receipt-schema.mjs";
+import {
+  CANONICAL_REPO,
+  isTrustedInstallRepo,
+} from "../shared/install-receipt-schema.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
@@ -443,7 +446,7 @@ export class UpdateController {
     else {
       this.receipt = this.port.readReceipt();
       if (!this.receipt) disable("This app was not installed with the managed install command.");
-      else if (this.receipt.repo !== CANONICAL_REPO) {
+      else if (!isTrustedInstallRepo(this.receipt.repo)) {
         disable(`Updates are disabled because this app was installed from ${this.receipt.repo}.`);
       } else {
         this.node = this.port.systemNode();

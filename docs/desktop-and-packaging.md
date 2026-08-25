@@ -35,6 +35,10 @@ Two trust rules hold on the install path, not only in the updater:
   *transport* comes from the caller's `origin`, so an SSH clone stays SSH and an HTTPS clone
   stays HTTPS. A checkout whose `origin` is a fork is refused, with `--from-origin` as the
   explicit way past it; such an install records its real repository in the receipt.
+- Managed installs created before the move from `mancej-cyc/ai-harness` remain eligible for one
+  migration. The next update normalizes the receipt to `teamupstart/mission-control` and rewrites
+  the updater-owned clone's `origin` to the new canonical URL before fetching. No other historical
+  or fork slug is accepted by that compatibility path.
 - Every remote is compared as **host and repository**, never repository alone - the caller's
   `origin` and the existing clone's `origin` alike. `https://elsewhere.example/owner/name.git`
   carries the right owner and name, and the clone it names is about to be fetched and force
@@ -55,7 +59,7 @@ The install ends by writing a **receipt** to `install-receipt.json` in the state
 ```json
 {
   "schema": 1,
-  "repo": "mancej-cyc/ai-harness",
+  "repo": "teamupstart/mission-control",
   "releaseTag": "v0.1.0",
   "installedVersion": "0.1.0",
   "sourceClone": "/Users/you/.mission-control/app-src",

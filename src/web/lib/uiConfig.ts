@@ -27,6 +27,7 @@ let current: UiConfig = readCache();
 const listeners = new Set<() => void>();
 let hydrated = false;
 let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+const writeGeneration = new Map<keyof UiConfig, number>();
 
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
 
@@ -103,15 +104,23 @@ export async function hydrateUiConfig(): Promise<void> {
 export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   const before = current;
   const optimistic = { ...before, ...patch };
+  const generations = new Map<keyof UiConfig, number>();
+  for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
+    const key = field as keyof UiConfig;
+    const generation = (writeGeneration.get(key) ?? 0) + 1;
+    writeGeneration.set(key, generation);
+    generations.set(key, generation);
+  }
   commit(optimistic);
   const res = await api.setUiConfig(patch);
   if (!res.ok) {
-    // A later optimistic patch may already have changed another field while this request was
-    // in flight. Roll back only fields this request still owns, never its whole old snapshot.
+    // A later optimistic patch, including one setting this field to the same value, may have
+    // already superseded this request. Roll back only fields this request still owns, never
+    // its whole old snapshot.
     const rollback = { ...current };
     for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
       const key = field as keyof UiConfig;
-      if (Object.is(current[key], optimistic[key])) {
+      if (writeGeneration.get(key) === generations.get(key) && Object.is(current[key], optimistic[key])) {
         Object.assign(rollback, { [key]: before[key] });
       }
     }

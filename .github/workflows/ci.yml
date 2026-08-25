@@ -12,19 +12,13 @@ name: CI
 #
 # ## Runner policy
 #
-# Lightweight Linux jobs use `ubuntu-latest`, the standard GitHub-hosted runner used across
-# Upstart repositories. The CPU-sensitive unit and browser suites use Upstart's
-# `ubuntu-4cpu-32ram-150ssd` larger runner, which preserves the 4 vCPU capacity this
-# repository's worker counts were measured against. That label belongs to the
-# `frontend-platform` runner group; a job that remains queued means this repository still
-# needs access to that group.
-#
-# Reusing the standard 2 vCPU private-repository runner for the heavy jobs was measured and
-# rejected. Unit took 486s instead of 127s, e2e took 1129s and failed, and a separate e2e run
-# with four workers on two cores also failed. Moving up to 8 vCPU was faster but inefficient:
-# unit at concurrency 8 took 75s and 600 vCPU-seconds against 111s and 444 vCPU-seconds at
-# 4 vCPU with concurrency 6. Four cores remain the measured performance and reliability knee.
-# See https://github.com/teamupstart/mission-control/pull/507 for the benchmark record.
+# Every Linux job uses `ubuntu-latest`, the standard GitHub-hosted runner that is available
+# to private repositories without a repository-specific runner-group grant. Keep CI worker
+# counts aligned with that runner's 2 CPU capacity: two unit-test workers and two Playwright
+# workers. Local defaults stay higher because contributor machines are not limited to that
+# hosted shape. Four Playwright workers on a 2 CPU runner failed the benchmark recorded in
+# https://github.com/teamupstart/mission-control/pull/507, so do not oversubscribe CI without
+# new reliability evidence.
 #
 # The release-only package job stays pinned to `macos-14` because changing that image changes
 # the operating system used to build the shipped dmg.
@@ -89,7 +83,7 @@ jobs:
   # costs a 5s build plus a 1s boot per leg, which is the cheapest coverage in this file.
   unit:
     name: unit (node ${{ matrix.node-version }})
-    runs-on: ubuntu-4cpu-32ram-150ssd
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -97,10 +91,9 @@ jobs:
         node-version: ['24', '26']
 
     env:
-      # The suite is dominated by per-file `tsx` transpile rather than steady CPU, so six
-      # workers fill the four cores without crossing the measured flat part of the curve.
-      # Keep this explicit so a future local default does not silently retune CI.
-      MISSION_TEST_CONCURRENCY: '6'
+      # Match the standard private-repository runner's two CPUs. Keep this explicit so a
+      # future local default does not silently retune CI.
+      MISSION_TEST_CONCURRENCY: '2'
 
     steps:
       - name: Checkout
@@ -176,8 +169,8 @@ jobs:
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Two shards remain the measured knee on 4 vCPU: one shard took 240s, two took 130s, and
-  # three took 93s but bought only five seconds of pipeline latency against the unit job.
+  # Keep two shards so each standard runner handles half the browser suite. The Playwright
+  # config separately limits each shard to two workers to match its two CPUs.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -186,7 +179,7 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-4cpu-32ram-150ssd
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false

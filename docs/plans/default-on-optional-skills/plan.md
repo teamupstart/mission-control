@@ -203,7 +203,7 @@ flowchart LR
 
 ### Browser coverage
 
-Read `e2e/README.md` before editing specs. Update or add Playwright coverage that:
+Browser coverage must conform to the repository's E2E contract documented in [`e2e/README.md`](../../../e2e/README.md). Update or add Playwright coverage that:
 
 1. starts a fresh daemon and shows the Skills master plus all valid catalog rows checked in Settings;
 2. explicitly turns Skills off, dispatches a Plan through the real form, and observes the self-contained contract in the fake agent's conversation with no refusal;

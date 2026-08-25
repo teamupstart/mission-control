@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileCommentReview,
   FileCommentThread,
@@ -555,21 +555,59 @@ export function useEventStream(): MissionState {
     };
   }, []);
 
+  // Every Map above is replaced wholesale only when ITS OWN events change it - `setSessions`
+  // on a `session_upsert`, `setTasks` on a task event, and so on. Spreading each one straight
+  // into a fresh array on every call of this hook threw that isolation away: the array below
+  // is what every downstream prop comparison and dependency array actually sees, and a NEW
+  // array on every render is indistinguishable from "everything changed" no matter how well
+  // memoized a session card or Tooltip is. With ~130 Tooltip-wrapped controls on a busy
+  // Fleet board and an active session emitting SSE events several times a second, that
+  // recreated the whole visible tree - board, cards, the Files workspace, the Dispatch
+  // modal - on every one of those ticks, not just the session that actually changed.
+  // Memoizing on the Map reference restores the isolation: an array's identity now changes
+  // only when the Map it is drawn from does.
+  const sessionsList = useMemo(() => [...sessions.values()], [sessions]);
+  const reviewsList = useMemo(() => [...reviews.values()], [reviews]);
+  const tasksList = useMemo(() => [...tasks.values()], [tasks]);
+  const personasList = useMemo(() => [...personas.values()], [personas]);
+  const sessionActionsList = useMemo(() => [...sessionActions.values()], [sessionActions]);
+  const workflowCommandsList = useMemo(() => [...workflowCommands.values()], [workflowCommands]);
+  const workflowSummariesList = useMemo(
+    () => [...workflowSummaries.values()],
+    [workflowSummaries],
+  );
+  const workflowRunSummariesList = useMemo(() => [...workflowRuns.values()], [workflowRuns]);
+  const workflowBindingSummariesList = useMemo(
+    () => [...workflowBindings.values()],
+    [workflowBindings],
+  );
+  const ensembleSummariesList = useMemo(() => [...ensembles.values()], [ensembles]);
+  const schedulesList = useMemo(() => [...schedules.values()], [schedules]);
+  const pipelineRunsList = useMemo(() => [...pipelineRuns.values()], [pipelineRuns]);
+  const fileCommentThreadsList = useMemo(
+    () => [...fileCommentThreads.values()],
+    [fileCommentThreads],
+  );
+  const fileCommentReviewsList = useMemo(
+    () => [...fileCommentReviews.values()],
+    [fileCommentReviews],
+  );
+
   return {
-    sessions: [...sessions.values()],
-    reviews: [...reviews.values()],
-    tasks: [...tasks.values()],
-    personas: [...personas.values()],
-    sessionActions: [...sessionActions.values()],
-    workflowCommands: [...workflowCommands.values()],
-    workflowSummaries: [...workflowSummaries.values()],
-    workflowRunSummaries: [...workflowRuns.values()],
-    workflowBindingSummaries: [...workflowBindings.values()],
-    ensembleSummaries: [...ensembles.values()],
-    schedules: [...schedules.values()],
-    pipelineRuns: [...pipelineRuns.values()],
-    fileCommentThreads: [...fileCommentThreads.values()],
-    fileCommentReviews: [...fileCommentReviews.values()],
+    sessions: sessionsList,
+    reviews: reviewsList,
+    tasks: tasksList,
+    personas: personasList,
+    sessionActions: sessionActionsList,
+    workflowCommands: workflowCommandsList,
+    workflowSummaries: workflowSummariesList,
+    workflowRunSummaries: workflowRunSummariesList,
+    workflowBindingSummaries: workflowBindingSummariesList,
+    ensembleSummaries: ensembleSummariesList,
+    schedules: schedulesList,
+    pipelineRuns: pipelineRunsList,
+    fileCommentThreads: fileCommentThreadsList,
+    fileCommentReviews: fileCommentReviewsList,
     fleetCost,
     lineSummary,
     settingsStatus,

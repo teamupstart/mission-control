@@ -16,18 +16,10 @@ export default defineConfig({
   // Each spec boots its own daemon on a per-worker port, so files are safe to parallelise;
   // the cost is one daemon process per worker, which is why this is not unbounded.
   fullyParallel: true,
-  // One worker per core on the 4 vCPU runner CI uses, which is also a sane local default.
-  // CI used to run 2 here and pay for 4 cores to sit half idle; the suite parallelises
-  // almost perfectly, so that was latency and money given away for nothing. It does have a
-  // ceiling: at 16 workers a benchmark run oversubscribed the box hard enough to fail a
-  // test outright, so raise this only together with the runner size.
-  //
-  // Going 2 -> 4 was checked for flakiness rather than assumed, because more workers means
-  // more CPU contention and this suite is timing-sensitive. Full suite, three runs at each
-  // setting on identical hardware: zero flakes in 765 test executions per arm, and ~6.0m
-  // against ~4.4m. If a timing flake does start recurring here, this setting is the first
-  // thing to suspect and `3` is the cheap hedge - it gives back roughly a third of the win.
-  workers: 4,
+  // Match the standard private-repository CI runner's two CPUs. Local runs retain four
+  // workers, which was faster and stable on 4 vCPU hardware. Four workers on the 2 CPU CI
+  // shape failed a benchmark run, so do not oversubscribe CI without new reliability evidence.
+  workers: process.env.CI ? 2 : 4,
   // A dispatch waits on a real subprocess launching, so the default 30s is tight on a cold
   // CI runner. Two minutes leaves room for a loaded runner while a real hang still fails.
   timeout: 120_000,

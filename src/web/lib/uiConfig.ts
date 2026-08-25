@@ -102,10 +102,20 @@ export async function hydrateUiConfig(): Promise<void> {
  */
 export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   const before = current;
-  commit({ ...before, ...patch });
+  const optimistic = { ...before, ...patch };
+  commit(optimistic);
   const res = await api.setUiConfig(patch);
   if (!res.ok) {
-    commit(before);
+    // A later optimistic patch may already have changed another field while this request was
+    // in flight. Roll back only fields this request still owns, never its whole old snapshot.
+    const rollback = { ...current };
+    for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
+      const key = field as keyof UiConfig;
+      if (Object.is(current[key], optimistic[key])) {
+        Object.assign(rollback, { [key]: before[key] });
+      }
+    }
+    commit(rollback);
     return false;
   }
   return true;

@@ -62,7 +62,9 @@ export async function hydrateUiConfig(): Promise<void> {
       // and a stray from a rename two generations back must never overwrite it.
       const legacy = readLegacySettings();
       if (legacy) {
-        await updateUiConfig(legacy);
+        // Legacy settings identify an existing profile. Do not let `coerce`'s new-profile
+        // default turn that rescued profile into an onboarding candidate.
+        await updateUiConfig({ ...legacy, guidedTour: false });
         return;
       }
     }
@@ -77,11 +79,15 @@ export async function hydrateUiConfig(): Promise<void> {
  * Apply a patch optimistically and TAKE IT BACK if the daemon refuses, so no control ever
  * shows a setting that isn't in force. Same contract as `useHarnesses.update`.
  */
-export async function updateUiConfig(patch: UiConfigPatch): Promise<void> {
+export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   const before = current;
   commit({ ...before, ...patch });
   const res = await api.setUiConfig(patch);
-  if (!res.ok) commit(before);
+  if (!res.ok) {
+    commit(before);
+    return false;
+  }
+  return true;
 }
 
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener

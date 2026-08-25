@@ -26,6 +26,9 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 let current: UiConfig = readCache();
 const listeners = new Set<() => void>();
 let hydrated = false;
+let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
 
 function emit(): void {
   for (const l of listeners) l();
@@ -43,36 +46,54 @@ export function uiConfig(): UiConfig {
   return current;
 }
 
+/** Whether a daemon-backed config has arrived and automatic onboarding may evaluate it. */
+export function uiConfigHydrated(): boolean {
+  return hydrated;
+}
+
+function retryHydration(): void {
+  if (hydrated || hydrationRetryTimer !== null) return;
+  hydrationRetryTimer = setTimeout(() => {
+    hydrationRetryTimer = null;
+    void hydrateUiConfig();
+  }, UI_CONFIG_HYDRATE_RETRY_MS);
+}
+
 /**
  * Fetch the daemon's copy and take it as the truth, adopting pre-rename `localStorage`
  * first if the daemon has never held one.
  *
- * On an unreachable daemon this returns having changed nothing, which is the point of
- * keeping a cache at all: under `vite` the dashboard is served by something other than
- * the daemon, so it can render before (or without) one, and it should render with the
- * operator's settings rather than the shipped defaults.
+ * On an unreachable daemon this keeps the current cache for rendering but leaves hydration
+ * incomplete and retries. A default-on onboarding setting must never infer a fresh profile
+ * merely because the daemon could not answer.
  */
 export async function hydrateUiConfig(): Promise<void> {
-  try {
-    const view = await fetchUiConfig();
-    if (!view) return; // daemon unreachable - the cache stands
-    if (!view.configured) {
-      // Nothing has ever been saved, so anything this origin still holds under an older
-      // product name is worth rescuing. Only here: once the daemon has a config, it wins,
-      // and a stray from a rename two generations back must never overwrite it.
-      const legacy = readLegacySettings();
-      if (legacy) {
-        // Legacy settings identify an existing profile. Do not let `coerce`'s new-profile
-        // default turn that rescued profile into an onboarding candidate.
-        await updateUiConfig({ ...legacy, guidedTour: false });
+  if (hydrated) return;
+  const view = await fetchUiConfig();
+  if (!view) {
+    retryHydration();
+    return;
+  }
+  if (!view.configured) {
+    // Nothing has ever been saved, so anything this origin still holds under an older
+    // product name is worth rescuing. Only here: once the daemon has a config, it wins,
+    // and a stray from a rename two generations back must never overwrite it.
+    const legacy = readLegacySettings();
+    if (legacy) {
+      // Legacy settings identify an existing profile. Do not let `coerce`'s new-profile
+      // default turn that rescued profile into an onboarding candidate.
+      if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
+        retryHydration();
         return;
       }
+    } else {
+      commit(view.config);
     }
+  } else {
     commit(view.config);
-  } finally {
-    hydrated = true;
-    emit();
   }
+  hydrated = true;
+  emit();
 }
 
 /**
@@ -108,7 +129,7 @@ function getSnapshot(): UiConfig {
 }
 
 function getHydrationSnapshot(): boolean {
-  return hydrated;
+  return uiConfigHydrated();
 }
 
 /** Live view of the whole config; re-renders on any change from any surface. */
@@ -116,7 +137,7 @@ export function useUiConfig(): UiConfig {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-/** True once the daemon-backed preferences have settled, even when the daemon is unavailable. */
+/** True once a daemon-backed preference is available for automatic behavior to evaluate. */
 export function useUiConfigHydrated(): boolean {
   return useSyncExternalStore(subscribe, getHydrationSnapshot, getHydrationSnapshot);
 }

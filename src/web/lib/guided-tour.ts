@@ -1,11 +1,26 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { UiConfigPatch } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./uiConfig.ts";
 
 export const GUIDED_TOUR_PERSIST_RETRY_MS = 1_000;
+export const GUIDED_TOUR_PERSIST_MAX_RETRY_MS = 30_000;
+export const GUIDED_TOUR_PERSIST_MAX_RETRIES = 5;
+const PENDING_GUIDED_TOUR_CONSUMPTION = "ai-harness.guided-tour-consumption-pending";
 
 type Persist = (patch: UiConfigPatch) => Promise<boolean>;
 type Schedule = (callback: () => void, delay: number) => unknown;
+
+function pendingGuidedTourConsumption(): boolean {
+  return localStorage.getItem(PENDING_GUIDED_TOUR_CONSUMPTION) === "true";
+}
+
+function markGuidedTourConsumptionPending(): void {
+  localStorage.setItem(PENDING_GUIDED_TOUR_CONSUMPTION, "true");
+}
+
+function clearGuidedTourConsumptionPending(): void {
+  localStorage.removeItem(PENDING_GUIDED_TOUR_CONSUMPTION);
+}
 
 /** A tour that opened in this dashboard session stays consumed even while its PUT retries. */
 export function canStartGuidedTour(persisted: boolean, consumedThisSession: boolean): boolean {
@@ -15,18 +30,34 @@ export function canStartGuidedTour(persisted: boolean, consumedThisSession: bool
 /**
  * Record the consumed onboarding state, retrying if the daemon was temporarily unavailable.
  * A new profile must not receive a second blocking tour merely because its first PUT raced a
- * short outage after the tour had already opened.
+ * short outage after the tour had already opened. The local pending marker survives a reload;
+ * each new dashboard load gets a bounded, capped-backoff attempt to make that marker durable.
  */
 export function consumeGuidedTour(
   persist: Persist = updateUiConfig,
   scheduleRetry: Schedule = setTimeout,
+  retry = 0,
 ): void {
+  if (retry === 0) markGuidedTourConsumptionPending();
   void persist({ guidedTour: false }).then(
     (saved) => {
-      if (!saved) scheduleRetry(() => consumeGuidedTour(persist, scheduleRetry), GUIDED_TOUR_PERSIST_RETRY_MS);
+      if (saved) {
+        clearGuidedTourConsumptionPending();
+      } else {
+        retryGuidedTourConsumption(persist, scheduleRetry, retry);
+      }
     },
-    () => scheduleRetry(() => consumeGuidedTour(persist, scheduleRetry), GUIDED_TOUR_PERSIST_RETRY_MS),
+    () => retryGuidedTourConsumption(persist, scheduleRetry, retry),
   );
+}
+
+function retryGuidedTourConsumption(persist: Persist, scheduleRetry: Schedule, retry: number): void {
+  if (retry >= GUIDED_TOUR_PERSIST_MAX_RETRIES) return;
+  const delay = Math.min(
+    GUIDED_TOUR_PERSIST_RETRY_MS * (2 ** retry),
+    GUIDED_TOUR_PERSIST_MAX_RETRY_MS,
+  );
+  scheduleRetry(() => consumeGuidedTour(persist, scheduleRetry, retry + 1), delay);
 }
 
 /**
@@ -40,7 +71,11 @@ export function useGuidedTour(): [enabled: boolean, hydrated: boolean, consume: 
   const persisted = useUiConfig().guidedTour;
   const hydrated = useUiConfigHydrated();
   const consumedThisSession = useRef(false);
-  const enabled = canStartGuidedTour(persisted, consumedThisSession.current);
+  const pendingConsumption = pendingGuidedTourConsumption();
+  const enabled = canStartGuidedTour(persisted, consumedThisSession.current || pendingConsumption);
+  useEffect(() => {
+    if (hydrated && pendingConsumption) consumeGuidedTour();
+  }, [hydrated, pendingConsumption]);
   const consume = useCallback(() => {
     consumedThisSession.current = true;
     consumeGuidedTour();

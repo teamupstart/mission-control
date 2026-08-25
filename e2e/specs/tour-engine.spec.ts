@@ -65,6 +65,29 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   await expectToursCleaned(daemon);
 });
 
+test("a rejected tour-consumption write stays consumed after reload", async ({ page, daemon }) => {
+  let rejectedWrites = 0;
+  await page.route("**/api/ui/config", async (route) => {
+    if (route.request().method() === "PUT") {
+      rejectedWrites += 1;
+      await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+      return;
+    }
+    await route.continue();
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const first = step(page, "Fleet and the Line");
+  await expect(first).toBeVisible();
+  await expect.poll(() => rejectedWrites).toBeGreaterThan(0);
+  await first.getByRole("button", { name: "Exit tour" }).click();
+  await expect(first).toBeHidden({ timeout: 30_000 });
+  await expectToursCleaned(daemon);
+
+  await page.reload();
+  await expect(step(page, "Fleet and the Line")).toBeHidden();
+});
+
 /**
  * Every temporary task the tour created is closed with its own fixed outcome.
  *

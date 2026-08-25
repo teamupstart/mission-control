@@ -38,6 +38,7 @@ test("an unset key reads as the shipped defaults", () => {
   assert.deepEqual(config.keybindings, {});
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
+  assert.equal(config.guidedTour, true);
 });
 
 test("the guided dispatch default and an explicit off preference both round-trip", () => {

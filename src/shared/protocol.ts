@@ -2790,6 +2790,9 @@ export const UI_CONFIG_DEFAULTS = {
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
+  // A fresh profile begins with the product orientation. The dashboard clears this after
+  // it launches the tour, so this is an onboarding default rather than a recurring modal.
+  guidedTour: true,
   trustStaged: [],
   /**
    * NOT empty, and this is the one place the reason is written down.
@@ -2851,6 +2854,12 @@ export const UiConfigSchema = z.object({
    * instead of inheriting this product default.
    */
   guidedDispatch: z.boolean().default(UI_CONFIG_DEFAULTS.guidedDispatch),
+  /**
+   * Whether the dashboard should launch the See the work orientation on its next settled
+   * startup. It is consumed when the tour starts; manual tour entry points always remain
+   * available afterwards.
+   */
+  guidedTour: z.boolean().default(UI_CONFIG_DEFAULTS.guidedTour),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *

@@ -33,6 +33,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
+  assert.equal(config.guidedTour, true);
   // NOT empty. The shipped default is "the card the previous release drew", and `worktree`
   // is the one registry item no card drew before - so it ships hidden and an upgrade moves
   // nothing on screen. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
@@ -48,6 +49,7 @@ test("a written cache round-trips", () => {
     richText: false,
     keybindingHints: false,
     guidedDispatch: false,
+    guidedTour: false,
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
   });
@@ -59,6 +61,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.richText, false);
   assert.equal(config.keybindingHints, false);
   assert.equal(config.guidedDispatch, false);
+  assert.equal(config.guidedTour, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
 });

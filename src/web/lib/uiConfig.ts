@@ -25,6 +25,7 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
 let current: UiConfig = readCache();
 const listeners = new Set<() => void>();
+let hydrated = false;
 
 function emit(): void {
   for (const l of listeners) l();
@@ -52,19 +53,24 @@ export function uiConfig(): UiConfig {
  * operator's settings rather than the shipped defaults.
  */
 export async function hydrateUiConfig(): Promise<void> {
-  const view = await fetchUiConfig();
-  if (!view) return; // daemon unreachable - the cache stands
-  if (!view.configured) {
-    // Nothing has ever been saved, so anything this origin still holds under an older
-    // product name is worth rescuing. Only here: once the daemon has a config, it wins,
-    // and a stray from a rename two generations back must never overwrite it.
-    const legacy = readLegacySettings();
-    if (legacy) {
-      await updateUiConfig(legacy);
-      return;
+  try {
+    const view = await fetchUiConfig();
+    if (!view) return; // daemon unreachable - the cache stands
+    if (!view.configured) {
+      // Nothing has ever been saved, so anything this origin still holds under an older
+      // product name is worth rescuing. Only here: once the daemon has a config, it wins,
+      // and a stray from a rename two generations back must never overwrite it.
+      const legacy = readLegacySettings();
+      if (legacy) {
+        await updateUiConfig(legacy);
+        return;
+      }
     }
+    commit(view.config);
+  } finally {
+    hydrated = true;
+    emit();
   }
-  commit(view.config);
 }
 
 /**
@@ -95,7 +101,16 @@ function getSnapshot(): UiConfig {
   return current;
 }
 
+function getHydrationSnapshot(): boolean {
+  return hydrated;
+}
+
 /** Live view of the whole config; re-renders on any change from any surface. */
 export function useUiConfig(): UiConfig {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/** True once the daemon-backed preferences have settled, even when the daemon is unavailable. */
+export function useUiConfigHydrated(): boolean {
+  return useSyncExternalStore(subscribe, getHydrationSnapshot, getHydrationSnapshot);
 }

@@ -23,14 +23,29 @@ export const test = base.extend<{
    * background work the other fifty pay for.
    */
   daemonEnv: Record<string, string>;
+  /**
+   * Leave the product's automatic tour default intact for a fresh-profile assertion.
+   * Ordinary browser specs turn it off before any page can load, so their setup does not
+   * become a test of onboarding.
+   */
+  guidedTour: boolean;
   daemon: DaemonHandle;
   dashboard: Page;
 }>({
   daemonEnv: [{}, { option: true }],
+  guidedTour: [false, { option: true }],
 
-  daemon: async ({ daemonEnv }, use) => {
+  daemon: async ({ daemonEnv, guidedTour }, use) => {
     const daemon = await startDaemon(daemonEnv);
     try {
+      if (!guidedTour) {
+        const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ guidedTour: false }),
+        });
+        if (!pinned.ok) throw new Error("the daemon should accept the guided-tour pin");
+      }
       await use(daemon);
     } finally {
       await daemon.stop();
@@ -45,7 +60,8 @@ export const test = base.extend<{
    * profile - or a second test in the same context - would open the modal pointed at a repo
    * this daemon has never heard of.
    *
-   * `guidedDispatch` is then pinned OFF and `conversationView` to Chat, explicitly, and
+   * `guidedDispatch` and the one-time `guidedTour` are then pinned OFF, and
+   * `conversationView` to Chat, explicitly, and
    * neither is the same statement as "it ships that way". Roughly fifty specs drive the
    * dispatch modal, and every one of them
    * expects the ordinary form with the caret in the task box; the preference decides which
@@ -62,18 +78,22 @@ export const test = base.extend<{
    * fetch has landed - and the first paint is early enough for a modal to be opened in it.
    */
   dashboard: async ({ page, daemon }, use) => {
-    await page.goto(`${daemon.baseURL}/#/fleet`);
-    await page.evaluate(() => window.localStorage.clear());
     const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ guidedDispatch: false, conversationView: "chat" }),
+      body: JSON.stringify({
+        guidedDispatch: false,
+        guidedTour: false,
+        conversationView: "chat",
+      }),
     });
-    expect(pinned.ok, "the daemon should accept the guided-dispatch pin").toBe(true);
+    expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
+    await page.goto(`${daemon.baseURL}/#/fleet`);
+    await page.evaluate(() => window.localStorage.clear());
     await page.evaluate(() =>
       window.localStorage.setItem(
         "mission-control.ui",
-        JSON.stringify({ guidedDispatch: false, conversationView: "chat" }),
+        JSON.stringify({ guidedDispatch: false, guidedTour: false, conversationView: "chat" }),
       ),
     );
     await page.reload();

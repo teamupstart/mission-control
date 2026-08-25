@@ -280,7 +280,6 @@ export function FileEditor({
   path,
   value,
   readOnly,
-  wrap = false,
   lineSeparator,
   comments,
   scrollTo = null,
@@ -290,15 +289,6 @@ export function FileEditor({
   path: string;
   value: string;
   readOnly: boolean;
-  /**
-   * Wrap long lines instead of scrolling them sideways.
-   *
-   * Off for the Editor, where a horizontal scroll is the honest rendering of source and
-   * wrapping would misrepresent what the file says. On for the source column Comment mode
-   * puts beside a preview: it is half as wide, it is read-only, and it exists to be POINTED
-   * AT - a marker that has scrolled off the right edge is a marker nobody can click.
-   */
-  wrap?: boolean;
   /** Preserve a caller's exact newline convention when CodeMirror serializes an edit. */
   lineSeparator?: "\n" | "\r\n" | "\r";
   /** Line-comment markers and the open panel. Absent when nothing has comments to draw. */
@@ -311,7 +301,7 @@ export function FileEditor({
    * after the reader scrolled away - and a bare `line` prop would fire only on a change.
    *
    * Fire-once and derived-on-demand, like everything else positional here: the view is
-   * destroyed outright on a `path`, `readOnly` or `wrap` change, so this must not remember a
+   * destroyed outright on a `path` or `readOnly` change, so this must not remember a
    * position. It reads the line off `state.doc` at the moment it runs.
    */
   scrollTo?: { line: number; nonce: number } | null;
@@ -372,7 +362,6 @@ export function FileEditor({
           syntaxHighlighting(missionHighlight),
           language.of([]),
           editable.of(EditorView.editable.of(!readOnly)),
-          ...(wrap ? [EditorView.lineWrapping] : []),
           EditorView.contentAttributes.of({ spellcheck: "false", "aria-label": `Editor for ${path}` }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !syncing.current) {
@@ -424,7 +413,7 @@ export function FileEditor({
       editor.destroy();
       view.current = null;
     };
-  }, [lineSeparator, path, readOnly, wrap]);
+  }, [lineSeparator, path, readOnly]);
 
   useEffect(() => {
     const editor = view.current;

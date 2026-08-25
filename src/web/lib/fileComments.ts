@@ -124,6 +124,26 @@ export function threadsByLine(
   return byLine;
 }
 
+/**
+ * What a rendered preview says when the block pointed at already carries a comment.
+ *
+ * A rendered document does not open existing comments: the review queue is the one place a
+ * comment this session already holds is read from, because it is the one surface that can
+ * list every comment in every file - and an HTML preview is an opaque sandbox with no way to
+ * mark which of its blocks have been commented on, so a reader clicking blocks to hunt for
+ * one would be guessing.
+ *
+ * A refusal rather than silence, and it names where the comment IS. Doing nothing here is the
+ * failure this whole surface exists to avoid; opening a second composer on a block that
+ * already has one would file a duplicate.
+ *
+ * Every status this can be reached with is in the queue or has a review behind it - a `draft`
+ * is not, and is deliberately not routed here: it has never been submitted, the queue cannot
+ * list it, and it is not an existing comment but this composer, unfinished.
+ */
+export const PREVIEW_EXISTING_COMMENT_NOTICE =
+  "This block already has a comment. Open the Review queue to read it.";
+
 /** How a thread's state reads on a marker and in a thread header. */
 export function threadStateLabel(thread: FileCommentThread): string {
   if (thread.outdated) return "moved";

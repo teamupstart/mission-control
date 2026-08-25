@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Implementation plan for default-on, dispatch-optional Mission Control skills">
+  <title>Default-on, dispatch-optional skills</title>
+  <style>
+:root {
+  color-scheme: light;
+  --canvas: #e9edf0;
+  --paper: #fbfcfd;
+  --ink: #17242b;
+  --muted: #65727a;
+  --line: #c5ced3;
+  --navy: #193f52;
+  --blue: #2f718d;
+  --aqua: #75bcb7;
+  --amber: #b9752d;
+  --amber-soft: #f5e6cf;
+  --green-soft: #deeee6;
+  --red-soft: #f1dcda;
+  --code: #122831;
+  --shadow: 0 22px 64px rgba(20, 47, 60, .14);
+  --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 8% 3%, rgba(117,188,183,.22), transparent 24rem),
+    linear-gradient(rgba(47,113,141,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47,113,141,.045) 1px, transparent 1px),
+    var(--canvas);
+  background-size: auto, 28px 28px, 28px 28px, auto;
+  font: 16px/1.66 var(--body);
+}
+a { color: var(--blue); text-underline-offset: .2em; }
+a:hover { color: var(--amber); }
+a:focus-visible { outline: 3px solid var(--aqua); outline-offset: 4px; }
+code, pre, th, .eyebrow, .rail strong { font-family: var(--mono); }
+.shell {
+  width: min(1460px, calc(100% - 32px));
+  margin: 24px auto 72px;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.rail {
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 22px 18px 24px;
+  color: #edf7f8;
+  background: var(--navy);
+  border-top: 5px solid var(--aqua);
+  box-shadow: var(--shadow);
+}
+.rail strong {
+  display: block;
+  margin-bottom: 16px;
+  color: #9ed7d2;
+  font-size: .74rem;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.rail nav { display: grid; gap: 3px; }
+.rail a {
+  padding: 6px 9px;
+  color: #dce9ed;
+  border-left: 2px solid transparent;
+  text-decoration: none;
+  font-size: .84rem;
+  line-height: 1.28;
+}
+.rail a:hover { color: white; border-left-color: var(--amber); }
+article {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 clamp(24px, 6vw, 82px) 84px;
+  background: var(--paper);
+  border-top: 5px solid var(--blue);
+  box-shadow: var(--shadow);
+}
+article > h1 {
+  margin: 0 calc(-1 * clamp(24px, 6vw, 82px)) 42px;
+  padding: clamp(56px, 8vw, 108px) clamp(24px, 7vw, 94px) 72px;
+  color: #f3fafb;
+  background:
+    radial-gradient(circle at 90% 120%, rgba(117,188,183,.24) 0 220px, transparent 222px),
+    repeating-linear-gradient(135deg, transparent 0 58px, rgba(255,255,255,.045) 59px 60px),
+    var(--navy);
+  font: 600 clamp(3.2rem, 8vw, 7rem)/.9 var(--display);
+  letter-spacing: -.055em;
+}
+h2, h3, h4 { scroll-margin-top: 28px; font-family: var(--display); }
+h2 {
+  margin: 76px 0 18px;
+  color: var(--navy);
+  font-size: clamp(2rem, 4vw, 3.15rem);
+  line-height: 1.03;
+  letter-spacing: -.035em;
+}
+h3 { margin: 38px 0 12px; font-size: 1.55rem; line-height: 1.2; }
+h4 { margin: 28px 0 8px; font-size: 1.2rem; }
+p, li { max-width: 84ch; }
+article > p:first-of-type {
+  max-width: 70ch;
+  margin: -16px 0 36px;
+  padding: 18px 22px;
+  color: #6c470e;
+  background: var(--amber-soft);
+  border-left: 5px solid var(--amber);
+}
+ul, ol { padding-left: 1.4rem; }
+li + li { margin-top: 7px; }
+table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  border: 1px solid var(--line);
+}
+thead, tbody { min-width: 820px; }
+tr { border-bottom: 1px solid var(--line); }
+th, td { padding: 13px 14px; text-align: left; vertical-align: top; }
+th {
+  color: var(--navy);
+  background: #e5eef2;
+  font-size: .75rem;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+td { min-width: 170px; }
+code {
+  padding: .08em .28em;
+  background: rgba(47,113,141,.09);
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+pre {
+  max-width: 100%;
+  overflow: auto;
+  padding: 19px 21px;
+  color: #eef8f9;
+  background: var(--code);
+  border-left: 5px solid var(--aqua);
+}
+pre code { padding: 0; color: inherit; background: transparent; }
+blockquote {
+  margin: 26px 0;
+  padding: 4px 20px;
+  color: var(--muted);
+  border-left: 4px solid var(--aqua);
+}
+.flow {
+  max-width: 100%;
+  margin: 30px 0;
+  padding: 18px;
+  overflow-x: auto;
+  background: #e6eef1;
+  border: 1px solid var(--line);
+}
+.flow svg { display: block; width: 100%; min-width: 980px; height: auto; }
+.flow text { font-family: var(--mono); fill: var(--ink); font-size: 14px; }
+.flow .small { fill: var(--muted); font-size: 12px; }
+.flow .flow-title { fill: var(--navy); font-weight: 800; font-size: 16px; letter-spacing: 2px; }
+.flow .box { fill: #fbfcfd; stroke: #2f718d; stroke-width: 2; }
+.flow .bad { fill: #f1dcda; stroke: #a44e47; stroke-width: 2; }
+.flow .good { fill: #deeee6; stroke: #39745e; stroke-width: 2; }
+.flow .choice { fill: #f5e6cf; stroke: #b9752d; stroke-width: 2; }
+.flow .arrow { fill: none; stroke: #6a746f; stroke-width: 2.2; marker-end: url(#plan-arrow); }
+.flow .optional { fill: none; stroke: #9a6b32; stroke-width: 2; stroke-dasharray: 6 5; marker-end: url(#plan-dash-arrow); }
+.flow .optional-label { fill: #8a5a27; font-size: 11px; }
+.flow .divider { stroke: var(--line); stroke-width: 2; stroke-dasharray: 5 5; }
+@media (max-width: 940px) {
+  .shell { display: block; width: min(100% - 20px, 940px); margin-top: 10px; }
+  .rail { position: static; max-height: none; margin-bottom: 18px; }
+  .rail nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .rail nav { grid-template-columns: 1fr; }
+  article > h1 { font-size: 3rem; }
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --canvas: #0d1519;
+    --paper: #151f24;
+    --ink: #e8eef1;
+    --muted: #acb9bf;
+    --line: #3a4a52;
+    --navy: #102e3a;
+    --blue: #8ec7dd;
+    --amber-soft: #46331f;
+    --green-soft: #203a30;
+    --red-soft: #452a29;
+    --code: #09161b;
+    --shadow: 0 22px 64px rgba(0,0,0,.4);
+  }
+  h2, th { color: #a8d4e4; }
+  th { background: #22323a; }
+  code { background: rgba(142,199,221,.11); }
+  article > p:first-of-type { color: #f2cea0; }
+  .flow { background: #1a292f; }
+  .flow .box { fill: #1b292f; stroke: #8ec7dd; }
+  .flow .bad { fill: #452a29; stroke: #dc837b; }
+  .flow .good { fill: #203a30; stroke: #83c4a7; }
+  .flow .choice { fill: #46331f; stroke: #d9a164; }
+  .flow text { fill: #e8eef1; }
+  .flow .small { fill: #acb9bf; }
+  .flow .flow-title { fill: #a8d4e4; }
+  .flow .optional-label { fill: #d9a164; }
+}</style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="Plan contents">
+      <strong>Plan review</strong>
+      <nav>
+        <a href="#status">Status</a>
+        <a href="#outcome">Outcome</a>
+        <a href="#verified-current-behavior">Current behavior</a>
+        <a href="#product-rules">Product rules</a>
+        <a href="#proposed-design">Proposed design</a>
+        <a href="#flow-change">Flow change</a>
+        <a href="#edge-case-contract">Edge cases</a>
+        <a href="#tests-and-verification">Verification</a>
+        <a href="#non-goals">Non-goals</a>
+        <a href="#approved-decisions">Approved decisions</a>
+        <a href="#completion-criteria">Completion criteria</a>
+      </nav>
+    </aside>
+    <article><h1>Default-on, dispatch-optional skills</h1>
+<h2 id="status">Status</h2>
+<p>Approved on 2026-08-24. This document plans the change and does not implement it. The operator chose to stop after the approved plan, so no phased implementation plan or task was created.</p>
+<h2 id="outcome">Outcome</h2>
+<p>Mission Control starts a truly unconfigured installation with every valid shipped skill enabled across every harness that declares a native skills directory. The first Plan or Scout dispatch therefore needs no Settings detour.</p>
+<p>Skills remain optional guidance. No task kind is allowed to depend on a native skill being enabled, linked, reload-acknowledged, or even present in the packaged catalog. Scout already satisfies this rule. Plan adopts a self-contained task contract with the same independence while retaining its Mission MCP requirements for interactive review and phase task creation.</p>
+<p>An operator can still turn the master switch off or disable individual skills. Those opt-outs remain durable across restarts, updates, catalog growth, and settings backup or restore.</p>
+<h2 id="verified-current-behavior">Verified current behavior</h2>
+<p>The repository investigation established these facts:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Current behavior</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fresh Skills config</td>
+<td>A missing <code>app_config.skills</code> row parses as <code>enabled: false</code>, <code>skills: {}</code>.</td>
+<td><a href="../../../src/shared/protocol.ts"><code>src/shared/protocol.ts:2032</code></a>, <a href="../../../src/server/skills/config.ts"><code>src/server/skills/config.ts:20</code></a></td>
+</tr>
+<tr>
+<td>Installation timing</td>
+<td>The app package includes <code>skills/**/*</code> as plain files. The daemon first reconciles links after opening SQLite; the installer does not seed Skills settings.</td>
+<td><a href="../../../electron-builder.yml"><code>electron-builder.yml:21</code></a>, <a href="../../../src/server/index.ts"><code>src/server/index.ts:96</code></a></td>
+</tr>
+<tr>
+<td>Native destinations</td>
+<td>The reconciler targets Claude, Codex, and Pi through harness declarations, using only <code>mission-</code> and legacy <code>fleet-</code> symlinks it owns.</td>
+<td><a href="../../../src/shared/harness-capabilities.ts"><code>src/shared/harness-capabilities.ts:458</code></a>, <a href="../../../src/server/skills/reconcile.ts"><code>src/server/skills/reconcile.ts:296</code></a></td>
+</tr>
+<tr>
+<td>Catalog</td>
+<td>Five skills ship: HTML Plans, HTML Report, Phased Plan, Pull Request, and Retro.</td>
+<td><a href="../../../skills"><code>skills/</code></a></td>
+</tr>
+<tr>
+<td>Scout delivery</td>
+<td>Scout embeds its report contract in the delivered prompt and is tested with Skills globally off. It does not require HTML Report.</td>
+<td><a href="../../../src/server/scouts/prompt.ts"><code>src/server/scouts/prompt.ts:10</code></a>, <a href="../../../e2e/specs/scout-archive.spec.ts"><code>e2e/specs/scout-archive.spec.ts:86</code></a></td>
+</tr>
+<tr>
+<td>Plan delivery</td>
+<td>Plan points at HTML Plans and Phased Plan. The route, backlog launch, dispatcher, and live-session assignment refuse when those skills cannot be invoked.</td>
+<td><a href="../../../src/server/plans/prompt.ts"><code>src/server/plans/prompt.ts:8</code></a>, <a href="../../../src/server/plans/skills.ts"><code>src/server/plans/skills.ts:14</code></a>, <a href="../../../src/server/tasks.ts"><code>src/server/tasks.ts:2296</code></a></td>
+</tr>
+<tr>
+<td>Other skill gates</td>
+<td>Pull Request and Retro use the separate Session Action <code>requiredSkillId</code> contract. They gate an explicit action or retro follow-up rather than a general task kind.</td>
+<td><a href="../../../src/server/workflows/builtin-session-actions.ts"><code>src/server/workflows/builtin-session-actions.ts:30</code></a>, <a href="../../../src/server/retro.ts"><code>src/server/retro.ts:390</code></a></td>
+</tr>
+<tr>
+<td>Tool requirements</td>
+<td>Scout still requires <code>submit_scout_artifacts</code>; Plan still requires <code>request_plan_decisions</code> and <code>create_task</code>. These are verified Mission MCP capabilities, not native skills.</td>
+<td><a href="../../../src/server/mission-mcp.ts"><code>src/server/mission-mcp.ts:97</code></a></td>
+</tr>
+</tbody></table>
+<h2 id="product-rules">Product rules</h2>
+<ol>
+<li>A native skill can improve how an agent performs relevant work, but no ordinary task kind can make installation of that skill a launch condition.</li>
+<li>The shipped default is opt-out: a new Skills configuration has the master switch on and treats valid catalog rows as enabled.</li>
+<li>A stored operator choice always wins over a later default. Explicit master-off and per-skill-off states are never reset by app startup or update.</li>
+<li>Default initialization occurs in the daemon, which owns SQLite and link reconciliation. The packaging or installer layer remains a file-delivery mechanism only.</li>
+<li>Mission MCP requirements remain fail-closed. Removing a native-skill dependency must not let a Plan launch without its human decision channel or let a Scout launch without report submission.</li>
+<li>The skills catalog remains machine-wide. Default-on reaches native harness sessions the app did not launch, so Settings and documentation continue to state that blast radius plainly.</li>
+</ol>
+<h2 id="proposed-design">Proposed design</h2>
+<h3>1. Represent a durable catalog default separately from row overrides</h3>
+<p><code>SkillsConfigSchema</code> gains a setting such as <code>defaultSkillEnabled</code>.</p>
+<ul>
+<li>Existing stored configurations parse the new field as <code>false</code>. This preserves the old sparse-map meaning on upgrade: ids absent from an old map stay off.</li>
+<li>A truly unconfigured installation is initialized with <code>enabled: true</code>, <code>defaultSkillEnabled: true</code>, and an empty override map.</li>
+<li>A row resolves through one shared helper: an explicit boolean in <code>skills[id]</code> wins, otherwise the catalog default applies.</li>
+<li>Turning a default-on row off stores <code>false</code>; turning it back on may store <code>true</code> or remove the override if the patch contract gains an explicit reset operation. The implementation should choose one canonical representation and test concurrent dashboard patches against it.</li>
+<li>The master switch remains independent. Turning it off removes all owned links but keeps the catalog default and row overrides, so turning it back on restores the same selection.</li>
+</ul>
+<p>This field avoids two unsafe shortcuts. Changing only the schema master default would still enable no rows. Treating every missing map key as on would reinterpret existing sparse maps and automatically install skills after a corrupt config was mistaken for a missing one.</p>
+<h3>2. Initialize only a truly absent Skills record</h3>
+<p>A Skills-owned read path distinguishes:</p>
+<ul>
+<li>no <code>app_config.skills</code> row;</li>
+<li>a present, valid row;</li>
+<li>a present row with invalid JSON or invalid schema.</li>
+</ul>
+<p>Only the first state receives the new default. The second is preserved exactly. The third fails closed, installs nothing new, and produces a bounded Settings problem instead of being treated as a fresh install.</p>
+<p>Initialization runs at daemon startup before ordinary <code>reconcileSkills()</code>:</p>
+<ol>
+<li>The read path detects a truly absent row.</li>
+<li>The Skills config owner persists the default intent; installer code and direct route-shaped writes do not.</li>
+<li>Reconciliation links the valid parsed catalog into every distinct declared harness directory.</li>
+<li>The generation watermark moves only when the filesystem actually moves.</li>
+<li>The current safe crash direction remains: if intent is persisted before all links exist, the next startup heals the disk from that intent.</li>
+</ol>
+<p>An unreadable catalog must never be treated as empty. A malformed new entry is not auto-linked merely because its directory exists. Explicitly enabled legacy entries remain protected from accidental unlinking when the narrow catalog parser cannot read their frontmatter.</p>
+<h3>3. Make effective state the reconciler&#39;s single source of truth</h3>
+<p>Every current explicit-<code>true</code> scan resolves through the same effective selection for these consumers:</p>
+<ul>
+<li><code>desiredSkillIds</code>;</li>
+<li>preflight blockers and patch refusal scoping;</li>
+<li>startup reconciliation;</li>
+<li>drift reporting;</li>
+<li><code>/api/skills</code> row projection;</li>
+<li>master-toggle touched ids;</li>
+<li>reload generation changes;</li>
+<li>Settings backup capture and restore.</li>
+</ul>
+<p>The effective set must be catalog-aware. For an id with no override, the default applies only to a successfully parsed catalog entry. For an explicit historical <code>true</code>, the existing <code>catalog.present</code> protection continues to prevent a parser limitation from uninstalling a working native skill.</p>
+<p>New catalog fields join the automatic settings backup registry. An older snapshot with no catalog-default field restores the legacy <code>false</code> meaning. Derived <code>generation</code> and <code>generationAt</code> remain outside logical setting payloads.</p>
+<h3>4. Replace Plan&#39;s skill pointer with a self-contained task contract</h3>
+<p><code>planContractAppendix</code> carries the minimum complete procedure a Plan task follows regardless of Skills settings:</p>
+<ul>
+<li>this is planning work, not implementation;</li>
+<li>the Markdown source belongs at <code>docs/plans/&lt;name&gt;/plan.md</code> and a self-contained offline <code>plan.html</code> belongs beside it;</li>
+<li>the rendered page is opened or surfaced for human review;</li>
+<li>flow changes between major components are represented in the source and rendered as inline SVG in the page;</li>
+<li>every plan review calls <code>request_plan_decisions</code>, with all open choices and the phased implementation follow-up last;</li>
+<li>submitted choices are resolved into the source and the page is regenerated;</li>
+<li>if phasing is selected, repository-compatible phase files and a phased index are written beside the plan, published, and scheduled through <code>create_task</code> with direct dependencies and <code>dependsOnCurrentSession: true</code>;</li>
+<li>a dismissal stops the workflow;</li>
+<li>the plan files land through the ordinary pull-request path so task pointers can resolve on the default branch.</li>
+</ul>
+<p>The appendix stays compact and aligns its required paths, tools, decision ids, offline rendering properties, publication gate, and scheduling dependencies with the two planning skills in tests. This follows the existing Scout pattern: one task-kind contract owns what must happen, while an enabled native skill remains richer optional guidance.</p>
+<p>No skill command is conditionally injected. When skills are enabled, each harness&#39;s native loader already exposes their trigger descriptions to the model. Plan delivery remains sufficient when the catalog is disabled, missing, malformed, drifted, or awaiting a live reload.</p>
+<h3>5. Remove Plan-only skill gates from every delivery seam</h3>
+<p>The plan-specific requirement owner and its plumbing are removed:</p>
+<ul>
+<li><code>src/server/plans/skills.ts</code> is deleted;</li>
+<li>the manual dispatch route preflight is removed;</li>
+<li>the backlog dispatch preflight is removed;</li>
+<li>dispatcher launch resolution and its injected test seam are removed;</li>
+<li>live-session assignment resolution and reload-watermark refusal are removed;</li>
+<li><code>PlanSkillInvocations</code>, Plan skill ids, and <code>TaskContractInputs.planSkills</code> are removed;</li>
+<li><code>withTaskKindContract</code> composes a Plan contract without extra inputs.</li>
+</ul>
+<p>The plan kind continues to contribute <code>request_plan_decisions</code> and <code>create_task</code> through <code>kindMissionMcpRequirement</code>. The existing bundle handshake still refuses a missing or stale Mission MCP implementation before an agent spawns.</p>
+<h3>6. Preserve explicit Session Action skill gates</h3>
+<p><code>requiredSkillId</code> remains for explicit Session Actions and the built-in Pull Request and Retro actions. Those are separately authored procedure contracts with separate completion proofs, not ordinary task-kind dispatch requirements. Removing them would require making each action self-contained, changing workflow snapshots, retro runner selection, Library authoring, and action delivery failure states. That broader redesign is outside this plan.</p>
+<h3>7. Update the product surface and documentation</h3>
+<p>Skills Settings copy states that shipped catalog skills start enabled, remain machine-wide, and can be disabled globally or by row. The API already supplies row state; the panel renders every row checked on a fresh daemon without inventing client defaults.</p>
+<p>Documentation updates cover at least:</p>
+<ul>
+<li><code>README.md</code>;</li>
+<li><code>docs/skills-and-settings.md</code>;</li>
+<li><code>docs/dispatch-and-backlog.md</code>;</li>
+<li>configuration and backup documentation if the persisted setting shape changes.</li>
+</ul>
+<p>The current statements that Skills are opt-in and that Plan requires HTML Plans and Phased Plan are removed. The distinction between optional native skills and required Mission MCP tools remains.</p>
+<h2 id="flow-change">Flow change</h2>
+<p>Today, installation leaves the catalog inactive. Scout carries its own contract, while Plan must resolve two native skills before it can launch. After the change, startup creates a durable default-on intent only for an unconfigured Skills record. Both Scout and Plan carry self-contained contracts; enabled skills sit beside those contracts as optional guidance.</p>
+<div class="flow" role="img" aria-label="Before and after skill installation and task dispatch flow">
+<svg viewBox="0 0 1260 620" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="plan-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6a746f"/></marker>
+    <marker id="plan-dash-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9a6b32"/></marker>
+  </defs>
+  <text x="24" y="34" class="flow-title">BEFORE</text>
+  <rect class="box" x="24" y="60" width="220" height="72" rx="9"/><text x="134" y="89" text-anchor="middle">Packaged catalog</text><text x="134" y="111" text-anchor="middle" class="small">five native skills</text>
+  <path class="arrow" d="M244 96 H302"/>
+  <rect class="bad" x="302" y="60" width="238" height="72" rx="9"/><text x="421" y="89" text-anchor="middle">Missing config</text><text x="421" y="111" text-anchor="middle" class="small">master off, empty map</text>
+  <path class="arrow" d="M540 96 H598"/>
+  <rect class="bad" x="598" y="60" width="220" height="72" rx="9"/><text x="708" y="89" text-anchor="middle">No links</text><text x="708" y="111" text-anchor="middle" class="small">all harness dirs empty</text>
+  <rect class="box" x="24" y="176" width="220" height="72" rx="9"/><text x="134" y="205" text-anchor="middle">Scout dispatch</text><text x="134" y="227" text-anchor="middle" class="small">self-contained contract</text>
+  <path class="arrow" d="M244 212 H302"/>
+  <rect class="good" x="302" y="176" width="238" height="72" rx="9"/><text x="421" y="205" text-anchor="middle">Runs with skills off</text><text x="421" y="227" text-anchor="middle" class="small">report tool still required</text>
+  <rect class="box" x="24" y="276" width="220" height="72" rx="9"/><text x="134" y="305" text-anchor="middle">Plan dispatch</text><text x="134" y="327" text-anchor="middle" class="small">skill-pointer contract</text>
+  <path class="arrow" d="M244 312 H302"/>
+  <rect class="bad" x="302" y="276" width="238" height="72" rx="9"/><text x="421" y="305" text-anchor="middle">Skill preflight</text><text x="421" y="327" text-anchor="middle" class="small">route, launch, assignment</text>
+  <path class="arrow" d="M540 312 H598"/>
+  <rect class="bad" x="598" y="276" width="220" height="72" rx="9"/><text x="708" y="305" text-anchor="middle">Refused</text><text x="708" y="327" text-anchor="middle" class="small">if either skill is absent</text>
+  <line x1="24" y1="390" x2="1236" y2="390" class="divider"/>
+  <text x="24" y="426" class="flow-title">AFTER</text>
+  <rect class="box" x="24" y="452" width="190" height="74" rx="9"/><text x="119" y="482" text-anchor="middle">Packaged catalog</text><text x="119" y="504" text-anchor="middle" class="small">valid entries</text>
+  <path class="arrow" d="M214 489 H264"/>
+  <rect class="choice" x="264" y="452" width="190" height="74" rx="9"/><text x="359" y="482" text-anchor="middle">Config exists?</text><text x="359" y="504" text-anchor="middle" class="small">absent vs stored</text>
+  <path class="arrow" d="M454 475 H504"/>
+  <path class="arrow" d="M454 505 H504"/>
+  <rect class="good" x="504" y="420" width="218" height="74" rx="9"/><text x="613" y="450" text-anchor="middle">Absent</text><text x="613" y="472" text-anchor="middle" class="small">persist default-on policy</text>
+  <rect class="box" x="504" y="514" width="218" height="74" rx="9"/><text x="613" y="544" text-anchor="middle">Stored</text><text x="613" y="566" text-anchor="middle" class="small">preserve choices</text>
+  <path class="arrow" d="M722 457 C770 457 770 488 820 488"/>
+  <path class="arrow" d="M722 551 C770 551 770 502 820 502"/>
+  <rect class="good" x="820" y="452" width="194" height="74" rx="9"/><text x="917" y="482" text-anchor="middle">Reconcile links</text><text x="917" y="504" text-anchor="middle" class="small">all harness dirs</text>
+  <rect class="box" x="24" y="552" width="250" height="50" rx="9"/><text x="149" y="583" text-anchor="middle">Scout or Plan dispatch</text>
+  <path class="arrow" d="M274 577 H326"/>
+  <rect class="good" x="326" y="552" width="250" height="50" rx="9"/><text x="451" y="583" text-anchor="middle">Self-contained contract</text>
+  <path class="arrow" d="M576 577 H628"/>
+  <rect class="choice" x="628" y="552" width="260" height="50" rx="9"/><text x="758" y="583" text-anchor="middle">Mission MCP preflight</text>
+  <path class="arrow" d="M888 577 H940"/>
+  <rect class="good" x="940" y="552" width="170" height="50" rx="9"/><text x="1025" y="583" text-anchor="middle">Run task</text>
+  <path class="optional" d="M917 526 C917 545 820 540 820 552"/>
+  <text x="927" y="544" class="optional-label">optional guidance</text>
+</svg>
+</div>
+<h2 id="edge-case-contract">Edge-case contract</h2>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Required result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Truly absent Skills row</td>
+<td>Initialize the approved default once, persist it, and reconcile all valid shipped skills.</td>
+</tr>
+<tr>
+<td>Existing stored master off</td>
+<td>Preserve off. Do not reinitialize on startup or update.</td>
+</tr>
+<tr>
+<td>Existing sparse legacy map</td>
+<td>Preserve absent ids as off through the legacy catalog-default value.</td>
+</tr>
+<tr>
+<td>Future valid catalog skill</td>
+<td>Follow the approved catalog-growth policy without rewriting explicit false overrides.</td>
+</tr>
+<tr>
+<td>Corrupt JSON or schema-invalid stored row</td>
+<td>Fail closed, do not treat it as fresh, and surface a bounded problem.</td>
+</tr>
+<tr>
+<td>Catalog directory unreadable</td>
+<td>Do not unlink live skills or finalize an empty default selection. Retry on later startup.</td>
+</tr>
+<tr>
+<td>New malformed <code>SKILL.md</code></td>
+<td>Report the catalog problem and do not auto-link that new entry.</td>
+</tr>
+<tr>
+<td>Previously explicit-on skill becomes unparsable</td>
+<td>Preserve its link while the directory still exists, matching current parse-failure safety.</td>
+</tr>
+<tr>
+<td>Skill removed from catalog</td>
+<td>Remove its owned link. Preserve explicit historical intent for a possible return; do not wedge the master switch.</td>
+</tr>
+<tr>
+<td>Foreign <code>mission-&lt;id&gt;</code> or <code>fleet-&lt;id&gt;</code> path</td>
+<td>Never replace or remove it. Report the exact path and keep the default intent recoverable.</td>
+</tr>
+<tr>
+<td>One destination is unwritable</td>
+<td>Preserve intent, report per-directory drift, and retry; do not claim every harness is current.</td>
+</tr>
+<tr>
+<td>Duplicate harness destinations</td>
+<td>Reconcile the physical directory once, as today.</td>
+</tr>
+<tr>
+<td>Existing live Claude or Pi session</td>
+<td>Keep generation and verified-idle reload rules; sessions started after the change owe no reload.</td>
+</tr>
+<tr>
+<td>Existing live Codex session</td>
+<td>Let its native directory watcher observe the links; do not count it as waiting for a typed reload.</td>
+</tr>
+<tr>
+<td>Isolated <code>MISSION_HOME</code>, test, or demo daemon</td>
+<td>Keep all destinations inside the isolated home and never touch the operator&#39;s real directories.</td>
+</tr>
+<tr>
+<td>Settings backup from an older build</td>
+<td>Restore legacy opt-in meaning unless the snapshot explicitly carries the new default-on field.</td>
+</tr>
+<tr>
+<td>Plan with master off or planning rows off</td>
+<td>Launch and deliver the complete Plan contract. Do not read Skills config during task-kind preflight.</td>
+</tr>
+<tr>
+<td>Plan with catalog missing or links drifted</td>
+<td>Launch under the same rule; optional skill availability cannot affect the task.</td>
+</tr>
+<tr>
+<td>Plan without Mission MCP tools</td>
+<td>Continue to refuse before spawn with the existing tool-specific reason.</td>
+</tr>
+<tr>
+<td>Scout with HTML Report off</td>
+<td>Continue to run and submit its report, preserving existing behavior.</td>
+</tr>
+<tr>
+<td>Pull Request or Retro action</td>
+<td>Follow the approved required-skill scope decision.</td>
+</tr>
+</tbody></table>
+<h2 id="tests-and-verification">Tests and verification</h2>
+<h3>Focused unit and contract coverage</h3>
+<ul>
+<li>Coverage in <code>test/skills-config.test.ts</code> proves a truly absent row initializes master-on, resolves every valid catalog row on, links every declared harness directory, and bumps the generation only for actual disk changes.</li>
+<li>Regression cases cover a stored explicit-off config, a sparse legacy config, future catalog growth, explicit false overrides, unreadable and malformed catalogs, foreign paths, partial I/O, corrupt stored config, idempotent restart, and restoration of master selection.</li>
+<li><code>test/skills-reconcile.test.ts</code> and <code>test/skills-multi-harness.test.ts</code> continue to cover real-directory guards, deduplicated destinations, prefix ownership, old-prefix cleanup, and isolated-home behavior.</li>
+<li>Backup coverage and restore tests include the new setting field and old-snapshot behavior.</li>
+<li><code>test/plan-prompt.test.ts</code> proves both delivery seams compose a self-contained contract without Skills inputs, the contract agrees with the optional skills on paths and tool ids, and no route, dispatcher, or task-manager plan skill gate remains.</li>
+<li>Mission MCP tests prove Plan still requires and pre-approves <code>request_plan_decisions</code> and <code>create_task</code>.</li>
+<li>Scout contract tests remain unchanged except where fresh default-on setup requires an explicit master-off fixture.</li>
+</ul>
+<h3>Browser coverage</h3>
+<p>Browser coverage conforms to the repository&#39;s E2E contract documented in <a href="../../../e2e/README.md"><code>e2e/README.md</code></a> and proves that:</p>
+<ol>
+<li>starts a fresh daemon and shows the Skills master plus all valid catalog rows checked in Settings;</li>
+<li>explicitly turns Skills off, dispatches a Plan through the real form, and observes the self-contained contract in the fake agent&#39;s conversation with no refusal;</li>
+<li>keeps the existing skills-off Scout report and archive proof;</li>
+<li>verifies a Plan still receives the interactive decision and scheduling tool names;</li>
+<li>verifies explicit operator opt-outs survive a daemon restart if the fixture supports restart without widening the test substantially.</li>
+</ol>
+<p>Every agent binary remains faked, selectors use roles, labels, or placeholders, and no <code>data-testid</code> is added.</p>
+<h3>Required commands</h3>
+<p>Verification comprises the focused files with the repository preload and the full gates because the change affects persisted settings, startup, dispatch, the browser, build artifacts, and package content:</p>
+<pre><code class="language-sh">node --test --import ./test/setup-state.mjs --import tsx test/skills-config.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/skills-reconcile.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/skills-multi-harness.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/plan-prompt.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/settings-backup-coverage.test.ts
+node --test --import ./test/setup-state.mjs --import tsx test/settings-restore.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npm run test:e2e
+</code></pre>
+<p>On macOS under the Codex seatbelt, Electron-bearing test commands require the repository&#39;s scoped outside-sandbox approval. Build precedes smoke and E2E.</p>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li>Native harness skill discovery and the single installation mechanism remain unchanged.</li>
+<li>Catalog files are not copied into user directories; owned symlinks and current prefix safety remain.</li>
+<li>The master switch and per-skill controls remain.</li>
+<li>Mission MCP bundle verification and task-kind tool requirements remain fail-closed.</li>
+<li>No route, warning, workflow default, or hidden installer precondition makes skills mandatory.</li>
+<li>The Scout archive contract, Plan archive capture, task completion boundaries, and phased task dependency semantics remain unchanged except where the self-contained Plan text describes existing behavior.</li>
+<li>Production, signing, release, and update infrastructure stay outside this work. The package already includes the catalog correctly.</li>
+</ul>
+<h2 id="approved-decisions">Approved decisions</h2>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Selection</th>
+<th>Consequence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Catalog growth</td>
+<td>Enable future skills by default.</td>
+<td>Default-on is a durable policy. A future valid catalog skill is enabled unless the operator explicitly opts it out.</td>
+</tr>
+<tr>
+<td>Existing unconfigured installations</td>
+<td>Enable on next start.</td>
+<td>A truly absent Skills row adopts the default on the next daemon start. Any stored choice is preserved.</td>
+</tr>
+<tr>
+<td>Required-skill scope</td>
+<td>Task kinds only.</td>
+<td>Plan and Scout remain independent of native skills. Explicit Pull Request, Retro, and user-authored Session Action gates remain.</td>
+</tr>
+<tr>
+<td>Implementation follow-up</td>
+<td>Stop after this plan.</td>
+<td>Do not invoke phased planning and do not create implementation tasks from this session.</td>
+</tr>
+</tbody></table>
+<h2 id="completion-criteria">Completion criteria</h2>
+<ul>
+<li>A fresh unconfigured daemon presents and installs every valid shipped skill as enabled across all declared harness destinations.</li>
+<li>Stored opt-outs and legacy sparse configurations are preserved across startup, update, and restore.</li>
+<li>A Plan and a Scout can launch with Skills globally off and complete their task-kind contracts without native skill installation.</li>
+<li>Plan still fails closed when its required Mission MCP tools are unavailable.</li>
+<li>All filesystem ownership, catalog-read safety, generation, reload, isolated-home, backup, documentation, and UI contracts above are covered and green.</li>
+</ul>
+
+</article>
+  </div>
+</body>
+</html>

@@ -39,6 +39,14 @@ import { createPortal } from "react-dom";
  * asserted by any test in `test/`. The hidden copy is what keeps "this control says what
  * it does" a checkable claim rather than a hope. The visible bubble is `aria-hidden`, so
  * the text is announced once, not twice.
+ *
+ * `label` also accepts `TooltipContent` - a laid-out node plus its own plain sentence - for
+ * the one case a string cannot serve: a popover with rows, such as the board card's pipeline
+ * phase meter. That is a WIDENING of this primitive rather than a second hover component,
+ * because everything above is what a second one would have had to reimplement, and because
+ * `test/tooltip-coverage.test.ts` deliberately leaves no escape hatch for a lookalike. The
+ * bubble is `pointer-events: none` either way, so a rich bubble cannot steal the hover from
+ * the trigger that opened it - which is also why its content must stay non-interactive.
  */
 
 type Placement = "above" | "below";
@@ -93,13 +101,38 @@ function describeLabelControls(children: ReactNode, id: string): ReactNode {
   });
 }
 
+/**
+ * Rich tooltip content: what the bubble paints, and the sentence a screen reader gets.
+ *
+ * Two fields rather than one because the label is rendered in two places that are different
+ * jobs (see the header): the bubble is already `aria-hidden`, so arbitrary nodes are safe
+ * there, while the `.tt-desc` node is what `aria-describedby` RESOLVES TO - and rendering
+ * markup into an accessible name is how a description becomes unreadable. So a caller that
+ * wants a laid-out popover supplies the plain sentence beside it rather than having one
+ * derived by stringifying its JSX.
+ */
+export interface TooltipContent {
+  content: ReactNode;
+  /** The accessible description. Plain text, because `aria-describedby` resolves to it. */
+  description: string;
+}
+
 export function Tooltip({
   label,
   children,
 }: {
-  label: string;
+  /**
+   * A string, which is what almost every call site passes, or rich content plus its own
+   * plain-text description. Additive: the string arm is unchanged in behaviour and in
+   * markup, so widening this cost no call site a migration.
+   */
+  label: string | TooltipContent;
   children: ReactElement;
 }): React.JSX.Element {
+  // Derived once, and named for the two jobs above rather than for their types.
+  const rich = typeof label !== "string";
+  const description = rich ? label.description : label;
+  const painted: ReactNode = rich ? label.content : label;
   const [tip, setTip] = useState<TipState | null>(null);
   const id = useId();
 
@@ -209,23 +242,26 @@ export function Tooltip({
       },
     } as Partial<typeof props>)
   );
-  const description = (
+  const describedBy = (
     <span id={id} className="tt-desc">
-      {label}
+      {description}
     </span>
   );
 
   return (
     <>
       {trigger}
-      {typeof document === "undefined" ? description : createPortal(description, document.body)}
+      {typeof document === "undefined" ? describedBy : createPortal(describedBy, document.body)}
       {tip &&
         createPortal(
           <span
             ref={measure}
             // The accessible description is the hidden portal above; this is the paint.
             aria-hidden
-            className={`tooltip tt-${tip.placement}`}
+            // `tt-rich` is what lets CSS drop the centred, single-line-ish text layout a
+            // string bubble wants. Not inferred from the content: a caller passing a node
+            // is exactly the caller that laid it out itself.
+            className={`tooltip tt-${tip.placement}${rich ? " tt-rich" : ""}`}
             style={{
               left: tip.x + (tip.shift ?? 0),
               top: tip.y,
@@ -238,7 +274,7 @@ export function Tooltip({
               visibility: tip.shift === undefined ? "hidden" : undefined,
             }}
           >
-            {label}
+            {painted}
           </span>,
           document.body,
         )}

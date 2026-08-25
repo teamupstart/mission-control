@@ -1,7 +1,9 @@
 import {
+  PIPELINE_HALT_CLASS_INFO,
   PIPELINE_KICKBACK_TARGETS,
   PIPELINE_PHASES,
   PIPELINE_RUN_GROUPS,
+  pipelinePhaseOfStep,
   pipelineRepoKey,
   pipelineStepInfo,
   sortByPipelineStep,
@@ -15,7 +17,7 @@ import {
   type PipelineStep,
   type PipelineStepState,
 } from "@shared/pipeline.ts";
-import type { PipelineStatus } from "../workflows/pipeline-bits.tsx";
+import type { PipelineStatus, PipelineStatusTone } from "../workflows/pipeline-bits.tsx";
 
 // Everything the Pipelines surface computes, as pure functions over the projection.
 //
@@ -346,6 +348,26 @@ export function pipelinePhaseSummary(steps: readonly PipelineStepRow[]): string 
 // ---- the live eyebrow -------------------------------------------------------------------
 
 /**
+ * The run's OWN sequential steps - the ones any "n of N" about this run is counted over.
+ *
+ * Extracted from the eyebrow so the eyebrow and the board card's phase meter cannot come to
+ * disagree about what the denominator is. Two rules are folded into the one filter, and both
+ * are load-bearing:
+ *
+ * - A KNOWN out-of-band step is dropped. It was dispatched in response to something and never
+ *   had a slot in the sequence, so counting it would report a run as longer than the path it
+ *   actually walked.
+ * - An UNKNOWN step is KEPT, and the optional chain is the reason rather than an accident:
+ *   `pipelineStepInfo` answers null for a name this build has no entry for, so the property
+ *   read yields undefined and the step survives the filter. It is a step the run really has,
+ *   and a total that quietly excluded it would be wrong about the engine rather than tolerant
+ *   of it. A caller that counts one owes it somewhere to be READ - see `pipelinePhaseMeter`.
+ */
+export function pipelineSequentialSteps(run: PipelineRun): PipelineStep[] {
+  return run.steps.filter((step) => !pipelineStepInfo(run.provider, step.name)?.outOfBand);
+}
+
+/**
  * Where the run is, as one line: the phase it is in and how far along the sequence.
  *
  * Counted over the run's OWN sequential steps rather than over the frozen table's 22,
@@ -354,9 +376,7 @@ export function pipelinePhaseSummary(steps: readonly PipelineStepRow[]): string 
  * the run really is on - it just cannot name a phase for it.
  */
 export function pipelineEyebrow(run: PipelineRun): string {
-  const sequential = run.steps.filter(
-    (step) => !pipelineStepInfo(run.provider, step.name)?.outOfBand,
-  );
+  const sequential = pipelineSequentialSteps(run);
   if (run.lastStep === null) return "Not started";
   const index = sequential.findIndex((step) => step.name === run.lastStep);
   const info = pipelineStepInfo(run.provider, run.lastStep);
@@ -365,6 +385,183 @@ export function pipelineEyebrow(run: PipelineRun): string {
   return index < 0
     ? `${where} · ${label}`
     : `${where} · ${label} · step ${index + 1} of ${sequential.length}`;
+}
+
+// ---- the board card's phase meter -------------------------------------------------------
+
+/**
+ * One segment of the board card's phase meter: a phase, sized and filled by THIS run.
+ *
+ * `total` and `finished` are counted over the phase's own steps as the projection reports
+ * them, never over the frozen table. That is the whole tolerance rule expressed as geometry:
+ * ai-conductor builds its effective step list per repository, and its own config disables one
+ * step and inserts two custom SHIP ones - so a hardcoded 1/1/9/5/6 split would be wrong on
+ * the very repository this meter exists to watch.
+ */
+export interface PipelinePhaseSegment {
+  phase: PipelinePhase;
+  /** The phase's steps, in the engine's own order, for the popover's rows. */
+  steps: PipelineStepRow[];
+  /**
+   * What the phase says, from `pipelinePhaseStatus` - never a local map, so failure keeps
+   * outranking running and both keep outranking the arithmetic below.
+   *
+   * A phase the run's state file has never mentioned folds to null there; it is reported as
+   * "Not started" rather than dropped, so the meter is always the engine's whole sequence.
+   */
+  status: PipelineStatus;
+  /** How many steps this phase holds in this run. The segment's share of the bar's width. */
+  total: number;
+  /** Done or skipped. The segment's fill. */
+  finished: number;
+  /** The phase the run is in right now, which is the segment that carries the ring. */
+  current: boolean;
+  /**
+   * The sentence under the popover's rows, or null. The halt's own reason on the phase the
+   * halt is attributed to, else the skip explanation on a phase that finished having skipped
+   * something - which is the difference between "done" and "done, 2 skipped" said in words as
+   * well as in a hatch.
+   */
+  footer: string | null;
+}
+
+/** Everything the board card's phase meter draws, folded from one run. */
+export interface PipelinePhaseMeterView {
+  /** One per entry of `PIPELINE_PHASES`, always, in that order. */
+  segments: PipelinePhaseSegment[];
+  /**
+   * The caption's phase word: the phase the run is in, `"Unknown step"` for a step this
+   * build cannot place, or `"Not started"` before the first one. It inherits the eyebrow's
+   * honest arm deliberately - a nearest-phase guess would be a claim the projection does
+   * not support.
+   */
+  caption: string;
+  /** The tone the caption word wears: the halt's if the run halted, else the phase it names. */
+  captionTone: PipelineStatusTone;
+  /**
+   * The run's halt, or null - read straight off `run.halt` with NO other condition.
+   *
+   * Unconditional on purpose, and the meter's answer to "has anything failed". It used to be
+   * carried only by the popover of a phase whose tone had resolved to `failed`, which was a
+   * bug rather than a shortcut: `pipelinePhaseStatus` is a function of step STATES and knows
+   * nothing about `run.halt`, so a run that halted during a step - the halting step still
+   * `in_progress` - had no failed phase, no halt sentence anywhere, and a blue current
+   * segment reading as work in progress. `classifyGroup`
+   * (`src/server/pipelines/conductor/normalize.ts`) names that exact case as the reason
+   * `halted` outranks `building`: "a run with a HALT marker AND an in-progress step halted
+   * DURING that step; drawing it as `building` would say work is happening that stopped."
+   * The meter was saying it.
+   *
+   * So a halt is a fact about the RUN and is stated at the run's own level, the way
+   * `pipelineRunLine` above already states it (`if (run.halt) return run.halt.reason`).
+   * Attributing it to a phase, below, is an addition to that and never the only copy.
+   */
+  halt: { label: string; reason: string; blurb: string } | null;
+  /** Finished steps of the run's own sequential list - the `n` of `n/N`. */
+  done: number;
+  /** The run's own sequential step count - the `N`. */
+  total: number;
+  /**
+   * The steps that can own no segment, which is why they need a home of their own.
+   *
+   * `unknown` names steps this build cannot place: they ARE inside `total` above, because the
+   * run really has them. `outOfBand` names known steps the run dispatched in response to
+   * something: they are NOT in `total`, because they were never on the sequence. Both are
+   * absent from every segment's `steps`, so a meter that counted them and drew them nowhere
+   * would be leaving the reader an unexplained discrepancy. The general rule: anything the
+   * meter counts must be readable somewhere on the meter.
+   */
+  extras: { unknown: PipelineStepRow[]; outOfBand: PipelineStepRow[] };
+}
+
+/**
+ * Fold one run into the board card's phase meter.
+ *
+ * A composition of the existing derivation rather than a second one: `pipelineStrip` splits
+ * the steps into the five phases and the two piles, and `pipelinePhaseStatus` says what each
+ * phase wants. Nothing here re-decides either, which is what stops the card and the Runs page
+ * from ever disagreeing about what a phase's colour means.
+ *
+ * Called with NO GATE EVIDENCE, and that is a finding rather than a shortcut:
+ * `pipelinePhaseStatus` reads only `step.state` and never a verdict, so the card needs no
+ * fetch and gate verdicts stay detail-only exactly as `src/shared/pipeline.ts` intends.
+ *
+ * Null for a run with no sequential steps at all - a worktree the engine has only just cut.
+ * An empty five-segment bar would claim a shape the projection has not reported.
+ */
+export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | null {
+  const sequential = pipelineSequentialSteps(run);
+  if (sequential.length === 0) return null;
+  const strip = pipelineStrip(run.provider, run.steps, []);
+  const current = run.lastStep ? pipelinePhaseOfStep(run.provider, run.lastStep) : null;
+
+  const halt = run.halt
+    ? {
+        label: PIPELINE_HALT_CLASS_INFO[run.halt.class].label,
+        reason: run.halt.reason,
+        blurb: PIPELINE_HALT_CLASS_INFO[run.halt.class].blurb,
+      }
+    : null;
+
+  const base = strip.phases.map((card) => ({
+    card,
+    // The same fallback the vertical ladder draws for an unmentioned phase, for the same
+    // reason: the sequence the operator is reading is the engine's, not the projection's.
+    status: pipelinePhaseStatus(card.steps) ?? { tone: "stopped" as const, label: "Not started" },
+  }));
+
+  /**
+   * Which phase's popover also carries the halt sentence.
+   *
+   * The phase that failed when there is one, because that is where the evidence is. Otherwise
+   * the phase the run is IN, because a run halts somewhere and the ringed segment is the
+   * segment an operator opens first. And when the run is on no placeable phase at all, no
+   * segment claims it - the caption's own halt marker is then the only honest home, which is
+   * the same rule the extras marker exists for: anything the meter states must be readable
+   * somewhere on the meter, and never attributed to a phase that did not earn it.
+   */
+  const haltHome =
+    base.find((entry) => entry.status.tone === "failed")?.card.phase ??
+    base.find((entry) => entry.card.phase === current)?.card.phase ??
+    null;
+
+  const segments = base.map(({ card, status }): PipelinePhaseSegment => ({
+    phase: card.phase,
+    steps: card.steps,
+    status,
+    total: card.steps.length,
+    finished: card.steps.filter((step) => step.state === "done" || step.state === "skipped")
+      .length,
+    current: card.phase === current,
+    footer:
+      halt && card.phase === haltHome
+        ? `${halt.label} - ${halt.reason}`
+        : status.degraded
+          ? status.tooltip ?? null
+          : null,
+  }));
+
+  const info = run.lastStep ? pipelineStepInfo(run.provider, run.lastStep) : null;
+  const caption =
+    run.lastStep === null ? "Not started" : info ? info.phase : "Unknown step";
+  return {
+    segments,
+    caption,
+    // A halted run's caption is `failed` whatever its steps say. This is the ONE place the
+    // meter lets a run-level fact outrank the phase arithmetic, and it is deliberately the
+    // caption rather than a segment: the caption is the run's own line, while a segment's tone
+    // is `pipelinePhaseStatus`'s answer about that phase's steps and overriding it here would
+    // be the second fold this module exists to prevent. Otherwise the caption borrows the tone
+    // of the phase it names; a caption naming no phase - not started, or a step with no
+    // placeable phase - has no status to borrow and stays neutral.
+    captionTone: halt
+      ? "failed"
+      : segments.find((segment) => segment.current)?.status.tone ?? "stopped",
+    halt,
+    done: sequential.filter((step) => step.state === "done" || step.state === "skipped").length,
+    total: sequential.length,
+    extras: { unknown: strip.unknown, outOfBand: strip.outOfBand },
+  };
 }
 
 /** The rail row's second line: what it is doing, or why it stopped. */

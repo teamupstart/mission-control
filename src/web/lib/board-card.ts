@@ -75,6 +75,13 @@ export const DISPLAY_ITEMS = [
       "The cropped stage ladder for the review that owns this session, and the control that expands it in place. Hidden, a run in progress is only visible from Runs or the console.",
   },
   {
+    id: "pipelinePhases",
+    group: "card",
+    label: "Pipeline phases",
+    description:
+      "The five-segment phase meter for the ai-conductor run driving this session: how far it has got, which phase it is in, what failed, and what its tier or track skipped. Hidden, a driven card names its run and says nothing about the run's progress, so a halted feature looks like a working one until you open Runs. Draws nothing at all on a session no engine is driving, which is every session on a fleet with no pipeline provider enabled.",
+  },
+  {
     id: "model",
     group: "card",
     label: "Model",

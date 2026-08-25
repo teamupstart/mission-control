@@ -167,6 +167,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineRunObserved={Boolean(
         s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
       )}
+      // The card's phase meter, joined CLIENT SIDE against the map this view already holds.
+      // `SessionPipelineLink` carries the three coordinates `pipelineRunKeyOf` needs and
+      // nothing else on purpose - a whole run on every session frame would ship 22 step
+      // states per correlated card per sweep - and the projection is already here, so this
+      // is the whole cost of the feature on the wire: nothing.
+      pipelineRun={
+        s.pipeline ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(s.pipeline)) ?? null) : null
+      }
     />
   );
   /**

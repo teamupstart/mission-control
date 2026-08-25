@@ -465,6 +465,37 @@ A correlated card carries:
   board and in the console rail, exactly as an ensemble's members do. An ensemble membership
   outranks a pipeline correlation when a session somehow has both: the ensemble is a binding
   Mission Control made, the correlation is a path coincidence the engine's layout produced.
+- **A phase meter, on the board card only.** A hairline bar cut into five segments, one per
+  phase, above the card's flags. Each segment's *width* is how many steps that phase holds **in
+  this run**, its *fill* is how many of them are finished, and its *tone* comes from the same
+  phase fold the Runs page uses, so a failure outranks work in progress and both outrank the
+  arithmetic. The phase the run is in carries a ring, and a phase that finished having skipped
+  something is hatched rather than solid - *done* and *done, 2 skipped* are not one reading.
+  Hovering or focusing a segment opens that phase's steps with their individual states, and the
+  skip explanation on a phase that was cut short by the run's tier or track. A caption above it
+  names the phase in a word and counts finished steps over the run's own total.
+
+  **A halt is stated on the caption, not on a segment**, and it is stated whenever the run
+  carries one. That is deliberate and it is the one place a run-level fact outranks the bar's
+  arithmetic: a segment's tone is the phase fold's answer about that phase's *step states*, and
+  a run can halt *during* a step - the halting step still `in_progress`, no step marked failed,
+  no phase red. Attaching the halt to a red segment would therefore have hidden exactly the
+  halts that stopped a running step, which is the case `classifyGroup` names as the reason
+  `halted` outranks `building`. So the caption turns red and gains the word **halted**, hovering
+  which gives the halt's class, its reason, and what that class means for whoever has to clear
+  it. The phase the halt can be attributed to - the one that failed, or failing that the one the
+  run stopped in - repeats the sentence in its own popover; when the run is on a step this build
+  cannot place there is no such phase, and the caption marker is the only claim made.
+
+  Three boundaries this draws deliberately. It is the **board card only** - the console rail
+  row and the console detail band keep the chip, because their axis is one line. It is
+  **externally driven workers only** - a managed Engineer host's task-owned run mark is
+  untouched, for the same reason it does not borrow the worker chip. And the run behind it is
+  **joined in the browser** from the projection the dashboard already holds, so
+  `SessionPipelineLink` still carries three coordinates and a step, and nothing new crosses the
+  wire. The meter is the one part of this list an operator can switch off, under
+  **Settings → Display → Pipeline phases**: it is progress rather than an attention flag, and
+  the flags that ask for you are never configurable.
 
 The conversation window's **Workflows** tab draws the run as a **vertical ladder** for such a
 session - the same rungs and the same status chips as a workflow run's ladder, folded from the

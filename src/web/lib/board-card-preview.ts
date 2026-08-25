@@ -1,3 +1,4 @@
+import type { PipelineRun } from "@shared/pipeline.ts";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 
@@ -105,10 +106,71 @@ export function previewSession(now: number): Session {
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
-    pipeline: null,
+    // A correlation, so the `Pipeline phases` checkbox governs something the preview can
+    // draw. The three coordinates have to match `PREVIEW_PIPELINE_RUN` below exactly: the
+    // card joins them through `pipelineRunKeyOf`, and a fixture whose link and run disagreed
+    // would preview an item as permanently absent - which reads as a dead checkbox.
+    pipeline: {
+      provider: "ai-conductor",
+      repoRoot: PREVIEW_REPO_ROOT,
+      slug: PREVIEW_SLUG,
+      step: "stories",
+    },
     paneDialog: null,
   };
 }
+
+/** The repository and feature the preview's correlation and run both name. */
+const PREVIEW_REPO_ROOT = "/Users/you/code/mission-control";
+const PREVIEW_SLUG = "parser-trailing-commas";
+
+/**
+ * The run the preview's phase meter is drawn from.
+ *
+ * A whole `PipelineRun` rather than a summary, because that is what the meter folds - and
+ * unlike the workflow run above there is nothing to fetch, so no request is implied. The step
+ * list is deliberately NOT the frozen table's full 22: it is a plausible mid-DECIDE state with
+ * every phase represented, which is what makes all five segments say something different -
+ * two finished, one running and part-filled, two pending. A fixture where every phase looked
+ * alike would preview the checkbox honestly and the FEATURE dishonestly.
+ *
+ * Two skips on purpose, and they preview two different things. UNDERSTAND's single step is
+ * skipped, so that phase finishes DEGRADED and wears the hatch - the mark that tells "done"
+ * from "done, 1 skipped" apart, which is the part of this design a reader is most likely to
+ * take for a rendering artefact. DECIDE's skip is mid-phase, so it previews the struck-through
+ * row inside a popover instead.
+ */
+export const PREVIEW_PIPELINE_RUN: PipelineRun = {
+  provider: "ai-conductor",
+  repoRoot: PREVIEW_REPO_ROOT,
+  slug: PREVIEW_SLUG,
+  worktree: PREVIEW_CWD,
+  tier: "M",
+  track: "product",
+  steps: [
+    { name: "worktree", state: "done" },
+    { name: "memory", state: "skipped" },
+    { name: "explore", state: "done" },
+    { name: "complexity", state: "done" },
+    { name: "prd", state: "done" },
+    { name: "architecture_diagram", state: "skipped" },
+    { name: "architecture_review", state: "done" },
+    { name: "stories", state: "in_progress" },
+    { name: "conflict_check", state: "pending" },
+    { name: "plan", state: "pending" },
+    { name: "acceptance_specs", state: "pending" },
+    { name: "build", state: "pending" },
+    { name: "test_suite", state: "pending" },
+    { name: "retro", state: "pending" },
+    { name: "finish", state: "pending" },
+  ],
+  lastStep: "stories",
+  halt: null,
+  group: "building",
+  prUrl: null,
+  costTokens: null,
+  updatedAt: 0,
+};
 
 /**
  * The run the preview's workflow panel is drawn from.

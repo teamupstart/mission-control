@@ -25723,6 +25723,242 @@ span.line-run-prov {
   }
 }
 
+/* ---- board tile: the pipeline phase meter ----
+   How far an engine-driven run has got, as five segments. See
+   `src/web/pipelines/PipelinePhaseMeter.tsx` for what each part claims; this block is only
+   the geometry and the tones.
+
+   Every tone here comes from the `.workflow-*` classes the component puts on the same
+   element, which set `color` - so the fill below is `currentColor` and there is no second
+   colour vocabulary to keep in step with the Runs page. That is also why nothing in this
+   block names a colour of its own. */
+.tile-phase-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tpm-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--dim);
+}
+.tpm-glyph {
+  flex: none;
+}
+.tpm-now {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The run halted. A word beside the phase, not a recolouring of it: the caption already turns
+   red, and a halt is the one thing on this bar that must not depend on somebody seeing the
+   difference. Uppercase and tight like the phase word it sits next to, and toned by
+   `.workflow-failed` alongside it rather than by a colour of its own. */
+.tpm-halt {
+  flex: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: help;
+}
+.tpm-halt:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* The steps that own no segment. Dotted like `.wf-status-explained`, which is this
+   stylesheet's existing mark for "hoverable, and not an action". */
+.tpm-extras {
+  flex: none;
+  padding: 0 3px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  cursor: help;
+  border-radius: 3px;
+  text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
+  text-underline-offset: 2px;
+}
+.tpm-extras:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+/* Pushed to the trailing edge, so the number sits where the eye already goes for a count
+   and never shifts as the phase word above changes length. */
+.tpm-count {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.tpm-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 7px;
+}
+/* `min-width` is the floor that keeps a one-step phase hittable: SETUP and UNDERSTAND hold
+   one step each in the default sequence, so at strictly proportional width against DECIDE's
+   nine they would be two-pixel slivers nobody could hover. A phase the run's state file has
+   never mentioned has `flex-grow: 0` and is exactly this wide. */
+.tpm-seg {
+  position: relative;
+  flex-basis: 0;
+  min-width: 9px;
+  overflow: hidden;
+  border-radius: 2px;
+  /* The unfilled track, and it is deliberately NEUTRAL rather than a faint wash of the
+     segment's own tone. Two reasons, both found by looking at a real board:
+
+     A tinted track says the wrong thing. A DECIDE phase five steps into nine drew a bright
+     blue remainder that read as most of the phase being done, because the track and the fill
+     were the same hue a shade apart. "Not done yet" has no tone - only progress does - so the
+     track is the same grey on all five and the fill is the only thing that carries colour.
+
+     It also has to be VISIBLE, which the first attempt was not: at a faint mix the pending
+     BUILD and SHIP segments both vanished into the card, so a five-segment bar read as three.
+     The 2px gaps show the tile's own panel colour, which is darker than this, so the divisions
+     are what make the bar legible as five phases rather than one. */
+  background: color-mix(in oklab, var(--exited) 34%, var(--bg-2));
+  cursor: help;
+}
+.tpm-seg > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+}
+/* The phase the run is in, marked with a ring so it is findable without relying on colour -
+   which matters most on the run where the colour is the point, a red BUILD beside a red
+   caption. `outline` rather than `border`, so the ring costs the segment no width. */
+.tpm-seg.is-now {
+  outline: 1px solid color-mix(in oklab, currentColor 62%, transparent);
+  outline-offset: 2px;
+}
+.tpm-seg:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+/* Finished, and did not do everything a full-ceremony run would have. Hatched rather than
+   solid, because "done" and "done, 2 skipped" must not be the same fill - a reader comparing
+   two runs needs to see that difference without opening either. */
+.tpm-seg.is-degraded > i {
+  background: repeating-linear-gradient(
+    115deg,
+    currentColor 0 3px,
+    color-mix(in oklab, currentColor 52%, var(--bg-2)) 3px 6px
+  );
+}
+.tpm-seg:hover {
+  filter: brightness(1.35);
+}
+
+/* The rich tooltip bubble, which `Tooltip` marks `tt-rich` when its label is content rather
+   than a string. The string bubble is centred and narrow; a list of steps is neither. */
+.tooltip.tt-rich {
+  width: 232px;
+  max-width: 232px;
+  padding: 9px 11px 10px;
+  text-align: left;
+}
+.tpm-pop {
+  display: flex;
+  flex-direction: column;
+}
+.tpm-pop-group {
+  display: flex;
+  flex-direction: column;
+}
+.tpm-pop-group + .tpm-pop-group {
+  margin-top: 10px;
+}
+.tpm-pop-hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.tpm-pop-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--fg);
+}
+/* `.workflow-stopped` alone among the tone classes also sets a background and a border
+   colour, for the chip it was written for. Neutralised here so a "Pending" phase's status
+   is a word like the other four rather than a box only it wears. */
+.tpm-pop-stat,
+.tpm-pop-row {
+  background: none;
+  border-color: transparent;
+}
+.tpm-pop-stat {
+  font-size: 10px;
+  white-space: nowrap;
+}
+.tpm-pop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+.tpm-pop-row .g {
+  flex: none;
+  width: 9px;
+  font-size: 9px;
+  text-align: center;
+}
+.tpm-pop-row .n {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The glyph and the label are toned separately: the glyph carries the step's state, while
+   the label stays readable prose. A whole row in `--danger` would shout one failed step
+   over the eight that are fine. */
+.tpm-pop-row.workflow-failed .n,
+.tpm-pop-row.workflow-running .n {
+  color: currentColor;
+}
+.tpm-pop-row.is-skipped .n {
+  color: var(--dim);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--dim) 60%, transparent);
+}
+/* The halt's own sentence. Wraps, unlike a step row: this is the engine's prose, and the whole
+   point of the marker above it is that the reason is READABLE from the board. */
+.tpm-pop-reason {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.tpm-pop-row .v {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--dim);
+}
+.tpm-pop-foot {
+  margin-top: 8px;
+  padding-top: 7px;
+  font-size: 10px;
+  color: var(--dim);
+  border-top: 1px solid var(--border-soft);
+}
+
 /* The shared runtime row sits in the tile's own flex column; drop its card margins so
    the tile's gap does the spacing. */
 .tile .card-runtime {

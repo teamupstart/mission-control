@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
+import { pipelineRunKeyOf, type PipelineRun } from "../src/shared/pipeline.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
@@ -314,4 +315,96 @@ test("a held session that needs you is not tagged, and does not leave needs-you"
   const html = renderToStaticMarkup(createElement(BoardView, viewProps));
   assert.doesNotMatch(html, /class="tile-held"/);
   assert.doesNotMatch(html, /fleet-section-held/);
+});
+
+// ---- the pipeline phase meter, from the board's own side ----
+//
+// The meter's own arithmetic is `test/pipeline-phase-meter.test.ts`. What only this file can
+// say is that `BoardView` performs the CLIENT-SIDE JOIN at all: the session carries three
+// coordinates and the run lives in a separate map, and nothing between them is typed - so a
+// key spelled a hair differently is a card that silently draws no meter forever, on the one
+// surface this feature exists for.
+
+const PIPELINE_REPO = "/repo";
+
+/** A session an engine is driving, correlated to `PIPELINE_RUN` below. */
+function drivenSession(): Session {
+  return mkSession({
+    id: "driven-1",
+    name: "driven",
+    pipeline: {
+      provider: "ai-conductor",
+      repoRoot: PIPELINE_REPO,
+      slug: "add-widgets",
+      step: "stories",
+    },
+  });
+}
+
+const PIPELINE_RUN: PipelineRun = {
+  provider: "ai-conductor",
+  repoRoot: PIPELINE_REPO,
+  slug: "add-widgets",
+  worktree: "/repo/.worktrees/add-widgets",
+  tier: "M",
+  track: "product",
+  steps: [
+    { name: "worktree", state: "done" },
+    { name: "memory", state: "done" },
+    { name: "explore", state: "done" },
+    { name: "stories", state: "in_progress" },
+    { name: "build", state: "pending" },
+  ],
+  lastStep: "stories",
+  halt: null,
+  group: "building",
+  prUrl: null,
+  costTokens: null,
+  updatedAt: 0,
+};
+
+function drivenProps(session: Session): SessionViewProps {
+  return {
+    ...props([session]),
+    pipelineRunByKey: new Map([[pipelineRunKeyOf(PIPELINE_RUN), PIPELINE_RUN]]),
+    onOpenPipelineRun: () => {},
+  };
+}
+
+test("a correlated card draws the phase meter for the run its link names", () => {
+  const html = renderToStaticMarkup(createElement(BoardView, drivenProps(drivenSession())));
+  assert.match(html, /class="tile-phase-meter"/);
+  assert.match(html, /aria-label="add-widgets pipeline phases"/);
+  // Five segments, and a count over the run's OWN sequential steps rather than a frozen 22.
+  assert.equal(html.match(/class="tpm-seg/g)?.length, 5);
+  assert.match(html, /class="tpm-count">3\/5</);
+  assert.match(html, /class="tpm-now workflow-running">DECIDE</);
+});
+
+test("a session with no pipeline correlation draws no meter at all", () => {
+  // The overwhelmingly common case: `Session.pipeline` is null on every fleet with no
+  // pipeline provider enabled, so this is what an ordinary installation renders. Passed the
+  // populated map deliberately - the gate has to be the session's link, not an empty map.
+  const html = renderToStaticMarkup(createElement(BoardView, drivenProps(mkSession())));
+  assert.doesNotMatch(html, /tile-phase-meter/);
+  assert.doesNotMatch(html, /tpm-seg/);
+});
+
+test("a correlation whose run has not arrived yet draws no meter rather than an empty one", () => {
+  // Not an error state. The link rides the session's own frame while the projection is a
+  // separate collection, so a card can know its slug a tick before the run lands.
+  const html = renderToStaticMarkup(
+    createElement(BoardView, { ...props([drivenSession()]), onOpenPipelineRun: () => {} }),
+  );
+  assert.match(html, /class="tile /, "the card itself still renders");
+  assert.doesNotMatch(html, /tile-phase-meter/);
+});
+
+test("the meter joins beside the cluster head rather than replacing it", () => {
+  // The head names the run and is not on the customization list; the meter is progress and
+  // is. Both are drawn, and the meter does not repeat the head's slug as a second button.
+  const html = renderToStaticMarkup(createElement(BoardView, drivenProps(drivenSession())));
+  assert.match(html, /board-pipeline-head/);
+  assert.match(html, /tile-phase-meter/);
+  assert.doesNotMatch(html, /class="tile-phase-meter"[^>]*>[\s\S]{0,400}?<button/);
 });

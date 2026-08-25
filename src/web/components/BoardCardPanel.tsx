@@ -8,7 +8,11 @@ import {
   setDisplayItemShown,
   type DisplayItemGroup,
 } from "../lib/board-card.ts";
-import { PREVIEW_WORKFLOW_RUN, previewSession } from "../lib/board-card-preview.ts";
+import {
+  PREVIEW_PIPELINE_RUN,
+  PREVIEW_WORKFLOW_RUN,
+  previewSession,
+} from "../lib/board-card-preview.ts";
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { SessionTile } from "./layouts/SessionTile.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -149,6 +153,7 @@ export function BoardCardPanel(): React.JSX.Element {
               onDropConfirm={() => {}}
               workflowRun={PREVIEW_WORKFLOW_RUN}
               workflowStageDetail="summary"
+              pipelineRun={PREVIEW_PIPELINE_RUN}
             />
           </div>
         </div>

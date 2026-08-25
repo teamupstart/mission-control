@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineRunLink } from "@shared/pipeline.ts";
+import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity } from "@shared/session.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
@@ -26,6 +26,7 @@ import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
+import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
 import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
 
@@ -61,6 +62,7 @@ export function SessionTile({
   ensembleSummary = null,
   onOpenPipelineRun,
   pipelineRunObserved = false,
+  pipelineRun = null,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -97,6 +99,16 @@ export function SessionTile({
   ensembleSummary?: EnsembleSummary | null;
   onOpenPipelineRun?: (link: PipelineRunLink) => void;
   pipelineRunObserved?: boolean;
+  /**
+   * The projected run this session's own `pipeline` correlation names, for the phase meter.
+   *
+   * Joined by the caller against the map it is already holding, and null is an ORDINARY state
+   * rather than an error: the link rides the session's own frame while the projection is a
+   * separate collection, so a card can know its slug a tick before the run lands. Null on
+   * every session no engine is driving, which is every session on a fleet with no pipeline
+   * provider enabled - so the meter fails open into drawing nothing.
+   */
+  pipelineRun?: PipelineRun | null;
 }): React.JSX.Element {
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
@@ -260,6 +272,14 @@ export function SessionTile({
           </span>
           <span className="ta-txt">{ticker}</span>
         </span>
+      )}
+
+      {/* How far the engine's run has got, for a session an engine is driving. Gated on the
+          registry AND on both halves of the join, so the overwhelmingly common session - one
+          with no correlation at all - renders nothing rather than an empty bar. The cluster
+          head above this tile already names the run; this says what the run has done. */}
+      {shown("pipelinePhases") && session.pipeline && pipelineRun && (
+        <PipelinePhaseMeter run={pipelineRun} link={session.pipeline} />
       )}
 
       {/* D′ is a cropped rung of the same Stage Ladder the Console detail draws. The summary

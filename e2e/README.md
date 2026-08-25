@@ -88,7 +88,7 @@ checklist beside its live preview card, twice: once at the shipped defaults - ev
 checked except the worktree, which is the one item no card drew before this feature - and
 once with Goal and Model unchecked and the worktree switched on, so the same frame shows
 what each checkbox actually costs and buys. Both sections are in frame, the board card's
-eleven items and the conversation header's two, which is why the viewport is 1700px tall.
+twelve items and the conversation header's two, which is why the viewport is 1700px tall.
 No agent is dispatched, so nothing runs but the settings page and a daemon.
 
 `e2e/.artifacts/conversation-band-optional/` is the other half of that feature and carries
@@ -110,6 +110,31 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   e2e/specs/board-card-preview.spec.ts \
   --workers=1 --reporter=list \
   | tee e2e/.artifacts/board-card-preview/focused-playwright-transcript.txt
+```
+
+### The pipeline phase meter on a board card
+
+`e2e/.artifacts/board-card-phase-meter/` carries the meter on real correlated cards: a
+BUILDING run and a HALTED one at a normal board column width and again at a narrow one, plus
+the two popovers - DECIDE mid-run, with its skipped step struck through and its current step
+named, and the halted BUILD phase carrying the halt's own sentence in its footer. The pair of
+cards is the point rather than a nicety: the claim this feature makes is that a halted feature
+and a working one no longer look alike from across a board, and one card cannot show that.
+
+Two real tmux panes run a `node` symlink named `claude` inside the fake engine's own
+worktrees, so the cards arrive through passive discovery and real correlation rather than
+through a dispatch. No agent and no model token is involved.
+
+Regenerate the frames and transcript with:
+
+```sh
+mkdir -p e2e/.artifacts/board-card-phase-meter
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-phase-meter.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/board-card-phase-meter/focused-playwright-transcript.txt
 ```
 
 ### Native workflow image evidence

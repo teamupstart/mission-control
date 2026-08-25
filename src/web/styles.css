@@ -22278,6 +22278,14 @@ button.sc-row:focus-visible {
 .line-bl-who {
   width: 360px;
 }
+/* At the board's narrow breakpoint, restore this column's established reservation. The
+   planner mark and ops controls need the remaining row width to stay reachable; the notice
+   already ellipsizes within its fixed-height line. */
+@media (max-width: 760px) {
+  .line-bl-who {
+    width: 240px;
+  }
+}
 /* The Review row alone goes wider, and only now that its bold line is a real title. 240px was
    sized when it held a conversation GUID, which ellipsizes at any width; the binding titles
    that replaced it ("Improve Foreman Context and Table Scrolling") are 46 characters of

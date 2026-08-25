@@ -23,9 +23,9 @@ import { useTourTaskTargetRef } from "../tour/target-context.tsx";
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
  * sent back with a note; a question is answered - as free text, or by picking from the
- * options the agent supplied; a selectable question or `plan-decisions` plan can also be
- * dismissed without submitting selections. Each resolution unblocks only the agent wait
- * for that review (for diff/input/plan-decisions) via the MCP long-poll.
+ * options the agent supplied; any review can also be dismissed without sending an answer.
+ * Each resolution unblocks only the agent wait for that review (for diff/input/plan-decisions)
+ * via the MCP long-poll.
  *
  * The options case is what a dispatched session's clarifying question looks like now:
  * `ask-channel.ts` disallows Claude's built-in `AskUserQuestion`, so instead of drawing a
@@ -136,6 +136,18 @@ export function ReviewCard({
     if (!r.ok) setErr(r.error ?? "failed");
   }
 
+  const dismissButton = (
+    <Tooltip label="Dismiss this review without sending an answer">
+      <button
+        className="btn btn-ghost"
+        disabled={busy}
+        onClick={() => void resolve("dismiss", null)}
+      >
+        Dismiss
+      </button>
+    </Tooltip>
+  );
+
   return (
     <section className={`review review-${review.kind}`}>
       <div className="review-head">
@@ -209,6 +221,7 @@ export function ReviewCard({
             onChange={(e) => setAnswer(e.target.value)}
             rows={2}
           />
+          {dismissButton}
           <Tooltip
             label={answer.trim() ? "Send this answer back to the agent" : "Write an answer first"}
           >
@@ -230,6 +243,7 @@ export function ReviewCard({
             onChange={(e) => setNote(e.target.value)}
           />
           <span className="actions-spacer" />
+          {dismissButton}
           <Tooltip label="Send this back for another pass, with your note">
             <button
               className="btn btn-reject"

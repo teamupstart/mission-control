@@ -297,7 +297,9 @@ server.registerTool(
   {
     title: "Request review of a diff",
     description:
-      "Show a unified/git diff in the Mission Control dashboard and BLOCK until the human approves or requests changes. Returns their decision so you can proceed or revise.",
+      "Show a unified/git diff in the Mission Control dashboard and BLOCK until the human " +
+      "approves, requests changes, or dismisses the review without a verdict. Returns their " +
+      "decision so you can proceed or revise.",
     inputSchema: {
       title: z.string().describe("What this change does"),
       diff: z.string().describe("A unified or git diff"),
@@ -459,9 +461,9 @@ server.registerTool(
     title: "Ask the human a question",
     description:
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they resolve it. Without `options`, they answer in free text and the tool returns that " +
-      "answer. With `options`, they can submit clickable choices or dismiss the stale choice " +
-      "set without an answer; the tool returns their selections or an explicit dismissal. " +
+      "they resolve it. Without `options`, they answer in free text or dismiss without an " +
+      "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
+      "the tool returns their answer, selections, or an explicit dismissal. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks.",
     inputSchema: {

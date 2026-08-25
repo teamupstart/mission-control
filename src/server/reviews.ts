@@ -403,13 +403,6 @@ export class ReviewManager {
   ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
-    if (
-      action === "dismiss" &&
-      cur.kind !== "plan-decisions" &&
-      (cur.kind !== "input" || !cur.decisions?.some((decision) => decision.options.length > 0))
-    ) {
-      throw new ReviewResolutionError("only reviews with selectable decisions can be dismissed");
-    }
     if (cur.status !== "pending") return cur;
 
     const status: ReviewStatus =

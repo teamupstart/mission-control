@@ -286,9 +286,9 @@ test("submitted and dismissed decision sets both leave Needs you when none remai
   assert.equal(waited.status, "dismissed", "the blocked MCP call is released as dismissed");
 });
 
-test("dismissal is limited to option-bearing reviews and discards supplied responses", async () => {
+test("every pending review kind can be dismissed without persisting a response", async () => {
   async function create(
-    kind: "diff" | "input",
+    kind: "diff" | "plan" | "input" | "plan-decisions",
     title: string,
     reviewDecisions?: typeof decisions,
   ): Promise<string> {
@@ -304,31 +304,39 @@ test("dismissal is limited to option-bearing reviews and discards supplied respo
         decisions: reviewDecisions,
       }),
     });
-    assert.equal(response.status, 200);
     return ((await response.json()) as { id: string }).id;
   }
 
-  for (const [kind, id] of [
-    ["diff", await create("diff", "Diff review")],
-    ["free-text input", await create("input", "Explain the failure")],
+  const results = [];
+  for (const [label, kind, title, reviewDecisions] of [
+    ["diff", "diff", "Diff review", undefined],
+    ["plan", "plan", "Plan review", undefined],
+    ["free-text input", "input", "Explain the failure", undefined],
+    ["option input", "input", "Choose a database", decisions],
+    ["plan decisions", "plan-decisions", "Choose a plan", decisions],
   ] as const) {
+    const id = await create(kind, title, reviewDecisions);
     const response = await app.request(`/api/reviews/${id}/resolve`, {
       method: "POST",
       headers: authed,
-      body: JSON.stringify({ action: "dismiss" }),
+      body: JSON.stringify({ action: "dismiss", response: "must be discarded" }),
     });
-    assert.equal(response.status, 400, `${kind} cannot be dismissed`);
-    assert.equal(registry.getReview(id)?.status, "pending", `${kind} remains unresolved`);
+    const review = registry.getReview(id);
+    results.push({
+      label,
+      resolveStatus: response.status,
+      status: review?.status,
+      response: review?.response,
+    });
   }
 
-  const selectableInputId = await create("input", "Choose a database", decisions);
-  const dismissed = await app.request(`/api/reviews/${selectableInputId}/resolve`, {
-    method: "POST",
-    headers: authed,
-    body: JSON.stringify({ action: "dismiss", response: "Postgres" }),
-  });
-  assert.equal(dismissed.status, 200);
-  const review = (await dismissed.json()) as ReviewItem;
-  assert.equal(review.status, "dismissed");
-  assert.equal(review.response, null, "dismissal never persists a supplied selection");
+  assert.deepEqual(
+    results,
+    ["diff", "plan", "free-text input", "option input", "plan decisions"].map((label) => ({
+      label,
+      resolveStatus: 200,
+      status: "dismissed",
+      response: null,
+    })),
+  );
 });

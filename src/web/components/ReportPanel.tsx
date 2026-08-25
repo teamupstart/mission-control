@@ -11,11 +11,17 @@ import {
 } from "@shared/session.ts";
 import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
+import {
+  backlogTaskNotice,
+  type BacklogTaskNoticeView,
+  type BacklogTrustView,
+} from "../lib/backlog-copy.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import {
   AgentDot,
+  BacklogTaskNotice,
   DeadBlockerButton,
   LabelChips,
   PriorityChip,
@@ -34,6 +40,8 @@ function BacklogReportRow({
   onEditTask,
   onOpenSchedule,
   scheduleNameById,
+  notice,
+  onManageTrust,
 }: {
   task: Task;
   tasks: Task[];
@@ -42,6 +50,8 @@ function BacklogReportRow({
   onEditTask: (taskId: string) => void;
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
+  notice: BacklogTaskNoticeView | null;
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
@@ -134,11 +144,11 @@ function BacklogReportRow({
             onOpen={onOpenSchedule}
           />
         </span>
-        {task.error && (
-          <span className="report-line report-line-sub report-task-error" role="status">
-            {task.error}
-          </span>
-        )}
+        <BacklogTaskNotice
+          notice={notice}
+          className="report-line report-line-sub report-task-notice"
+          onManageTrust={onManageTrust}
+        />
         {blockers.length > 0 && (
           <span className="report-line report-line-sub">
             Waiting for{" "}
@@ -201,6 +211,8 @@ export function ReportPanel({
   onEditTask,
   onOpenSchedule,
   scheduleNameById,
+  backlogTrust = null,
+  onManageTrust,
 }: {
   sessions: Session[];
   tasks: Task[];
@@ -219,6 +231,9 @@ export function ReportPanel({
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for provenance copy on backlog and recent rows. */
   scheduleNameById?: ReadonlyMap<string, string>;
+  backlogTrust?: BacklogTrustView | null;
+  /** Close the Sitrep and open the existing Trust matrix. */
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [marking, setMarking] = useState<string | null>(null);
@@ -448,6 +463,13 @@ export function ReportPanel({
               onEditTask={onEditTask}
               onOpenSchedule={onOpenSchedule}
               scheduleNameById={scheduleNameById}
+              notice={backlogTaskNotice(task, backlogTrust)}
+              onManageTrust={onManageTrust
+                ? () => {
+                    onClose();
+                    onManageTrust();
+                  }
+                : undefined}
             />
           ))}
         </Section>

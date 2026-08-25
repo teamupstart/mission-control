@@ -13,6 +13,7 @@ import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
+import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -56,6 +57,10 @@ export interface SessionViewProps {
    * its own poll.
    */
   backlogPlan: BacklogPlan | null;
+  /** Loaded live Foreman posture used for task-local repository trust explanations. */
+  backlogTrust?: BacklogTrustView | null;
+  /** Route task-local trust explanations to the existing Trust matrix. */
+  onManageForemanTrust?: () => void;
   selectedId: string | null;
   /**
    * Which half of the Console holds the keyboard - the rail selector or the open

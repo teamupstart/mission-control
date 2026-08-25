@@ -688,6 +688,35 @@ cheaper of the two.
 Like the rest of the launch configuration, the switch can only be changed while the task
 is *in* the backlog; there's nothing left to schedule once it has started.
 
+### Resolve missing repository trust for autopilot
+
+An enabled backlog task can be ready in every other respect and still be outside Foreman's
+unattended authority. While Foreman is enabled, **Live**, running, and has backlog autopilot
+on, such a task uses the amber inline notification position on the Board's backlog card, its
+row in [Sitrep](attention-and-alerts.md#roundup), and its row in the Line's
+[Backlog drawer](ui.md#the-stage-drawers). The notice names only the primary or attached
+repositories that Foreman's allowlist does not cover. Canonical paths remain available to
+assistive technology when duplicate directory names need disambiguation.
+
+This derived trust posture is ordinary inline content, not a live-region update: Foreman's
+poll can change several rows together, and announcing every affected row would create noise.
+Only the persisted launch-error recovery message retains the notification position's
+`role="status"`; **Manage trust** stays outside any live region.
+
+**Every repository needs its own grant.** A multi-repo task stays withheld until its primary
+and every attached repository are covered by the allowlist. A task waiting on a prerequisite
+still shows the trust warning beside `after X`, because finishing that prerequisite cannot
+grant repository access. A parked task keeps `autopilot will skip this`, and a backlog task
+carrying a launch error keeps its retry reason; those more specific task-local explanations
+take precedence. Foreman being off, not Live, not running, or having autopilot off is a
+queue-level condition explained by Foreman's controls rather than repeated on every task.
+
+The notice changes no launch policy. **Manual launch still works**, using the same existing
+button or task editor path, and the notice itself grants nothing. **Manage trust** closes the
+open backlog surface and deep-links to **Settings → Trust**, which remains the only editor and
+confirmation surface for repository grants. Once every missing Foreman cell is granted, the
+normal config update removes all affected notices without a page reload.
+
 ### Resolve a stopped dependency
 
 A dependency is satisfied when it reaches `done`, or when it leaves the task list

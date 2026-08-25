@@ -10331,8 +10331,13 @@ select:not([multiple]) option:focus-visible {
 .report-line-sub {
   gap: 6px;
 }
-.report-task-error {
+.report-task-error,
+.report-task-notice.is-error {
   color: var(--danger);
+  white-space: normal;
+}
+.report-task-notice.is-trust {
+  color: var(--attention);
   white-space: normal;
 }
 /* The path is the flexible one on this line, so it absorbs the remainder and ellipsises
@@ -22243,6 +22248,36 @@ button.sc-row:focus-visible {
   flex-direction: column;
   gap: 2px;
 }
+.line-bl-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  font-size: 9.5px;
+  line-height: 1.1;
+}
+.line-bl-notice.is-error {
+  color: var(--danger);
+}
+.line-bl-notice.is-trust {
+  color: var(--attention);
+}
+.line-bl-notice .backlog-task-notice-copy {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.line-bl-notice .backlog-task-notice-action {
+  flex: none;
+}
+/* The compact status must reach the repository name before it ellipsizes. This is taken
+   from the marks rail, which remains flexible, while the action and ops reservation stay put. */
+.line-bl-who {
+  width: 360px;
+}
 /* The Review row alone goes wider, and only now that its bold line is a real title. 240px was
    sized when it held a conversation GUID, which ellipsizes at any width; the binding titles
    that replaced it ("Improve Foreman Context and Table Scrolling") are 46 characters of
@@ -25042,6 +25077,27 @@ span.line-run-prov {
   color: var(--attention);
   font-size: 10.5px;
   line-height: 1.45;
+}
+.backlog-task-notice-action {
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.backlog-task-notice-action:hover {
+  color: var(--fg);
+}
+.backlog-task-notice-action:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
 }
 .bl-launch {
   align-self: flex-start;

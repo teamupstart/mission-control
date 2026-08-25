@@ -160,6 +160,28 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/dispatch-restart-recovery/focused-playwright-transcript.txt
 ```
 
+### Backlog repository-trust notices
+
+`e2e/.artifacts/backlog-trust-alert/board-surface.png`, `sitrep-surface.png`, and
+`drawer-surface.png` provide one focused frame for each backlog surface. They show the derived
+trust copy and inline **Manage trust** action in the existing visual notification positions;
+the Board keeps manual launch, and the drawer keeps its fixed-height three-row presentation.
+`board-inline-wide.png` shows all four enabled tasks with their dependency marks, while
+`board-inline-narrow.png` proves the notice wraps inside a compact card.
+
+The focused spec also proves the derived notices are not live regions, exercises the Sitrep
+notification line, routes the drawer remedy to the existing Trust matrix, grants the
+repository there, and observes every notice disappear on the ordinary Foreman config refresh.
+
+Regenerate the frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/backlog-trust-alert.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Native worktree dispatch and reuse
 
 `e2e/.artifacts/native-worktree-dispatch/` carries the task card before cleanup and after a

@@ -9,10 +9,17 @@ import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 // The words and the tone rule for a blocked item, shared with the Line's Backlog drawer so
 // the board and the drawer cannot describe one task two ways.
-import { blockedLabel, blockersNeedYou } from "../../lib/backlog-copy.ts";
+import {
+  backlogTaskNotice,
+  blockedLabel,
+  blockersNeedYou,
+  type BacklogTaskNoticeView,
+  type BacklogTrustView,
+} from "../../lib/backlog-copy.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
 import {
   ColumnWidthToggle,
+  BacklogTaskNotice,
   DeadBlockerButton,
   LabelChips,
   ScheduleOriginChip,
@@ -81,6 +88,8 @@ export function BacklogColumn({
   onEdit,
   onOpenSchedule,
   scheduleNameById,
+  backlogTrust = null,
+  onManageTrust,
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -105,6 +114,10 @@ export function BacklogColumn({
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
+  /** Loaded Foreman posture, or null while either config or status is unavailable. */
+  backlogTrust?: BacklogTrustView | null;
+  /** Open the existing Trust matrix. Omitted in isolated renders with no App router. */
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   const index = backlogIndex(allTasks, plan);
@@ -270,6 +283,8 @@ export function BacklogColumn({
                 onEdit={() => onEdit(t.id)}
                 onOpenSchedule={onOpenSchedule}
                 scheduleNameById={scheduleNameById}
+                notice={backlogTaskNotice(t, backlogTrust)}
+                onManageTrust={onManageTrust}
               />
               {i === tasks.length - 1 && (
                 <div
@@ -380,6 +395,8 @@ function BacklogCard({
   onEdit,
   onOpenSchedule,
   scheduleNameById,
+  notice,
+  onManageTrust,
 }: {
   task: Task;
   blockers: BacklogBlocker[];
@@ -403,6 +420,8 @@ function BacklogCard({
   onEdit: () => void;
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
+  notice: BacklogTaskNoticeView | null;
+  onManageTrust?: () => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   /** The move-control group, so focus can be put back on it after a move redraws it. */
@@ -706,15 +725,13 @@ function BacklogCard({
         )}
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
-      {/* Live failure handling and startup recovery can prove a dispatch stopped before any
-          worktree or agent existed and put it back here for a safe retry. Keep that reason
-          on the card: merely restoring the row would fix scheduling while preserving the
-          original "it disappeared" symptom. */}
-      {task.error && (
-        <span className="bl-recovery" role="status">
-          {task.error}
-        </span>
-      )}
+      {/* One notification slot beneath metadata. A persisted launch error is the strongest
+          explanation; otherwise live autopilot can name a missing repository grant here. */}
+      <BacklogTaskNotice
+        notice={notice}
+        className="bl-recovery"
+        onManageTrust={onManageTrust}
+      />
       {/* A generated task's recurring-mission origin. The shared chip stops propagation so
           opening its history does not also open Dispatch or start a drag. */}
       <ScheduleOriginChip task={task} scheduleNames={scheduleNameById} onOpen={onOpenSchedule} />

@@ -1,7 +1,8 @@
 import type { BacklogBlocker } from "@shared/backlog.ts";
-import { PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
+import { missingTaskRepoRoots } from "@shared/allowlist.ts";
+import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
-import { relativeTime } from "./format.ts";
+import { relativeTime, repoLeaf } from "./format.ts";
 
 /**
  * How a blocked backlog item's state is SAID, in one place.
@@ -46,6 +47,87 @@ export function blockedLabel(blockers: BacklogBlocker[]): string {
  */
 export function blockersNeedYou(blockers: BacklogBlocker[]): boolean {
   return blockers.some((b) => b.state === "stopped" || b.state === "disabled");
+}
+
+/** The loaded Foreman posture needed to explain one task-level repository hold. */
+export interface BacklogTrustView {
+  enabled: boolean;
+  mode: ForemanStatus["mode"];
+  running: boolean;
+  autoBacklog: boolean;
+  repoAllowlist: readonly string[];
+}
+
+/**
+ * Missing repository grants for one backlog task, or null when trust is not its current
+ * task-local explanation.
+ *
+ * Queue-wide posture stays on Foreman's own controls. Parked tasks and launch failures also
+ * stay with the more specific explanation already printed on their row. Dependencies are
+ * deliberately absent from this gate: finishing upstream work cannot grant repository trust.
+ */
+export function backlogTrustHold(
+  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "repoRoot" | "extraRepos">,
+  view: BacklogTrustView | null,
+): string[] | null {
+  if (
+    view === null
+    || !view.enabled
+    || view.mode !== "live"
+    || !view.running
+    || !view.autoBacklog
+    || task.status !== "backlog"
+    || !task.enabled
+    || task.error !== null
+    || !allowsBacklogAutopilot(task.kind)
+  ) {
+    return null;
+  }
+  const missing = missingTaskRepoRoots(task, view.repoAllowlist);
+  return missing.length > 0 ? missing : null;
+}
+
+/** The one task-local explanation shown in backlog status slots. */
+export type BacklogTaskNoticeView =
+  | { kind: "error"; message: string; missingRoots: null }
+  | { kind: "trust"; message: string; missingRoots: string[] };
+
+function readableList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+}
+
+/** The repository clause shared by every backlog task surface. */
+export function backlogTrustSummary(missingRoots: readonly string[]): string {
+  const names = missingRoots.map(repoLeaf);
+  return names.length === 1
+    ? `${names[0]} is not trusted for Foreman`
+    : `${readableList(names)} are not trusted for Foreman`;
+}
+
+/** Persistent inline copy for a trust hold. Manual launch is deliberately still offered. */
+export function backlogTrustNoticeText(missingRoots: readonly string[]): string {
+  return `Autopilot cannot schedule this task: ${backlogTrustSummary(missingRoots)}. Manual launch still works.`;
+}
+
+/**
+ * Resolve status-slot precedence once for Board, Backlog drawer, and Sitrep.
+ *
+ * A persisted launch error is the more specific recovery explanation and always wins.
+ * Trust remains derived browser state and is never copied into `task.error`.
+ */
+export function backlogTaskNotice(
+  task: Pick<Task, "status" | "enabled" | "error" | "kind" | "repoRoot" | "extraRepos">,
+  view: BacklogTrustView | null,
+): BacklogTaskNoticeView | null {
+  if (task.error !== null) {
+    return { kind: "error", message: task.error, missingRoots: null };
+  }
+  const missingRoots = backlogTrustHold(task, view);
+  return missingRoots
+    ? { kind: "trust", message: backlogTrustNoticeText(missingRoots), missingRoots }
+    : null;
 }
 
 /**

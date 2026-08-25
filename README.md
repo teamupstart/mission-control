@@ -102,6 +102,15 @@ from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the
 you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
 still launches the task immediately.
 
+When Foreman is running in **Live** mode with backlog autopilot on, an amber inline notice
+marks an otherwise eligible task whose primary or attached repositories are missing from
+Foreman's allowlist. The Board, the Line's Backlog drawer, and Sitrep use their existing task
+notification position to name the missing grants, confirm that manual launch still works,
+and link **Manage trust** to the existing
+**Settings → Trust** matrix. Granting every listed repository removes the notice on the next
+Foreman config update. Parked tasks and tasks carrying a launch error keep their existing,
+more specific explanations instead.
+
 If freezing a dispatch's Git bases or provisioning its worktrees fails before any worktree or
 agent remains, a backlog-capable task returns to the Board's Backlog with the exact error on its
 card and its normal launch control enabled. Task kinds that cannot appear in Backlog remain

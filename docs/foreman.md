@@ -143,6 +143,11 @@ approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
 safety check) are **always** escalated, never auto-approved.
 
+The same allowlist gates unattended backlog launches across every repository attached to a
+task. When a running Live Foreman with backlog autopilot on lacks one of those grants, the
+task's Board, Backlog drawer, and Sitrep rows name what is missing and link to the Trust
+matrix; [manual launch remains available](dispatch-and-backlog.md#resolve-missing-repository-trust-for-autopilot).
+
 Everything Foreman does surfaces where you're already looking. When an agent's ordinary
 review form already owns the decision, Foreman does not draw a second answer card or an
 **Approve & send** path beside it. Instead the option its recommendation names wears a

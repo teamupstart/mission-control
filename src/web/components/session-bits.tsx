@@ -21,6 +21,7 @@ import {
   sessionTitleDetail,
   stateDisplay,
 } from "../lib/format.ts";
+import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useInterrupting } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
@@ -2141,6 +2142,62 @@ export function DeadBlockerButton({
             ))}
           </ul>
         </div>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The shared contents of the existing backlog task-notification line.
+ *
+ * Hosts keep their established position and sizing classes. This leaf only preserves the
+ * shared copy, tone, and compact Trust remedy. Persisted launch errors retain the line's
+ * transient status semantics, while derived trust posture is ordinary content: polling can
+ * update many task rows at once and must not turn each one into a live-region announcement.
+ * This leaf owns no scheduler state or disclosure state; a Foreman config refresh is what
+ * removes a resolved trust notice.
+ */
+export function BacklogTaskNotice({
+  notice,
+  className,
+  onManageTrust,
+}: {
+  notice: BacklogTaskNoticeView | null;
+  className: string;
+  onManageTrust?: () => void;
+}): React.JSX.Element | null {
+  if (!notice) return null;
+  const hasDuplicateLeaves = notice.kind === "trust"
+    && new Set(notice.missingRoots.map(repoLeaf)).size !== notice.missingRoots.length;
+
+  return (
+    <span
+      className={`${className} backlog-task-notice is-${notice.kind}`}
+      role={notice.kind === "error" ? "status" : undefined}
+    >
+      <span className="backlog-task-notice-copy">{notice.message}</span>
+      {hasDuplicateLeaves && (
+        <span className="sr-only">
+          {` Missing repository paths: ${notice.missingRoots.join(", ")}.`}
+        </span>
+      )}
+      {notice.kind === "trust" && onManageTrust && (
+        <>
+          {" "}
+          <Tooltip label="Open the Foreman repository Trust matrix">
+            <button
+              type="button"
+              className="backlog-task-notice-action"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onManageTrust();
+              }}
+            >
+              Manage trust
+            </button>
+          </Tooltip>
+        </>
       )}
     </span>
   );

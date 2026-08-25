@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import { ReviewDrawer } from "../src/web/components/line/ReviewDrawer.tsx";
 import { BacklogDrawer } from "../src/web/components/line/BacklogDrawer.tsx";
+import type { BacklogTrustView } from "../src/web/lib/backlog-copy.ts";
 import type { BacklogPlan, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
@@ -179,7 +180,22 @@ const QUEUE_PLAN: BacklogPlan = {
   generatedAt: 1000,
 };
 
-const backlogDrawer = (tasks: Task[]): string =>
+const NOTICED_QUEUE = QUEUE.map((task, index) => ({
+  ...task,
+  error: index === 0
+    ? "Dispatch stopped before provisioning, so launch this task manually when ready."
+    : task.error,
+}));
+
+const BACKLOG_TRUST = {
+  enabled: true,
+  mode: "live",
+  running: true,
+  autoBacklog: true,
+  repoAllowlist: [],
+} satisfies BacklogTrustView;
+
+const backlogDrawer = (tasks: Task[], withNotices = false): string =>
   renderToStaticMarkup(createElement(BacklogDrawer, {
     tasks,
     backlogPlan: QUEUE_PLAN,
@@ -194,6 +210,7 @@ const backlogDrawer = (tasks: Task[]): string =>
     onEditTask: () => {},
     onOpenSitrep: () => {},
     onSetAutoBacklog: async () => true,
+    ...(withNotices ? { backlogTrust: BACKLOG_TRUST, onManageTrust: () => {} } : {}),
   }));
 
 const strip = (): string =>
@@ -212,6 +229,7 @@ interface Measured {
   bodyScrollHeight: number | null;
   rowHeights: number[];
   rowOverflows: number[];
+  noticeOverflows: Array<number | null>;
   firstRowTop: number | null;
   shellBodyHeight: number | null;
   shellBodyTop: number | null;
@@ -239,6 +257,7 @@ const CASES: Array<[string, string]> = [
   ["console-wordy", consoleShell(drawer(WORDY))],
   ["console-piled", consoleShell(drawer(PILED))],
   ["console-backlog", consoleShell(backlogDrawer(QUEUE))],
+  ["console-backlog-notices", consoleShell(backlogDrawer(NOTICED_QUEUE, true))],
   ["console-closed", consoleShell("")],];
 
 let measured: Record<string, Measured>;
@@ -423,6 +442,32 @@ test("the footer sits under the cap, not inside it, and costs the rows nothing",
   assert.ok(
     (backlog.drawerHeight ?? 0) < (many.drawerHeight ?? 0) + 60,
     `the footer added ${(backlog.drawerHeight ?? 0) - (many.drawerHeight ?? 0)}px to the panel`,
+  );
+});
+
+test("a third backlog identity line keeps the fixed row height and three-row cap", () => {
+  const plain = at("console-backlog");
+  const noticed = at("console-backlog-notices");
+
+  assert.deepEqual(
+    [...new Set(noticed.rowHeights)],
+    [...new Set(plain.rowHeights)],
+    "adding persisted-error and repository-trust notices changed the fixed row height",
+  );
+  assert.equal(
+    noticed.bodyClientHeight,
+    plain.bodyClientHeight,
+    "the task notice reduced or expanded the drawer's exact three-row viewport",
+  );
+  assert.equal(noticed.rows, plain.rows, "a task notice removed a row from the capped list");
+  assert.ok(
+    noticed.noticeOverflows.slice(0, -1).every((overflow) => (overflow ?? 0) > 0),
+    `the long notice copy should ellipsize, got ${noticed.noticeOverflows.join(", ")}`,
+  );
+  assert.equal(
+    noticed.noticeOverflows.at(-1),
+    null,
+    "the parked row should keep its existing explanation instead of a notice line",
   );
 });
 

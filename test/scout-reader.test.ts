@@ -75,7 +75,10 @@ test("the scout reader leads with the concise title and renders ordered prompt c
   const html = render(detail());
 
   assert.match(html, /<h1 class="scouts-question"[^>]*><button[^>]*>.*Concise reconnect finding.*<\/button>/);
-  assert.match(html, /<h2[^>]*>Prompt context<\/h2>/);
+  assert.match(html, /<h2 id="scouts-prompt-context-heading"[^>]*>.*Prompt context.*<\/h2>/);
+  // Open on arrival, so the request someone is checking needs no click to read.
+  assert.match(html, /class="scouts-prompt-disclosure" aria-expanded="true"/);
+  assert.match(html, /2 prompts/);
   assert.ok(html.indexOf("Original request") < html.indexOf("Follow-up"));
   assert.ok(html.indexOf("Original request") < html.indexOf("scouts-doc"));
   assert.match(html, new RegExp(`dateTime="${DELIVERED_AT}"`));
@@ -111,4 +114,13 @@ test("the scout reader swaps its title for the shared inline rename editor", () 
   assert.match(html, /value="Concise reconnect finding"/);
   assert.match(html, /aria-label="Save name"/);
   assert.match(html, /aria-label="Cancel rename"/);
+});
+
+test("the scout reader caps each prompt at a scrollable eight lines", () => {
+  const html = render(detail());
+
+  // The cap and the scroll live in `.scouts-prompt-text`; what the markup has to carry is
+  // the keyboard reach into that scroll container, which CSS cannot add.
+  const texts = html.match(/<p class="scouts-prompt-text" tabindex="0">/g) ?? [];
+  assert.equal(texts.length, 2, "every prompt body is its own focusable scroll box");
 });

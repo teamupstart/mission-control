@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -135,6 +135,31 @@ test.beforeEach(({ daemon }) => {
   script(daemon, { preflight: "ok", issueCreate: "created" });
   // Somebody is at the machine and says yes, unless a test says otherwise.
   consent(daemon, "grant");
+});
+
+test.describe("the default public issue target", () => {
+  test.use({ daemonEnv: { MISSION_PRODUCT_ISSUES_REPO: "" } });
+
+  test("names mancej-cyc/mission-control-issues in the feedback dialog", async ({ dashboard }) => {
+    await openFromTopbar(dashboard);
+    await form(dashboard)
+      .getByRole("textbox", { name: "Title", exact: true })
+      .fill("The issue target is incorrect");
+    await form(dashboard)
+      .getByRole("textbox", { name: "Details", exact: true })
+      .fill("The public repository shown here should be the product issue tracker.");
+
+    const target = form(dashboard).getByText("mancej-cyc/mission-control-issues").first();
+    await expect(target).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "product-issue-default-target");
+      mkdirSync(evidenceDir, { recursive: true });
+      await target.scrollIntoViewIfNeeded();
+      await form(dashboard).screenshot({
+        path: join(evidenceDir, "correct-default-target-preview.png"),
+      });
+    }
+  });
 });
 
 /**

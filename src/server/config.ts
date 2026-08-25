@@ -236,7 +236,7 @@ export function ghBin(): string {
   return envVar("GH_BIN") || "gh";
 }
 
-export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej/mission-controller-control-issues";
+export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej-cyc/mission-control-issues";
 
 export type ProductIssuesRepoConfig =
   | { ok: true; repo: string }

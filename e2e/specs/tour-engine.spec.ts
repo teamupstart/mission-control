@@ -1,6 +1,8 @@
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -12,8 +14,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * complete route rather than a per-tour list of fields.
  */
 const TOUR_COMMAND = /Start See the work tour, command/;
+const EVIDENCE = artifactsDir("guided-tour-default");
 
 test.describe.configure({ timeout: 90_000 });
+// This file owns the fresh-profile case. The shared browser fixture otherwise turns the
+// one-time default off so unrelated specs can state their own visible preconditions.
+test.use({ guidedTour: true });
 
 async function api<T>(daemon: DaemonHandle, path: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`);
@@ -24,6 +30,63 @@ async function api<T>(daemon: DaemonHandle, path: string): Promise<T> {
 function step(page: Page, title: string) {
   return page.getByRole("dialog", { name: title }).or(page.getByRole("status", { name: title }));
 }
+
+/** A frame of the automatic first-launch orientation, after its assertions have passed. */
+async function shoot(target: Page): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await target.screenshot({ path: `${EVIDENCE}fresh-profile-tour.png`, animations: "disabled" });
+  // eslint-disable-next-line no-console
+  console.log("CAPTURED e2e/.artifacts/guided-tour-default/fresh-profile-tour.png");
+}
+
+test("a fresh profile enables and starts the guided tour by default", async ({ page, daemon }) => {
+  const initial = await api<{ configured: boolean; config: { guidedTour: boolean } }>(
+    daemon,
+    "/api/ui/config",
+  );
+  expect(initial.configured).toBe(false);
+  expect(initial.config.guidedTour).toBe(true);
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const first = step(page, "Fleet and the Line");
+  await expect(first).toBeVisible();
+  await expect(first).toContainText("Step 1 of 14");
+  await shoot(page);
+
+  // The default is one-time: starting the orientation records it before a later dashboard
+  // visit can reopen the overlay over the operator's work.
+  await expect.poll(async () => (
+    await api<{ config: { guidedTour: boolean } }>(daemon, "/api/ui/config")
+  ).config.guidedTour).toBe(false);
+  await first.getByRole("button", { name: "Exit tour" }).click();
+  await expect(first).toBeHidden({ timeout: 30_000 });
+  await expectToursCleaned(daemon);
+});
+
+test("a rejected tour-consumption write stays consumed after reload", async ({ page, daemon }) => {
+  let rejectedWrites = 0;
+  await page.route("**/api/ui/config", async (route) => {
+    if (route.request().method() === "PUT") {
+      rejectedWrites += 1;
+      await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+      return;
+    }
+    await route.continue();
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const first = step(page, "Fleet and the Line");
+  await expect(first).toBeVisible();
+  await expect.poll(() => rejectedWrites).toBeGreaterThan(0);
+  await first.getByRole("button", { name: "Exit tour" }).click();
+  await expect(first).toBeHidden({ timeout: 30_000 });
+  await expectToursCleaned(daemon);
+
+  await page.reload();
+  await expect(step(page, "Fleet and the Line")).toBeHidden();
+});
 
 /**
  * Every temporary task the tour created is closed with its own fixed outcome.

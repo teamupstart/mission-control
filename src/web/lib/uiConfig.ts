@@ -25,6 +25,13 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
 let current: UiConfig = readCache();
 const listeners = new Set<() => void>();
+let hydrated = false;
+let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+const writeGeneration = new Map<keyof UiConfig, number>();
+
+export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
+export const UI_CONFIG_HYDRATE_MAX_RETRY_MS = 30_000;
+let hydrationRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
 
 function emit(): void {
   for (const l of listeners) l();
@@ -42,40 +49,90 @@ export function uiConfig(): UiConfig {
   return current;
 }
 
+/** Whether a daemon-backed config has arrived and automatic onboarding may evaluate it. */
+export function uiConfigHydrated(): boolean {
+  return hydrated;
+}
+
+function retryHydration(): void {
+  if (hydrated || hydrationRetryTimer !== null) return;
+  const delay = hydrationRetryDelay;
+  hydrationRetryDelay = Math.min(delay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
+  hydrationRetryTimer = setTimeout(() => {
+    hydrationRetryTimer = null;
+    void hydrateUiConfig();
+  }, delay);
+}
+
 /**
  * Fetch the daemon's copy and take it as the truth, adopting pre-rename `localStorage`
  * first if the daemon has never held one.
  *
- * On an unreachable daemon this returns having changed nothing, which is the point of
- * keeping a cache at all: under `vite` the dashboard is served by something other than
- * the daemon, so it can render before (or without) one, and it should render with the
- * operator's settings rather than the shipped defaults.
+ * On an unreachable daemon this keeps the current cache for rendering but leaves hydration
+ * incomplete and retries. A default-on onboarding setting must never infer a fresh profile
+ * merely because the daemon could not answer.
  */
 export async function hydrateUiConfig(): Promise<void> {
+  if (hydrated) return;
   const view = await fetchUiConfig();
-  if (!view) return; // daemon unreachable - the cache stands
+  if (!view) {
+    retryHydration();
+    return;
+  }
+  hydrationRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
   if (!view.configured) {
     // Nothing has ever been saved, so anything this origin still holds under an older
     // product name is worth rescuing. Only here: once the daemon has a config, it wins,
     // and a stray from a rename two generations back must never overwrite it.
     const legacy = readLegacySettings();
     if (legacy) {
-      await updateUiConfig(legacy);
-      return;
+      // Legacy settings identify an existing profile. Do not let `coerce`'s new-profile
+      // default turn that rescued profile into an onboarding candidate.
+      if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
+        retryHydration();
+        return;
+      }
+    } else {
+      commit(view.config);
     }
+  } else {
+    commit(view.config);
   }
-  commit(view.config);
+  hydrated = true;
+  emit();
 }
 
 /**
  * Apply a patch optimistically and TAKE IT BACK if the daemon refuses, so no control ever
  * shows a setting that isn't in force. Same contract as `useHarnesses.update`.
  */
-export async function updateUiConfig(patch: UiConfigPatch): Promise<void> {
+export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   const before = current;
-  commit({ ...before, ...patch });
+  const optimistic = { ...before, ...patch };
+  const generations = new Map<keyof UiConfig, number>();
+  for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
+    const key = field as keyof UiConfig;
+    const generation = (writeGeneration.get(key) ?? 0) + 1;
+    writeGeneration.set(key, generation);
+    generations.set(key, generation);
+  }
+  commit(optimistic);
   const res = await api.setUiConfig(patch);
-  if (!res.ok) commit(before);
+  if (!res.ok) {
+    // A later optimistic patch, including one setting this field to the same value, may have
+    // already superseded this request. Roll back only fields this request still owns, never
+    // its whole old snapshot.
+    const rollback = { ...current };
+    for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
+      const key = field as keyof UiConfig;
+      if (writeGeneration.get(key) === generations.get(key) && Object.is(current[key], optimistic[key])) {
+        Object.assign(rollback, { [key]: before[key] });
+      }
+    }
+    commit(rollback);
+    return false;
+  }
+  return true;
 }
 
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener
@@ -95,7 +152,16 @@ function getSnapshot(): UiConfig {
   return current;
 }
 
+function getHydrationSnapshot(): boolean {
+  return uiConfigHydrated();
+}
+
 /** Live view of the whole config; re-renders on any change from any surface. */
 export function useUiConfig(): UiConfig {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/** True once a daemon-backed preference is available for automatic behavior to evaluate. */
+export function useUiConfigHydrated(): boolean {
+  return useSyncExternalStore(subscribe, getHydrationSnapshot, getHydrationSnapshot);
 }

@@ -235,6 +235,7 @@ const uiFields = {
   richText: "setting",
   keybindingHints: "setting",
   guidedDispatch: "setting",
+  guidedTour: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;

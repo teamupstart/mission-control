@@ -381,9 +381,10 @@ Workflow posture, and MCP tool list. An unknown tour, or an operation a tour did
 is refused before any task is created rather than falling through to general dispatch, and
 cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
 
-Two tours are registered, and neither stores progress: there is no first-run trigger, no
-resume prompt, and no "you have not finished this tour" nudge. Exiting one restores the page,
-the asset, and the control it started from, and starting it again starts it at stop one.
+Two tours are registered, and neither stores progress or resumes. A fresh profile starts
+**See the work** once automatically, then records that the orientation has been shown so it
+does not reopen over later work. Exiting one restores the page, the asset, and the control it
+started from, and either tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md) and
@@ -395,10 +396,10 @@ TypeScript definition because they are executable tour behavior rather than edit
 
 #### See the work
 
-**See the work** in the Settings rail's **Help & tours** footer, or **Start See the work tour**
-in the palette's **Do** group, teaches the operating half of the product and runs an isolated
-evaluation of `driver.js@1.8.0`. It is user-started only. There is no first-run trigger,
-progress storage, new top-bar control, or chapter beyond this one guided sequence:
+**See the work** starts automatically once for a fresh profile, or from the Settings rail's
+**Help & tours** footer and **Start See the work tour** in the palette's **Do** group. It teaches
+the operating half of the product and runs an isolated evaluation of `driver.js@1.8.0`. It has
+no resume state, new top-bar control, or chapter beyond this one guided sequence:
 
 1. **Fleet and the Line** spotlights the permanent pipeline strip.
 2. **Board View** switches through the existing layout owner and spotlights the real Board.

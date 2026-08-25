@@ -18,9 +18,10 @@ workflow, model, context, effort, permission mode, cost, branch, worktree, last 
 live preview card beside the checklist. The flags that ask for you stay on whatever you
 choose, and the defaults draw the card the previous release drew.
 
-Guided tours start from the **Help & tours** footer in the Settings rail, which lists one row
-per registered tour, or from that tour's command in the <kbd>⌘K</kbd> palette's **Do** group.
-One tour runs at a time, and two are registered.
+Fresh profiles automatically start the **See the work** guided tour once, then remember that
+the orientation has been shown. Guided tours can later start from the **Help & tours** footer
+in the Settings rail, which lists one row per registered tour, or from that tour's command in
+the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and two are registered.
 Their names and stage copy are edited in [`tours/see-work.md`](tours/see-work.md) and
 [`tours/library.md`](tours/library.md); see [`tours/README.md`](tours/README.md) for the format.
 
@@ -41,8 +42,8 @@ on shipped built-ins, ends on **No-Mistakes Review**, and then follows one alrea
 that workflow - completed, cancelled or failed alike - into the Runs page and its session's
 **Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
 run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
-same two stops against the built-in graph instead. Neither tour stores progress, and both
-restore the page, the asset, and the control you started from when you exit.
+same two stops against the built-in graph instead. Tours do not store progress, and both restore
+the page, the asset, and the control you started from when you exit.
 
 For Files workspace behavior and controls, see the
 [UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).

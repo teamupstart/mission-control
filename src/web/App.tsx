@@ -131,6 +131,7 @@ import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx"
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import { GuidedTourController } from "./tour/GuidedTourController.tsx";
+import { useGuidedTour } from "./lib/guided-tour.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
 import { tourEntry } from "./tour/entries.ts";
@@ -811,6 +812,7 @@ export function App(): React.JSX.Element {
   // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
   // the same module-level store, so this is a third reader of one value rather than a copy.
   const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
+  const [guidedTourEnabled, guidedTourHydrated, consumeGuidedTour] = useGuidedTour();
   /**
    * Runtime get/set for the settings toggles the palette may flip in place.
    *
@@ -956,10 +958,10 @@ export function App(): React.JSX.Element {
   const startTour = useCallback((
     tourId: TourId,
     focus = paletteInvokerRef.current,
-  ): void => {
-    if (activeTourRef.current) return;
+  ): boolean => {
+    if (activeTourRef.current) return false;
     const snapshot: TourSnapshot = { route, layout, selectedId, boardOpen, filter, lineDrawer };
-    if (!navigate(tourEntry(tourId).entryRoute)) return;
+    if (!navigate(tourEntry(tourId).entryRoute)) return false;
     const starter = tourStarters[tourId];
     const run: TourRun = {
       id: `${tourId}-${++tourSequence.current}`,
@@ -973,7 +975,18 @@ export function App(): React.JSX.Element {
     activeTourRef.current = run;
     starter.begin(run);
     setActiveTour(run);
+    return true;
   }, [boardOpen, filter, layout, lineDrawer, navigate, route, selectedId, tourStarters]);
+
+  /**
+   * A fresh profile receives one automatic product orientation. The preference is consumed
+   * only after the preflight accepts, so a dirty route that declines navigation can try again
+   * after the operator resolves its ordinary leave dialog.
+   */
+  useEffect(() => {
+    if (!guidedTourHydrated || !guidedTourEnabled) return;
+    if (startTour("see-work", captureFocusBookmark(null))) consumeGuidedTour();
+  }, [consumeGuidedTour, guidedTourEnabled, guidedTourHydrated, startTour]);
 
   // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
   // repository is known, while the operator is reading the Line and Board stops. A late

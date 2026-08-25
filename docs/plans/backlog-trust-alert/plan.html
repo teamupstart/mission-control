@@ -140,31 +140,21 @@
     .task-title { margin: 0; font-weight: 680; font-size: .92rem; }
     .marks, .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; color: var(--muted); font: .72rem var(--mono); }
     .tag { padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; font-size: .68rem; }
-    .warning {
-      width: 24px;
-      height: 24px;
-      display: grid;
-      place-items: center;
-      margin-top: 10px;
-      color: var(--amber);
-      background: var(--amber-soft);
-      border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
-      border-radius: 999px;
-      font-weight: 800;
-    }
+    .notice { margin-top: 10px; color: var(--amber); font-size: .76rem; line-height: 1.45; }
+    .notice .repo { font-size: inherit; }
+    .notice-action { padding: 0; border: 0; background: none; color: var(--navy); font: 700 inherit; text-decoration: underline; text-underline-offset: .18em; }
     .launch { margin-top: 10px; padding: 4px 8px; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
-    .popover {
+    .reuse-note {
       padding: 18px;
       background: var(--paper);
       border: 1px solid var(--line);
-      border-top: 4px solid var(--amber);
+      border-left: 4px solid var(--amber);
       border-radius: 10px;
       box-shadow: 0 16px 38px var(--shadow);
     }
-    .popover h3 { margin: 0 0 10px; font-family: var(--sans); font-size: 1rem; }
-    .popover p { margin: 7px 0; }
+    .reuse-note h3 { margin: 0 0 10px; font-family: var(--sans); font-size: 1rem; }
+    .reuse-note p { margin: 7px 0; }
     .repo { color: var(--amber); font: 700 .9rem var(--mono); }
-    .button { display: inline-block; margin-top: 10px; padding: 7px 10px; color: white; background: var(--navy); border-radius: 6px; font-weight: 650; }
     .flow {
       margin-top: 24px;
       overflow-x: auto;
@@ -204,7 +194,6 @@
         --shadow: rgba(0, 0, 0, .35);
       }
       header { color: #edf3f4; background: #102833; }
-      .button { color: #102027; background: #72b5ce; }
     }
   </style>
 </head>
@@ -214,7 +203,7 @@
       <p class="eyebrow">Feature plan · backlog scheduling</p>
       <h1>Explain the trust hold on the task itself.</h1>
       <p class="lede">The scheduler already knows why these tasks will not move. This plan carries that exact repository-trust reason to every place the queued task is read.</p>
-      <p class="outcome"><strong>Outcome:</strong> a persistent amber warning names the missing repository grant, preserves manual launch, and routes the operator to the existing Trust matrix.</p>
+      <p class="outcome"><strong>Outcome:</strong> the existing inline backlog notification names the missing repository grant, preserves manual launch, and routes the operator to the existing Trust matrix.</p>
     </header>
 
     <main>
@@ -224,7 +213,9 @@
           <li><code>backlog-machine.ts</code> refuses the queue through <code>taskReposAllowlisted</code> before capacity.</li>
           <li><code>allowlist.ts</code> owns the path and multi-repo rules, but exposes only a boolean today.</li>
           <li><code>App.tsx</code> already holds tasks, Foreman config, worker status, and the allowlist.</li>
-          <li><code>DeadBlockerButton</code> supplies the existing shared task-alert interaction.</li>
+          <li>Board and Sitrep already render persisted <code>task.error</code> in an inline status line beneath task metadata.</li>
+          <li>The Backlog drawer currently omits that line; this feature completes the same notification placement there.</li>
+          <li><code>DeadBlockerButton</code> remains the separate active resolver for stopped prerequisites.</li>
           <li><code>openSettingsAnchor("trust", "trust/matrix")</code> already owns the remedy route.</li>
         </ul>
         <p class="callout">No database migration, new endpoint, wire field, or automatic trust grant is required.</p>
@@ -249,34 +240,34 @@
       </section>
 
       <section id="design">
-        <h2>One quiet alarm</h2>
-        <p>Amber means operator action; danger remains reserved for stopped work. The closed state stays icon-sized so a phased backlog does not become a wall of repeated copy. The opened dialog names the repository, says manual launch still works, and offers one route to the Trust matrix.</p>
+        <h2>Reuse the line operators already read</h2>
+        <p>The trust explanation occupies the same position as a recoverable dispatch error: immediately beneath task metadata, before dependency and scheduling marks. Amber means operator action; persisted launch errors keep precedence and each host's existing tone.</p>
         <div class="specimen" aria-label="Illustration of the backlog trust alert">
           <div class="task-card">
             <p class="task-title">Phase 1: App skeleton</p>
             <div class="marks"><span class="tag">on</span><span class="tag">priority</span></div>
             <div class="meta"><span>ship</span><span>codex</span><span>2m ago</span></div>
-            <span class="warning" aria-hidden>!</span>
+            <div class="notice">Autopilot cannot schedule this task: <span class="repo">calendar-buddy</span> is not trusted for Foreman. Manual launch still works. <button class="notice-action" type="button">Manage trust</button></div>
             <button class="launch" type="button">launch new agent</button>
           </div>
-          <div class="popover">
-            <h3>Why autopilot cannot schedule Phase 1</h3>
-            <p><span class="repo">calendar-buddy</span> is not trusted for Foreman's live actions.</p>
-            <p class="muted">Manual launch still works.</p>
-            <span class="button">Manage trust</span>
+          <div class="reuse-note">
+            <h3>The existing task-notification slot</h3>
+            <p>Board already uses <code>.bl-recovery</code> and <code>role="status"</code> here when an interrupted or failed launch returns to Backlog.</p>
+            <p class="muted">Sitrep mirrors the line. The drawer gains the missing equivalent without changing its fixed row height.</p>
           </div>
         </div>
         <ul>
-          <li>Reuse the existing outlined warning triangle and popover interaction.</li>
-          <li>Use existing attention, panel, border, text, shadow, and focus tokens.</li>
-          <li>Do not use <code>role="alert"</code> for persistent multi-row state.</li>
+          <li>Reuse the existing status-line placement, wrapping, type, and attention tone.</li>
+          <li>Persisted <code>task.error</code> wins the slot over the derived trust posture.</li>
+          <li>Give derived trust copy no live-region role; only transient persisted recovery retains <code>role="status"</code>.</li>
           <li>Keep Trust as the only place that edits and confirms repository grants.</li>
+          <li>Leave the stopped-prerequisite triangle and popover unchanged.</li>
         </ul>
       </section>
 
       <section id="flow">
         <h2>Data and request flow</h2>
-        <p>Existing server projections meet in App. A pure browser helper then feeds the same shared control to all three task surfaces. Only the remedy navigates.</p>
+        <p>Existing server projections meet in App. A pure browser helper then feeds the same notice projection to the established task-status position on all three surfaces. Only the remedy navigates.</p>
         <div class="flow">
           <svg viewBox="0 0 1160 390" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
             <title id="flow-title">Backlog trust alert data flow</title>
@@ -303,13 +294,13 @@
               <line x1="734" y1="192" x2="810" y2="254" stroke="#78868c" stroke-width="2" marker-end="url(#arr)"/>
               <rect x="818" y="30" width="170" height="76" rx="7" fill="var(--paper)" stroke="var(--line)" stroke-width="2"/>
               <text x="903" y="63" text-anchor="middle" font-weight="700">Board card</text>
-              <text x="903" y="86" text-anchor="middle" fill="var(--muted)" font-size="13">shared warning</text>
+              <text x="903" y="86" text-anchor="middle" fill="var(--muted)" font-size="13">existing status line</text>
               <rect x="818" y="124" width="170" height="76" rx="7" fill="var(--paper)" stroke="var(--line)" stroke-width="2"/>
               <text x="903" y="157" text-anchor="middle" font-weight="700">Backlog drawer</text>
-              <text x="903" y="180" text-anchor="middle" fill="var(--muted)" font-size="13">shared warning</text>
+              <text x="903" y="180" text-anchor="middle" fill="var(--muted)" font-size="13">completed status line</text>
               <rect x="818" y="218" width="170" height="76" rx="7" fill="var(--paper)" stroke="var(--line)" stroke-width="2"/>
               <text x="903" y="251" text-anchor="middle" font-weight="700">Sitrep row</text>
-              <text x="903" y="274" text-anchor="middle" fill="var(--muted)" font-size="13">shared warning</text>
+              <text x="903" y="274" text-anchor="middle" fill="var(--muted)" font-size="13">existing status line</text>
 
               <line x1="903" y1="294" x2="903" y2="338" stroke="#78868c" stroke-width="2" marker-end="url(#arr)"/>
               <rect x="818" y="346" width="310" height="34" rx="7" fill="var(--green-soft)" stroke="var(--green)" stroke-width="2"/>
@@ -324,8 +315,8 @@
         <ol>
           <li><strong>Name the gap once.</strong> Add a missing-task-repositories helper to <code>src/shared/allowlist.ts</code> and define <code>taskReposAllowlisted</code> from it.</li>
           <li><strong>Project the UI state once.</strong> Add <code>backlogTrustHold</code> and singular/plural copy helpers to <code>src/web/lib/backlog-copy.ts</code>.</li>
-          <li><strong>Build one shared control.</strong> Add <code>BacklogTrustAlert</code> beside <code>DeadBlockerButton</code> and share popover geometry with an amber modifier.</li>
-          <li><strong>Wire all three surfaces.</strong> Thread one nullable view from App through Board, Backlog drawer, and Sitrep, with one Trust deep-link callback.</li>
+          <li><strong>Reuse the task-notification slot.</strong> Resolve persisted error versus trust precedence once, preserve the Board and Sitrep positions, and add the missing drawer line.</li>
+          <li><strong>Wire all three surfaces.</strong> Thread one nullable view from App through Board, Backlog drawer, and Sitrep, with one Trust deep-link callback and no popover state.</li>
           <li><strong>Document the contract.</strong> Update <code>README.md</code>, <code>docs/dispatch-and-backlog.md</code>, <code>docs/ui.md</code>, and aligned Foreman copy if needed.</li>
         </ol>
       </section>
@@ -335,28 +326,28 @@
         <h3>Pure and render coverage</h3>
         <ul>
           <li>Gate state, primary and attached repos, parked/error suppression, and dependency coexistence.</li>
-          <li>The same shared markup on Board, Backlog drawer, and Sitrep.</li>
-          <li>Accessible names, singular/plural copy, no live-region spam, and attention versus danger tones.</li>
+          <li>The same notice projection in the existing status position on Board, Backlog drawer, and Sitrep.</li>
+          <li>Persisted-error precedence, singular/plural copy, non-live trust semantics, retained recovery <code>role="status"</code>, and attention versus danger tones.</li>
         </ul>
         <pre><code>node --test --import ./test/setup-state.mjs --import tsx \
   test/backlog-trust-alert.test.ts test/backlog-trust-alert-render.test.ts</code></pre>
         <h3>Browser and visual coverage</h3>
         <ul>
           <li>Seed a live Foreman heartbeat, armed autopilot, and a task repository absent from Trust.</li>
-          <li>Exercise the warning on all three surfaces with role and accessible-name selectors.</li>
-          <li>Open Manage trust, verify <code>#/settings/trust</code>, grant access, and watch the warnings disappear after polling.</li>
-          <li>Capture gitignored evidence showing several closed warnings and one open dialog.</li>
+          <li>Exercise the inline status and Manage trust action on all three surfaces with semantic selectors.</li>
+          <li>Verify <code>#/settings/trust</code>, grant access, and watch the notices disappear after polling.</li>
+          <li>Capture gitignored evidence showing reused notification lines on cards and a drawer row.</li>
         </ul>
         <h3>Gates</h3>
-        <p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Run Electron drawer geometry coverage if the shared alert styling changes row measurements.</p>
+        <p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Run Electron drawer geometry coverage to preserve fixed row height and the three-row cap.</p>
       </section>
 
       <section id="acceptance">
         <h2>Acceptance criteria</h2>
         <ul>
-          <li>All four enabled, error-free <code>calendar-buddy</code> phases show the warning, including dependency-blocked phases.</li>
-          <li>The dialog names <code>calendar-buddy</code>, preserves manual launch, and routes to Trust.</li>
-          <li>Granting Foreman access removes every affected warning after normal refresh.</li>
+          <li>All four enabled, error-free <code>calendar-buddy</code> phases show the inline notice, including dependency-blocked phases.</li>
+          <li>The status line names <code>calendar-buddy</code>, preserves manual launch, and routes to Trust.</li>
+          <li>Granting Foreman access removes every affected notice after normal refresh.</li>
           <li>Multi-repo tasks name only missing grants and require all repositories.</li>
           <li>Parked and launch-error tasks keep one existing explanation, not two alarms.</li>
           <li>No new persistence, endpoint, alert-center event, desktop notification, scheduler rule, or automatic grant exists.</li>

@@ -31,17 +31,26 @@ Object.defineProperty(globalThis, "fetch", {
 const {
   hydrateUiConfig,
   uiConfigHydrated,
+  UI_CONFIG_HYDRATE_MAX_RETRY_MS,
   UI_CONFIG_HYDRATE_RETRY_MS,
 } = await import("../src/web/lib/uiConfig.ts");
 
-test("a failed config hydration keeps automatic onboarding unavailable and retries", async () => {
+test("a failed config hydration keeps onboarding unavailable and uses capped retries", async () => {
   await hydrateUiConfig();
   assert.equal(uiConfigHydrated(), false);
   assert.equal(timers.length, 1);
-  assert.equal(timers[0]?.delay, UI_CONFIG_HYDRATE_RETRY_MS);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    assert.equal(timers[attempt]?.delay, Math.min(
+      UI_CONFIG_HYDRATE_RETRY_MS * (2 ** attempt),
+      UI_CONFIG_HYDRATE_MAX_RETRY_MS,
+    ));
+    timers[attempt]?.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(timers[6]?.delay, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
 
   online = true;
-  timers[0]?.callback();
+  timers[6]?.callback();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(uiConfigHydrated(), true);
 });

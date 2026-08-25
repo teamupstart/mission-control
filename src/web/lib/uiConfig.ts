@@ -30,6 +30,8 @@ let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const writeGeneration = new Map<keyof UiConfig, number>();
 
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
+export const UI_CONFIG_HYDRATE_MAX_RETRY_MS = 30_000;
+let hydrationRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
 
 function emit(): void {
   for (const l of listeners) l();
@@ -54,10 +56,12 @@ export function uiConfigHydrated(): boolean {
 
 function retryHydration(): void {
   if (hydrated || hydrationRetryTimer !== null) return;
+  const delay = hydrationRetryDelay;
+  hydrationRetryDelay = Math.min(delay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
   hydrationRetryTimer = setTimeout(() => {
     hydrationRetryTimer = null;
     void hydrateUiConfig();
-  }, UI_CONFIG_HYDRATE_RETRY_MS);
+  }, delay);
 }
 
 /**
@@ -75,6 +79,7 @@ export async function hydrateUiConfig(): Promise<void> {
     retryHydration();
     return;
   }
+  hydrationRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
   if (!view.configured) {
     // Nothing has ever been saved, so anything this origin still holds under an older
     // product name is worth rescuing. Only here: once the daemon has a config, it wins,

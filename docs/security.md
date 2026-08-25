@@ -87,7 +87,7 @@ server's attachment gate is.
 
 The daemon owns the destination, the fixed type and triage labels, and the dashboard or agent
 source label. Requests cannot supply routing metadata. The destination defaults to
-`mancej/mission-controller-control-issues`; the optional environment override accepts only one exact
+`mancej-cyc/mission-control-issues`; the optional environment override accepts only one exact
 `owner/name` value and cannot be changed per report. The issue body contains only reporter-authored
 details plus an allowlisted Mission Control version, OS family, architecture, browser or Electron
 client value, and a versioned marker. Mission Control does not collect logs, paths, session text,

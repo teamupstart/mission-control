@@ -35,6 +35,7 @@ const {
   GUIDED_TOUR_PERSIST_MAX_RETRIES,
   GUIDED_TOUR_PERSIST_MAX_RETRY_MS,
   GUIDED_TOUR_PERSIST_RETRY_MS,
+  shouldResumeGuidedTourConsumption,
 } = await import("../src/web/lib/guided-tour.ts");
 
 test("rescuing settings from a legacy product name consumes the guided tour", async () => {
@@ -75,6 +76,8 @@ test("a failed guided-tour consumption schedules a durable retry", async () => {
 test("a consumed session cannot reopen the tour while persistence retries", () => {
   assert.equal(canStartGuidedTour(true, false), true);
   assert.equal(canStartGuidedTour(true, true), false);
+  assert.equal(shouldResumeGuidedTourConsumption(true, true, false), true);
+  assert.equal(shouldResumeGuidedTourConsumption(true, true, true), false);
 });
 
 test("failed guided-tour persistence keeps reloads consumed and uses bounded backoff", async () => {

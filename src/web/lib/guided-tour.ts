@@ -27,6 +27,15 @@ export function canStartGuidedTour(persisted: boolean, consumedThisSession: bool
   return persisted && !consumedThisSession;
 }
 
+/** Resume a pending write only when it came from an earlier dashboard session. */
+export function shouldResumeGuidedTourConsumption(
+  hydrated: boolean,
+  pendingConsumption: boolean,
+  consumedThisSession: boolean,
+): boolean {
+  return hydrated && pendingConsumption && !consumedThisSession;
+}
+
 /**
  * Record the consumed onboarding state, retrying if the daemon was temporarily unavailable.
  * A new profile must not receive a second blocking tour merely because its first PUT raced a
@@ -74,7 +83,9 @@ export function useGuidedTour(): [enabled: boolean, hydrated: boolean, consume: 
   const pendingConsumption = pendingGuidedTourConsumption();
   const enabled = canStartGuidedTour(persisted, consumedThisSession.current || pendingConsumption);
   useEffect(() => {
-    if (hydrated && pendingConsumption) consumeGuidedTour();
+    if (shouldResumeGuidedTourConsumption(hydrated, pendingConsumption, consumedThisSession.current)) {
+      consumeGuidedTour();
+    }
   }, [hydrated, pendingConsumption]);
   const consume = useCallback(() => {
     consumedThisSession.current = true;

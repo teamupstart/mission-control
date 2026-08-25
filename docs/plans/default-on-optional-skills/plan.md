@@ -40,7 +40,7 @@ The repository investigation established these facts:
 
 ### 1. Represent a durable catalog default separately from row overrides
 
-Extend `SkillsConfigSchema` with a setting such as `defaultSkillEnabled`.
+`SkillsConfigSchema` gains a setting such as `defaultSkillEnabled`.
 
 - Existing stored configurations parse the new field as `false`. This preserves the old sparse-map meaning on upgrade: ids absent from an old map stay off.
 - A truly unconfigured installation is initialized with `enabled: true`, `defaultSkillEnabled: true`, and an empty override map.
@@ -52,7 +52,7 @@ This field avoids two unsafe shortcuts. Changing only the schema master default 
 
 ### 2. Initialize only a truly absent Skills record
 
-Add a Skills-owned read path that distinguishes:
+A Skills-owned read path distinguishes:
 
 - no `app_config.skills` row;
 - a present, valid row;
@@ -62,17 +62,17 @@ Only the first state receives the new default. The second is preserved exactly. 
 
 Initialization runs at daemon startup before ordinary `reconcileSkills()`:
 
-1. Detect a truly absent row.
-2. Persist the default intent through the Skills config owner, not through installer code or a direct route-shaped write.
-3. Reconcile the valid parsed catalog into every distinct declared harness directory.
-4. Move the generation watermark only when the filesystem actually moves.
-5. Preserve the current safe crash direction: if intent is persisted before all links exist, the next startup heals the disk from that intent.
+1. The read path detects a truly absent row.
+2. The Skills config owner persists the default intent; installer code and direct route-shaped writes do not.
+3. Reconciliation links the valid parsed catalog into every distinct declared harness directory.
+4. The generation watermark moves only when the filesystem actually moves.
+5. The current safe crash direction remains: if intent is persisted before all links exist, the next startup heals the disk from that intent.
 
 An unreadable catalog must never be treated as empty. A malformed new entry is not auto-linked merely because its directory exists. Explicitly enabled legacy entries remain protected from accidental unlinking when the narrow catalog parser cannot read their frontmatter.
 
 ### 3. Make effective state the reconciler's single source of truth
 
-Refactor the current explicit-`true` scans so every consumer uses the same effective selection:
+Every current explicit-`true` scan resolves through the same effective selection for these consumers:
 
 - `desiredSkillIds`;
 - preflight blockers and patch refusal scoping;
@@ -89,7 +89,7 @@ New catalog fields join the automatic settings backup registry. An older snapsho
 
 ### 4. Replace Plan's skill pointer with a self-contained task contract
 
-Rewrite `planContractAppendix` to carry the minimum complete procedure a Plan task must follow regardless of Skills settings:
+`planContractAppendix` carries the minimum complete procedure a Plan task follows regardless of Skills settings:
 
 - this is planning work, not implementation;
 - the Markdown source belongs at `docs/plans/<name>/plan.md` and a self-contained offline `plan.html` belongs beside it;
@@ -101,40 +101,40 @@ Rewrite `planContractAppendix` to carry the minimum complete procedure a Plan ta
 - a dismissal stops the workflow;
 - the plan files land through the ordinary pull-request path so task pointers can resolve on the default branch.
 
-Keep this appendix compact, but align its required paths, tools, decision ids, offline rendering properties, publication gate, and scheduling dependencies with the two planning skills in tests. This follows the existing Scout pattern: one task-kind contract owns what must happen, while an enabled native skill remains richer optional guidance.
+The appendix stays compact and aligns its required paths, tools, decision ids, offline rendering properties, publication gate, and scheduling dependencies with the two planning skills in tests. This follows the existing Scout pattern: one task-kind contract owns what must happen, while an enabled native skill remains richer optional guidance.
 
-Do not conditionally inject a skill command. When skills are enabled, each harness's native loader already exposes their trigger descriptions to the model. Plan delivery must remain sufficient when the catalog is disabled, missing, malformed, drifted, or awaiting a live reload.
+No skill command is conditionally injected. When skills are enabled, each harness's native loader already exposes their trigger descriptions to the model. Plan delivery remains sufficient when the catalog is disabled, missing, malformed, drifted, or awaiting a live reload.
 
 ### 5. Remove Plan-only skill gates from every delivery seam
 
-Delete the plan-specific requirement owner and its plumbing:
+The plan-specific requirement owner and its plumbing are removed:
 
-- remove `src/server/plans/skills.ts`;
-- remove the manual dispatch route preflight;
-- remove the backlog dispatch preflight;
-- remove dispatcher launch resolution and its injected test seam;
-- remove live-session assignment resolution and reload-watermark refusal;
-- remove `PlanSkillInvocations`, Plan skill ids, and `TaskContractInputs.planSkills`;
-- make `withTaskKindContract` compose a Plan contract without extra inputs.
+- `src/server/plans/skills.ts` is deleted;
+- the manual dispatch route preflight is removed;
+- the backlog dispatch preflight is removed;
+- dispatcher launch resolution and its injected test seam are removed;
+- live-session assignment resolution and reload-watermark refusal are removed;
+- `PlanSkillInvocations`, Plan skill ids, and `TaskContractInputs.planSkills` are removed;
+- `withTaskKindContract` composes a Plan contract without extra inputs.
 
 The plan kind continues to contribute `request_plan_decisions` and `create_task` through `kindMissionMcpRequirement`. The existing bundle handshake still refuses a missing or stale Mission MCP implementation before an agent spawns.
 
 ### 6. Preserve explicit Session Action skill gates
 
-Preserve `requiredSkillId` for explicit Session Actions and the built-in Pull Request and Retro actions. Those are separately authored procedure contracts with separate completion proofs, not ordinary task-kind dispatch requirements. Removing them would require making each action self-contained, changing workflow snapshots, retro runner selection, Library authoring, and action delivery failure states. That broader redesign is outside this plan.
+`requiredSkillId` remains for explicit Session Actions and the built-in Pull Request and Retro actions. Those are separately authored procedure contracts with separate completion proofs, not ordinary task-kind dispatch requirements. Removing them would require making each action self-contained, changing workflow snapshots, retro runner selection, Library authoring, and action delivery failure states. That broader redesign is outside this plan.
 
 ### 7. Update the product surface and documentation
 
-Update Skills Settings copy to explain that shipped catalog skills start enabled, remain machine-wide, and can be disabled globally or by row. The API already supplies row state; the panel should render every row checked on a fresh daemon without inventing client defaults.
+Skills Settings copy states that shipped catalog skills start enabled, remain machine-wide, and can be disabled globally or by row. The API already supplies row state; the panel renders every row checked on a fresh daemon without inventing client defaults.
 
-Update at least:
+Documentation updates cover at least:
 
 - `README.md`;
 - `docs/skills-and-settings.md`;
 - `docs/dispatch-and-backlog.md`;
 - configuration and backup documentation if the persisted setting shape changes.
 
-Remove the current statements that Skills are opt-in and that Plan requires HTML Plans and Phased Plan. Preserve the distinction between optional native skills and required Mission MCP tools.
+The current statements that Skills are opt-in and that Plan requires HTML Plans and Phased Plan are removed. The distinction between optional native skills and required Mission MCP tools remains.
 
 ## Flow change
 
@@ -193,17 +193,17 @@ flowchart LR
 
 ### Focused unit and contract coverage
 
-- Update `test/skills-config.test.ts` to prove a truly absent row initializes master-on, resolves every valid catalog row on, links every declared harness directory, and bumps the generation only for actual disk changes.
-- Add cases for a stored explicit-off config, a sparse legacy config, future catalog growth, explicit false overrides, unreadable and malformed catalogs, foreign paths, partial I/O, corrupt stored config, idempotent restart, and restoration of master selection.
-- Keep and adapt `test/skills-reconcile.test.ts` and `test/skills-multi-harness.test.ts` so real-directory guards, deduplicated destinations, prefix ownership, old-prefix cleanup, and isolated-home behavior remain intact.
-- Update backup coverage and restore tests for the new setting field and old-snapshot behavior.
-- Rewrite `test/plan-prompt.test.ts` around a self-contained contract. Assert both delivery seams compose it without Skills inputs, the contract agrees with the optional skills on paths and tool ids, and no route, dispatcher, or task-manager plan skill gate remains.
-- Keep Mission MCP tests proving Plan still requires and pre-approves `request_plan_decisions` and `create_task`.
-- Preserve Scout contract tests unchanged except where fresh default-on setup requires an explicit master-off fixture.
+- Coverage in `test/skills-config.test.ts` proves a truly absent row initializes master-on, resolves every valid catalog row on, links every declared harness directory, and bumps the generation only for actual disk changes.
+- Regression cases cover a stored explicit-off config, a sparse legacy config, future catalog growth, explicit false overrides, unreadable and malformed catalogs, foreign paths, partial I/O, corrupt stored config, idempotent restart, and restoration of master selection.
+- `test/skills-reconcile.test.ts` and `test/skills-multi-harness.test.ts` continue to cover real-directory guards, deduplicated destinations, prefix ownership, old-prefix cleanup, and isolated-home behavior.
+- Backup coverage and restore tests include the new setting field and old-snapshot behavior.
+- `test/plan-prompt.test.ts` proves both delivery seams compose a self-contained contract without Skills inputs, the contract agrees with the optional skills on paths and tool ids, and no route, dispatcher, or task-manager plan skill gate remains.
+- Mission MCP tests prove Plan still requires and pre-approves `request_plan_decisions` and `create_task`.
+- Scout contract tests remain unchanged except where fresh default-on setup requires an explicit master-off fixture.
 
 ### Browser coverage
 
-Browser coverage must conform to the repository's E2E contract documented in [`e2e/README.md`](../../../e2e/README.md). Update or add Playwright coverage that:
+Browser coverage conforms to the repository's E2E contract documented in [`e2e/README.md`](../../../e2e/README.md) and proves that:
 
 1. starts a fresh daemon and shows the Skills master plus all valid catalog rows checked in Settings;
 2. explicitly turns Skills off, dispatches a Plan through the real form, and observes the self-contained contract in the fake agent's conversation with no refusal;
@@ -211,11 +211,11 @@ Browser coverage must conform to the repository's E2E contract documented in [`e
 4. verifies a Plan still receives the interactive decision and scheduling tool names;
 5. verifies explicit operator opt-outs survive a daemon restart if the fixture supports restart without widening the test substantially.
 
-Every agent binary remains faked and selectors use roles, labels, or placeholders. Add no `data-testid`.
+Every agent binary remains faked, selectors use roles, labels, or placeholders, and no `data-testid` is added.
 
 ### Required commands
 
-Run the focused files with the repository preload, then the full gates because the change affects persisted settings, startup, dispatch, the browser, build artifacts, and package content:
+Verification comprises the focused files with the repository preload and the full gates because the change affects persisted settings, startup, dispatch, the browser, build artifacts, and package content:
 
 ```sh
 node --test --import ./test/setup-state.mjs --import tsx test/skills-config.test.ts
@@ -232,17 +232,17 @@ npm run smoke
 npm run test:e2e
 ```
 
-On macOS under the Codex seatbelt, run Electron-bearing test commands with the repository's scoped outside-sandbox approval. Build must precede smoke and E2E.
+On macOS under the Codex seatbelt, Electron-bearing test commands require the repository's scoped outside-sandbox approval. Build precedes smoke and E2E.
 
 ## Non-goals
 
-- Do not change how native harnesses discover skills or add a second installation mechanism.
-- Do not copy catalog files into user directories; retain owned symlinks and current prefix safety.
-- Do not remove the master switch or per-skill controls.
-- Do not weaken Mission MCP bundle verification or task-kind tool requirements.
-- Do not make skills mandatory through another route, warning, workflow default, or hidden installer precondition.
-- Do not change the Scout archive contract, Plan archive capture, task completion boundaries, or phased task dependency semantics except where the self-contained Plan text must describe existing behavior.
-- Do not broaden changes to production, signing, release, or update infrastructure. The package already includes the catalog correctly.
+- Native harness skill discovery and the single installation mechanism remain unchanged.
+- Catalog files are not copied into user directories; owned symlinks and current prefix safety remain.
+- The master switch and per-skill controls remain.
+- Mission MCP bundle verification and task-kind tool requirements remain fail-closed.
+- No route, warning, workflow default, or hidden installer precondition makes skills mandatory.
+- The Scout archive contract, Plan archive capture, task completion boundaries, and phased task dependency semantics remain unchanged except where the self-contained Plan text describes existing behavior.
+- Production, signing, release, and update infrastructure stay outside this work. The package already includes the catalog correctly.
 
 ## Approved decisions
 

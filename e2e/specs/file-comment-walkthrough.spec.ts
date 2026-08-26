@@ -108,13 +108,20 @@ async function openTheFile(page: Page, path: string = SOURCE): Promise<void> {
   await openAnotherFile(page, path);
 }
 
-/** Select a file in the already-open Files tab. */
+/** Select a file in the already-open Files tab, and take its Editor. */
 async function openAnotherFile(page: Page, path: string): Promise<void> {
-  await page
+  const row = page
     .getByRole("listbox", { name: "Session files" })
-    .getByRole("option", { name: path })
-    .click();
-  await expect(page.getByLabel(`Preview of ${path}`)).toBeVisible();
+    .getByRole("option", { name: path });
+  await row.click();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  // This spec drives the review MODEL - queue order, delivery, where the reader is taken -
+  // and its input device is a click on a line number. Comment mode used to raise a source
+  // column beside the preview to hold one; the panel docks over the preview now, so the
+  // surface with a gutter is chosen explicitly. After EVERY selection, because selecting a
+  // file resets the view to that path's default (`sessionFiles.ts`'s `select`).
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
+  await expect(page.getByLabel(`Editor for ${path}`)).toBeVisible();
 }
 
 function lineNumber(page: Page, line: number): Locator {
@@ -520,7 +527,16 @@ test.describe("the review walkthrough", () => {
         timeout: 30_000,
       })
       .toBe(2);
-    await expect(page.getByLabel(`Editor for ${OTHER}`)).toBeVisible({ timeout: 30_000 });
+    /*
+     * The reader is on the other file. Asserted on the SELECTION rather than on a named
+     * editor, because the walkthrough gets there through `controller.select`, which resets
+     * the view to that path's default - a Markdown file opens rendered. Which surface it
+     * lands on is not what this test is about; which FILE it lands on is.
+     */
+    await expect(
+      page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: OTHER }),
+      "the walkthrough takes the reader to the file the outstanding comment is in",
+    ).toHaveAttribute("aria-selected", "true", { timeout: 30_000 });
     // And the comment it moved us to is the one that is actually out with the agent.
     await expect(queue.getByRole("status")).toContainText(OTHER);
   });

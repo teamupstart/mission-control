@@ -4684,27 +4684,42 @@ body {
 .file-codemirror .cm-editor { height: 100%; }
 .file-codemirror .cm-scroller { overflow: auto; }
 
-/* Comment mode over a RENDERED document: the preview keeps its half of the pane and the
-   source takes the other, so a line number is clickable without the reader losing the thing
-   they were reading. Both children are already `flex: 1`, so all this does is set the share
-   and draw the seam. Below the phone breakpoint there is no room for two columns, so they
-   stack and each takes half the height. */
-.file-content.is-comment-split > .file-preview-reader {
-  /* An explicit basis on BOTH halves, or they do not halve. The preview's own rule is
-     `flex: 1`, whose basis is 0, so a basis on the source column alone handed it that
-     width plus an equal share of what was left - a 70/30 split of a pane meant to be even. */
-  flex: 1 1 52%;
-  border-right: 1px solid var(--border);
+/* Comment mode over a RENDERED document: the panel docks OVER the preview, which keeps the
+   whole pane. It used to take a source column beside it - see `FileWorkspace`'s
+   `commentOverlayShowing` for why that went - and the consequence here is that the preview's
+   width no longer changes when a comment opens, so a rendered document never reflows
+   mid-read.
+
+   Out of flow, so nothing above needs a share to hand it. The containing block is
+   `.file-content`, which is why that rule carries `position: relative`. */
+.file-content { position: relative; }
+.file-comment-dock {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2;
+  /* Bounded on BOTH axes. A quote is the whole block a reader pointed at, which can be a
+     table or a code fence, and an unbounded panel would grow until it covered the document
+     it is about. `min()` keeps it inside the pane on a narrow one rather than hanging off. */
+  width: min(360px, calc(100% - 28px));
+  max-height: min(62%, 420px);
+  overflow: auto;
+  border-radius: 8px;
+  /* The panel behind this is `background: var(--panel)`, which is opaque; the shadow is what
+     separates it from a rendered document that may be any colour at all - a preview iframe
+     draws on white even in the dark theme. */
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
 }
-.file-content.is-comment-split > .file-codemirror { flex: 1 1 48%; }
+/* Below the phone breakpoint there is no room to float beside anything, so it spans the
+   pane's foot instead of shrinking to a column nobody can type in. */
 @media (max-width: 640px) {
-  .file-content.is-comment-split { flex-direction: column; }
-  .file-content.is-comment-split > .file-preview-reader {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
+  .file-comment-dock {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    max-height: 55%;
   }
-  .file-content.is-comment-split > .file-preview-reader,
-  .file-content.is-comment-split > .file-codemirror { flex: 1 1 50%; min-height: 0; }
 }
 
 /* Line comments in the Files workspace.

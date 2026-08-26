@@ -256,8 +256,12 @@ describes the shape.</p>
     <ul>
       <li>empty or whitespace path;</li>
       <li>a path that is not absolute after expansion;</li>
-      <li><code>/</code> and the home directory itself, because a depth-3 walk from either is a
-      scan of the whole machine dressed up as a preference;</li>
+      <li>any path that is the filesystem root, the home directory, or an <strong>ancestor</strong>
+      of the home directory, because a depth-3 walk from any of them is a scan of the whole machine
+      dressed up as a preference. Checked after canonicalization, not against the string as typed:
+      <code>~/..</code>, <code>/Users/me/..</code> and <code>/Users</code> all name an ancestor of
+      home while equalling none of the three literally, so <code>..</code> segments are normalized
+      away first and an existing path is resolved through its symlinks before the comparison;</li>
       <li>a duplicate of a directory already listed, compared after expansion and
       <code>realpath</code> so <code>~/workspace</code> and <code>/Users/me/workspace</code>
       cannot both be added;</li>

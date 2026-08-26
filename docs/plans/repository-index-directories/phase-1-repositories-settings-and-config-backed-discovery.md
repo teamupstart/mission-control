@@ -117,11 +117,27 @@ Mirror `src/server/shipping/config.ts`.
   lives in one module.
 - `indexedDirectories(): string[]` - the environment list when non-empty, otherwise the configured
   paths expanded and deduplicated. Synchronous, because `workspaceRoots()` is.
-- `validateIndexedDirectories(rows)` - refuse with a message the panel prints verbatim:
-  empty/whitespace path; not absolute after expansion; exactly `/`; exactly the home directory;
-  a duplicate of another row after expansion and (where the path exists) `realpath`; more than
-  `MAX_INDEXED_DIRECTORIES` rows. A directory that simply does not exist is accepted and reported
-  as `missing`, because a path can be created after it is configured.
+- `canonicalize(path)` - `expandHome`, then `resolve()` so `..` and `.` segments are gone, then
+  `realpathSync` when the path exists so a symlink cannot smuggle in a different target. Returns the
+  canonical absolute path; for a path that does not exist yet, the normalized-but-unresolved form is
+  the answer.
+- `validateIndexedDirectories(rows)` - canonicalize first, then refuse with a message the panel
+  prints verbatim:
+  - empty or whitespace-only path;
+  - not absolute after expansion;
+  - **at or above the home directory**: the canonical path is the filesystem root, equals the home
+    directory, or is an ancestor of it. This is a containment test on path segments, not three
+    equality checks, and canonicalizing before it is the point - `~/..`, `/Users/me/..` and
+    `/Users` are all ancestors of home that equal none of those literals, and each would turn the
+    depth-3 walk into a scan of every user's files. Compare segment-wise (`/Users` versus
+    `/Users2`) rather than by string prefix.
+  - a duplicate of another row after canonicalization;
+  - more than `MAX_INDEXED_DIRECTORIES` rows.
+
+  A directory that simply does not exist is accepted and reported as `missing`, because a path can
+  be created after it is configured. That is also why the ancestor test must work on the normalized
+  path rather than relying on `realpath`: an operator can name a not-yet-existing
+  `~/projects/../../..`, which has no `realpath` to resolve.
 - `repoIndexView()` - async. Probes each configured path with `stat` and `realpath`, counts the
   repos each contributes from the scan, and reports `managedBy`. Under an environment override the
   primary list is the override's directories and `savedDirectories` is the configured list with no
@@ -191,7 +207,10 @@ Follow `mockups/a-directory-rows.html`, which is the adopted design, and its fou
   over a configured list; `~` is expanded; duplicates collapse after `realpath`; an empty list scans
   nothing; an absent config key yields the four defaults.
 - `test/repo-index-http.test.ts` (new) - the view's shape including `status` and `repoCount`; each
-  validation refusal with its message; a removal that survives a re-read; `[]` staying empty rather
+  validation refusal with its message, including the ancestor cases (`~/..`, `<home>/..`, the
+  directory holding the home directory, and a not-yet-existing path whose `..` segments climb above
+  home) and a near-miss that must be ACCEPTED (a sibling of home such as `<parent>/me2/code`, so
+  the containment test is not a string prefix); a removal that survives a re-read; `[]` staying empty rather
   than re-defaulting; Restore defaults adding only what is missing; and a repo created after the
   first read appearing after a write, which is the cache-invalidation assertion. Set
   `MISSION_HOME` above the imports, per the suite's isolation contract in `CLAUDE.md`.
@@ -287,6 +306,13 @@ No later phase depends on this one. What a future change may rely on, and should
   names it.
 - **Addition beyond `plan.md`.** The README and `docs/skills-and-settings.md` updates, required by
   the registries and documentation contracts, which the plan's documentation list omitted.
+- **Review round 2 (Inspector, PR #802).** The broad-root refusal was specified as equality against
+  `/` and the home directory, which `~/..`, `<home>/..` and `/Users` all pass while still making the
+  depth-3 walk scan every user's files. Step 3 now canonicalizes (expand, `resolve`, `realpath` where
+  the path exists) before a segment-wise containment test that refuses the root, the home directory,
+  and any ancestor of it, and step 9 pins the ancestor cases plus a sibling-of-home path that must
+  still be accepted. `plan.md` carries the same rule. No approved decision changed; this closed a
+  hole in a safety check the plan already intended.
 - **Review round 1 (Inspector, PR #802).** The e2e scenario named "remove one row, then add the
   fixture workspace", which finding 3 makes impossible: `~/workspace` already IS the fixture
   workspace, so the add lands on the duplicate refusal. Step 9 and `plan.md` now name `~/dev` as

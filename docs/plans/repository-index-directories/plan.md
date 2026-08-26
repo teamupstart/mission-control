@@ -148,8 +148,12 @@ New `src/server/repo-index.ts`, on the `src/server/shipping/config.ts` pattern:
 - Write validation, refused with a message the panel prints:
   - empty or whitespace path;
   - a path that is not absolute after expansion;
-  - `/` and the home directory itself, because a depth-3 walk from either is a scan of the
-    whole machine dressed up as a preference;
+  - any path that is the filesystem root, the home directory, or an **ancestor** of the home
+    directory, because a depth-3 walk from any of them is a scan of the whole machine dressed
+    up as a preference. Checked after canonicalization, not against the string as typed: `~/..`,
+    `/Users/me/..` and `/Users` all name an ancestor of home while equalling none of the three
+    literally, so `..` segments are normalized away first and an existing path is resolved
+    through its symlinks before the comparison;
   - a duplicate of a directory already listed, compared after expansion and `realpath` so
     `~/workspace` and `/Users/me/workspace` cannot both be added;
   - more than sixteen directories.

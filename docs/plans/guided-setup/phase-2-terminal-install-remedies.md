@@ -91,16 +91,28 @@ const INSTALL_GRAMMAR = [
 ] as const;
 ```
 
-An argv is accepted only when **all** of these hold:
+The accepted argv is an **ordered shape**, not a bag of permitted tokens:
+
+```
+argv = [ program, subcommand, ...flags, operand ]
+```
+
+Positional, because "any remaining element may be a flag or the operand" is a materially weaker
+rule that admits `npm install pkg -g` and `npm install -g -g pkg`. An argv is accepted only when
+**all** of these hold:
 
 - it is a non-empty array of plain strings, and `argv[0]` matches a grammar entry's `program`
   exactly;
 - `argv[1]` equals that entry's `subcommand` **literally**. No aliases: `i`, `add`, `x`, and
   `exec` are not `install`, and accepting them would reopen the hole this rule closes;
-- every remaining element is either one of that entry's `allowedFlags` or the single operand. An
-  unrecognised flag is a refusal, not something to ignore - flag injection is how
-  `--ignore-scripts`-style behavior gets flipped;
-- there is exactly `operands` operand, and it matches that program's package-name pattern:
+- **every flag appears in `argv[2..n-1]`, before the operand, and each allowed flag at most
+  once.** A flag after the operand is refused, and so is a repeated flag - both are accepted by
+  the looser reading, and neither has a legitimate catalog use. An unrecognised flag is refused
+  too, rather than ignored: flag injection is how `--ignore-scripts`-style behavior gets flipped;
+- **the operand is the last element, and there is exactly one** (`operands`, which is `1` for
+  every entry today). Trailing-position is what makes "flags before, package last" checkable in
+  one pass instead of inferred from what did not match a flag;
+- the operand matches that program's package-name pattern:
   - npm: `/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/`
   - brew: `/^[a-z0-9][a-z0-9+._@-]*$/`
 
@@ -237,7 +249,9 @@ In the remedy action slot Phase 1 defined:
     plus the aliases `npm i` and `npm add`;
   - **operand that is not a package**: `/tmp/evil.tgz`, `../x`, `git+ssh://host/repo`,
     `file:./x`, `pkg@1.2.3`, a leading-dash operand, zero operands, two operands;
-  - **flag injection**: an unrecognised flag, an allowed flag repeated, a flag after the operand;
+  - **flag injection and ordering**: an unrecognised flag; an allowed flag repeated (`npm install
+    -g -g pkg`); a flag after the operand (`npm install pkg -g`) - the two forms the earlier
+    unordered wording would have admitted; a flag in place of the operand;
   - **accepted forms**, so the guard is not vacuously strict: `brew install gh`,
     `brew install --cask <name>`, `npm install -g <pkg>`, `npm install -g @scope/pkg`.
 - `test/setup-install-route.test.ts` - unknown id 404; `link` and `skill` remedies refused; **a
@@ -299,6 +313,14 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 7 (major, PR #800).** The grammar's prose ("every remaining element is either
+  an allowed flag or the single operand") contradicted its own test list, which required a
+  repeated flag and a flag after the operand to be refused. The loose reading admits
+  `npm install pkg -g` and `npm install -g -g pkg`, and prose is what gets implemented when the
+  two disagree. Restated the accepted argv as an ordered shape -
+  `[program, subcommand, ...flags, operand]` - with flags confined to the middle, each allowed
+  flag at most once, and the operand required to be the last and only one. The test names the two
+  admitted forms explicitly so the regression is pinned rather than described.
 - **Inspector round 6 (major, PR #800).** The body schema was told to enforce "checkout required
   for `provider-installer`, forbidden otherwise", which a schema over `{ id, backend, checkout? }`
   cannot do: whether an id resolves to that remedy kind is catalog knowledge, so the instruction

@@ -274,12 +274,16 @@ cannot be installed that way carries a `link` instead.
 That is enforced as a **closed grammar of whole invocations**, not an allowlist of programs.
 Allowlisting `argv[0]` would admit `npm uninstall`, `npm publish`, `npm run <script>`,
 `npm exec` / `npx`, `brew uninstall`, and `brew services stop` - all of which start with an
-approved program, and several of which execute arbitrary code. So each entry fixes the program,
-the **literal** subcommand (no aliases), the flags that may appear, and exactly one operand that
-must match a package-name pattern - which is also what rejects a path or remote spec dressed as a
-package name (`/tmp/evil.tgz`, `../x`, `git+ssh://host/repo`). Shell metacharacters, `sudo`, and
-`://` remain refused outright as a second layer. Widening the grammar is a plan decision, not a
-catalog edit.
+approved program, and several of which execute arbitrary code. So each entry fixes an **ordered**
+shape, `[program, subcommand, ...flags, operand]`: the program, the **literal** subcommand (no
+aliases), which flags may appear - each at most once, and only before the operand - and exactly
+one operand, last, matching a package-name pattern. The pattern is also what rejects a path or
+remote spec dressed as a package name (`/tmp/evil.tgz`, `../x`, `git+ssh://host/repo`).
+
+Order and uniqueness are part of the boundary rather than tidiness: a rule that merely permits
+"flags and one operand in any arrangement" accepts `npm install pkg -g` and `npm install -g -g
+pkg`. Shell metacharacters, `sudo`, and `://` remain refused outright as a second layer.
+Widening the grammar is a plan decision, not a catalog edit.
 
 The guard bounds what Mission Control will *ask* a terminal to do. It cannot bound what an
 accepted `npm install -g <pkg>` then runs from the registry, and does not claim to - that is

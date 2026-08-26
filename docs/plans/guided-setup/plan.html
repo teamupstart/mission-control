@@ -571,11 +571,17 @@ read -r _</code></pre>
   <code>npm publish</code>, <code>npm run &lt;script&gt;</code>, <code>npm exec</code> /
   <code>npx</code>, <code>brew uninstall</code>, and <code>brew services stop</code> - all of
   which start with an approved program, and several of which execute arbitrary code. So each entry
-  fixes the program, the <strong>literal</strong> subcommand (no aliases), the flags that may
-  appear, and exactly one operand that must match a package-name pattern - which is also what
-  rejects a path or remote spec dressed as a package name (<code>/tmp/evil.tgz</code>,
-  <code>../x</code>, <code>git+ssh://host/repo</code>). Shell metacharacters, <code>sudo</code>,
-  and <code>://</code> remain refused outright as a second layer. Widening the grammar is a plan
+  fixes an <strong>ordered</strong> shape,
+  <code>[program, subcommand, ...flags, operand]</code>: the program, the
+  <strong>literal</strong> subcommand (no aliases), which flags may appear - each at most once,
+  and only before the operand - and exactly one operand, last, matching a package-name pattern.
+  The pattern is also what rejects a path or remote spec dressed as a package name
+  (<code>/tmp/evil.tgz</code>, <code>../x</code>, <code>git+ssh://host/repo</code>).</p>
+
+  <p>Order and uniqueness are part of the boundary rather than tidiness: a rule that merely
+  permits "flags and one operand in any arrangement" accepts <code>npm install pkg -g</code> and
+  <code>npm install -g -g pkg</code>. Shell metacharacters, <code>sudo</code>, and
+  <code>://</code> remain refused outright as a second layer. Widening the grammar is a plan
   decision, not a catalog edit.</p>
 
   <p>The guard bounds what Mission Control will <em>ask</em> a terminal to do. It cannot bound what

@@ -5,8 +5,8 @@ Part of [`phased-plan.md`](phased-plan.md). Approved goal: [`plan.md`](plan.md).
 ## Outcome
 
 A new operator is told their machine needs attention instead of having to find the Setup page,
-and can be walked through it. A banner appears when a required dependency is missing or on first
-launch, dismisses durably, and returns if a required dependency later goes missing. A `setup`
+and can be walked through it. A banner appears when any required row is not satisfied or on first
+launch, dismisses durably, and returns if a required row later stops being satisfied. A `setup`
 tour narrates the panel from the Settings rail and the command palette.
 
 ## Entry criteria and dependencies
@@ -156,8 +156,8 @@ the read was in flight would train the operator to dismiss it unread.
   `npm run tours` output is committed and identical to a fresh run - a stale generated file is a
   failing check, not a cosmetic drift.
 - `e2e/specs/setup-banner-and-tour.spec.ts` - the banner appears on a fresh daemon whose overrides
-  make a required dependency missing, links to the Setup category, dismisses, stays dismissed
-  across a reload, and re-appears when a required dependency goes missing afterwards. Then the
+  make a required row unsatisfied, links to the Setup category, dismisses, stays dismissed
+  across a reload, and re-appears when a required row stops being satisfied afterwards. Then the
   tour: start it from the Settings rail, walk at least two stops, and confirm it spotlights the
   panel and writes nothing. Selectors by role and label; no `data-testid`.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
@@ -167,8 +167,9 @@ the read was in flight would train the operator to dismiss it unread.
 
 ## Merge and exit criteria
 
-- On a machine with a required dependency missing, the banner appears, links through, dismisses
-  durably, and returns when a required dependency goes missing again.
+- On a machine with a required row unsatisfied - including the tmux-without-an-emulator case,
+  where the unsatisfied row is the derived pair rather than any dependency - the banner appears,
+  links through, dismisses durably, and returns when a required row stops being satisfied again.
 - The `setup` tour runs end to end from both the Settings rail and the command palette, writes
   nothing, and its generated content matches a fresh `npm run tours`.
 - Full gate green.

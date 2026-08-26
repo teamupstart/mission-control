@@ -319,13 +319,32 @@ export function useFileCommentDraft(input: {
   const mounted = useRef(true);
   /** Set below, once `persist` exists; read only from the unmount cleanup. */
   const flushOnUnmount = useRef<(() => void) | null>(null);
-  useEffect(() => () => {
-    mounted.current = false;
-    // A pending keystroke is still owed to the daemon. Leaving with the timer merely
-    // cleared would drop the last few characters of a comment - which is precisely the
-    // loss persisting from the first keystroke exists to prevent - and switching detail
-    // tabs unmounts this, so it is the ordinary exit rather than a rare one.
-    flushOnUnmount.current?.();
+  useEffect(() => {
+    /*
+     * ARMED HERE, not only at the initial value, and this line is the whole of a bug that
+     * made the composer untypable in every development build.
+     *
+     * StrictMode double-invokes a mount effect - run, clean up, run again - so a cleanup
+     * that flips this to false is REACHED ON MOUNT. Initialised true and never re-armed, the
+     * flag was therefore false from the first render, and `patch` - which is the only way
+     * text reaches the composer's React state - returned early for the rest of the panel's
+     * life. Typing still ran `change`, so the ref advanced and the daemon received every
+     * character; the textarea is controlled by that state, so it drew an empty box with
+     * `Comment` disabled over a comment that was being saved. Both surfaces share this hook,
+     * so both were dead, which is exactly what was reported.
+     *
+     * `WorkflowLadder`, `WorkflowRuns` and `usePipelineRepos` all re-arm their own liveness
+     * ref here for this reason; this hook was the one that did not.
+     */
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // A pending keystroke is still owed to the daemon. Leaving with the timer merely
+      // cleared would drop the last few characters of a comment - which is precisely the
+      // loss persisting from the first keystroke exists to prevent - and switching detail
+      // tabs unmounts this, so it is the ordinary exit rather than a rare one.
+      flushOnUnmount.current?.();
+    };
   }, []);
 
   const patch = useCallback((change: Partial<FileCommentComposerState>) => {

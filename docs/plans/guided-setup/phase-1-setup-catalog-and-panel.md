@@ -49,8 +49,8 @@ None. This is the first phase, and it introduces every contract the other two in
    existence rather than executability. `resolveBinPath` spawns `which` and yields the resolved
    path with the system resolver's authority. This panel wants the resolved path as its evidence
    string, and `agentBinPresent` already uses `hasBin`, so prefer `resolveBinPath` for the rows
-   whose evidence is a path - but keep the whole route's cost bounded (finding: probes run
-   concurrently; see step 4).
+   whose evidence is a path - but keep the whole route's cost bounded, which step 2 does with
+   concurrency plus a per-probe timeout rather than with a cache.
 
 3. **Reuse `terminalTargetViews` for the pair row.** `src/server/terminal/targets.ts` exists
    because a detached tmux session with no emulator to raise it is a control that reports success
@@ -122,7 +122,12 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
     evidence; `unknown` when the record exists and cannot be read;
   - `claude-skills`: the existing skills reconcile/drift read;
   - `ai-conductor`: `binForPresence()` then `probe()` for the version evidence.
-- Nothing is cached across requests, for `environmentCheckViews`' documented reason.
+- **Nothing is cached across requests**, for `environmentCheckViews`' documented reason: an
+  operator who just installed something must see the change on the next read, and a cached answer
+  is a claim about a machine they have since repaired. The two subprocess probes (`gh auth status`
+  and the conductor probe) are bounded instead, by `run`'s own `timeoutMs`
+  (`src/server/util/exec.ts`, 4s by default); a probe that times out yields `unknown` with a
+  reason. Concurrency plus that bound is what keeps the route cheap - not a cache.
 
 ### 3. Route and client
 
@@ -174,7 +179,8 @@ existing spec depends on those backends being resolvable.
   well-formed (the shape rule itself is Phase 2's guard; here just assert the data exists).
 - `test/setup-probes.test.ts` - each probe against an arranged `SetupDeps`: satisfied with its
   evidence, missing, `needs-setup` (unauthenticated `gh`; unfinished Claw setup), and `unknown`
-  distinguished from `missing` for an unreadable file. A probe that throws yields that row's
+  distinguished from `missing` for an unreadable file. A probe that TIMES OUT yields `unknown`
+  with a reason, and a probe that throws yields that row's
   `unknown` and does not take the view down. The terminal pair row disagreeing with per-backend
   presence (a multiplexer installed, no emulator) is its own case.
 - `test/setup-checks-route.test.ts` - the route answers 200 with every row even when a probe
@@ -227,3 +233,9 @@ regions of `SetupPanel.tsx`; either may merge first.
   machine probe there would contradict the plan's no-tick rule.
 - Added the e2e `WEZTERM_BIN` / `GHOSTTY_BIN` overrides to this phase rather than Phase 3, since
   this is the phase whose spec would otherwise be flaky.
+- **Inspector round 1 (minor, PR #800).** The source plan's risk table claimed the two subprocess
+  probes sat behind a short-lived cache, contradicting this phase's per-request contract. Resolved
+  in favour of no cache - the policy the plan, this phase, and the approved "fix it and re-check"
+  behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
+  `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
+  found while checking this.

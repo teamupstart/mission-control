@@ -158,7 +158,8 @@ Owned by Phase 1, relied on by the others, and not to be changed by them:
    `unknown`.
 4. Every probe resolves its binary through the same override chain the launcher uses
    (finding 2). No phase adds a bare-name probe.
-5. `GET /api/setup/checks` computes per request and caches nothing durable. No phase puts setup
+5. `GET /api/setup/checks` computes per request and caches nothing - not durably and not in
+   memory. Cost is bounded by concurrency plus a per-probe timeout instead. No phase puts setup
    detection on a poll tick, in `SettingsStatus`, or in the registry snapshot (finding 7).
 6. Panel structure: one section per family with a stable element id, one row per dependency
    carrying `data-anchor="setup/<slug>"`, an accessible name, and a remedy action slot.

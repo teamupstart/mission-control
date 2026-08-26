@@ -86,19 +86,32 @@ refuses an argv that fails this predicate **even though the catalog is committed
 guard's job is to make a bad future catalog edit a refused request rather than a shell
 injection, and a check that only runs at authoring time does not do that.
 
+**Scope: `command` remedies only.** A `provider-installer` remedy's argv belongs to the pipeline
+provider, which verifies its own checkout and markers at click time, and its `bin/install` is not
+a package-manager invocation - running this allowlist over it would refuse the one remedy that
+already has a vetted installer. See the route's `switch` below.
+
 ### 2. `POST /api/setup/install`
 
 - Body schema in `src/shared/protocol.ts`: `{ id: SetupDependencyId, backend: TerminalBackendId }`
   and nothing else. **No argv, no cwd, no title, no command string.** Parse with `parseBody`.
-- Handler, beside the pipelines install route:
+- Handler, beside the pipelines install route. **Two remedy kinds are runnable and two are not**,
+  so branch on the kind before refusing anything - a refusal that fires first would make
+  `provider-installer` unreachable:
   1. look the dependency up in the catalog; 404 for an unknown id;
-  2. refuse with 409 and a sentence when its remedy is not a `command` - a `link` or `skill`
-     remedy has nothing to run;
-  3. re-run the argv guard on the looked-up argv; refuse with 409 if it fails;
-  4. for `provider-installer`, delegate to `pipelineInstallerLaunch` exactly as the pipelines
-     route does, including its reverification, rather than reimplementing candidate discovery;
-  5. wrap in the hold-open shell with `shellCommand`, launch via `terminalLauncher`, and answer
-     `opened` / `maybe-opening` / `refused` with the terminal layer's status code preserved.
+  2. switch on `remedy.kind`:
+     - `link` and `skill`: refuse with 409 and a sentence. There is nothing to run, and that is
+       a property of the remedy rather than an error.
+     - `provider-installer`: delegate to `pipelineInstallerLaunch` exactly as the pipelines route
+       does, including its reverification, rather than reimplementing candidate discovery. The
+       argv guard below does not apply - the argv is the provider's, already verified by it, and
+       running our package-manager allowlist over `bin/install` would refuse it.
+     - `command`: run the argv guard on the looked-up argv and refuse with 409 if it fails, then
+       wrap in the hold-open shell with `shellCommand`.
+  3. launch via `terminalLauncher` and answer `opened` / `maybe-opening` / `refused` with the
+     terminal layer's status code preserved.
+  A `switch` over the union rather than a chain of early returns, so a remedy kind added later
+  does not compile until this route says what it does with it.
 - cwd: the operator's home for a package-manager install (it must not depend on a repository),
   and the provider's own cwd for the delegated path.
 
@@ -123,10 +136,12 @@ In the remedy action slot Phase 1 defined:
   `$(...)`, a newline, `sudo` in first and later position, a URL, an empty array, a non-allowlisted
   program, and each legitimate form (`brew install gh`, `npm install -g <pkg>`). This is the
   phase's most important test.
-- `test/setup-install-route.test.ts` - unknown id 404; `link`-only remedy refused; a catalog entry
-  whose argv fails the guard refused **without** reaching the terminal layer (assert the launcher
-  was not called); the happy path handing exactly the wrapped argv to the launcher; the 504 case
-  reported as `maybe-opening`.
+- `test/setup-install-route.test.ts` - unknown id 404; `link` and `skill` remedies refused; **a
+  `provider-installer` remedy reaching the delegated launch rather than the refusal** (the
+  ai-conductor row is the case, and getting this wrong makes the one dependency with a real
+  installer the one that cannot use it); a `command` entry whose argv fails the guard refused
+  **without** reaching the terminal layer (assert the launcher was not called); the happy path
+  handing exactly the wrapped argv to the launcher; the 504 case reported as `maybe-opening`.
 - `e2e/specs/setup-install-terminal.spec.ts` - picks the cmux backend, clicks "Run in a terminal"
   on a missing dependency, and asserts against the fake's recorded command line that what the
   terminal was handed is the catalog's argv inside the hold-open wrapper. Also asserts the refusal
@@ -163,3 +178,10 @@ App-level banner; neither touches the remedy action slot.
 - Checked that delegating ai-conductor to `pipelineInstallerLaunch` does not create a second
   source of truth for installer candidates: the pipelines route keeps ownership, this route calls
   it.
+- **Inspector round 1 (major, PR #800).** The route sequence refused every non-`command` remedy
+  before the step that delegates `provider-installer`, so ai-conductor - the one dependency with a
+  real installer - could never have reached it. Rewritten as an exhaustive `switch` over the
+  remedy union, so a kind added later does not compile until this route says what it does with it,
+  and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
+  a package-manager invocation and the allowlist would refuse it). Added the delegation case to
+  the route test list.

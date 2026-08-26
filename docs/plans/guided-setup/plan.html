@@ -673,7 +673,7 @@ step.</p>
     <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id. Argv shape pinned by test. Visible terminal, hold-open, exit code shown.</td></tr>
     <tr><td>Becomes a machine-wide install manager</td><td><code>requirement</code> levels plus a committed catalog. A dependency Mission Control does not use does not get a row.</td></tr>
     <tr><td>Detection drifts from what refuses</td><td>Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses <code>terminalTargetViews</code> rather than restating it.</td></tr>
-    <tr><td>A slow probe stalls the page</td><td>Probes run concurrently; the subprocess-costing ones (<code>gh auth status</code>, the conductor probe) sit behind the short-lived cache the Settings route already uses, and each row renders <code>unknown</code> with a reason rather than blocking.</td></tr>
+    <tr><td>A slow probe stalls the page</td><td>Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (<code>gh auth status</code>, the conductor probe) are bounded by <code>run</code>'s own <code>timeoutMs</code> (<code>src/server/util/exec.ts</code>, 4s by default). A probe that times out renders <code>unknown</code> with a reason rather than blocking the page. <strong>No cache</strong>, per the no-tick rule above: an operator who just installed something must see the change on the next read.</td></tr>
     <tr><td>Chrome for an already-set-up operator</td><td>The banner appears only for missing <code>required</code> rows, and satisfied rows collapse to a one-line chip.</td></tr>
   </tbody>
 </table>

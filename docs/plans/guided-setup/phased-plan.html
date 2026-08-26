@@ -459,7 +459,8 @@ regions; whichever merges second rebases without a semantic conflict.</p>
   <li><code>SetupStatus</code> has exactly four states. A phase needing a fifth states the case in
   its audit record rather than overloading <code>unknown</code>.</li>
   <li>Every probe resolves its binary through the same override chain the launcher uses.</li>
-  <li><code>GET /api/setup/checks</code> computes per request and caches nothing durable. No phase
+  <li><code>GET /api/setup/checks</code> computes per request and caches nothing - not durably and
+  not in memory; cost is bounded by concurrency plus a per-probe timeout instead. No phase
   puts setup detection on a poll tick, in <code>SettingsStatus</code>, or in the registry
   snapshot.</li>
   <li>Panel structure: one section per family with a stable element id, one row per dependency

@@ -177,11 +177,18 @@ already has a vetted installer. See the route's `switch` below.
 - Handler, beside the pipelines install route. **Two remedy kinds are runnable and two are not**,
   so branch on the kind before refusing anything - a refusal that fires first would make
   `provider-installer` unreachable:
-  1. look the dependency up in the catalog; 404 for an unknown id. The body's `id` is a
-     `SetupDependencyId`, so neither a folded environment-check row nor the derived terminal-pair
-     row is addressable here by construction - both live in other arms of `SetupRowId`, and the
-     folded row's remedy is a `skill` the operator runs in a session, which this route refuses
-     anyway;
+  1. look the remedy up in the catalog. **There is no not-found arm**, and that is a property
+     rather than an omission: the schema already established that `id` is a member of
+     `SETUP_DEPENDENCY_IDS`, and `SETUP_DEPENDENCY_INFO` is a total `Record` over that tuple, so
+     the lookup cannot miss. An id outside the tuple never reaches here - `parseBody` refuses it
+     with a 400, which is what `routes.ts:5615` already does for a provider id outside its closed
+     set. Do not add a defensive 404: it would be unreachable, and an unreachable arm invites a
+     later widening of the schema that makes it reachable without anyone noticing.
+
+     The body's `id` is a `SetupDependencyId`, so neither a folded environment-check row nor the
+     derived terminal-pair row is addressable here by construction - both live in other arms of
+     `SetupRowId`, and the folded row's remedy is a `skill` the operator runs in a session, which
+     this route refuses anyway;
   2. **enforce the checkout pairing**, now that the remedy is known. A `provider-installer`
      remedy with no `checkout` is a 409 saying which checkout to pick; any other remedy that
      carries one is a 409 saying that remedy takes none. This is the step the schema could not do,
@@ -254,7 +261,9 @@ In the remedy action slot Phase 1 defined:
     unordered wording would have admitted; a flag in place of the operand;
   - **accepted forms**, so the guard is not vacuously strict: `brew install gh`,
     `brew install --cask <name>`, `npm install -g <pkg>`, `npm install -g @scope/pkg`.
-- `test/setup-install-route.test.ts` - unknown id 404; `link` and `skill` remedies refused; **a
+- `test/setup-install-route.test.ts` - an id outside `SETUP_DEPENDENCY_IDS` refused **400 by the
+  schema**, before any lookup (there is no 404 arm; see step 1); `link` and `skill` remedies
+  refused; **a
   `provider-installer` remedy reaching the delegated launch rather than the refusal** (the
   ai-conductor row is the case, and getting this wrong makes the one dependency with a real
   installer the one that cannot use it); a `provider-installer` request with **no** checkout
@@ -313,6 +322,14 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 8 (minor, PR #800).** The route said "404 for an unknown id" while the body
+  schema was specified to require `id` to be a member of `SETUP_DEPENDENCY_IDS`, so the 404 was
+  unreachable and its test unsatisfiable. Resolved in favour of the schema owning membership,
+  which is this repository's existing answer for an id outside a closed set (`routes.ts:5615`
+  returns 400 for an unknown pipeline provider), and stated why there is no not-found arm at all:
+  `SETUP_DEPENDENCY_INFO` is a total `Record` over the tuple, so the lookup cannot miss. Also
+  recorded why not to add the arm defensively - an unreachable branch invites a later schema
+  widening that quietly makes it reachable.
 - **Inspector round 7 (major, PR #800).** The grammar's prose ("every remaining element is either
   an allowed flag or the single operand") contradicted its own test list, which required a
   repeated flag and a flag after the operand to be refused. The loose reading admits

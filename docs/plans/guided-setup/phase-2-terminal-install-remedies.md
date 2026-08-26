@@ -56,10 +56,30 @@ slot. It adds no shared type.
 2. **`shellCommand(argv)` already exists** and is what quotes argv into that wrapper. Use it;
    do not concatenate.
 
-3. **`GET /api/terminal-targets` (`routes.ts:2791`) already answers which backends can actually
-   open a window**, pair-aware via `terminalTargetViews`, including the `unavailable` sentence
-   per row. The picker reads that route rather than the raw backend list, so it cannot offer a
-   multiplexer with no emulator to raise it.
+3. **The pair-availability check is enforced in the launcher, not in the picker**, and this
+   phase must not add a second copy of it. `launchTerminal` (`src/server/terminal/targets.ts:235`)
+   is the first thing every launch goes through, and it re-derives the answer per call:
+
+   ```ts
+   const view = terminalTargetViews(deps).find((v) => v.id === backend);
+   if (!view) return { ok: false, label: backend, error: "no such terminal", status: 404 };
+   if (view.unavailable) {
+     return { ok: false, label: view.label, error: view.unavailable, status: 409 };
+   }
+   ```
+
+   So a request naming a backend that cannot open a window - stale, crafted, or simply a machine
+   whose emulator was uninstalled between the picker's read and the click - is refused **before
+   anything is spawned**, with that backend's own `unavailable` sentence. It goes further than a
+   presence test: for a multiplexer whose detached session starts but cannot be raised, it cleans
+   the session up and returns `502` with "session started but no terminal could show it", which is
+   the invisible-terminal failure this whole module exists to prevent.
+
+   `GET /api/terminal-targets` (`routes.ts:2791`) answers the same question for the browser, and
+   the picker reads it so the UI does not *offer* a target that must fail. That is a courtesy, not
+   the boundary - the boundary is the launcher, one implementation shared with the pipelines
+   install route and every other caller. **What this phase owes is not a third check but faithful
+   propagation:** see the launch step below.
 
 4. **`PipelineInstallerLaunchSchema` (`src/shared/protocol.ts:2700`)** is the schema shape to
    follow for the new body, and `parseBody(c, Schema)` is the parsing contract.
@@ -206,8 +226,17 @@ already has a vetted installer. See the route's `switch` below.
        and running our package-manager allowlist over `bin/install` would refuse it.
      - `command`: run the argv guard on the looked-up argv and refuse with 409 if it fails, then
        wrap in the hold-open shell with `shellCommand`.
-  4. launch via `terminalLauncher` and answer `opened` / `maybe-opening` / `refused` with the
-     terminal layer's status code preserved.
+  4. launch via `terminalLauncher` and map its outcome faithfully, **preserving both the status
+     and the sentence**. The launcher has already refused an unavailable or unknown backend
+     (finding 3), so this route's job is to not lose that answer:
+     - `404` (no such terminal) and `409` (that backend cannot open a window) -> `refused`,
+       carrying the launcher's own sentence. Do not substitute a generic message: "tmux is
+       available but no terminal could raise it" is the only version an operator can act on.
+     - `502` (started but nothing could show it) -> `refused` as well, **never `opened`**. The
+       launcher has already cleaned the detached session up; reporting success here would be the
+       exact invisible-terminal lie the launcher went to the trouble of preventing.
+     - `504` (the backend did not report back) -> `maybe-opening`, for the reason finding 1 gives.
+     - success -> `opened`.
   A `switch` over the union rather than a chain of early returns, so a remedy kind added later
   does not compile until this route says what it does with it.
 - cwd: the operator's home for a package-manager install (it must not depend on a repository),
@@ -274,7 +303,14 @@ In the remedy action slot Phase 1 defined:
   is **not** a verified candidate refused with the provider's own sentence and without reaching
   the terminal layer; a `command` entry whose argv fails the guard refused **without** reaching
   the terminal layer (assert the launcher was not called); the happy path handing exactly the
-  wrapped argv to the launcher; the 504 case reported as `maybe-opening`.
+  wrapped argv to the launcher.
+
+  Then the outcome mapping, one case per status the launcher can return, because losing one of
+  these is how a refusal becomes a silent success: a stub launcher returning `409` surfaces as
+  `refused` **with the launcher's sentence** rather than a generic one; `404` likewise; **`502`
+  surfaces as `refused` and never as `opened`**; `504` as `maybe-opening`. The `409` case is the
+  one that covers a request naming a backend that cannot open a window - the route inherits that
+  refusal from `launchTerminal` rather than re-checking, so the test asserts the inheritance.
 - `e2e/specs/setup-install-terminal.spec.ts` - picks the cmux backend, clicks "Run in a terminal"
   on a missing dependency, and asserts against the fake's recorded command line that what the
   terminal was handed is the catalog's argv inside the hold-open wrapper. Also asserts the refusal
@@ -322,6 +358,23 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 16 (major, PR #800), partially adopted.** The finding was right about this
+  document and wrong about the repository. Finding 3 described the pair-availability check as
+  something the browser picker does, which reads as though a crafted or stale `POST` could reach
+  `terminalLauncher` with a multiplexer that has no emulator - so the review asked the handler to
+  re-check against `terminalTargetViews`. It already cannot: `launchTerminal`
+  (`src/server/terminal/targets.ts:235-244`) re-derives the views on every call, refuses an unknown
+  backend `404` and an unavailable one `409` before spawning, and for a detached session that
+  cannot be raised cleans it up and returns `502`. Adding a second check in this route would be a
+  duplicate of the one place that owns the rule, which is what this plan forbids elsewhere for the
+  same reason.
+
+  So: corrected finding 3 to say where the enforcement actually lives (with the code), and fixed
+  the real gap the finding exposed, which is on this route's side of the boundary - the outcome
+  mapping was one clause ("preserve the status code") and is now explicit per status, because the
+  way this feature could still show an invisible terminal is a handler that swallows a `409`
+  sentence or maps `502` to `opened`. Tests added per status, asserting the inherited refusal
+  rather than a re-check.
 - **Inspector round 8 (minor, PR #800).** The route said "404 for an unknown id" while the body
   schema was specified to require `id` to be a member of `SETUP_DEPENDENCY_IDS`, so the 404 was
   unreachable and its test unsatisfiable. Resolved in favour of the schema owning membership,

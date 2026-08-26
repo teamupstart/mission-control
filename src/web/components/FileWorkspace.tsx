@@ -17,6 +17,7 @@ import {
   markerTone,
   outstandingThread,
   reviewQueue,
+  threadForRenderedBlock,
   threadsByLine,
   threadsForFile,
 } from "../lib/fileComments.ts";
@@ -796,7 +797,7 @@ export function FileWorkspace({
     revision?: string | null,
   ): void => {
     const onLine = allThreadLines.get(anchor.startLine) ?? [];
-    const existing = onLine.find((thread) => thread.status === "draft") ?? onLine[0];
+    const existing = threadForRenderedBlock(onLine, anchor, surface);
     if (existing) {
       openIndexedThread(existing);
       return;

@@ -186,6 +186,7 @@ const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
 const TOP_HISTORY_COMMENT = "Clarify the top reliability question.";
 const BOTTOM_HISTORY_COMMENT = "Close the bottom reliability question.";
 const COMPACT_HISTORY_COMMENT = "Keep this thread on the paragraph, not its inline child.";
+const COMPACT_SIBLING_COMMENT = "Keep this second same-line paragraph as its own thread.";
 const LONG_COMMENT = "This heading overstates what the report goes on to say.";
 const DRAFT_COMMENT = "Half a thought about this paragraph,";
 
@@ -570,6 +571,33 @@ test.describe("commenting on a rendered document", () => {
     await expect(paragraph).toHaveClass(/mission-comment-target/);
     await expect(inline).not.toHaveClass(/mission-comment-target/);
     await shoot(page.locator(".file-main"), page, "compact-html-comment-target");
+  });
+
+  test("compact HTML blocks on one line open their own threads", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const paragraphs = page.frameLocator("iframe.html-preview").locator("p");
+    await paragraphs.nth(0).click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    await paragraphs.nth(1).click();
+    await writeComment(page, "line 1", COMPACT_SIBLING_COMMENT);
+
+    await paragraphs.nth(0).click();
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 1$/ });
+    await expect(thread).toContainText(COMPACT_HISTORY_COMMENT);
+    await paragraphs.nth(1).click();
+    await expect(thread).toContainText(COMPACT_SIBLING_COMMENT);
+    await shoot(page.locator(".file-main"), page, "compact-html-thread-selection");
   });
 
   test("a block is whatever the browser laid out as one, not whatever a list named", async ({

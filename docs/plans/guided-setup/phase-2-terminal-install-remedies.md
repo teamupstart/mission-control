@@ -141,12 +141,19 @@ already has a vetted installer. See the route's `switch` below.
   `{ id: SetupDependencyId, backend: TerminalBackendId, checkout?: string }`.
   **No argv, no cwd, no title, no command string.** Parse with `parseBody`.
 
-  `checkout` is **required when the remedy is `provider-installer` and forbidden otherwise** -
-  express that in the schema (a `refine`, or a discriminated body) rather than checking it in the
-  handler, so a malformed pairing is refused before any lookup. It exists because
-  `pipelineInstallerLaunch(provider, checkout, repoRoots)` is checkout-based: candidates are local
-  source checkouts in the workspace catalog, and there is no "the" checkout for the route to
-  assume.
+  The schema validates **shape only**: three fields, correct types, `id` a member of
+  `SETUP_DEPENDENCY_IDS`, `backend` a member of the terminal backend union, `checkout` a non-empty
+  string when present. It deliberately does **not** try to enforce the pairing rule below, because
+  it cannot: whether this `id` resolves to a `provider-installer` remedy is catalog knowledge, and
+  a schema that reached for it would either fail valid provider installs or relocate catalog
+  semantics into the protocol layer.
+
+  `checkout` is **required when the remedy is `provider-installer` and forbidden otherwise**, and
+  that pairing is enforced in the handler immediately after the catalog lookup - step 2 below -
+  as its own refusal with its own sentence. Ordering matters: shape, then lookup, then pairing,
+  then launch. It exists because `pipelineInstallerLaunch(provider, checkout, repoRoots)` is
+  checkout-based: candidates are local source checkouts in the workspace catalog, and there is no
+  "the" checkout for the route to assume.
 
   **A checkout is not argv, and accepting one does not weaken the boundary.** It is a *selection
   among candidates the server enumerated*: `pipelineInstallerLaunch` re-derives the verified set
@@ -159,10 +166,16 @@ already has a vetted installer. See the route's `switch` below.
   so branch on the kind before refusing anything - a refusal that fires first would make
   `provider-installer` unreachable:
   1. look the dependency up in the catalog; 404 for an unknown id. The body's `id` is a
-     `SetupDependencyId`, so a folded environment-check row is **unaddressable here by
-     construction** - it lives in the other half of `SetupRowId` and its remedy is a `skill` the
-     operator runs in a session, which this route refuses anyway;
-  2. switch on `remedy.kind`:
+     `SetupDependencyId`, so neither a folded environment-check row nor the derived terminal-pair
+     row is addressable here by construction - both live in other arms of `SetupRowId`, and the
+     folded row's remedy is a `skill` the operator runs in a session, which this route refuses
+     anyway;
+  2. **enforce the checkout pairing**, now that the remedy is known. A `provider-installer`
+     remedy with no `checkout` is a 409 saying which checkout to pick; any other remedy that
+     carries one is a 409 saying that remedy takes none. This is the step the schema could not do,
+     and doing it here is what keeps catalog knowledge out of the protocol layer. Both refusals
+     precede every launch path;
+  3. switch on `remedy.kind`:
      - `link` and `skill`: refuse with 409 and a sentence. There is nothing to run, and that is
        a property of the remedy rather than an error.
      - `provider-installer`: delegate to `pipelineInstallerLaunch(provider, body.checkout,
@@ -174,7 +187,7 @@ already has a vetted installer. See the route's `switch` below.
        and running our package-manager allowlist over `bin/install` would refuse it.
      - `command`: run the argv guard on the looked-up argv and refuse with 409 if it fails, then
        wrap in the hold-open shell with `shellCommand`.
-  3. launch via `terminalLauncher` and answer `opened` / `maybe-opening` / `refused` with the
+  4. launch via `terminalLauncher` and answer `opened` / `maybe-opening` / `refused` with the
      terminal layer's status code preserved.
   A `switch` over the union rather than a chain of early returns, so a remedy kind added later
   does not compile until this route says what it does with it.
@@ -231,11 +244,14 @@ In the remedy action slot Phase 1 defined:
   `provider-installer` remedy reaching the delegated launch rather than the refusal** (the
   ai-conductor row is the case, and getting this wrong makes the one dependency with a real
   installer the one that cannot use it); a `provider-installer` request with **no** checkout
-  refused by the schema; a checkout that is **not** a verified candidate refused with the
-  provider's own sentence and without reaching the terminal layer; a `command` request that
-  carries a checkout refused by the schema; a `command` entry whose argv fails the guard refused
-  **without** reaching the terminal layer (assert the launcher was not called); the happy path
-  handing exactly the wrapped argv to the launcher; the 504 case reported as `maybe-opening`.
+  refused by the handler's pairing step with a sentence naming what to pick; a `command` request
+  that **carries** a checkout refused by that same step; a structurally malformed body (missing
+  `backend`, unknown `id` type, empty-string `checkout`) refused by the schema, which is the split
+  worth pinning - shape in the schema, catalog-dependent pairing in the handler; a checkout that
+  is **not** a verified candidate refused with the provider's own sentence and without reaching
+  the terminal layer; a `command` entry whose argv fails the guard refused **without** reaching
+  the terminal layer (assert the launcher was not called); the happy path handing exactly the
+  wrapped argv to the launcher; the 504 case reported as `maybe-opening`.
 - `e2e/specs/setup-install-terminal.spec.ts` - picks the cmux backend, clicks "Run in a terminal"
   on a missing dependency, and asserts against the fake's recorded command line that what the
   terminal was handed is the catalog's argv inside the hold-open wrapper. Also asserts the refusal
@@ -283,6 +299,14 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 6 (major, PR #800).** The body schema was told to enforce "checkout required
+  for `provider-installer`, forbidden otherwise", which a schema over `{ id, backend, checkout? }`
+  cannot do: whether an id resolves to that remedy kind is catalog knowledge, so the instruction
+  would have produced either a schema that rejects valid provider installs or one that copies
+  catalog semantics into the protocol layer. Split the responsibilities explicitly - the schema
+  validates shape, the handler enforces the pairing in a new step 2 immediately after the catalog
+  lookup and before any launch path - and moved the two pairing test cases off the schema onto that
+  step, keeping a structural-malformation case on the schema so the split itself is pinned.
 - **Inspector round 5 (major, PR #800).** The guard allowlisted `argv[0]` only, so `npm
   uninstall`, `npm publish`, `npm run <script>`, `npm exec` / `npx`, `brew uninstall`, and
   `brew services stop` all passed every stated check - several of them executing arbitrary code,
@@ -301,7 +325,9 @@ App-level banner; neither touches the remedy action slot.
 - **Inspector round 2 (major, PR #800).** The follow-on hole in that same fix: the body carried
   only `id` and `backend`, but `pipelineInstallerLaunch` is checkout-based, so the delegation had
   nothing to launch. Added `checkout` to the contract - required for `provider-installer`,
-  forbidden otherwise, enforced in the schema - and specified where the panel gets it (the
+  forbidden otherwise, enforced in the schema (**revised by round 6 above**: the schema cannot
+  know an id's remedy kind, so the pairing moved to the handler) - and specified where the panel
+  gets it (the
   existing `GET /api/pipelines/installers`, with distinct no-candidate / one / many states).
   Recorded why this does not weaken the argv boundary: the provider re-derives the verified
   candidate set and refuses anything outside it, so a checkout is a selection rather than a path

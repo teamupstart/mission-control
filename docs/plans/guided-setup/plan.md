@@ -191,13 +191,24 @@ discriminated rather than pooled into one id space, so nothing can mistake a che
 dependency:
 
 ```ts
+export type SetupDerivedRowId = "terminal-pair";
+
 export type SetupRowId =
   | { source: "dependency"; id: SetupDependencyId }
-  | { source: "environment-check"; id: EnvironmentCheckId };
+  | { source: "environment-check"; id: EnvironmentCheckId }
+  | { source: "derived"; id: SetupDerivedRowId };
 ```
 
-Both sources produce one row shape, so the panel renders a list and never branches on an id. Two
-properties of the folded row are deliberate and easy to get wrong:
+**Three sources, one row shape.** The third exists because the terminal pair row is not a
+dependency - no binary is called `terminal-pair` - and yet it is the `required` row in the
+Terminals family while each backend stays `optional`. Giving it a view type of its own instead
+would put a `required` row outside the list every consumer iterates, which is exactly how the
+first-run banner comes to miss the operator it exists for.
+
+Every row - dependency, folded check, derived - lives in one `SetupChecksView.rows` list, so the
+panel renders a list and never branches on an id, and "what is required and not satisfied here"
+is answerable in one pass. Two properties of the folded row are deliberate and easy to get
+wrong:
 
 - **It exists only while the warning does.** A null warning is silence, and silence covers both
   "installed and set up" and "never heard of this tooling" - which the environment check

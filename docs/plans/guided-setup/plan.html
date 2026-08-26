@@ -487,12 +487,24 @@ compile until it has said where its row belongs and what fixes it. The row's ide
 discriminated rather than pooled into one id space, so nothing can mistake a check for a
 dependency:</p>
 
-<pre><code>export type SetupRowId =
-  | { source: "dependency"; id: SetupDependencyId }
-  | { source: "environment-check"; id: EnvironmentCheckId };</code></pre>
+<pre><code>export type SetupDerivedRowId = "terminal-pair";
 
-<p>Both sources produce one row shape, so the panel renders a list and never branches on an id.
-Two properties of the folded row are deliberate and easy to get wrong:</p>
+export type SetupRowId =
+  | { source: "dependency"; id: SetupDependencyId }
+  | { source: "environment-check"; id: EnvironmentCheckId }
+  | { source: "derived"; id: SetupDerivedRowId };</code></pre>
+
+<p><strong>Three sources, one row shape.</strong> The third exists because the terminal pair row
+is not a dependency - no binary is called <code>terminal-pair</code> - and yet it is the
+<code>required</code> row in the Terminals family while each backend stays <code>optional</code>.
+Giving it a view type of its own instead would put a <code>required</code> row outside the list
+every consumer iterates, which is exactly how the first-run banner comes to miss the operator it
+exists for.</p>
+
+<p>Every row - dependency, folded check, derived - lives in one <code>SetupChecksView.rows</code>
+list, so the panel renders a list and never branches on an id, and "what is required and not
+satisfied here" is answerable in one pass. Two properties of the folded row are deliberate and
+easy to get wrong:</p>
 
 <ul>
   <li><strong>It exists only while the warning does.</strong> A null warning is silence, and that

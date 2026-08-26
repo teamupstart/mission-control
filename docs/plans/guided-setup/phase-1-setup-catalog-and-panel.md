@@ -89,10 +89,12 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
 - `SetupRowId`, the discriminated identity every row carries, so no code has to guess which id
   space a row's id came from and the spaces can never collide:
   ```ts
+  export type SetupDerivedRowId = "terminal-pair";
+
   export type SetupRowId =
     | { source: "dependency"; id: SetupDependencyId }
     | { source: "environment-check"; id: EnvironmentCheckId }
-    | { source: "derived"; id: SetupDerivedRowId };   // "terminal-pair" today
+    | { source: "derived"; id: SetupDerivedRowId };
   ```
   **Three sources, one row type.** The derived source exists because the terminal pair row is not
   a dependency - no binary is named `terminal-pair` - and yet it is the `required` row in the

@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -99,23 +99,28 @@ function discovered(cwd: string, id: string, over: Partial<DiscoveredSession> = 
  *
  * The task deliberately keeps `workflowId: null` - that is what a manual attach leaves
  * behind, and reproducing the report means never writing that column.
+ *
+ * `task: false` builds the OTHER shape a binding admits: a bound conversation with no task of
+ * its own, which resolves its single slot from the session's own checkout instead.
  */
-function harness(repo: string, id: string) {
+function harness(repo: string, id: string, opts: { task?: boolean } = {}) {
   const versionId = seedPersonaVersion(`agent-evidence-${id}`);
   const registry = new Registry();
   registry.applyDiscovery([discovered(repo, id)]);
   const session = registry.getSession(id);
   assert.ok(session);
-  registry.upsertTask(mkTask({
-    id: `scout-${id}`,
-    kind: "scout",
-    title: "Synthesis: Platform reliability investment review",
-    status: "running",
-    sessionId: session.id,
-    repoRoot: repo,
-    worktreePath: repo,
-    workflowId: null,
-  }));
+  if (opts.task !== false) {
+    registry.upsertTask(mkTask({
+      id: `scout-${id}`,
+      kind: "scout",
+      title: "Synthesis: Platform reliability investment review",
+      status: "running",
+      sessionId: session.id,
+      repoRoot: repo,
+      worktreePath: repo,
+      workflowId: null,
+    }));
+  }
   const personas = new PersonaManager(registry);
   const workflows = new WorkflowManager(registry, personas.store);
   const app = buildApp(
@@ -186,6 +191,96 @@ test("a manually attached workflow accepts agent evidence from a scout session",
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The other shape the binding admits, and the branch that has no task to read.
+ *
+ * A bound conversation is not always a task's - an operator can attach a workflow to a session
+ * they started themselves, and a task's repair rounds outlive its settled row. Both land on the
+ * fallback slot list built from the session's own checkout, so this drives that construction
+ * through the route rather than trusting it: a path-backed artifact only resolves if the
+ * fallback names the session's checkout, `repo-02` only exists if the fallback issued more than
+ * one slot, and a path outside the checkout only lands if containment is not being applied.
+ */
+test("a bound session with no task registers against its own single checkout", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-taskless-")));
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-outside-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    writeFileSync(join(repo, "evidence", "focused.tap"), "TAP version 13\nok 1 - taskless\n");
+    writeFileSync(join(outside, "stolen.tap"), "not this agent's checkout\n");
+    const { app, registry, session, workflows, versionId } = harness(
+      repo,
+      "taskless-bound-session",
+      { task: false },
+    );
+    assert.equal(
+      registry.taskForSession(session.id, session.cwd),
+      undefined,
+      "the fixture must reach the fallback, so it may not have a task",
+    );
+
+    const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
+    assert.equal(bound.ok, true, bound.ok ? "" : bound.message);
+
+    const artifact = (
+      clientItemId: string,
+      path: string,
+      repositoryScope: string,
+    ) => ({
+      artifacts: [{
+        kind: "text",
+        clientItemId,
+        path,
+        caption: "Focused output from a conversation that has no task of its own",
+        repositoryScope,
+      }],
+    });
+
+    const accepted = await evidenceRequest(
+      app,
+      { env: { cwd: repo }, cwd: repo, ...artifact("taskless", "evidence/focused.tap", "repo-01") },
+    );
+    const body = await accepted.text();
+    assert.equal(accepted.status, 200, body);
+    assert.deepEqual(
+      (JSON.parse(body) as { artifacts: Array<{ clientItemId: string }> })
+        .artifacts.map((entry) => entry.clientItemId),
+      ["taskless"],
+      "the single slot resolved to the session's own checkout",
+    );
+
+    // Exactly ONE slot is issued, so the second repository of a multi-repo task cannot be
+    // addressed by a conversation that has no task to have attached one.
+    const extraSlot = await evidenceRequest(
+      app,
+      { env: { cwd: repo }, cwd: repo, ...artifact("second-repo", "evidence/focused.tap", "repo-02") },
+    );
+    assert.equal(extraSlot.status, 403);
+    assert.equal((await extraSlot.json() as { code: string }).code, "repository_scope");
+
+    // Containment still applies to the fallback root, so the session's checkout is a boundary
+    // rather than merely a starting point.
+    const escape = await evidenceRequest(
+      app,
+      {
+        env: { cwd: repo },
+        cwd: repo,
+        ...artifact("outside", `${outside}/stolen.tap`, "repo-01"),
+      },
+    );
+    // `artifact_path` carries the resolver's default 409 rather than the 403 the scope
+    // refusals use. Asserted as it is rather than as it might read: what matters is that the
+    // path never resolved, and pinning the status keeps a later widening honest.
+    assert.equal(escape.status, 409);
+    assert.equal((await escape.json() as { code: string }).code, "artifact_path");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
 

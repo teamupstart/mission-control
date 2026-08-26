@@ -50,8 +50,12 @@ Independent of Phase 2. May merge before or after it.
    owner.
 
 3. **Targets are registered by the components they spotlight**, through the target ref hook, so
-   this phase does touch `SetupPanel.tsx` - attaching refs to the family sections Phase 1 gave
-   stable ids. That is the seam; it does not overlap Phase 2's remedy action slot.
+   this phase touches `SetupPanel.tsx` twice: attaching refs to the family sections Phase 1 gave
+   stable ids, and taking the checks state as props once the hook is hoisted (step 1). Neither
+   reaches into the remedy action slot Phase 2 edits, so the two remain mergeable in either order -
+   but the hoist does change the panel's prop signature, so whichever of the two merges second
+   rebases through a mechanical prop-wiring change. Phase 1 keeps that state and its `recheck`
+   prop-passable precisely so this is a move rather than a rewrite.
 
 4. **`app_config` entries are declared, not ad hoc.** `src/shared/app-config-entries.ts` holds a
    schema, a `snapshotVersion`, a `capture` kind, a value classification, and a backup domain per
@@ -77,15 +81,28 @@ Independent of Phase 2. May merge before or after it.
   after a dismissal - that is a machine that broke, not a preference the operator expressed. Store
   the dismissal so this is expressible: record what was dismissed (the first-launch notice, or a
   set of ids), not merely a boolean, or the return case cannot be told from the dismissed one.
-- Reuse the existing checks fetch. The banner must not add a second poll of
-  `/api/setup/checks`; App already has a place to hold one read, and two consumers of one fetch
-  is the rule the settings panels follow.
+- **Hoist the checks read to App - it is not there yet.** Phase 1 deliberately owns
+  `useSetupChecks` inside `SetupPanel`, because at that point the panel is its only consumer
+  (the rule `useSkills` and `useHarnesses` follow). The banner is the second consumer and it must
+  evaluate before Settings is ever opened, so this phase moves the hook up to App and passes its
+  state to both the banner and, through `SettingsPage`, to `SetupPanel` - which is exactly the
+  distinction `useHarnesses`' own comment draws about Foreman, whose state the topbar shares.
+  One owner, one read, two readers.
+
+  This is a planned move rather than a violation of Phase 1: Phase 1's handoff names the hook as
+  panel-local *until a second consumer exists*. Do not leave a second `useSetupChecks` mounted in
+  the panel after hoisting, and do not add a poll - one mount read plus the explicit re-check is
+  still the whole contract.
 
 ### 2. The banner component
 
 `src/web/components/SetupBanner.tsx`, in `UpdateBanner`'s shape: one sentence naming how many
 rows need attention, a link that navigates to `#/settings/setup`, and a dismiss control with an
 accessible name. No modal, no blocking, no auto-navigation.
+
+**Renders nothing until the first read lands.** Before the checks answer, "no required row is
+missing" has not been established - it is unknown - and a banner that flashed on every load while
+the read was in flight would train the operator to dismiss it unread.
 
 ### 3. The tour
 
@@ -150,5 +167,10 @@ shape are the two things a future rail dot would reuse, if that decision is ever
 - Changed the dismissal from a boolean to a record of what was dismissed during this write-up:
   a boolean cannot express "dismissed, then a required dependency went missing again", which the
   approved plan requires.
-- Confirmed Phase 1's no-second-poll rule is inherited here: the banner reuses App's existing
-  read of the checks route rather than adding its own.
+- **Inspector round 2 (major, PR #800).** This phase said the banner reuses a read "App already
+  has a place to hold", but Phase 1 makes `useSetupChecks` panel-local, so no such read exists and
+  the instruction was unimplementable both ways: reusing the panel hook leaves the banner unable to
+  evaluate before Settings is opened, and adding a read violates the single-fetch rule. Resolved by
+  making the hoist to App explicit here, and by amending Phase 1's handoff to say the hook is
+  panel-local only until a second consumer exists. Also specified that the banner renders nothing
+  until the first read lands, since "not yet known" is not "nothing is wrong".

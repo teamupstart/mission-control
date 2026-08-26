@@ -86,9 +86,9 @@ tests and excluding the generated tour content:
 | Phase | Estimate | Assumptions |
 | --- | --- | --- |
 | 1 | 750 - 950 | Shared catalog ~180 (13 entries with prose), `src/server/setup/` ~330 (probes plus the dep bag and the throw containment), route + protocol + api client ~70, `SetupPanel.tsx` ~300 in the shape of `SkillsPanel` (210) rather than `ConductorPanel` (1079), registry/renderCategory ~20, e2e fixture overrides ~15. |
-| 2 | 250 - 350 | Install route ~90, argv guard ~50, catalog argv data ~40, panel remedy controls and backend picker ~120. |
+| 2 | 300 - 400 | Install route ~90, argv guard ~50, catalog argv data ~40, panel remedy controls and backend picker ~120, provider-installer checkout selection over the existing candidates route ~50. |
 | 3 | 400 - 550 | Banner ~120 in `UpdateBanner`'s shape (114), config entry + route wiring ~60, tour stage file ~300, entry + namespace + target refs ~60, authored `tours/setup.md` prose. |
-| **Total** | **1400 - 1850** | |
+| **Total** | **1450 - 1900** | |
 
 **Why three phases.** The estimate is far above the 200-line one-phase threshold, so the
 question is only where the boundaries fall. Each additional boundary is justified against
@@ -138,8 +138,10 @@ defined; Phase 3 adds an App-level banner, a config entry, and tour registration
 target refs to section elements Phase 1 defined. Their one shared file is `SetupPanel.tsx`, and
 the seam is stated in both phase files - Phase 1 ships the panel with a per-row remedy action
 slot and per-family section elements carrying stable ids, so Phase 2 edits inside the row action
-and Phase 3 attaches refs to the section wrappers. Those are disjoint regions; whichever merges
-second rebases without a semantic conflict.
+while Phase 3 attaches refs to the section wrappers and hoists the checks hook to App. Those are
+disjoint regions, so neither breaks the other's behavior; the hoist does change the panel's prop
+signature, so whichever merges second rebases through a mechanical prop-wiring change. Phase 1
+keeps that state and its `recheck` prop-passable so the hoist is a move rather than a rewrite.
 
 **Merge order.** Phase 1, then Phase 2 and Phase 3 in any order.
 

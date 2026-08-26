@@ -271,7 +271,7 @@
 <div class="meta">
   <div><b>Source plan</b><code>docs/plans/guided-setup/plan.md</code> (rendered: <code>plan.html</code>)</div>
   <div><b>Decisions</b>review <code>df3523c8</code>, applied to the source plan</div>
-  <div><b>Estimate</b>1400 - 1850 non-test implementation lines</div>
+  <div><b>Estimate</b>1450 - 1900 non-test implementation lines</div>
   <div><b>Phases</b>3, with Phase 2 and Phase 3 mergeable in either order</div>
 </div>
 
@@ -357,9 +357,9 @@ and the generated tour content.</p>
   <thead><tr><th>Phase</th><th>Estimate</th><th>Assumptions</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>750 - 950</td><td>Shared catalog ~180, <code>src/server/setup/</code> ~330, route + protocol + client ~70, <code>SetupPanel.tsx</code> ~300 in <code>SkillsPanel</code>'s register (210) rather than <code>ConductorPanel</code>'s (1079), registry wiring ~20, e2e fixture overrides ~15.</td></tr>
-    <tr><td>2</td><td>250 - 350</td><td>Install route ~90, argv guard ~50, catalog argv data ~40, panel controls and backend picker ~120.</td></tr>
+    <tr><td>2</td><td>300 - 400</td><td>Install route ~90, argv guard ~50, catalog argv data ~40, panel controls and backend picker ~120, provider-installer checkout selection over the existing candidates route ~50.</td></tr>
     <tr><td>3</td><td>400 - 550</td><td>Banner ~120 in <code>UpdateBanner</code>'s shape (114), config entry + wiring ~60, tour stage file ~300, entry/namespace/refs ~60, plus authored prose.</td></tr>
-    <tr class="arm-d"><td>Total</td><td>1400 - 1850</td><td></td></tr>
+    <tr class="arm-d"><td>Total</td><td>1450 - 1900</td><td></td></tr>
   </tbody>
 </table>
 </div>
@@ -442,8 +442,11 @@ and the generated tour content.</p>
 decision the other introduces. Their one shared file is <code>SetupPanel.tsx</code>, and the seam
 is stated in both phase files: Phase 1 ships the panel with a per-row <strong>remedy action
 slot</strong> and per-family <strong>section elements carrying stable ids</strong>, so Phase 2
-edits inside the row action and Phase 3 attaches tour refs to the section wrappers. Disjoint
-regions; whichever merges second rebases without a semantic conflict.</p>
+edits inside the row action while Phase 3 attaches tour refs to the section wrappers and hoists
+the checks hook to App. Disjoint regions, so neither breaks the other's behavior; the hoist does
+change the panel's prop signature, so whichever merges second rebases through a mechanical
+prop-wiring change. Phase 1 keeps that state and its <code>recheck</code> prop-passable so the
+hoist is a move rather than a rewrite.</p>
 
 <h2>Cross-phase contracts</h2>
 

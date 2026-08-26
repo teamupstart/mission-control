@@ -136,7 +136,10 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   not a route error.
 - `fetchSetupChecks()` in `src/web/lib/api.ts`, in the shape of the existing
   `fetchJson<EnvironmentChecksView>("/api/environment/checks")` at `api.ts:303`.
-- A `useSetupChecks` hook owned locally by the panel, like `useSkills` and `useHarnesses`: mount
+- A `useSetupChecks` hook owned locally by the panel, like `useSkills` and `useHarnesses` -
+  correct **while the panel is its only consumer**; Phase 3 adds the first-run banner as a second
+  consumer and hoists it to App, so keep the hook's state and its `recheck` passable as props
+  rather than reaching for context inside the panel. Mount
   read plus an explicit `recheck()`. **No poll and no SSE** - the page refetches when the
   operator asks.
 
@@ -217,6 +220,10 @@ Later phases may rely on, and must not change:
 4. The panel's structure: `setup-family-<id>` sections, `data-anchor="setup/<slug>"` rows, and
    the remedy action slot.
 5. The override-chain rule for every probe.
+6. `useSetupChecks` is panel-local **only until a second consumer exists**. Phase 3's banner is
+   that consumer and is expected to hoist the hook to App and pass its state to both readers; that
+   is a planned move, not a contract break. What must not change is the underlying rule - one
+   owner, one read, no poll.
 
 **Seam for the concurrent phases.** Phase 2 edits inside the remedy action slot; Phase 3
 attaches tour target refs to the family section wrappers and adds an App-level banner. Disjoint
@@ -239,3 +246,7 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 2 (major, PR #800).** Phase 3's banner needs the checks before Settings is
+  opened, which this phase's panel-local hook cannot serve. Amended the hook bullet and the handoff
+  to say panel-local holds only until a second consumer exists, and to keep the hook's state
+  prop-passable so Phase 3's hoist is a move rather than a rewrite.

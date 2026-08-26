@@ -161,8 +161,12 @@ export const DAEMON_TERMINAL_IDENTITY = {
  * Binding port 0 makes the kernel pick, so two workers cannot collide by construction. There
  * is still a window between closing this probe and the daemon binding, which is why the boot
  * check below verifies the daemon's identity rather than trusting the port.
+ *
+ * Exported for `dev-dashboard.ts`, which needs a second free port on the same terms. A
+ * hand-rolled copy there would be a second answer to "is this port free", and the answer
+ * that matters is the kernel's.
  */
-async function freeLoopbackPort(): Promise<number> {
+export async function freeLoopbackPort(): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);

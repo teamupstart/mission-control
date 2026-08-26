@@ -421,7 +421,7 @@ and the generated tour content.</p>
       <rect x="293" y="24" width="200" height="70" rx="10" class="n-fill"/>
       <text x="393" y="51" text-anchor="middle" class="ttl">Phase 2</text>
       <text x="393" y="69" text-anchor="middle" class="sub">run in a visible terminal</text>
-      <text x="393" y="84" text-anchor="middle" class="sub">250 - 350 lines</text>
+      <text x="393" y="84" text-anchor="middle" class="sub">300 - 400 lines</text>
 
       <rect x="293" y="138" width="200" height="70" rx="10" class="n-fill"/>
       <text x="393" y="165" text-anchor="middle" class="ttl">Phase 3</text>
@@ -468,11 +468,15 @@ hoist is a move rather than a rewrite.</p>
   snapshot.</li>
   <li>Panel structure: one section per family with a stable element id, one row per dependency
   carrying <code>data-anchor="setup/&lt;slug&gt;"</code>, an accessible name, and a remedy action
-  slot. Anchor slugs derive from the discriminated row id, so the two id spaces cannot collide.</li>
+  slot. Anchor slugs derive from the discriminated row id, so no two sources' ids can collide.</li>
   <li><code>SetupRowId</code> / <code>SetupRowView</code> / <code>ENVIRONMENT_ROW_METADATA</code>:
-  one row shape produced from two id spaces (catalog dependencies and folded environment checks),
-  discriminated by <code>source</code>. Rows are added by adding catalog data, never by branching
-  on an id at a render site.</li>
+  one row shape produced from three sources (catalog dependencies, folded environment checks, and
+  derived rows such as the terminal pair), discriminated by <code>source</code> and all present in
+  the single <code>SetupChecksView.rows</code> list. Rows are added by adding catalog data, never
+  by branching on an id at a render site. <code>requirement</code> sits on the row, so a family can
+  be <code>required</code> through a derived row while each of its members stays
+  <code>optional</code> - and any consumer asking about "every required row" must iterate that one
+  list rather than the dependency catalog.</li>
   <li>The daemon never installs anything in-process. Phase 2 is the only phase that may cause
   execution, and only by handing vetted argv to a visible terminal. The one path-shaped value it
   accepts, a provider installer's <code>checkout</code>, is a selection the daemon re-verifies

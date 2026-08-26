@@ -87,12 +87,17 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
 - `SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo>` - the exhaustiveness
   enforcement, so a new id does not compile until it has said what it is and how to get it.
 - `SetupRowId`, the discriminated identity every row carries, so no code has to guess which id
-  space a row's id came from and the two can never collide:
+  space a row's id came from and the spaces can never collide:
   ```ts
   export type SetupRowId =
     | { source: "dependency"; id: SetupDependencyId }
-    | { source: "environment-check"; id: EnvironmentCheckId };
+    | { source: "environment-check"; id: EnvironmentCheckId }
+    | { source: "derived"; id: SetupDerivedRowId };   // "terminal-pair" today
   ```
+  **Three sources, one row type.** The derived source exists because the terminal pair row is not
+  a dependency - no binary is named `terminal-pair` - and yet it is the `required` row in the
+  Terminals family. Giving it its own view type instead is what left it invisible to anything
+  that iterates "dependencies", which is a defect Phase 3's banner condition hit directly.
 - `ENVIRONMENT_ROW_METADATA: Record<EnvironmentCheckId, { family; requirement; remedy }>` - what a
   folded environment warning is beyond what the check itself says. An `EnvironmentCheckView`
   carries a label, a warning, and a detail and has **no** family, requirement, or remedy, so
@@ -106,11 +111,20 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   `enables`, `remedy`, `status`. The panel renders a list of these and never branches on an id.
   A dependency row fills it from `SETUP_DEPENDENCY_INFO`; a folded row fills it from the check's
   own label plus `ENVIRONMENT_ROW_METADATA`.
-- The derived `SetupPairView` for the terminal row, plus `SetupChecksView` as the route's answer.
+- `SetupChecksView` as the route's answer: `{ rows: SetupRowView[] }`. **Every** row is in that
+  one list - dependency, folded environment check, and derived - so a consumer asking "what is
+  required and not satisfied here" gets a complete answer from one iteration and cannot miss a
+  class of row by construction. The terminal pair row is a `SetupRowView` with
+  `source: "derived"`, family `terminals`, requirement `required`, its `enables` sentence, a
+  status of `satisfied` naming the emulator that would do the raising or `missing` when no pair
+  exists, and a `link` remedy to install an emulator.
 - Requirement levels for v1: `claude-cli` recommended (each agent CLI is only required if it is
   the one you dispatch, and the panel says so); `tmux`/`cmux`/`wezterm`/`ghostty` optional
-  individually with the derived pair row **required**; `gh-cli` required; `gh-auth` required;
-  `claude-plugins`/`claude-skills` optional; `ai-conductor` optional.
+  individually, with the **derived pair row carrying the `required`** level for that family -
+  which backend you use is a preference, having none that can open a window is not;
+  `gh-cli` required; `gh-auth` required; `claude-plugins`/`claude-skills` optional;
+  `ai-conductor` optional. Note that `requirement` sits on the ROW, not on the dependency, which
+  is what lets a family's requirement live on a derived row while its members stay optional.
 
 ### 2. `src/server/setup/`
 
@@ -252,9 +266,12 @@ Later phases may rely on, and must not change:
 4. The panel's structure: `setup-family-<id>` sections, `data-anchor="setup/<slug>"` rows, and
    the remedy action slot.
 5. The override-chain rule for every probe.
-6. `SetupRowId`, `SetupRowView`, and `ENVIRONMENT_ROW_METADATA`: one row shape from two id
-   spaces, discriminated by `source`. A later phase adds a row by adding catalog data, never by
-   branching on an id at a render site, and never by pooling the two id spaces into one.
+6. `SetupRowId`, `SetupRowView`, and `ENVIRONMENT_ROW_METADATA`: one row shape from three
+   sources (dependency, environment-check, derived), discriminated by `source`, all in the single
+   `SetupChecksView.rows` list. A later phase adds a row by adding catalog data, never by
+   branching on an id at a render site, and never by pooling the id spaces into one. **Anything
+   asking a question about "every required row" iterates that one list** - the pair row is the
+   proof of why: it is `required` and it is not a dependency.
 7. `useSetupChecks` is panel-local **only until a second consumer exists**. Phase 3's banner is
    that consumer and is expected to hoist the hook to App and pass its state to both readers; that
    is a planned move, not a contract break. What must not change is the underlying rule - one
@@ -281,6 +298,12 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 4 (major, PR #800).** The derived terminal pair row had its own view type
+  (`SetupPairView`) beside the row union, so "every required dependency" - the shape Phase 3's
+  banner condition took - could not see the one `required` row in the Terminals family. Folded it
+  into `SetupRowView` as a third `source: "derived"`, put every row in one
+  `SetupChecksView.rows` list, and stated that `requirement` belongs to the row rather than to the
+  dependency, which is what lets a family be required while each of its backends stays optional.
 - **Inspector round 3 (major, PR #800).** The folded environment warning was unrepresentable:
   the only row type extended `SetupDependencyInfo`, while an `EnvironmentCheckView` has no id in
   that space, no family, no requirement, and no remedy - so an implementer would have invented all

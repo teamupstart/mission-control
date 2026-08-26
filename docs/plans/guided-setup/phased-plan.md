@@ -165,10 +165,14 @@ Owned by Phase 1, relied on by the others, and not to be changed by them:
    detection on a poll tick, in `SettingsStatus`, or in the registry snapshot (finding 7).
 6. Panel structure: one section per family with a stable element id, one row per dependency
    carrying `data-anchor="setup/<slug>"`, an accessible name, and a remedy action slot.
-   Anchor slugs derive from the discriminated row id, so the two id spaces cannot collide.
-7. `SetupRowId` / `SetupRowView` / `ENVIRONMENT_ROW_METADATA`: one row shape produced from two id
-   spaces (catalog dependencies and folded environment checks), discriminated by `source`. Rows
-   are added by adding catalog data, never by branching on an id at a render site.
+   Anchor slugs derive from the discriminated row id, so no two sources' ids can collide.
+7. `SetupRowId` / `SetupRowView` / `ENVIRONMENT_ROW_METADATA`: one row shape produced from three
+   sources (catalog dependencies, folded environment checks, and derived rows such as the terminal
+   pair), discriminated by `source` and all present in the single `SetupChecksView.rows` list.
+   Rows are added by adding catalog data, never by branching on an id at a render site.
+   `requirement` sits on the row, so a family can be `required` through a derived row while each
+   of its members stays `optional` - and any consumer asking about "every required row" must
+   iterate that one list rather than the dependency catalog.
 8. The daemon never installs anything in-process. Phase 2 is the only phase that may cause
    execution, and only by handing vetted argv to a visible terminal. The one path-shaped value it
    accepts, a provider installer's `checkout`, is a selection the daemon re-verifies against its

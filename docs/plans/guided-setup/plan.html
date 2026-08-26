@@ -448,6 +448,14 @@ derived row - "Mission Control can open a terminal window on a checkout" - compu
 <code>terminalTargetViews</code>, naming the emulator that would do the raising. Restating that
 pair logic inside the setup registry is the one duplication this plan explicitly forbids.</p>
 
+<p><strong>That derived row carries the family's <code>required</code> level</strong>, and the
+individual backends are each <code>optional</code>: which terminal you use is a preference, having
+none that can open a window is not. So <code>requirement</code> belongs to the row rather than to
+the dependency, and the derived row is an ordinary member of the same row list as the rest - not a
+separate view type. Anything asking "what is required and not satisfied on this machine" therefore
+gets a complete answer from one list, which is what keeps the first-run banner from missing the
+very operator it exists for.</p>
+
 <h3>The existing environment checks are folded in, not forked</h3>
 
 <p><code>ENVIRONMENT_CHECK_IDS</code> is append-only and its entries answer a narrower question:
@@ -675,10 +683,21 @@ refetches; there is no auto-refresh, because a page that silently rewrites itsel
 operator reads it is worse than one they refresh.</p>
 
 <p><strong>A first-run entry point.</strong> The dashboard shows a dismissible banner when any
-<code>required</code> dependency is <code>missing</code>, or on first launch with no dismissal
+<code>required</code> <strong>row</strong> is not satisfied, or on first launch with no dismissal
 recorded. It links to the Setup category and says how many rows need attention. Dismissal is
 durable (one <code>app_config</code> flag), and the banner returns if a <em>required</em> row later
-goes missing - that is a machine that broke, not a preference the operator already expressed.</p>
+stops being satisfied - that is a machine that broke, not a preference the operator already
+expressed.</p>
+
+<p>Rows rather than dependencies, because the two levels that matter most here do not sit on a
+dependency. The <strong>derived terminal pair row</strong> is the <code>required</code> one in the
+Terminals family while every individual backend is <code>optional</code>, so a machine with tmux
+and no emulator cannot open a terminal window and a condition written over required dependencies
+would find nothing wrong with it. And <code>needs-setup</code> counts as well as
+<code>missing</code>: a required-but-unauthenticated <code>gh</code> is the case that breaks an
+operator's first push, and it is never <code>missing</code>. <code>unknown</code> does not raise
+the banner - "we could not look" is not evidence of breakage, and nagging about it is
+unactionable.</p>
 
 <p><strong>A tour.</strong> One <code>TourEntry</code> (<code>src/web/tour/entries.ts</code>)
 walking the Setup panel, so it appears in the Settings rail's Help and tours row and in the
@@ -721,7 +740,7 @@ step.</p>
     <tr><td>Becomes a machine-wide install manager</td><td><code>requirement</code> levels plus a committed catalog. A dependency Mission Control does not use does not get a row.</td></tr>
     <tr><td>Detection drifts from what refuses</td><td>Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses <code>terminalTargetViews</code> rather than restating it.</td></tr>
     <tr><td>A slow probe stalls the page</td><td>Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (<code>gh auth status</code>, the conductor probe) are bounded by <code>run</code>'s own <code>timeoutMs</code> (<code>src/server/util/exec.ts</code>, 4s by default). A probe that times out renders <code>unknown</code> with a reason rather than blocking the page. <strong>No cache</strong>, per the no-tick rule above: an operator who just installed something must see the change on the next read.</td></tr>
-    <tr><td>Chrome for an already-set-up operator</td><td>The banner appears only for missing <code>required</code> rows, and satisfied rows collapse to a one-line chip.</td></tr>
+    <tr><td>Chrome for an already-set-up operator</td><td>The banner appears only for <code>required</code> rows that are missing or need setup, and satisfied rows collapse to a one-line chip.</td></tr>
   </tbody>
 </table>
 </div>

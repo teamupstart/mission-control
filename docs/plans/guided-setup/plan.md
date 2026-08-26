@@ -151,6 +151,13 @@ open a terminal window on a checkout" - computed from `terminalTargetViews`, nam
 emulator that would do the raising. Restating that pair logic inside the setup registry is
 the one duplication this plan explicitly forbids.
 
+**That derived row carries the family's `required` level**, and the individual backends are each
+`optional`: which terminal you use is a preference, having none that can open a window is not.
+So `requirement` belongs to the row rather than to the dependency, and the derived row is an
+ordinary member of the same row list as the rest - not a separate view type. Anything asking
+"what is required and not satisfied on this machine" therefore gets a complete answer from one
+list, which is what keeps the first-run banner from missing the very operator it exists for.
+
 ### The existing environment checks are folded in, not forked
 
 `ENVIRONMENT_CHECK_IDS` is append-only and its entries answer a narrower question: would a
@@ -302,10 +309,18 @@ auto-refresh, because a page that silently rewrites itself while an operator rea
 worse than one they refresh.
 
 **A first-run entry point.** The dashboard shows a dismissible banner when any `required`
-dependency is `missing`, or on first launch with no dismissal recorded. It links to the Setup
+**row** is not satisfied, or on first launch with no dismissal recorded. It links to the Setup
 category and says how many rows need attention. Dismissal is durable (one `app_config` flag),
-and the banner returns if a *required* row later goes missing - that is a machine that broke,
-not a preference the operator already expressed.
+and the banner returns if a *required* row later stops being satisfied - that is a machine that
+broke, not a preference the operator already expressed.
+
+Rows rather than dependencies, because the two levels that matter most here do not sit on a
+dependency. The **derived terminal pair row** is the `required` one in the Terminals family while
+every individual backend is `optional`, so a machine with tmux and no emulator cannot open a
+terminal window and a condition written over required dependencies would find nothing wrong with
+it. And `needs-setup` counts as well as `missing`: a required-but-unauthenticated `gh` is the case
+that breaks an operator's first push, and it is never `missing`. `unknown` does not raise the
+banner - "we could not look" is not evidence of breakage, and nagging about it is unactionable.
 
 **A tour.** One `TourEntry` (`src/web/tour/entries.ts`) walking the Setup panel, so it appears
 in the Settings rail's Help and tours row and in the command palette beside the existing
@@ -340,4 +355,4 @@ and there is no third wizard implementation to keep in step.
 | The page becomes an install manager for the whole machine | `requirement` levels plus a committed catalog. A dependency Mission Control does not use does not get a row. |
 | Detection drifts from the code that actually refuses | Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses `terminalTargetViews` rather than restating it. |
 | A slow probe stalls the page | Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (`gh auth status`, the conductor probe) are bounded by `run`'s own `timeoutMs` (`src/server/util/exec.ts`, 4s by default). A probe that times out renders `unknown` with a reason rather than blocking the page. **No cache**, per the no-tick rule above: an operator who just installed something must see the change on the next read. |
-| Rows of chrome for an operator who is already set up | The banner appears only for missing `required` rows, and satisfied rows collapse to a one-line chip. |
+| Rows of chrome for an operator who is already set up | The banner appears only for `required` rows that are missing or need setup, and satisfied rows collapse to a one-line chip. |

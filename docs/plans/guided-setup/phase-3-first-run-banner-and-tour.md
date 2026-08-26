@@ -74,13 +74,30 @@ Independent of Phase 2. May merge before or after it.
 - Declare the `app_config` entry (`setup-banner-dismissed`, or the repository's naming
   convention) in `src/shared/app-config-entries.ts` with its schema and classification per
   finding 4, plus its read/write route wiring in the shape the neighbouring config entries use.
-- The banner shows when **either**: any `required` dependency's status is `missing`, **or** no
-  dismissal has ever been recorded (the first-launch case, so a fully-provisioned machine still
-  gets told the page exists once).
-- Dismissal is durable. **The banner returns if a `required` dependency later goes missing** even
-  after a dismissal - that is a machine that broke, not a preference the operator expressed. Store
-  the dismissal so this is expressible: record what was dismissed (the first-launch notice, or a
-  set of ids), not merely a boolean, or the return case cannot be told from the dismissed one.
+- The banner shows when **either**: any `required` **row** is not satisfied, **or** no dismissal
+  has ever been recorded (the first-launch case, so a fully-provisioned machine still gets told
+  the page exists once).
+
+  **Rows, not dependencies, and this distinction is the whole condition.** Phase 1 puts every row
+  in one `SetupChecksView.rows` list from three sources, and two of the levels that matter most
+  are not on a dependency at all:
+  - the **derived terminal pair row** is the `required` one in the Terminals family, while every
+    individual backend is `optional`. A machine with tmux and no emulator cannot open a terminal
+    window, and a condition written over required *dependencies* would find nothing wrong with
+    it - which is precisely the operator who most needs to be sent to Setup.
+  - a folded **environment-check** row is `required` if its `ENVIRONMENT_ROW_METADATA` says so.
+
+  So: iterate `rows`, keep `requirement === "required"`, and raise on status `missing` **or**
+  `needs-setup`. `needs-setup` is in deliberately - a required-but-unauthenticated `gh` is the
+  case that breaks an operator's first push, and it is never `missing`. `unknown` is deliberately
+  **out**: "we could not look" is not evidence of breakage, and a banner that nags on it is both
+  unactionable and unfixable by the operator.
+- Dismissal is durable. **The banner returns if a `required` row later stops being satisfied**
+  even after a dismissal - that is a machine that broke, not a preference the operator expressed.
+  Store the dismissal so this is expressible: record what was dismissed (the first-launch notice,
+  or a set of row ids), not merely a boolean, or the return case cannot be told from the dismissed
+  one. Row ids are `SetupRowId`s, so serialize the discriminant with the id - a bare `"tmux"` and
+  a bare `"terminal-pair"` come from different spaces and must not be able to alias.
 - **Hoist the checks read to App - it is not there yet.** Phase 1 deliberately owns
   `useSetupChecks` inside `SetupPanel`, because at that point the panel is its only consumer
   (the rule `useSkills` and `useHarnesses` follow). The banner is the second consumer and it must
@@ -123,9 +140,14 @@ the read was in flight would train the operator to dismiss it unread.
 
 - `test/setup-banner-condition.test.ts` - the condition as a pure function over
   (checks view, dismissal record): shows on first launch; hides after dismissal; **re-shows when a
-  required row goes missing after a dismissal**; stays hidden when only an `optional` row is
-  missing; and behaves sanely when the checks read has not landed yet (unknown is not "everything
-  is fine").
+  required row stops being satisfied after a dismissal**; stays hidden when only an `optional` row
+  is missing; and behaves sanely when the checks read has not landed yet (unknown is not
+  "everything is fine"). Three cases exist specifically because the row model has three sources,
+  and a condition written over dependencies alone passes the first and fails the rest:
+  - **the derived pair row missing** while every terminal backend is `optional` and present-ish
+    (tmux installed, no emulator) - this must raise the banner;
+  - a **required dependency in `needs-setup`** (`gh` present, not authenticated) - must raise;
+  - a **required row in `unknown`** - must NOT raise.
 - `test/app-config-entries.test.ts` (or the existing equivalent) - the new entry is declared with
   the intended classification and backup domain.
 - The tour registration tests that already exist for the two shipped tours, extended to the new
@@ -167,6 +189,15 @@ shape are the two things a future rail dot would reuse, if that decision is ever
 - Changed the dismissal from a boolean to a record of what was dismissed during this write-up:
   a boolean cannot express "dismissed, then a required dependency went missing again", which the
   approved plan requires.
+- **Inspector round 4 (major, PR #800).** The condition was written over required *dependencies*,
+  which cannot see the derived terminal pair row - the only `required` row in the Terminals family,
+  since the individual backends are `optional`. A machine with tmux and no emulator would never
+  have been sent to Setup. Rewritten over required **rows** from Phase 1's single `rows` list, and
+  while fixing it found the same bug in a second instance the review did not name: the condition
+  raised only on `missing`, so a required-but-unauthenticated `gh` (always `needs-setup`, never
+  `missing`) was equally invisible. Both now raise; `unknown` deliberately does not, with the
+  reason recorded. Dismissal records now serialize the row id's discriminant so ids from different
+  spaces cannot alias.
 - **Inspector round 2 (major, PR #800).** This phase said the banner reuses a read "App already
   has a place to hold", but Phase 1 makes `useSetupChecks` panel-local, so no such read exists and
   the instruction was unimplementable both ways: reusing the panel hook leaves the banner unable to

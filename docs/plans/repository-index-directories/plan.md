@@ -247,9 +247,17 @@ All three open from `mockups/index.html`.
   registries, so the new category and its three anchors are covered by the existing integrity
   assertions; `test/settings-backup-coverage.test.ts` covers the new domain.
 - `e2e/specs/settings-repository-index.spec.ts`, new: open Settings and select
-  Repositories, assert the four seeded rows, remove one and assert it is gone after a
-  reload, add the fixture workspace and assert the dispatch picker then offers the fixture
-  repo.
+  Repositories, assert the four seeded rows and that the `~/workspace` row reports the
+  fixture's repo; remove a default that is *not* `~/workspace` (`~/dev`, which reports
+  `not found` under the fixture), assert it is still gone after a reload, and assert the
+  dispatch picker still offers the fixture repo. Then Restore defaults and assert `~/dev` is
+  back.
+
+  Removing `~/workspace` and adding it again would be the more direct exercise of the round
+  trip, and it is not what the spec does: the fixture's `HOME` makes `~/workspace` the seeded
+  workspace, so an add of that path lands on the duplicate refusal rather than on the picker
+  assertion. Removing a different default keeps the picker's repo reachable, which is what
+  makes the assertion after the removal meaningful.
 
   This spec needs the daemon fixture NOT to set `MISSION_WORKSPACE_DIRS`, since the override
   would make the panel read-only. `e2e/fixtures/daemon.ts` gains an opt-in flag that omits the

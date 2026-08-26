@@ -196,11 +196,17 @@ Follow `mockups/a-directory-rows.html`, which is the adopted design, and its fou
   first read appearing after a write, which is the cache-invalidation assertion. Set
   `MISSION_HOME` above the imports, per the suite's isolation contract in `CLAUDE.md`.
 - `e2e/specs/settings-repository-index.spec.ts` (new) - open Settings, select Repositories, assert
-  the four seeded rows and that the fixture workspace row reports its repo; remove a row and assert
-  it is still gone after a reload; then assert the dispatch repo picker still offers the fixture
-  repo. Drive the fixture with the new flag so `MISSION_WORKSPACE_DIRS` is unset and the shipped
-  default resolves to the fixture workspace (finding 3). No agent is launched, so no tokens are
-  spent.
+  the four seeded rows and that the `~/workspace` row reports the fixture's repo; remove `~/dev`
+  (a default that is NOT the fixture workspace, and which reports `not found` there), assert it is
+  still gone after a reload, and assert the dispatch repo picker still offers the fixture repo;
+  then Restore defaults and assert `~/dev` is back. Drive the fixture with the new flag so
+  `MISSION_WORKSPACE_DIRS` is unset and the shipped default resolves to the fixture workspace
+  (finding 3). No agent is launched, so no tokens are spent.
+
+  Remove `~/dev` specifically, not any row: `~/workspace` IS the fixture workspace under finding 3,
+  so removing it empties the picker and re-adding it hits the duplicate refusal instead of the
+  picker assertion. If the spec ever needs to exercise the workspace row's own round trip, remove
+  it and use Restore defaults to bring it back rather than adding the path again.
 - `e2e/fixtures/daemon.ts` - the opt-in flag that omits `MISSION_WORKSPACE_DIRS`. Every existing
   spec keeps the environment path unchanged, and `e2e/README.md`'s environment table gains the flag.
 
@@ -281,3 +287,8 @@ No later phase depends on this one. What a future change may rely on, and should
   names it.
 - **Addition beyond `plan.md`.** The README and `docs/skills-and-settings.md` updates, required by
   the registries and documentation contracts, which the plan's documentation list omitted.
+- **Review round 1 (Inspector, PR #802).** The e2e scenario named "remove one row, then add the
+  fixture workspace", which finding 3 makes impossible: `~/workspace` already IS the fixture
+  workspace, so the add lands on the duplicate refusal. Step 9 and `plan.md` now name `~/dev` as
+  the row to remove and use Restore defaults for the return trip. No approved decision changed;
+  this corrected a scenario the fixture decision had already invalidated.

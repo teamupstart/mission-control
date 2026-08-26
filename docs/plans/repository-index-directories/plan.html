@@ -446,8 +446,19 @@ was chosen over, kept for the record rather than as live options. All three open
   its three anchors are covered by the existing integrity assertions;
   <code>test/settings-backup-coverage.test.ts</code> covers the new domain.</li>
   <li><code>e2e/specs/settings-repository-index.spec.ts</code>, new: open Settings and select
-  Repositories, assert the four seeded rows, remove one and assert it is gone after a reload,
-  add the fixture workspace and assert the dispatch picker then offers the fixture repo.
+  Repositories, assert the four seeded rows and that the <code>~/workspace</code> row reports the
+  fixture's repo; remove a default that is <em>not</em> <code>~/workspace</code>
+  (<code>~/dev</code>, which reports <code>not found</code> under the fixture), assert it is still
+  gone after a reload, and assert the dispatch picker still offers the fixture repo. Then Restore
+  defaults and assert <code>~/dev</code> is back.
+  <div class="note">
+    <b>Why not remove and re-add the workspace row</b>
+    That would be the more direct exercise of the round trip, and it is not what the spec does:
+    the fixture's <code>HOME</code> makes <code>~/workspace</code> the seeded workspace, so an add
+    of that path lands on the duplicate refusal rather than on the picker assertion. Removing a
+    different default keeps the picker's repo reachable, which is what makes the assertion after
+    the removal meaningful.
+  </div>
   <div class="note">
     <b>Fixture change this needs</b>
     The spec needs the daemon fixture NOT to set <code>MISSION_WORKSPACE_DIRS</code>, since the

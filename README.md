@@ -375,6 +375,23 @@ npm run dev
 Open `http://127.0.0.1:5173`. For the desktop shell, demo mode, hooks, state locations, and
 the full verification path, use the setup guide below.
 
+## CI runner allocation
+
+The `gates` job runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy jobs use the shared
+`frontend-platform` runner group, which grants this repository access to both runner sizes.
+The Node 24 and Node 26 unit jobs run directly on `ubuntu-8cpu-32ram-300ssd` with eight test
+workers. Five end-to-end shards run directly on `ubuntu-4cpu-32ram-150ssd` with four
+Playwright workers each.
+
+The workflow names both the `frontend-platform` group and the relevant label for each job.
+There is no repository variable or fallback selector. Access is managed centrally in
+`teamupstart/Github_Org_Settings_TF`; changing the group, labels, worker counts, or shard count
+is one capacity decision and should be benchmarked together.
+
+This allocation is a performance experiment, not a claim that the five-minute target has
+already been met. Accept it only after three consecutive live workflows complete all eight
+checks green in five minutes or less, measured from workflow creation through completion.
+
 ## Choose how the app's own model calls are made
 
 Beyond the agents in the cards, Mission Control makes a few model calls of its own - naming an

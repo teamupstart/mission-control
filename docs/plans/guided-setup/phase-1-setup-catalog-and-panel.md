@@ -79,7 +79,9 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   "pipelines"]`, each with a label and a one-line description.
 - `SetupDependencyInfo` - `id`, `label`, `family`, `requirement`
   (`"required" | "recommended" | "optional"`), `enables` (one sentence, in the product's terms),
-  `remedy`.
+  `remedy`. Its `requirement` is this source's declaration of the level, read by the view composer
+  and by nothing else; see `SetupRowView` below for why that is a projection rather than a rival
+  field.
 - The full `SetupRemedy` union: `link`, `command`, `provider-installer`, `skill`. **All four
   variants ship here**, including `command.argv`, so Phase 2 adds no shared type.
 - `SetupStatus` - the four states. `satisfied` carries `evidence`; `missing` carries nothing;
@@ -114,10 +116,22 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   fixes it. For the one check that exists today: family `extensions`, requirement `optional`,
   remedy `{ kind: "skill", command: "/upstartclaw-core:setup" }` - which is where the `skill`
   variant of the remedy union earns its place.
-- `SetupRowView` - ONE row shape both sources produce: `rowId`, `label`, `family`, `requirement`,
-  `enables`, `remedy`, `status`. The panel renders a list of these and never branches on an id.
-  A dependency row fills it from `SETUP_DEPENDENCY_INFO`; a folded row fills it from the check's
-  own label plus `ENVIRONMENT_ROW_METADATA`.
+- `SetupRowView` - ONE row shape every source produces: `rowId`, `label`, `family`,
+  `requirement`, `enables`, `remedy`, `status`. The panel renders a list of these and never
+  branches on an id. A dependency row fills it from `SETUP_DEPENDENCY_INFO`; a folded row from the
+  check's own label plus `ENVIRONMENT_ROW_METADATA`; the derived row from its own definition.
+
+  **`SetupRowView.requirement` is a projection, not a second opinion.** Each source declares the
+  level for the rows it produces - `SETUP_DEPENDENCY_INFO[id].requirement`,
+  `ENVIRONMENT_ROW_METADATA[id].requirement`, and the derived row's own - and `setupChecksView`
+  copies that value onto the row it builds. One-to-one: there is no override, no precedence rule,
+  and no case where the two could disagree, because only one of them is ever written by hand for
+  a given row.
+
+  **Only the view composer reads a source-level `requirement`. Every consumer reads
+  `row.requirement`** - the panel, the banner condition, and anything later. That is the rule that
+  makes "which value do I use" have one answer, and it is why the level can be declared per source
+  without becoming two sources of truth.
 - `SetupChecksView` as the route's answer: `{ rows: SetupRowView[] }`. **Every** row is in that
   one list - dependency, folded environment check, and derived - so a consumer asking "what is
   required and not satisfied here" gets a complete answer from one iteration and cannot miss a
@@ -130,8 +144,10 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   individually, with the **derived pair row carrying the `required`** level for that family -
   which backend you use is a preference, having none that can open a window is not;
   `gh-cli` required; `gh-auth` required; `claude-plugins`/`claude-skills` optional;
-  `ai-conductor` optional. Note that `requirement` sits on the ROW, not on the dependency, which
-  is what lets a family's requirement live on a derived row while its members stay optional.
+  `ai-conductor` optional. Each of those is a declaration by the dependency source; the derived
+  pair row declares `required` in its own definition. Both end up as `row.requirement`, which is
+  what lets a family carry `required` through a derived row while its member dependencies stay
+  `optional` - not because the row overrides them, but because they describe different rows.
 
 ### 2. `src/server/setup/`
 
@@ -232,6 +248,11 @@ existing spec depends on those backends being resolvable.
 - `test/setup-catalog.test.ts` - the pure half: every id has info, families are contiguous and
   in panel order, requirement levels are as specified, and every `command` remedy's argv is
   well-formed (the shape rule itself is Phase 2's guard; here just assert the data exists).
+  Plus the projection, asserted per source: each composed row's `requirement` **equals** its
+  source's declared value - dependency rows against `SETUP_DEPENDENCY_INFO`, folded rows against
+  `ENVIRONMENT_ROW_METADATA`, and the derived pair row against its definition. That is what pins
+  "one value, copied" rather than leaving a future reader to guess whether the row or the source
+  wins.
 - `test/setup-probes.test.ts` - each probe against an arranged `SetupDeps`: satisfied with its
   evidence, missing, `needs-setup` (unauthenticated `gh`; unfinished Claw setup), and `unknown`
   distinguished from `missing` for an unreadable file. A probe that TIMES OUT yields `unknown`
@@ -278,7 +299,9 @@ Later phases may rely on, and must not change:
 5. The override-chain rule for every probe.
 6. `SetupRowId`, `SetupRowView`, and `ENVIRONMENT_ROW_METADATA`: one row shape from three
    sources (dependency, environment-check, derived), discriminated by `source`, all in the single
-   `SetupChecksView.rows` list. A later phase adds a row by adding catalog data, never by
+   `SetupChecksView.rows` list. **`row.requirement` is the only requirement any consumer reads**;
+   each source declares its own and the composer projects it, so a later phase must not reach past
+   a row into `SETUP_DEPENDENCY_INFO` for a level. A later phase adds a row by adding catalog data, never by
    branching on an id at a render site, and never by pooling the id spaces into one. **Anything
    asking a question about "every required row" iterates that one list** - the pair row is the
    proof of why: it is `required` and it is not a dependency.
@@ -308,6 +331,14 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 15 (major, PR #800).** `requirement` was on `SetupDependencyInfo` while the
+  prose said it "sits on the ROW, not on the dependency" - two statements a reader has to
+  reconcile, with no rule saying which a consumer should use. Reframed as a projection: each
+  source declares the level for the rows it produces, the composer copies it onto the row, and
+  **only the composer reads a source-level value**. No override and no precedence, because for any
+  given row exactly one source declares it. Added the per-source projection assertion to the
+  catalog test and the single-read rule to the handoff, so the ambiguity cannot come back as a
+  consumer reaching past a row into the dependency table.
 - **Inspector round 9 (major, PR #800).** `SetupStatus.needs-setup` carried only `why`, so a
   folded environment check's `detail` had nowhere to go: the stated shape forced an implementer to
   discard it or widen the contract ad hoc, and the panel would have lost the evidence
@@ -321,7 +352,9 @@ regions of `SetupPanel.tsx`; either may merge first.
   banner condition took - could not see the one `required` row in the Terminals family. Folded it
   into `SetupRowView` as a third `source: "derived"`, put every row in one
   `SetupChecksView.rows` list, and stated that `requirement` belongs to the row rather than to the
-  dependency, which is what lets a family be required while each of its backends stays optional.
+  dependency, which is what lets a family be required while each of its backends stays optional
+  (**refined by round 15 above**: the level is declared per source and projected onto the row, so
+  it is one value copied rather than a row-level override of a dependency's).
 - **Inspector round 3 (major, PR #800).** The folded environment warning was unrepresentable:
   the only row type extended `SetupDependencyInfo`, while an `EnvironmentCheckView` has no id in
   that space, no family, no requirement, and no remedy - so an implementer would have invented all

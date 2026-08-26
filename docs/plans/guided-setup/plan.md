@@ -167,10 +167,17 @@ the one duplication this plan explicitly forbids.
 
 **That derived row carries the family's `required` level**, and the individual backends are each
 `optional`: which terminal you use is a preference, having none that can open a window is not.
-So `requirement` belongs to the row rather than to the dependency, and the derived row is an
-ordinary member of the same row list as the rest - not a separate view type. Anything asking
-"what is required and not satisfied on this machine" therefore gets a complete answer from one
-list, which is what keeps the first-run banner from missing the very operator it exists for.
+The derived row is an ordinary member of the same row list as the rest - not a separate view
+type - so anything asking "what is required and not satisfied on this machine" gets a complete
+answer from one list, which is what keeps the first-run banner from missing the very operator it
+exists for.
+
+That works because **`requirement` is declared per source and projected onto the row**: a
+dependency declares its own level, the environment metadata declares one per check, the derived
+row declares its own, and the view composer copies whichever applies onto the row it builds.
+Consumers read `row.requirement` and nothing else. So the family being `required` through a
+derived row while its members stay `optional` is not an override or a precedence rule - they are
+simply different rows, each with one declared level.
 
 ### The existing environment checks are folded in, not forked
 

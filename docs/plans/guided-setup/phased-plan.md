@@ -170,9 +170,11 @@ Owned by Phase 1, relied on by the others, and not to be changed by them:
    sources (catalog dependencies, folded environment checks, and derived rows such as the terminal
    pair), discriminated by `source` and all present in the single `SetupChecksView.rows` list.
    Rows are added by adding catalog data, never by branching on an id at a render site.
-   `requirement` sits on the row, so a family can be `required` through a derived row while each
-   of its members stays `optional` - and any consumer asking about "every required row" must
-   iterate that one list rather than the dependency catalog.
+   `requirement` is declared per source and **projected** onto the row by the composer, which is
+   the only reader of a source-level value; every consumer reads `row.requirement`. That is how a
+   family can be `required` through a derived row while each of its members stays `optional` -
+   different rows, one declared level each, no override. Any consumer asking about "every required
+   row" iterates that one list rather than the dependency catalog.
 8. The daemon never installs anything in-process. Phase 2 is the only phase that may cause
    execution, and only by handing vetted argv to a visible terminal. The one path-shaped value it
    accepts, a provider installer's `checkout`, is a selection the daemon re-verifies against its

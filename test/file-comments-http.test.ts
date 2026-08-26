@@ -217,6 +217,18 @@ test("a comment is created as a draft, hashed by the daemon, and reaches the str
   assert.equal(loadFileCommentThread(thread.id)?.id, thread.id);
 });
 
+test("an HTML comment keeps the exact block identity returned by the resolver", async () => {
+  reset();
+  const htmlBlockPath = [{ index: 0, tag: "p" }];
+  const thread = await create({
+    surface: "html",
+    htmlBlockPath,
+    htmlBlockQuote: "<p>the paragraph as it currently reads</p>",
+  });
+  assert.deepEqual(thread.htmlBlockPath, htmlBlockPath);
+  assert.equal(thread.htmlBlockQuote, "<p>the paragraph as it currently reads</p>");
+});
+
 test("the schemas refuse what they are supposed to refuse", async () => {
   reset();
   assert.equal((await post("/api/sessions/live/file-comments", { ...COMMENT, body: "" })).status, 400);

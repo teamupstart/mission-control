@@ -132,6 +132,8 @@ function thread(over: Partial<FileCommentThread> = {}): FileCommentThread {
     quoteHash: "hash",
     revision: "rev-1",
     surface: "editor",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     status: "queued",
     outdated: false,
     queueSeq: 1,
@@ -509,6 +511,8 @@ function composerState(over: Partial<FileCommentComposerState> = {}): FileCommen
     startLine: 3,
     endLine: 3,
     quote: "line two says something",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     text: "this is wrong",
     threadId: null,
     messageId: null,
@@ -541,6 +545,8 @@ test("a pending draft is written against the file it was opened on, not the one 
       quote: "line two says something",
       revision: "rev-a",
       surface: "editor",
+      htmlBlockPath: null,
+      htmlBlockQuote: null,
       body: "this is wrong",
     },
   });
@@ -551,6 +557,17 @@ test("a pending draft is written against the file it was opened on, not the one 
   assert.equal(draftCreateRequest(composerState({ text: "  spaced  " }))?.body.body, "spaced");
   assert.equal(draftCreateRequest(composerState({ text: "   " })), null);
   assert.equal(draftCreateRequest(composerState({ text: "" })), null);
+});
+
+test("an HTML draft carries its exact rendered block identity into creation", () => {
+  const htmlBlockPath = [{ index: 0, tag: "p" }];
+  const request = draftCreateRequest(composerState({
+    surface: "html",
+    htmlBlockPath,
+    htmlBlockQuote: "<p>line two says something</p>",
+  }));
+  assert.deepEqual(request?.body.htmlBlockPath, htmlBlockPath);
+  assert.equal(request?.body.htmlBlockQuote, "<p>line two says something</p>");
 });
 
 test("cancelling during the create request still deletes the row that request produced", () => {

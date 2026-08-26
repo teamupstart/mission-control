@@ -2412,6 +2412,8 @@ export function buildApp(
       startLine: resolved.startLine,
       endLine: resolved.endLine,
       quote: resolved.quote,
+      blockPath: parsed.data.blockPath,
+      blockQuote: resolved.blockQuote,
       revision: document.revision,
     });
   });
@@ -2442,6 +2444,8 @@ export function buildApp(
       parsed.data.startLine,
       parsed.data.endLine,
       parsed.data.quote,
+      parsed.data.blockPath,
+      parsed.data.blockQuote,
     );
     if (!resolved.ok) return c.json({ error: resolved.reason }, 409);
     return c.json({ blockPath: resolved.blockPath, revision: document.revision });

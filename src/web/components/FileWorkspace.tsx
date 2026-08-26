@@ -785,7 +785,13 @@ export function FileWorkspace({
    * opens a new composer, so repeated clicks never create duplicate threads.
    */
   const commentOnBlock = useCallback((
-    anchor: { startLine: number; endLine: number; quote: string },
+    anchor: {
+      startLine: number;
+      endLine: number;
+      quote: string;
+      htmlBlockPath?: HtmlBlockPathStep[] | null;
+      htmlBlockQuote?: string | null;
+    },
     surface: "markdown" | "html",
     revision?: string | null,
   ): void => {
@@ -894,6 +900,8 @@ export function FileWorkspace({
       startLine: thread.startLine,
       endLine: thread.endLine,
       quote: thread.quote,
+      blockPath: thread.htmlBlockPath ?? undefined,
+      blockQuote: thread.htmlBlockQuote ?? undefined,
       revision: previewRevision,
     }).then((result) => {
       if (!live) return;
@@ -1056,7 +1064,13 @@ export function FileWorkspace({
           return;
         }
         blockClickRef.current(
-          { startLine: result.startLine, endLine: result.endLine, quote: result.quote },
+          {
+            startLine: result.startLine,
+            endLine: result.endLine,
+            quote: result.quote,
+            htmlBlockPath: result.blockPath,
+            htmlBlockQuote: result.blockQuote,
+          },
           "html",
           // The revision the daemon sliced the quote out of, which is a fact the browser's
           // buffer may not have caught up with yet. See `FileCommentRangeAnchor`.

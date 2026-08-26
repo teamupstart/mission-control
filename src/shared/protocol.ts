@@ -6404,6 +6404,10 @@ export const HtmlBlockPathStepSchema = z.object({
   tag: z.string().trim().min(1).max(64).regex(/^[a-z0-9:-]+$/),
 });
 export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
+export const HtmlBlockPathSchema = z
+  .array(HtmlBlockPathStepSchema)
+  .min(1)
+  .max(HTML_BLOCK_PATH_LIMITS.depth);
 
 /**
  * Resolving a clicked preview block to a source line range.
@@ -6413,7 +6417,7 @@ export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
  */
 export const HtmlBlockAnchorSchema = z.object({
   path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
-  blockPath: z.array(HtmlBlockPathStepSchema).min(1).max(HTML_BLOCK_PATH_LIMITS.depth),
+  blockPath: HtmlBlockPathSchema,
   /**
    * The revision the render being clicked was built from, when the caller knows it.
    *
@@ -6435,6 +6439,10 @@ export const HtmlBlockTargetSchema = z.object({
   startLine: z.number().int().min(1),
   endLine: z.number().int().min(1),
   quote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).optional(),
+  /** The server-validated browser-tree path captured when this HTML thread was created. */
+  blockPath: HtmlBlockPathSchema.optional(),
+  /** Exact source bytes for that element, used to validate or recover the structural path. */
+  blockQuote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).optional(),
   revision: z.string().max(FILE_COMMENT_TEXT_LIMITS.path).nullable().optional(),
 }).refine((value) => value.endLine >= value.startLine, {
   message: "endLine must not precede startLine",
@@ -6471,7 +6479,27 @@ export const CreateFileCommentSchema = z.object({
   /** The document revision the anchor was taken against; null when it was unknown. */
   revision: z.string().max(256).nullable().optional().default(null),
   surface: z.enum(FILE_COMMENT_SURFACES),
+  /** Durable HTML-only identity returned by the server after resolving a preview click. */
+  htmlBlockPath: HtmlBlockPathSchema.nullable().optional().default(null),
+  /** Exact source bytes for the selected HTML element, separate from the line-wide quote. */
+  htmlBlockQuote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).nullable().optional().default(null),
   body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+}).superRefine((value, ctx) => {
+  const hasHtmlPath = value.htmlBlockPath !== null;
+  const hasHtmlQuote = value.htmlBlockQuote !== null;
+  if (value.surface === "html" && hasHtmlPath !== hasHtmlQuote) {
+    ctx.addIssue({
+      code: "custom",
+      path: hasHtmlPath ? ["htmlBlockQuote"] : ["htmlBlockPath"],
+      message: "an HTML block anchor requires both its path and exact source quote",
+    });
+  } else if (value.surface !== "html" && (hasHtmlPath || hasHtmlQuote)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["htmlBlockPath"],
+      message: "only HTML comments carry a block anchor",
+    });
+  }
 });
 export type CreateFileCommentBody = z.infer<typeof CreateFileCommentSchema>;
 

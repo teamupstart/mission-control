@@ -97,6 +97,10 @@ const HTML_HISTORY_SOURCE = [
   "</html>",
 ].join("\n");
 
+const HTML_COMPACT = "docs/plans/compact-comment.html";
+const HTML_COMPACT_SOURCE =
+  "<html><body><p>Read <strong>this</strong> carefully.</p><p>Sibling.</p></body></html>";
+
 const HTML_BLOCKS = "docs/plans/blocks.html";
 /**
  * Blocks a tag allowlist did not name, which is the point of this document.
@@ -181,6 +185,7 @@ const HTML_COMMENT = "This paragraph says the opposite of the heading.";
 const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
 const TOP_HISTORY_COMMENT = "Clarify the top reliability question.";
 const BOTTOM_HISTORY_COMMENT = "Close the bottom reliability question.";
+const COMPACT_HISTORY_COMMENT = "Keep this thread on the paragraph, not its inline child.";
 const LONG_COMMENT = "This heading overstates what the report goes on to say.";
 const DRAFT_COMMENT = "Half a thought about this paragraph,";
 
@@ -538,6 +543,33 @@ test.describe("commenting on a rendered document", () => {
     await expect(resolvedThread.getByRole("button", { name: "Reopen" })).toBeVisible();
     await expect.poll(() => sourceScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
     await shoot(page.locator(".file-main"), page, "comment-history-rail");
+  });
+
+  test("the comments rail returns compact HTML to the originally commented block", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const paragraph = frame.locator("p").filter({ hasText: "Read this carefully." });
+    const inline = paragraph.locator("strong");
+    await inline.click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_COMPACT}` });
+    await rail.getByRole("button", { name: new RegExp(COMPACT_HISTORY_COMMENT) }).click();
+
+    await expect(paragraph).toHaveClass(/mission-comment-target/);
+    await expect(inline).not.toHaveClass(/mission-comment-target/);
+    await shoot(page.locator(".file-main"), page, "compact-html-comment-target");
   });
 
   test("a block is whatever the browser laid out as one, not whatever a list named", async ({

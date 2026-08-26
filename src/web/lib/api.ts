@@ -2069,7 +2069,15 @@ export async function resolveHtmlBlockAnchor(
   sessionId: string,
   body: HtmlBlockAnchorBody,
 ): Promise<
-  | { ok: true; startLine: number; endLine: number; quote: string; revision: string | null }
+  | {
+      ok: true;
+      startLine: number;
+      endLine: number;
+      quote: string;
+      blockPath: HtmlBlockPathStep[];
+      blockQuote: string;
+      revision: string | null;
+    }
   | { ok: false; error: string; status: number | null }
 > {
   try {
@@ -2085,10 +2093,18 @@ export async function resolveHtmlBlockAnchor(
       startLine?: number;
       endLine?: number;
       quote?: string;
+      blockPath?: HtmlBlockPathStep[];
+      blockQuote?: string;
       revision?: string | null;
       error?: string;
     };
-    if (!res.ok || typeof data.startLine !== "number" || typeof data.quote !== "string") {
+    if (
+      !res.ok
+      || typeof data.startLine !== "number"
+      || typeof data.quote !== "string"
+      || !Array.isArray(data.blockPath)
+      || typeof data.blockQuote !== "string"
+    ) {
       return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
     return {
@@ -2096,6 +2112,8 @@ export async function resolveHtmlBlockAnchor(
       startLine: data.startLine,
       endLine: data.endLine ?? data.startLine,
       quote: data.quote,
+      blockPath: data.blockPath,
+      blockQuote: data.blockQuote,
       revision: data.revision ?? null,
     };
   } catch (error) {

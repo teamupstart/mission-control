@@ -57,11 +57,17 @@ raises a count of answers nobody has read yet, which expanding the thread clears
 whose MCP bundle cannot serve that tool is asked to quote the comment's id back in its next
 turn instead, and its answer is recovered from the conversation. See
 [walk the agent through your review](docs/ui.md#walk-the-agent-through-your-review).
+When a paused review explains why a comment was held, **Dismiss** hides that warning without
+resuming the review or dropping the comment. Resuming re-checks the file and shows the warning
+again if the quoted text is still missing.
 
 **Comments** opens a side rail for the selected file. It lists every thread, including resolved
 ones, with its source location and latest message. Selecting a row expands that thread and
 scrolls the current Preview or Editor to its anchored block or line; selecting a resolved thread
-also reveals its **Reopen** action.
+also reveals its **Reopen** action. If an HTML Preview warning says the displayed file is out of
+date, **Refresh** re-reads the selected file in place and dismisses the warning. When the Files
+pane narrows, its filename, metadata, shortcut hints, spacing, and button padding compress before
+the Preview or Editor controls, so every file action remains visible.
 
 The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
 Foreman turns carry their purple provenance from the chat log into the terminal, and completion

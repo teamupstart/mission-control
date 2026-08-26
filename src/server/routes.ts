@@ -2632,10 +2632,11 @@ export function buildApp(
     const parsed = await parseBody(c, FileCommentReviewControlSchema);
     if (!parsed.ok) return parsed.res;
     // `start` covers resume: see the schema for why those are one action and not two.
-    const review =
-      parsed.data.action === "start"
-        ? fileCommentWalkthrough.start(session.id)
-        : fileCommentWalkthrough.pause(session.id, parsed.data.reason ?? null);
+    const review = parsed.data.action === "start"
+      ? fileCommentWalkthrough.start(session.id)
+      : parsed.data.action === "pause"
+      ? fileCommentWalkthrough.pause(session.id, parsed.data.reason ?? null)
+      : fileCommentWalkthrough.dismissPauseReason(session.id);
     return c.json({ review });
   });
 

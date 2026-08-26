@@ -631,7 +631,7 @@ test.describe("commenting on a rendered document", () => {
     await expectMarkerOnLine(page, 7);
   });
 
-  test("a block from a render the file has outrun is refused with a reason", async ({
+  test("a stale block warning refreshes the file in place", async ({
     dashboard: page,
     daemon,
   }) => {
@@ -656,9 +656,12 @@ test.describe("commenting on a rendered document", () => {
     await shoot(page.locator(".file-main"), page, "html-stale-refusal");
     // Refused, not guessed at: no thread was written on a line nobody pointed to.
     expect(storedThreads(daemon)).toEqual([]);
-    // "Dismiss" is the button's text; the sentence about it is a tooltip, not its name.
-    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+
+    // The remedy is next to the warning. It re-reads both the file list and the selected
+    // file, rather than making the reader find the toolbar's icon or reopen the tab.
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByText(/showing an older version of the file/)).toBeHidden();
+    await expect(frame.getByRole("heading", { name: "Rewritten entirely." })).toBeVisible();
   });
 
   test("the preview takes no comments while comment mode is off", async ({

@@ -306,6 +306,20 @@ export class FileCommentWalkthrough {
     return review;
   }
 
+  /**
+   * Hide the current pause warning without changing what the walkthrough will do.
+   *
+   * The reason is presentation carried in durable state, so clearing it here keeps every open
+   * Files surface in sync. The state stays paused, no comment moves, and no tick is armed. If
+   * Resume finds the same problem again, `stopWith` writes a fresh reason and the warning
+   * returns. A stale click after the review has already moved is harmless.
+   */
+  dismissPauseReason(sessionId: string): FileCommentReview {
+    const review = this.port.review(sessionId);
+    if (review.state !== "paused" || review.pauseReason === null) return review;
+    return this.port.setReviewState(sessionId, "paused", null);
+  }
+
   // ---- the two signals that wake it ----
 
   /**

@@ -76,6 +76,12 @@ export interface FileWorkspaceHandle {
 
 type FileReaderScrollDistance = "arrow" | "page";
 
+interface FileThreadError {
+  message: string;
+  /** True only when re-reading the selected file is the remedy the daemon prescribed. */
+  refreshable: boolean;
+}
+
 function scrollElement(
   element: HTMLElement,
   direction: -1 | 1,
@@ -222,7 +228,10 @@ export function FileWorkspace({
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadBusy, setThreadBusy] = useState(false);
-  const [threadError, setThreadError] = useState<string | null>(null);
+  const [threadError, setThreadErrorState] = useState<FileThreadError | null>(null);
+  const setThreadError = useCallback((message: string | null, refreshable = false): void => {
+    setThreadErrorState(message === null ? null : { message, refreshable });
+  }, []);
   const [threadJump, setThreadJump] = useState<{
     id: string;
     line: number;
@@ -553,7 +562,9 @@ export function FileWorkspace({
     if (running) setShowQueue(true);
   }, [running]);
 
-  const controlReview = useCallback(async (action: "start" | "pause"): Promise<void> => {
+  const controlReview = useCallback(async (
+    action: "start" | "pause" | "dismiss",
+  ): Promise<void> => {
     setReviewBusy(true);
     const result = await controlFileCommentReview(session.id, action);
     setReviewBusy(false);
@@ -1038,7 +1049,10 @@ export function FileWorkspace({
         // which is the one case where an answer is genuinely no longer wanted.
         if (!live || request !== blockRequests.current) return;
         if (!result.ok) {
-          setThreadError(result.error);
+          // This endpoint uses 409 for exactly one condition: the file on disk no longer
+          // matches the render the person clicked. Keep that fact structured so every place
+          // this error can appear offers the action that fixes it, without text matching.
+          setThreadError(result.error, result.status === 409);
           return;
         }
         blockClickRef.current(
@@ -1113,7 +1127,7 @@ export function FileWorkspace({
         <FileCommentThreadCard
           thread={openThread}
           busy={threadBusy}
-          error={threadError}
+          error={threadError?.refreshable ? null : (threadError?.message ?? null)}
           onReply={(body) => reply(openThread.id, body)}
           onResolve={() => { void setThreadStatus(openThread.id, "resolved"); }}
           onReopen={() => { void setThreadStatus(openThread.id, "draft"); }}
@@ -1205,6 +1219,11 @@ export function FileWorkspace({
     setComparing(false);
     controller.select(session.id, path);
   }
+
+  const refreshStaleFile = useCallback((): void => {
+    setThreadError(null);
+    controller.refresh(session.id);
+  }, [controller.refresh, session.id, setThreadError]);
 
   useEffect(() => {
     if (!focusSelectedFile.current) return;
@@ -1528,6 +1547,7 @@ export function FileWorkspace({
             onEdit={editQueued}
             onDrop={(threadId) => { void dropFromQueue(threadId); }}
             onOpen={openQueued}
+            onDismissPause={() => { void controlReview("dismiss"); }}
             onDismissError={() => setReviewError(null)}
           />
         )}
@@ -1535,9 +1555,14 @@ export function FileWorkspace({
         {/* A comment refusal with no panel to carry it - a blank line at the end of a file
             has nothing to anchor to, and the click that found that out has nowhere else to
             report it. */}
-        {threadError && !composer && !openThread && (
+        {threadError && (threadError.refreshable || (!composer && !openThread)) && (
           <div className="file-notice">
-            <span>{threadError}</span>
+            <span>{threadError.message}</span>
+            {threadError.refreshable && (
+              <Tooltip label="Reload the selected file and its preview">
+                <button className="btn" onClick={refreshStaleFile}>Refresh</button>
+              </Tooltip>
+            )}
             <Tooltip label="Dismiss this comment error">
               <button className="btn" onClick={() => setThreadError(null)}>Dismiss</button>
             </Tooltip>

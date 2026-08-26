@@ -908,8 +908,14 @@ Two things follow from a rendered document being a render:
 - **An HTML block can be refused.** The preview is a sandboxed frame the dashboard cannot
   read into, so a click is resolved against the file on disk. If the agent has rewritten the file
   under a render still on screen, that block no longer exists to point at, and the refusal says
-  so and asks you to reload the preview. It never guesses at a nearby line. Repeated wording and
-  duplicate headings are not a problem at all - blocks are matched by position, never by text.
+  so and offers **Refresh**, which re-reads the selected file and reloads its preview in place. It
+  never guesses at a nearby line. Repeated wording and duplicate headings are not a problem at all
+  - blocks are matched by position, never by text.
+
+The Files toolbar responds to the width of the file pane itself. As that pane narrows, the path
+ellipsizes further, metadata and shortcut hints step out, and control spacing tightens. The
+Preview and Editor switch remains whole, and the other file actions remain visible rather than
+overlapping it.
 
 **A rendered document can reopen the thread already anchored to a block.** Markers remain an
 Editor surface because an HTML preview is a sandboxed frame the dashboard cannot draw into, but
@@ -958,6 +964,11 @@ comment again on the text that is actually there** - that is the way past. Note 
 work, because the queue offers it: **Edit** rewrites what a comment *says*, not the text it
 *quotes*, so editing a held comment leaves it held. A comment's quoted text is fixed when you
 write it.
+
+The warning itself has a **Dismiss** control. Dismissing it clears the explanation across open
+Files surfaces, but leaves the review paused and the comment queued. It does not stand in for
+**Drop** or **Resume**. If you later resume while the quote is still missing, the new check
+holds the comment and shows the warning again.
 
 **Resume** is not a way past either. It re-runs the check against the file as it stands, so a
 comment whose quote is still missing is held again with the same reason. That is deliberate:

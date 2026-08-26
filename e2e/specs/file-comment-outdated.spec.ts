@@ -220,17 +220,30 @@ test.describe("a comment whose text the agent deleted", () => {
     expect(reason).toMatch(/no longer in/);
     await expect(queue.getByRole("alert")).toContainText(held[0]!.short_id);
     await expect(queue.getByRole("alert")).toContainText("no longer in");
+    // Dismiss removes only the warning. The review stays paused and the held comment stays
+    // queued, so this is not a disguised Drop or Resume action.
+    const warning = queue.getByRole("alert").filter({ hasText: held[0]!.short_id });
+    await shoot(page.locator(".file-main"), page, "held-outdated");
+    await warning.getByRole("button", { name: "Dismiss review warning" }).click();
+    await expect(warning).toBeHidden();
+    await expect
+      .poll(() => storedReview(daemon), { message: "the warning was not durably dismissed" })
+      .toEqual({ state: "paused", pause_reason: null });
+    expect(storedQueue(daemon)[0]!.status).toBe("queued");
+    expect(storedQueue(daemon)[0]!.delivered).toBe(0);
     // The list says the same thing beside the comment itself, so the reason is findable from
     // either end.
     await expect(queue.locator(".file-review-item").first())
       .toContainText("the quoted text has moved or is gone");
-    await shoot(page.locator(".file-main"), page, "held-outdated");
 
     // ---- Resume is a RE-CHECK, not a way past ----
     await queue.getByRole("button", { name: "Resume review" }).click();
     await expect
-      .poll(() => storedReview(daemon)?.state, { message: "Resume did nothing" })
-      .not.toBe("idle");
+      .poll(() => storedReview(daemon)?.pause_reason, {
+        message: "Resume did not re-check and raise the warning again",
+      })
+      .toContain(held[0]!.short_id);
+    await expect(queue.getByRole("alert")).toContainText(held[0]!.short_id);
     // Still held: resuming re-runs the pass, the quote is still gone, and holding is still the
     // right answer. What resuming does NOT do is deliver a comment about text that is not
     // there. Nor would editing it: Edit rewrites the message body and the quote is fixed, so

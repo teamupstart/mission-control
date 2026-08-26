@@ -783,7 +783,7 @@ test("the loopback guard applies to all of it", async () => {
 });
 
 
-test("the walkthrough's three controls are one route with an action", async () => {
+test("the walkthrough controls are one route with an action", async () => {
   reset();
   const t = await create();
   await post(`/api/file-comments/${t.id}/queue`);
@@ -814,6 +814,15 @@ test("the walkthrough's three controls are one route with an action", async () =
   });
   assert.equal(paused.status, 200);
   assert.equal(loadFileCommentReview("live").pauseReason, "reading something else");
+
+  const dismissed = await post("/api/sessions/live/file-comment-review", {
+    action: "dismiss",
+  });
+  assert.equal(dismissed.status, 200);
+  const afterDismiss = loadFileCommentReview("live");
+  assert.equal(afterDismiss.state, "paused");
+  assert.equal(afterDismiss.pauseReason, null);
+  assert.equal(submitted.length, 0, "dismiss does not resume or send the queued comment");
 });
 
 test("a reason is refused on anything but a pause, and an unknown action is refused", async () => {
@@ -822,6 +831,10 @@ test("a reason is refused on anything but a pause, and an unknown action is refu
   // which is the one state the column must never hold.
   assert.equal(
     (await post("/api/sessions/live/file-comment-review", { action: "start", reason: "why" })).status,
+    400,
+  );
+  assert.equal(
+    (await post("/api/sessions/live/file-comment-review", { action: "dismiss", reason: "why" })).status,
     400,
   );
   assert.equal(

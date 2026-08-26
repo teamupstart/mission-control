@@ -2070,7 +2070,7 @@ export async function resolveHtmlBlockAnchor(
   body: HtmlBlockAnchorBody,
 ): Promise<
   | { ok: true; startLine: number; endLine: number; quote: string; revision: string | null }
-  | { ok: false; error: string }
+  | { ok: false; error: string; status: number | null }
 > {
   try {
     const res = await fetch(
@@ -2089,7 +2089,7 @@ export async function resolveHtmlBlockAnchor(
       error?: string;
     };
     if (!res.ok || typeof data.startLine !== "number" || typeof data.quote !== "string") {
-      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+      return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
     return {
       ok: true,
@@ -2099,7 +2099,11 @@ export async function resolveHtmlBlockAnchor(
       revision: data.revision ?? null,
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      status: null,
+    };
   }
 }
 
@@ -2198,7 +2202,7 @@ export async function reorderFileComments(
  */
 export async function controlFileCommentReview(
   sessionId: string,
-  action: "start" | "pause",
+  action: "start" | "pause" | "dismiss",
   reason?: string,
 ): Promise<{ ok: true; review: FileCommentReview } | { ok: false; error: string }> {
   try {

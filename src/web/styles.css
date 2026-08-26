@@ -4501,6 +4501,7 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  container: file-main / inline-size;
 }
 .file-toolbar {
   flex: none;
@@ -4531,7 +4532,7 @@ body {
 .file-save-state.is-offline,
 .file-save-state.is-readonly { color: var(--dim); }
 .file-toolbar-spacer { flex: 1; }
-.file-mode { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.file-mode { display: flex; flex: none; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .file-mode button {
   display: flex;
   align-items: center;
@@ -4545,6 +4546,35 @@ body {
 }
 .file-mode button.on { color: var(--fg); background: color-mix(in oklab, var(--working) 16%, var(--panel)); }
 .file-mode button:disabled { opacity: .45; cursor: default; }
+
+/* The file pane can become narrow while the dashboard around it stays wide, so this is a
+   container rule rather than a viewport breakpoint. Preview/Editor are one indivisible mode
+   switch. The path and ornamental spacing yield first, then button chrome tightens; no action
+   is selected as the flex item to clip behind its neighbours. */
+@container file-main (max-width: 560px) {
+  .file-main > .file-toolbar {
+    gap: 5px;
+    padding-inline: 6px;
+  }
+  .file-main > .file-toolbar .file-path {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .file-main > .file-toolbar > .file-toolbar-spacer,
+  .file-main > .file-toolbar .file-language,
+  .file-main > .file-toolbar .file-size,
+  .file-main > .file-toolbar .kb-hint {
+    display: none;
+  }
+  .file-main > .file-toolbar .file-mode button,
+  .file-main > .file-toolbar .file-comment-toggle,
+  .file-main > .file-toolbar .open-in-btn {
+    padding-inline: 6px;
+  }
+  .file-main > .file-toolbar .file-comment-controls {
+    gap: 4px;
+  }
+}
 .open-in { position: relative; flex: none; }
 .open-in-btn {
   display: flex;
@@ -5106,6 +5136,7 @@ body {
   font-size: 11px;
 }
 .file-review-error { color: var(--danger); background: color-mix(in oklab, var(--danger) 8%, var(--panel)); }
+.file-review-paused > span { flex: 1; min-width: 0; }
 .file-review-empty { margin: 0; padding: 10px; color: var(--dim); font-size: 11px; }
 .file-review-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .file-review-item { padding: 5px 10px; border-bottom: 1px solid var(--border); }

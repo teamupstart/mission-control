@@ -5,9 +5,10 @@ Part of [`phased-plan.md`](phased-plan.md). Approved goal: [`plan.md`](plan.md).
 ## Outcome
 
 A new operator is told their machine needs attention instead of having to find the Setup page,
-and can be walked through it. A banner appears when any required row is not satisfied or on first
-launch, dismisses durably, and returns if a required row later stops being satisfied. A `setup`
-tour narrates the panel from the Settings rail and the command palette.
+and can be walked through it. A banner appears when a required row is unsatisfied and
+**unacknowledged**, or on a first launch the operator has never dismissed; it dismisses durably,
+and returns if a required row later stops being satisfied. A `setup` tour narrates the panel from
+the Settings rail and the command palette.
 
 ## Entry criteria and dependencies
 

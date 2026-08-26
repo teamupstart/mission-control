@@ -352,9 +352,18 @@ worse than one they refresh.
 
 **A first-run entry point.** The dashboard shows a dismissible banner when any `required`
 **row** is not satisfied, or on first launch with no dismissal recorded. It links to the Setup
-category and says how many rows need attention. Dismissal is durable (one `app_config` flag),
+category and says how many rows need attention. Dismissal is durable (one `app_config` entry),
 and the banner returns if a *required* row later stops being satisfied - that is a machine that
 broke, not a preference the operator already expressed.
+
+That return needs one rule to actually hold: **a satisfied observation retires that row's
+dismissal.** A record of "ids the operator dismissed" is not enough, because it cannot tell a row
+that stayed broken from one that was repaired and broke again - dismiss the terminal-pair row,
+install an emulator, then lose it, and the same id is still recorded while the machine is broken
+again. So the record means "acknowledged *while broken*": a row observed satisfied, or gone, drops
+out of it, and a later unsatisfied row is therefore unacknowledged and raises the banner again.
+The daemon prunes when it composes the banner state and writes only when the set actually
+shrinks.
 
 Rows rather than dependencies, because the two levels that matter most here do not sit on a
 dependency. The **derived terminal pair row** is the `required` one in the Terminals family while

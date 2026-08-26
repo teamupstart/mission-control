@@ -734,9 +734,18 @@ operator reads it is worse than one they refresh.</p>
 <p><strong>A first-run entry point.</strong> The dashboard shows a dismissible banner when any
 <code>required</code> <strong>row</strong> is not satisfied, or on first launch with no dismissal
 recorded. It links to the Setup category and says how many rows need attention. Dismissal is
-durable (one <code>app_config</code> flag), and the banner returns if a <em>required</em> row later
-stops being satisfied - that is a machine that broke, not a preference the operator already
+durable (one <code>app_config</code> entry), and the banner returns if a <em>required</em> row
+later stops being satisfied - that is a machine that broke, not a preference the operator already
 expressed.</p>
+
+<p>That return needs one rule to actually hold: <strong>a satisfied observation retires that row's
+dismissal.</strong> A record of "ids the operator dismissed" is not enough, because it cannot tell
+a row that stayed broken from one that was repaired and broke again - dismiss the terminal-pair
+row, install an emulator, then lose it, and the same id is still recorded while the machine is
+broken again. So the record means "acknowledged <em>while broken</em>": a row observed satisfied,
+or gone, drops out of it, and a later unsatisfied row is therefore unacknowledged and raises the
+banner again. The daemon prunes when it composes the banner state and writes only when the set
+actually shrinks.</p>
 
 <p>Rows rather than dependencies, because the two levels that matter most here do not sit on a
 dependency. The <strong>derived terminal pair row</strong> is the <code>required</code> one in the

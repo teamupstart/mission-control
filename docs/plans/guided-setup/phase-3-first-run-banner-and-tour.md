@@ -98,6 +98,31 @@ Independent of Phase 2. May merge before or after it.
   or a set of row ids), not merely a boolean, or the return case cannot be told from the dismissed
   one. Row ids are `SetupRowId`s, so serialize the discriminant with the id - a bare `"tmux"` and
   a bare `"terminal-pair"` come from different spaces and must not be able to alias.
+
+- **A satisfied observation retires that row's dismissal.** A set of ids alone does not deliver
+  the behavior above, and the gap is not hypothetical: dismiss `terminal-pair`, install an
+  emulator so the row goes satisfied, then lose that emulator again, and the id is still in the
+  record - so the banner stays suppressed for a machine that is broken again. The record has to
+  mean "acknowledged **while broken**", not "acknowledged once, ever".
+
+  So the rule is: **whenever a row is observed `satisfied` - or has disappeared entirely, which a
+  folded environment row can do - its id is removed from the dismissal record.** The banner then
+  shows when any `required` unsatisfied row is *not* in the record, and a repaired-then-broken row
+  is by definition no longer in it. Per row, so dismissing A and B and repairing only A leaves B
+  acknowledged rather than re-alerting on it.
+
+  **The daemon does the pruning, when it composes the banner state, and writes only when the set
+  actually shrinks.** Three consequences worth stating because each is a thing to get wrong:
+  - it keeps the daemon the only writer, and keeps the browser from having to write in order to
+    *clear* something;
+  - the write is idempotent and rare - a no-change prune writes nothing, so this does not turn a
+    page open into a database write;
+  - it is a write on the read path, which is unusual enough to justify. The alternative - prune
+    when the operator dismisses something - does not work, because recovery happens *between*
+    dismissals: nothing would ever prune, which is exactly the bug above.
+
+  The first-launch notice is a separate entry in the record, not a row id, and pruning never
+  touches it.
 - **Hoist the checks read to App - it is not there yet.** Phase 1 deliberately owns
   `useSetupChecks` inside `SetupPanel`, because at that point the panel is its only consumer
   (the rule `useSkills` and `useHarnesses` follow). The banner is the second consumer and it must
@@ -138,12 +163,20 @@ the read was in flight would train the operator to dismiss it unread.
 
 ## Tests and verification
 
-- `test/setup-banner-condition.test.ts` - the condition as a pure function over
+- `test/setup-banner-condition.test.ts` - the condition and the prune as pure functions over
   (checks view, dismissal record): shows on first launch; hides after dismissal; **re-shows when a
   required row stops being satisfied after a dismissal**; stays hidden when only an `optional` row
   is missing; and behaves sanely when the checks read has not landed yet (unknown is not
-  "everything is fine"). Three cases exist specifically because the row model has three sources,
-  and a condition written over dependencies alone passes the first and fails the rest:
+  "everything is fine").
+
+  The **repair-then-regress sequence** is its own test, walked as a sequence rather than asserted
+  as a state, because that is the only way the defect shows: unsatisfied -> dismissed -> satisfied
+  (prune drops the id) -> unsatisfied again -> **banner shows**. Plus the two adjacent cases: a
+  prune that changes nothing writes nothing, and repairing A while B stays broken leaves B
+  acknowledged rather than re-alerting.
+
+  Three further cases exist specifically because the row model has three sources, and a condition
+  written over dependencies alone passes the first and fails the rest:
   - **the derived pair row missing** while every terminal backend is `optional` and present-ish
     (tmux installed, no emulator) - this must raise the banner;
   - a **required dependency in `needs-setup`** (`gh` present, not authenticated) - must raise;
@@ -169,7 +202,9 @@ the read was in flight would train the operator to dismiss it unread.
 
 - On a machine with a required row unsatisfied - including the tmux-without-an-emulator case,
   where the unsatisfied row is the derived pair rather than any dependency - the banner appears,
-  links through, dismisses durably, and returns when a required row stops being satisfied again.
+  links through, and dismisses durably across a restart.
+- Repair that row, then break it again: the banner comes back. This is the criterion that proves
+  the dismissal record means "acknowledged while broken" rather than "acknowledged once".
 - The `setup` tour runs end to end from both the Settings rail and the command palette, writes
   nothing, and its generated content matches a fresh `npm run tours`.
 - Full gate green.
@@ -190,6 +225,16 @@ shape are the two things a future rail dot would reuse, if that decision is ever
 - Changed the dismissal from a boolean to a record of what was dismissed during this write-up:
   a boolean cannot express "dismissed, then a required dependency went missing again", which the
   approved plan requires.
+- **Inspector round 10 (major, PR #800).** The dismissal record held only the affected row ids,
+  which cannot tell a row that stayed broken from one that was repaired and broke again - so
+  dismissing `terminal-pair`, fixing it, and later losing the emulator left the banner suppressed
+  on a machine that was broken again, contradicting this phase's own return-on-regression promise.
+  Added the retirement rule: a `satisfied` (or vanished) observation removes that row from the
+  record, pruned by the daemon when it composes the banner state and written only when the set
+  shrinks. Recorded why the pruning cannot instead happen on dismissal - recovery happens between
+  dismissals, so nothing would ever prune - and why a write on the read path is acceptable here.
+  The repair-then-regress sequence is now its own test and its own exit criterion, walked as a
+  sequence, since no single-state assertion exposes this.
 - **Inspector round 4 (major, PR #800).** The condition was written over required *dependencies*,
   which cannot see the derived terminal pair row - the only `required` row in the Terminals family,
   since the individual backends are `optional`. A machine with tmux and no emulator would never

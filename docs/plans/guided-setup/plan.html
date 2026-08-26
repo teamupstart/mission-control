@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Guided setup - plan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #14181e;
+      --panel-2: #1b2129;
+      --fg: #e7ebf1;
+      --muted: #98a2b1;
+      --dim: #5d6775;
+      --line: #242b34;
+      --line-soft: #1b2129;
+      --accent: #f6a733;
+      --accent-soft: #1e1a12;
+      --green: #35c08a;
+      --red: #ef6f61;
+      --code-bg: #0a0c0f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1116;
+    --panel: #14181e;
+    --panel-2: #1b2129;
+    --fg: #e7ebf1;
+    --muted: #98a2b1;
+    --dim: #5d6775;
+    --line: #242b34;
+    --line-soft: #1b2129;
+    --accent: #f6a733;
+    --accent-soft: #1e1a12;
+    --green: #35c08a;
+    --red: #ef6f61;
+    --code-bg: #0a0c0f;
+  }
+  :root[data-theme="light"] {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 24px 110px; }
+
+  header.masthead { margin-bottom: 34px; }
+  .eyebrow {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--muted); margin: 0; max-width: 64ch; }
+  .lede strong { color: var(--fg); font-weight: 620; }
+
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 56px 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 18px; margin: 34px 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 7px; color: var(--muted); }
+  li > ul, li > ol { margin-top: 7px; }
+  strong { color: var(--fg); font-weight: 620; }
+  em { font-style: italic; }
+  a { color: var(--accent); }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 9px;
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .meta b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--code-bg);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--fg);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--fg); }
+
+  .table-scroll { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    padding: 12px 15px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { color: var(--fg); font-family: var(--mono); font-weight: 700; }
+
+  .arm-a td:first-child { color: var(--dim); }
+  .arm-b td:first-child { color: var(--red); }
+  .arm-c td:first-child { color: var(--red); }
+  .arm-d td:first-child { color: var(--green); }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 16px 20px;
+    margin: 0 0 22px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout.warn { border-left-color: var(--red); }
+  .callout.good { border-left-color: var(--green); }
+  .callout.key { background: var(--accent-soft); }
+
+  figure { margin: 0 0 26px; }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 16px 12px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; min-width: 560px; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; text-align: center; }
+
+  svg text { font-family: var(--mono); fill: var(--fg); }
+  .n-fill { fill: var(--panel-2); stroke: var(--line); }
+  .n-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .n-ext { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+  .n-good { fill: none; stroke: var(--green); }
+  .n-dead { fill: none; stroke: var(--red); stroke-dasharray: 4 4; }
+  .edge { stroke: var(--muted); fill: none; stroke-width: 1.4; }
+  .edge-new { stroke: var(--accent); fill: none; stroke-width: 1.8; }
+  .edge-back { stroke: var(--green); fill: none; stroke-width: 1.6; }
+  .rule { stroke: var(--line); stroke-width: 1; }
+  .lbl { font-size: 10.5px; fill: var(--muted); }
+  .lbl-new { font-size: 10.5px; fill: var(--accent); font-weight: 700; }
+  .lbl-back { font-size: 10.5px; fill: var(--green); font-weight: 700; }
+  .lbl-bad { font-size: 10.5px; fill: var(--red); font-weight: 700; }
+  .ttl { font-size: 12px; font-weight: 700; }
+  .sub { font-size: 10px; fill: var(--muted); }
+  .band {
+    font-size: 10.5px;
+    fill: var(--dim);
+    letter-spacing: 0.1em;
+  }
+
+  .pill {
+    display: inline-block;
+    font: 600 10.5px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--muted);
+    vertical-align: 2px;
+  }
+  .pill.ok { border-color: var(--green); color: var(--green); }
+
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Mission Control &middot; plan</div>
+  <h1>Guided setup: detect every external dependency, then help install it</h1>
+  <p class="lede">Mission Control is a control plane for tooling it does not ship. Today a
+  missing terminal, agent CLI, <code>gh</code>, plugin, or ai-conductor is discovered
+  <strong>at the moment it fails</strong>, in five different places. This adds one catalog, one
+  detector per entry, one Settings surface, and a remedy per row - without the daemon ever
+  running an install itself.</p>
+</header>
+
+<div class="meta">
+  <div><b>Status</b>approved <span class="pill ok">decisions submitted</span></div>
+  <div><b>Source</b><code>docs/plans/guided-setup/plan.md</code></div>
+  <div><b>Reuses</b><code>src/server/environment/</code> (registry shape), <code>src/server/terminal/{bin,targets}.ts</code>, <code>src/server/util/exec.ts</code>, <code>src/server/plugins/installed-plugins.ts</code>, <code>src/server/pipelines/</code> (the installer flow)</div>
+  <div><b>New surfaces</b>Settings category <code>setup</code>, <code>GET /api/setup/checks</code>, <code>POST /api/setup/install</code>, first-run banner, one tour</div>
+</div>
+
+<h2>The problem</h2>
+
+<p>A working install depends on a terminal emulator, a multiplexer, one or more agent CLIs,
+<code>gh</code>, <code>git</code>, Claude Code plugins and skills, and - for pipelines -
+ai-conductor. Each of those facts is discovered somewhere different, and almost always too
+late:</p>
+
+<ul>
+  <li>A terminal backend that is not installed is silently skipped by <code>enumerateTerminals</code>
+  (<code>src/server/terminal/enumerate.ts</code>), so its sessions simply never appear.</li>
+  <li>A missing agent binary is refused at dispatch by <code>agentBinPresent</code>
+  (<code>src/server/dispatcher.ts:2243</code>), or per ensemble member at roster creation.</li>
+  <li><code>gh</code> is resolved per call by <code>ghBin()</code>
+  (<code>src/server/config.ts:236</code>) and fails at the first push or PR.</li>
+  <li>ai-conductor presence is one boolean folded into <code>SettingsStatus.pipelines.present</code>
+  (<code>pipelinesPresent</code>, <code>src/server/pipelines/index.ts:174</code>).</li>
+  <li>The only surface that proactively tells an operator to fix their machine is the dispatch
+  form's environment checks, and that registry holds exactly one entry
+  (<code>ENVIRONMENT_CHECK_IDS = ["upstartclaw-core-setup"]</code>).</li>
+</ul>
+
+<div class="callout key">
+  <p>Nowhere answers the question a new operator actually has: <strong>what does this machine
+  have, what is it missing, what does each missing thing cost me, and how do I get it?</strong></p>
+</div>
+
+<h2>What we are building</h2>
+
+<p>One catalog of external dependencies, one daemon-side detector per entry, one Settings
+surface that renders all of them with a remedy, and a first-run entry point that sends a new
+operator there. The catalog is the only place a dependency's name is spelled, which is the
+rule the existing registries (<code>OPEN_TARGET_INFO</code>, <code>ENVIRONMENT_CHECK_INFO</code>,
+<code>TASK_SOURCE_KINDS</code>, <code>PIPELINE_PROVIDERS</code>) already hold to.</p>
+
+<h3>Decisions taken</h3>
+
+<p>Submitted in the plan review, and now the plan's premises rather than open questions:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Decision</th><th>Adopted</th></tr></thead>
+  <tbody>
+    <tr><td>Where the catalog lives</td><td>A new setup catalog that <strong>reads</strong> the existing environment checks. <code>src/shared/setup-catalog.ts</code> plus <code>src/server/setup/</code>; <code>ENVIRONMENT_CHECK_IDS</code> is neither renamed nor extended, and no detection is copied.</td></tr>
+    <tr><td>How far a remedy goes</td><td>Links, copyable commands, and run-in-a-visible-terminal. The daemon owns argv; the browser sends an id. No daemon-side package-manager install.</td></tr>
+    <tr><td>The guided surface</td><td>Settings panel, first-run banner, and one tour. No separate first-run wizard, and not dispatch-form warnings alone.</td></tr>
+    <tr><td>v1 families</td><td>Terminals and multiplexers, GitHub CLI presence and authentication, agent CLIs, Claude Code plugins and skills, ai-conductor. <strong>The git and Node baseline is out of v1.</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The baseline being out is a scope decision with one consequence worth stating: a checkout that
+got far enough to run this dashboard already has <code>git</code> and a Node new enough to start
+the daemon, so those rows would be satisfied on every machine that can see them. The ids stay
+appendable - the tuple is append-only, so adding <code>git</code> and <code>node</code> later costs
+an append and two probes, and nothing in this design has to move to accommodate them.</p>
+
+<h3>Non-goals</h3>
+
+<ul>
+  <li><strong>The daemon never installs anything itself.</strong> No package manager invoked
+  in-process, no <code>curl | sh</code>, no privilege escalation, no network fetch of an install
+  script. Every remedy is a link the operator opens, a command they copy, or a command that runs
+  in a <em>visible</em> terminal they watch - which is exactly the shape
+  <code>/api/pipelines/install</code> already has.</li>
+  <li><strong>Not a health monitor.</strong> Nothing here polls on a tick. Detection is computed
+  per request, for <code>environmentCheckViews</code>' stated reason: an operator who installs
+  something must see the answer change without restarting the daemon, and a boot snapshot is a
+  claim about a machine that has since changed.</li>
+  <li><strong>Not a second source of truth for capability.</strong> The dispatch form keeps
+  refusing a missing agent binary, <code>enumerateTerminals</code> keeps skipping absent backends.
+  Guided setup explains those facts; it does not gate on them.</li>
+</ul>
+
+<h2>The catalog</h2>
+
+<p><code>src/shared/setup-catalog.ts</code> holds the pure half - what a dependency IS, readable
+in the browser, no <code>node:</code> imports. <code>src/server/setup/</code> holds the impure
+half - one probe per entry, plus the dependency bag that makes it testable against an arranged
+home rather than the developer's own. This is the
+<code>EnvironmentCheckInfo</code> / <code>EnvironmentCheckImpl</code> split, reused verbatim:</p>
+
+<pre><code>// src/shared/setup-catalog.ts - append-only, ids are the natural key
+export const SETUP_DEPENDENCY_IDS = [
+  "claude-cli", "codex-cli", "pi-cli",
+  "tmux", "cmux", "wezterm", "ghostty",
+  "gh-cli", "gh-auth", "claude-plugins", "claude-skills", "ai-conductor",
+] as const;
+
+export interface SetupDependencyInfo {
+  id: SetupDependencyId;
+  label: string;                    // "GitHub CLI"
+  family: SetupFamilyId;            // grouping in the panel
+  requirement: "required" | "recommended" | "optional";
+  /** What Mission Control cannot do without it. One sentence, in the product's terms. */
+  enables: string;
+  /** How an operator gets it. Rendered as the row's control; see Remedies. */
+  remedy: SetupRemedy;
+}</code></pre>
+
+<p>Families, in panel order: <strong>Agent CLIs</strong> (claude, codex, pi),
+<strong>Terminals</strong> (emulators and multiplexers, reported as a pair - see below),
+<strong>GitHub</strong> (<code>gh</code> presence, <code>gh</code> authentication),
+<strong>Claude Code extensions</strong> (installed plugins and the skills Mission Control
+reconciles), <strong>Pipelines</strong> (ai-conductor).</p>
+
+<p><code>requirement</code> is what keeps the page honest about scale. Every agent CLI missing
+means nothing can be dispatched at all; Ghostty missing is a preference. A page that draws a dozen
+equally red rows has told the operator nothing.</p>
+
+<h3>Status is four answers, not two</h3>
+
+<pre><code>export type SetupStatus =
+  | { state: "satisfied"; evidence: string }        // "/opt/homebrew/bin/gh"
+  | { state: "missing" }
+  | { state: "needs-setup"; why: string }           // installed, not usable yet
+  | { state: "unknown"; why: string };              // we could not look</code></pre>
+
+<p><code>needs-setup</code> and <code>unknown</code> are the two a boolean cannot express, and
+both already exist in this codebase's reasoning. <code>gh</code> on PATH but unauthenticated is
+<code>needs-setup</code>; so is the UpstartClaw plugin installed with its setup state file absent,
+which <code>src/server/environment/upstartclaw.ts</code> already distinguishes at length.
+<code>unknown</code> is <code>FileRead</code>'s "there is a file I could not read" case:
+collapsing it into <code>missing</code> either silences a real problem or warns every operator on
+earth.</p>
+
+<h3>Detection reuses the probes that already exist</h3>
+
+<p>No new mechanism. Each catalog entry points at the function the daemon already trusts:</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Family</th><th>Probe</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td>Agent CLIs</td><td><code>agentBinPresent(agent)</code></td><td><code>src/server/dispatcher.ts</code></td></tr>
+    <tr><td>Terminals</td><td><code>binPresent(spec)</code> over <code>TMUX_BIN</code>, <code>CMUX_BIN</code>, <code>WEZTERM_BIN</code>, <code>GHOSTTY_BIN</code></td><td><code>src/server/terminal/bin.ts</code></td></tr>
+    <tr><td>Terminals, usable</td><td><code>terminalTargetViews(...)</code></td><td><code>src/server/terminal/targets.ts</code></td></tr>
+    <tr><td><code>gh</code> presence</td><td><code>resolveBinPath(ghBin())</code></td><td><code>src/server/util/exec.ts</code>, <code>src/server/config.ts</code></td></tr>
+    <tr><td><code>gh</code> auth</td><td><code>gh auth status</code>, output-parsed, never exit-code alone</td><td>new, in <code>src/server/setup/</code></td></tr>
+    <tr><td>Claude Code plugins</td><td><code>installedPlugins()</code></td><td><code>src/server/plugins/installed-plugins.ts</code></td></tr>
+    <tr><td>Skills</td><td>the existing skills reconcile / drift read</td><td><code>src/server/skills/reconcile.ts</code></td></tr>
+    <tr><td>ai-conductor</td><td><code>binForPresence()</code> then <code>probe()</code></td><td><code>src/server/pipelines/conductor/</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two probe rules the existing code already states, and this catalog inherits:</p>
+
+<ul>
+  <li><strong>Presence is answered from the filesystem where it can be.</strong>
+  <code>onPath</code> walks <code>PATH</code> with <code>existsSync</code> and costs microseconds;
+  a doomed <code>fork</code> + <code>execve</code> costs milliseconds. Use
+  <code>resolveBinPath</code> (which spawns <code>which</code>) only where the very next thing we
+  do is spawn the binary, per the note in <code>src/server/util/exec.ts</code>.</li>
+  <li><strong>A probe never throws.</strong> <code>environmentCheckViews</code> maps a thrown
+  implementation into that check's own warning so one bad probe cannot take the page down or fail
+  the route. The setup registry does the same, and names itself as the fault rather than the
+  operator's machine.</li>
+</ul>
+
+<h3>The terminal row is about a pair, not a binary</h3>
+
+<div class="callout warn">
+  <p><code>src/server/terminal/targets.ts</code> exists because "is tmux available" is not a
+  question about tmux: a detached tmux session with no emulator to raise it is a button that
+  reports success and puts nothing on screen. Guided setup must not reintroduce that.</p>
+</div>
+
+<p>The Terminals family therefore draws per-backend presence rows <strong>plus</strong> one
+derived row - "Mission Control can open a terminal window on a checkout" - computed from
+<code>terminalTargetViews</code>, naming the emulator that would do the raising. Restating that
+pair logic inside the setup registry is the one duplication this plan explicitly forbids.</p>
+
+<h3>The existing environment checks are folded in, not forked</h3>
+
+<p><code>ENVIRONMENT_CHECK_IDS</code> is append-only and its entries answer a narrower question:
+would a dispatch launched right now stall on somebody else's unfinished setup. That check keeps
+its registry, its route, and its place in the dispatch form. The setup view <em>reads</em>
+<code>environmentCheckViews()</code> and renders each non-null warning as a
+<code>needs-setup</code> row in the family it belongs to. One detector, two surfaces; no id
+renamed, no detection copied.</p>
+
+<h2>Remedies</h2>
+
+<p>Three kinds plus a printed one, and the boundary between them is the security spine of this
+feature.</p>
+
+<pre><code>export type SetupRemedy =
+  | { kind: "link"; url: string; label: string }
+  | { kind: "command"; argv: readonly string[]; note: string }
+  | { kind: "provider-installer"; provider: PipelineProviderId }
+  | { kind: "skill"; command: string };     // "/upstartclaw-core:setup"</code></pre>
+
+<ul>
+  <li><strong><code>link</code></strong> opens documentation or a download page through the
+  existing browser open target (<code>src/server/open-targets/browser.ts</code>). Always
+  available, always the fallback.</li>
+  <li><strong><code>command</code></strong> is shown as copyable text, with an optional "Run in a
+  terminal" button. The button posts an entry <strong>id</strong> and a chosen terminal backend -
+  never argv. The daemon looks the argv up in its own catalog and wraps it in the same hold-open
+  shell the pipelines installer route already uses, so the operator watches the install and reads
+  its exit code rather than trusting a spinner.</li>
+  <li><strong><code>provider-installer</code></strong> delegates to the flow that already exists:
+  <code>pipelineInstallerCandidates</code> finds verified local checkouts in the workspace
+  catalog, <code>pipelineInstallerLaunch</code> reverifies at click time, and the terminal opens
+  the provider's own <code>bin/install</code>. ai-conductor uses this and gains nothing new.</li>
+  <li><strong><code>skill</code></strong> is a slash command the operator runs inside a Claude
+  session - the shape <code>upstartclaw.ts</code> already prescribes with
+  <code>/upstartclaw-core:setup</code>. Mission Control prints it; it does not run it. Claw owns
+  its own setup, and a daemon that repaired another tool's state would be a second owner of
+  it.</li>
+</ul>
+
+<pre><code>&lt;argv&gt;
+status=$?
+printf '\n[installer exited %s] press enter to close ' "$status"
+read -r _</code></pre>
+
+<div class="callout">
+  <p><strong>What a <code>command</code> remedy may contain.</strong> A package-manager invocation
+  with a fixed package name (<code>brew install gh</code>,
+  <code>npm install -g @openai/codex</code>), and nothing else. No shell metacharacters, no pipes,
+  no redirects, no <code>sudo</code>, no URL fetched and executed. A dependency that cannot be
+  installed that way carries a <code>link</code> instead. The list is committed, reviewed, and
+  pinned by a test that rejects any argv outside that shape.</p>
+</div>
+
+<h2>Flows</h2>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 260" role="img" aria-label="Detection flow: the Setup panel issues GET /api/setup/checks to the daemon route, which folds over the SETUP_DEPENDENCIES registry; the registry fans out to PATH and filesystem probes, environmentCheckViews, terminalTargetViews, and the pipeline provider probe, and the route answers with a SetupChecksView.">
+      <defs>
+        <marker id="m-det" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="20" class="ttl">DETECTION</text>
+      <text x="118" y="20" class="band">per request, nothing cached, nothing on a tick</text>
+
+      <rect x="17" y="100" width="126" height="60" rx="9" class="n-accent"/>
+      <text x="80" y="126" text-anchor="middle" class="ttl">Setup panel</text>
+      <text x="80" y="144" text-anchor="middle" class="sub">browser</text>
+
+      <g color="var(--accent)"><path d="M147,120 L207,120" class="edge-new" marker-end="url(#m-det)"/></g>
+      <text x="177" y="112" text-anchor="middle" class="lbl-new">GET</text>
+      <g color="var(--green)"><path d="M207,146 L147,146" class="edge-back" marker-end="url(#m-det)"/></g>
+      <text x="177" y="164" text-anchor="middle" class="lbl-back">view</text>
+
+      <rect x="211" y="100" width="126" height="60" rx="9" class="n-fill"/>
+      <text x="274" y="122" text-anchor="middle" class="ttl">daemon route</text>
+      <text x="274" y="140" text-anchor="middle" class="sub">/api/setup/checks</text>
+
+      <g color="var(--muted)"><path d="M341,130 L389,130" class="edge" marker-end="url(#m-det)"/></g>
+
+      <rect x="393" y="100" width="126" height="60" rx="9" class="n-accent"/>
+      <text x="456" y="122" text-anchor="middle" class="ttl">setup registry</text>
+      <text x="456" y="140" text-anchor="middle" class="sub">SETUP_DEPENDENCIES</text>
+
+      <g color="var(--muted)">
+        <path d="M523,116 L571,52" class="edge" marker-end="url(#m-det)"/>
+        <path d="M523,124 L571,110" class="edge" marker-end="url(#m-det)"/>
+        <path d="M523,136 L571,168" class="edge" marker-end="url(#m-det)"/>
+        <path d="M523,144 L571,226" class="edge" marker-end="url(#m-det)"/>
+      </g>
+
+      <rect x="575" y="30" width="110" height="42" rx="8" class="n-ext"/>
+      <text x="630" y="49" text-anchor="middle" class="sub">PATH +</text>
+      <text x="630" y="63" text-anchor="middle" class="sub">filesystem</text>
+
+      <rect x="575" y="88" width="110" height="42" rx="8" class="n-ext"/>
+      <text x="630" y="107" text-anchor="middle" class="sub">environment</text>
+      <text x="630" y="121" text-anchor="middle" class="sub">CheckViews</text>
+
+      <rect x="575" y="146" width="110" height="42" rx="8" class="n-ext"/>
+      <text x="630" y="165" text-anchor="middle" class="sub">terminal</text>
+      <text x="630" y="179" text-anchor="middle" class="sub">TargetViews</text>
+
+      <rect x="575" y="204" width="110" height="42" rx="8" class="n-ext"/>
+      <text x="630" y="223" text-anchor="middle" class="sub">provider</text>
+      <text x="630" y="237" text-anchor="middle" class="sub">probe()</text>
+    </svg>
+  </div>
+  <figcaption>Every dashed box is a probe that already exists. The registry is the only new node.</figcaption>
+</figure>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 200" role="img" aria-label="Install flow: the Setup panel posts a dependency id and a terminal backend, the daemon looks argv, cwd and title up in its own catalog, wraps the command in the hold-open shell, and the terminal backend opens a visible window the operator watches; Re-check returns to the detection route.">
+      <defs>
+        <marker id="m-ins" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="20" class="ttl">INSTALL</text>
+      <text x="94" y="20" class="band">browser sends an id; the daemon owns the argv</text>
+
+      <rect x="17" y="58" width="118" height="58" rx="9" class="n-accent"/>
+      <text x="76" y="82" text-anchor="middle" class="ttl">Setup panel</text>
+      <text x="76" y="99" text-anchor="middle" class="sub">id + backend</text>
+
+      <g color="var(--accent)"><path d="M139,87 L183,87" class="edge-new" marker-end="url(#m-ins)"/></g>
+      <text x="161" y="78" text-anchor="middle" class="lbl-new">POST</text>
+
+      <rect x="187" y="58" width="118" height="58" rx="9" class="n-fill"/>
+      <text x="246" y="82" text-anchor="middle" class="ttl">daemon route</text>
+      <text x="246" y="99" text-anchor="middle" class="sub">catalog lookup</text>
+
+      <g color="var(--muted)"><path d="M309,87 L353,87" class="edge" marker-end="url(#m-ins)"/></g>
+      <text x="331" y="78" text-anchor="middle" class="lbl">argv</text>
+
+      <rect x="357" y="58" width="118" height="58" rx="9" class="n-fill"/>
+      <text x="416" y="82" text-anchor="middle" class="ttl">hold-open sh</text>
+      <text x="416" y="99" text-anchor="middle" class="sub">prints exit code</text>
+
+      <g color="var(--muted)"><path d="M479,87 L523,87" class="edge" marker-end="url(#m-ins)"/></g>
+
+      <rect x="527" y="58" width="158" height="58" rx="9" class="n-good"/>
+      <text x="606" y="82" text-anchor="middle" class="ttl">visible terminal</text>
+      <text x="606" y="99" text-anchor="middle" class="sub">the operator watches</text>
+
+      <path d="M17,150 L685,150" class="rule"/>
+      <g color="var(--green)"><path d="M606,140 L606,168 L80,168 L80,124" class="edge-back" marker-end="url(#m-ins)"/></g>
+      <text x="343" y="184" text-anchor="middle" class="lbl-back">operator presses Re-check; detection runs again</text>
+    </svg>
+  </div>
+  <figcaption>No install runs inside the daemon. The only thing the browser chooses is which
+  dependency and which terminal.</figcaption>
+</figure>
+
+<p>Nothing else changes. There is no new poller, no new persisted table, and no new writer: the
+daemon remains the only database writer, and this feature writes nothing to it beyond the one
+dismissal flag below.</p>
+
+<h2>Surfaces</h2>
+
+<p><strong>A new Settings category, <code>setup</code>.</strong> Appended to
+<code>SETTINGS_CATEGORIES</code> (<code>src/web/lib/settings-registry.ts</code>) in the
+<code>sessions</code> group, first within it, because it is what a new operator needs before any
+other row means anything. Its scope badge is <span class="pill">home</span>, not
+<span class="pill">machine</span>: a remedy can launch an installer that writes outside this app,
+and the scope badges are not allowed to be softer than the truth.</p>
+
+<p>The panel draws one card per family and one row per dependency: status chip, the
+<code>enables</code> sentence, the evidence string (the resolved path, the file that was read),
+and the remedy control. Rows carry <code>data-anchor="setup/&lt;slug&gt;"</code> so the settings
+search index can point at them, per that registry's anchor contract. A single "Re-check" button
+refetches; there is no auto-refresh, because a page that silently rewrites itself while an
+operator reads it is worse than one they refresh.</p>
+
+<p><strong>A first-run entry point.</strong> The dashboard shows a dismissible banner when any
+<code>required</code> dependency is <code>missing</code>, or on first launch with no dismissal
+recorded. It links to the Setup category and says how many rows need attention. Dismissal is
+durable (one <code>app_config</code> flag), and the banner returns if a <em>required</em> row later
+goes missing - that is a machine that broke, not a preference the operator already expressed.</p>
+
+<p><strong>A tour.</strong> One <code>TourEntry</code> (<code>src/web/tour/entries.ts</code>)
+walking the Setup panel, so it appears in the Settings rail's Help and tours row and in the
+command palette beside the existing tours. This is the guided part of guided setup: the tour
+narrates, the panel is the surface, and there is no third wizard implementation to keep in
+step.</p>
+
+<h2>Verification</h2>
+
+<ul>
+  <li><strong><code>test/</code></strong> - the catalog and every probe, driven through a
+  <code>SetupDeps</code> bag in <code>EnvironmentDeps</code>' shape. A test must never read the
+  developer's real <code>~/.claude</code> or their real <code>PATH</code>; the bag is what makes
+  an arranged home possible. Cases: each status state per family, a throwing probe contained to
+  its own row, <code>unknown</code> distinguished from <code>missing</code>, the terminal pair row
+  disagreeing with per-backend presence, and the argv shape test that rejects a command remedy
+  containing a pipe, a redirect, <code>sudo</code>, or a URL.</li>
+  <li><strong><code>e2e/</code></strong> - required, per <code>CLAUDE.md</code>: this is a new UI
+  surface. A spec that opens the Setup category with fake backends and asserts a satisfied row, a
+  missing row with its remedy control, the first-run banner and its dismissal, and that "Run in a
+  terminal" reaches the install route and reports its refusal. It installs nothing and spends no
+  model tokens; agent binaries stay redirected by <code>e2e/fixtures/fake-agents.ts</code>.
+  Selectors by role and label only, no <code>data-testid</code>.</li>
+  <li><strong><code>renderToStaticMarkup</code></strong> alongside, for the settings sidebar tests
+  that already walk <code>SETTINGS_CATEGORIES</code> and pin anchor uniqueness and category
+  reachability.</li>
+  <li>Docs in the same change: <code>docs/setup.md</code> gains the in-app path beside its
+  command-line prerequisites, <code>docs/ui.md</code> and <code>docs/skills-and-settings.md</code>
+  gain the category, and <code>docs/harnesses-and-terminals.md</code> points at it for backend
+  presence.</li>
+</ul>
+
+<h2>Risks and how each is contained</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Risk</th><th>Containment</th></tr></thead>
+  <tbody>
+    <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id. Argv shape pinned by test. Visible terminal, hold-open, exit code shown.</td></tr>
+    <tr><td>Becomes a machine-wide install manager</td><td><code>requirement</code> levels plus a committed catalog. A dependency Mission Control does not use does not get a row.</td></tr>
+    <tr><td>Detection drifts from what refuses</td><td>Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses <code>terminalTargetViews</code> rather than restating it.</td></tr>
+    <tr><td>A slow probe stalls the page</td><td>Probes run concurrently; the subprocess-costing ones (<code>gh auth status</code>, the conductor probe) sit behind the short-lived cache the Settings route already uses, and each row renders <code>unknown</code> with a reason rather than blocking.</td></tr>
+    <tr><td>Chrome for an already-set-up operator</td><td>The banner appears only for missing <code>required</code> rows, and satisfied rows collapse to a one-line chip.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  Rendered from <code>docs/plans/guided-setup/plan.md</code>, which stays the source of truth.
+</footer>
+
+</div>
+</body>
+</html>

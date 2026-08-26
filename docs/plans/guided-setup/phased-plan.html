@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Guided setup - phased implementation</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #14181e;
+      --panel-2: #1b2129;
+      --fg: #e7ebf1;
+      --muted: #98a2b1;
+      --dim: #5d6775;
+      --line: #242b34;
+      --line-soft: #1b2129;
+      --accent: #f6a733;
+      --accent-soft: #1e1a12;
+      --green: #35c08a;
+      --red: #ef6f61;
+      --code-bg: #0a0c0f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1116;
+    --panel: #14181e;
+    --panel-2: #1b2129;
+    --fg: #e7ebf1;
+    --muted: #98a2b1;
+    --dim: #5d6775;
+    --line: #242b34;
+    --line-soft: #1b2129;
+    --accent: #f6a733;
+    --accent-soft: #1e1a12;
+    --green: #35c08a;
+    --red: #ef6f61;
+    --code-bg: #0a0c0f;
+  }
+  :root[data-theme="light"] {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 24px 110px; }
+
+  header.masthead { margin-bottom: 34px; }
+  .eyebrow {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--muted); margin: 0; max-width: 64ch; }
+  .lede strong { color: var(--fg); font-weight: 620; }
+
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 56px 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 18px; margin: 34px 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 7px; color: var(--muted); }
+  li > ul, li > ol { margin-top: 7px; }
+  strong { color: var(--fg); font-weight: 620; }
+  em { font-style: italic; }
+  a { color: var(--accent); }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 9px;
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .meta b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--code-bg);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--fg);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--fg); }
+
+  .table-scroll { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    padding: 12px 15px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { color: var(--fg); font-family: var(--mono); font-weight: 700; }
+
+  .arm-a td:first-child { color: var(--dim); }
+  .arm-b td:first-child { color: var(--red); }
+  .arm-c td:first-child { color: var(--red); }
+  .arm-d td:first-child { color: var(--green); }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 16px 20px;
+    margin: 0 0 22px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout.warn { border-left-color: var(--red); }
+  .callout.good { border-left-color: var(--green); }
+  .callout.key { background: var(--accent-soft); }
+
+  figure { margin: 0 0 26px; }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 16px 12px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; min-width: 560px; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; text-align: center; }
+
+  svg text { font-family: var(--mono); fill: var(--fg); }
+  .n-fill { fill: var(--panel-2); stroke: var(--line); }
+  .n-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .n-ext { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+  .n-good { fill: none; stroke: var(--green); }
+  .n-dead { fill: none; stroke: var(--red); stroke-dasharray: 4 4; }
+  .edge { stroke: var(--muted); fill: none; stroke-width: 1.4; }
+  .edge-new { stroke: var(--accent); fill: none; stroke-width: 1.8; }
+  .edge-back { stroke: var(--green); fill: none; stroke-width: 1.6; }
+  .rule { stroke: var(--line); stroke-width: 1; }
+  .lbl { font-size: 10.5px; fill: var(--muted); }
+  .lbl-new { font-size: 10.5px; fill: var(--accent); font-weight: 700; }
+  .lbl-back { font-size: 10.5px; fill: var(--green); font-weight: 700; }
+  .lbl-bad { font-size: 10.5px; fill: var(--red); font-weight: 700; }
+  .ttl { font-size: 12px; font-weight: 700; }
+  .sub { font-size: 10px; fill: var(--muted); }
+  .band {
+    font-size: 10.5px;
+    fill: var(--dim);
+    letter-spacing: 0.1em;
+  }
+
+  .pill {
+    display: inline-block;
+    font: 600 10.5px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--muted);
+    vertical-align: 2px;
+  }
+  .pill.ok { border-color: var(--green); color: var(--green); }
+
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Mission Control &middot; phased implementation</div>
+  <h1>Guided setup - phased implementation</h1>
+  <p class="lede">Three merge units. Phase 1 ships the whole read-only feature - catalog,
+  detection, and the Setup panel. Phase 2 adds the one thing that <strong>executes</strong>, on
+  its own reviewable boundary. Phase 3 adds the onboarding surface. Phases 2 and 3 are
+  <strong>concurrent</strong>.</p>
+</header>
+
+<div class="meta">
+  <div><b>Source plan</b><code>docs/plans/guided-setup/plan.md</code> (rendered: <code>plan.html</code>)</div>
+  <div><b>Decisions</b>review <code>df3523c8</code>, applied to the source plan</div>
+  <div><b>Estimate</b>1400 - 1850 non-test implementation lines</div>
+  <div><b>Phases</b>3, with Phase 2 and Phase 3 mergeable in either order</div>
+</div>
+
+<h2>Incorporated decisions</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Decision</th><th>Adopted</th><th>Consequence for the split</th></tr></thead>
+  <tbody>
+    <tr><td>Registry shape</td><td>A new setup catalog that <strong>reads</strong> the existing environment checks</td><td>Phase 1 owns <code>src/shared/setup-catalog.ts</code> and <code>src/server/setup/</code>. <code>ENVIRONMENT_CHECK_IDS</code> is not renamed or extended by any phase.</td></tr>
+    <tr><td>Remedy depth</td><td>Links, copyable commands, and run-in-a-visible-terminal</td><td>Phase 1 renders every remedy as link/copy; Phase 2 adds the execution path. The remedy union is defined once, in Phase 1.</td></tr>
+    <tr><td>Guided surface</td><td>Settings panel, first-run banner, one tour</td><td>Phase 1 ships the panel; Phase 3 ships the banner and the tour. No first-run wizard in any phase.</td></tr>
+    <tr><td>v1 families</td><td>Terminals, GitHub CLI and its auth, agent CLIs, Claude Code plugins and skills, ai-conductor</td><td>Phase 1 ships all five. The git/Node baseline is out; <code>SETUP_DEPENDENCY_IDS</code> stays appendable for it.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Repository findings</h2>
+
+<p>Investigated against this checkout before the boundaries were drawn. Two of these changed the
+design; all of them belong to a phase.</p>
+
+<ol>
+  <li><strong>Every probe the catalog needs already exists</strong>, and each is the function the
+  refusing path itself calls: <code>agentBinPresent</code>
+  (<code>src/server/dispatcher.ts:2243</code>), <code>binPresent</code> with
+  <code>TMUX_BIN</code> / <code>CMUX_BIN</code> / <code>WEZTERM_BIN</code> /
+  <code>GHOSTTY_BIN</code>, <code>terminalTargetViews</code>, <code>resolveBinPath</code> and
+  <code>onPath</code>, <code>ghBin()</code> (<code>src/server/config.ts:236</code>),
+  <code>installedPlugins()</code>, and the conductor provider's <code>binForPresence()</code> /
+  <code>probe()</code>. Phase 1 writes no new detection mechanism.</li>
+
+  <li><strong>Detection must resolve through the env-override chain, not by probing a bare
+  name.</strong> <code>resolveBinSpec</code> reads <code>MISSION_</code> then
+  <code>FLEET_</code> then <code>HARNESS_</code>; <code>resolveBin</code> reads a backend's own
+  <code>spec.env</code>; <code>ghBin()</code> reads <code>MISSION_GH_BIN</code>. A probe that
+  asked <code>onPath("gh")</code> directly would report the operator's real machine while dispatch
+  used the override - and would make the e2e spec in finding 4 impossible. <strong>Hard contract
+  on Phase 1.</strong></li>
+
+  <li><strong>The install path already exists and is the model to copy, not to invent.</strong>
+  <code>POST /api/pipelines/install</code> (<code>src/server/routes.ts:5627</code>) takes provider,
+  checkout, and backend from the browser, resolves argv through the provider, wraps it in a
+  hold-open shell that prints the exit code and waits for a keypress, and hands it to
+  <code>terminalLauncher</code>. <code>GET /api/terminal-targets</code>
+  (<code>routes.ts:2791</code>) already answers which backends can open a window, pair-aware.</li>
+
+  <li><strong>The e2e harness can already arrange installed-versus-missing for four of the five
+  families.</strong> <code>e2e/fixtures/daemon.ts:285-325</code> redirects the three agent
+  binaries, <code>CMUX_BIN</code>, <code>MISSION_GH_BIN</code>, and
+  <code>MISSION_CONDUCTOR_BIN</code> - and already has a <code>startsMissing</code> mode pointing
+  the conductor override at a not-yet-installed path, which is exactly the missing-row case.
+  <strong>But <code>WEZTERM_BIN</code> and <code>GHOSTTY_BIN</code> are not overridden</strong>,
+  so those rows would read "installed" on a laptop and "missing" on CI. Phase 1 adds both
+  overrides.</li>
+
+  <li><strong>The tour is a bigger artifact than it looks, and part of it is generated.</strong>
+  <code>src/web/tour/content.generated.ts</code> is written by
+  <code>scripts/tour-content.ts</code> from <code>tours/*.md</code> via <code>npm run tours</code>.
+  A tour also needs a <code>TourId</code> union member, a stage file (335 and 415 lines for the
+  two shipped tours), a <code>TourEntry</code>, a target namespace, and target refs registered by
+  the components it spotlights. This is most of why the banner and tour are their own phase.</li>
+
+  <li><strong>The settings surfaces a new category has to satisfy are already pinned by
+  tests.</strong> <code>SETTINGS_CATEGORIES</code> is read by the router, the page, the search
+  index, the dots, and <code>settings-sidebar-render.test.ts</code>, which fails on a duplicate
+  <code>data-anchor</code> or an anchor whose prefix is not a category.</li>
+
+  <li><strong><code>SettingsStatus</code> is not the channel for this.</strong> It is a fixed
+  struct of the daemon's own config, emitted on config writes and folded into
+  <code>registry.snapshot()</code>, and <code>settings-dots.ts</code> derives every dot from it.
+  So the Setup category ships <strong>without</strong> a rail dot in v1; the Phase 3 banner is the
+  attention surface instead.</li>
+</ol>
+
+<h2>Sizing</h2>
+
+<p>Gross non-test implementation lines expected to be added or materially changed, excluding tests
+and the generated tour content.</p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Phase</th><th>Estimate</th><th>Assumptions</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>750 - 950</td><td>Shared catalog ~180, <code>src/server/setup/</code> ~330, route + protocol + client ~70, <code>SetupPanel.tsx</code> ~300 in <code>SkillsPanel</code>'s register (210) rather than <code>ConductorPanel</code>'s (1079), registry wiring ~20, e2e fixture overrides ~15.</td></tr>
+    <tr><td>2</td><td>250 - 350</td><td>Install route ~90, argv guard ~50, catalog argv data ~40, panel controls and backend picker ~120.</td></tr>
+    <tr><td>3</td><td>400 - 550</td><td>Banner ~120 in <code>UpdateBanner</code>'s shape (114), config entry + wiring ~60, tour stage file ~300, entry/namespace/refs ~60, plus authored prose.</td></tr>
+    <tr class="arm-d"><td>Total</td><td>1400 - 1850</td><td></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout key">
+  <p><strong>Why three phases.</strong> The estimate is far above the 200-line one-phase
+  threshold, so the only question is where the boundaries fall.</p>
+  <ul>
+    <li><strong>Phase 1 alone is already a complete, useful feature</strong> - every dependency,
+    its status, what it unlocks, and a link or copyable command. Nothing in it is a dead surface
+    awaiting a later phase.</li>
+    <li><strong>Phase 2 must not be folded into Phase 1.</strong> It is the only phase that makes
+    Mission Control execute anything on the operator's machine, and the one place a mistake is a
+    remote code execution rather than a wrong label. Inside a ~900-line panel diff, the argv
+    ownership rule would be reviewed as a detail of a UI change; alone it is a ~300-line diff
+    whose entire subject is that boundary.</li>
+    <li><strong>Phase 3 must not be folded into either.</strong> ~500 lines of onboarding surface
+    with a generated artifact and a five-file tour registration, sharing nothing with the install
+    path but the panel it points at. Combined with Phase 2 it would mix a security-critical route
+    with tour copy.</li>
+  </ul>
+</div>
+
+<h2>Phases</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>#</th><th>Phase</th><th>Prereq</th><th>Delivers</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><a href="phase-1-setup-catalog-and-panel.md">Setup catalog, detection, and the Setup panel</a></td><td>none</td><td>The catalog, every probe, <code>GET /api/setup/checks</code>, and the <code>setup</code> Settings category rendering all five families with link and copy remedies.</td></tr>
+    <tr><td>2</td><td><a href="phase-2-terminal-install-remedies.md">Run a remedy in a visible terminal</a></td><td>Phase 1</td><td><code>POST /api/setup/install</code>, the daemon-owned argv guard, the backend picker, ai-conductor delegating to the existing installer.</td></tr>
+    <tr><td>3</td><td><a href="phase-3-first-run-banner-and-tour.md">First-run banner and the guided tour</a></td><td>Phase 1</td><td>The dismissible banner with its durable flag, and the <code>setup</code> tour in the Settings rail and command palette.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 220" role="img" aria-label="Dependency graph: Phase 1 delivers the catalog, detection and panel; Phase 2 (run a remedy in a visible terminal) and Phase 3 (first-run banner and tour) both depend only on Phase 1 and may merge in either order.">
+      <defs>
+        <marker id="m-dep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="20" class="ttl">MERGE GRAPH</text>
+      <text x="130" y="20" class="band">numbering is presentation order, not serialization</text>
+
+      <rect x="17" y="80" width="190" height="70" rx="10" class="n-accent"/>
+      <text x="112" y="107" text-anchor="middle" class="ttl">Phase 1</text>
+      <text x="112" y="125" text-anchor="middle" class="sub">catalog, detection, panel</text>
+      <text x="112" y="140" text-anchor="middle" class="sub">750 - 950 lines</text>
+
+      <g color="var(--accent)">
+        <path d="M211,105 L289,58" class="edge-new" marker-end="url(#m-dep)"/>
+        <path d="M211,125 L289,172" class="edge-new" marker-end="url(#m-dep)"/>
+      </g>
+
+      <rect x="293" y="24" width="200" height="70" rx="10" class="n-fill"/>
+      <text x="393" y="51" text-anchor="middle" class="ttl">Phase 2</text>
+      <text x="393" y="69" text-anchor="middle" class="sub">run in a visible terminal</text>
+      <text x="393" y="84" text-anchor="middle" class="sub">250 - 350 lines</text>
+
+      <rect x="293" y="138" width="200" height="70" rx="10" class="n-fill"/>
+      <text x="393" y="165" text-anchor="middle" class="ttl">Phase 3</text>
+      <text x="393" y="183" text-anchor="middle" class="sub">banner and tour</text>
+      <text x="393" y="198" text-anchor="middle" class="sub">400 - 550 lines</text>
+
+      <path d="M513,59 L513,173" class="rule" stroke-dasharray="4 4"/>
+      <text x="527" y="105" class="lbl-back">concurrent:</text>
+      <text x="527" y="122" class="lbl-back">either order</text>
+      <text x="527" y="145" class="lbl">no shared</text>
+      <text x="527" y="161" class="lbl">contract</text>
+    </svg>
+  </div>
+  <figcaption>Merge order: Phase 1, then Phase 2 and Phase 3 in any order.</figcaption>
+</figure>
+
+<p><strong>Concurrency.</strong> Neither Phase 2 nor Phase 3 reads a file, route, schema, or
+decision the other introduces. Their one shared file is <code>SetupPanel.tsx</code>, and the seam
+is stated in both phase files: Phase 1 ships the panel with a per-row <strong>remedy action
+slot</strong> and per-family <strong>section elements carrying stable ids</strong>, so Phase 2
+edits inside the row action and Phase 3 attaches tour refs to the section wrappers. Disjoint
+regions; whichever merges second rebases without a semantic conflict.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Owned by Phase 1, relied on by the others, and not to be changed by them:</p>
+
+<ol>
+  <li><code>SETUP_DEPENDENCY_IDS</code> is append-only and ids are the natural key. Later phases
+  may read an id; neither renames, reorders, nor removes one.</li>
+  <li>The <strong>full</strong> <code>SetupRemedy</code> union - <code>link</code>,
+  <code>command</code>, <code>provider-installer</code>, <code>skill</code> - is defined in Phase
+  1, including <code>command.argv</code>, even though Phase 1 only renders it as copyable text.
+  Phase 2 therefore adds a route and a control and changes no shared contract.</li>
+  <li><code>SetupStatus</code> has exactly four states. A phase needing a fifth states the case in
+  its audit record rather than overloading <code>unknown</code>.</li>
+  <li>Every probe resolves its binary through the same override chain the launcher uses.</li>
+  <li><code>GET /api/setup/checks</code> computes per request and caches nothing durable. No phase
+  puts setup detection on a poll tick, in <code>SettingsStatus</code>, or in the registry
+  snapshot.</li>
+  <li>Panel structure: one section per family with a stable element id, one row per dependency
+  carrying <code>data-anchor="setup/&lt;slug&gt;"</code>, an accessible name, and a remedy action
+  slot.</li>
+  <li>The daemon never installs anything in-process. Phase 2 is the only phase that may cause
+  execution, and only by handing vetted argv to a visible terminal.</li>
+</ol>
+
+<h2>Final verification</h2>
+
+<p>After Phase 3 merges:</p>
+
+<ul>
+  <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code> clean.</li>
+  <li><code>npm run build</code> and <code>npm run smoke</code>, since routes and browser surfaces
+  changed.</li>
+  <li><code>npm run test:e2e</code> with the three specs the phases add, plus
+  <code>dispatch-environment-warning</code> still green - the environment check keeps its own
+  registry and its dispatch-form note.</li>
+  <li>A manual pass on a real machine: open Settings → Setup, confirm the statuses match what the
+  machine actually has, follow one <code>link</code>, copy one <code>command</code>, and run one
+  remedy in a terminal.</li>
+  <li>Docs read back correctly: <code>docs/setup.md</code>, <code>docs/ui.md</code>,
+  <code>docs/skills-and-settings.md</code>, <code>docs/harnesses-and-terminals.md</code>.</li>
+</ul>
+
+<footer>
+  Rendered from <code>docs/plans/guided-setup/phased-plan.md</code>, which stays the source of
+  truth. The three <code>phase-*.md</code> files beside it carry each merge unit's detail.
+</footer>
+
+</div>
+</body>
+</html>

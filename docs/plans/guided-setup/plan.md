@@ -257,10 +257,23 @@ export type SetupRemedy =
   state would be a second owner of it.
 
 **What a `command` remedy may contain.** A package-manager invocation with a fixed package
-name (`brew install gh`, `npm install -g @openai/codex`), and nothing else. No shell
-metacharacters, no pipes, no redirects, no `sudo`, no URL fetched and executed. A dependency
-that cannot be installed that way carries a `link` instead. The list is committed, reviewed,
-and pinned by a test that rejects any argv outside that shape.
+name (`brew install gh`, `npm install -g @openai/codex`), and nothing else. A dependency that
+cannot be installed that way carries a `link` instead.
+
+That is enforced as a **closed grammar of whole invocations**, not an allowlist of programs.
+Allowlisting `argv[0]` would admit `npm uninstall`, `npm publish`, `npm run <script>`,
+`npm exec` / `npx`, `brew uninstall`, and `brew services stop` - all of which start with an
+approved program, and several of which execute arbitrary code. So each entry fixes the program,
+the **literal** subcommand (no aliases), the flags that may appear, and exactly one operand that
+must match a package-name pattern - which is also what rejects a path or remote spec dressed as a
+package name (`/tmp/evil.tgz`, `../x`, `git+ssh://host/repo`). Shell metacharacters, `sudo`, and
+`://` remain refused outright as a second layer. Widening the grammar is a plan decision, not a
+catalog edit.
+
+The guard bounds what Mission Control will *ask* a terminal to do. It cannot bound what an
+accepted `npm install -g <pkg>` then runs from the registry, and does not claim to - that is
+covered by the operator watching a visible terminal, and is why no remedy ever executes inside
+the daemon. The grammar is committed, reviewed, and pinned by a test organised by attack.
 
 ## Flows
 

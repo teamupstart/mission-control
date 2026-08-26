@@ -86,9 +86,9 @@ tests and excluding the generated tour content:
 | Phase | Estimate | Assumptions |
 | --- | --- | --- |
 | 1 | 750 - 950 | Shared catalog ~180 (13 entries with prose), `src/server/setup/` ~330 (probes plus the dep bag and the throw containment), route + protocol + api client ~70, `SetupPanel.tsx` ~300 in the shape of `SkillsPanel` (210) rather than `ConductorPanel` (1079), registry/renderCategory ~20, e2e fixture overrides ~15. |
-| 2 | 300 - 400 | Install route ~90, argv guard ~50, catalog argv data ~40, panel remedy controls and backend picker ~120, provider-installer checkout selection over the existing candidates route ~50. |
+| 2 | 330 - 430 | Install route ~90, invocation-grammar guard ~90 (the grammar table, two package-name patterns, and the per-entry validation - it was ~50 as a program allowlist, which is the thing it is deliberately no longer), catalog argv data ~40, panel remedy controls and backend picker ~120, provider-installer checkout selection over the existing candidates route ~50. |
 | 3 | 400 - 550 | Banner ~120 in `UpdateBanner`'s shape (114), config entry + route wiring ~60, tour stage file ~300, entry + namespace + target refs ~60, authored `tours/setup.md` prose. |
-| **Total** | **1450 - 1900** | |
+| **Total** | **1480 - 1930** | |
 
 **Why three phases.** The estimate is far above the 200-line one-phase threshold, so the
 question is only where the boundaries fall. Each additional boundary is justified against

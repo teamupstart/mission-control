@@ -74,19 +74,61 @@ slot. It adds no shared type.
 ### 1. The argv guard - do this first
 
 In `src/shared/setup-catalog.ts`'s neighbourhood or a small `src/server/setup/argv.ts`, a
-predicate that accepts a `command` remedy's argv only when it is:
+predicate over a **closed grammar of whole invocations** - not an allowlist of programs. Checking
+`argv[0]` alone is not a boundary: `npm uninstall`, `npm publish`, `npm run <script>`,
+`npm exec` / `npx`, `brew uninstall`, and `brew services stop` all begin with an allowlisted
+program, carry no shell metacharacters, and would each be launched in a terminal. Several of them
+execute arbitrary code from the repository or registry, which is the opposite of "a
+package-manager invocation with a fixed package name".
 
-- a non-empty array of plain strings, the first being an allowlisted installer program
-  (`brew`, `npm`, and nothing else until a decision adds one);
-- free of shell metacharacters in every element: no `|`, `&`, `;`, `<`, `>`, `` ` ``, `$`, `(`,
-  `)`, newline, or quote;
-- free of `sudo` in any position;
-- free of any element that parses as a URL or contains `://`.
+So the grammar names the whole shape, program by program:
 
-Anything a catalog entry cannot express that way carries a `link` instead. The install route
-refuses an argv that fails this predicate **even though the catalog is committed source** - the
-guard's job is to make a bad future catalog edit a refused request rather than a shell
-injection, and a check that only runs at authoring time does not do that.
+```ts
+/** The only invocation shapes a `command` remedy may express. Closed; see below. */
+const INSTALL_GRAMMAR = [
+  { program: "brew", subcommand: "install", allowedFlags: ["--cask"], operands: 1 },
+  { program: "npm",  subcommand: "install", allowedFlags: ["-g", "--global"], operands: 1 },
+] as const;
+```
+
+An argv is accepted only when **all** of these hold:
+
+- it is a non-empty array of plain strings, and `argv[0]` matches a grammar entry's `program`
+  exactly;
+- `argv[1]` equals that entry's `subcommand` **literally**. No aliases: `i`, `add`, `x`, and
+  `exec` are not `install`, and accepting them would reopen the hole this rule closes;
+- every remaining element is either one of that entry's `allowedFlags` or the single operand. An
+  unrecognised flag is a refusal, not something to ignore - flag injection is how
+  `--ignore-scripts`-style behavior gets flipped;
+- there is exactly `operands` operand, and it matches that program's package-name pattern:
+  - npm: `/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/`
+  - brew: `/^[a-z0-9][a-z0-9+._@-]*$/`
+
+  The pattern is what rejects a **path or a remote spec dressed as a package name**, which is the
+  subtler half of the same attack: `npm install -g /tmp/evil.tgz`, `npm install -g ../x`,
+  `npm install -g git+ssh://host/repo`, and `npm install -g file:./x` each install arbitrary code
+  and each fails the pattern (a leading `/`, a `/` outside the scope group, a `:`). A version
+  suffix (`pkg@1.2.3`) is also refused for npm: the catalog names bare packages, so allowing `@`
+  outside a scope prefix buys nothing and widens the surface;
+- no element contains a shell metacharacter (`|`, `&`, `;`, `<`, `>`, `` ` ``, `$`, `(`, `)`,
+  newline, or a quote), `sudo`, or `://`. Redundant given the rules above, and kept as the
+  belt-and-braces layer that still holds if the grammar is later widened.
+
+**The grammar is closed, and widening it is a plan decision rather than a catalog edit.** That is
+the actual escalation path: adding `{ program: "npm", subcommand: "exec" }` is a two-line diff
+that turns this route into arbitrary code execution, so it belongs in review as a design change
+and the grammar's comment says so.
+
+Anything a catalog entry cannot express this way carries a `link` instead. The install route
+re-runs this predicate **even though the catalog is committed source** - the guard's job is to
+make a bad future catalog edit a refused request rather than a shell injection, and a check that
+only runs at authoring time does not do that.
+
+**The honest limit.** Even an accepted `npm install -g <pkg>` runs that package's install scripts,
+which is arbitrary code from the registry. No argv guard can prevent that, and it is not this
+guard's claim. What the guard bounds is what Mission Control will *ask* a terminal to do; the
+operator watching a visible terminal, and the fact that they would have run the same command
+themselves, is what covers the rest. This is why the remedy is never executed inside the daemon.
 
 **Scope: `command` remedies only.** A `provider-installer` remedy's argv belongs to the pipeline
 provider, which verifies its own checkout and markers at click time, and its `bin/install` is not
@@ -171,10 +213,20 @@ In the remedy action slot Phase 1 defined:
 
 ## Tests and verification
 
-- `test/setup-install-argv.test.ts` - the guard, adversarially: a pipe, a redirect, a backtick,
-  `$(...)`, a newline, `sudo` in first and later position, a URL, an empty array, a non-allowlisted
-  program, and each legitimate form (`brew install gh`, `npm install -g <pkg>`). This is the
-  phase's most important test.
+- `test/setup-install-argv.test.ts` - the guard, adversarially. This is the phase's most
+  important test, and it is organised by attack rather than by field:
+  - **shell escape**: a pipe, a redirect, a backtick, a command substitution, a newline, an
+    embedded quote, `sudo` in first and in later position;
+  - **wrong program**: an empty array, a non-grammar program, an absolute path to a real
+    package manager;
+  - **wrong verb, right program** - the case that motivated the grammar: `npm uninstall`,
+    `npm publish`, `npm run build`, `npm exec`, `npx`, `brew uninstall`, `brew services stop`,
+    plus the aliases `npm i` and `npm add`;
+  - **operand that is not a package**: `/tmp/evil.tgz`, `../x`, `git+ssh://host/repo`,
+    `file:./x`, `pkg@1.2.3`, a leading-dash operand, zero operands, two operands;
+  - **flag injection**: an unrecognised flag, an allowed flag repeated, a flag after the operand;
+  - **accepted forms**, so the guard is not vacuously strict: `brew install gh`,
+    `brew install --cask <name>`, `npm install -g <pkg>`, `npm install -g @scope/pkg`.
 - `test/setup-install-route.test.ts` - unknown id 404; `link` and `skill` remedies refused; **a
   `provider-installer` remedy reaching the delegated launch rather than the refusal** (the
   ai-conductor row is the case, and getting this wrong makes the one dependency with a real
@@ -231,6 +283,18 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 5 (major, PR #800).** The guard allowlisted `argv[0]` only, so `npm
+  uninstall`, `npm publish`, `npm run <script>`, `npm exec` / `npx`, `brew uninstall`, and
+  `brew services stop` all passed every stated check - several of them executing arbitrary code,
+  which is precisely what the "fixed package name" boundary was supposed to exclude. Replaced the
+  program allowlist with a closed grammar of whole invocations (program + literal subcommand +
+  allowed flags + exactly one operand matching a package-name pattern), which also closes the
+  subtler half the review did not name: a path or remote spec dressed as an operand
+  (`/tmp/evil.tgz`, `../x`, `git+ssh://…`, `file:./x`). Recorded that widening the grammar is a
+  plan decision rather than a catalog edit, since adding one entry is what would turn this route
+  into arbitrary execution, and stated the guard's honest limit - an accepted
+  `npm install -g <pkg>` still runs that package's install scripts, which is why the remedy runs
+  in a visible terminal and never inside the daemon.
 - **Inspector round 3 (PR #800).** Phase 1 gained `SetupRowId`, so this route's `id` field is
   explicitly the dependency half of it - stated in the handler steps so nobody widens the body to
   the row id and makes an environment-check row look launchable.

@@ -551,10 +551,26 @@ read -r _</code></pre>
 <div class="callout">
   <p><strong>What a <code>command</code> remedy may contain.</strong> A package-manager invocation
   with a fixed package name (<code>brew install gh</code>,
-  <code>npm install -g @openai/codex</code>), and nothing else. No shell metacharacters, no pipes,
-  no redirects, no <code>sudo</code>, no URL fetched and executed. A dependency that cannot be
-  installed that way carries a <code>link</code> instead. The list is committed, reviewed, and
-  pinned by a test that rejects any argv outside that shape.</p>
+  <code>npm install -g @openai/codex</code>), and nothing else. A dependency that cannot be
+  installed that way carries a <code>link</code> instead.</p>
+
+  <p>That is enforced as a <strong>closed grammar of whole invocations</strong>, not an allowlist
+  of programs. Allowlisting <code>argv[0]</code> would admit <code>npm uninstall</code>,
+  <code>npm publish</code>, <code>npm run &lt;script&gt;</code>, <code>npm exec</code> /
+  <code>npx</code>, <code>brew uninstall</code>, and <code>brew services stop</code> - all of
+  which start with an approved program, and several of which execute arbitrary code. So each entry
+  fixes the program, the <strong>literal</strong> subcommand (no aliases), the flags that may
+  appear, and exactly one operand that must match a package-name pattern - which is also what
+  rejects a path or remote spec dressed as a package name (<code>/tmp/evil.tgz</code>,
+  <code>../x</code>, <code>git+ssh://host/repo</code>). Shell metacharacters, <code>sudo</code>,
+  and <code>://</code> remain refused outright as a second layer. Widening the grammar is a plan
+  decision, not a catalog edit.</p>
+
+  <p>The guard bounds what Mission Control will <em>ask</em> a terminal to do. It cannot bound what
+  an accepted <code>npm install -g &lt;pkg&gt;</code> then runs from the registry, and does not
+  claim to - that is covered by the operator watching a visible terminal, and is why no remedy ever
+  executes inside the daemon. The grammar is committed, reviewed, and pinned by a test organised by
+  attack.</p>
 </div>
 
 <h2>Flows</h2>
@@ -736,7 +752,7 @@ step.</p>
 <table>
   <thead><tr><th>Risk</th><th>Containment</th></tr></thead>
   <tbody>
-    <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id, and for a provider installer a checkout the daemon re-verifies against its own enumerated candidates. Argv shape pinned by test. Visible terminal, hold-open, exit code shown.</td></tr>
+    <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id, and for a provider installer a checkout the daemon re-verifies against its own enumerated candidates. Argv must match a closed grammar of whole invocations - program, literal subcommand, allowed flags, one package-name operand - so an approved program cannot smuggle in <code>uninstall</code>, <code>run</code>, or <code>exec</code>. Visible terminal, hold-open, exit code shown.</td></tr>
     <tr><td>Becomes a machine-wide install manager</td><td><code>requirement</code> levels plus a committed catalog. A dependency Mission Control does not use does not get a row.</td></tr>
     <tr><td>Detection drifts from what refuses</td><td>Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses <code>terminalTargetViews</code> rather than restating it.</td></tr>
     <tr><td>A slow probe stalls the page</td><td>Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (<code>gh auth status</code>, the conductor probe) are bounded by <code>run</code>'s own <code>timeoutMs</code> (<code>src/server/util/exec.ts</code>, 4s by default). A probe that times out renders <code>unknown</code> with a reason rather than blocking the page. <strong>No cache</strong>, per the no-tick rule above: an operator who just installed something must see the change on the next read.</td></tr>

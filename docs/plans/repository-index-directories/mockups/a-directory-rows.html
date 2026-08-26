@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>A - Directory rows - indexed directories</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+<main class="settings-page">
+  <div class="settings-rail">
+    <div class="settings-page-title">
+      <h2>Settings</h2>
+      <button class="settings-leave" type="button">← Fleet</button>
+    </div>
+    <button class="settings-rail-search" type="button">
+      <span aria-hidden>⌕</span><span>Search everything…</span><kbd>⌘K</kbd>
+    </button>
+
+    <div class="settings-nav-group">
+      <p class="settings-nav-label">This screen <span class="settings-scope settings-scope-browser">This browser</span></p>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">▦</span>Display</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⌨</span>Keyboard</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">+</span>Dispatch</button>
+    </div>
+
+    <div class="settings-nav-group">
+      <p class="settings-nav-label">Sessions <span class="settings-scope settings-scope-machine">This machine</span></p>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⚙</span>Harnesses</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⑂</span>Worktrees</button>
+      <button class="settings-nav-item is-active is-new" type="button"><span class="settings-nav-icon">▤</span>Repositories</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✦</span>Skills</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✎</span>Standing instructions</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">$</span>Cost</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">↶</span>Restore</button>
+    </div>
+
+    <div class="settings-nav-group">
+      <p class="settings-nav-label">Background work <span class="settings-scope settings-scope-machine">This machine</span></p>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">●</span>Foreman</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⌘</span>Workflows</button>
+    </div>
+  </div>
+
+  <div class="settings-pane">
+    <div class="settings-panel-head">
+      <h2>Repositories</h2>
+      <span class="settings-scope settings-scope-machine">This machine</span>
+    </div>
+
+    <!-- ============ screen 1: seeded, as shipped ============ -->
+    <section class="settings-section" data-screen="seeded">
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts. Everything that offers you
+        a <strong>repository</strong> reads this one list - the dispatch repo picker, a task
+        filed by name through MCP, and the Conductor's install candidates. Indexing a directory
+        offers its checkouts; it grants nothing. Trust stays where it is.
+      </p>
+
+      <div class="settings-section-head">
+        <h3>Indexed directories</h3>
+        <p class="settings-hint">
+          A checkout is any directory holding a <code>.git</code> entry, found up to three
+          levels down. We never descend into one, so a vendored or pooled checkout inside a
+          repo is not offered separately.
+        </p>
+      </div>
+
+      <ul class="ri-rows">
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/workspace</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-ok">14 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/code</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-ok">3 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row is-missing">
+          <span class="ri-glyph" aria-hidden>▢</span>
+          <span class="ri-path">~/dev</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-missing">not found</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/upstart</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-ok">9 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+      </ul>
+
+      <div class="ri-add">
+        <input class="field-input" type="text" placeholder="~/another-directory" aria-label="Directory to index" />
+        <button class="btn btn-primary" type="button">Add directory</button>
+      </div>
+      <p class="settings-hint">
+        A leading <code>~</code> is your home directory. The path is checked before it is
+        saved, and a directory that does not exist yet is kept and reported as
+        <em>not found</em> rather than refused.
+      </p>
+
+      <div class="ri-actions">
+        <button class="btn" type="button">Rescan now</button>
+        <span class="ri-count">26 repositories indexed · last scanned 4s ago</span>
+      </div>
+
+      <p class="ri-footnote">
+        <span aria-hidden>ℹ</span>
+        <span>Four directories are seeded so a fresh install finds your work without being
+        configured first. Removing one is durable, including a seeded one; nothing on disk is
+        touched either way.</span>
+      </p>
+    </section>
+
+    <!-- ============ screen 2: edited, with a refusal ============ -->
+    <section class="settings-section" data-screen="edited" hidden>
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts. Everything that offers you
+        a <strong>repository</strong> reads this one list - the dispatch repo picker, a task
+        filed by name through MCP, and the Conductor's install candidates. Indexing a directory
+        offers its checkouts; it grants nothing. Trust stays where it is.
+      </p>
+
+      <div class="settings-section-head">
+        <h3>Indexed directories</h3>
+        <p class="settings-hint">
+          A checkout is any directory holding a <code>.git</code> entry, found up to three
+          levels down. We never descend into one, so a vendored or pooled checkout inside a
+          repo is not offered separately.
+        </p>
+      </div>
+
+      <ul class="ri-rows">
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/workspace</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-ok">14 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/upstart</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-default">default</span>
+            <span class="ri-chip ri-chip-ok">9 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">/Volumes/scratch/forks</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-ok">2 repositories</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+        <li class="ri-row is-missing">
+          <span class="ri-glyph" aria-hidden>▲</span>
+          <span class="ri-path">~/Notes</span>
+          <span class="ri-meta">
+            <span class="ri-chip ri-chip-warn">not a directory</span>
+          </span>
+          <button class="ri-remove" type="button">Remove</button>
+        </li>
+      </ul>
+
+      <div class="ri-add">
+        <input class="field-input" type="text" value="~/" aria-label="Directory to index" />
+        <button class="btn btn-primary" type="button">Add directory</button>
+      </div>
+      <p class="settings-error">
+        Your home directory itself cannot be indexed: a three-level walk from <code>~</code> is
+        a scan of the whole machine. Name the folder your checkouts are in.
+      </p>
+
+      <div class="ri-actions">
+        <button class="btn" type="button">Rescan now</button>
+        <button class="btn" type="button">Restore defaults</button>
+        <span class="ri-count">25 repositories indexed · <code>~/code</code> and <code>~/dev</code> removed</span>
+      </div>
+
+      <p class="ri-footnote">
+        <span aria-hidden>ℹ</span>
+        <span><strong>Restore defaults</strong> adds back only the seeded directories you have
+        removed. The ones you added stay exactly as they are.</span>
+      </p>
+    </section>
+
+    <!-- ============ screen 3: environment override ============ -->
+    <section class="settings-section" data-screen="env" hidden>
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts. Everything that offers you
+        a <strong>repository</strong> reads this one list - the dispatch repo picker, a task
+        filed by name through MCP, and the Conductor's install candidates.
+      </p>
+
+      <div class="settings-warn">
+        <p>
+          <strong>Set by the environment.</strong> This daemon was launched with
+          <code>MISSION_WORKSPACE_DIRS=/tmp/fixture/workspace</code>, which takes precedence
+          over anything saved here. The list below is what is actually indexed. To edit it from
+          this page, unset that variable and restart the daemon.
+        </p>
+      </div>
+
+      <ul class="ri-rows">
+        <li class="ri-row">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">/tmp/fixture/workspace</span>
+          <span class="ri-meta">
+            <span class="ri-chip">from environment</span>
+            <span class="ri-chip ri-chip-ok">1 repository</span>
+          </span>
+          <span></span>
+        </li>
+      </ul>
+
+      <div class="settings-section-head">
+        <h3>Saved here, currently ignored</h3>
+        <p class="settings-hint">
+          What this page would index if the variable were unset. Kept, not discarded, so
+          removing the override restores your list rather than the defaults.
+        </p>
+      </div>
+      <ul class="ri-rows">
+        <li class="ri-row is-missing">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/workspace</span>
+          <span class="ri-meta"><span class="ri-chip ri-chip-default">default</span></span>
+          <span></span>
+        </li>
+        <li class="ri-row is-missing">
+          <span class="ri-glyph" aria-hidden>▤</span>
+          <span class="ri-path">~/upstart</span>
+          <span class="ri-meta"><span class="ri-chip ri-chip-default">default</span></span>
+          <span></span>
+        </li>
+      </ul>
+
+      <div class="ri-actions">
+        <button class="btn" type="button">Rescan now</button>
+      </div>
+    </section>
+
+    <!-- ============ screen 4: emptied ============ -->
+    <section class="settings-section" data-screen="empty" hidden>
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts. Everything that offers you
+        a <strong>repository</strong> reads this one list.
+      </p>
+
+      <div class="settings-section-head">
+        <h3>Indexed directories</h3>
+      </div>
+
+      <div class="ri-empty">
+        <p style="margin:0 0 6px;color:var(--muted);font-size:12.5px;">Nothing is indexed.</p>
+        <p style="margin:0;">
+          The dispatch repo picker will offer no repositories, and a task filed by repository
+          name will not resolve. Add a directory below, or restore the four defaults.
+        </p>
+      </div>
+
+      <div class="ri-add">
+        <input class="field-input" type="text" placeholder="~/another-directory" aria-label="Directory to index" />
+        <button class="btn btn-primary" type="button">Add directory</button>
+      </div>
+
+      <div class="ri-actions">
+        <button class="btn" type="button">Restore defaults</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<nav class="mock-switch" aria-label="Mock-up screens">
+  <button type="button" data-go="seeded" class="is-on">Seeded</button>
+  <button type="button" data-go="edited">Edited</button>
+  <button type="button" data-go="env">Environment</button>
+  <button type="button" data-go="empty">Emptied</button>
+  <a href="index.html">all mock-ups</a>
+</nav>
+
+<script>
+  const screens = [...document.querySelectorAll("[data-screen]")];
+  const buttons = [...document.querySelectorAll("[data-go]")];
+  function show(name) {
+    for (const s of screens) s.hidden = s.dataset.screen !== name;
+    for (const b of buttons) b.classList.toggle("is-on", b.dataset.go === name);
+  }
+  for (const b of buttons) b.addEventListener("click", () => show(b.dataset.go));
+  // The screen is addressable, so a screenshot can ask for one directly.
+  const asked = location.hash.replace("#", "");
+  if (screens.some((s) => s.dataset.screen === asked)) show(asked);
+</script>
+</body>
+</html>

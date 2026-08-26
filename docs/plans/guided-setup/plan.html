@@ -731,12 +731,18 @@ search index can point at them, per that registry's anchor contract. A single "R
 refetches; there is no auto-refresh, because a page that silently rewrites itself while an
 operator reads it is worse than one they refresh.</p>
 
-<p><strong>A first-run entry point.</strong> The dashboard shows a dismissible banner when any
-<code>required</code> <strong>row</strong> is not satisfied, or on first launch with no dismissal
-recorded. It links to the Setup category and says how many rows need attention. Dismissal is
-durable (one <code>app_config</code> entry), and the banner returns if a <em>required</em> row
-later stops being satisfied - that is a machine that broke, not a preference the operator already
-expressed.</p>
+<p><strong>A first-run entry point.</strong> The dashboard shows a dismissible banner when either
+some <code>required</code> <strong>row</strong> is unsatisfied and unacknowledged, or the operator
+has never dismissed it (so a fully-provisioned machine still gets told the page exists once). It
+links to the Setup category and says how many rows need attention. Dismissal is durable (one
+<code>app_config</code> entry), and the banner returns if a <em>required</em> row later stops being
+satisfied - that is a machine that broke, not a preference the operator already expressed.</p>
+
+<p>Those are two independent clauses over a record with two parts - a first-launch marker and the
+set of rows acknowledged while broken - so <strong>one dismiss writes both</strong>: the marker,
+and the currently unsatisfied required row ids, in a single write. Writing only the row ids leaves
+the first-launch clause true and the banner re-renders immediately; writing only the marker leaves
+every broken row unacknowledged, with the same result.</p>
 
 <p>That return needs one rule to actually hold: <strong>a satisfied observation retires that row's
 dismissal.</strong> A record of "ids the operator dismissed" is not enough, because it cannot tell

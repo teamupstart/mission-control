@@ -350,11 +350,18 @@ them, per that registry's anchor contract. A single "Re-check" button refetches;
 auto-refresh, because a page that silently rewrites itself while an operator reads it is
 worse than one they refresh.
 
-**A first-run entry point.** The dashboard shows a dismissible banner when any `required`
-**row** is not satisfied, or on first launch with no dismissal recorded. It links to the Setup
-category and says how many rows need attention. Dismissal is durable (one `app_config` entry),
-and the banner returns if a *required* row later stops being satisfied - that is a machine that
-broke, not a preference the operator already expressed.
+**A first-run entry point.** The dashboard shows a dismissible banner when either some `required`
+**row** is unsatisfied and unacknowledged, or the operator has never dismissed it (so a
+fully-provisioned machine still gets told the page exists once). It links to the Setup category
+and says how many rows need attention. Dismissal is durable (one `app_config` entry), and the
+banner returns if a *required* row later stops being satisfied - that is a machine that broke, not
+a preference the operator already expressed.
+
+Those are two independent clauses over a record with two parts - a first-launch marker and the set
+of rows acknowledged while broken - so **one dismiss writes both**: the marker, and the currently
+unsatisfied required row ids, in a single write. Writing only the row ids leaves the first-launch
+clause true and the banner re-renders immediately; writing only the marker leaves every broken row
+unacknowledged, with the same result.
 
 That return needs one rule to actually hold: **a satisfied observation retires that row's
 dismissal.** A record of "ids the operator dismissed" is not enough, because it cannot tell a row

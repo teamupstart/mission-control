@@ -74,9 +74,13 @@ Independent of Phase 2. May merge before or after it.
 - Declare the `app_config` entry (`setup-banner-dismissed`, or the repository's naming
   convention) in `src/shared/app-config-entries.ts` with its schema and classification per
   finding 4, plus its read/write route wiring in the shape the neighbouring config entries use.
-- The banner shows when **either**: any `required` **row** is not satisfied, **or** no dismissal
-  has ever been recorded (the first-launch case, so a fully-provisioned machine still gets told
-  the page exists once).
+- The record has exactly two parts, and naming them is what makes the condition and the write
+  below unambiguous:
+  - `firstLaunchAcknowledged: boolean` - whether this operator has ever dismissed the banner;
+  - `acknowledged: SetupRowId[]` - the rows they dismissed **while those rows were broken**.
+- The banner shows when **either**: some `required` row is unsatisfied and **not** in
+  `acknowledged`, **or** `firstLaunchAcknowledged` is false (so a fully-provisioned machine still
+  gets told the page exists once).
 
   **Rows, not dependencies, and this distinction is the whole condition.** Phase 1 puts every row
   in one `SetupChecksView.rows` list from three sources, and two of the levels that matter most
@@ -121,8 +125,20 @@ Independent of Phase 2. May merge before or after it.
     when the operator dismisses something - does not work, because recovery happens *between*
     dismissals: nothing would ever prune, which is exactly the bug above.
 
-  The first-launch notice is a separate entry in the record, not a row id, and pruning never
-  touches it.
+  Pruning never touches `firstLaunchAcknowledged`: the first-launch notice is shown once per
+  operator, not once per repair.
+
+- **One dismiss writes both parts, in one write.** This is the step that is easy to omit and
+  fails immediately when omitted: on a machine that is already broken, the operator's first
+  dismissal must set `firstLaunchAcknowledged` **and** union the currently-unsatisfied required
+  row ids into `acknowledged`. Writing only the row ids leaves the second clause of the condition
+  true, so the banner re-renders the instant it is dismissed - the two clauses are independent, so
+  satisfying one does not satisfy the other. Writing only the marker leaves every broken row
+  unacknowledged, with the same visible result.
+
+  One write rather than two sequential ones, so a crash or a failed request cannot leave a
+  half-dismissed record that shows the banner forever or hides a broken row that was never
+  acknowledged.
 - **Hoist the checks read to App - it is not there yet.** Phase 1 deliberately owns
   `useSetupChecks` inside `SetupPanel`, because at that point the panel is its only consumer
   (the rule `useSkills` and `useHarnesses` follow). The banner is the second consumer and it must
@@ -175,6 +191,13 @@ the read was in flight would train the operator to dismiss it unread.
   prune that changes nothing writes nothing, and repairing A while B stays broken leaves B
   acknowledged rather than re-alerting.
 
+  **Dismissing on an already-broken machine** is its own case too, and it is the one that catches
+  a half-written record: from a virgin record with a required row unsatisfied, one dismiss must
+  leave the banner hidden on the very next evaluation. Assert the record's two parts directly as
+  well as the hidden banner - a test that only checks "hidden" passes on a record that set the
+  marker and forgot the rows, which then re-alerts on the next regression check for the wrong
+  reason.
+
   Three further cases exist specifically because the row model has three sources, and a condition
   written over dependencies alone passes the first and fails the rest:
   - **the derived pair row missing** while every terminal backend is `optional` and present-ish
@@ -189,8 +212,11 @@ the read was in flight would train the operator to dismiss it unread.
   `npm run tours` output is committed and identical to a fresh run - a stale generated file is a
   failing check, not a cosmetic drift.
 - `e2e/specs/setup-banner-and-tour.spec.ts` - the banner appears on a fresh daemon whose overrides
-  make a required row unsatisfied, links to the Setup category, dismisses, stays dismissed
-  across a reload, and re-appears when a required row stops being satisfied afterwards. Then the
+  make a required row unsatisfied, links to the Setup category, dismisses, and **stays hidden
+  without a reload as well as across one**. The no-reload assertion is the one that would have
+  caught a dismiss that wrote only the row ids: the first-launch clause would re-show the banner
+  immediately, which a reload-only assertion can mistake for a fresh page's first render. Then it
+  re-appears when a required row stops being satisfied afterwards. Then the
   tour: start it from the Settings rail, walk at least two stops, and confirm it spotlights the
   panel and writes nothing. Selectors by role and label; no `data-testid`.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
@@ -225,6 +251,15 @@ shape are the two things a future rail dot would reuse, if that decision is ever
 - Changed the dismissal from a boolean to a record of what was dismissed during this write-up:
   a boolean cannot express "dismissed, then a required dependency went missing again", which the
   approved plan requires.
+- **Inspector round 13 (major, PR #800).** The condition's two clauses are independent, and the
+  write only satisfied one: a first dismissal on an already-broken machine recorded the broken row
+  ids without setting the first-launch marker, so the second clause stayed true and the banner
+  re-rendered the instant it was dismissed. Named the record's two parts explicitly
+  (`firstLaunchAcknowledged`, `acknowledged`) and specified that one dismiss writes both in a
+  single write - single so a crash cannot leave a half-dismissed record. Added the
+  dismiss-while-broken unit case asserting both parts rather than only the hidden banner, and
+  changed the e2e assertion to require the banner stay hidden **without** a reload, which is the
+  assertion that would have caught this and the reload-only one that did not.
 - **Inspector round 10 (major, PR #800).** The dismissal record held only the affected row ids,
   which cannot tell a row that stayed broken from one that was repaired and broke again - so
   dismissing `terminal-pair`, fixing it, and later losing the emulator left the banner suppressed

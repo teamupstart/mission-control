@@ -33,6 +33,14 @@ export const GH_ARGS: {
 
 export function parseRemote(url: string | null | undefined): ParsedRemote | null;
 export function canonicalRemoteUrl(transport: string, repo?: string): string;
+export function existingCloneCommands(input: {
+  url: string;
+  repo: string;
+  clone: string;
+}): {
+  problem: string | null;
+  commands: Array<[command: string, args: string[]]>;
+};
 export function originMismatchMessage(originSlug: string): string;
 export function resolveInstallRepo(input: {
   originSlug: string | null;

@@ -830,12 +830,17 @@ for any file with source to read. With it on, clicking a line number - or a bloc
 rendered preview - opens a box under that line. An image has no lines and shows the control
 disabled with that as the reason.
 
-**This works in Preview as well as in the Editor.** A comment names a line and quotes it, so
-something with line numbers has to be on screen to click - but turning the control on over a
-rendered Markdown or HTML document no longer takes that document away. The preview keeps its
-half of the pane and the source appears beside it, read-only, carrying the line numbers and
-the markers. You stay in Preview; **Preview** stays the pressed view; <kbd>e</kbd> is one key
-away if you meant to edit. On a phone-width window the two stack instead.
+**This works in Preview as well as in the Editor.** A comment names a line and quotes it, but
+turning the control on over a rendered Markdown or HTML document takes nothing away and shrinks
+nothing: the document keeps the whole pane, you point at the block you have something to say
+about, and the box **docks over the preview** at the line that block was written on, carrying
+the range and the source it quotes in its own header. You stay in Preview; **Preview** stays the
+pressed view; <kbd>e</kbd> is one key away if you meant to edit. On a phone-width window the box
+spans the foot of the pane instead of floating in its corner.
+
+The box is not a modal. It does not cover the app, it does not trap focus, and it does not stand
+the session shortcuts down - you are meant to keep reading the document while you write about
+it. In the **Editor** it opens where it always has, in the document under the line you clicked.
 
 What you write is saved from the first keystroke as a *draft* - it is a real row in the
 daemon's state, not a string in the browser tab, so closing the file, reloading the page, or
@@ -883,8 +888,8 @@ so a paragraph inside a quote is one target, not three.
   at all. A link inside a block you are commenting on does not navigate while comment mode is
   on.
 
-Either way it opens the same box, in the source column beside the preview, at the line that
-block was written on - and the comment anchors to **source lines** and quotes **source text**,
+Either way it opens the same box, docked over the preview, at the line that block was written
+on - and the comment anchors to **source lines** and quotes **source text**,
 because that is what the agent is being sent and what a later edit is checked against. A block
 anchor quotes the whole block, so what you see in the composer is the paragraph or the table as
 it is written in the file, markup and all.
@@ -899,7 +904,17 @@ Two things follow from a rendered document being a render:
   so and asks you to reload the preview. It never guesses at a nearby line. Repeated wording and
   duplicate headings are not a problem at all - blocks are matched by position, never by text.
 
-Markers themselves are still drawn on the source column rather than over the rendered document.
+**A rendered document is where a comment is left, not where the ones already left are read.**
+Markers are an Editor surface - the dot that says a line already carries a comment is drawn in
+the source - and an HTML preview is a sandboxed frame the dashboard cannot draw into at all, so
+a rendered document does not show which of its blocks have been commented on. Point at one that
+has and it says so, and says where the comment is: **Review (N)** in the Files toolbar, which
+lists every comment the session holds, across every file, and opens the one you pick. Nothing is
+filed twice by pointing twice.
+
+The exception is a comment you started and never submitted. A **draft** is not an existing
+comment - it is your composer with half a sentence in it, and the review queue does not list one
+- so pointing at its block reopens it with what you wrote still in it.
 
 ### Walk the agent through your review
 

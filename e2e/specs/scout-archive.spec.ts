@@ -49,6 +49,7 @@ const EVIDENCE = artifactsDir("scout-prompt-context");
 const RENAME_EVIDENCE = artifactsDir("scout-rename");
 const SHORTCUT_EVIDENCE = artifactsDir("scouts-shortcuts");
 const FRAGMENT_EVIDENCE = artifactsDir("scout-fragment-links");
+const PROMPT_CAP_EVIDENCE = artifactsDir("scout-prompt-cap");
 const CLOSE_WARNING_EVIDENCE = artifactsDir("scout-close-warning");
 /** Visible text that exists ONLY inside the report the fake writes. */
 const FINDING = "the resume path never replayed the repository grant";
@@ -488,6 +489,16 @@ async function captureFragmentEvidence(page: Page): Promise<void> {
   console.log("CAPTURED e2e/.artifacts/scout-fragment-links/scout-fragment-target.png");
 }
 
+/** The bounded prompt ledger, expanded and collapsed, with the report visible in both. */
+async function capturePromptCapEvidence(page: Page, name: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(PROMPT_CAP_EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${PROMPT_CAP_EVIDENCE}${name}.png`, animations: "disabled" });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/scout-prompt-cap/${name}.png`);
+}
+
 test("Scouts is reachable from the topbar, its shortcut, and the command palette", async ({
   dashboard,
 }) => {
@@ -639,6 +650,79 @@ test("Scouts arrows load adjacent reports and slash focuses its search", async (
   await dashboard.keyboard.press("/");
   await expect(search).toBeFocused();
   await captureShortcutEvidence(dashboard);
+});
+
+test("a long original request is capped at eight scrollable lines and collapses away", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Thirty numbered lines: an ordinary dispatch brief, and far more than this pane can spend
+  // on the question when the answer is what the reader came for.
+  const lines = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the original dispatch request.`);
+  writeScoutBundle(join(daemon.home, "scouts"), {
+    title: "Bounded prompt scout",
+    prompts: {
+      entries: [
+        { kind: "initial", text: lines.join("\n"), at: null },
+        { kind: "follow_up", text: "One short follow-up.", at: "2026-08-14T15:18:00.000Z" },
+      ],
+      truncated: false,
+    },
+  });
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), { timeout: 20_000 }).toBe(1);
+
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  await dashboard.getByRole("button", { name: /^Scouts/ }).click();
+  const reader = dashboard.getByRole("region", { name: "Scout report" });
+  const promptContext = reader.getByRole("region", { name: "Prompt context" });
+  await expect(promptContext).toBeVisible();
+
+  const originalRequest = promptContext.getByRole("listitem").nth(0).locator("p");
+  await expect(originalRequest).toContainText("Line 1 of the original dispatch request.");
+
+  // Eight lines of its own line box, not thirty. Measured, because this is exactly the class
+  // of claim a markup assertion cannot make.
+  const box = await originalRequest.evaluate((el) => {
+    const line = Number.parseFloat(getComputedStyle(el).lineHeight);
+    return { client: el.clientHeight, scroll: el.scrollHeight, line };
+  });
+  expect(box.line, "the prompt body has a resolved line height").toBeGreaterThan(0);
+  expect(box.client, "eight lines is the cap").toBeLessThanOrEqual(Math.ceil(box.line * 8) + 2);
+  expect(box.client, "eight lines is also the floor for a prompt this long").toBeGreaterThanOrEqual(
+    Math.floor(box.line * 8) - 2,
+  );
+  expect(box.scroll, "the rest of the request is still there, below the fold").toBeGreaterThan(box.client);
+
+  // The point of the cap: the report is on screen with the ledger open and untouched.
+  const frame = dashboard.locator('iframe[title^="Report"]');
+  await expect(frame).toBeInViewport();
+  await capturePromptCapEvidence(dashboard, "01-prompt-capped-report-visible");
+
+  // It scrolls on its own, and the page does not move while it does.
+  const pageTop = await dashboard.evaluate(() => window.scrollY);
+  await originalRequest.hover();
+  await dashboard.mouse.wheel(0, 400);
+  await expect
+    .poll(() => originalRequest.evaluate((el) => el.scrollTop), { timeout: 5_000 })
+    .toBeGreaterThan(0);
+  await expect(originalRequest).toContainText("Line 30 of the original dispatch request.");
+  expect(await dashboard.evaluate(() => window.scrollY), "the pane stays put").toBe(pageTop);
+
+  await expect(frame).toBeInViewport();
+
+  // And the ledger folds away entirely for a reader who already knows what they asked.
+  const disclosure = promptContext.getByRole("button", { name: /Prompt context/ });
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await disclosure.click();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await expect(promptContext.getByText("Original request")).toBeHidden();
+  await expect(promptContext.getByRole("listitem")).toHaveCount(0);
+  await expect(frame).toBeInViewport();
+  await capturePromptCapEvidence(dashboard, "02-prompt-collapsed");
+
+  await disclosure.click();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(promptContext.getByText("Original request")).toBeVisible();
 });
 
 test("a Scout report fragment link scrolls to and keeps rendering its target", async ({

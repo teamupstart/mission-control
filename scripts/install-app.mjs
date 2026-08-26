@@ -43,7 +43,10 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
-import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import {
+  CANONICAL_REPO,
+  isTrustedInstallRepo,
+} from "../src/shared/install-receipt-schema.mjs";
 import { receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
 import {
   archPrerequisiteMessage,
@@ -112,7 +115,7 @@ export function parseRemote(url) {
 /**
  * The only host a remote may name.
  *
- * The slug alone is not identity. `https://attacker.example/mancej-cyc/ai-harness.git` carries
+ * The slug alone is not identity. `https://attacker.example/teamupstart/mission-control.git` carries
  * the canonical owner and name, so a check that compared only the slug would fetch and force
  * check out whatever that host served. Every remote this script trusts is compared as host AND
  * slug, and the releases it compares against are GitHub releases, so there is no second host to
@@ -132,7 +135,12 @@ export function remoteProblem({ url, repo }) {
   if (remote.host !== REQUIRED_REMOTE_HOST) {
     return `${url} is hosted at ${remote.host}, not ${REQUIRED_REMOTE_HOST} - only ${REQUIRED_REMOTE_HOST} repositories are supported, because the releases this compares against are GitHub releases`;
   }
-  if (remote.slug !== repo) return `${url} is ${remote.slug}, not ${repo}`;
+  if (
+    remote.slug !== repo
+    && !(repo === CANONICAL_REPO && isTrustedInstallRepo(remote.slug))
+  ) {
+    return `${url} is ${remote.slug}, not ${repo}`;
+  }
   return null;
 }
 
@@ -141,6 +149,33 @@ export function canonicalRemoteUrl(transport, repo = CANONICAL_REPO) {
   return transport === "ssh"
     ? `ssh://git@github.com/${repo}.git`
     : `https://github.com/${repo}.git`;
+}
+
+/**
+ * Validate an updater-owned clone and plan the ordered git commands that make it current.
+ *
+ * A clone left by an install from the former canonical slug is trusted only through
+ * `remoteProblem`'s exact GitHub-hosted alias rule. Rewrite that origin before fetching so a
+ * successful migration no longer depends on GitHub continuing to redirect the former URL.
+ */
+export function existingCloneCommands({ url, repo, clone }) {
+  const problem = remoteProblem({ url, repo });
+  if (problem) return { problem, commands: [] };
+
+  const remote = parseRemote(url);
+  const commands = [];
+  if (
+    repo === CANONICAL_REPO
+    && remote.slug !== CANONICAL_REPO
+    && isTrustedInstallRepo(remote.slug)
+  ) {
+    commands.push([
+      "git",
+      ["-C", clone, "remote", "set-url", "origin", canonicalRemoteUrl(remote.transport)],
+    ]);
+  }
+  commands.push(["git", ["-C", clone, "fetch", "--tags", "--prune", "origin"]]);
+  return { problem: null, commands };
 }
 
 export function originMismatchMessage(originSlug) {
@@ -173,7 +208,7 @@ export function resolveInstallRepo({ originSlug, originHost, fromOrigin = false 
       problem: `this checkout's origin is hosted at ${originHost || "an unknown host"}, not ${REQUIRED_REMOTE_HOST}. Only ${REQUIRED_REMOTE_HOST} repositories can be installed, because the releases this compares against are GitHub releases.`,
     };
   }
-  if (originSlug === CANONICAL_REPO) return { repo: CANONICAL_REPO, problem: null };
+  if (isTrustedInstallRepo(originSlug)) return { repo: CANONICAL_REPO, problem: null };
   if (fromOrigin) return { repo: originSlug, problem: null };
   return { repo: null, problem: originMismatchMessage(originSlug) };
 }
@@ -464,12 +499,12 @@ function installApp(options) {
     // Host AND slug. This clone is about to be fetched and force-checked-out, so a remote that
     // merely carries the right owner/name - served from anywhere - is not the same repository.
     const cloneRemote = capture("git", ["-C", clone, "remote", "get-url", "origin"]).stdout.trim();
-    const cloneProblem = remoteProblem({ url: cloneRemote, repo });
-    if (cloneProblem) {
-      fail(`${clone} is not a clone of ${repo}: ${cloneProblem}. Move or remove it yourself, then rerun; this script will not delete it.`);
+    const clonePlan = existingCloneCommands({ url: cloneRemote, repo, clone });
+    if (clonePlan.problem) {
+      fail(`${clone} is not a clone of ${repo}: ${clonePlan.problem}. Move or remove it yourself, then rerun; this script will not delete it.`);
     }
     ok(`clone present at ${clone}`);
-    run("git", ["-C", clone, "fetch", "--tags", "--prune", "origin"]);
+    for (const [command, args] of clonePlan.commands) run(command, args);
   } else {
     doing(`cloning ${remoteUrl} into ${clone}`);
     run("git", ["clone", remoteUrl, clone]);

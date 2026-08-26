@@ -115,6 +115,11 @@ async function openTheFile(page: Page): Promise<void> {
     .getByRole("option", { name: SOURCE })
     .click();
   await expect(page.getByLabel(`Preview of ${SOURCE}`)).toBeVisible();
+  // A comment here is made by clicking a line number, which is the Editor's gutter. Comment
+  // mode used to raise a read-only copy of it beside the preview; the panel docks over the
+  // preview now, so the surface is chosen explicitly.
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
+  await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 }
 
 function lineNumber(page: Page, line: number): Locator {

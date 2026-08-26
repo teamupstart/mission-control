@@ -178,8 +178,14 @@ function registryStub(): Registry {
   } as unknown as Registry;
 }
 
+/*
+ * A wall-clock deadline, so it has to survive the contention the suite actually runs under:
+ * six test files at once on a 4 vCPU runner. This whole file finishes in under three seconds
+ * on an idle machine, and a five-second budget for one wait inside it failed there for no
+ * reason but scheduling. The number is a ceiling on a hang, not a performance assertion.
+ */
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));

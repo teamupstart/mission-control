@@ -125,10 +125,45 @@ const HTML_DIALOG_SOURCE = [
   "</html>",                                               // 6
 ].join("\n");
 
+const HTML_LONG = "docs/reports/report.html";
+/**
+ * The shape of a real generated report, which is the shape that broke this.
+ *
+ * A hand-written fixture is a dozen lines long, so every block it has anchors inside the
+ * first screen of anything. A generated report carries its stylesheet inline, so the first
+ * thing a reader SEES rendered is a couple of hundred lines into the file - and the panel is
+ * drawn at the anchored line. While that panel lived in a CodeMirror column, this document
+ * opened it outside the rendered viewport, where it was never attached to the page at all:
+ * the click resolved correctly, and nothing appeared and nothing said why.
+ *
+ * The `<h1>` is on line 210. Nothing else about this document is unusual, which is the point.
+ */
+const HTML_LONG_SOURCE = [
+  "<!doctype html>",                                                         // 1
+  '<html lang="en">',                                                        // 2
+  "<head>",                                                                  // 3
+  '<meta charset="utf-8">',                                                  // 4
+  "<title>Report</title>",                                                   // 5
+  "<style>",                                                                 // 6
+  ...Array.from(                                                             // 7-206
+    { length: 200 },
+    (_, i) => `  .filler-${i} { color: #${i % 10}${i % 10}${i % 10}; }`,
+  ),
+  "</style>",                                                                // 207
+  "</head>",                                                                 // 208
+  "<body>",                                                                  // 209
+  "<h1>Pi is a capable terminal harness</h1>",                               // 210
+  "<p>The budget is thirty seconds.</p>",                                    // 211
+  "</body>",                                                                 // 212
+  "</html>",                                                                 // 213
+].join("\n");
+
 const MARKDOWN_COMMENT = "Thirty seconds contradicts the table below.";
 const TABLE_COMMENT = "This table is missing a units column.";
 const HTML_COMMENT = "This paragraph says the opposite of the heading.";
 const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
+const LONG_COMMENT = "This heading overstates what the report goes on to say.";
+const DRAFT_COMMENT = "Half a thought about this paragraph,";
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -532,5 +567,198 @@ test.describe("commenting on a rendered document", () => {
     await frame.getByText("Read this carefully.").click();
     await expect(page.getByRole("textbox", { name: /^Comment on line/ })).toHaveCount(0);
     expect(storedThreads(daemon)).toEqual([]);
+  });
+
+  test("the panel docks over the preview instead of opening a source column", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    // The whole pane stays the rendered document. Comment mode used to take 48% of it for a
+    // read-only source column to hold the composer, which was showing a second copy of the
+    // range and quote the composer prints in its own header.
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    await startCommenting(page);
+    await expect(page.getByLabel(`Editor for ${HTML}`)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Preview", exact: true }))
+      .toHaveAttribute("aria-pressed", "true");
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await frame.getByText("Read this carefully.").click();
+    await expect(page.getByRole("region", { name: "New comment on line 4" })).toBeVisible();
+    // Still no editor: the panel is docked over the preview, not hosted in a column.
+    await expect(page.getByLabel(`Editor for ${HTML}`)).toHaveCount(0);
+    // The dock carries the anchor itself, which is the job the source column was doing.
+    await expect(
+      page.getByRole("region", { name: "New comment on line 4" })
+        .getByText("<p>Read <strong>this</strong> carefully.</p>"),
+    ).toBeVisible();
+    // The whole pane, so the photograph carries what the assertions above just proved: the
+    // toolbar with Preview pressed, the rendered document at full width, no source column,
+    // and the composer docked over it.
+    await shoot(page.locator(".file-main"), page, "html-new-comment-dock");
+
+    // Typed into, because an empty box is not proof that it takes a comment.
+    await page.getByRole("textbox", { name: "Comment on line 4" }).fill(HTML_COMMENT);
+    await shoot(page.locator(".file-main"), page, "html-new-comment-dock-typed");
+  });
+
+  test("a block far below the source's first screen still opens a composer on screen", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The reported bug, as a document rather than as a mechanism.
+     *
+     * Clicking the first thing you can see in a generated report anchors to line 210. Every
+     * other spec in this file uses a fixture short enough that the anchored line is on screen
+     * whatever happens, so none of them could ever have caught this.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_LONG, HTML_LONG_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_LONG);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+    await frame.getByText("Pi is a capable terminal harness").click();
+
+    // VISIBLE, not merely present. The failure this covers is a composer that opened
+    // correctly, on the correct line, somewhere nobody could see it.
+    const box = page.getByRole("textbox", { name: "Comment on line 210" });
+    await expect(box).toBeVisible();
+    await shoot(page.locator(".file-content"), page, "html-long-composer");
+    await box.fill(LONG_COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(box).toBeHidden();
+
+    await expect.poll(() => storedThreads(daemon).length).toBe(1);
+    const stored = storedThreads(daemon)[0]!;
+    expect([stored.path, stored.start_line, stored.surface]).toEqual([HTML_LONG, 210, "html"]);
+    expect(stored.quote).toBe("<h1>Pi is a capable terminal harness</h1>");
+
+    /*
+     * Read back through the REVIEW QUEUE, which is the one surface existing comments open
+     * from, and not through `expectMarkerOnLine`.
+     *
+     * That helper flips to the Editor and reads the gutter, which every short document here
+     * does and which pins the same claim. On this one it would assert nothing useful: the
+     * marker is an inline widget at line 210, the Editor opens at line 1, and CodeMirror
+     * builds DOM only for its rendered viewport - so a marker that is perfectly correct is
+     * simply not drawn until something scrolls to it.
+     */
+    await page.getByRole("button", { name: "Review queue" }).click();
+    await page
+      .getByRole("region", { name: "Review queue" })
+      .getByRole("button", { name: new RegExp(`^Open comment MC-\\w+ on ${HTML_LONG} line 210$`) })
+      .click();
+    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 210$/ }))
+      .toContainText(LONG_COMMENT);
+  });
+
+  test("a block holding an unsubmitted draft still reopens it, because the queue cannot", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The carve-out in the rule above, and the reason it has to exist.
+     *
+     * A draft has never been submitted, so the review queue does not list it - the queue holds
+     * `queued`, `sending` and `awaiting` only. Sending a draft to the queue would therefore be
+     * sending it nowhere: half a sentence, written on a block, that nothing on any surface can
+     * reach again. It is not an existing comment; it is this composer, unfinished.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+
+    // Start one and leave it unsubmitted: it is a durable row from the first keystroke.
+    await frame.getByText("Read this carefully.").click();
+    await page.getByRole("textbox", { name: "Comment on line 4" }).fill(DRAFT_COMMENT);
+    await expect.poll(() => storedThreads(daemon).length, {
+      message: "the draft was never written",
+    }).toBe(1);
+    expect(storedThreads(daemon)[0]!.body).toBe(DRAFT_COMMENT);
+
+    // Point somewhere else, which settles the draft and opens a composer on the new block.
+    await frame.getByText("Fish & chips, twice.").click();
+    await expect(page.getByRole("textbox", { name: "Comment on line 5" })).toBeVisible();
+
+    // Back to the first block. Not refused - reopened, with what was typed still in it.
+    await frame.getByText("Read this carefully.").click();
+    const reopened = page.getByRole("textbox", { name: "Comment on line 4" });
+    await expect(reopened).toBeVisible();
+    await expect(reopened).toHaveValue(DRAFT_COMMENT);
+    await expect(
+      page.getByText("This block already has a comment. Open the Review queue to read it."),
+      "a draft is not an existing comment, so it is not sent to the queue",
+    ).toHaveCount(0);
+
+    // And it can still be finished, which is the whole point of it staying reachable.
+    await reopened.fill(HTML_COMMENT);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(reopened).toBeHidden();
+    await expect
+      .poll(() => storedThreads(daemon).find((row) => row.start_line === 4)?.body)
+      .toBe(HTML_COMMENT);
+  });
+
+  test("a commented block in HTML Preview sends the reader to the review queue", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    /*
+     * The one surface existing comments are read from is the queue, and this is the rule that
+     * makes that true of the HTML preview specifically.
+     *
+     * An HTML preview is an opaque sandbox this origin cannot draw into, so it carries no
+     * marker saying which of its blocks have already been commented on. Reopening a thread by
+     * clicking blocks would therefore be a hunt: the only way to find out is to click one and
+     * see. So a block that already carries a submitted comment is refused, in a sentence that
+     * names where the comment is - and no second comment is filed on it either.
+     */
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    await startCommenting(page);
+    await frame.getByText("Read this carefully.").click();
+    await writeComment(page, "line 4", HTML_COMMENT);
+    await expect.poll(() => storedThreads(daemon).length).toBe(1);
+
+    // The same block again. Refused, and told where to go.
+    await frame.getByText("Read this carefully.").click();
+    await expect(page.getByText("This block already has a comment. Open the Review queue to read it."))
+      .toBeVisible();
+    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "New comment on line 4" })).toHaveCount(0);
+    await shoot(page.locator(".file-main"), page, "html-existing-comment-refusal");
+    // Refused, not duplicated: pointing twice does not file a second comment on one block.
+    expect(storedThreads(daemon)).toHaveLength(1);
+
+    await page.getByRole("button", { name: "Review queue" }).click();
+    await page
+      .getByRole("region", { name: "Review queue" })
+      .getByRole("button", { name: new RegExp(`^Open comment MC-\\w+ on ${HTML} line 4$`) })
+      .click();
+    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ }))
+      .toContainText(HTML_COMMENT);
   });
 });

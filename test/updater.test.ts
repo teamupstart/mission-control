@@ -99,6 +99,13 @@ test("ineligible installations disable before any release query", async () => {
   }
 });
 
+test("an existing managed install remains eligible during the repository migration", async () => {
+  const f = fixture({ readReceipt: () => ({ ...receipt, repo: "mancej-cyc/ai-harness" }) });
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().phase, "idle");
+  f.controller.stop();
+});
+
 test("a check is deduplicated and offers the newest stable release", async () => {
   let finish!: (value: ReleaseInfo) => void;
   let queries = 0;
@@ -159,7 +166,7 @@ test("release lookup filters before selection and pins every release call to the
   for (const args of calls) {
     assert.deepEqual(args.slice(args.indexOf("--repo"), args.indexOf("--repo") + 2), [
       "--repo",
-      CANONICAL_REPO,
+      "teamupstart/mission-control",
     ]);
   }
 });

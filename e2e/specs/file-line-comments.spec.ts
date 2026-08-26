@@ -137,6 +137,32 @@ async function openTheFile(page: Page): Promise<void> {
 }
 
 /**
+ * Open the file and take the EDITOR, which is where a line-number gutter lives.
+ *
+ * Comment mode used to bring a read-only source column up beside the preview, so a spec about
+ * the draft lifecycle could reach a gutter without ever choosing a view. The panel docks over
+ * the preview now and no editor comes with it, so a spec that means to click a line NUMBER
+ * has to say which surface it is on. The tests that are about the rendered document say so
+ * the other way, by staying in Preview.
+ */
+async function openTheFileInEditor(page: Page): Promise<void> {
+  await openTheFile(page);
+  await takeTheEditor(page, SOURCE);
+}
+
+/**
+ * Switch the pane to the Editor for the file that is already selected.
+ *
+ * Its own helper because selecting a file RESETS the view to that path's default
+ * (`sessionFiles.ts`'s `select`), so a spec that reaches for a gutter has to say so after
+ * every selection rather than once at the top.
+ */
+async function takeTheEditor(page: Page, path: string): Promise<void> {
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
+  await expect(page.getByLabel(`Editor for ${path}`)).toBeVisible();
+}
+
+/**
  * The line-number gutter element for a 1-based source line.
  *
  * CodeMirror renders a hidden spacer as the gutter's first child, so the numbers are matched
@@ -193,7 +219,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
 
     // ---- the control ----
     const commentMode = page.getByRole("button", { name: "Comment mode" });
@@ -201,10 +227,9 @@ test.describe("line comments in the Files editor", () => {
     await expect(commentMode).toHaveAttribute("aria-keyshortcuts", "m");
     await commentMode.click();
     await expect(commentMode).toHaveAttribute("aria-pressed", "true");
-    // A comment names a line, so something with line numbers has to come up - but the
-    // rendered spec the reader was reading STAYS. See the Preview test below, which is where
-    // that rule is stated; here it is simply the surface the rest of this runs on.
-    await expect(page.getByLabel(`Preview of ${SOURCE}`)).toBeVisible();
+    // This spec runs on the EDITOR, which is the surface with line numbers. That a comment can
+    // equally be made without leaving the rendered document is the Preview test below; here
+    // the source is simply what the rest of this clicks on.
     await expect(page.getByLabel(`Editor for ${SOURCE}`))
       .toContainText("The retry budget is thirty seconds.");
 
@@ -275,7 +300,7 @@ test.describe("line comments in the Files editor", () => {
 
     // ---- and it is still there after a reload ----
     await page.reload();
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Editor", exact: true }).click();
     // Comment mode is off again - it is a mode, not a setting - and the marker is there
     // anyway. Markers are the file's record of what was said about it; the mode only decides
@@ -333,11 +358,13 @@ test.describe("line comments in the Files editor", () => {
     await page.getByRole("listbox", { name: "Session files" }).click();
     await page.keyboard.press("m");
     await expect(commentMode).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    // The pane does not change shape when the mode comes on - the panel docks over the
+    // preview when there is one to open, and until then the document is simply the document.
+    // This used to be where a source column appeared and took half of it.
+    await expect(page.getByLabel(`Preview of ${SOURCE}`)).toBeVisible();
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toHaveCount(0);
     await page.keyboard.press("m");
     await expect(commentMode).toHaveAttribute("aria-pressed", "false");
-    // Turning it off puts the pane back the way it was: the preview alone, full width.
-    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeHidden();
     await expect(page.getByLabel(`Preview of ${SOURCE}`)).toBeVisible();
 
     // And it stands down while you are typing, like p and e.
@@ -355,7 +382,7 @@ test.describe("line comments in the Files editor", () => {
   });
 
 
-  test("commenting in Preview keeps the rendered document on screen", async ({
+  test("commenting in Preview keeps the rendered document on screen, whole", async ({
     dashboard: page,
     daemon,
   }) => {
@@ -364,9 +391,11 @@ test.describe("line comments in the Files editor", () => {
      * plan. Comment mode used to answer that by switching them to source - it took the
      * document away to let them point at it.
      *
-     * It does not now. The preview keeps its half of the pane, the source takes the other,
-     * and Preview stays the pressed view throughout: the whole comment is written, submitted
-     * and read back without ever leaving it.
+     * Then it took HALF the document away instead, opening a read-only source column beside
+     * the preview to hold the composer. This is the third and current answer: the panel docks
+     * over the preview, the preview keeps the whole pane, and Preview stays the pressed view
+     * throughout. The whole comment is pointed at, written, submitted and read back on the
+     * rendered document.
      */
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
@@ -384,25 +413,27 @@ test.describe("line comments in the Files editor", () => {
 
     await page.getByRole("button", { name: "Comment mode" }).click();
 
-    // Both halves, at once. This assertion is the requested behaviour in one line.
+    // The requested behaviour in three lines: the document is still there, ALL of it, and no
+    // editor was opened beside it.
     await expect(preview.getByRole("heading", { name: "The spec" })).toBeVisible();
-    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toHaveCount(0);
     await expect(previewButton, "commenting must not switch the view out from under the reader")
       .toHaveAttribute("aria-pressed", "true");
-    await shoot(page.locator(".file-main"), page, "preview-comment-split");
 
-    // The source column is for pointing at lines, not for editing: Preview is the view they
-    // chose, and `e` is one key away if they meant otherwise.
-    await expect(page.locator(".file-content.is-comment-split .cm-content"))
-      .toHaveAttribute("contenteditable", "false");
+    // Pointing happens on the rendered paragraph now, not on a line number in a column.
+    const paragraph = preview.getByText("The retry budget is thirty seconds.");
+    await paragraph.hover();
+    await preview.getByRole("button", { name: "Comment on line 3" }).click();
+    await shoot(page.locator(".file-main"), page, "preview-comment-dock");
 
-    await lineNumber(page, 3).click();
     const box = page.getByRole("textbox", { name: "Comment on line 3" });
+    // Docked over the preview, so it is on screen the moment it opens rather than wherever
+    // line 3 happens to sit in a source column nobody scrolled.
+    await expect(box).toBeVisible();
     await box.fill(COMMENT);
     await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(box).toBeHidden();
 
-    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
-    await expect(marker).toBeVisible();
     await expect(previewButton).toHaveAttribute("aria-pressed", "true");
     await expect(preview.getByRole("heading", { name: "The spec" })).toBeVisible();
 
@@ -412,11 +443,20 @@ test.describe("line comments in the Files editor", () => {
     expect(queued[0]!.start_line).toBe(3);
     expect(queued[0]!.status).toBe("queued");
 
-    // Reading it back is a Preview action too.
-    await marker.click();
-    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ }))
-      .toContainText(COMMENT);
+    /* The Comments rail gives rendered Preview a visible thread index, so pointing at a block
+       already carrying a comment opens that thread directly for follow-up. */
+    await paragraph.hover();
+    await preview.getByRole("button", { name: "Comment on line 3" }).click();
+    const existing = page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
+    await expect(existing).toContainText(COMMENT);
+    await expect(existing.getByPlaceholder("Reply…")).toBeVisible();
     await shoot(page.locator(".file-main"), page, "preview-thread-open");
+
+    // The Editor still keeps its gutter marker - the dock replaced the split column, not the
+    // in-editor surface.
+    await page.getByRole("button", { name: "Editor", exact: true }).click();
+    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+      .toBeVisible();
   });
 
   /**
@@ -439,7 +479,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
@@ -473,7 +513,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
@@ -541,7 +581,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
@@ -626,14 +666,14 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     const files = page.getByRole("listbox", { name: "Session files" });
 
     // ---- the draft that gets edited later ----
     await files.getByRole("option", { name: OTHER }).click();
-    await expect(page.getByLabel(`Editor for ${OTHER}`)).toBeVisible();
+    await takeTheEditor(page, OTHER);
     await lineNumber(page, 3).click();
     await page.getByRole("textbox", { name: "Comment on line 3" }).fill(FIRST_DRAFT);
     await expect
@@ -660,7 +700,7 @@ test.describe("line comments in the Files editor", () => {
     );
 
     await files.getByRole("option", { name: SOURCE }).click();
-    await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    await takeTheEditor(page, SOURCE);
     await lineNumber(page, 3).click();
     await page.getByRole("textbox", { name: "Comment on line 3" }).fill(ECHO);
     // Past the 400ms debounce, so the create is out and unanswered.
@@ -668,6 +708,7 @@ test.describe("line comments in the Files editor", () => {
 
     // ---- and, while it is still in the air, say the same thing in the first one ----
     await files.getByRole("option", { name: OTHER }).click();
+    await takeTheEditor(page, OTHER);
     await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
     const reopened = page.getByRole("textbox", { name: "Comment on line 3" });
     await expect(reopened).toHaveValue(FIRST_DRAFT);
@@ -710,7 +751,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     // ---- frozen while the queue request is out ----
@@ -808,7 +849,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     await lineNumber(page, 3).click();
@@ -860,7 +901,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, HOLLOW), HOLLOW_CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     /*
@@ -905,7 +946,7 @@ test.describe("line comments in the Files editor", () => {
       .getByRole("listbox", { name: "Session files" })
       .getByRole("option", { name: HOLLOW })
       .click();
-    await expect(page.getByLabel(`Editor for ${HOLLOW}`)).toBeVisible();
+    await takeTheEditor(page, HOLLOW);
     await lineNumber(page, 1).click();
     await expect(page.getByText("This file has no text to anchor a comment to.")).toBeVisible();
     expect(storedThreads(daemon), "no unanchorable thread was written").toHaveLength(2);
@@ -931,7 +972,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     // ---- a draft the daemon already holds ----
@@ -998,7 +1039,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     await lineNumber(page, 3).click();
@@ -1013,7 +1054,7 @@ test.describe("line comments in the Files editor", () => {
       .toEqual([COMMENT]);
 
     // And it is still a draft the reader can reopen and finish, not an orphan row.
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toHaveValue(COMMENT);
@@ -1034,7 +1075,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     await lineNumber(page, 3).click();
@@ -1099,7 +1140,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
     await useConsoleLayout(page, daemon);
-    await openTheFile(page);
+    await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
     // ---- a refused settle, with the panel already gone ----
@@ -1141,6 +1182,7 @@ test.describe("line comments in the Files editor", () => {
       .getByRole("listbox", { name: "Session files" })
       .getByRole("option", { name: SOURCE })
       .click();
+    await takeTheEditor(page, SOURCE);
     await page.getByRole("button", { name: /^Comment MC-\w+ on line 3, draft$/ }).click();
     const reopened = page.getByRole("textbox", { name: "Comment on line 3" });
     await expect(reopened).toHaveValue(FIRST_DRAFT);

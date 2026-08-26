@@ -18,6 +18,33 @@ install` is run by everyone and this suite is not - fetching ~150MB of Chromium 
 contributor who only ever runs `npm test` is a tax on the common path. CI installs it as its
 own step for the same reason, and skips it on the Node version that does not run this suite.
 
+## The development dashboard
+
+`dist/` is the default and stays the default: it is what an installed Mission Control serves.
+It is not what `make start` or `make restart` serves, and on one point the two builds
+genuinely differ - React's `StrictMode` double-invokes mount effects in development only. An
+effect whose cleanup disarms something therefore runs that cleanup ON MOUNT there, so a hook
+that never re-arms it is broken for the component's whole life, in the build the people
+developing this app use and in no other.
+
+`e2e/fixtures/dev-dashboard.ts` boots a Vite dev server in front of a spec's isolated daemon
+for the few specs that need to assert that build's behavior:
+
+```ts
+const dev = await startDevDashboard(daemon);
+await page.goto(`${dev.origin}/#/fleet`);
+// … and `dev.stop()` in an `afterEach`, which kills the process group.
+```
+
+It aims the dev server's `/api` and `/events` proxy at the fixture daemon by setting
+`MISSION_PORT`. Without that it would proxy at port 7317 - the operator's own daemon - and
+dispatch test sessions into their real fleet.
+
+Reach for it only when the development build is the subject. `e2e/specs/file-comment-typing.spec.ts`
+is the case that earned it: the file-comment composer was untypable on both surfaces in every
+development build, and no spec here could see it, because a `fill()` never presses a key and
+the production build has no double-invoke. Everything else belongs on `dist/`.
+
 ## Host concurrency
 
 Playwright uses at most four workers, and Mission Control permits one E2E invocation per user on
@@ -265,6 +292,24 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/scout-archive.spec.ts \
   -g 'ordered human prompt context' \
+  --workers=1 --reporter=list
+```
+
+### Scout bounded prompt ledger
+
+`e2e/.artifacts/scout-prompt-cap/` holds two frames of a thirty-line original request: the
+ledger open, capped at eight scrolled lines with the report in view beside it, and the ledger
+collapsed to its heading with the report at the top of the pane. Together they are the whole
+claim - a long request no longer sets the height of this section, and a reader who already
+knows what they asked can fold it away.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/scout-archive.spec.ts \
+  -g 'eight scrollable lines' \
   --workers=1 --reporter=list
 ```
 

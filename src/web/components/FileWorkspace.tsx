@@ -255,21 +255,31 @@ export function FileWorkspace({
    */
   const commentsActive = commentMode && commentable && !comparing;
   /**
-   * The source column Comment mode puts BESIDE a rendered document.
+   * Whether the panel Comment mode opens is docked OVER the rendered document.
    *
-   * Comments anchor to source lines, and that is a property of the model rather than a
-   * limitation of the surface: a thread names a line and a quote, so something with lines
-   * has to be on screen to click. So the preview keeps its half and the source takes the
-   * other, and the reader comments without leaving Preview. It is read-only - Preview is
-   * the view they chose, and `e` is one key away if they meant to edit.
+   * It used to be a read-only source column BESIDE it, taking 48% of the pane, and the
+   * reasoning was sound as far as it went: a comment anchors to source lines and a quote, so
+   * the reader should be able to see the lines their comment names. What that reasoning
+   * missed is that the composer already prints both - the range in its header and the source
+   * slice beside it - so the column was showing a second copy of what the panel was about to
+   * say, and charging half the preview for it.
    *
-   * The rendered half is clickable too, and that is where a comment in Preview actually
-   * starts: hover a paragraph, heading, table, code block or diagram and its own control
-   * appears. What it opens is the composer in THIS column, at the line the block came from -
-   * so the reader sees, in source, exactly what their comment is anchored to.
+   * It also could not survive a real document. The panel is drawn at its anchored line, and
+   * CodeMirror builds DOM only for its rendered viewport; a generated report puts its first
+   * rendered block a couple of hundred lines down, past an inline stylesheet, so the composer
+   * was created outside the viewport, never attached, and its own `focus()` ran against a
+   * detached node. Nothing appeared and nothing said why. Docking the panel over the preview
+   * removes that failure by construction rather than by scrolling a column to chase it.
+   *
+   * A comment in Preview still starts on the RENDERED document - hover a paragraph, heading,
+   * table, code block or diagram and its own control appears - and still resolves to source
+   * lines. Only where the panel lands has changed.
+   *
+   * Not an `<Overlay>` and not a `role="dialog"`, deliberately. See `FileCommentThread.tsx`'s
+   * header: this panel must not cover the app, trap focus, or stand App's global shortcuts
+   * down, because the reader is meant to keep reading the document while writing about it.
    */
-  const commentSourceShowing = commentsActive && !sourceShowing && buffer?.document.text != null;
-  const commentSurfaceShowing = sourceShowing || commentSourceShowing;
+  const commentOverlayShowing = commentsActive && !sourceShowing && buffer?.document.text != null;
   const enterCommentMode = useCallback(() => {
     if (!commentable) return;
     setCommentMode(true);
@@ -500,6 +510,7 @@ export function FileWorkspace({
       : allFileThreads.filter((thread) => thread.status !== "resolved"),
     [allFileThreads, showResolved],
   );
+  const allThreadLines = useMemo(() => threadsByLine(allFileThreads), [allFileThreads]);
   const threadLines = useMemo(() => threadsByLine(fileThreads), [fileThreads]);
   const resolvedCount = allFileThreads.filter((thread) => thread.status === "resolved").length;
   const openThread = allFileThreads.find((thread) => thread.id === openThreadId) ?? null;
@@ -757,18 +768,20 @@ export function FileWorkspace({
   /**
    * What a click on a rendered block does, once its source range is known.
    *
-   * A block the reader has already commented on opens that thread instead of a second
-   * composer, which is what clicking a commented LINE does in the Editor. One rule for both
-   * surfaces: pointing at something you have already said something about takes you to what
-   * you said.
+   * The Comments rail now gives Preview a visible index of every thread, including resolved
+   * ones. A block that already carries a thread therefore opens that thread in the dock so the
+   * reader can reply or reopen it. A draft reopens in the same way. Only an unclaimed block
+   * opens a new composer, so repeated clicks never create duplicate threads.
    */
   const commentOnBlock = useCallback((
     anchor: { startLine: number; endLine: number; quote: string },
     surface: "markdown" | "html",
     revision?: string | null,
   ): void => {
-    if (threadLines.has(anchor.startLine)) {
-      openThreadOnLine(anchor.startLine);
+    const onLine = allThreadLines.get(anchor.startLine) ?? [];
+    const existing = onLine.find((thread) => thread.status === "draft") ?? onLine[0];
+    if (existing) {
+      openIndexedThread(existing);
       return;
     }
     setOpenThreadId(null);
@@ -778,7 +791,7 @@ export function FileWorkspace({
       return;
     }
     setThreadError("That block has no source text to anchor a comment to.");
-  }, [dismissDraftForBlock, openRange, openThreadOnLine, threadLines]);
+  }, [allThreadLines, dismissDraftForBlock, openIndexedThread, openRange]);
 
   /**
    * A block of the rendered Markdown, anchored to the source it was rendered FROM.
@@ -805,13 +818,12 @@ export function FileWorkspace({
   /*
    * One identity for the whole time comment mode is on, held behind a ref.
    *
-   * `commentOnMarkdownBlock` is a new function on every render - it depends on
-   * `commentOnBlock`, which depends on `openThreadOnLine`, which closes over a draft
-   * controller rebuilt every time. Passing it straight through as `blockAnchor` would make
-   * `markdownPropsEqual` report "not equal" on every parent render, and the memo it guards
-   * exists because the remark -> rehype -> highlight pipeline behind it is real work. A
-   * reader sitting in comment mode reading a long spec is precisely the case that memo is
-   * for, so the prop has to be stable while the freshest handler still runs.
+   * `commentOnMarkdownBlock` is rebuilt whenever `previewText` moves, which is every keystroke
+   * an agent makes in the file being read. Passing it straight through as `blockAnchor` would
+   * make `markdownPropsEqual` report "not equal" each time, and the memo it guards exists
+   * because the remark -> rehype -> highlight pipeline behind it is real work. A reader sitting
+   * in comment mode reading a long spec is precisely the case that memo is for, so the prop has
+   * to be stable while the freshest handler still runs.
    *
    * The ref is refreshed during render rather than in an effect, so the very first click
    * after a state change already calls the new closure. `blockClickRef` below does the same
@@ -970,12 +982,14 @@ export function FileWorkspace({
    * The handler reaches its own latest self through a ref, and that is a correctness fix
    * rather than a tidy-up.
    *
-   * `commentOnBlock` is rebuilt whenever `openThreadOnLine` is, and that is rebuilt on EVERY
-   * render, because the draft controller it closes over is a fresh object each time. With the
-   * handler in this effect's dependency list, the listener was therefore torn down and
-   * resubscribed on every render - and any render landing during the resolve request dropped
-   * the answer on the floor. A click that produced neither a composer nor a refusal, at a
-   * rate set by whatever else happened to re-render the workspace in those few milliseconds.
+   * `commentOnBlock` is rebuilt whenever `threadLines` is - which is whenever ANY thread in the
+   * session changes, including the ones this click is about to create. With the handler in this
+   * effect's dependency list, the listener was torn down and resubscribed on each of those, and
+   * any rebuild landing during the resolve request dropped the answer on the floor: a click that
+   * produced neither a composer nor a refusal, at a rate set by whatever else happened to move
+   * the thread model in those few milliseconds. It was worse still when this closed over the
+   * whole draft controller, which is a fresh object every render, but narrowing the dependencies
+   * does not fix it - a resolve is a round trip, and any rebuild inside it is enough.
    *
    * Subscribed on the three facts that really define this listener, then, and called through
    * a ref that is refreshed during render, so it is always the current closure.
@@ -1070,61 +1084,83 @@ export function FileWorkspace({
   }, [showResolved]);
 
   const composer = draft.composer;
+  /**
+   * The open panel itself, built once for BOTH places it can be drawn.
+   *
+   * The Editor hosts it in a block widget under its anchored line; a rendered document docks
+   * it over the preview. Which of those is on screen is a property of the surface and not of
+   * the panel, so there is one panel and two hosts rather than two panels that have to be
+   * kept saying the same thing.
+   */
+  const commentPanel = useMemo((): React.ReactNode => {
+    if (composer) {
+      return (
+        <FileCommentComposer
+          startLine={composer.startLine}
+          endLine={composer.endLine}
+          quote={composer.quote}
+          value={composer.text}
+          busy={composer.busy}
+          error={composer.error}
+          onChange={draft.change}
+          onSubmit={draft.submit}
+          onCancel={draft.cancel}
+        />
+      );
+    }
+    if (openThread) {
+      return (
+        <FileCommentThreadCard
+          thread={openThread}
+          busy={threadBusy}
+          error={threadError}
+          onReply={(body) => reply(openThread.id, body)}
+          onResolve={() => { void setThreadStatus(openThread.id, "resolved"); }}
+          onReopen={() => { void setThreadStatus(openThread.id, "draft"); }}
+          onClose={() => setOpenThreadId(null)}
+        />
+      );
+    }
+    return null;
+  }, [
+    composer,
+    draft.cancel,
+    draft.change,
+    draft.submit,
+    openThread,
+    reply,
+    setThreadStatus,
+    threadBusy,
+    threadError,
+  ]);
+  /**
+   * Gated on `sourceShowing` rather than on "comments are on anywhere".
+   *
+   * A rendered document no longer mounts an editor at all, so markers and the panel line -
+   * both of which only mean something in a gutter - belong to the Editor's surface alone.
+   */
   const editorComments = useMemo((): FileEditorComments | undefined => {
-    if (!commentable || !commentSurfaceShowing) return undefined;
-    const panelLine = composer?.line ?? openThread?.startLine ?? null;
+    if (!commentable || !sourceShowing) return undefined;
     return {
       markers: [...threadLines.entries()].map(([line, threads]) => ({
         line,
         label: markerLabel(line, threads),
         tone: markerTone(threads),
       })),
-      panelLine,
+      panelLine: composer?.line ?? openThread?.startLine ?? null,
       onLineSelect: commentsActive ? commentOnLine : null,
       onMarkerSelect: openThreadOnLine,
-      panel: composer
-        ? (
-          <FileCommentComposer
-            startLine={composer.startLine}
-            endLine={composer.endLine}
-            quote={composer.quote}
-            value={composer.text}
-            busy={composer.busy}
-            error={composer.error}
-            onChange={draft.change}
-            onSubmit={draft.submit}
-            onCancel={draft.cancel}
-          />
-        )
-        : openThread
-        ? (
-          <FileCommentThreadCard
-            thread={openThread}
-            busy={threadBusy}
-            error={threadError}
-            onReply={(body) => reply(openThread.id, body)}
-            onResolve={() => { void setThreadStatus(openThread.id, "resolved"); }}
-            onReopen={() => { void setThreadStatus(openThread.id, "draft"); }}
-            onClose={() => setOpenThreadId(null)}
-          />
-        )
-        : null,
+      panel: commentPanel,
     };
   }, [
     commentOnLine,
+    commentPanel,
     commentable,
     commentsActive,
     composer,
-    draft.cancel,
-    draft.change,
-    draft.submit,
-    commentSurfaceShowing,
     openThread,
     openThreadOnLine,
-    reply,
-    setThreadStatus,
-    threadBusy,
-    threadError,
+    sourceShowing,
     threadLines,
   ]);
 
@@ -1401,7 +1437,7 @@ export function FileWorkspace({
         </header>
 
         <div className={`file-reader-shell${showComments ? " has-comment-rail" : ""}`}>
-          <div className={`file-content${commentSourceShowing ? " is-comment-split" : ""}`}>
+          <div className={`file-content${commentOverlayShowing ? " is-commenting" : ""}`}>
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
           {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
@@ -1438,17 +1474,28 @@ export function FileWorkspace({
           {buffer?.document.kind === "image" && mode === "preview" && !imageSource && (
             <p className="file-empty">Image preview is unavailable.</p>
           )}
-          {buffer?.document.text != null && commentSurfaceShowing && !comparing && (
+          {buffer?.document.text != null && sourceShowing && !comparing && (
             <FileEditor
               path={buffer.document.path}
               value={buffer.text}
-              readOnly={commentSourceShowing || !buffer.document.editable || buffer.saveState === "conflict"}
-              wrap={commentSourceShowing}
+              readOnly={!buffer.document.editable || buffer.saveState === "conflict"}
               comments={editorComments}
               scrollTo={scrollTo}
               onChange={(text) => controller.edit(session.id, buffer.document.path, text)}
               onBlur={() => controller.flush(session.id, buffer.document.path)}
             />
+          )}
+          {/*
+            The panel, docked over the rendered document rather than beside it.
+
+            In flow terms it is out of flow, so the preview keeps the whole pane and reflows
+            for nothing when a comment opens. It is NOT a `role="dialog"` and it is not
+            registered with the overlay registry: the composer inside already names itself a
+            region, and making this a modal would trap focus and stand App's shortcuts down
+            over a reader who is meant to keep reading the document behind it.
+          */}
+          {commentOverlayShowing && commentPanel && (
+            <div className="file-comment-dock">{commentPanel}</div>
           )}
           {buffer?.conflict && comparing && (
             <div className="file-compare">

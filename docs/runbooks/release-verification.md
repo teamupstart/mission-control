@@ -35,7 +35,7 @@ Node on the login shell `PATH`.
 Confirm the gate before starting anything else:
 
 ```sh
-gh release list --repo mancej-cyc/ai-harness --exclude-drafts --exclude-pre-releases
+gh release list --repo teamupstart/mission-control --exclude-drafts --exclude-pre-releases
 ```
 
 Empty output means the phase cannot begin. A stable release is created by merging the standing
@@ -64,7 +64,7 @@ state directory, port, and Electron user-data directory:
 ```sh
 SB=~/phase4-sandbox
 mkdir -p "$SB/state"
-git clone git@github.com:mancej-cyc/ai-harness.git "$SB/checkout"
+git clone git@github.com:teamupstart/mission-control.git "$SB/checkout"
 cd "$SB/checkout"
 MISSION_HOME="$SB/state" make install
 ```

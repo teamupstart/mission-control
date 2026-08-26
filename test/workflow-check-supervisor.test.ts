@@ -71,15 +71,25 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** Wait for a newly spawned process to become observable through the platform identity seam. */
+async function waitForStartIdentity(pid: number): Promise<string | null> {
+  for (let i = 0; i < 100; i += 1) {
+    const identity = processStartIdentity(pid);
+    if (identity !== null) return identity;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return null;
+}
+
 /** A long-lived detached group we control, for the cases that must NOT be signalled. */
-function bystander(): { pid: number; identity: string } {
+async function bystander(): Promise<{ pid: number; identity: string }> {
   const child = spawn(NODE, ["-e", "setInterval(() => {}, 1000)"], {
     detached: true,
     stdio: "ignore",
   });
   const pid = child.pid!;
   raw.push(pid);
-  const identity = processStartIdentity(pid);
+  const identity = await waitForStartIdentity(pid);
   assert.notEqual(identity, null, "this platform must be able to read its own start identities");
   return { pid, identity: identity! };
 }
@@ -370,7 +380,7 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
 // ---- identity is what licenses a signal ------------------------------------
 
 test("a mismatched start identity is NEVER signalled", async () => {
-  const { pid, identity } = bystander();
+  const { pid, identity } = await bystander();
   // A live pid recorded with a deliberately wrong identity: exactly the shape of a durable row
   // whose supervisor died and whose pid the operating system handed to somebody else.
   const verdict = await terminateCheckGroup(pid, `${identity}-not-the-same-process`, {
@@ -383,7 +393,7 @@ test("a mismatched start identity is NEVER signalled", async () => {
 });
 
 test("each half of the composite identity is load-bearing on its own", async () => {
-  const { pid, identity } = bystander();
+  const { pid, identity } = await bystander();
   // Split only in the test, and only to prove the composite is doing work. Everything in
   // production treats this string as opaque.
   const halves = identity.split(String.fromCharCode(0x1f));
@@ -419,7 +429,7 @@ test("a sentinel pid is never signalled, whatever it would have named", async ()
 });
 
 test("a group still answering at the bound is not reported empty", async () => {
-  const { pid, identity } = bystander();
+  const { pid, identity } = await bystander();
   // Zero budgets: the ladder runs but every probe gives up immediately, which is the only
   // deterministic way to reach the "we asked and it was still there" branch.
   const verdict = await terminateCheckGroup(pid, identity, { graceMs: 0, confirmMs: 0, pollMs: 1 });
@@ -430,7 +440,7 @@ test("a group still answering at the bound is not reported empty", async () => {
 // ---- the recovery seam -----------------------------------------------------
 
 test("recovery proves a live group dead, and reports the tri-state honestly", async () => {
-  const { pid, identity } = bystander();
+  const { pid, identity } = await bystander();
   const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }), {
     graceMs: 200,
     confirmMs: 2_000,
@@ -453,7 +463,7 @@ test("recovery of a row that recorded nothing is `empty` - nothing ever ran", as
 });
 
 test("recovery of a recycled pid is `unknown`, and signals nothing", async () => {
-  const { pid, identity } = bystander();
+  const { pid, identity } = await bystander();
   const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: `${identity}-stale` }), {
     graceMs: 20,
     confirmMs: 20,
@@ -616,12 +626,24 @@ function daemonFixture(dir: string): string {
       `import { spawn } from "node:child_process";`,
       `import { watchCheckGroup } from ${JSON.stringify(join(repo, "src/server/workflows/check-group.ts"))};`,
       `import { processStartIdentity } from ${JSON.stringify(join(repo, "src/server/workflows/check-identity.ts"))};`,
+      `async function waitForStartIdentity(pid: number): Promise<string | null> {`,
+      `  for (let i = 0; i < 100; i += 1) {`,
+      `    const identity = processStartIdentity(pid);`,
+      `    if (identity !== null) return identity;`,
+      `    await new Promise((resolve) => setTimeout(resolve, 5));`,
+      `  }`,
+      `  return null;`,
+      `}`,
+      `void (async () => {`,
       `const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });`,
-      `watchCheckGroup(victim.pid!, processStartIdentity(victim.pid!)!);`,
+      `const victimIdentity = await waitForStartIdentity(victim.pid!);`,
+      `if (victimIdentity === null) throw new Error("victim process identity remained unreadable");`,
+      `watchCheckGroup(victim.pid!, victimIdentity);`,
       // Exactly `index.ts`: SIGINT/SIGTERM -> shutdown() -> process.exit(0).
       `if (process.argv[2] === "handled") process.on("SIGTERM", () => process.exit(0));`,
       `console.log("VICTIM=" + victim.pid);`,
       `setInterval(() => {}, 1000);`,
+      `})();`,
     ].join("\n"),
   );
   return path;
@@ -744,7 +766,7 @@ test("a surviving descendant whose LEADER is gone is never signalled", async () 
   const pid = leader.pid!;
   raw.push(pid);
   // Captured while the leader is alive - the only moment it can be read.
-  const identity = processStartIdentity(pid)!;
+  const identity = await waitForStartIdentity(pid);
   assert.notEqual(identity, null);
   await new Promise<void>((r) => leader.once("exit", () => r()));
   for (let i = 0; i < 60 && processStartIdentity(pid) !== null; i += 1) {
@@ -757,7 +779,7 @@ test("a surviving descendant whose LEADER is gone is never signalled", async () 
   // lease rather than returning a tree something is still writing into, and it self-heals when
   // the descendant exits.
   assert.equal(
-    await terminateCheckGroup(pid, identity, { graceMs: 20, confirmMs: 20, pollMs: 10 }),
+    await terminateCheckGroup(pid, identity!, { graceMs: 20, confirmMs: 20, pollMs: 10 }),
     "unknown",
   );
   assert.equal(checkGroupAnswers(pid), true, "and nothing was signalled");

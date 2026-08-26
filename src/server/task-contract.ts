@@ -141,7 +141,12 @@ export function withTaskKindContract(
       workflowContinuation: false,
     }),
     KIND_CONTRACT[task.kind](task, inputs),
-    task.kind === "ship" && inputs.workflowEvidence ? workflowEvidenceContractAppendix() : null,
+    // Whether a Persona will read evidence is the workflow's property, resolved once by the
+    // eligibility reader this flag arrives from - so it is not re-decided per kind here. A
+    // scout dispatched with a Persona workflow gets its report contract AND this one, in that
+    // order: handing over the report is what its kind means, and registering proof is what
+    // the workflow waiting behind it needs.
+    inputs.workflowEvidence ? workflowEvidenceContractAppendix() : null,
   ].filter((value): value is string => value !== null);
   return `${composedIntent}\n\n${appendices.join("\n\n")}`;
 }

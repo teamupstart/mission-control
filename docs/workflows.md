@@ -671,9 +671,10 @@ context, but its 45-second attempt cannot replace the raw evidence. An unparsabl
 one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
 deterministic visible fallback.
 
-A workflow-bound ship task whose published graph contains a Persona receives an evidence-readiness
-contract before completion. Through `submit_workflow_evidence`, the agent can register three native
-channels. `images` and `artifacts` name an issued repository slot, a checkout-relative gitignored
+A workflow-bound task whose published graph contains a Persona receives an evidence-readiness
+contract before completion, whatever its kind - a scout dispatched with such a workflow receives
+it alongside its report contract. Through `submit_workflow_evidence`, the agent can register three
+native channels. `images` and `artifacts` name an issued repository slot, a checkout-relative gitignored
 file, a stable client item id, and a required caption. Images remain bounded PNG, JPEG, static GIF,
 or WebP files. Path-backed text artifacts are bounded, valid UTF-8 files intended for focused test
 output or logs. `commandOutputs` instead carries one completed focused command, its exit code, and
@@ -681,8 +682,14 @@ its exact output directly through the existing evidence tool, so normalized tran
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
 
-The daemon resolves repository scope from the task. It rejects file paths outside the issued
-checkout, symlinks, non-files, unsupported images, and path-backed evidence that is not gitignored.
+Registration itself is authorized by the conversation's own active Persona binding rather than by
+the task's dispatch-time selection, so a workflow an operator attaches to a session that is already
+running accepts evidence exactly as a selected one does.
+
+The daemon resolves repository scope from the task, falling back to the session's own checkout as
+the single slot when the bound conversation has no live task. It rejects file paths outside the
+issued checkout, symlinks, non-files, unsupported images, and path-backed evidence that is not
+gitignored.
 Direct command output is rendered into one canonical UTF-8 artifact, digest-bound at registration,
 and retained in the staging row until immutable submission capture. Browser submission continues
 to accept images through an opaque upload id; it never accepts the absolute upload path returned

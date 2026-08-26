@@ -3,36 +3,107 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const repo = join(import.meta.dirname, "..");
 const script = join(repo, "scripts", "init.mjs");
 
-test("local and CI concurrency are explicit for their runner capacity", () => {
+test("CI directly uses available frontend runners at their bounded capacities", async () => {
   const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
   };
   const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
-  const e2eConfig = readFileSync(join(repo, "e2e", "playwright.config.ts"), "utf8");
-  const testCommand = pkg.scripts.test;
+  const testCommand = pkg.scripts.test ?? "";
+  const jobs = Object.fromEntries(
+    [
+      ...workflow.matchAll(
+        /^([ \t]*)(gates|unit|e2e):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
+      ),
+    ].map(([, , job, body]) => [job, body]),
+  );
+  const capture = (source: string | undefined, pattern: RegExp) =>
+    source?.match(pattern)?.[1] ?? null;
+  const jobValue = (job: string, key: string) =>
+    capture(
+      jobs[job],
+      new RegExp(`^[ \\t]+${key}:[ \\t]*(.+?)[ \\t]*$`, "m"),
+    );
+  const runner = (job: string) => ({
+    scalar: jobValue(job, "runs-on"),
+    group: capture(jobs[job], /^[ \t]+group:[ \t]*(.+?)[ \t]*$/m),
+    label: capture(jobs[job], /^[ \t]+labels:[ \t]*(.+?)[ \t]*$/m),
+  });
+  const shards = capture(jobs.e2e, /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m)
+    ?.split(",")
+    .map((value) => Number(value.trim()));
+  const e2eConfigUrl = pathToFileURL(join(repo, "e2e", "playwright.config.ts")).href;
+  const previousCi = process.env.CI;
+  const previousWorkers = process.env.MISSION_E2E_WORKERS;
+  const loadWorkers = async (ci: boolean) => {
+    if (ci) process.env.CI = "true";
+    else delete process.env.CI;
+    delete process.env.MISSION_E2E_WORKERS;
 
-  assert.ok(testCommand);
-  assert.match(testCommand, /--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-6\}/);
-  assert.match(workflow, /^\s+MISSION_TEST_CONCURRENCY: '2'$/m);
-  assert.match(e2eConfig, /^  workers: process\.env\.CI \? 2 : 4,$/m);
-});
+    const config = (await import(
+      `${e2eConfigUrl}?capacity-contract=${ci}`
+    )).default as { workers?: number };
+    return config.workers ?? null;
+  };
 
-test("CI uses repository-accessible standard Linux runners", () => {
-  const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
-  const runnerLabels = [
-    ...workflow.matchAll(/^  (gates|unit|e2e):\n    name:.*\n    runs-on: (.+)$/gm),
-  ].map(([, job, runner]) => [job, runner]);
+  let playwrightWorkers: { ci: number | null; local: number | null };
+  try {
+    playwrightWorkers = {
+      ci: await loadWorkers(true),
+      local: await loadWorkers(false),
+    };
+  } finally {
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousWorkers === undefined) delete process.env.MISSION_E2E_WORKERS;
+    else process.env.MISSION_E2E_WORKERS = previousWorkers;
+  }
 
-  assert.doesNotMatch(workflow, /blacksmith/i);
-  assert.deepEqual(runnerLabels, [
-    ["gates", "ubuntu-latest"],
-    ["unit", "ubuntu-latest"],
-    ["e2e", "ubuntu-latest"],
-  ]);
+  assert.deepEqual(
+    {
+      runners: {
+        gates: runner("gates"),
+        unit: runner("unit"),
+        e2e: runner("e2e"),
+      },
+      hasBlacksmithLabel: /blacksmith/i.test(workflow),
+      hasRunnerVariable: /MISSION_CONTROL_CI_RUNNER/.test(workflow),
+      unitWorkers: jobValue("unit", "MISSION_TEST_CONCURRENCY"),
+      e2eWorkerVariable: jobValue("e2e", "MISSION_E2E_WORKERS"),
+      shards,
+      localUnitWorkers:
+        testCommand.match(
+          /--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-(\d+)\}/,
+        )?.[1] ?? null,
+      playwrightWorkers,
+    },
+    {
+      runners: {
+        gates: { scalar: "ubuntu-latest", group: null, label: null },
+        unit: {
+          scalar: null,
+          group: "frontend-platform",
+          label: "ubuntu-8cpu-32ram-300ssd",
+        },
+        e2e: {
+          scalar: null,
+          group: "frontend-platform",
+          label: "ubuntu-4cpu-32ram-150ssd",
+        },
+      },
+      hasBlacksmithLabel: false,
+      hasRunnerVariable: false,
+      unitWorkers: "'8'",
+      e2eWorkerVariable: null,
+      shards: [1, 2, 3, 4, 5],
+      localUnitWorkers: "6",
+      playwrightWorkers: { ci: 4, local: 4 },
+    },
+  );
 });
 
 test("init dry-run has no external worktree installer or configuration step", () => {

@@ -93,33 +93,33 @@ at once, so naming a single file makes it inert, and carrying it here implied a 
 run reproduces the suite's concurrency when it cannot.
 
 `npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
-and CI explicitly pins it to 2 to match the standard private-repository runner's two CPUs.
-CI therefore does not inherit future changes to the faster local fallback. A failure that
-only appears under that contention needs the whole suite, not one file:
+and CI explicitly pins it to 8 on the selected frontend 8-core runner. CI therefore does
+not inherit future changes to the local fallback. A failure that only appears under that
+CI contention needs the whole suite, not one file:
 
 ```sh
-MISSION_TEST_CONCURRENCY=2 npm test
+MISSION_TEST_CONCURRENCY=8 npm test
 ```
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI runs three jobs in parallel, reporting as five checks on GitHub-hosted `ubuntu-latest`:
-`gates` (typecheck and lint), `unit (node 24)` and `unit (node 26)` (tests, build, and bundle
-smoke), and `e2e (shard 1/2)` and `e2e (shard 2/2)` (the `e2e/` Playwright suite, on Node.js
-24 only). Lint is now a CI job rather than a local-only check, so a lint failure now turns CI
-red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
-block. `.github/workflows/ci.yml` documents the runner and worker policy.
+CI defines three jobs and reports eight checks. `gates` (typecheck and lint) uses GitHub-hosted
+`ubuntu-latest`; `unit (node 24)` and `unit (node 26)` (tests, build, and bundle smoke) use the
+`frontend-platform` 8-core runner with eight workers; and five `e2e` shards (the Playwright
+suite, on Node.js 24 only) use the same group's 4-core runner with four workers each. Lint is
+now a CI job rather than a local-only check, so a lint failure now turns CI red - `main`
+carries no branch protection, so that is a signal to act on and not a mechanical block.
+`.github/workflows/ci.yml` documents the runner and worker policy.
 
 ## Working rules
 
 1. Inspect `git status` before editing. Preserve unrelated changes.
 2. Follow existing module ownership and registry patterns. Do not create parallel sources of truth.
-3. Update README documentation in the same change when behavior, configuration, commands, or shortcuts change.
-4. Add focused tests for behavior changes and regressions.
-5. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
-6. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
-7. Commit only task-related files on a feature branch.
-8. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
+3. Add focused tests for behavior changes and regressions.
+4. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
+5. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
+6. Commit only task-related files on a feature branch.
+7. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
 
 When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor that pull request and its CI until green - per pull request, so a session holding one in each of several repositories follows through on each.
 

@@ -200,6 +200,26 @@ test("an exact block quote recovers a compact HTML block after its structural pa
   assert.deepEqual(target, { ok: true, blockPath: [{ index: 1, tag: "p" }] });
 });
 
+test("an exact block quote recovers after the element moves beyond its old line range", () => {
+  const source = [
+    "<html>",
+    "<body>",
+    "<aside>New.</aside>",
+    "<p>Read <strong>this</strong> carefully.</p>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+  const target = resolveHtmlBlockPath(
+    source,
+    1,
+    1,
+    "<html><body><p>Read <strong>this</strong> carefully.</p></body></html>",
+    [{ index: 0, tag: "p" }],
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+  assert.deepEqual(target, { ok: true, blockPath: [{ index: 1, tag: "p" }] });
+});
+
 test("a block spanning several lines quotes all of them", () => {
   const source = [
     "<body>",

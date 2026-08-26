@@ -197,11 +197,17 @@ export function resolveHtmlBlockPath(
 
   if (preferredPath && blockQuote) {
     const preferred = elementAtPath(body, preferredPath);
-    if (preferred && coversRange(preferred) && exactSourceMatches(preferred, blockQuote)) {
+    if (preferred && exactSourceMatches(preferred, blockQuote)) {
       return { ok: true, blockPath: [...preferredPath] };
     }
   }
 
+  let exactBlock: {
+    path: HtmlBlockPathStep[];
+    distance: number;
+    span: number;
+    depth: number;
+  } | null = null;
   let best: {
     path: HtmlBlockPathStep[];
     span: number;
@@ -211,11 +217,28 @@ export function resolveHtmlBlockPath(
 
   const visit = (node: ParsedElement, path: HtmlBlockPathStep[]): void => {
     const location = node.sourceCodeLocation;
+    if (path.length > 0 && location && blockQuote && exactSourceMatches(node, blockQuote)) {
+      const distance = location.endLine < startLine
+        ? startLine - location.endLine
+        : location.startLine > endLine
+          ? location.startLine - endLine
+          : 0;
+      const span = location.endLine - location.startLine;
+      if (
+        !exactBlock
+        || distance < exactBlock.distance
+        || (
+          distance === exactBlock.distance
+          && (span < exactBlock.span || (span === exactBlock.span && path.length > exactBlock.depth))
+        )
+      ) {
+        exactBlock = { path, distance, span, depth: path.length };
+      }
+    }
     if (
       path.length > 0
       && location
-      && location.startLine <= startLine
-      && location.endLine >= endLine
+      && coversRange(node)
     ) {
       const span = location.endLine - location.startLine;
       const quoteMatch = quote !== undefined
@@ -245,5 +268,12 @@ export function resolveHtmlBlockPath(
     depth: number;
     matchQuality: number;
   } | null;
+  const recovered = exactBlock as {
+    path: HtmlBlockPathStep[];
+    distance: number;
+    span: number;
+    depth: number;
+  } | null;
+  if (recovered) return { ok: true, blockPath: recovered.path };
   return found ? { ok: true, blockPath: found.path } : { ok: false, reason: STALE };
 }

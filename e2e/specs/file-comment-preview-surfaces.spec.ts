@@ -488,6 +488,48 @@ test.describe("commenting on a rendered document", () => {
     await shoot(page.locator(".file-content"), page, "moved-html-thread-open");
   });
 
+  test("the comments rail follows compact HTML after earlier lines are inserted", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const paragraph = frame.locator("p").filter({ hasText: "Read this carefully." });
+    await paragraph.click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    write(
+      cwd,
+      HTML_COMPACT,
+      [
+        "<html>",
+        "<body>",
+        "<aside>New context.</aside>",
+        "<p>Read <strong>this</strong> carefully.</p>",
+        "<p>Sibling.</p>",
+        "</body>",
+        "</html>",
+      ].join("\n"),
+    );
+    await page.reload();
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_COMPACT}` });
+    await rail.getByRole("button", { name: new RegExp(COMPACT_HISTORY_COMMENT) }).click();
+    await expect(paragraph).toHaveClass(/mission-comment-target/);
+    await shoot(page.locator(".file-main"), page, "moved-compact-html-history-target");
+  });
+
   test("the comments rail lists resolved threads and jumps Preview and Editor to them", async ({
     dashboard: page,
     daemon,

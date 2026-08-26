@@ -12,12 +12,12 @@ name: CI
 #
 # ## Runner policy
 #
-# `gates` always uses the standard GitHub-hosted `ubuntu-latest` runner. The CPU-heavy `unit`
-# and `e2e` jobs default there too, so normal CI requires no larger-runner access. Setting the
-# `MISSION_CONTROL_CI_RUNNER` repository variable to exactly `ubuntu-8core` activates the
-# generic larger-runner label only after its runner-group grant is in place. The label is
-# managed in `teamupstart/Github_Org_Settings_TF`; an unset or mistyped value fails safe to
-# `ubuntu-latest` and the matching two-worker limits.
+# `gates` uses the standard GitHub-hosted `ubuntu-latest` runner. CPU-heavy jobs use the
+# shared `frontend-platform` group granted to this repository in
+# `teamupstart/Github_Org_Settings_TF#131`: unit runs on its 8-core label with eight test
+# workers, while each E2E shard runs on its reliability-tested 4-core label with four
+# Playwright workers. Keep group and labels explicit so CI cannot silently move between
+# unrelated runner pools.
 #
 # The release-only package job stays pinned to `macos-14` because changing that image changes
 # the operating system used to build the shipped dmg.
@@ -82,7 +82,9 @@ jobs:
   # costs a 5s build plus a 1s boot per leg, which is the cheapest coverage in this file.
   unit:
     name: unit (node ${{ matrix.node-version }})
-    runs-on: ${{ vars.MISSION_CONTROL_CI_RUNNER == 'ubuntu-8core' && 'ubuntu-8core' || 'ubuntu-latest' }}
+    runs-on:
+      group: frontend-platform
+      labels: ubuntu-8cpu-32ram-300ssd
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -90,8 +92,8 @@ jobs:
         node-version: ['24', '26']
 
     env:
-      # Scale only with the exact larger-runner opt-in; the default remains safe for two CPUs.
-      MISSION_TEST_CONCURRENCY: ${{ vars.MISSION_CONTROL_CI_RUNNER == 'ubuntu-8core' && '8' || '2' }}
+      # Match the selected runner's eight CPUs without changing the six-worker local default.
+      MISSION_TEST_CONCURRENCY: '8'
 
     steps:
       - name: Checkout
@@ -167,8 +169,8 @@ jobs:
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Keep two shards so each runner handles half the browser suite. The Playwright config
-  # separately consumes the safe two-or-eight worker decision made by this job.
+  # Five shards keep the 610-test browser suite below the measured two-shard bottleneck.
+  # Each shard uses four Playwright workers to match its 4-core runner.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -177,7 +179,9 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ${{ vars.MISSION_CONTROL_CI_RUNNER == 'ubuntu-8core' && 'ubuntu-8core' || 'ubuntu-latest' }}
+    runs-on:
+      group: frontend-platform
+      labels: ubuntu-4cpu-32ram-150ssd
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -187,11 +191,7 @@ jobs:
         # `--shard=X/N` partitions purely by the N it is handed and never checks it against
         # how many jobs actually ran. Hardcoding the denominator would mean editing this
         # list alone silently runs a fraction of the suite and still reports green.
-        shard: [1, 2]
-
-    env:
-      # Keep worker capacity coupled to the same exact larger-runner opt-in as `runs-on`.
-      MISSION_E2E_WORKERS: ${{ vars.MISSION_CONTROL_CI_RUNNER == 'ubuntu-8core' && '8' || '2' }}
+        shard: [1, 2, 3, 4, 5]
 
     steps:
       - name: Checkout

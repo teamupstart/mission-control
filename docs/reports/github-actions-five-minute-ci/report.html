@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -142,22 +142,22 @@
 <main>
   <header>
     <div class="eyebrow">GitHub Actions performance investigation</div>
-    <h1>Mission Control CI has a safe five-minute experiment, pending runner access</h1>
+    <h1>Mission Control CI has direct access to the right-sized frontend runners</h1>
     <p class="lede">The repository transfer removed the effective path to its fast runner. The accessible fallback is not queue-bound: it starts jobs in two to three seconds, then spends up to 24 minutes executing them.</p>
-    <div class="finding"><strong>Finding.</strong> The measured bottleneck is CPU capacity, not GitHub queue delay. The prepared first iteration keeps all five checks and both Node versions, but no longer requires an inaccessible runner: the four heavy jobs remain on <code>ubuntu-latest</code> with two workers until one repository variable opts into <code>ubuntu-8core</code> and eight workers after access is granted. The five-minute result is not yet proven because that grant has not been made and no live 8-core workflow has run.</div>
-    <div class="status">Prepared locally - no PR, Slack message, or runner grant created</div>
+    <div class="finding"><strong>Finding.</strong> The measured bottleneck is CPU capacity, not GitHub queue delay. <a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/131">Github_Org_Settings_TF PR #131</a> granted Mission Control access to the shared <code>frontend-platform</code> group. The prepared workflow now assigns the unit matrix directly to its 8-core runner and five E2E shards directly to its 4-core runner. No repository variable or fallback selector remains. The five-minute result is not yet proven because this exact allocation has not completed a live workflow.</div>
+    <div class="status">Runner access merged - direct workflow allocation prepared</div>
     <div class="grid">
       <div class="metric"><strong>24m 11s</strong><span>Latest green standard-runner workflow, queue-aware</span></div>
       <div class="metric"><strong>7m 12s</strong><span>Last green 4-vCPU Blacksmith workflow</span></div>
       <div class="metric"><strong>2-3s</strong><span>Standard-runner job pickup delay</span></div>
-      <div class="metric"><strong>8 cores</strong><span>Recommended first live experiment</span></div>
+      <div class="metric"><strong>5 shards</strong><span>Prepared 4-core E2E allocation</span></div>
     </div>
     <nav class="toc" aria-label="Report sections">
       <a href="#evidence">Measured evidence</a>
       <a href="#cause">Root cause</a>
       <a href="#options">Runner options</a>
       <a href="#change">Prepared change</a>
-      <a href="#coordination">Unsent coordination</a>
+      <a href="#coordination">Access grant</a>
       <a href="#limits">Limits and next iteration</a>
     </nav>
   </header>
@@ -211,8 +211,9 @@
       <li>The repository previously used Blacksmith's 4-vCPU label for the four heavy jobs.</li>
       <li><a href="https://github.com/teamupstart/mission-control/pull/789">PR #789</a> replaced Blacksmith with Frontend Platform's <code>ubuntu-4cpu-32ram-150ssd</code> runner. The standard <code>gates</code> job finished, but all four larger-runner jobs remained unassigned for 1h 23m 44s before cancellation. GitHub returned empty runner names and groups. This is direct evidence that <code>teamupstart/mission-control</code> was not on that runner group's selected-repository list.</li>
       <li><a href="https://github.com/teamupstart/mission-control/pull/790">PR #790</a> restored all Linux jobs to repository-accessible <code>ubuntu-latest</code> and reduced CI workers to two. CI could run again, but the next green workflow took 24m 11s.</li>
+      <li><a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/131">Github_Org_Settings_TF PR #131</a> then added Mission Control repository ID <code>1296871890</code> to the selected repositories for <code>frontend-platform</code>, granting access to both required runner sizes.</li>
     </ol>
-    <div class="callout warn"><strong>Verified root-cause theory, 98% confidence.</strong> The transfer exposed a runner-group authorization gap. The current performance regression is the resulting 2-CPU fallback. This is supported by the Git history, assigned runner labels, empty runner identity on the stuck 4-core jobs, and immediate pickup on standard runners.</div>
+    <div class="callout good"><strong>Access gap resolved.</strong> The transfer exposed a runner-group authorization gap, and the 2-CPU fallback caused the measured performance regression. The merged Terraform change resolves that authorization prerequisite. Live CI still needs to prove assignment and elapsed time for the direct configuration.</div>
   </section>
 
   <section id="options">
@@ -222,9 +223,9 @@
         <thead><tr><th>Option</th><th>Access</th><th>Evidence</th><th>Disposition</th></tr></thead>
         <tbody>
           <tr><td><code>ubuntu-latest</code>, 2 CPU</td><td>Available now</td><td>24m 11s green run; 2-3s pickup</td><td>Cannot meet the goal without aggressive test sharding.</td></tr>
-          <tr><td><code>ubuntu-4cpu-32ram-150ssd</code></td><td>Frontend Platform grant required</td><td>A comparable 4-vCPU run took 7m 12s. The exact Upstart runner did not execute.</td><td>Insufficient margin and wrong ownership boundary for a CPU-only need.</td></tr>
-          <tr><td><code>ubuntu-8core</code></td><td>Generic 8-core grant required</td><td>Live Terraform, 50-runner maximum, no static IP. <a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/122">PR #122</a> is a recent speed-only precedent.</td><td><strong>Recommended first experiment.</strong></td></tr>
-          <tr><td><code>ubuntu-8cpu-32ram-300ssd</code></td><td>Frontend Platform grant required</td><td>Same core count, plus a fixed public IP that this workflow does not need.</td><td>Use only if Delivery prefers that existing group.</td></tr>
+          <tr><td><code>ubuntu-4cpu-32ram-150ssd</code></td><td>Granted through <code>frontend-platform</code></td><td>The 4-vCPU shape is the reliability-tested E2E baseline. Five shards provide latency headroom without oversubscribing a runner.</td><td><strong>Selected for E2E.</strong></td></tr>
+          <tr><td><code>ubuntu-8core</code></td><td>Not granted</td><td>The separate generic group was considered, but PR #131 deliberately leaves Mission Control out of it.</td><td>Rejected in favor of the application-aligned frontend group.</td></tr>
+          <tr><td><code>ubuntu-8cpu-32ram-300ssd</code></td><td>Granted through <code>frontend-platform</code></td><td>An earlier controlled benchmark measured the 8-core unit configuration at 75 seconds.</td><td><strong>Selected for the unit matrix.</strong></td></tr>
           <tr><td><code>ubuntu-16core</code> or <code>ubuntu-32core</code></td><td>Separate selected groups</td><td>Live Terraform. Prior 16-worker E2E benchmark failed.</td><td>Keep as later escalation, not iteration 1.</td></tr>
           <tr><td>8-core ARM64</td><td>Separate selected group</td><td>Prior repository benchmark measured 2-2.5x slower per core.</td><td>Reject for this workload.</td></tr>
         </tbody>
@@ -235,104 +236,68 @@
 
   <section id="change">
     <h2>Prepared repository change</h2>
-    <p>The local working tree now expresses iteration 1 as a safe opt-in. It does not alter test coverage or local concurrency, and its default needs no larger-runner access.</p>
+    <p>The workflow directly names the granted runner group and the right-sized label for each heavy job. It preserves the Node matrix and test coverage, increases E2E sharding for the current 610-test suite, and does not change local concurrency.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Contract</th><th>Before</th><th>Prepared</th></tr></thead>
         <tbody>
           <tr><td>gates runner</td><td><code>ubuntu-latest</code></td><td><code>ubuntu-latest</code></td></tr>
-          <tr><td>unit runner</td><td><code>ubuntu-latest</code></td><td><code>ubuntu-latest</code> by default; <code>ubuntu-8core</code> only on exact opt-in</td></tr>
-          <tr><td>e2e runner</td><td><code>ubuntu-latest</code></td><td><code>ubuntu-latest</code> by default; <code>ubuntu-8core</code> only on exact opt-in</td></tr>
-          <tr><td>unit CI workers</td><td>2</td><td>2 by default; 8 only on exact opt-in</td></tr>
-          <tr><td>Playwright CI workers</td><td>2</td><td>2 by default; 8 only on exact opt-in</td></tr>
+          <tr><td>unit runner</td><td><code>ubuntu-latest</code></td><td><code>frontend-platform</code> / <code>ubuntu-8cpu-32ram-300ssd</code></td></tr>
+          <tr><td>e2e runner</td><td><code>ubuntu-latest</code></td><td><code>frontend-platform</code> / <code>ubuntu-4cpu-32ram-150ssd</code></td></tr>
+          <tr><td>unit CI workers</td><td>2</td><td>8</td></tr>
+          <tr><td>Playwright CI workers</td><td>2</td><td>4 per shard</td></tr>
           <tr><td>local unit / Playwright</td><td>6 / 4</td><td>6 / 4</td></tr>
-          <tr><td>Node matrix / E2E shards</td><td>24 + 26 / 2</td><td>24 + 26 / 2</td></tr>
+          <tr><td>Node matrix / E2E shards</td><td>24 + 26 / 2</td><td>24 + 26 / 5</td></tr>
         </tbody>
       </table>
     </div>
-    <p>Machine-consumed coverage is in <a href="../../../test/init-script.test.ts"><code>test/init-script.test.ts</code></a>. Runner and worker policy is in <a href="../../../.github/workflows/ci.yml"><code>.github/workflows/ci.yml</code></a> and <a href="../../../e2e/playwright.config.ts"><code>e2e/playwright.config.ts</code></a>. The activation prerequisite and rollback are documented in <a href="../../../README.md#keep-ci-runnable-while-enabling-larger-runners"><code>README.md</code></a>, with contributor detail in <a href="../../../AGENTS.md"><code>AGENTS.md</code></a>.</p>
-    <div class="callout good"><strong>Safe activation order.</strong> Apply the runner-group grant first, then set the repository Actions variable <code>MISSION_CONTROL_CI_RUNNER</code> to exactly <code>ubuntu-8core</code>. Until then, and for every other value, the workflow remains runnable on <code>ubuntu-latest</code> with two workers. Removing the variable rolls back the experiment.</div>
-    <div class="callout good"><strong>Local verification completed.</strong> The focused contract failed first against the hard-required 8-core configuration, then passed all 3 tests after the safe opt-in change. <code>npm run typecheck</code> and <code>npm run lint</code> passed. Live performance remains the next acceptance gate.</div>
+    <p>Machine-consumed coverage is in <a href="../../../test/init-script.test.ts"><code>test/init-script.test.ts</code></a>. Runner and worker policy is in <a href="../../../.github/workflows/ci.yml"><code>.github/workflows/ci.yml</code></a> and <a href="../../../e2e/playwright.config.ts"><code>e2e/playwright.config.ts</code></a>. The allocation is documented in <a href="../../../README.md#ci-runner-allocation"><code>README.md</code></a>, with contributor detail in <a href="../../../AGENTS.md"><code>AGENTS.md</code></a>.</p>
+    <div class="callout good"><strong>Direct allocation invariant.</strong> Unit and E2E jobs each specify both <code>group: frontend-platform</code> and their exact runner label. No repository variable, conditional expression, or fallback can redirect those jobs to a different runner shape.</div>
+    <div class="callout good"><strong>Local contract verified.</strong> The focused contract failed against the variable-driven configuration, then passed all 3 tests after the direct runner, worker, and shard allocation was applied. Live performance remains the next acceptance gate.</div>
   </section>
 
   <section id="coordination">
-    <h2>Prepared external coordination</h2>
-    <p>Nothing below was sent or opened. The direct Slack connector was not logged in, so channel discovery and precedent came from successful read-only Glean search plus live GitHub reads.</p>
-
-    <h3>Terraform patch for <code>teamupstart/Github_Org_Settings_TF</code></h3>
-    <pre>locals {
-  repo_ids = {
-    mission_control = 1296871890
-  }
-}
-
-resource "github_actions_runner_group" "ubuntu_8core" {
-  selected_repository_ids = [
-    # existing repositories...
-    local.repo_ids.mission_control,
-  ]
-}</pre>
-
-    <h3>Unsent Terraform PR draft</h3>
-    <div class="draft-label">Draft only</div>
-    <pre>Title: Add mission-control to the ubuntu-8core runner group
-
-## Summary
-
-- Add teamupstart/mission-control (repository ID 1296871890) to the existing ubuntu-8core runner group.
-- Enable the repository's CPU-heavy unit and Playwright jobs to use the generic 8-core GitHub-hosted runner.
-
-## Why
-
-- The repository's first green standard-runner workflow after the transfer took 24m 11s.
-- Jobs were picked up in 2-3 seconds, so the delay is execution capacity rather than queueing.
-- The last comparable 4-vCPU workflow took 7m 12s, which still misses the 5-minute goal.
-- This follows the speed-only access precedent in Github_Org_Settings_TF PR #122.
-
-## Test plan
-
-- terraform fmt -check
-- terraform validate
-- Confirm terraform plan reports 0 add, 1 change, 0 destroy for github_actions_runner_group.ubuntu_8core.
-- After apply, confirm ubuntu-8core appears for teamupstart/mission-control.
-- Set the Mission Control repository variable MISSION_CONTROL_CI_RUNNER to ubuntu-8core.
-- Run the prepared Mission Control CI change and verify all five checks are green in 5 minutes or less.</pre>
-
-    <h3>Unsent <code>#ask-delivery</code> message</h3>
-    <div class="draft-label">Draft only</div>
-    <pre>Hi Delivery - could you review a small runner-group access change for teamupstart/mission-control?
-
-After the repository transfer, its accessible ubuntu-latest fallback starts jobs within 2-3 seconds but a green workflow takes 24m 11s. The last 4-vCPU run took 7m 12s, so we are targeting 5 minutes or less with the existing generic ubuntu-8core group. The repository ID is 1296871890, and the Terraform change follows Github_Org_Settings_TF PR #122: add the ID to locals.repo_ids and to ubuntu_8core.selected_repository_ids.
-
-The companion workflow change is prepared locally with full Node 24/26 and Playwright coverage retained. It safely stays on ubuntu-latest until the grant is applied and the MISSION_CONTROL_CI_RUNNER repository variable is set to ubuntu-8core. We will live-benchmark it after activation and iterate if it does not clear 5 minutes. Is ubuntu-8core the preferred group for this CPU-only use case?</pre>
-
-    <p class="small">Routing evidence: Glean found the August 18, 2026 <a href="https://upstartnetwork.atlassian.net/browse/DELSUPPORT-4204">DELSUPPORT-4204</a> request generated from <code>#ask-delivery</code>, where the matching <a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/122">runner access PR</a> was reviewed and merged. The broader runner-group source of truth is <a href="https://github.com/teamupstart/Github_Org_Settings_TF/blob/main/github_actions_runner_groups.tf"><code>github_actions_runner_groups.tf</code></a>.</p>
+    <h2>Runner access grant</h2>
+    <p><a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/131">Github_Org_Settings_TF PR #131</a> merged on August 26, 2026. Its final Terraform plan updated only <code>github_actions_runner_group.frontend_platform</code>, with 0 resources added, 1 changed in place, and 0 destroyed.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Contract</th><th>Merged value</th><th>Workflow use</th></tr></thead>
+        <tbody>
+          <tr><td>Repository</td><td><code>teamupstart/mission-control</code>, ID <code>1296871890</code></td><td>Selected access to the shared group</td></tr>
+          <tr><td>Runner group</td><td><code>frontend-platform</code></td><td>Named explicitly by unit and E2E</td></tr>
+          <tr><td>8-core label</td><td><code>ubuntu-8cpu-32ram-300ssd</code></td><td>Node 24 and 26 unit jobs</td></tr>
+          <tr><td>4-core label</td><td><code>ubuntu-4cpu-32ram-150ssd</code></td><td>Five E2E shards</td></tr>
+          <tr><td>Separate generic group</td><td><code>ubuntu-8core</code> unchanged</td><td>Not used and not granted</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout good"><strong>No activation variable needed.</strong> The authorization is now group membership, so the workflow can target the frontend labels directly. The remaining external proof is a live Mission Control workflow, not another configuration switch.</div>
   </section>
 
   <section id="limits">
     <h2>Limits, acceptance gate, and iteration loop</h2>
-    <div class="callout bad"><strong>The five-minute goal is not yet achieved.</strong> No job has run on Upstart's generic 8-core runner for this repository. Default CI remains runnable on <code>ubuntu-latest</code>; the access grant, repository-variable activation, live workflow execution, and any required follow-up iteration remain external work.</div>
+    <div class="callout bad"><strong>The five-minute goal is not yet achieved.</strong> Runner access is merged, but no workflow has completed with the direct 8-core unit and five-shard 4-core E2E allocation. Live workflow execution and any required tuning remain external work.</div>
     <h3>Acceptance gate</h3>
     <ul>
       <li>Measure from workflow <code>created_at</code> to terminal <code>updated_at</code>, not only test-step duration.</li>
-      <li>Require all five checks green with no Playwright retry or flaky-test line.</li>
+      <li>Require all eight checks green with no Playwright retry or flaky-test line.</li>
       <li>Require total queue-aware time at or below 5m 00s.</li>
-      <li>Retain Node 24 and 26 unit coverage, bundle smoke, and both E2E shards.</li>
+      <li>Retain Node 24 and 26 unit coverage, bundle smoke, and all five E2E shards.</li>
     </ul>
     <h3>Bounded iterations</h3>
     <ol>
-      <li>After the grant, set <code>MISSION_CONTROL_CI_RUNNER=ubuntu-8core</code> and run the prepared 8-core, 8-worker, 2-shard configuration three times with warm caches.</li>
-      <li>If E2E is over five minutes and stable, increase only the E2E shard count to three and remeasure.</li>
-      <li>If eight Playwright workers introduce retries or flakes, reduce workers to six and use three or four shards for latency.</li>
+      <li>Run the direct 8-core unit and five-shard 4-core E2E configuration three times with warm caches, plus one cold-cache run.</li>
+      <li>If E2E is over five minutes and stable, inspect shard balance and setup time before changing capacity.</li>
+      <li>If four Playwright workers introduce retries or flakes, reduce workers without reducing the five-shard coverage.</li>
       <li>If unit remains over five minutes, inspect per-file balance and Node's test sharding before requesting 16 cores.</li>
       <li>Stop as soon as three consecutive queue-aware green runs are at or below five minutes. The operator authorized at most ten iterations.</li>
     </ol>
     <h3>Evidence boundaries</h3>
     <ul>
-      <li>Organization runner-group listing through the GitHub API returned HTTP 403 because the current token lacks organization runner-group permission. The live Terraform file was readable and is the current organization source of truth used here.</li>
+      <li>Organization runner-group listing through the GitHub API returned HTTP 403 because the current token lacks organization runner-group permission. The merged Terraform change is the authorization source used here; actual job assignment still requires a workflow run.</li>
       <li>The direct Slack connector returned <code>USER_NOT_LOGGED_IN</code>. No Slack message was searched or sent through that connector. Glean's Slack and Jira index was callable and returned the cited Delivery precedent.</li>
-      <li>No Terraform checkout was attached to this Mission Control task, so no cross-repository file was edited.</li>
-      <li>No commit, push, PR, reviewer request, Slack message, rerun, or merge was performed.</li>
+      <li>No Terraform file was changed by this Mission Control update. The access grant is independently owned and merged in PR #131.</li>
+      <li>No live frontend-runner result is claimed by this report.</li>
     </ul>
   </section>
 
@@ -341,8 +306,8 @@ The companion workflow change is prepared locally with full Node 24/26 and Playw
     <ul class="source-list">
       <li>GitHub Actions runs: <a href="https://github.com/teamupstart/mission-control/actions/runs/32880734676">standard runner, green</a>; <a href="https://github.com/teamupstart/mission-control/actions/runs/32847241816">Blacksmith 4-vCPU, green</a>; <a href="https://github.com/teamupstart/mission-control/actions/runs/32875634422">Upstart 4-core label, unassigned then cancelled</a>.</li>
       <li>Repository history: <a href="https://github.com/teamupstart/mission-control/pull/507">PR #507 benchmark record</a>; <a href="https://github.com/teamupstart/mission-control/pull/789">PR #789 runner migration</a>; <a href="https://github.com/teamupstart/mission-control/pull/790">PR #790 accessible-runner fallback</a>.</li>
-      <li>Upstart access management: <a href="https://github.com/teamupstart/Github_Org_Settings_TF/blob/main/github_actions_runner_groups.tf">live runner Terraform</a>; <a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/122">recent 8-core speed access precedent</a>; <a href="https://upstartnetwork.atlassian.net/wiki/spaces/DEL/pages/6227263638">larger-runner management guide</a>; <a href="https://upstartnetwork.atlassian.net/browse/DELSUPPORT-4204">Delivery review request precedent</a>.</li>
-      <li>GitHub primary documentation: <a href="https://docs.github.com/en/actions/reference/runners/github-hosted-runners">hosted runner hardware</a>; <a href="https://docs.github.com/en/actions/how-tos/manage-runners/larger-runners/control-access">larger-runner access</a>; <a href="https://docs.github.com/en/actions/reference/workflows-and-actions/contexts">repository-variable context and <code>runs-on</code> availability</a>; <a href="https://docs.github.com/en/billing/reference/actions-runner-pricing">runner pricing</a>.</li>
+      <li>Upstart access management: <a href="https://github.com/teamupstart/Github_Org_Settings_TF/pull/131">merged Mission Control runner access</a>; <a href="https://github.com/teamupstart/Github_Org_Settings_TF/blob/main/github_actions_runner_groups.tf">runner Terraform</a>; <a href="https://upstartnetwork.atlassian.net/wiki/spaces/DEL/pages/6227263638">larger-runner management guide</a>.</li>
+      <li>GitHub primary documentation: <a href="https://docs.github.com/en/actions/reference/runners/github-hosted-runners">hosted runner hardware</a>; <a href="https://docs.github.com/en/actions/how-tos/manage-runners/larger-runners/control-access">larger-runner access</a>; <a href="https://docs.github.com/en/billing/reference/actions-runner-pricing">runner pricing</a>.</li>
     </ul>
   </section>
 </main>

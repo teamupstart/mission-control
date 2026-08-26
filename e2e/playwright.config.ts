@@ -16,9 +16,9 @@ export default defineConfig({
   // Each spec boots its own daemon on a per-worker port, so files are safe to parallelise;
   // the cost is one daemon process per worker, which is why this is not unbounded.
   fullyParallel: true,
-  // CI scales to eight workers only for the workflow's exact larger-runner opt-in. Any
-  // missing or unexpected value stays at the safe two-worker default; local runs retain four.
-  workers: process.env.CI ? (process.env.MISSION_E2E_WORKERS === "8" ? 8 : 2) : 4,
+  // CI and local runs use four workers. In CI that matches each selected 4-core runner;
+  // increasing shards provides parallelism without oversubscribing any one machine.
+  workers: 4,
   // A dispatch waits on a real subprocess launching, so the default 30s is tight on a cold
   // CI runner. Two minutes leaves room for a loaded runner while a real hang still fails.
   timeout: 120_000,

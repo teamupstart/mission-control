@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 const repo = join(import.meta.dirname, "..");
 const script = join(repo, "scripts", "init.mjs");
 
-test("CI capacity safely opts in while local worker defaults stay bounded", async () => {
+test("CI directly uses available frontend runners at their bounded capacities", async () => {
   const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
   };
@@ -28,47 +28,33 @@ test("CI capacity safely opts in while local worker defaults stay bounded", asyn
       jobs[job],
       new RegExp(`^[ \\t]+${key}:[ \\t]*(.+?)[ \\t]*$`, "m"),
     );
-  const selectorDecisions = (expression: string | null) => {
-    const selector = expression?.match(
-      /^\s*\$\{\{\s*vars\.([A-Z_][A-Z0-9_]*)\s*==\s*(["'])([^"']*)\2\s*&&\s*(["'])([^"']*)\4\s*\|\|\s*(["'])([^"']*)\6\s*\}\}\s*$/,
-    );
-    if (!selector || selector[1] !== "MISSION_CONTROL_CI_RUNNER") return null;
-
-    const decide = (runner: string | undefined) =>
-      runner === selector[3] ? selector[5] : selector[7];
-    return {
-      unset: decide(undefined),
-      optedIn: decide("ubuntu-8core"),
-      nearMiss: decide("ubuntu-8cor"),
-    };
-  };
+  const runner = (job: string) => ({
+    scalar: jobValue(job, "runs-on"),
+    group: capture(jobs[job], /^[ \t]+group:[ \t]*(.+?)[ \t]*$/m),
+    label: capture(jobs[job], /^[ \t]+labels:[ \t]*(.+?)[ \t]*$/m),
+  });
+  const shards = capture(jobs.e2e, /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m)
+    ?.split(",")
+    .map((value) => Number(value.trim()));
   const e2eConfigUrl = pathToFileURL(join(repo, "e2e", "playwright.config.ts")).href;
   const previousCi = process.env.CI;
   const previousWorkers = process.env.MISSION_E2E_WORKERS;
-  const loadWorkers = async (ci: boolean, workers?: string) => {
+  const loadWorkers = async (ci: boolean) => {
     if (ci) process.env.CI = "true";
     else delete process.env.CI;
-    if (workers === undefined) delete process.env.MISSION_E2E_WORKERS;
-    else process.env.MISSION_E2E_WORKERS = workers;
+    delete process.env.MISSION_E2E_WORKERS;
 
     const config = (await import(
-      `${e2eConfigUrl}?capacity-contract=${ci}-${workers ?? "default"}`
+      `${e2eConfigUrl}?capacity-contract=${ci}`
     )).default as { workers?: number };
     return config.workers ?? null;
   };
 
-  let playwrightWorkers: {
-    ciOptIn: number | null;
-    ciUnset: number | null;
-    ciInvalid: number | null;
-    local: number | null;
-  };
+  let playwrightWorkers: { ci: number | null; local: number | null };
   try {
     playwrightWorkers = {
-      ciOptIn: await loadWorkers(true, "8"),
-      ciUnset: await loadWorkers(true),
-      ciInvalid: await loadWorkers(true, "invalid"),
-      local: await loadWorkers(false, "8"),
+      ci: await loadWorkers(true),
+      local: await loadWorkers(false),
     };
   } finally {
     if (previousCi === undefined) delete process.env.CI;
@@ -79,18 +65,16 @@ test("CI capacity safely opts in while local worker defaults stay bounded", asyn
 
   assert.deepEqual(
     {
-      gateRunner: jobValue("gates", "runs-on"),
-      runnerSelectors: {
-        unit: selectorDecisions(jobValue("unit", "runs-on")),
-        e2e: selectorDecisions(jobValue("e2e", "runs-on")),
+      runners: {
+        gates: runner("gates"),
+        unit: runner("unit"),
+        e2e: runner("e2e"),
       },
       hasBlacksmithLabel: /blacksmith/i.test(workflow),
-      workerSelectors: {
-        unit: selectorDecisions(
-          jobValue("unit", "MISSION_TEST_CONCURRENCY"),
-        ),
-        e2e: selectorDecisions(jobValue("e2e", "MISSION_E2E_WORKERS")),
-      },
+      hasRunnerVariable: /MISSION_CONTROL_CI_RUNNER/.test(workflow),
+      unitWorkers: jobValue("unit", "MISSION_TEST_CONCURRENCY"),
+      e2eWorkerVariable: jobValue("e2e", "MISSION_E2E_WORKERS"),
+      shards,
       localUnitWorkers:
         testCommand.match(
           /--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-(\d+)\}/,
@@ -98,26 +82,26 @@ test("CI capacity safely opts in while local worker defaults stay bounded", asyn
       playwrightWorkers,
     },
     {
-      gateRunner: "ubuntu-latest",
-      runnerSelectors: {
+      runners: {
+        gates: { scalar: "ubuntu-latest", group: null, label: null },
         unit: {
-          unset: "ubuntu-latest",
-          optedIn: "ubuntu-8core",
-          nearMiss: "ubuntu-latest",
+          scalar: null,
+          group: "frontend-platform",
+          label: "ubuntu-8cpu-32ram-300ssd",
         },
         e2e: {
-          unset: "ubuntu-latest",
-          optedIn: "ubuntu-8core",
-          nearMiss: "ubuntu-latest",
+          scalar: null,
+          group: "frontend-platform",
+          label: "ubuntu-4cpu-32ram-150ssd",
         },
       },
       hasBlacksmithLabel: false,
-      workerSelectors: {
-        unit: { unset: "2", optedIn: "8", nearMiss: "2" },
-        e2e: { unset: "2", optedIn: "8", nearMiss: "2" },
-      },
+      hasRunnerVariable: false,
+      unitWorkers: "'8'",
+      e2eWorkerVariable: null,
+      shards: [1, 2, 3, 4, 5],
       localUnitWorkers: "6",
-      playwrightWorkers: { ciOptIn: 8, ciUnset: 2, ciInvalid: 2, local: 4 },
+      playwrightWorkers: { ci: 4, local: 4 },
     },
   );
 });

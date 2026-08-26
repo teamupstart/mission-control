@@ -375,24 +375,22 @@ npm run dev
 Open `http://127.0.0.1:5173`. For the desktop shell, demo mode, hooks, state locations, and
 the full verification path, use the setup guide below.
 
-## Keep CI runnable while enabling larger runners
+## CI runner allocation
 
-The `gates` job always runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy `unit` and `e2e`
-jobs also default to that repository-accessible runner with two workers, so an unset or
-mistyped configuration variable cannot strand CI waiting for a runner the repository cannot
-use.
+The `gates` job runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy jobs use the shared
+`frontend-platform` runner group, which grants this repository access to both runner sizes.
+The Node 24 and Node 26 unit jobs run directly on `ubuntu-8cpu-32ram-300ssd` with eight test
+workers. Five end-to-end shards run directly on `ubuntu-4cpu-32ram-150ssd` with four
+Playwright workers each.
 
-The optional larger-runner mode has one activation switch. First grant this repository access
-to the existing `ubuntu-8core` runner group in `teamupstart/Github_Org_Settings_TF`. After that
-grant is applied, set the repository Actions variable `MISSION_CONTROL_CI_RUNNER` to exactly
-`ubuntu-8core`. That value atomically moves the four heavy jobs to the larger runner and raises
-their unit and Playwright worker limits to eight. Do not set the variable before the access
-grant. Removing it, or setting any other value, rolls those jobs back to `ubuntu-latest` and
-two workers.
+The workflow names both the `frontend-platform` group and the relevant label for each job.
+There is no repository variable or fallback selector. Access is managed centrally in
+`teamupstart/Github_Org_Settings_TF`; changing the group, labels, worker counts, or shard count
+is one capacity decision and should be benchmarked together.
 
-The larger-runner mode is a performance experiment, not a claim that the five-minute target
-has already been met. Accept it only after a live workflow completes all five checks green in
-five minutes or less, measured from workflow creation through completion.
+This allocation is a performance experiment, not a claim that the five-minute target has
+already been met. Accept it only after three consecutive live workflows complete all eight
+checks green in five minutes or less, measured from workflow creation through completion.
 
 ## Choose how the app's own model calls are made
 

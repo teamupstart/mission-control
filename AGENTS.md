@@ -115,12 +115,11 @@ carries no branch protection, so that is a signal to act on and not a mechanical
 
 1. Inspect `git status` before editing. Preserve unrelated changes.
 2. Follow existing module ownership and registry patterns. Do not create parallel sources of truth.
-3. Update README documentation in the same change when behavior, configuration, commands, or shortcuts change.
-4. Add focused tests for behavior changes and regressions.
-5. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
-6. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
-7. Commit only task-related files on a feature branch.
-8. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
+3. Add focused tests for behavior changes and regressions.
+4. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
+5. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
+6. Commit only task-related files on a feature branch.
+7. A task that attaches more than one repository produces one pull request per repository it changed, and none for a repository it left alone. Each is reviewed, gated, and merged on its own; the task finishes when all of them have merged. See [dispatch and the backlog](docs/dispatch-and-backlog.md#attaching-more-than-one-repository).
 
 When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor that pull request and its CI until green - per pull request, so a session holding one in each of several repositories follows through on each.
 

@@ -309,6 +309,14 @@ Later phases may rely on, and must not change:
    that consumer and is expected to hoist the hook to App and pass its state to both readers; that
    is a planned move, not a contract break. What must not change is the underlying rule - one
    owner, one read, no poll.
+8. `GET /api/setup/checks` answers `{ rows }` and is **expected to grow a `banner` field in Phase
+   3**, whose composition prunes the dismissal record against the rows just computed. Also a
+   planned extension rather than a contract break, and the reason it belongs on this route instead
+   of a new one: a second setup endpoint would run a second probe sweep per page load and produce
+   a second answer that can drift from this one. Two things it must not change - `rows` stays
+   exactly as specified here (the extension is additive), and the route still computes per request
+   and caches nothing. The prune is a write on a read path, which Phase 3 justifies; it is not a
+   cache.
 
 **Seam for the concurrent phases.** Phase 2 edits inside the remedy action slot; Phase 3
 attaches tour target refs to the family section wrappers and adds an App-level banner. Disjoint
@@ -331,6 +339,11 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 17 (major, PR #800).** Phase 3's prune had no surface to happen on, because
+  this route was specified as returning rows only and Phase 3 forbade route changes. Added handoff
+  clause 8 declaring the additive `banner` extension Phase 3 makes, with the constraints that keep
+  it safe (rows unchanged, still per-request, still uncached) and the reason it is an extension
+  rather than a second endpoint.
 - **Inspector round 15 (major, PR #800).** `requirement` was on `SetupDependencyInfo` while the
   prose said it "sits on the ROW, not on the dependency" - two statements a reader has to
   reconcile, with no rule saying which a consumer should use. Reframed as a projection: each

@@ -376,7 +376,8 @@ that stayed broken from one that was repaired and broke again - dismiss the term
 install an emulator, then lose it, and the same id is still recorded while the machine is broken
 again. So the record means "acknowledged *while broken*": a row observed satisfied, or gone, drops
 out of it, and a later unsatisfied row is therefore unacknowledged and raises the banner again.
-The daemon prunes when it composes the banner state and writes only when the set actually
+The daemon prunes while composing the setup read's answer - the same request that recomputes the
+rows, so the prune always runs against fresh checks - and writes only when the set actually
 shrinks.
 
 Rows rather than dependencies, because the two levels that matter most here do not sit on a

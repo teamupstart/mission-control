@@ -28,8 +28,10 @@ Independent of Phase 2. May merge before or after it.
 
 - **No first-run wizard.** Decided: panel plus banner plus tour. The banner links to the panel;
   it does not become a second renderer of the catalog.
-- **No new detection, no new probe, no catalog change, no route change** beyond the config entry
-  the dismissal needs.
+- **No new detection, no new probe, no catalog change.** No **new** route either: this phase adds
+  the dismissal's config wiring and makes **one additive extension** to Phase 1's
+  `GET /api/setup/checks`, named in step 1. It introduces no second setup endpoint and no second
+  read.
 - **No rail dot** (Phase 1's finding 7 stands).
 - **No hand-editing of `content.generated.ts`.**
 
@@ -116,8 +118,28 @@ Independent of Phase 2. May merge before or after it.
   is by definition no longer in it. Per row, so dismissing A and B and repairing only A leaves B
   acknowledged rather than re-alerting on it.
 
-  **The daemon does the pruning, when it composes the banner state, and writes only when the set
-  actually shrinks.** Three consequences worth stating because each is a thing to get wrong:
+  **Where that happens - the one thing the round-10 wording left unanchored.** "When it composes
+  the banner state" named no actual surface: Phase 1's `GET /api/setup/checks` returns rows and
+  never touches the record, so nothing in the plan recomputed checks, pruned, and answered. A
+  repaired row would have stayed acknowledged forever.
+
+  So **Phase 1's read is extended additively** to answer `{ rows, banner }`, and the daemon prunes
+  while composing that response, in this order:
+
+  1. compose `rows` exactly as Phase 1 does - fresh probes, nothing cached;
+  2. **prune** the stored record against those fresh rows: drop every acknowledged id whose row is
+     now `satisfied` or absent. Write only if the set actually shrank;
+  3. compose `banner` from the **post-prune** record, so the answer the browser renders and the
+     record on disk cannot disagree.
+
+  One extension rather than a new endpoint, because a second endpoint would mean a second probe
+  sweep per page load and two answers that can drift; and additive rather than replacing, so
+  Phase 1's response stays a superset of what it promised. Phase 1's handoff names this as an
+  anticipated extension, exactly as it does the `useSetupChecks` hoist - a planned move, not a
+  contract break. What does not change: the route still computes per request and caches nothing.
+
+  **The daemon does the pruning, and writes only when the set actually shrinks.** Three
+  consequences worth stating because each is a thing to get wrong:
   - it keeps the daemon the only writer, and keeps the browser from having to write in order to
     *clear* something;
   - the write is idempotent and rare - a no-change prune writes nothing, so this does not turn a
@@ -207,6 +229,12 @@ the read was in flight would train the operator to dismiss it unread.
   - a **required row in `unknown`** - must NOT raise.
 - `test/app-config-entries.test.ts` (or the existing equivalent) - the new entry is declared with
   the intended classification and backup domain.
+- The extended read, which is where the prune actually lives: `GET /api/setup/checks` answers both
+  `rows` and `banner`; a request against a record holding an id whose row is now `satisfied`
+  **prunes it and persists that**, and the `banner` in the same response reflects the post-prune
+  record rather than the pre-prune one; a request that changes nothing performs **no write**; and
+  `rows` is unchanged from Phase 1's contract, so the extension is additive rather than a
+  replacement.
 - The tour registration tests that already exist for the two shipped tours, extended to the new
   one: every declared target is registered by a rendered owner, every stage's content stop exists
   in the generated content, and the entry is reachable from both discovery surfaces. Confirm
@@ -252,6 +280,17 @@ shape are the two things a future rail dot would reuse, if that decision is ever
 - Changed the dismissal from a boolean to a record of what was dismissed during this write-up:
   a boolean cannot express "dismissed, then a required dependency went missing again", which the
   approved plan requires.
+- **Inspector round 17 (major, PR #800).** Round 10 said the daemon prunes "when it composes the
+  banner state" without ever saying where that happens - and this phase's own non-goals forbade a
+  route change, while Phase 1's only setup read returns rows and never touches the record. So no
+  specified operation could recompute checks, prune, and answer: a repaired row would stay
+  acknowledged and suppress the banner when it broke again, which is the exact defect round 10
+  existed to fix. Named the surface: Phase 1's read is extended additively to `{ rows, banner }`,
+  with the prune between composing rows and composing the banner, and the ordering written down so
+  the response cannot disagree with the record. Amended the non-goal from "no route change" to "no
+  *new* route, one additive extension", chose extension over a second endpoint (which would mean a
+  second probe sweep per page load and two answers that can drift), and added the route tests that
+  pin the prune, the no-write case, and the additivity.
 - **Inspector round 13 (major, PR #800).** The condition's two clauses are independent, and the
   write only satisfied one: a first dismissal on an already-broken machine recorded the broken row
   ids without setting the first-launch marker, so the second clause stayed true and the banner
@@ -267,7 +306,8 @@ shape are the two things a future rail dot would reuse, if that decision is ever
   on a machine that was broken again, contradicting this phase's own return-on-regression promise.
   Added the retirement rule: a `satisfied` (or vanished) observation removes that row from the
   record, pruned by the daemon when it composes the banner state and written only when the set
-  shrinks. Recorded why the pruning cannot instead happen on dismissal - recovery happens between
+  shrinks (**anchored by round 17 above**: "composes the banner state" named no surface at the
+  time; it is now the additive extension of Phase 1's read). Recorded why the pruning cannot instead happen on dismissal - recovery happens between
   dismissals, so nothing would ever prune - and why a write on the read path is acceptable here.
   The repair-then-regress sequence is now its own test and its own exit criterion, walked as a
   sequence, since no single-state assertion exposes this.

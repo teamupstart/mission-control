@@ -463,7 +463,10 @@ hoist is a move rather than a rewrite.</p>
   its audit record rather than overloading <code>unknown</code>.</li>
   <li>Every probe resolves its binary through the same override chain the launcher uses.</li>
   <li><code>GET /api/setup/checks</code> computes per request and caches nothing - not durably and
-  not in memory; cost is bounded by concurrency plus a per-probe timeout instead. No phase
+  not in memory; cost is bounded by concurrency plus a per-probe timeout instead. Phase 3 extends
+  its response additively with the banner state, and prunes the dismissal record against the rows
+  that request just computed; <code>rows</code> itself is unchanged, and the prune is a write on a
+  read path rather than a cache. No phase
   puts setup detection on a poll tick, in <code>SettingsStatus</code>, or in the registry
   snapshot.</li>
   <li>Panel structure: one section per family with a stable element id, one row per dependency

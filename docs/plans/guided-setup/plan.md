@@ -105,8 +105,9 @@ equally red rows has told the operator nothing.
 export type SetupStatus =
   | { state: "satisfied"; evidence: string }        // "/opt/homebrew/bin/gh"
   | { state: "missing" }
-  | { state: "needs-setup"; why: string }           // installed, not usable yet
-  | { state: "unknown"; why: string };              // we could not look
+  // installed, not usable yet. `why` is the sentence; `evidence` is where to look.
+  | { state: "needs-setup"; why: string; evidence: string | null }
+  | { state: "unknown"; why: string; evidence: string | null };   // we could not look
 ```
 
 `needs-setup` and `unknown` are the two a boolean cannot express, and both already exist in
@@ -115,6 +116,19 @@ UpstartClaw plugin installed with its setup state file absent, which
 `src/server/environment/upstartclaw.ts` already distinguishes at length. `unknown` is
 `FileRead`'s "there is a file I could not read" case: collapsing it into `missing` either
 silences a real problem or warns every operator on earth.
+
+**Two fields, because a problem row answers two questions.** `why` is the sentence a person
+reads; `evidence` is where they look if they disagree with it - the file that was read and what
+it said, the resolved path, the command whose output was parsed. `satisfied` carries only
+`evidence` (there is no complaint to make) and `missing` carries neither (nothing was found, so
+there is nothing to cite).
+
+This is the split `EnvironmentCheckView` already makes - `warning` plus `detail`, where that
+`detail` exists so "an operator who disagrees with the note knows where to look rather than
+having to guess which of their files the daemon means". A folded check therefore maps
+`warning -> why` and `detail -> evidence` with nothing discarded, which is what makes the
+folding lossless rather than a summary. A status shape that carried only `why` would have thrown
+that evidence away at the boundary and left the page unable to say which file it read.
 
 ### Detection reuses the probes that already exist
 

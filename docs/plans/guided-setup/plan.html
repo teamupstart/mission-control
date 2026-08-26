@@ -390,8 +390,9 @@ equally red rows has told the operator nothing.</p>
 <pre><code>export type SetupStatus =
   | { state: "satisfied"; evidence: string }        // "/opt/homebrew/bin/gh"
   | { state: "missing" }
-  | { state: "needs-setup"; why: string }           // installed, not usable yet
-  | { state: "unknown"; why: string };              // we could not look</code></pre>
+  // installed, not usable yet. `why` is the sentence; `evidence` is where to look.
+  | { state: "needs-setup"; why: string; evidence: string | null }
+  | { state: "unknown"; why: string; evidence: string | null };   // we could not look</code></pre>
 
 <p><code>needs-setup</code> and <code>unknown</code> are the two a boolean cannot express, and
 both already exist in this codebase's reasoning. <code>gh</code> on PATH but unauthenticated is
@@ -400,6 +401,20 @@ which <code>src/server/environment/upstartclaw.ts</code> already distinguishes a
 <code>unknown</code> is <code>FileRead</code>'s "there is a file I could not read" case:
 collapsing it into <code>missing</code> either silences a real problem or warns every operator on
 earth.</p>
+
+<p><strong>Two fields, because a problem row answers two questions.</strong> <code>why</code> is
+the sentence a person reads; <code>evidence</code> is where they look if they disagree with it -
+the file that was read and what it said, the resolved path, the command whose output was parsed.
+<code>satisfied</code> carries only <code>evidence</code> (there is no complaint to make) and
+<code>missing</code> carries neither (nothing was found, so there is nothing to cite).</p>
+
+<p>This is the split <code>EnvironmentCheckView</code> already makes - <code>warning</code> plus
+<code>detail</code>, where that <code>detail</code> exists so "an operator who disagrees with the
+note knows where to look rather than having to guess which of their files the daemon means". A
+folded check therefore maps <code>warning -&gt; why</code> and <code>detail -&gt; evidence</code>
+with nothing discarded, which is what makes the folding lossless rather than a summary. A status
+shape that carried only <code>why</code> would have thrown that evidence away at the boundary and
+left the page unable to say which file it read.</p>
 
 <h3>Detection reuses the probes that already exist</h3>
 

@@ -82,8 +82,13 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   `remedy`.
 - The full `SetupRemedy` union: `link`, `command`, `provider-installer`, `skill`. **All four
   variants ship here**, including `command.argv`, so Phase 2 adds no shared type.
-- `SetupStatus` - the four states, `satisfied` carrying `evidence`, `needs-setup` and `unknown`
-  carrying `why`.
+- `SetupStatus` - the four states. `satisfied` carries `evidence`; `missing` carries nothing;
+  `needs-setup` and `unknown` carry **both** `why` (the sentence) and `evidence`
+  (`string | null` - where to look if you disagree with the sentence). Both fields, because a
+  folded environment check has a `warning` **and** a `detail`, and a status carrying only `why`
+  would discard that detail at the boundary - leaving the panel unable to name the file it read,
+  which is the whole point of `EnvironmentCheckView.detail`. Map `warning -> why` and
+  `detail -> evidence`.
 - `SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo>` - the exhaustiveness
   enforcement, so a new id does not compile until it has said what it is and how to get it.
 - `SetupRowId`, the discriminated identity every row carries, so no code has to guess which id
@@ -151,8 +156,9 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
       row in the panel that can vanish entirely, and claiming `satisfied` would invent a fact the
       check declined to assert.
     - **its status is always `needs-setup`**, with the warning as `why` and the check's `detail`
-      as the evidence. A check that fired has by construction found something installed and
-      unfinished.
+      as `evidence` - both carried, neither summarised. A check that fired has by construction
+      found something installed and unfinished, and its detail is the file it read; dropping that
+      would leave an operator who disputes the note with nowhere to look.
 - `probes.ts` (or one file per family if it reads better) - the probes themselves:
   - agents: `agentBinPresent` / `resolveBinPath(resolveAgentBin(agent))` for the evidence path;
   - terminals: `binPresent(spec)` per backend, with the resolved candidate as evidence;
@@ -233,9 +239,11 @@ existing spec depends on those backends being resolvable.
   `unknown` and does not take the view down. The terminal pair row disagreeing with per-backend
   presence (a multiplexer installed, no emulator) is its own case.
 - `test/setup-checks-route.test.ts` - the route answers 200 with every row even when a probe
-  fails; the folded environment check appears as a `needs-setup` row carrying the check's warning
-  and detail, in the family `ENVIRONMENT_ROW_METADATA` names; and **no row at all** appears for
-  that check when its warning is null. Anchor slugs are unique across both id spaces.
+  fails; the folded environment check appears as a `needs-setup` row whose `why` **is** the check's
+  warning and whose `evidence` **is** the check's detail, asserted field by field rather than by
+  presence, in the family `ENVIRONMENT_ROW_METADATA` names; a check whose detail is null yields
+  `evidence: null` rather than an empty string; and **no row at all** appears for that check when
+  its warning is null. Anchor slugs are unique across both id spaces.
 - `test/settings-sidebar-render.test.ts` - already walks the registry; confirm it passes with the
   new category and that no anchor collides.
 - `e2e/specs/setup-panel.spec.ts` - the required UI spec. Opens Settings → Setup against a daemon
@@ -300,6 +308,14 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 9 (major, PR #800).** `SetupStatus.needs-setup` carried only `why`, so a
+  folded environment check's `detail` had nowhere to go: the stated shape forced an implementer to
+  discard it or widen the contract ad hoc, and the panel would have lost the evidence
+  `EnvironmentCheckView.detail` exists to provide. Added `evidence: string | null` to
+  `needs-setup` and `unknown`, keeping `why` as the sentence, so the fold maps
+  `warning -> why` and `detail -> evidence` losslessly. Reused the name `evidence` rather than
+  introducing `detail` alongside it, so the contract has one word for "where to look" across every
+  state that can answer it. Route test now asserts both fields by value.
 - **Inspector round 4 (major, PR #800).** The derived terminal pair row had its own view type
   (`SetupPairView`) beside the row union, so "every required dependency" - the shape Phase 3's
   banner condition took - could not see the one `required` row in the Terminals family. Folded it

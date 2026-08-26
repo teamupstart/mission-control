@@ -116,7 +116,10 @@ already has a vetted installer. See the route's `switch` below.
 - Handler, beside the pipelines install route. **Two remedy kinds are runnable and two are not**,
   so branch on the kind before refusing anything - a refusal that fires first would make
   `provider-installer` unreachable:
-  1. look the dependency up in the catalog; 404 for an unknown id;
+  1. look the dependency up in the catalog; 404 for an unknown id. The body's `id` is a
+     `SetupDependencyId`, so a folded environment-check row is **unaddressable here by
+     construction** - it lives in the other half of `SetupRowId` and its remedy is a `skill` the
+     operator runs in a session, which this route refuses anyway;
   2. switch on `remedy.kind`:
      - `link` and `skill`: refuse with 409 and a sentence. There is nothing to run, and that is
        a property of the remedy rather than an error.
@@ -228,6 +231,9 @@ App-level banner; neither touches the remedy action slot.
   and scoped the argv guard explicitly to `command` remedies (the provider's `bin/install` is not
   a package-manager invocation and the allowlist would refuse it). Added the delegation case to
   the route test list.
+- **Inspector round 3 (PR #800).** Phase 1 gained `SetupRowId`, so this route's `id` field is
+  explicitly the dependency half of it - stated in the handler steps so nobody widens the body to
+  the row id and makes an environment-check row look launchable.
 - **Inspector round 2 (major, PR #800).** The follow-on hole in that same fix: the body carried
   only `id` and `backend`, but `pipelineInstallerLaunch` is checkout-based, so the delegation had
   nothing to launch. Added `checkout` to the contract - required for `provider-installer`,

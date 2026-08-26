@@ -319,7 +319,7 @@ rule the existing registries (<code>OPEN_TARGET_INFO</code>, <code>ENVIRONMENT_C
   <thead><tr><th>Decision</th><th>Adopted</th></tr></thead>
   <tbody>
     <tr><td>Where the catalog lives</td><td>A new setup catalog that <strong>reads</strong> the existing environment checks. <code>src/shared/setup-catalog.ts</code> plus <code>src/server/setup/</code>; <code>ENVIRONMENT_CHECK_IDS</code> is neither renamed nor extended, and no detection is copied.</td></tr>
-    <tr><td>How far a remedy goes</td><td>Links, copyable commands, and run-in-a-visible-terminal. The daemon owns argv; the browser sends an id. No daemon-side package-manager install.</td></tr>
+    <tr><td>How far a remedy goes</td><td>Links, copyable commands, and run-in-a-visible-terminal. The daemon owns argv; the browser sends an id, plus a server-verified checkout selection for a provider installer. No daemon-side package-manager install.</td></tr>
     <tr><td>The guided surface</td><td>Settings panel, first-run banner, and one tour. No separate first-run wizard, and not dispatch-form warnings alone.</td></tr>
     <tr><td>v1 families</td><td>Terminals and multiplexers, GitHub CLI presence and authentication, agent CLIs, Claude Code plugins and skills, ai-conductor. <strong>The git and Node baseline is out of v1.</strong></td></tr>
   </tbody>
@@ -457,6 +457,45 @@ its registry, its route, and its place in the dispatch form. The setup view <em>
 <code>needs-setup</code> row in the family it belongs to. One detector, two surfaces; no id
 renamed, no detection copied.</p>
 
+<p><strong>A folded row needs metadata the check does not carry</strong>, and inventing it at the
+render site is how a panel grows per-id branching. An <code>EnvironmentCheckView</code> has a
+label, a warning, and a detail; it has no family, no requirement, and no remedy. So the catalog
+owns that mapping, exactly as it owns a dependency's:</p>
+
+<pre><code>/** What a folded environment warning is, beyond what the check itself says. */
+export const ENVIRONMENT_ROW_METADATA: Record&lt;
+  EnvironmentCheckId,
+  { family: SetupFamilyId; requirement: SetupRequirement; remedy: SetupRemedy }
+&gt; = {
+  "upstartclaw-core-setup": {
+    family: "extensions",
+    requirement: "optional",
+    remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+  },
+};</code></pre>
+
+<p>That <code>Record</code> is again the enforcement: a check appended to the tuple does not
+compile until it has said where its row belongs and what fixes it. The row's identity is
+discriminated rather than pooled into one id space, so nothing can mistake a check for a
+dependency:</p>
+
+<pre><code>export type SetupRowId =
+  | { source: "dependency"; id: SetupDependencyId }
+  | { source: "environment-check"; id: EnvironmentCheckId };</code></pre>
+
+<p>Both sources produce one row shape, so the panel renders a list and never branches on an id.
+Two properties of the folded row are deliberate and easy to get wrong:</p>
+
+<ul>
+  <li><strong>It exists only while the warning does.</strong> A null warning is silence, and that
+  silence covers both "installed and set up" and "never heard of this tooling" - which the
+  environment check deliberately refuses to distinguish. So the row is absent rather than
+  <code>satisfied</code>; it is the one row in the panel that can vanish entirely.</li>
+  <li><strong>Its status is always <code>needs-setup</code></strong>, carrying the check's own
+  warning as <code>why</code> and its <code>detail</code> as the evidence. A check that fired has,
+  by construction, found something installed and unfinished.</li>
+</ul>
+
 <h2>Remedies</h2>
 
 <p>Three kinds plus a printed one, and the boundary between them is the security spine of this
@@ -480,7 +519,15 @@ feature.</p>
   <li><strong><code>provider-installer</code></strong> delegates to the flow that already exists:
   <code>pipelineInstallerCandidates</code> finds verified local checkouts in the workspace
   catalog, <code>pipelineInstallerLaunch</code> reverifies at click time, and the terminal opens
-  the provider's own <code>bin/install</code>. ai-conductor uses this and gains nothing new.</li>
+  the provider's own <code>bin/install</code>. ai-conductor uses this and gains nothing new.
+  <br /><br />
+  This is the one remedy whose request carries a second value: <strong>which</strong> verified
+  checkout to install from, because candidates are local checkouts and there is no "the" checkout
+  to assume. It does not weaken the rule above - a checkout is a <em>selection among candidates the
+  server enumerated</em>, since the provider re-derives the verified set, refuses anything outside
+  it, and cross-checks its own confirmation of the checkout and cwd. The panel offers no control at
+  all when there is no candidate, one click when there is exactly one, and a select defaulting to
+  none when there are several.</li>
   <li><strong><code>skill</code></strong> is a slash command the operator runs inside a Claude
   session - the shape <code>upstartclaw.ts</code> already prescribes with
   <code>/upstartclaw-core:setup</code>. Mission Control prints it; it does not run it. Claw owns
@@ -564,7 +611,7 @@ read -r _</code></pre>
 
 <figure>
   <div class="diagram">
-    <svg viewBox="0 0 700 200" role="img" aria-label="Install flow: the Setup panel posts a dependency id and a terminal backend, the daemon looks argv, cwd and title up in its own catalog, wraps the command in the hold-open shell, and the terminal backend opens a visible window the operator watches; Re-check returns to the detection route.">
+    <svg viewBox="0 0 700 200" role="img" aria-label="Install flow: the Setup panel posts a dependency id, a terminal backend, and - for a provider installer - a verified checkout selection; the daemon looks argv, cwd and title up in its own catalog, wraps the command in the hold-open shell, and the terminal backend opens a visible window the operator watches; Re-check returns to the detection route.">
       <defs>
         <marker id="m-ins" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
@@ -572,11 +619,11 @@ read -r _</code></pre>
       </defs>
 
       <text x="14" y="20" class="ttl">INSTALL</text>
-      <text x="94" y="20" class="band">browser sends an id; the daemon owns the argv</text>
+      <text x="94" y="20" class="band">browser sends an id and a verified selection; the daemon owns the argv</text>
 
       <rect x="17" y="58" width="118" height="58" rx="9" class="n-accent"/>
       <text x="76" y="82" text-anchor="middle" class="ttl">Setup panel</text>
-      <text x="76" y="99" text-anchor="middle" class="sub">id + backend</text>
+      <text x="76" y="99" text-anchor="middle" class="sub">id, backend, checkout</text>
 
       <g color="var(--accent)"><path d="M139,87 L183,87" class="edge-new" marker-end="url(#m-ins)"/></g>
       <text x="161" y="78" text-anchor="middle" class="lbl-new">POST</text>
@@ -670,7 +717,7 @@ step.</p>
 <table>
   <thead><tr><th>Risk</th><th>Containment</th></tr></thead>
   <tbody>
-    <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id. Argv shape pinned by test. Visible terminal, hold-open, exit code shown.</td></tr>
+    <tr><td>Destructive remedy</td><td>The daemon owns argv; the browser sends an id, and for a provider installer a checkout the daemon re-verifies against its own enumerated candidates. Argv shape pinned by test. Visible terminal, hold-open, exit code shown.</td></tr>
     <tr><td>Becomes a machine-wide install manager</td><td><code>requirement</code> levels plus a committed catalog. A dependency Mission Control does not use does not get a row.</td></tr>
     <tr><td>Detection drifts from what refuses</td><td>Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses <code>terminalTargetViews</code> rather than restating it.</td></tr>
     <tr><td>A slow probe stalls the page</td><td>Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (<code>gh auth status</code>, the conductor probe) are bounded by <code>run</code>'s own <code>timeoutMs</code> (<code>src/server/util/exec.ts</code>, 4s by default). A probe that times out renders <code>unknown</code> with a reason rather than blocking the page. <strong>No cache</strong>, per the no-tick rule above: an operator who just installed something must see the change on the next read.</td></tr>

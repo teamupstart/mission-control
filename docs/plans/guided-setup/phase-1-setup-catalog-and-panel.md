@@ -86,8 +86,27 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   carrying `why`.
 - `SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo>` - the exhaustiveness
   enforcement, so a new id does not compile until it has said what it is and how to get it.
-- `SetupDependencyView extends SetupDependencyInfo` with `status`, plus the derived
-  `SetupPairView` for the terminal row, plus `SetupChecksView` as the route's answer.
+- `SetupRowId`, the discriminated identity every row carries, so no code has to guess which id
+  space a row's id came from and the two can never collide:
+  ```ts
+  export type SetupRowId =
+    | { source: "dependency"; id: SetupDependencyId }
+    | { source: "environment-check"; id: EnvironmentCheckId };
+  ```
+- `ENVIRONMENT_ROW_METADATA: Record<EnvironmentCheckId, { family; requirement; remedy }>` - what a
+  folded environment warning is beyond what the check itself says. An `EnvironmentCheckView`
+  carries a label, a warning, and a detail and has **no** family, requirement, or remedy, so
+  without this the folded row is unrepresentable and the panel grows per-id branching to paper
+  over it. `Record<EnvironmentCheckId, ...>` is the same enforcement used everywhere else here: a
+  check appended to that tuple does not compile until it has said where its row belongs and what
+  fixes it. For the one check that exists today: family `extensions`, requirement `optional`,
+  remedy `{ kind: "skill", command: "/upstartclaw-core:setup" }` - which is where the `skill`
+  variant of the remedy union earns its place.
+- `SetupRowView` - ONE row shape both sources produce: `rowId`, `label`, `family`, `requirement`,
+  `enables`, `remedy`, `status`. The panel renders a list of these and never branches on an id.
+  A dependency row fills it from `SETUP_DEPENDENCY_INFO`; a folded row fills it from the check's
+  own label plus `ENVIRONMENT_ROW_METADATA`.
+- The derived `SetupPairView` for the terminal row, plus `SetupChecksView` as the route's answer.
 - Requirement levels for v1: `claude-cli` recommended (each agent CLI is only required if it is
   the one you dispatch, and the panel says so); `tmux`/`cmux`/`wezterm`/`ghostty` optional
   individually with the derived pair row **required**; `gh-cli` required; `gh-auth` required;
@@ -107,9 +126,17 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   - wraps each in the `runCheck` equivalent, so a thrown probe becomes that row's `unknown` with
     a why that names Mission Control as the fault rather than the operator's machine;
   - appends the derived terminal pair row from `terminalTargets`;
-  - folds `environmentCheckViews()` in: each non-null warning becomes a `needs-setup` row in the
-    family it belongs to, reusing that check's own `label` and `detail`. Do not re-implement
-    `upstartclaw.ts`; call it.
+  - folds `environmentCheckViews()` in, building each row from the check's own `label` plus
+    `ENVIRONMENT_ROW_METADATA`. Do not re-implement `upstartclaw.ts`; call it. Two rules, both
+    easy to get wrong and both worth a test:
+    - **a row exists only while its warning does.** A null warning is silence, and that silence
+      covers both "installed and set up" and "never heard of this tooling", which the check
+      deliberately refuses to distinguish. So emit no row - not a `satisfied` one. It is the only
+      row in the panel that can vanish entirely, and claiming `satisfied` would invent a fact the
+      check declined to assert.
+    - **its status is always `needs-setup`**, with the warning as `why` and the check's `detail`
+      as the evidence. A check that fired has by construction found something installed and
+      unfinished.
 - `probes.ts` (or one file per family if it reads better) - the probes themselves:
   - agents: `agentBinPresent` / `resolveBinPath(resolveAgentBin(agent))` for the evidence path;
   - terminals: `binPresent(spec)` per backend, with the resolved candidate as evidence;
@@ -159,7 +186,10 @@ Pure, browser-safe, no `node:` imports - `src/shared/` is a controlled path.
   - one row per dependency: status chip, label, the `enables` sentence, the evidence or why
     string, a requirement marker for `required` rows, and a **remedy action slot** - Phase 2
     fills it;
-  - `data-anchor="setup/<slug>"` on every control row, per the registry's anchor contract;
+  - `data-anchor="setup/<slug>"` on every control row, per the registry's anchor contract. Slugs
+    must be unique **across both id spaces**, since a dependency and an environment check could
+    otherwise slug the same - `settings-sidebar-render.test.ts` fails on a duplicate anchor, so
+    derive the slug from `SetupRowId` (source included) rather than from the bare id;
   - remedy rendering in this phase: `link` as an anchor, `command` as copyable text with the
     existing copy affordance, `provider-installer` as a pointer to the Conductor panel, `skill`
     as the printed slash command;
@@ -187,7 +217,9 @@ existing spec depends on those backends being resolvable.
   `unknown` and does not take the view down. The terminal pair row disagreeing with per-backend
   presence (a multiplexer installed, no emulator) is its own case.
 - `test/setup-checks-route.test.ts` - the route answers 200 with every row even when a probe
-  fails, and the folded environment check appears as a `needs-setup` row.
+  fails; the folded environment check appears as a `needs-setup` row carrying the check's warning
+  and detail, in the family `ENVIRONMENT_ROW_METADATA` names; and **no row at all** appears for
+  that check when its warning is null. Anchor slugs are unique across both id spaces.
 - `test/settings-sidebar-render.test.ts` - already walks the registry; confirm it passes with the
   new category and that no anchor collides.
 - `e2e/specs/setup-panel.spec.ts` - the required UI spec. Opens Settings → Setup against a daemon
@@ -220,7 +252,10 @@ Later phases may rely on, and must not change:
 4. The panel's structure: `setup-family-<id>` sections, `data-anchor="setup/<slug>"` rows, and
    the remedy action slot.
 5. The override-chain rule for every probe.
-6. `useSetupChecks` is panel-local **only until a second consumer exists**. Phase 3's banner is
+6. `SetupRowId`, `SetupRowView`, and `ENVIRONMENT_ROW_METADATA`: one row shape from two id
+   spaces, discriminated by `source`. A later phase adds a row by adding catalog data, never by
+   branching on an id at a render site, and never by pooling the two id spaces into one.
+7. `useSetupChecks` is panel-local **only until a second consumer exists**. Phase 3's banner is
    that consumer and is expected to hoist the hook to App and pass its state to both readers; that
    is a planned move, not a contract break. What must not change is the underlying rule - one
    owner, one read, no poll.
@@ -246,6 +281,14 @@ regions of `SetupPanel.tsx`; either may merge first.
   behavior all already rested on - and named the real bound instead: concurrency plus `run`'s
   `timeoutMs`, with a timeout rendering `unknown`. Fixed a stale "see step 4" pointer in finding 2
   found while checking this.
+- **Inspector round 3 (major, PR #800).** The folded environment warning was unrepresentable:
+  the only row type extended `SetupDependencyInfo`, while an `EnvironmentCheckView` has no id in
+  that space, no family, no requirement, and no remedy - so an implementer would have invented all
+  four at the render site. Added `SetupRowId` (discriminated by source), one `SetupRowView` both
+  sources produce, and a catalog-owned `ENVIRONMENT_ROW_METADATA`. Also pinned the two properties
+  of a folded row that a naive mapping gets wrong - it vanishes when the warning is null rather
+  than reading `satisfied`, and its status is always `needs-setup` - and required anchor slugs to
+  be derived from the discriminated id so the two spaces cannot collide.
 - **Inspector round 2 (major, PR #800).** Phase 3's banner needs the checks before Settings is
   opened, which this phase's panel-local hook cannot serve. Amended the hook bullet and the handoff
   to say panel-local holds only until a second consumer exists, and to keep the hook's state

@@ -37,7 +37,7 @@ Submitted in the plan review, and now the plan's premises rather than open quest
 | Decision | Adopted |
 | --- | --- |
 | Where the catalog lives | A new setup catalog that **reads** the existing environment checks. `src/shared/setup-catalog.ts` plus `src/server/setup/`; `ENVIRONMENT_CHECK_IDS` is neither renamed nor extended, and no detection is copied. |
-| How far a remedy goes | Links, copyable commands, and run-in-a-visible-terminal. The daemon owns argv; the browser sends an id. No daemon-side package-manager install. |
+| How far a remedy goes | Links, copyable commands, and run-in-a-visible-terminal. The daemon owns argv; the browser sends an id, plus a server-verified checkout selection for a provider installer. No daemon-side package-manager install. |
 | The guided surface | Settings panel, first-run banner, and one tour. No separate first-run wizard, and not dispatch-form warnings alone. |
 | v1 families | Terminals and multiplexers, GitHub CLI presence and authentication, agent CLIs, Claude Code plugins and skills, ai-conductor. **The git and Node baseline is out of v1.** |
 
@@ -159,6 +159,47 @@ registry, its route, and its place in the dispatch form. The setup view *reads*
 `environmentCheckViews()` and renders each non-null warning as a `needs-setup` row in the
 family it belongs to. One detector, two surfaces; no id renamed, no detection copied.
 
+**A folded row needs metadata the check does not carry**, and inventing it at the render site is
+how a panel grows per-id branching. An `EnvironmentCheckView` has a label, a warning, and a
+detail; it has no family, no requirement, and no remedy. So the catalog owns that mapping,
+exactly as it owns a dependency's:
+
+```ts
+/** What a folded environment warning is, beyond what the check itself says. */
+export const ENVIRONMENT_ROW_METADATA: Record<
+  EnvironmentCheckId,
+  { family: SetupFamilyId; requirement: SetupRequirement; remedy: SetupRemedy }
+> = {
+  "upstartclaw-core-setup": {
+    family: "extensions",
+    requirement: "optional",
+    remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+  },
+};
+```
+
+`Record<EnvironmentCheckId, ...>` is again the enforcement: a check appended to that tuple does
+not compile until it has said where its row belongs and what fixes it. The row's identity is
+discriminated rather than pooled into one id space, so nothing can mistake a check for a
+dependency:
+
+```ts
+export type SetupRowId =
+  | { source: "dependency"; id: SetupDependencyId }
+  | { source: "environment-check"; id: EnvironmentCheckId };
+```
+
+Both sources produce one row shape, so the panel renders a list and never branches on an id. Two
+properties of the folded row are deliberate and easy to get wrong:
+
+- **It exists only while the warning does.** A null warning is silence, and silence covers both
+  "installed and set up" and "never heard of this tooling" - which the environment check
+  deliberately refuses to distinguish. So the row is absent rather than `satisfied`; it is the one
+  row in the panel that can vanish entirely.
+- **Its status is always `needs-setup`**, carrying the check's own warning as `why` and its
+  `detail` as the evidence. A check that fired has, by construction, found something installed
+  and unfinished.
+
 ## Remedies
 
 Three kinds plus a printed one, and the boundary between them is the security spine of this
@@ -194,6 +235,15 @@ export type SetupRemedy =
   `pipelineInstallerCandidates` finds verified local checkouts in the workspace catalog,
   `pipelineInstallerLaunch` reverifies at click time, and the terminal opens the provider's
   own `bin/install`. ai-conductor uses this and gains nothing new.
+
+  This is the one remedy whose request carries a second value: **which** verified checkout to
+  install from, because candidates are local checkouts and there is no "the" checkout to assume.
+  It does not weaken the rule above. A checkout is a *selection among candidates the server
+  enumerated* - the provider re-derives the verified set, refuses anything outside it, and
+  cross-checks its own confirmation of the checkout and cwd - so the browser cannot name an
+  arbitrary directory, and argv still comes from the provider. The panel offers no control at all
+  when there is no candidate, one click when there is exactly one, and a select defaulting to none
+  when there are several.
 - **`skill`** is a slash command the operator runs inside a Claude session - the shape
   `upstartclaw.ts` already prescribes with `/upstartclaw-core:setup`. Mission Control prints
   it; it does not run it. Claw owns its own setup, and a daemon that repaired another tool's
@@ -224,7 +274,7 @@ Install, on click:
 
 ```mermaid
 flowchart LR
-  Panel[Setup panel] -->|POST /api/setup/install with id and backend| Route[daemon route]
+  Panel[Setup panel] -->|POST /api/setup/install: id, backend, verified checkout| Route[daemon route]
   Route --> Cat[catalog lookup: argv, cwd, title]
   Cat --> Wrap[hold-open shell wrapper]
   Wrap --> Term[terminal backend]
@@ -286,7 +336,7 @@ and there is no third wizard implementation to keep in step.
 
 | Risk | Containment |
 | --- | --- |
-| A remedy runs something destructive | The daemon owns argv; the browser sends an id. Argv shape pinned by test. Visible terminal, hold-open, exit code shown. |
+| A remedy runs something destructive | The daemon owns argv; the browser sends an id, and for a provider installer a checkout the daemon re-verifies against its own enumerated candidates. Argv shape pinned by test. Visible terminal, hold-open, exit code shown. |
 | The page becomes an install manager for the whole machine | `requirement` levels plus a committed catalog. A dependency Mission Control does not use does not get a row. |
 | Detection drifts from the code that actually refuses | Every probe is the function the refusing path calls. The one place that could drift - the terminal pair - reuses `terminalTargetViews` rather than restating it. |
 | A slow probe stalls the page | Probes run concurrently, so the route costs the slowest one rather than their sum, and the two subprocess probes (`gh auth status`, the conductor probe) are bounded by `run`'s own `timeoutMs` (`src/server/util/exec.ts`, 4s by default). A probe that times out renders `unknown` with a reason rather than blocking the page. **No cache**, per the no-tick rule above: an operator who just installed something must see the change on the next read. |

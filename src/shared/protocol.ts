@@ -6429,6 +6429,19 @@ export const HtmlBlockAnchorSchema = z.object({
 });
 export type HtmlBlockAnchorBody = z.infer<typeof HtmlBlockAnchorSchema>;
 
+/** Locate a source-anchored thread in the rendered HTML tree without changing either. */
+export const HtmlBlockTargetSchema = z.object({
+  path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  quote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).optional(),
+  revision: z.string().max(FILE_COMMENT_TEXT_LIMITS.path).nullable().optional(),
+}).refine((value) => value.endLine >= value.startLine, {
+  message: "endLine must not precede startLine",
+  path: ["endLine"],
+});
+export type HtmlBlockTargetBody = z.infer<typeof HtmlBlockTargetSchema>;
+
 /** A new line-anchored comment thread, with its opening comment. */
 export const CreateFileCommentSchema = z.object({
   path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),

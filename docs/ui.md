@@ -863,11 +863,18 @@ original comment, every reply in time order, and a box to add another. A line ca
 than one thread steps through them on each click, and closes on the last. <kbd>Esc</kbd> closes
 the panel, and <kbd>⌘</kbd><kbd>Enter</kbd> submits from either box.
 
+**Comments** in the toolbar opens the file's comment index as a side rail. It lists every
+thread on the selected file in source order, including resolved threads, with its location,
+state, message count, and most recent text. Selecting a row expands that thread and centers
+its anchor in the current reader: the rendered block in Preview and the source line in Editor.
+The rail is navigation rather than the review queue, so a thread remains findable after it is
+sent, answered, or resolved.
+
 **Resolve** closes a thread, and only a person ever does - a thread does not close itself and
-an agent cannot close one. Closed threads stop being drawn; **Resolved** in the toolbar
-brings them back, where each offers **Reopen**. That control appears only while comment mode
-is on and the file has at least one closed thread - it is part of deciding what you are
-looking at, not a permanent fixture of the toolbar.
+an agent cannot close one. Closed threads stop being drawn inline, but remain in the
+**Comments** rail. Selecting one brings its marker and thread back into the file, where it
+offers **Reopen**. **Resolved** still controls whether all closed markers are drawn together;
+it appears only while comment mode is on and the file has at least one closed thread.
 
 **In Preview, point at what you are reading.** With comment mode on, hovering a block of the
 rendered document outlines it, and the block you land on is the innermost one under the pointer -

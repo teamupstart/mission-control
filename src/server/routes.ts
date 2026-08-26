@@ -89,6 +89,7 @@ import {
   AppendFileCommentMessageSchema,
   CreateFileCommentSchema,
   HtmlBlockAnchorSchema,
+  HtmlBlockTargetSchema,
   EditFileCommentMessageSchema,
   ReorderFileCommentsSchema,
   SetFileCommentStatusSchema,
@@ -251,7 +252,11 @@ import {
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
-import { HTML_BLOCK_STALE_REASON, resolveHtmlBlockAnchor } from "./html-block-anchor.ts";
+import {
+  HTML_BLOCK_STALE_REASON,
+  resolveHtmlBlockAnchor,
+  resolveHtmlBlockPath,
+} from "./html-block-anchor.ts";
 import { progressOf, type FileCommentWalkthrough } from "./file-comment-walkthrough.ts";
 import type { ProductIssueService } from "./product-issues.ts";
 import type { SettingsBackupService } from "./settings-backups/service.ts";
@@ -2409,6 +2414,37 @@ export function buildApp(
       quote: resolved.quote,
       revision: document.revision,
     });
+  });
+
+  /** The inverse read: locate a stored source range in the current rendered HTML tree. */
+  app.post("/api/sessions/:id/html-block-target", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    const parsed = await parseBody(c, HtmlBlockTargetSchema);
+    if (!parsed.ok) return parsed.res;
+    let document: Awaited<ReturnType<typeof readSessionFile>>;
+    try {
+      document = await readSessionFile(session.cwd, parsed.data.path);
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      return c.json({ error: known?.message ?? "could not read session file" }, status);
+    }
+    if (document.text === null) {
+      return c.json({ error: document.error ?? "this file has no source to locate" }, 400);
+    }
+    if (parsed.data.revision !== undefined && parsed.data.revision !== document.revision) {
+      return c.json({ error: HTML_BLOCK_STALE_REASON }, 409);
+    }
+    const resolved = resolveHtmlBlockPath(
+      document.text,
+      parsed.data.startLine,
+      parsed.data.endLine,
+      parsed.data.quote,
+    );
+    if (!resolved.ok) return c.json({ error: resolved.reason }, 409);
+    return c.json({ blockPath: resolved.blockPath, revision: document.revision });
   });
 
   // ---- line comments in the Files workspace ----

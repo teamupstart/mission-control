@@ -80,6 +80,23 @@ const HTML_SOURCE = [
   "</html>",                                                    // 13
 ].join("\n");
 
+const HTML_HISTORY = "docs/plans/comment-history.html";
+const HTML_HISTORY_FILLER_COUNT = 72;
+const HTML_HISTORY_BOTTOM_LINE = 5 + HTML_HISTORY_FILLER_COUNT;
+const HTML_HISTORY_SOURCE = [
+  "<html>",
+  "<head><title>Comment history</title></head>",
+  "<body>",
+  "<p>Top reliability question.</p>",
+  ...Array.from(
+    { length: HTML_HISTORY_FILLER_COUNT },
+    (_, index) => `<p>Background paragraph ${index + 1}.</p>`,
+  ),
+  "<p>Bottom reliability question.</p>",
+  "</body>",
+  "</html>",
+].join("\n");
+
 const HTML_BLOCKS = "docs/plans/blocks.html";
 /**
  * Blocks a tag allowlist did not name, which is the point of this document.
@@ -129,6 +146,8 @@ const MARKDOWN_COMMENT = "Thirty seconds contradicts the table below.";
 const TABLE_COMMENT = "This table is missing a units column.";
 const HTML_COMMENT = "This paragraph says the opposite of the heading.";
 const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
+const TOP_HISTORY_COMMENT = "Clarify the top reliability question.";
+const BOTTOM_HISTORY_COMMENT = "Close the bottom reliability question.";
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -392,6 +411,99 @@ test.describe("commenting on a rendered document", () => {
 
     await expectMarkerOnLine(page, 4);
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
+  });
+
+  test("an HTML block whose quote moved opens its existing thread after reload", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").getByText("Read this carefully.").click();
+    await writeComment(page, "line 4", HTML_COMMENT);
+
+    write(
+      cwd,
+      HTML,
+      HTML_SOURCE.replace(
+        "<p>Read <strong>this</strong> carefully.</p>",
+        "\n\n<p>Read <strong>this</strong> carefully.</p>",
+      ),
+    );
+    await page.reload();
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").getByText("Read this carefully.").click();
+    const existingThread = page.getByRole("region", { name: /^Comment MC-\w+ on line / });
+    await expect(existingThread.getByPlaceholder("Reply…")).toBeVisible();
+    await shoot(page.locator(".file-content"), page, "moved-html-thread-open");
+  });
+
+  test("the comments rail lists resolved threads and jumps Preview and Editor to them", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_HISTORY, HTML_HISTORY_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_HISTORY);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const top = frame.getByText("Top reliability question.");
+    const bottom = frame.getByText("Bottom reliability question.");
+
+    await top.click();
+    await writeComment(page, "line 4", TOP_HISTORY_COMMENT);
+    await bottom.scrollIntoViewIfNeeded();
+    await bottom.click();
+    const sourceScroller = page.locator(".file-codemirror .cm-scroller");
+    await sourceScroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await writeComment(page, `line ${HTML_HISTORY_BOTTOM_LINE}`, BOTTOM_HISTORY_COMMENT);
+
+    await bottom.click();
+    const bottomThread = page.getByRole("region", {
+      name: new RegExp(`^Comment MC-\\w+ on line ${HTML_HISTORY_BOTTOM_LINE}$`),
+    });
+    await bottomThread.getByRole("button", { name: "Resolve" }).click();
+    await expect(bottomThread).toBeHidden();
+
+    const commentsToggle = page.getByRole("button", { name: "Comments", exact: true });
+    await expect(commentsToggle).toContainText("2");
+    await commentsToggle.click();
+    await expect(commentsToggle).toHaveAttribute("aria-expanded", "true");
+
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_HISTORY}` });
+    await expect(rail).toBeVisible();
+    await expect(rail.getByRole("list").getByRole("button")).toHaveCount(2);
+    await expect(rail.getByText("resolved", { exact: true })).toBeVisible();
+
+    await frame.locator("body").evaluate((body) => body.scrollTo({ top: body.scrollHeight }));
+    await rail.getByRole("button", { name: new RegExp(TOP_HISTORY_COMMENT) }).click();
+    await expect(top).toBeInViewport();
+    const topThread = page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ });
+    await expect(topThread.getByPlaceholder("Reply…")).toBeVisible();
+    await shoot(page.locator(".file-main"), page, "comment-history-preview-jump");
+
+    await page.getByRole("button", { name: "Editor" }).click();
+    await sourceScroller.evaluate((element) => { element.scrollTop = 0; });
+    await rail.getByRole("button", { name: new RegExp(BOTTOM_HISTORY_COMMENT) }).click();
+    const resolvedThread = page.getByRole("region", {
+      name: new RegExp(`^Comment MC-\\w+ on line ${HTML_HISTORY_BOTTOM_LINE}$`),
+    });
+    await expect(resolvedThread.getByRole("button", { name: "Reopen" })).toBeVisible();
+    await expect.poll(() => sourceScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
+    await shoot(page.locator(".file-main"), page, "comment-history-rail");
   });
 
   test("a block is whatever the browser laid out as one, not whatever a list named", async ({

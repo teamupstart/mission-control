@@ -58,6 +58,11 @@ whose MCP bundle cannot serve that tool is asked to quote the comment's id back 
 turn instead, and its answer is recovered from the conversation. See
 [walk the agent through your review](docs/ui.md#walk-the-agent-through-your-review).
 
+**Comments** opens a side rail for the selected file. It lists every thread, including resolved
+ones, with its source location and latest message. Selecting a row expands that thread and
+scrolls the current Preview or Editor to its anchored block or line; selecting a resolved thread
+also reveals its **Reopen** action.
+
 The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
 Foreman turns carry their purple provenance from the chat log into the terminal, and completion
 reviews separate the original request, each missing item, its suggested fix, and the safety note

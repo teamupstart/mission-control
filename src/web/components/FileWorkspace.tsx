@@ -9,6 +9,7 @@ import {
 } from "../lib/sessionFiles.ts";
 import { FileEditor, type FileEditorComments } from "./FileEditor.tsx";
 import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.tsx";
+import { FileCommentRail } from "./FileCommentRail.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
 import {
   isCommentableDocument,
@@ -28,9 +29,10 @@ import {
   markFileCommentRead,
   reorderFileComments,
   resolveHtmlBlockAnchor,
+  resolveHtmlBlockTarget,
   setFileCommentStatus,
 } from "../lib/api.ts";
-import { boundQuote, sliceLines } from "@shared/file-comment-anchor.ts";
+import { boundQuote, reanchor, sliceLines } from "@shared/file-comment-anchor.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import { Markdown, type MarkdownBlockRange } from "./Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
@@ -49,6 +51,7 @@ import {
   HTML_PREVIEW_READY_MESSAGE,
   HTML_PREVIEW_SANDBOX,
   HTML_PREVIEW_SCROLL_MESSAGE,
+  HTML_PREVIEW_TARGET_MESSAGE,
   htmlPreviewSource,
   inlinePreviewStyles,
 } from "../lib/htmlPreview.ts";
@@ -213,12 +216,23 @@ export function FileWorkspace({
   const commentable = buffer ? isCommentableDocument(buffer.document) : false;
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
+  const [showComments, setShowComments] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadBusy, setThreadBusy] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
+  const [threadJump, setThreadJump] = useState<{
+    id: string;
+    line: number;
+    nonce: number;
+  } | null>(null);
+  const [htmlTarget, setHtmlTarget] = useState<{
+    blockPath: HtmlBlockPathStep[];
+    nonce: number;
+  } | null>(null);
+  const jumpNonce = useRef(0);
   const draft = useFileCommentDraft({
     sessionId: session.id,
     path: selectedPath,
@@ -443,31 +457,52 @@ export function FileWorkspace({
   }, [files, filter]);
 
   /*
-   * The comment model this file draws, derived on every render from the durable threads
-   * and nothing else.
-   *
-   * That is the rule the CodeMirror integration rests on and the one later phases must
-   * keep: the Editor replaces its whole document on an agent edit and rebuilds its view
-   * outright on a path or read-only change, and a marker that remembered a position rather
-   * than deriving one would be wrong after each. Phase 3's re-anchor pass moves
-   * `startLine`; this redraws from it with no further work.
+   * The durable row keeps a thread's identity; the selected file's current bytes decide
+   * where it is drawn. Delivery re-anchors queued comments on the daemon, but an answered
+   * thread can outlive an edit above its quote without entering that path again. Deriving
+   * its display anchor here keeps the marker and Preview click on the same current line,
+   * while the next human reply still uses the existing thread id and lets the daemon persist
+   * the move before delivery. The document revision keeps unchanged files on the cheap path;
+   * a newly loaded revision triggers the same bounded quote search the daemon uses.
    */
+  const allFileThreads = useMemo(() => {
+    const threads = threadsForFile(fileCommentThreads, session.id, selectedPath, true);
+    if (!buffer || buffer.document.text === null) return threads;
+    const revision = buffer.document.revision;
+    return threads.map((thread) => {
+      const outcome = reanchor(thread, buffer.text, revision);
+      if (outcome.kind === "outdated") {
+        return thread.outdated ? thread : { ...thread, outdated: true };
+      }
+      if (
+        thread.startLine === outcome.startLine
+        && thread.endLine === outcome.endLine
+        && thread.revision === outcome.revision
+        && thread.outdated === false
+      ) return thread;
+      return {
+        ...thread,
+        startLine: outcome.startLine,
+        endLine: outcome.endLine,
+        revision: outcome.revision,
+        outdated: false,
+      };
+    });
+  }, [
+    buffer,
+    fileCommentThreads,
+    selectedPath,
+    session.id,
+  ]);
   const fileThreads = useMemo(
-    () => threadsForFile(fileCommentThreads, session.id, selectedPath, showResolved),
-    [fileCommentThreads, selectedPath, session.id, showResolved],
+    () => showResolved
+      ? allFileThreads
+      : allFileThreads.filter((thread) => thread.status !== "resolved"),
+    [allFileThreads, showResolved],
   );
   const threadLines = useMemo(() => threadsByLine(fileThreads), [fileThreads]);
-  const resolvedCount = useMemo(
-    () =>
-      fileCommentThreads.filter(
-        (thread) =>
-          thread.sessionId === session.id
-          && thread.path === selectedPath
-          && thread.status === "resolved",
-      ).length,
-    [fileCommentThreads, selectedPath, session.id],
-  );
-  const openThread = fileThreads.find((thread) => thread.id === openThreadId) ?? null;
+  const resolvedCount = allFileThreads.filter((thread) => thread.status === "resolved").length;
+  const openThread = allFileThreads.find((thread) => thread.id === openThreadId) ?? null;
 
   /*
    * Reading a thread is what clears its pip.
@@ -589,6 +624,7 @@ export function FileWorkspace({
     if (outstanding.path !== selectedPath) controller.select(session.id, outstanding.path);
   }, [controller, outstanding, selectedPath, session.id]);
   const scrollTo = useMemo(() => {
+    if (threadJump) return { line: threadJump.line, nonce: threadJump.nonce };
     if (
       outstanding
       && followedOutstanding?.id === outstanding.id
@@ -604,7 +640,7 @@ export function FileWorkspace({
       return { line: fileLineRequest.line, nonce: fileLineRequest.nonce };
     }
     return null;
-  }, [fileLineRequest, followedOutstanding, outstanding, selectedPath, session.id]);
+  }, [fileLineRequest, followedOutstanding, outstanding, selectedPath, session.id, threadJump]);
 
   const openQueued = useCallback((thread: FileCommentThread): void => {
     setReviewError(null);
@@ -613,6 +649,22 @@ export function FileWorkspace({
     if (thread.path !== selectedPath) controller.select(session.id, thread.path);
     else setOpenThreadId(thread.id);
   }, [controller, selectedPath, session.id]);
+
+  /** Open a history row and make its anchor the active target on every visible reader. */
+  const openIndexedThread = useCallback((thread: FileCommentThread): void => {
+    setThreadError(null);
+    setCommentMode(true);
+    if (thread.status === "resolved") setShowResolved(true);
+    if (thread.status === "draft") {
+      setOpenThreadId(null);
+      draft.openDraft(thread);
+    } else {
+      draft.dismiss();
+      setOpenThreadId(thread.id);
+    }
+    jumpNonce.current += 1;
+    setThreadJump({ id: thread.id, line: thread.startLine, nonce: jumpNonce.current });
+  }, [draft]);
 
   /*
    * A comment belongs to the file and the session it was written on.
@@ -637,6 +689,8 @@ export function FileWorkspace({
     pendingThreadOpen.current = null;
     setOpenThreadId(requested);
     setThreadError(null);
+    setThreadJump(null);
+    setHtmlTarget(null);
     dismissDraft();
   }, [dismissDraft, selectedPath, session.id]);
 
@@ -782,6 +836,51 @@ export function FileWorkspace({
 
   /** Whether the sandboxed preview should be treating a click as a comment right now. */
   const htmlCommenting = commentsActive && htmlShowing;
+
+  /* Reveal the indexed block in Markdown Preview, where source ranges are already in DOM. */
+  useEffect(() => {
+    if (!threadJump || !markdownShowing || !commentsActive) return;
+    const reader = workspaceRef.current?.querySelector<HTMLElement>(".file-markdown-preview");
+    if (!reader) return;
+    const blocks = [...reader.querySelectorAll<HTMLElement>("[data-start-line][data-end-line]")];
+    const target = blocks.find((block) => {
+      const start = Number(block.dataset.startLine);
+      const end = Number(block.dataset.endLine);
+      return start <= threadJump.line && end >= threadJump.line;
+    });
+    if (!target) return;
+    blocks.forEach((block) => block.classList.remove("mission-comment-target"));
+    target.classList.add("mission-comment-target");
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [commentsActive, markdownShowing, previewText, threadJump]);
+
+  /* Resolve the same source range to the opaque HTML preview's structural path. */
+  useEffect(() => {
+    if (!threadJump || !htmlShowing || !previewPath) {
+      setHtmlTarget(null);
+      return;
+    }
+    const thread = allFileThreads.find((candidate) => candidate.id === threadJump.id);
+    if (!thread) {
+      setHtmlTarget(null);
+      return;
+    }
+    let live = true;
+    void resolveHtmlBlockTarget(session.id, {
+      path: previewPath,
+      startLine: thread.startLine,
+      endLine: thread.endLine,
+      quote: thread.quote,
+      revision: previewRevision,
+    }).then((result) => {
+      if (!live) return;
+      setHtmlTarget(result.ok
+        ? { blockPath: result.blockPath, nonce: threadJump.nonce }
+        : null);
+    });
+    return () => { live = false; };
+  }, [allFileThreads, htmlShowing, previewPath, previewRevision, session.id, threadJump]);
+
   /*
    * Arming the frame, from BOTH directions, because either one alone loses.
    *
@@ -803,11 +902,26 @@ export function FileWorkspace({
     frame?.contentWindow?.postMessage({ type: HTML_PREVIEW_COMMENT_MESSAGE, enabled }, "*");
     frame?.contentWindow?.postMessage({ type: HTML_PREVIEW_KEYBOARD_MESSAGE, enabled: true }, "*");
   }, []);
+  const revealHtmlTarget = useCallback((target: typeof htmlTarget): void => {
+    if (!target) return;
+    const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+      ".file-content .html-preview",
+    );
+    frame?.contentWindow?.postMessage({
+      type: HTML_PREVIEW_TARGET_MESSAGE,
+      path: target.blockPath,
+    }, "*");
+  }, []);
   const commentingRef = useRef(htmlCommenting);
   commentingRef.current = htmlCommenting;
+  const htmlTargetRef = useRef(htmlTarget);
+  htmlTargetRef.current = htmlTarget;
   useEffect(() => {
     armFrame(htmlCommenting);
   }, [armFrame, htmlCommenting]);
+  useEffect(() => {
+    revealHtmlTarget(htmlTarget);
+  }, [htmlTarget, revealHtmlTarget]);
   useEffect(() => {
     if (!previewPath) return;
     const onReady = (event: MessageEvent): void => {
@@ -817,10 +931,11 @@ export function FileWorkspace({
       );
       if (!frame || event.source !== frame.contentWindow) return;
       armFrame(commentingRef.current);
+      revealHtmlTarget(htmlTargetRef.current);
     };
     window.addEventListener("message", onReady);
     return () => window.removeEventListener("message", onReady);
-  }, [armFrame, previewPath]);
+  }, [armFrame, previewPath, revealHtmlTarget]);
 
   // A sandbox is a separate browsing context, so its keydown events never bubble to App.
   // The armed bridge claims only Preview's fixed navigation keys and sends exit back here,
@@ -1223,6 +1338,20 @@ export function FileWorkspace({
                   {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
                 </button>
               </Tooltip>
+              <Tooltip
+                label={showComments
+                  ? "Hide every comment on this file"
+                  : "Show every comment on this file, including resolved threads"}
+              >
+                <button
+                  className={`file-comment-toggle${showComments ? " on" : ""}`}
+                  aria-label="Comments"
+                  aria-expanded={showComments}
+                  onClick={() => setShowComments((value) => !value)}
+                >
+                  Comments ({allFileThreads.length})
+                </button>
+              </Tooltip>
               {/*
                 The review's own control, beside the mode toggle rather than inside it: comment
                 mode is "what a click on a line does", and this is "what happens to what you
@@ -1271,7 +1400,8 @@ export function FileWorkspace({
           )}
         </header>
 
-        <div className={`file-content${commentSourceShowing ? " is-comment-split" : ""}`}>
+        <div className={`file-reader-shell${showComments ? " has-comment-rail" : ""}`}>
+          <div className={`file-content${commentSourceShowing ? " is-comment-split" : ""}`}>
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
           {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
@@ -1325,6 +1455,17 @@ export function FileWorkspace({
               <div><h3>Local edits</h3><pre>{buffer.text}</pre></div>
               <div><h3>{buffer.conflict.deleted ? "Deleted on disk" : "Current disk"}</h3><pre>{buffer.conflict.text ?? "File content is unavailable."}</pre></div>
             </div>
+          )}
+          </div>
+
+          {showComments && selectedPath && (
+            <FileCommentRail
+              path={selectedPath}
+              threads={allFileThreads}
+              selectedId={openThreadId ?? composer?.threadId ?? null}
+              onOpen={openIndexedThread}
+              onClose={() => setShowComments(false)}
+            />
           )}
         </div>
 

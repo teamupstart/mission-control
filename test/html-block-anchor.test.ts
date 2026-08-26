@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 
-import { resolveHtmlBlockAnchor } from "../src/server/html-block-anchor.ts";
+import {
+  resolveHtmlBlockAnchor,
+  resolveHtmlBlockPath,
+} from "../src/server/html-block-anchor.ts";
 import { htmlPreviewSource } from "../src/web/lib/htmlPreview.ts";
 import type { HtmlBlockPathStep } from "../src/shared/protocol.ts";
 
@@ -129,6 +132,35 @@ test("a row in a table written without tbody anchors to its own line", () => {
   assert.equal(result.ok, true);
   assert.equal(result.ok && result.startLine, 4);
   assert.equal(result.ok && result.quote, "<tr><td>3</td><td>30s</td></tr>");
+});
+
+test("a stored source anchor resolves back through the browser tree", () => {
+  const source = [
+    "<body>",
+    "<p>Read <strong>this</strong> carefully.</p>",
+    "<table>",
+    "<tr><td>3</td><td>30s</td></tr>",
+    "</table>",
+    "</body>",
+  ].join("\n");
+  const paragraph = resolveHtmlBlockPath(
+    source,
+    2,
+    2,
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+  assert.deepEqual(paragraph, {
+    ok: true,
+    blockPath: [{ index: 0, tag: "p" }],
+  });
+
+  const row = resolveHtmlBlockPath(source, 4, 4, "<tr><td>3</td><td>30s</td></tr>");
+  assert.equal(row.ok, true);
+  assert.ok(
+    row.ok && row.blockPath.some((step) => step.tag === "tbody"),
+    "the inverse path keeps the implicit tbody the browser owns",
+  );
+  assert.equal(row.ok && row.blockPath.at(-1)?.tag, "tr");
 });
 
 test("a block spanning several lines quotes all of them", () => {

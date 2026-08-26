@@ -67,6 +67,10 @@ export interface HtmlBlockAnchorResolution {
 
 export type HtmlBlockAnchorResult = HtmlBlockAnchorResolution | HtmlBlockAnchorRefusal;
 
+export type HtmlBlockPathResult =
+  | { ok: true; blockPath: HtmlBlockPathStep[] }
+  | HtmlBlockAnchorRefusal;
+
 /**
  * One sentence a person can act on, and it is the same sentence for every way the walk can
  * fail, because they are all the same fact: the document changed under a render still on
@@ -131,4 +135,69 @@ export function resolveHtmlBlockAnchor(
   // even a `<div>` with nothing in it quotes text a later `reanchor()` can search for -
   // which is exactly the property `CreateFileCommentSchema` refuses a comment for lacking.
   return { ok: true, startLine, endLine, quote: boundQuote(sliceLines(source, startLine, endLine)) };
+}
+
+/**
+ * Find the rendered element nearest a source range so a history row can jump to it.
+ *
+ * The returned path uses the same browser-tree contract as `resolveHtmlBlockAnchor`, only
+ * in reverse. Nodes inserted by HTML5 tree construction still remain in the path even
+ * though they have no source location, which is what keeps a table row below an implicit
+ * `<tbody>` reachable in the iframe. An element whose exact source bytes match the thread's
+ * quote wins; otherwise the smallest covering source range wins, with the deepest node
+ * breaking ties. That puts a preview-authored thread back on its original block while an
+ * editor-authored line still lands on the nearest rendered element that covers it.
+ */
+export function resolveHtmlBlockPath(
+  source: string,
+  startLine: number,
+  endLine = startLine,
+  quote?: string,
+): HtmlBlockPathResult {
+  if (startLine < 1 || endLine < startLine) return { ok: false, reason: STALE };
+  const body = documentBody(source);
+  if (!body) return { ok: false, reason: STALE };
+
+  let best: {
+    path: HtmlBlockPathStep[];
+    span: number;
+    depth: number;
+    quoteMatch: boolean;
+  } | null = null;
+
+  const visit = (node: ParsedElement, path: HtmlBlockPathStep[]): void => {
+    const location = node.sourceCodeLocation;
+    if (
+      path.length > 0
+      && location
+      && location.startLine <= startLine
+      && location.endLine >= endLine
+    ) {
+      const span = location.endLine - location.startLine;
+      const quoteMatch = quote !== undefined
+        && boundQuote(source.slice(location.startOffset, location.endOffset)) === quote;
+      if (
+        !best
+        || (quoteMatch && !best.quoteMatch)
+        || (
+          quoteMatch === best.quoteMatch
+          && (span < best.span || (span === best.span && path.length > best.depth))
+        )
+      ) {
+        best = { path, span, depth: path.length, quoteMatch };
+      }
+    }
+    elementChildren(node).forEach((child, index) => {
+      visit(child, [...path, { index, tag: child.tagName }]);
+    });
+  };
+
+  visit(body, []);
+  const found = best as {
+    path: HtmlBlockPathStep[];
+    span: number;
+    depth: number;
+    quoteMatch: boolean;
+  } | null;
+  return found ? { ok: true, blockPath: found.path } : { ok: false, reason: STALE };
 }

@@ -40,6 +40,7 @@ import {
   FileCommentComposer,
   FileCommentThreadCard,
 } from "../src/web/components/FileCommentThread.tsx";
+import { FileCommentRail } from "../src/web/components/FileCommentRail.tsx";
 import {
   anchorForLine,
   isCommentableDocument,
@@ -279,6 +280,41 @@ test("a marker names its line and its state, and resolved threads hide behind th
     [],
     "threads belong to the session that wrote them",
   );
+});
+
+test("the comments rail indexes every thread, including resolved ones", () => {
+  const html = renderToStaticMarkup(
+    createElement(FileCommentRail, {
+      path: PATH,
+      threads: [
+        thread(),
+        thread({
+          id: "t-2",
+          shortId: "MC-b52a",
+          status: "resolved",
+          startLine: 9,
+          endLine: 9,
+          resolvedAt: 1_700_000_100_000,
+          messages: [{
+            ...thread().messages[0]!,
+            id: "m-2",
+            threadId: "t-2",
+            body: "This one is already closed.",
+          }],
+        }),
+      ],
+      selectedId: "t-2",
+      onOpen: () => {},
+      onClose: () => {},
+    }),
+  );
+  assert.match(html, new RegExp(`aria-label="Comments on ${PATH}"`));
+  assert.ok(html.includes("2 total"));
+  assert.ok(html.includes("MC-a41f"));
+  assert.ok(html.includes("MC-b52a"));
+  assert.ok(html.includes("This one is already closed."));
+  assert.ok(html.includes("resolved"));
+  assert.match(html, /aria-current="true"/);
 });
 
 test("the composer names the line it is anchored to and quotes it back", () => {

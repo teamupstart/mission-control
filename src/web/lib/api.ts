@@ -45,6 +45,8 @@ import type {
   AwayConfigPatch,
   CreateFileCommentBody,
   HtmlBlockAnchorBody,
+  HtmlBlockPathStep,
+  HtmlBlockTargetBody,
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
@@ -2096,6 +2098,37 @@ export async function resolveHtmlBlockAnchor(
       quote: data.quote,
       revision: data.revision ?? null,
     };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Which rendered HTML element currently covers a stored comment's source range. */
+export async function resolveHtmlBlockTarget(
+  sessionId: string,
+  body: HtmlBlockTargetBody,
+): Promise<
+  | { ok: true; blockPath: HtmlBlockPathStep[]; revision: string | null }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/html-block-target`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      blockPath?: HtmlBlockPathStep[];
+      revision?: string | null;
+      error?: string;
+    };
+    if (!res.ok || !Array.isArray(data.blockPath)) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true, blockPath: data.blockPath, revision: data.revision ?? null };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }

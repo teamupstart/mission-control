@@ -100,6 +100,10 @@ export interface DaemonHandle {
   conductorCheckout: string | null;
   /** Make the initially missing fake engine resolve on the next real provider probe. */
   installFakeConductor(): void;
+  /** Make the opt-in, initially missing fake GitHub CLI resolve on the next Setup read. */
+  installFakeGh(): void;
+  /** Remove that fake GitHub CLI so a later Setup read observes a regression. */
+  removeFakeGh(): void;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -276,6 +280,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const useRepoIndexDefaults = extraEnv.MC_E2E_USE_REPO_INDEX_DEFAULTS === "1";
   const installRoot = join(home, "installed-conductor");
   const installBin = join(installRoot, "bin/conduct-ts");
+  const ghStartsMissing = extraEnv.MC_E2E_GH_STARTS_MISSING === "1";
+  const ghInstallBin = join(home, "installed-gh", "bin", "gh");
 
   const installFakeConductor = (): void => {
     if (!startsMissing) return;
@@ -283,6 +289,18 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     copyFileSync(conductor.bin, installBin);
     chmodSync(installBin, 0o755);
     writeFileSync(join(installRoot, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
+  };
+
+  const installFakeGh = (): void => {
+    if (!ghStartsMissing) return;
+    mkdirSync(dirname(ghInstallBin), { recursive: true });
+    copyFileSync(bins.gh, ghInstallBin);
+    chmodSync(ghInstallBin, 0o755);
+  };
+
+  const removeFakeGh = (): void => {
+    if (!ghStartsMissing) return;
+    rmSync(ghInstallBin, { force: true });
   };
 
   const isolatedEnv: NodeJS.ProcessEnv = {
@@ -328,7 +346,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
-    MISSION_GH_BIN: bins.gh,
+    MISSION_GH_BIN: ghStartsMissing ? ghInstallBin : bins.gh,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR
@@ -595,6 +613,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     conductor,
     conductorCheckout,
     installFakeConductor,
+    installFakeGh,
+    removeFakeGh,
     readLog: () => log,
     startForeman,
     crash,

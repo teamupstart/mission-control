@@ -107,6 +107,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "llm",
       "pipelines",
       "repoIndex",
+      "setup.banner",
       "shipping",
       "skills",
       "taskSources",
@@ -155,6 +156,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.setupBanner.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
 });
 
 test("mixed config snapshots include settings and exclude derived or operational state", () => {

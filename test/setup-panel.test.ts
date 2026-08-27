@@ -11,7 +11,8 @@ test("the panel renders stable families, namespaced rows, and inert remedies", (
       loading: false,
       error: null,
       refresh: async () => {},
-      view: { rows: [
+      dismissBanner: async () => null,
+      view: { snapshotToken: "00000000-0000-4000-8000-000000000000", rows: [
         {
           rowId: { source: "dependency", id: "claude-cli" },
           label: "Claude Code",
@@ -30,7 +31,7 @@ test("the panel renders stable families, namespaced rows, and inert remedies", (
           remedy: { kind: "provider-installer", provider: "ai-conductor" },
           status: { state: "missing" },
         },
-      ] },
+      ], banner: { visible: true, attentionRowIds: [], attentionCount: 0 } },
     },
   }));
   for (const id of ["agents", "terminals", "github", "extensions", "pipelines"]) assert.match(html, new RegExp(`id="setup-family-${id}"`));

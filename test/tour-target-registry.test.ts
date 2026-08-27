@@ -152,14 +152,22 @@ test("run scope is declared beside the target too, and only the ladder claims it
   assert.equal(tourTargetOwner("library:library-page"), "library");
 });
 
-test("the Library tour's nineteen targets are declared, namespaced, and its own", () => {
+test("the Library and Setup tour targets are declared, namespaced, and their own", () => {
   const library = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "library");
   assert.equal(library.length, 19);
   assert.equal(new Set(library).size, 19);
   for (const id of library) assert.ok(id.startsWith("library:"));
-  // Two tours, and no target belongs to both.
+  // Every tour owns its targets, and no target belongs to two tours.
   const seeWork = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "see-work");
-  assert.equal(seeWork.length + library.length, TOUR_TARGET_IDS.length);
+  const setup = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "setup");
+  assert.deepEqual(setup, [
+    "setup:panel",
+    "setup:family-agents",
+    "setup:family-github",
+    "setup:recheck",
+  ]);
+  assert.ok(setup.every((id) => tourTargetScope(id) === "page"));
+  assert.equal(seeWork.length + library.length + setup.length, TOUR_TARGET_IDS.length);
 });
 
 test("the namespace table is the one source of target names", () => {

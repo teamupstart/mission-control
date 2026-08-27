@@ -50,6 +50,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     conductorProbe: async () => conductor(),
     terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
     environmentChecks: async () => [],
+    readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
+    writeBannerDismissal: () => {},
     ...overrides,
   };
 }

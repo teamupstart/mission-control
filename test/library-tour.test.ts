@@ -113,10 +113,13 @@ const summary = (patch: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary =>
   ...patch,
 });
 
-test("both tours are registered once, and discovery derives one row each in a stable order", () => {
-  assert.deepEqual(Object.keys(TOUR_DEFINITIONS), ["see-work", "library"]);
-  assert.deepEqual(TOUR_ENTRIES.map((entry) => entry.id), ["see-work", "library"]);
-  assert.deepEqual(TOUR_ENTRIES.map((entry) => entry.title), ["See the work", "Author what runs"]);
+test("all tours are registered once, and discovery derives one row each in a stable order", () => {
+  assert.deepEqual(Object.keys(TOUR_DEFINITIONS), ["see-work", "library", "setup"]);
+  assert.deepEqual(TOUR_ENTRIES.map((entry) => entry.id), ["see-work", "library", "setup"]);
+  assert.deepEqual(
+    TOUR_ENTRIES.map((entry) => entry.title),
+    ["See the work", "Author what runs", "Set up this machine"],
+  );
   assert.equal(new Set(TOUR_ENTRIES.map((entry) => entry.palette.rowId)).size, TOUR_ENTRIES.length);
   // The tour opens on the shelves index, and that route is what App preflights before it
   // commits a run - so a dirty draft answers for it with no tour active.

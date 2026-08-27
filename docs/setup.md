@@ -11,6 +11,18 @@ agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions
 ai-conductor. Missing rows explain what capability is unavailable and provide a documentation
 link or copyable command. The page never runs an installer or setup command.
 
+Mission Control also puts a dismissible reminder above the dashboard on first launch, or when
+a required Setup row becomes missing or needs setup. **Open Setup** links directly to this panel.
+Dismissal is stored on this machine. A repaired row retires its acknowledgement, so the reminder
+returns if that required capability later regresses. An inconclusive **Unknown** result does not
+raise the reminder. A dismissal is bound to the required rows in the checks result it came from;
+if another tab observes repair or regression first, the stale dismissal is refused and asks the
+operator to re-check.
+
+The **Set up this machine** guided tour explains families, statuses, remedies, and **Re-check**
+without executing a remedy. Start it from **Help & tours** at the bottom of the Settings rail or
+from **Start Set up this machine tour** in the command palette.
+
 Install Node.js 24 or newer and verify it:
 
 ```sh

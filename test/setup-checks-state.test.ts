@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SetupChecksView } from "../src/shared/setup-catalog.ts";
+import type { SetupChecksSnapshot } from "../src/shared/setup-catalog.ts";
 import { readSetupChecks } from "../src/web/useSetupChecks.ts";
 
 test("a rejected setup read becomes panel error state", async () => {
@@ -16,6 +16,10 @@ test("a rejected setup read becomes panel error state", async () => {
 });
 
 test("a successful setup read keeps its view and clears the error", async () => {
-  const view: SetupChecksView = { rows: [] };
+  const view: SetupChecksSnapshot = {
+    snapshotToken: "00000000-0000-4000-8000-000000000000",
+    rows: [],
+    banner: { visible: true, attentionRowIds: [], attentionCount: 0 },
+  };
   assert.deepEqual(await readSetupChecks(async () => view), { view, error: null });
 });

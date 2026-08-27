@@ -400,14 +400,15 @@ Workflow posture, and MCP tool list. An unknown tour, or an operation a tour did
 is refused before any task is created rather than falling through to general dispatch, and
 cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
 
-Two tours are registered, and neither stores progress or resumes. A fresh profile starts
+Three tours are registered, and none stores progress or resumes. A fresh profile starts
 **See the work** once automatically, then records that the orientation has been shown so it
 does not reopen over later work. Exiting one restores the page, the asset, and the control it
-started from, and either tour can always be started manually at stop one.
+started from, and each tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
-location per tour: [`tours/see-work.md`](../tours/see-work.md) and
-[`tours/library.md`](../tours/library.md). Their H1 is the tour name, each H2 is a stage title,
+location per tour: [`tours/see-work.md`](../tours/see-work.md),
+[`tours/library.md`](../tours/library.md), and [`tours/setup.md`](../tours/setup.md). Their H1 is
+the tour name, each H2 is a stage title,
 and the prose below it is the stage description. Edit those Markdown files and run
 `npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
 edited by hand. Navigation, readiness, fallbacks, and button behavior remain in the matching
@@ -550,6 +551,18 @@ refused with the same answer an invented tour id gets. If the operator is alread
 dirty draft when they start it, the entry-route preflight raises the existing leave dialog with
 no tour active.
 
+#### Set up this machine
+
+**Set up this machine** starts from the Settings rail's **Help & tours** footer or **Start Set
+up this machine tour** in the palette. It opens **Settings → Setup** and walks six concise stops:
+the panel, dependency families, status meanings, remedies, **Re-check**, and a centered close.
+Every spotlight is page-scoped because the panel has one rendered owner.
+
+The tour is explanatory and read-only. It does not click a remedy, execute a command, install a
+tool, or write progress. Its status language matches the live panel: **Ready** reports evidence,
+**Missing** reports an absent tool, **Needs setup** reports a present but unusable tool, and
+**Unknown** means the check could not finish.
+
 **Comparison finding:** Driver.js supplies spotlight geometry, bounded `waitForElement`
 progression, a centered missing-target fallback, labelled dialog semantics, and initial focus,
 but version 1.8.0 does not contain Tab inside the popover and its built-in close affordance is
@@ -568,7 +581,10 @@ Reduced-motion preference turns off both Driver.js animation and the spike's tra
 The Settings rail begins its machine-level session tools with **Setup**. That panel reports five
 families of external tooling, keeps satisfied tools to a compact evidence line, and gives missing
 or incomplete tools their capability impact and a link or copyable remedy. **Re-check** reads the
-machine again without running any remedy.
+machine again without running any remedy. An App-level reminder appears once on first launch and
+again for newly broken required rows. It links here, can be dismissed durably, and does not add a
+second probe or polling loop. The daemon binds dismissal to the displayed checks snapshot, so a
+tab cannot suppress a repair-regression sequence that another tab already observed.
 
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
 lets you switch live between them, and the choice persists per machine:

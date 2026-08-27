@@ -28,7 +28,7 @@ import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { SetupPanel } from "./SetupPanel.tsx";
-import { useSetupChecks } from "../useSetupChecks.ts";
+import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
 import { useRepoIndex } from "../useRepoIndex.ts";
@@ -184,6 +184,7 @@ export function SettingsPage({
   foreman,
   cost,
   llm,
+  setup,
   layout,
   onLayoutChange,
   settingsStatus,
@@ -234,6 +235,8 @@ export function SettingsPage({
    */
   cost: CostState;
   llm: LlmState;
+  /** App-owned because the first-run banner reads the same uncached machine snapshot. */
+  setup: SetupChecksState;
   /**
    * The live layout, OWNED BY App for the same reason as `foreman`: App renders the
    * layout, so it holds the state and this panel only edits it. A local `useLayoutMode()`
@@ -281,7 +284,6 @@ export function SettingsPage({
 }): React.JSX.Element {
   const shown = category;
   const skills = useSkills();
-  const setup = useSetupChecks(shown === "setup");
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);

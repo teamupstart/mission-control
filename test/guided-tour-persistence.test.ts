@@ -42,6 +42,11 @@ test("rescuing settings from a legacy product name consumes the guided tour", as
   await hydrateUiConfig();
   assert.deepEqual(writes, [{
     layout: "board",
+    // Not rescued from anything - no legacy build stored a density. It rides along because
+    // `coerce` fills every field of the blob, and the value is the shipped default. Pinned
+    // here rather than loosened because this assertion's whole job is to state the EXACT
+    // payload a rescue sends the daemon.
+    lineDensity: "condensed",
     keybindings: {},
     alerts: { notifications: false, sound: true },
     richText: true,
@@ -51,6 +56,10 @@ test("rescuing settings from a legacy product name consumes the guided tour", as
     trustStaged: [],
     hiddenDisplayItems: ["worktree"],
     conversationView: "terminal",
+    // The whole config is pushed up, so a field the legacy read could not know about arrives at
+    // its shipped default rather than being dropped - which is what an operator rescued from an
+    // older product name should get.
+    groupBoardByRepo: true,
   }]);
 });
 

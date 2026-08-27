@@ -116,6 +116,7 @@ const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
 const CONDUCTOR_ONLY = /Conductor commissioning progress/; // the Conductor panel's setup path
+const SETUP_ONLY = /Commands are copied, never run from this page/;
 const STANDING_INSTRUCTIONS_ONLY = /A rule here beats the default/; // the repositories group's rule
 
 test("the rail lists every category exactly once", () => {
@@ -146,6 +147,18 @@ test("routing to Conductor without an engine renders its setup destination", () 
 test("before the daemon answers, the permanent Conductor category is already drawn", () => {
   const html = render();
   assert.match(html, />Conductor</);
+});
+
+test("Setup is a routed category with its read-only remedy boundary visible", () => {
+  const html = render("setup");
+  assert.match(html, SETUP_ONLY);
+  assert.match(
+    html,
+    /<div class="settings-panel-head"><h2>Setup<\/h2><span class="settings-scope settings-scope-home-read"[^>]*>Reads ~\/<\/span>/,
+  );
+  assert.match(html, /Inspects tools and configuration in your home directory without changing them\./);
+  assert.doesNotMatch(html, />Writes ~\/<\/span>/);
+  assert.doesNotMatch(html, HARNESSES_ONLY);
 });
 
 // The rail groups by blast radius, and the groups come from the registry - never from a

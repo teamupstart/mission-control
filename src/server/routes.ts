@@ -327,6 +327,8 @@ import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import { setupChecksView } from "./setup/index.ts";
+import type { SetupDeps } from "./setup/types.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
   getInspectorConfig,
@@ -967,6 +969,8 @@ export function buildApp(
   fileCommentWalkthrough?: FileCommentWalkthrough,
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
   settingsBackups?: SettingsBackupService,
+  /** Read-only setup probe seams. Optional so existing focused route tests stay unchanged. */
+  setupDeps?: SetupDeps,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -5710,8 +5714,13 @@ export function buildApp(
       return c.json(answer, 409);
     }
 
+    const installerArgv = [
+      "/usr/bin/env",
+      ...Object.entries(launch.terminalEnv).map(([name, value]) => `${name}=${value}`),
+      ...launch.argv,
+    ];
     const hold =
-      `${shellCommand(launch.argv)}\n` +
+      `${shellCommand(installerArgv)}\n` +
       `status=$?\n` +
       `printf '\\n[installer exited %s] press enter to close ' "$status"\n` +
       `read -r _\n`;
@@ -5727,7 +5736,7 @@ export function buildApp(
       outcome: result.ok ? "opened" : result.status === 504 ? "maybe-opening" : "refused",
       label: result.label,
       detail: result.ok
-        ? "Installer terminal opened. Finish the interactive installer there, then check again."
+        ? "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts; finish the interactive installer there, then check again."
         : (result.error ?? `${result.label} could not open the installer terminal.`),
     };
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
@@ -6048,6 +6057,10 @@ export function buildApp(
   // who fixes what a warning names must not have to restart the daemon to stop seeing it.
   app.get("/api/environment/checks", async (c) =>
     c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
+
+  // Uncached and read-only. Re-checking reflects installs and sign-ins without restarting,
+  // while every remedy remains inert data for the browser to link or copy.
+  app.get("/api/setup/checks", async (c) => c.json(await setupChecksView(setupDeps)));
 
   // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {

@@ -23,9 +23,12 @@ import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
+import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
+import { SetupPanel } from "./SetupPanel.tsx";
+import { useSetupChecks } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
 import { useRepoIndex } from "../useRepoIndex.ts";
@@ -74,7 +77,7 @@ const FLASH_MS = 3200;
  */
 const ANCHOR_WAIT_MS = 5000;
 
-/** How far this category's writes reach, as the badge the rail and the panel head carry. */
+/** How far this category reaches, as the badge the rail and the panel head carry. */
 function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.JSX.Element {
   const { label, hint } = SETTINGS_SCOPES[scope];
   return (
@@ -278,6 +281,7 @@ export function SettingsPage({
 }): React.JSX.Element {
   const shown = category;
   const skills = useSkills();
+  const setup = useSetupChecks(shown === "setup");
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
@@ -517,14 +521,16 @@ export function SettingsPage({
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
       case "display":
-        // Layout, Conversation and Appearance stacked, not three rail peers: all three are
-        // one browser's preference about this screen, and a category holding a single
-        // checkbox sat as a visual equal of the one that merges pull requests. Stacked
-        // outside in: how sessions are arranged, how a conversation is read, how the
-        // messages inside it are formatted.
+        // Layout, the Line, Conversation and Appearance stacked, not four rail peers: all
+        // of them are one browser's preference about this screen, and a category holding a
+        // single checkbox sat as a visual equal of the one that merges pull requests.
+        // Stacked outside in: how sessions are arranged, how the strip ABOVE every
+        // arrangement is drawn, how a conversation is read, how the messages inside it are
+        // formatted.
         return (
           <>
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
+            <LineDensityPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,
@@ -544,6 +550,8 @@ export function SettingsPage({
         // that category into a drawer of browser preferences, which is the thing its own
         // stacking comment above exists to avoid.
         return <DispatchSettingsPanel />;
+      case "setup":
+        return <SetupPanel state={setup} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

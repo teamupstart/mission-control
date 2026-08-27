@@ -107,6 +107,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
+import type { SetupChecksView } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -307,6 +308,8 @@ export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId)
  */
 export const fetchEnvironmentChecks = () =>
   fetchJson<EnvironmentChecksView>("/api/environment/checks");
+/** A fresh read-only machine setup snapshot. Called only while Settings > Setup is open. */
+export const fetchSetupChecks = () => fetchJson<SetupChecksView>("/api/setup/checks");
 /**
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.

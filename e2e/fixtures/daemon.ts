@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -26,6 +26,7 @@ import {
 import {
   FAKE_CONDUCTOR_VERSION,
   seedConductorInstallerCheckout,
+  writeConductorNodeRuntime,
   writeFakeConductor,
   type FakeConductor,
 } from "./conductor.ts";
@@ -238,6 +239,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
+  if (conductorNodeVersion !== undefined) {
+    writeConductorNodeRuntime(home, conductorNodeVersion);
+  }
   writeProductConsentBin(home);
   const conductor = writeFakeConductor(home);
   mkdirSync(workspace, { recursive: true });
@@ -290,6 +295,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
     MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
+    // Installer specs opt into a controllable bare `node --version`, matching upstream
+    // bin/install without placing a process wrapper in front of every unrelated fixture.
+    PATH:
+      conductorNodeVersion === undefined
+        ? (process.env.PATH ?? "")
+        : `${join(home, "bin")}${delimiter}${process.env.PATH ?? ""}`,
     // Every agent the daemon can launch, redirected at a fake. Missing even one would
     // let a real CLI start and spend real tokens.
     MISSION_CLAUDE_BIN: bins.claude,
@@ -301,6 +312,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // Setup reports these registered emulators too. Pin both to absent paths inside the
+    // disposable home so a developer's installed apps cannot make the browser result differ
+    // from CI. Specs that need one can still override it through `daemonEnv` below.
+    WEZTERM_BIN: join(home, "missing-wezterm"),
+    GHOSTTY_BIN: join(home, "missing-ghostty"),
     // The keep-awake provider, redirected at a fake that records its argv. With the
     // override present this daemon is "supported" on any platform - which is the point:
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a

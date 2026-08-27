@@ -992,7 +992,7 @@ turning it on is consent. Per source:
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed |
-| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
@@ -1088,6 +1088,7 @@ else, it never dispatches, and a task you delete stays deleted.
 | Field | Meaning |
 |---|---|
 | **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
+| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
 | **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
@@ -1102,8 +1103,9 @@ agent's first prompt has the actual text rather than a key to go and look up. De
 arrive from Jira Cloud as ADF (a document tree, not a string) and are flattened to the text
 a human wrote; anything past 4000 characters is truncated and says so.
 
-**A sweep reads the whole filter, not its first page** - over REST. It pages until the result set
-is exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
+**A sweep reads the whole filter, not its first page** - over REST or through UpstartClaw. The
+selected path pages until the result set is exhausted, and the
+[ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
 re-filing any of it, so a queue of 400 issues drains at **Most tasks per sweep** per sweep instead
 of stopping after the first page forever. One sweep processes at most **1000 issues** over at most
 **50 requests**, whichever it reaches first; a filter bigger than that has a tail no sweep can
@@ -1121,7 +1123,9 @@ issue more than the page size, which is an exact test for whether anything follo
   saying the tail is out of reach and naming the two ways to change that (set the variables, or
   narrow the JQL). Work still arrives; it is just bounded, and it says so.
 
-**Auth is a ladder, and no rung of it stores a secret.**
+**The query method is explicit, and neither method stores a secret.**
+
+The local method uses this ladder:
 
 1. Your **`jira` CLI** ([`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli),
    `brew install ankitpokhrel/jira-cli/jira-cli` then `jira init`), if it's on the daemon's
@@ -1129,6 +1133,21 @@ issue more than the page size, which is an exact test for whether anything follo
 2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
+
+The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
+exposes only `Skill`, `ToolSearch`, and
+`mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql`, pre-approves those three,
+invokes `upstartclaw-core:working-with-jira` first, and sends the configured JQL unchanged. Glean,
+web search, filesystem tools, and write-capable Jira tools are unavailable. The returned issue
+pages are read from the MCP provider's structured tool results and validated before entering the
+same mapper and deduplication ledger as a local answer. Jira's own `hasNextPage` and `endCursor`
+values decide whether another request is required; Claude's final summary cannot mark an
+incomplete filter healthy. Loading user settings also means user-level Claude hooks can run on every **Check it
+works** call and scheduled sweep; selecting this query method is the operator's explicit opt-in
+to that unattended behavior. Select it only for `upstartnetwork.atlassian.net`; install
+`upstartclaw-core` and finish `/upstartclaw-core:setup` interactively first. A selected source
+refuses before starting Claude when the JQL is blank, the site is not Upstart Jira, or setup is
+incomplete.
 
 If the CLI is installed but can't answer (a common half-configured machine: `jira` on
 `PATH`, `jira init` never run, tokens exported for shell helpers), the credential is tried
@@ -1160,6 +1179,8 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | What it says | What to do |
 |---|---|
 | `set a JQL query in this source's settings` | the filter is empty - paste one |
+| `UpstartClaw is not installed and fully set up` | install `upstartclaw-core`, then run `/upstartclaw-core:setup` in an interactive Claude Code session |
+| `UpstartClaw queries Upstart Jira only` | restore `upstartnetwork.atlassian.net`, or select the local query method for another Jira site |
 | `no way to reach Jira: install the CLI … or set JIRA_API_TOKEN and JIRA_EMAIL` | neither rung is available |
 | `JIRA_API_TOKEN is set but JIRA_EMAIL is not` | half a credential, named as the half that's missing |
 | `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |

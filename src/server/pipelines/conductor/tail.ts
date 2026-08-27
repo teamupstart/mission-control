@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 // Incremental reads of one feature's `events.jsonl`, resumable across daemon restarts.
 //
-// What the ledger IS good for, and what it is not. ai-conductor persists 44 of its 71 event
-// kinds, and the set it does NOT persist includes `loop_halt`, `gate_verdict` and
-// `halt_cleared` - so a reader that took its halts from here would never see one. Halts,
+// What the ledger IS good for, and what it is not. ai-conductor persists 76 of its 104 event
+// kinds, and the set it does NOT persist includes `build_review_reduced_coverage_accepted`,
+// `gate_verdict` and `halt_cleared` - so a reader that took its halts from here would never see one. Halts,
 // gate verdicts and step statuses all come from files (`state.ts`); the ledger contributes
 // the one fact no file carries, which is the token spend the engine attributes to each
 // step, plus a cheap liveness signal in the shape of "this run's ledger grew".

@@ -1179,9 +1179,9 @@ two PNGs beside it, so it is only as fresh as they are.
 
 `e2e/.artifacts/jira-task-source/` carries three frames
 from `specs/settings-task-sources-jira.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The
-spec can prove a field exists, holds a value and survives a reload; it also turns off
-**Allow backlog autopilot** and proves that per-source task default survives the same round
-trip. The frames are what show that the Jira group tiles into the card's existing rhythm,
+spec can prove a field exists, holds a value and survives a reload; it selects the UpstartClaw
+query method and proves that choice survives alongside the per-source backlog-autopilot default.
+The frames are what show that the Jira group tiles into the card's existing rhythm,
 and that the sentence naming a missing credential lands somewhere a person will read it.
 
 That last one is the frame two fixes were made for, and neither is visible in a DOM

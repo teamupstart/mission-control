@@ -47,6 +47,7 @@ const STEP_GLYPH: Record<PipelineStepState, string> = {
   done: "✓",
   in_progress: "●",
   failed: "✗",
+  refused: "!",
   skipped: "–",
   stale: "↻",
   pending: "○",

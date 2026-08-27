@@ -318,7 +318,7 @@ test("a command that EXITS leaving a background process still has its group torn
  * checks. Spelled twice, they drift, and a `700 + 400` that no longer matches the run is a
  * green test asserting nothing.
  */
-const STUBBORN_TIMEOUT_MS = 1_200;
+const STUBBORN_TIMEOUT_MS = COMMAND_TIMEOUT_MS;
 const STUBBORN_GRACE_MS = 400;
 
 test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
@@ -330,9 +330,10 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   // lever is margin, and both halves of it are deliberate. Measured on an idle machine: the
   // pid file landed at ~145ms with a node grandchild and ~84ms with this one, the residual
   // being the supervisor's own shim, which is the thing under test and cannot be avoided. So
-  // shell removes the ~60ms that was avoidable, and the budget carries the rest. A full suite
-  // at MISSION_TEST_CONCURRENCY=6 once stretched the old ~4.8x margin past breaking, and it
-  // surfaced as a bare ENOENT on this pid file - a symptom naming nothing about signals.
+  // shell removes the ~60ms that was avoidable, and the budget carries the rest. Full-suite
+  // contention has stretched a 1.2s budget past breaking, so this case shares the same 3s
+  // supervisor-start floor as the other timeout cases above. Otherwise it tests scheduler
+  // load instead of the SIGTERM-to-SIGKILL escalation it exists to prove.
   writeFileSync(
     join(dir, "stubborn.sh"),
     [

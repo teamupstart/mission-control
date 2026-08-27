@@ -23,7 +23,7 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  * marker, the projection re-read it and the row change under an operator who never reloaded.
  * That chain is the whole feature, and every link in it belongs to a different program.
  *
- * Ten claims:
+ * Eleven claims:
  *
  *  1. A verb pressed in the attention inbox reaches the engine's own CLI, in the argv and the
  *     working directory the engine requires - and the row leaves the inbox when the halt it
@@ -41,6 +41,8 @@ import { pipelineRepoKey } from "../../src/shared/pipeline.ts";
  *  8. A verb that moved the engine and did not say so still moves the daemon chip, now.
  *  9. A shipped feature the engine could not price reads as unpriced, never as $0.00.
  * 10. A poll that left before a verb cannot repaint the chip that verb already moved.
+ * 11. Refused steps and plan-gap halts keep their typed status, operator tone, actions, and
+ *     recovery guidance across the projection and rendered dashboard.
  *
  * No model tokens: nothing here dispatches an agent, and the only engine is the fake
  * `conduct-ts` that `e2e/fixtures/conductor.ts` installs - which writes the same marker files
@@ -173,6 +175,58 @@ test("a halted run's verb reaches the engine, and the row leaves when the halt c
   await expect(inbox.locator("section.inbox-halt")).toHaveCount(0, { timeout: 15_000 });
   await expect(inbox.getByText("You are all clear.")).toBeVisible();
   await shoot(dashboard, "02-inbox-drained");
+});
+
+test("a refused step and plan-gap halt retain their operator-facing state", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedConductorRun(daemon.repo, "plan-gap-feature", {
+    steps: {
+      build: "done",
+      architecture_review_as_built: "refused",
+      finish: "pending",
+    },
+    lastStep: "architecture_review_as_built",
+    halt: "the approved plan cannot deliver the stated outcome",
+    haltClass: "plan-gap",
+  });
+  seedConductorDaemon(daemon.repo, { pid: process.pid });
+  await observe(daemon, 1);
+
+  const repoKey = encodeURIComponent(pipelineRepoKey("ai-conductor", daemon.repo));
+  await dashboard.goto(`${daemon.baseURL}/#/runs/pipeline/${repoKey}/plan-gap-feature`);
+  const reader = dashboard.locator("div.pipelines-reader");
+  const halt = reader.locator(".pipelines-run-halt");
+  const asBuilt = reader.locator(".wf-pipeline-reviewer", {
+    hasText: "Architecture Review (as-built)",
+  });
+
+  await expect(halt).toContainText("Plan gap");
+  await expect(halt).toContainText("the approved plan cannot deliver the stated outcome");
+  await expect(asBuilt.locator(".workflow-chip")).toHaveText("Refused");
+  await expect(asBuilt.locator(".workflow-chip")).toHaveClass(/workflow-waiting/);
+  await expect(
+    reader.locator(".pipelines-run-facts .workflow-chip", { hasText: "Halted" }),
+  ).toHaveClass(/workflow-failed/);
+  await expect(reader.getByRole("button", { name: "Park" })).toBeVisible();
+  await expect(reader.getByRole("button", { name: "Grant DECIDE re-entry" })).toHaveCount(0);
+  await expect(reader.getByRole("button", { name: "Reseal an artifact" })).toHaveCount(0);
+  await shoot(asBuilt, "11-refused-step");
+  await shoot(reader, "13-plan-gap-run");
+
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("button", { name: /to answer/ }).click();
+  const row = dashboard
+    .getByRole("dialog", { name: "Attention inbox" })
+    .locator("section.inbox-halt");
+  await expect(row).toContainText("Plan gap");
+  await expect(row).toContainText("Revise and approve the plan before clearing the halt");
+  await expect(row).toContainText("Runbook: Stalled or stuck feature");
+  await expect(row.getByRole("button", { name: "Unpark" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "Grant DECIDE re-entry" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "Reseal an artifact" })).toHaveCount(0);
+  await shoot(dashboard, "12-plan-gap-inbox");
 });
 
 test("the daemon chip follows the engine's own pidfile and pause marker", async ({

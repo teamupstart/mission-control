@@ -109,6 +109,55 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "line-density",
+    label: "Line density",
+    description: "Fold the pipeline strip to one row, or expand it to read each stage's sentence.",
+    category: "display",
+    anchor: "display/line-density",
+    keywords: [
+      "line",
+      "strip",
+      "pipeline",
+      "collapse",
+      "condense",
+      "fold",
+      "expand",
+      "vertical space",
+      "real estate",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    // A `toggle` rather than a `jump`, unlike the Board card checklist below: this is one
+    // boolean, so the palette can flip it from the results list without opening the page.
+    id: "board-grouping",
+    label: "Group by repository",
+    description:
+      "Collect the fleet's cards by the repository their session belongs to, under a heading naming it.",
+    category: "display",
+    anchor: "display/board-grouping",
+    // "project" and "monorepo" are what somebody types who thinks about their work rather than
+    // about the directory it lives in; "ungroup" and "flat" are what somebody types who wants
+    // it OFF and would never think to search for the thing they are trying to remove.
+    keywords: [
+      "repo",
+      "repository",
+      "project",
+      "group",
+      "grouping",
+      "ungroup",
+      "flat",
+      "monorepo",
+      "board",
+      "column",
+      "colour",
+      "color",
+    ],
+    kind: "toggle",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",
@@ -197,6 +246,27 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["guided", "wizard", "walkthrough", "steps", "questions", "kind", "harness", "after work"],
     kind: "toggle",
     backup: backupDomains("ui"),
+  },
+  {
+    id: "setup-checks",
+    label: "Machine setup checks",
+    description: "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor.",
+    category: "setup",
+    anchor: "setup/recheck",
+    keywords: [
+      "install",
+      "agent cli",
+      "terminal",
+      "tmux",
+      "cmux",
+      "github",
+      "plugins",
+      "skills",
+      "ai-conductor",
+      "dependencies",
+    ],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
   },
   {
     id: "auto-mode",

@@ -61,8 +61,8 @@ export const test = base.extend<{
    * this daemon has never heard of.
    *
    * `guidedDispatch` and the one-time `guidedTour` are then pinned OFF, and
-   * `conversationView` to Chat, explicitly, and
-   * neither is the same statement as "it ships that way". Roughly fifty specs drive the
+   * `conversationView` to Chat and `lineDensity` to Expanded, explicitly, and
+   * none is the same statement as "it ships that way". Roughly fifty specs drive the
    * dispatch modal, and every one of them
    * expects the ordinary form with the caret in the task box; the preference decides which
    * of two forms they get. Left to the shipped default, all of them would silently depend on
@@ -72,6 +72,13 @@ export const test = base.extend<{
    * want the pass turn it on for themselves - see `specs/guided-dispatch.spec.ts`.
    * Conversation-facing specs likewise keep their original Chat precondition; the default
    * itself is covered through the raw page fixture in `settings-conversation-picker.spec.ts`.
+   *
+   * `lineDensity` is the same story and the newest instance of it. The strip SHIPS
+   * condensed, which drops each stage's sentence from the row - and `line-strip.spec.ts`
+   * asserts those sentences as its proof that the daemon's fold arrived over SSE at all.
+   * Pinned Expanded, that proof goes on saying what it always said, and the shipped default
+   * is covered where it belongs: `line-density.spec.ts` sets its own density both ways
+   * through the raw page fixture.
    *
    * Both halves are needed. The PUT is what `hydrateUiConfig()` adopts as the truth on the
    * next load; the cache write is what the FIRST PAINT reads, synchronously, before that
@@ -85,6 +92,7 @@ export const test = base.extend<{
         guidedDispatch: false,
         guidedTour: false,
         conversationView: "chat",
+        lineDensity: "expanded",
       }),
     });
     expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
@@ -93,7 +101,12 @@ export const test = base.extend<{
     await page.evaluate(() =>
       window.localStorage.setItem(
         "mission-control.ui",
-        JSON.stringify({ guidedDispatch: false, guidedTour: false, conversationView: "chat" }),
+        JSON.stringify({
+          guidedDispatch: false,
+          guidedTour: false,
+          conversationView: "chat",
+          lineDensity: "expanded",
+        }),
       ),
     );
     await page.reload();

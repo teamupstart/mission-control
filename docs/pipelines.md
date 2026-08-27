@@ -68,6 +68,16 @@ other URL details cannot leak through this surface. An unrecognized, malformed, 
 symlinked, non-executable, or out-of-catalog checkout is omitted rather than weakened into a
 warning.
 
+Before an installer can be reviewed or opened, Mission Control runs the same read-only
+`node --version` probe that ai-conductor's installer relies on. Conductor requires Node.js
+`>=26.0.0`. The panel names the detected version and blocks both the browser control and the
+server launch route when that runtime is older or cannot be determined. Activate Node.js 26+
+for Mission Control, restart Mission Control from that environment, and check again before
+installation; changing the runtime in a separate shell cannot update the running process. No
+checkout code runs during this preflight. Mission Control resolves the Node executable that
+answered the probe and resets PATH inside the hosted terminal command so shell initialization
+cannot select a different Node for `bin/install`.
+
 Selecting **Review installer** does not launch anything. A second confirmation names the exact
 checkout, the exact `bin/install` command, its recognized upstream, and the user-level changes
 the upstream installer may offer:
@@ -86,12 +96,15 @@ itself. It opens the upstream interactive installer in that visible terminal and
 terminal open after the installer exits so its result remains readable. Mission Control does
 not add update flags, worktree-root overrides, or non-interactive answers.
 
-Opening a terminal is not proof that Conductor installed. The engine card remains at **Setup
-needed** until **I installed it, check again** finds `conduct-ts`; an unresponsive terminal
-launch is reported only as possibly still opening. If no candidate verifies, no terminal can
-be hosted, or candidate discovery fails, the panel shows copyable commands for cloning the
-recognized upstream and running `./bin/install` manually. Those commands remain operator
-instructions: Mission Control never executes them from the browser.
+Opening a terminal is not proof that Conductor installed. In particular, upstream `bin/install`
+can finish other setup after skipping a failed `conduct-ts` build. Mission Control therefore
+reports only that the installer terminal opened, in an attention state, and the engine card
+remains at **Setup needed** until **I installed it, check again** finds `conduct-ts`. An
+unresponsive terminal launch is reported only as possibly still opening. If no candidate
+verifies, no terminal can be hosted, or candidate discovery fails, the panel shows copyable
+commands for cloning the recognized upstream, activating Node.js 26+, and running
+`./bin/install` manually. Those commands remain operator instructions: Mission Control never
+executes them from the browser.
 
 The compact commissioning line keeps three facts separate: **Engine → Register repo →
 Observe**. They are not interchangeable milestones:
@@ -183,16 +196,18 @@ otherwise the consent would be in force with nothing on screen that could withdr
 
 ## ai-conductor
 
-Verified against ai-conductor `8b51392d`. Mission Control reads, per consented repository:
+File and control contracts verified against ai-conductor `b9c19307`. The live event vocabulary
+is synchronized with ai-conductor 0.104.0 (`1631544a`, upstream `3ba53878`). Mission Control
+reads, per consented repository:
 
 | Path | What it is |
 | --- | --- |
 | `.worktrees/<slug>/` | One feature's worktree. The slug is the plan stem, which is the engine's own canonical key. Directories with no `.pipeline/` (its spec-authoring and autoresolve worktrees) are not pipelines and are skipped. |
-| `.worktrees/<slug>/.pipeline/conduct-state.json` | Per-step statuses as flat top-level keys, plus `last_step`, `complexity_tier`, `track` and `pr_url`. |
+| `.worktrees/<slug>/.pipeline/conduct-state.json` | Per-step statuses as flat top-level keys, plus `last_step`, `complexity_tier`, `track` and `pr_url`. `refused` means an entry condition, environmental guard, or human-judgement boundary ended the attempt without the step's own work failing; it remains unsatisfied and is displayed as refused. |
 | `.worktrees/<slug>/.pipeline/gates/<step>.json` | One gate's verdict. A `skipped: ` reason prefix marks a step that was skipped rather than one whose evidence passed. |
 | `.worktrees/<slug>/.pipeline/HALT`, `HALT.class` | Why it stopped. The first non-empty line of `HALT` is the reason; an absent or unrecognised class reads as `unclassified`. |
 | `.worktrees/<slug>/.pipeline/DONE` | The engine's converged marker. |
-| `.worktrees/<slug>/.pipeline/events.jsonl` | The engine's event ledger, tailed incrementally by byte offset. It contributes the running token spend of a feature in flight; halts and gate verdicts come from the files above, because the engine does not persist those events. |
+| `.worktrees/<slug>/.pipeline/events.jsonl` | The engine's event ledger, tailed incrementally by byte offset. It contributes the running token spend of a feature in flight; the run projection still derives halts and gate verdicts from the authoritative files above. |
 | `.worktrees/<slug>/.docs/shipped/<slug>.md` | What the feature COST, as the engine's own rollup committed it when the feature shipped. Read only once a run is finished, and only then. See [cost](#what-a-feature-cost). |
 | `.daemon/` | At the **repository** root, not inside a worktree: the pidfile, `PAUSED`, `parked/`, `grants/` and `processed/`, all shared by every feature in that repository. |
 
@@ -346,9 +361,12 @@ Five things follow that are worth knowing before pressing anything:
   projection the same request just wrote.
 
 An inbox row offers only what its halt's class calls for - a grant and an unpark for
-`needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact` - and
-never the repository-wide daemon verbs, because a row about one feature must not be able to
-stop every feature in the checkout. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
+`needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact`, and
+no immediate verb for `plan-gap` - and never the repository-wide daemon verbs, because a row
+about one feature must not be able to stop every feature in the checkout. A plan-gap halt
+requires the approved plan to be revised and approved before the halt is cleared through the
+provider's resume procedure. `unpark` only removes a separate park marker, so presenting it as
+the halt's answer would be inaccurate. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
 the run header consults as well: two surfaces deciding separately which verbs a run deserves
 agree only until somebody edits one of them.
 
@@ -532,6 +550,7 @@ and the runbook section that owns that class:
 | `needs-human` | Only an operator can clear it; the engine will not re-kick it. |
 | `mechanical` | The engine may re-kick it on its own once the cause clears. |
 | `protected-artifact` | A sealed decision artifact changed under the engine. |
+| `plan-gap` | The approved plan cannot deliver the stated outcome. Revise and approve the plan before clearing the halt. |
 | `legacy` | Raised before the engine classified halts. Read the reason and decide. |
 | `unclassified` | The engine recorded no class, so nothing here guesses one. |
 
@@ -563,13 +582,15 @@ plugin installed, uninstalled, misconfigured or crashed, the projection is folde
 same files by the same code. That is not a safety margin - it is the design, and the reasons
 are in the engine rather than in caution:
 
-- ai-conductor does not persist every event it emits. Its halts, its gate verdicts and its
-  `halt_cleared` never reach `events.jsonl` at all, so a reader that took them from events
-  would never see one. They come from state files, on every pass, whatever the plugin is
+- ai-conductor does not persist every event it emits. For example,
+  `build_review_reduced_coverage_accepted`, `gate_verdict` and `halt_cleared` never reach
+  `events.jsonl`, so the plugin is their only Mission Control event record. Run halts and gate
+  verdicts still come from authoritative state files on every pass, whatever the plugin is
   doing.
 - Its event bus has no wildcard subscription, so the plugin subscribes to an enumerated list
-  built when it was copied. A conductor release that adds an event kind emits something the
-  installed plugin never asked for - and that event still reaches `events.jsonl`.
+  built when it was copied. A persisted kind added by a later Conductor release still reaches
+  `events.jsonl`; an unpersisted kind has no backstop, which is why the full supported union is
+  pinned by a Mission Control contract test.
 
 So the file tail is never switched off. What live ingest changes is its **cadence**: while
 events are arriving for a run, its event ledger is read on a slow backfill sweep instead of
@@ -598,7 +619,7 @@ somebody else's event loop, appending a line per event and flushing what it has:
 ```
 
 `event` is stored verbatim and read for two fields it may not carry (`type`, `ts`). Nothing
-validates its shape: conductor's event union is TypeScript-only, unversioned and seventy-odd
+validates its shape: conductor's event union is TypeScript-only, unversioned and 104 kinds
 members long, so a schema here would be a second copy of a contract with no first copy, and
 its first effect would be to refuse the events of a conductor release newer than this build.
 A record naming no `type` is stored under the kind `unknown`.
@@ -625,7 +646,8 @@ the file tail builds runs from - and a push naming anything else is counted as `
 stored nowhere. This is a retention rule rather than an authenticity one: the ledger is
 bounded by retiring rows alongside the runs a pass enumerates, so a row under a slug no pass
 can ever produce is a row nothing would retire. When the worktrees cannot be listed at all,
-the push is refused rather than trusted, and the file tail backfills whatever was turned away.
+the push is refused rather than trusted. The file tail later backfills persisted events that
+were turned away; an unpersisted event has no recovery path across this safety boundary.
 That is the opposite of the call the projection makes on the same unreadable directory, where
 "we could not look" must not retire anything - and both follow from one rule: an unreadable
 directory is not evidence for the durable act in front of you.
@@ -676,7 +698,7 @@ Two details are worth knowing before reading the table:
   What this gives up is named: a path re-offering an event under a *new* coordinate - a
   rewritten `events.jsonl` whose lines shifted - stores a second row for one event. A
   duplicate row costs nothing, because nothing in the projection is derived from this table;
-  a dropped event is the one thing that cannot be recovered, and for the 30 kinds conductor
+  a dropped event is the one thing that cannot be recovered, and for the 28 kinds conductor
   never writes down there is nowhere to recover it from.
 
 Retention: a run's events are retired with the run - a worktree the engine tore down, or a
@@ -701,11 +723,10 @@ nothing to copy:
 | `MISSION_CONTROL_URL` | `http://127.0.0.1:7317` | The daemon to post to. |
 | `MISSION_CONTROL_TOKEN` | read from `~/.mission-control/token` | The shared secret. Set it explicitly when the engine runs as another user or on another machine. |
 
-**Until ai-conductor starts the visualizer plugins its registry already discovers, this
-plugin is dormant** - it is found, its manifest is read, and nothing calls `start()`. That
-wiring is a separate change in the ai-conductor repository. Installing the plugin before it
-lands is harmless and does nothing; the file tail carries observation exactly as it does
-today.
+ai-conductor 0.104.0 starts registered visualizers on the same event emitter used by its
+built-in writers, after persistence is attached, and awaits their bounded shutdown. Once this
+plugin is installed, it therefore delivers live events without adding another Conductor event
+source. The file tail remains active as the independent persistence backstop.
 
 The Settings health line says which of the three states a repository is in:
 
@@ -713,7 +734,7 @@ The Settings health line says which of the three states a repository is in:
 | --- | --- |
 | `· file tail` | No plugin has ever pushed here. The shipped state, and the permanent one for anyone who has not installed it. |
 | `· live events` | Events are arriving now, so the tail has relaxed to its backfill sweep. |
-| `· file tail (plugin quiet)` | The plugin has delivered here before and has stopped. The tail is back on its ordinary cadence and picks up everything conductor wrote down - which is 44 of its 74 event kinds; anything the plugin did not deliver from the other 30 was never written anywhere and is not recoverable. This is also what a revoked token or a crashed engine looks like, which is why it does not read as "never". |
+| `· file tail (plugin quiet)` | The plugin has delivered here before and has stopped. The tail is back on its ordinary cadence and picks up everything conductor wrote down - 76 of its 104 event kinds; anything the plugin did not deliver from the other 28 has no `events.jsonl` recovery path. This is also what a revoked token or a crashed engine looks like, which is why it does not read as "never". |
 
 ## Configuration
 
@@ -723,7 +744,7 @@ The Settings health line says which of the three states a repository is in:
 | `MISSION_PIPELINE_TICK_MS` | `5000` | How often consented repositories are re-read. Floored at `1000`. |
 | `MISSION_PIPELINE_PROBE_TTL_MS` | `30000` | How long a cached engine probe answers the Settings route before it is re-run. Floored at `1000`. |
 | `MISSION_PIPELINE_INGEST_LIVE_MS` | `600000` | How long after a pushed event a run still counts as live. Ten minutes because conductor emits at step boundaries and a build or a test suite runs for many of them - a shorter window would read every long step as "the plugin stopped". Floored at `1000`. |
-| `MISSION_PIPELINE_BACKFILL_MS` | `60000` | How long a live run may go without a full event-ledger read. The backstop that makes demotion safe: it is what picks up events the installed plugin never subscribed to. Floored at `1000`. |
+| `MISSION_PIPELINE_BACKFILL_MS` | `60000` | How long a live run may go without a full event-ledger read. It picks up persisted events the installed plugin never subscribed to; unpersisted coverage is enforced by the pinned plugin contract. Floored at `1000`. |
 | `MISSION_PIPELINE_INGEST_REFRESH_MS` | `150` | How long a burst of pushed events coalesces before the repositories it named have their state files folded. |
 | `AI_CONDUCTOR_REGISTRY` | `~/.ai-conductor/registry.json` | Read **bare**, without a `MISSION_` prefix, because it is the variable the engine itself reads - a machine already configured for conductor needs nothing new. Names the file, not its directory. |
 

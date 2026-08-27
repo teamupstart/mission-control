@@ -51,7 +51,8 @@ export type ActionId =
   // to a different action.
   | "scouts"
   | "review"
-  | "delete";
+  | "delete"
+  | "lineDensity";
 
 export interface ActionDef {
   id: ActionId;
@@ -107,6 +108,16 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Toggle Sitrep",
     description: "Open or close the sitrep.",
     defaultBinding: "shift+p",
+    group: "global",
+  },
+  {
+    // `shift+l` for the Line. Bare `l` is Open in Files, and the shifted pair reads as
+    // "the Line" rather than as a second file action.
+    id: "lineDensity",
+    label: "Condense or expand the Line",
+    description:
+      "Fold the pipeline strip to one row and give the space to the conversation, or unfold it to read each stage's sentence.",
+    defaultBinding: "shift+l",
     group: "global",
   },
   {

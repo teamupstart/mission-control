@@ -83,6 +83,7 @@ export const PIPELINE_STEP_STATES = [
   "in_progress",
   "done",
   "failed",
+  "refused",
   "skipped",
   "stale",
 ] as const;
@@ -105,6 +106,7 @@ export const PIPELINE_HALT_CLASSES = [
   "needs-human",
   "mechanical",
   "protected-artifact",
+  "plan-gap",
   "legacy",
   "unclassified",
 ] as const;
@@ -147,6 +149,11 @@ export const PIPELINE_HALT_CLASS_INFO: Record<PipelineHaltClass, PipelineHaltCla
     label: "Protected artifact",
     blurb: "A sealed decision artifact changed under the engine; the seal wants a ceremony.",
   },
+  "plan-gap": {
+    label: "Plan gap",
+    blurb:
+      "The approved plan cannot deliver the stated outcome. Revise and approve the plan before clearing the halt.",
+  },
   legacy: {
     label: "Legacy",
     blurb: "A halt raised before the engine classified them. Read the reason and decide.",
@@ -172,7 +179,7 @@ export interface PipelineRunbook {
  * another program's documentation so the inbox can say where to go, and it decides nothing.
  * A name that has fallen behind a provider release makes one line of a row stale.
  *
- * Read from ai-conductor's own `docs/runbooks/` at `8b51392d`, where a HALT is owned by one
+ * Read from ai-conductor's own `docs/runbooks/` at `b9c19307`, where a HALT is owned by one
  * document - "Stalled or stuck feature", whose symptom list leads with `■ done <slug>:
  * halted` - and the classes differ by which of its sections applies. Both fields are copied
  * from that file's headings rather than paraphrased, so a reader can find them.
@@ -187,6 +194,10 @@ export const PIPELINE_HALT_RUNBOOKS: Record<
     "protected-artifact": {
       name: "Stalled or stuck feature",
       section: "The halt is a protected-artifact violation",
+    },
+    "plan-gap": {
+      name: "Stalled or stuck feature",
+      section: "Clear a halt and let the feature resume",
     },
     legacy: { name: "Stalled or stuck feature", section: "Classify the stall" },
     unclassified: { name: "Stalled or stuck feature", section: "Classify the stall" },
@@ -688,10 +699,26 @@ export interface PipelineInstallerCandidate {
   changes: PipelineInstallerChangeId[];
 }
 
+/** The provider-owned runtime preflight that must pass before installer code can run. */
+export interface PipelineInstallerRuntime {
+  /** Stable runtime id for browser rendering without provider-specific branching. */
+  id: string;
+  label: string;
+  /** Normalized detected version, or null when the executable did not answer clearly. */
+  current: string | null;
+  /** Provider requirement in the same form its package metadata declares. */
+  requirement: string;
+  supported: boolean;
+  /** Bounded, operator-facing explanation of the preflight result. */
+  detail: string;
+}
+
 /** The optional installer capability's answer for one provider. */
 export interface PipelineInstallerCandidatesResult {
   provider: PipelineProviderId;
   supported: boolean;
+  /** Null when this provider has no guided installer or its runtime probe could not be read. */
+  runtime: PipelineInstallerRuntime | null;
   detail: string;
   candidates: PipelineInstallerCandidate[];
 }
@@ -749,7 +776,7 @@ export interface PipelineStepInfo {
  * ai-conductor's 22 sequential steps, in its own `ALL_STEPS` order, plus its four
  * out-of-band steps.
  *
- * Copied from `src/conductor/src/engine/steps.ts` at ai-conductor `8b51392d` and frozen
+ * Copied from `src/conductor/src/engine/steps.ts` at ai-conductor `b9c19307` and frozen
  * here. It is a DISPLAY aid, never an authority: nothing refuses a step name that is
  * missing from it, and `pipelineStepInfo` returning null is an ordinary answer meaning
  * "this build has not been taught what that step is", not an error. See the file header.
@@ -1124,11 +1151,16 @@ export function pipelineGrantRefusal(provider: PipelineProviderId, step: string)
  * once the cause clears, so the useful action is releasing a park somebody applied while
  * looking at it - and offering a grant beside it would suggest a DECIDE gate is what stopped
  * a run that no DECIDE gate touched.
+ *
+ * `plan-gap` is empty for a different reason: the operator must revise and approve the plan,
+ * then clear the halt through the provider's documented resume procedure. `unpark` only
+ * removes a separate park marker, so presenting it as the halt's answer would be misleading.
  */
 export const PIPELINE_HALT_ACTIONS: Record<PipelineHaltClass, readonly PipelineAction[]> = {
   "needs-human": ["grant", "unpark"],
   mechanical: ["unpark"],
   "protected-artifact": [],
+  "plan-gap": [],
   legacy: ["unpark"],
   unclassified: ["unpark"],
 };
@@ -1234,6 +1266,7 @@ export const PIPELINE_HALT_CONSOLES: Record<PipelineHaltClass, readonly Pipeline
   "needs-human": [],
   mechanical: [],
   "protected-artifact": ["reseal"],
+  "plan-gap": [],
   legacy: [],
   unclassified: [],
 };

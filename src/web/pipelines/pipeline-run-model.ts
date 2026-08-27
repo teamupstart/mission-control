@@ -229,6 +229,13 @@ export function pipelineStepStatus(state: PipelineStepState): PipelineStatus {
       return { tone: "passed", label: "Done" };
     case "failed":
       return { tone: "failed", label: "Failed" };
+    case "refused":
+      return {
+        tone: "waiting",
+        label: "Refused",
+        tooltip:
+          "An entry condition, environmental guard, or human judgement boundary refused this attempt; the step's work did not fail",
+      };
     case "skipped":
       return {
         tone: "stopped",
@@ -320,6 +327,9 @@ export function pipelinePhaseStatus(steps: readonly PipelineStepRow[]): Pipeline
   if (steps.length === 0) return null;
   const has = (state: PipelineStepState): boolean => steps.some((step) => step.state === state);
   if (has("failed")) return { tone: "failed", label: "Failed" };
+  // Refusal is terminal for this attempt but is not failed work. It therefore outranks a
+  // sibling still marked in progress while keeping the fleet's amber attention tone.
+  if (has("refused")) return { tone: "waiting", label: "Refused" };
   if (has("in_progress")) return { tone: "running", label: "Running" };
   if (has("stale")) return { tone: "waiting", label: "Re-running" };
   const finished = steps.filter((step) => step.state === "done" || step.state === "skipped");

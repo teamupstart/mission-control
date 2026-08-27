@@ -1,5 +1,10 @@
-import { CONVERSATION_VIEWS, LAYOUT_MODES, UI_CONFIG_DEFAULTS } from "@shared/protocol.ts";
-import type { ConversationView, LayoutMode, UiConfig } from "@shared/protocol.ts";
+import {
+  CONVERSATION_VIEWS,
+  LAYOUT_MODES,
+  LINE_DENSITIES,
+  UI_CONFIG_DEFAULTS,
+} from "@shared/protocol.ts";
+import type { ConversationView, LayoutMode, LineDensity, UiConfig } from "@shared/protocol.ts";
 
 /**
  * The synchronous first-paint cache for the dashboard's preferences, and the ONLY module
@@ -85,10 +90,24 @@ function parseConversationView(raw: string | undefined): ConversationView {
     : UI_CONFIG_DEFAULTS.conversationView;
 }
 
+/**
+ * Same rule again, and it matters MORE here than for the two above: this one decides a
+ * band height. A miss that fell back to `expanded` would paint an 86px strip and then
+ * snap it to 38.5px the moment the daemon's copy landed, stepping the whole conversation
+ * pane down a line on every cold load - which is the reflow the strip's fixed height
+ * exists to prevent, arriving once per paint instead of once per state change.
+ */
+function parseLineDensity(raw: string | undefined): LineDensity {
+  return (LINE_DENSITIES as readonly string[]).includes(raw ?? "")
+    ? (raw as LineDensity)
+    : UI_CONFIG_DEFAULTS.lineDensity;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
     conversationView: parseConversationView(raw?.conversationView),
+    lineDensity: parseLineDensity(raw?.lineDensity),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,
@@ -111,6 +130,11 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     hiddenDisplayItems: raw?.hiddenDisplayItems
       ? [...raw.hiddenDisplayItems]
       : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
+    // `??` and not `||`, which is the whole hazard for a boolean that DEFAULTS TO TRUE: a
+    // stored `false` is the operator's answer, and `||` would read it as absent and hand back
+    // the default - re-grouping the board on every cold paint for the one person who turned it
+    // off. The same trap the booleans above avoid the same way.
+    groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
   };
 }
 

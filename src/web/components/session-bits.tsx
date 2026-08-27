@@ -487,6 +487,119 @@ export function PipelineClusterHead({
   );
 }
 
+/**
+ * What a repository frame's header says, in one place.
+ *
+ * `here` is how many of this repository's cards are in THIS frame and `total` how many it has
+ * on the whole board, and the two come apart constantly - a repository is framed once per tone
+ * column its sessions landed in, and once more per side of the idle column's free/held
+ * boundary. So the short form is the part (`2 of 7`) and the long form says what the parts are,
+ * which is the same division of labour `EnsembleClusterHead`'s rollup line already makes.
+ *
+ * When every session the repository has is in this one frame there is no part to report, and
+ * `2 of 2` would be inviting an operator to go looking for the other zero. It says `2 agents`.
+ */
+export function repoGroupHeadline(
+  repoRoot: string,
+  here: number,
+  total: number,
+): { title: string; count: string; tooltip: string } {
+  const title = repoLeaf(repoRoot);
+  const whole = here >= total;
+  return {
+    title,
+    count: whole ? `${here} agent${here === 1 ? "" : "s"}` : `${here} of ${total}`,
+    tooltip: whole
+      ? `${repoRoot} - ${here} session${here === 1 ? "" : "s"}, all of them here`
+      : `${repoRoot} - ${here} of ${total} sessions in this repository, on this board`,
+  };
+}
+
+/**
+ * The frame header over the sessions of one repository, for the board and the console rail.
+ *
+ * The third member of the `EnsembleClusterHead` / `PipelineClusterHead` family, and a separate
+ * component for the same reason those two are separate from each other: what it draws does not
+ * carry over. An ensemble's header is about a comparison in flight and a pipeline's about a
+ * feature's position, while this one is about identity - which project these cards belong to -
+ * and identity is the one thing on this board with no progress, no stage and no verdict. What
+ * IS shared is the shape, so it borrows the same classes and the three read as one kind of
+ * structure in a column.
+ *
+ * ONE line, unlike the two-line head it borrows the box from. The cluster head needs two
+ * because it carries a strategy, a stage word, progress dots and an attention badge; a
+ * repository carries a name and a count, and putting the count on its own line spent a whole
+ * row of every column in the board on four characters.
+ *
+ * A DISCLOSURE, not a link. The other two heads open their run, because a run is a thing
+ * elsewhere in the app with a page of its own. A repository is not - so the useful action is
+ * the one this header is already the top of: fold the group away while you read the rest of the
+ * board. `expanded` and `onToggle` are the caller's, because the state is per FRAME rather than
+ * per repository: folding a repository in the idle column must not fold away the sibling
+ * waiting for you in "needs you".
+ */
+export function RepoGroupHead({
+  repoRoot,
+  here,
+  total,
+  variant,
+  expanded,
+  onToggle,
+}: {
+  repoRoot: string;
+  /** Cards in this frame. See `repoGroupHeadline`. */
+  here: number;
+  /** Cards this repository has on the whole board, from `repoSessionTotals`. */
+  total: number;
+  /** `board` draws the framed head; `rail` draws the one-line rail group. */
+  variant: "board" | "rail";
+  expanded: boolean;
+  onToggle: () => void;
+}): React.JSX.Element {
+  const { title, count, tooltip } = repoGroupHeadline(repoRoot, here, total);
+  const action = expanded ? "Collapse" : "Expand";
+  // The accessible name carries the action as well as the subject, because that is what a
+  // person operating this by keyboard needs to know before they press it - and `aria-expanded`
+  // below states the same fact in the way a screen reader can announce on its own.
+  const label = `${action} ${title} - ${tooltip}`;
+  if (variant === "rail") {
+    return (
+      <Tooltip label={tooltip}>
+        <button
+          className="rail-ensemble-group rail-repo-group"
+          aria-label={label}
+          aria-expanded={expanded}
+          onClick={onToggle}
+        >
+          <span className="brh-swatch" aria-hidden />
+          <span className="reg-title">{title}</span>
+          <span className="reg-stage">{count}</span>
+          <span className="brh-chevron" aria-hidden>
+            ⌄
+          </span>
+        </button>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        className="board-cluster-head board-repo-head"
+        aria-label={label}
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <span className="brh-swatch" aria-hidden />
+        <span className="bch-title">{title}</span>
+        <span className="bch-meta">{count}</span>
+        <span className="brh-chevron" aria-hidden>
+          ⌄
+        </span>
+      </button>
+    </Tooltip>
+  );
+}
+
 export function WorkflowRailMark({
   run,
   onOpen,

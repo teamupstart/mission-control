@@ -253,6 +253,26 @@ test("the halt reaches the card as a word, not only as the caption's colour", ()
   );
 });
 
+test("a refused step is amber and named refused rather than pending or failed", () => {
+  const refused = run({
+    steps: steps({ architecture_review_as_built: "refused", finish: "pending" }),
+    lastStep: "architecture_review_as_built",
+    halt: {
+      class: "plan-gap",
+      reason: "the approved plan cannot deliver the stated outcome",
+    },
+    group: "halted",
+  });
+  const strip = pipelineStrip(refused.provider, refused.steps, []);
+  const ship = strip.phases.find((phase) => phase.phase === "SHIP")!;
+
+  assert.deepEqual(pipelinePhaseStatus(ship.steps), { tone: "waiting", label: "Refused" });
+  const html = render(refused);
+  assert.ok(html.includes("Architecture Review (as-built) refused (current)"));
+  assert.match(html, /class="tpm-seg workflow-waiting is-now"/);
+  assert.doesNotMatch(html, /Architecture Review \(as-built\) pending/);
+});
+
 test("a run with no halt draws no halt marker and keeps its phase's own tone", () => {
   // The other direction, so the marker cannot become permanent furniture.
   const view = pipelinePhaseMeter(MID_DECIDE)!;

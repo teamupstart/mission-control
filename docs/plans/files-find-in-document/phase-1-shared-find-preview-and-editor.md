@@ -125,12 +125,17 @@ Verified against the checkout before writing this phase.
   emphasis markers, decode entities, rewrite autolinks and hoist reference definitions, so no
   exact character mapping survives the transform. Only block-level `position` data is reliable,
   which is why it is used for the coarse job below and for nothing finer.
-- **Position is carried across the toggle best-effort, and is not claimed to be exact.** The
-  current mark's block carries a source line range (`blockRangeFromNode`, already used for
-  comments), so switching to the Editor lands on the first hit at or after that line, and
-  switching back lands on the first mark in or after the Editor hit's line. The same
+- **Position is carried across the toggle best-effort, and is not claimed to be exact.** Every
+  reported Preview hit carries the source line range of the block it sits in
+  (`blockRangeFromNode`, already used for comments) - the plugin must report it, because a key
+  identifies a rendered hit and says nothing about where in the source it came from. Switching
+  to the Editor lands on the first hit at or after that range's start line; switching back lands
+  on the first mark whose block contains or follows the Editor hit's line. The same
   neighbourhood, not the same character - which is what these two surfaces can honestly promise
-  each other.
+  each other, since a block's range is coarser than a character offset.
+  Where the metadata is absent - the parser records no position for some nodes, which is why
+  `blockRangeFromNode` is nullable - the toggle keeps the query and lands on the first hit rather
+  than guessing a position. A missing line is not an excuse to pick the wrong one.
 
 ## Implementation steps
 
@@ -159,11 +164,23 @@ Verified against the checkout before writing this phase.
    `rehypeHighlight` and `rehypeWorkspacePaths`, that walks text nodes in document order,
    splits them around matches using the core's matcher, and replaces each match with a
    `mark` element carrying `find-hit` and a find key, plus `is-current` on the active key.
-   Skip nothing; a hit that straddles a highlight span boundary is clipped into both halves
-   under one key, per finding 6.
-   **The plugin is Preview's model, not only its renderer.** It reports the keys it marked, in
-   document order, so the bar's count is literally the number of marks on screen and the ring
-   steps only over marks a reader can reach. Nothing derives Preview's count from source text.
+   **Match over logical runs, not text node by text node.** A per-node scan misses matches a
+   reader sees as one word: `foo**bar**` renders as `foo` plus a `strong`, and
+   `rehypeHighlight` splits a code line into many spans, so searching `foobar` would find
+   nothing. Build a run by joining the text nodes within one block - skipping nodes that occupy
+   no space at all, never joining across a block boundary - match the run, then emit the marks
+   that cover that hit. One logical hit may therefore be drawn as several `mark` elements, which
+   all share **one key**: that is exactly what `hitsInWindow`'s clipping contract already does
+   for the transcript's two-span tool chip (finding 6).
+   **The plugin is Preview's model, not only its renderer.** It reports, in document order, one
+   record per logical hit: its key, and the source line range of the block it sits in
+   (`blockRangeFromNode`, nullable when the parser recorded no position). The bar's count is the
+   number of **logical hits**, not the number of `mark` elements - a hit split across inline
+   markup is one match to a reader and must be one match to the count. Nothing derives Preview's
+   count from source text.
+   The source line range is not decoration: it is what carries position across the mode toggle
+   (see the decisions). A key alone identifies a rendered hit and says nothing about where in
+   the source it came from, so without this metadata the toggle rule cannot be performed at all.
 4. **`src/web/components/Markdown.tsx`**. Add an optional find prop (query, case flag,
    current key), thread it into the plugin list - restructuring `rehypePlugins` into a built
    array rather than nested ternaries - and add it to `markdownPropsEqual` per finding 5.
@@ -189,8 +206,9 @@ Verified against the checkout before writing this phase.
      `extracted` (finding 9) and even when the target is a typing element, then
      `preventDefault` and `stopImmediatePropagation` so App stands down (finding 1);
    - in Editor, compute hits over `buffer.text` and hand them to `FileEditor`; in Markdown
-     preview, pass the query to `Markdown` and take the count and ordered keys back from what
-     the plugin marked. Never feed source hits to Preview or rendered hits to the Editor. The
+     preview, pass the query to `Markdown` and take back the ordered records the plugin
+     produced - key plus block source range per logical hit - using the count for the bar and
+     the ranges for the toggle. Never feed source hits to Preview or rendered hits to the Editor. The
      bar shows the active surface's count, and position crosses the toggle by line as the
      decisions describe. Render `FindBar` anchored in `.file-content`;
    - Escape closes find and must not also peel the detail layer - the same
@@ -209,10 +227,17 @@ Verified against the checkout before writing this phase.
   the zero-length guard, clipped straddling hits, and `hitLine` at file start, end and
   across CRLF.
 - `test/markdown-find-marks.test.ts` (new): `renderToStaticMarkup` over the plugin's output -
-  the number of `mark.find-hit` elements equals the count the plugin reported, `is-current`
-  appears exactly once, a match inside a fenced code block still marks, and a query that occurs
-  **only** in a link destination, an image URL, a reference definition or a fence info string
-  produces no marks and a reported count of zero.
+  the number of **distinct find keys** equals the count the plugin reported (not the number of
+  `mark` elements, which is larger when a hit is split across inline markup), `is-current`
+  appears on exactly one hit's fragments, a match inside a fenced code block still marks, and a
+  query that occurs **only** in a link destination, an image URL, a reference definition or a
+  fence info string produces no marks and a reported count of zero. Plus:
+  - `foo**bar**` matched by `foobar` is **one** hit, drawn as two fragments sharing one key;
+  - a match spanning a `rehypeHighlight` span boundary inside a code fence behaves the same way;
+  - a match is never joined across a block boundary - the last word of one paragraph and the
+    first of the next do not combine;
+  - each reported hit's block source range matches the source lines of the block it sits in, and
+    a node for which the parser recorded no position still marks, reporting a null range.
 - `test/file-editor-find.test.ts` (new), or an addition to the existing editor markup test:
   decoration ranges for a known document and query.
 - `e2e/specs/file-find-in-document.spec.ts` (new): open Files on a markdown fixture, press
@@ -270,6 +295,18 @@ Phase 2 may rely on, and must not change:
   values (step 2), because Phase 2 replaces the source of that number for HTML documents with
   the frame's own report. Moving the decision here rather than working around it later is why
   Phase 2 needs no edit to the bar.
+- Review round 6 (PR #818): two consequences of round 5's model, both fixed together.
+  The toggle rule needed the current mark's source line range while the plugin was only required
+  to report keys - a key identifies a rendered hit and carries no source position, so the rule
+  could not have been performed. The plugin now reports a block source range per hit, nullable,
+  and the toggle lands on the first hit rather than guessing when it is absent.
+  The plugin was also described as matching text node by text node, which misses what a reader
+  sees as one word: `foo**bar**` searched for `foobar`, or a match crossing a `rehypeHighlight`
+  span inside a fence. Matching is now over per-block runs of joined text nodes, one logical hit
+  is drawn as however many fragments it needs under **one key**, and the count is logical hits -
+  correcting round 5's own sentence that the count is "literally the number of marks on screen",
+  which is larger whenever inline markup splits a hit. The unit test asserts distinct keys rather
+  than mark elements for the same reason. Phase 2 took the identical correction in the same pass.
 - Review round 5 (PR #818): hits were specified as computed once over `buffer.text` and used by
   both surfaces, while `rehypeFindMarks` can only mark rendered text. A query matching only a
   link destination would have counted 1 in Preview with nothing to highlight or step to - the

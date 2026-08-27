@@ -134,8 +134,28 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
      `visibility: hidden` and `opacity: 0` text is laid out and still returns rects, which is
      precisely why gate 2 carries its own flags rather than leaning on this one.
 
-  The count the frame reports is the number of ranges that survive all three gates, which is
-  exactly the number it highlighted. A count that can disagree with the highlights is the defect this
+- **Match over logical runs, and count logical hits.** The gates above decide which text nodes
+  are eligible; the match is then made over a **run** built by joining those nodes, because a
+  per-node scan misses matches a reader sees as one word - `foo<strong>bar</strong>` searched for
+  `foobar` finds nothing node by node, while the reader sees one continuous word. The rules:
+  - a run never crosses a block boundary, since the last word of one paragraph and the first of
+    the next are not contiguous to a reader;
+  - a run is **not** broken by a node the gates excluded for occupying no space at all
+    (`display: none`, head content, a `script` or `style` body) - that text is absent from what
+    the reader sees, so the visible characters either side of it really are adjacent;
+  - a run **is** broken by an excluded node that still occupies layout space, `visibility: hidden`
+    being the case that matters: it leaves a visible gap, so joining across it would claim a
+    contiguity the reader does not see.
+
+  One logical hit maps to one `Range` even when its ends lie in different text nodes - a Range
+  spans element boundaries natively and the Custom Highlight API paints every fragment - so a hit
+  split by inline markup is highlighted whole. **The count is logical hits, never the number of
+  ranges or the number of client rects**, both of which are larger for a single hit that wraps a
+  line or crosses markup. This is the same rule Phase 1's Markdown adapter follows, for the same
+  reason.
+
+  The count the frame reports is therefore the number of logical hits that survived the gates,
+  which is exactly the number it highlighted. A count that can disagree with the highlights is the defect this
   phase exists to remove, not a rounding error.
 - **The new script owns the chord forwarding.** Putting it in the new bridge rather than
   extending the existing scroll bridge keeps the other three bodies and hashes untouched
@@ -163,10 +183,12 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
      which walks text nodes **through the three gates in the decision above** - skipping
      non-rendered containers, then invisible subtrees (with `checkVisibility`'s flags spelled
-     out, never the bare call), then dropping any range with no client rects - builds ranges from what survives, registers them under a named highlight, scrolls
-     the current range into view, posts the surviving count, and clears on an empty query. It
-     also forwards the find chord up and announces itself when ready. No literal `<` anywhere
-     in the body (finding 2);
+     out, never the bare call), then dropping any range with no client rects - joins the eligible
+     nodes into per-block runs and matches over those rather than node by node, builds one
+     `Range` per logical hit (spanning text nodes where the hit does), registers them under a
+     named highlight, scrolls the current one into view, posts the **logical hit count**, and
+     clears on an empty query. It also forwards the find chord up and announces itself when
+     ready. No literal `<` anywhere in the body (finding 2);
    - add its hash to `PREVIEW_CSP` and inject the script in `htmlPreviewSource` after the
      existing three;
    - add the `::highlight()` rules to `PREVIEW_COMMENT_STYLE` (or a sibling constant), in the
@@ -203,10 +225,12 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   - inside the document `title`;
   - inside a `display: none` subtree and a `visibility: hidden` one.
 
-  Assert that the reported count equals the visible occurrences alone, that the number of
-  highlighted ranges equals that count, that stepping moves the highlight, and that the
-  document's own script still never runs (the no-script assertion in
-  `file-default-view.spec.ts` is the precedent). An attribute-only case is not sufficient
+  Assert that the reported count equals the visible occurrences alone, that stepping moves the
+  highlight, and that the document's own script still never runs (the no-script assertion in
+  `file-default-view.spec.ts` is the precedent). The fixture also carries a match **split by
+  inline markup** - `foo<strong>bar</strong>` searched for `foobar` - asserting it counts as one
+  hit and highlights whole, and a match separated by a `visibility: hidden` span, asserting it
+  does **not** join across the visible gap. An attribute-only case is not sufficient
   coverage here and must not be mistaken for it - see finding 7.
 - A Scouts spec run to confirm an archived report still renders and comments unchanged.
 - A case where the frame declares it cannot highlight: the bar keeps its note, the count stays
@@ -275,6 +299,15 @@ another script's ready signal for it.
   decisions, both implementation steps, the exit criteria and the downstream handoff were
   amended together. Phase 1 needed no change - it posts nothing into the frame beyond the
   existing target message, which is request-response and carries no state.
+- Review round 6 (PR #818): the gates decided which nodes were eligible but the match was still
+  described node by node, so `foo<strong>bar</strong>` searched for `foobar` would have found
+  nothing - the mirror image of round 1's defect, missing visible text instead of counting
+  invisible text. The match is now made over per-block runs of eligible nodes, one logical hit
+  maps to one `Range` even across node boundaries, and the count is logical hits rather than
+  ranges or client rects. Run joining follows the gates: skip a node that occupies no space and
+  keep the run intact, break the run at one that occupies space (`visibility: hidden` leaves a
+  visible gap). Phase 1 took the same correction in the same pass, which is what keeps the two
+  surfaces honest about the same question.
 - Review round 4 (PR #818): the visibility gate was specified as a bare
   `Element.checkVisibility()`, which in Chromium ignores `visibility: hidden` and `opacity: 0`
   by default and answers `true` for both - so the prescribed implementation would have counted

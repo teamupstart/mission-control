@@ -115,7 +115,14 @@ the two are strictly ordered. Merge order is 1 then 2.
   renders to nothing, so a shared count would offer a match nothing can reach.
 - **Hit keys are namespaced by surface**, so a rendered key and a source key can never be
   mistaken for one another, and position crosses the Preview/Editor toggle by source line
-  rather than by a character mapping that the markdown transform does not preserve.
+  rather than by a character mapping that the markdown transform does not preserve. Every
+  rendered hit therefore reports the source line range of its block, because a key alone says
+  nothing about where in the source it came from.
+- **A match is a logical hit over rendered runs, not a per-node scan.** Both rendered surfaces
+  join eligible text nodes within a block before matching, so `foo<strong>bar</strong>` searched
+  for `foobar` is one hit - and one hit is one number in the count however many fragments or
+  client rects it takes to draw. Runs never cross a block boundary, skip text that occupies no
+  space, and break at text that occupies space but is hidden.
 - **The bar takes supplied numbers.** Count and current position are props, so the source of
   the HTML count can move from source text (Phase 1) to the frame's report (Phase 2) without
   touching `FindBar`.

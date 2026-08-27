@@ -264,10 +264,13 @@ Named so the cost is visible now rather than discovered mid-build:
   either force Expanded for its duration or skip the step.
 - Per this repository's rules, the new control needs its own Playwright spec in `e2e/`.
 
-## Open decisions
+## Decisions, as answered
 
-Asked as selectable options in the dashboard, not answered here:
+These were asked as selectable options in the dashboard and resolved there. Kept as the
+questions plus their answers, rather than deleted, because the choice that was NOT taken is
+the part a later reader needs - see [Decisions taken](#decisions-taken) for the full record.
 
-1. Which concepts to build.
-2. What the default density is on upgrade.
-3. Whether Hidden keeps the attention hairline or is truly empty.
+1. **Which concepts to build** - Concept 1, Condensed. Only that one.
+2. **What the default density is on upgrade** - Condensed, which is not the no-op default.
+3. **Whether Hidden keeps the attention hairline** - it keeps the 3px segmented hairline.
+   Held in reserve, since Hidden itself is not in scope.

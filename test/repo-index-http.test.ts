@@ -4,6 +4,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -216,6 +217,23 @@ test("an absolute spelling of a seeded directory is not offered as a duplicate d
   const workspace = join(operatorHome, "workspace");
   assert.equal((await putDirectories([workspace])).status, 200);
   assert.deepEqual((await getView()).defaultsMissing, ["~/code", "~/dev", "~/upstart"]);
+});
+
+test("a saved missing directory is reported unsafe if it later resolves at or above home", async () => {
+  const deferred = join(operatorHome, "future-code");
+  assert.equal((await putDirectories([deferred])).status, 200);
+  assert.equal((await getView()).directories[0]?.status, "missing");
+
+  symlinkSync(operatorHome, deferred);
+  const view = await getView();
+  assert.deepEqual(view.directories[0], {
+    path: deferred,
+    resolved: realpathSync(operatorHome),
+    status: "unsafe",
+    repoCount: null,
+    isDefault: false,
+  });
+  assert.equal(view.repoCount, 0);
 });
 
 test("a config write and Rescan now both invalidate the repository cache", async () => {

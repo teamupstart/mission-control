@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -74,6 +75,32 @@ test.describe("config-backed repository indexing", () => {
     await dashboard.getByRole("button", { name: "Restore defaults" }).click();
     for (const path of paths) await expect(directoryRow(dashboard, path)).toBeVisible();
     await shoot(dashboard, "04-restored");
+  });
+
+  test("a missing saved path is not scanned if it later resolves above home", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+
+    for (const path of ["~/workspace", "~/code", "~/dev", "~/upstart"]) {
+      const row = directoryRow(dashboard, path);
+      await row.getByRole("button", { name: "Remove" }).click();
+      await expect(row).toHaveCount(0);
+    }
+
+    const deferred = join(daemon.home, "future-code");
+    await dashboard.getByLabel("Directory to index").fill(deferred);
+    await dashboard.getByRole("button", { name: "Add directory" }).click();
+    const row = directoryRow(dashboard, deferred);
+    await expect(row).toContainText("not found");
+
+    symlinkSync(daemon.home, deferred);
+    await dashboard.getByRole("button", { name: "Rescan now" }).click();
+
+    await expect(row).toContainText("unsafe path");
+    await expect(dashboard.getByText(/0 repositories indexed/)).toBeVisible();
+    await shoot(dashboard, "06-deferred-unsafe");
   });
 });
 

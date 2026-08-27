@@ -37,6 +37,7 @@ export const INDEXED_DIRECTORY_STATUSES = [
   "missing",
   "not-a-directory",
   "unreadable",
+  "unsafe",
 ] as const;
 
 export type IndexedDirectoryStatus = (typeof INDEXED_DIRECTORY_STATUSES)[number];

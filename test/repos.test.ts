@@ -169,6 +169,21 @@ test("configured aliases collapse after realpath", () => {
   }
 });
 
+test("a saved missing directory is skipped if it later resolves at or above home", () => {
+  const root = makeWorkspace(() => {});
+  const deferred = join(root, "future-code");
+  try {
+    setRepoIndexConfig({ directories: [{ path: deferred }] });
+    assert.deepEqual(indexedDirectories(), [deferred]);
+
+    symlinkSync(homedir(), deferred);
+    assert.deepEqual(indexedDirectories(), []);
+  } finally {
+    rmSync(deferred, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("an intentionally empty configured list scans nothing", async () => {
   setRepoIndexConfig({ directories: [] });
   assert.deepEqual(workspaceRoots(), []);

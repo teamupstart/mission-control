@@ -15,6 +15,8 @@ function directoryStatus(row: IndexedDirectoryView): string {
       return "not a directory";
     case "unreadable":
       return "unreadable";
+    case "unsafe":
+      return "unsafe path";
   }
 }
 

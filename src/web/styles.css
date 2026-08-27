@@ -18038,7 +18038,8 @@ button.wf-carried.is-link:focus-visible {
   color: var(--dim);
 }
 .ri-chip-not-a-directory,
-.ri-chip-unreadable {
+.ri-chip-unreadable,
+.ri-chip-unsafe {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 32%, var(--border));
   background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));

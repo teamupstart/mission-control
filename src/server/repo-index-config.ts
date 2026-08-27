@@ -60,9 +60,11 @@ export function canonicalize(path: string): string {
   }
 }
 
-function atOrAboveHome(path: string): boolean {
+/** Whether a path currently resolves to the operator's home or one of its ancestors. */
+export function resolvesAtOrAboveHome(path: string): boolean {
+  const canonical = canonicalize(path);
   const home = canonicalize(homedir());
-  const fromPathToHome = relative(path, home);
+  const fromPathToHome = relative(canonical, home);
   return fromPathToHome === ""
     || (!isAbsolute(fromPathToHome)
       && fromPathToHome !== ".."
@@ -88,7 +90,7 @@ export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): v
       );
     }
     const canonical = canonicalize(path);
-    if (atOrAboveHome(canonical)) {
+    if (resolvesAtOrAboveHome(canonical)) {
       throw new RepoIndexConfigError(
         `"${path}" is at or above your home directory. Name the folder that holds your checkouts.`,
       );
@@ -109,5 +111,12 @@ export function validateIndexedDirectories(rows: readonly IndexedDirectory[]): v
  */
 export function indexedDirectories(): string[] {
   if (repositoryIndexEnvironmentOverride()) return environmentDirectories();
-  return [...new Set(getRepoIndexConfig().directories.map((row) => canonicalize(row.path)))];
+  const roots = new Set<string>();
+  for (const row of getRepoIndexConfig().directories) {
+    const canonical = canonicalize(row.path);
+    // A missing path can become a symlink after it was saved. Reapply the broad-root guard
+    // at read time so that filesystem change cannot turn a safe deferred row into a home scan.
+    if (!resolvesAtOrAboveHome(canonical)) roots.add(canonical);
+  }
+  return [...roots];
 }

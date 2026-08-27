@@ -75,8 +75,9 @@ endpoint, nonce guard and target-message plumbing rather than adding its own.
 
 Two phases.
 
-**Why Phase 1 is not split further.** The requirement is one find whose query and count are
-the same in both modes, which is only demonstrable with both adapters present. A core-plus-bar
+**Why Phase 1 is not split further.** The requirement is one find that behaves the same way in
+both modes - one query, one case flag, one ring, each surface counting what it shows - which is
+only demonstrable with both adapters present. A core-plus-bar
 phase would ship a find bar with nothing to search - a dead surface - and splitting the two
 adapters would put the find session's query and index in two places at once, which is the
 temporary second source of truth the phasing rules warn against. It is a large slice, and it
@@ -121,8 +122,9 @@ the two are strictly ordered. Merge order is 1 then 2.
 - **A match is a logical hit over rendered runs, not a per-node scan.** Both rendered surfaces
   join eligible text nodes within a block before matching, so `foo<strong>bar</strong>` searched
   for `foobar` is one hit - and one hit is one number in the count however many fragments or
-  client rects it takes to draw. Runs never cross a block boundary, skip text that occupies no
-  space, and break at text that occupies space but is hidden.
+  client rects it takes to draw. Runs break at every visible separation - a block boundary, a
+  `br`, a non-phrasing element, and hidden text that still occupies space - and skip text that
+  occupies no space at all, which the reader never saw.
 - **The bar takes supplied numbers.** Count and current position are props, so the source of
   the HTML count can move from source text (Phase 1) to the frame's report (Phase 2) without
   touching `FindBar`.

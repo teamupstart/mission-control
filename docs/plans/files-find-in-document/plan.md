@@ -79,7 +79,9 @@ too. Nothing here grows a second search model.
 ### 1. Shared find core
 
 Split `find.ts`: the generic primitives move into a `documentFind.ts`-style module with a
-`FindSession` (query, case flag, hits, index). `collectHits` and the conversation scopes
+`FindSession` (query, case flag, index - and deliberately **no hit list**, because each
+surface searches the string it renders and therefore has its own hits). `collectHits` and the
+conversation scopes
 stay conversation-specific, so the transcript's behaviour does not change.
 
 ### 2. Shared chrome
@@ -99,12 +101,24 @@ A `rehypeFindMarks` rehype plugin beside the existing `rehypeWorkspacePaths` and
 `scrollIntoView` on the current key. React keeps owning the nodes, which is the reason
 `find.ts` returns data instead of walking the DOM.
 
+It matches over **rendered text**, joined into runs within a block so a hit split by inline
+markup (`foo**bar**` searched for `foobar`) is one hit, and broken at every visible
+separation - a `br`, a nested block, a table cell edge. It is therefore Preview's model as
+well as its renderer: it reports one record per logical hit, with the source line range of
+the block it sits in, and the bar's count is that number.
+
 ### 4. Editor adapter - character-accurate, and it replaces CodeMirror's panel
 
 Compute matches over the buffer text and paint them with a CodeMirror decoration
 `StateField` - the pattern `FileEditor.tsx` already uses for comment markers. Drop
-`searchKeymap`'s Mod-f binding so the app has one find, one look and one count; Preview
-and Editor read the same string, so their counts agree by construction.
+`searchKeymap`'s Mod-f binding so the app has one find and one look, installed only where a
+caller supplies a find owner so the three other `FileEditor` hosts keep the behaviour they
+have today.
+
+The Editor searches **source**, which is what it shows, so its count can legitimately differ
+from Preview's on the same file: a link destination is one occurrence here and none there.
+One matcher, applied per surface to the string that surface renders - never one hit list
+shared by two surfaces showing different text.
 
 ### 5. HTML preview - block reveal now, character-accurate later
 

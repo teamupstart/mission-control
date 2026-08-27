@@ -227,7 +227,8 @@ endpoint, nonce guard and target-message plumbing rather than adding its own.</p
 
 <div class="option pick">
   <h3>Why Phase 1 is not split further</h3>
-  <p>The requirement is one find whose query and count are the same in both modes, which is only
+  <p>The requirement is one find that behaves the same way in both modes - one query, one case
+  flag, one ring, each surface counting what it shows - which is only
   demonstrable with both adapters present. A core-plus-bar phase would ship a find bar with
   nothing to search - a dead surface - and splitting the two adapters would put the find
   session&rsquo;s query and index in two places at once, which is the temporary second source of
@@ -311,8 +312,9 @@ ownership, so the two are strictly ordered.</figcaption>
   rendered surfaces join eligible text nodes within a block before matching, so
   <code>foo&lt;strong&gt;bar&lt;/strong&gt;</code> searched for <code>foobar</code> is one hit -
   and one hit is one number in the count however many fragments or client rects it takes to draw.
-  Runs never cross a block boundary, skip text that occupies no space, and break at text that
-  occupies space but is hidden.</li>
+  Runs break at every visible separation - a block boundary, a <code>br</code>, a non-phrasing
+  element, and hidden text that still occupies space - and skip text that occupies no space at
+  all, which the reader never saw.</li>
   <li><strong>The bar takes supplied numbers.</strong> Count and current position are props, so
   the source of the HTML count can move from source text (Phase 1) to the frame&rsquo;s report
   (Phase 2) without touching <code>FindBar</code>.</li>

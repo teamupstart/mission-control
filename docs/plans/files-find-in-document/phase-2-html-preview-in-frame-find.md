@@ -138,8 +138,11 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   are eligible; the match is then made over a **run** built by joining those nodes, because a
   per-node scan misses matches a reader sees as one word - `foo<strong>bar</strong>` searched for
   `foobar` finds nothing node by node, while the reader sees one continuous word. The rules:
-  - a run never crosses a block boundary, since the last word of one paragraph and the first of
-    the next are not contiguous to a reader;
+  - a run breaks at every **visible separation**, not only at a block boundary: a `br` (a line
+    break with no text node of its own, so `foo<br>bar` must not match `foobar`), and any element
+    whose computed `display` is not `inline` or `contents` - which is the definition
+    `missionBlock` in the comment bridge already uses, so the two bridges answer "is this one
+    box of text" the same way rather than each keeping a tag list;
   - a run is **not** broken by a node the gates excluded for occupying no space at all
     (`display: none`, head content, a `script` or `style` body) - that text is absent from what
     the reader sees, so the visible characters either side of it really are adjacent;
@@ -179,7 +182,13 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
      `PREVIEW_FIND_RESULT_MESSAGE` (frame to parent: count, current index), and
      `PREVIEW_FIND_READY_MESSAGE` (frame to parent, posted by the find script as its last act -
      never reuse the comment bridge's ready message, finding 5 - carrying whether this frame can
-     highlight, so the parent can decide whether the fallback is still needed);
+     highlight, so the parent can decide whether the fallback is still needed), and
+     `PREVIEW_FIND_CHORD_MESSAGE` (frame to parent: the reader pressed the find chord inside the
+     preview). The chord message is a **named part of the contract, not an implied side effect**:
+     "the script forwards the chord" describes no wire format, and without one the keystroke is
+     still lost - which is the whole reason finding 4 exists. The frame's handler calls
+     `preventDefault` before posting, so the host browser's own find does not open over the
+     dashboard;
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
      which walks text nodes **through the three gates in the decision above** - skipping
      non-rendered containers, then invisible subtrees (with `checkVisibility`'s flags spelled
@@ -202,6 +211,12 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
      (finding 5). Follow `armFrame`'s existing shape rather than inventing a second handshake;
    - accept the result message (verifying `event.source` is the preview frame, as the block
      handler already does) and use its count and index for HTML documents;
+   - **handle the chord message**: on receipt, verify `event.source` is this workspace's preview
+     frame - the same check the block handler performs, and load-bearing here because a message
+     that opens a UI surface must not be actionable by any other frame - then open the find bar
+     and focus its input, exactly as the workspace's own chord handler does. One entry point, two
+     ways in. Without this handler the message is posted into a parent that ignores it, which
+     looks identical to the keystroke being lost;
    - treat the keyboard bridge's exit action as "close find" while find is open (finding 6);
    - drop the block-reveal call and the bar's note only once **the find bridge specifically** has
      reported ready **and that report says it can highlight**. Keep both until then, again after
@@ -229,9 +244,14 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   highlight, and that the document's own script still never runs (the no-script assertion in
   `file-default-view.spec.ts` is the precedent). The fixture also carries a match **split by
   inline markup** - `foo<strong>bar</strong>` searched for `foobar` - asserting it counts as one
-  hit and highlights whole, and a match separated by a `visibility: hidden` span, asserting it
-  does **not** join across the visible gap. An attribute-only case is not sufficient
+  hit and highlights whole; a match separated by a `visibility: hidden` span, asserting it does
+  **not** join across the visible gap; and `foo<br>bar` searched for `foobar`, asserting a
+  rendered line break separates as firmly as a paragraph does. An attribute-only case is not sufficient
   coverage here and must not be mistaken for it - see finding 7.
+- The chord path end to end: click into the preview so focus is inside the frame, press the
+  chord, and assert the find bar opened with its input focused. Assert too that a chord message
+  from any other frame is ignored - the `event.source` check is what keeps a UI-opening message
+  from being actionable by an arbitrary sender.
 - A Scouts spec run to confirm an archived report still renders and comments unchanged.
 - A case where the frame declares it cannot highlight: the bar keeps its note, the count stays
   source-derived, and stepping still reveals the block. Reachable in a test by having the bridge
@@ -243,7 +263,8 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
 - Find in an HTML preview marks visible text, counts only visible matches, and steps. The
   reported count equals the number of highlighted ranges on a document that also contains the
   query in a head element, a body `style`, a `script`, an attribute and a hidden subtree.
-- Cmd+F works with focus inside the preview.
+- Cmd+F works with focus inside the preview: the frame posts the chord message, the workspace
+  validates its source and opens the bar with the input focused.
 - A query typed before the preview finished loading highlights as soon as it loads, with no
   second keystroke, and the highlight returns by itself after an edit reloads the `srcDoc`.
 - No behaviour keys off the comment bridge's ready message. Injecting the find script in any
@@ -299,6 +320,16 @@ another script's ready signal for it.
   decisions, both implementation steps, the exit criteria and the downstream handoff were
   amended together. Phase 1 needed no change - it posts nothing into the frame beyond the
   existing target message, which is request-response and carries no state.
+- Review round 7 (PR #818): two fixes here. Run joining was defined as "within a block", which
+  over-joins in the other direction - `foo<br>bar` would match `foobar`, and a `br` is a visible
+  line break with no text node of its own to notice. Runs now break at every visible separation,
+  defined by computed display exactly as `missionBlock` already defines a block, so the two
+  bridges answer "is this one box of text" the same way. Second: the chord forwarding had no
+  message and no parent handler - "the script forwards the chord" describes no wire format, so
+  the keystroke stayed lost, which is the very gap finding 4 names.
+  `PREVIEW_FIND_CHORD_MESSAGE` and a source-validated parent handler are now part of the
+  contract, with the frame calling `preventDefault` first so the host browser's find does not
+  open instead. Phase 1 took the matching run-break correction in the same pass.
 - Review round 6 (PR #818): the gates decided which nodes were eligible but the match was still
   described node by node, so `foo<strong>bar</strong>` searched for `foobar` would have found
   nothing - the mirror image of round 1's defect, missing visible text instead of counting

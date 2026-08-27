@@ -167,9 +167,21 @@ Verified against the checkout before writing this phase.
    **Match over logical runs, not text node by text node.** A per-node scan misses matches a
    reader sees as one word: `foo**bar**` renders as `foo` plus a `strong`, and
    `rehypeHighlight` splits a code line into many spans, so searching `foobar` would find
-   nothing. Build a run by joining the text nodes within one block - skipping nodes that occupy
-   no space at all, never joining across a block boundary - match the run, then emit the marks
-   that cover that hit. One logical hit may therefore be drawn as several `mark` elements, which
+   nothing. Build a run by joining the text nodes within one block, match the run, then emit the
+   marks that cover that hit.
+   **A run is broken by every visible separation, not only by a block boundary.** Joining
+   everything inside a block is as wrong in the other direction: `foo<br>bar` would match
+   `foobar`, and a `br` is a line break the reader can see, with no text node of its own to
+   notice. So the run breaks at:
+   - a `br`;
+   - any element that is not phrasing content - a nested block inside the block, a list item, a
+     table cell edge - because text either side of it is on a different line or in a different
+     cell;
+   - a node the gates excluded that still occupies space (see Phase 2's mirror of this rule).
+
+   It does **not** break at an inline element boundary (`strong`, `em`, `code`, a
+   `rehypeHighlight` span), which is the whole point, nor at text that occupies no space at all,
+   which the reader never saw. One logical hit may therefore be drawn as several `mark` elements, which
    all share **one key**: that is exactly what `hitsInWindow`'s clipping contract already does
    for the transcript's two-span tool chip (finding 6).
    **The plugin is Preview's model, not only its renderer.** It reports, in document order, one
@@ -236,6 +248,8 @@ Verified against the checkout before writing this phase.
   - a match spanning a `rehypeHighlight` span boundary inside a code fence behaves the same way;
   - a match is never joined across a block boundary - the last word of one paragraph and the
     first of the next do not combine;
+  - `foo<br>bar` is **not** matched by `foobar`, and neither are two adjacent table cells or
+    list items whose text would concatenate to the query;
   - each reported hit's block source range matches the source lines of the block it sits in, and
     a node for which the parser recorded no position still marks, reporting a null range.
 - `test/file-editor-find.test.ts` (new), or an addition to the existing editor markup test:
@@ -295,6 +309,15 @@ Phase 2 may rely on, and must not change:
   values (step 2), because Phase 2 replaces the source of that number for HTML documents with
   the frame's own report. Moving the decision here rather than working around it later is why
   Phase 2 needs no edit to the bar.
+- Review round 7 (PR #818): run joining said "within a block", which over-joins - `foo<br>bar`
+  would have matched `foobar`, and a `br` is a visible line break with no text node of its own to
+  notice. Runs now break at every visible separation: a `br`, any non-phrasing element, and an
+  excluded node that still occupies space. Phase 2 took the same correction, expressed through
+  computed display. The source plan and its rendering were also brought into line with round 5's
+  per-surface model: they still described one session holding a shared hit list and claimed the
+  two surfaces "read the same string, so their counts agree", which is exactly the shared
+  source-derived count this phase rejects - a contradiction that could have led an implementation
+  straight back to it.
 - Review round 6 (PR #818): two consequences of round 5's model, both fixed together.
   The toggle rule needed the current mark's source line range while the plugin was only required
   to report keys - a key identifies a rendered hit and carries no source position, so the rule

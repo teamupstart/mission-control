@@ -320,11 +320,24 @@ test("condensing hands the conversation the height it took, and it is worth havi
   // `.app-console` is `height: 100dvh` and does not scroll, so every pixel the strip gives
   // up has to arrive here. If it does not, something else in the shell absorbed it and the
   // operator got a shorter strip for nothing.
+  //
+  // Within a pixel, NOT exactly equal, and the difference is the whole correctness of this
+  // assertion. The fixture `Math.round()`s every measurement independently
+  // (`test/fixtures/line-strip-browser.cjs`), and the real condensed band is 38.5px - so
+  // `lineHeight` rounds to 39 while the body's own height rounds from a different fractional
+  // part, and the two disagree by 1 depending only on where each landed. `assert.equal` here
+  // therefore asserted that two roundings of one 47.5px number got lucky together: it passed
+  // on macOS and failed on Linux CI with "the strip gave up 47px but the conversation gained
+  // 48px", which says nothing about the layout.
+  //
+  // The tolerance costs nothing this case was defending. The failure it exists to catch is
+  // the space being absorbed somewhere else in the shell, and that shows up as a discrepancy
+  // the size of the whole band - tens of pixels - never as one.
   const gained = (condensed.bodyHeight ?? 0) - (expanded.bodyHeight ?? 0);
-  assert.equal(
-    gained,
-    saved,
-    `the strip gave up ${saved}px but the conversation gained ${gained}px`,
+  assert.ok(
+    Math.abs(gained - saved) <= 1,
+    `the strip gave up ${saved}px but the conversation gained ${gained}px - the space went `
+      + `somewhere other than the pane below it`,
   );
 });
 

@@ -14,6 +14,8 @@ import {
   fleetBlocks,
   fleetRows,
   orderSessions,
+  repoSessionTotals,
+  type FleetRow,
 } from "../src/web/lib/fleet-order.ts";
 import { TONE_GROUPS } from "../src/web/lib/tone.ts";
 import { moveSelection } from "../src/web/lib/layoutNav.ts";
@@ -40,6 +42,22 @@ const IDLE: Partial<Session> = { state: "idle", activity: null };
 
 function names(sessions: readonly Session[]): string[] {
   return sessions.map((s) => s.name);
+}
+
+/**
+ * Every session id a row expansion would DRAW, in order, whatever nesting it arrived in.
+ *
+ * The one assertion that has to hold for the arrow keys: `group.sessions` is what
+ * `moveSelection` indexes, and this is what the eye sees. A repository row nests its blocks, so
+ * flattening has to recurse - a version that only handled the two flat kinds would silently
+ * report an empty list for a grouped column and pass by comparing nothing to nothing.
+ */
+function renderedIds(rows: readonly FleetRow[]): string[] {
+  return rows.flatMap((row) => {
+    if (row.kind === "section") return [];
+    if (row.kind === "repo") return renderedIds(row.blocks);
+    return row.kind === "session" ? [row.session.id] : row.sessions.map((s) => s.id);
+  });
 }
 
 test("with no ensemble anywhere, the order is exactly the tone/name/pid sort it always was", () => {
@@ -358,8 +376,261 @@ test("board column arrays still match the rendered sequence with a boundary in p
   const fleet = [plain("alpha", IDLE), plain("bravo", IDLE), plain("charlie", IDLE)];
   const ordered = orderSessions(fleet, new Set(["plain-bravo"]));
   const idle = ordered.groups.find((g) => g.tone === "idle")!;
-  const rendered = fleetRows(idle).flatMap((r) =>
-    r.kind === "section" ? [] : r.kind === "session" ? [r.session.id] : r.sessions.map((s) => s.id),
-  );
+  const rendered = renderedIds(fleetRows(idle));
   assert.deepEqual(rendered, idle.sessions.map((s) => s.id));
+});
+
+// ---- repository grouping ----
+//
+// What is at stake is the same thing the clustering tests above defend, one level out: the
+// partition happens in `orderSessions` precisely so the arrow keys and the rendered frames come
+// from one list. It is also the first thing in this file that is OPTIONAL, so "off is
+// byte-identical to before" is a property in its own right.
+
+const REPO_A = "/work/alpha-repo";
+const REPO_B = "/work/bravo-repo";
+
+/** A session in a repository, otherwise exactly `plain`. */
+function inRepo(name: string, repoRoot: string | null, over: Partial<Session> = {}): Session {
+  return plain(name, { repoRoot, ...over });
+}
+
+test("with grouping off, a fleet full of repositories comes out exactly as before", () => {
+  // The regression that would be invisible to everyone who never opens the setting: the
+  // partition must cost an ungrouped fleet nothing at all, spans included.
+  const fleet = [
+    inRepo("charlie", REPO_B),
+    inRepo("alpha", REPO_A),
+    inRepo("bravo", REPO_B),
+    inRepo("delta", null),
+  ];
+  const off = orderSessions(fleet);
+  assert.deepEqual(names(off.sessions), ["alpha", "bravo", "charlie", "delta"]);
+  for (const group of off.groups) assert.deepEqual(group.repos, []);
+  // And `fleetRows` adds nothing, which is what keeps every existing rendering test honest.
+  for (const group of off.groups) assert.deepEqual(fleetRows(group), fleetBlocks(group));
+});
+
+test("grouping pulls a repository's sessions together, anchored where its first member sat", () => {
+  // `charlie` moves up to sit under `alpha`; `bravo` keeps its relative place behind them. The
+  // smallest move that groups them, which is the rule `clusterPartition` already follows.
+  const fleet = [inRepo("alpha", REPO_A), inRepo("bravo", REPO_B), inRepo("charlie", REPO_A)];
+  const on = orderSessions(fleet, new Set(), true);
+  assert.deepEqual(names(on.sessions), ["alpha", "charlie", "bravo"]);
+  const working = on.groups.find((g) => g.tone === "working")!;
+  assert.deepEqual(working.repos, [
+    { repoRoot: REPO_A, startIndex: 0, length: 2 },
+    { repoRoot: REPO_B, startIndex: 2, length: 1 },
+  ]);
+});
+
+test("a session in no repository sorts after every repository and gets no span", () => {
+  // It has no repository to be grouped under, and an "(none)" frame would be a box around the
+  // one thing these sessions have in common, which is nothing.
+  const fleet = [inRepo("alpha", null), inRepo("bravo", REPO_A), inRepo("charlie", null)];
+  const on = orderSessions(fleet, new Set(), true);
+  assert.deepEqual(names(on.sessions), ["bravo", "alpha", "charlie"]);
+  const working = on.groups.find((g) => g.tone === "working")!;
+  assert.deepEqual(working.repos, [{ repoRoot: REPO_A, startIndex: 0, length: 1 }]);
+  // And they render as loose rows rather than inside a frame.
+  assert.deepEqual(
+    fleetRows(working).map((r) => r.kind),
+    ["repo", "session", "session"],
+  );
+});
+
+test("a repository never crosses a tone column", () => {
+  // The rule the run clusters already obey, inherited: a blocked session stays in "needs you"
+  // rather than dragging its working siblings out of the column that says what they are.
+  const fleet = [
+    inRepo("alpha", REPO_A),
+    inRepo("bravo", REPO_A, { state: "awaiting_input", activity: null }),
+    inRepo("charlie", REPO_A, IDLE),
+  ];
+  const on = orderSessions(fleet, new Set(), true);
+  for (const group of on.groups) {
+    if (group.sessions.length === 0) continue;
+    assert.equal(group.repos.length, 1, "each column frames its own slice exactly once");
+    assert.equal(group.repos[0]!.length, group.sessions.length);
+  }
+  // Three columns, so three frames for one repository - and each says which part it is.
+  assert.equal(on.groups.flatMap((g) => g.repos).length, 3);
+});
+
+test("a repository never crosses the free/held boundary either", () => {
+  // The same reason: a span straddling the boundary would swallow the section rule, exactly as
+  // a run cluster would. So one repository is framed once per SIDE.
+  const fleet = [inRepo("alpha", REPO_A, IDLE), inRepo("bravo", REPO_A, IDLE)];
+  const on = orderSessions(fleet, new Set(["plain-bravo"]), true);
+  const idle = on.groups.find((g) => g.tone === "idle")!;
+  assert.equal(idle.heldFrom, 1);
+  assert.deepEqual(idle.repos, [
+    { repoRoot: REPO_A, startIndex: 0, length: 1 },
+    { repoRoot: REPO_A, startIndex: 1, length: 1 },
+  ]);
+  // The rules land between the two frames, not inside either of them.
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? "--" + r.section : r.kind)),
+    ["--free", "repo", "--held", "repo"],
+  );
+});
+
+test("two frames for one repository in one column do not share a key", () => {
+  // React would match one fiber and hand the other its collapse state, so folding the free half
+  // would fold the held half with it.
+  const fleet = [inRepo("alpha", REPO_A, IDLE), inRepo("bravo", REPO_A, IDLE)];
+  const on = orderSessions(fleet, new Set(["plain-bravo"]), true);
+  const idle = on.groups.find((g) => g.tone === "idle")!;
+  const keys = fleetRows(idle).flatMap((r) => (r.kind === "repo" ? [r.key] : []));
+  assert.equal(keys.length, 2);
+  assert.equal(new Set(keys).size, 2);
+});
+
+test("a run cluster sits wholly inside one repository frame", () => {
+  // The nesting the whole design rests on: an ensemble's members share a repository, so the
+  // repository partition can never split a run. If it could, `fleetRows` would step past a
+  // span's end and orphan a block.
+  const fleet = [
+    inRepo("zulu", REPO_B),
+    member("run-a", 2, "yankee", { repoRoot: REPO_A }),
+    member("run-a", 1, "xray", { repoRoot: REPO_A }),
+  ];
+  const on = orderSessions(fleet, new Set(), true);
+  const working = on.groups.find((g) => g.tone === "working")!;
+  const repoRows = fleetRows(working).flatMap((r) => (r.kind === "repo" ? [r] : []));
+  assert.equal(repoRows.length, 2);
+  const withRun = repoRows.find((r) => r.repoRoot === REPO_A)!;
+  assert.deepEqual(
+    withRun.blocks.map((b) => b.kind),
+    ["cluster"],
+  );
+  // Ordinal order survives inside the frame, which is the run's own vocabulary.
+  assert.deepEqual(
+    withRun.blocks.flatMap((b) => (b.kind === "cluster" ? names(b.sessions) : [])),
+    ["xray", "yankee"],
+  );
+});
+
+test("a run whose members somehow span two repositories degrades into one frame each", () => {
+  // The edge the partition ORDER creates, pinned so a reader does not have to work out what it
+  // does. Repositories partition before the run clustering, so members in different
+  // repositories cannot share a frame - and that is the right answer rather than a loss: one
+  // frame cannot be inside two repositories, and this is the same shape the tone-boundary and
+  // free/held splits already produce, which is one frame per side with the header's own rollup
+  // tying them together.
+  //
+  // It should not arise in the product - an ensemble's candidates are dispatched into worktrees
+  // of ONE repository, and `repoRoot` names the main checkout rather than the worktree, so its
+  // members agree. What matters is that if it ever did, nothing orphans a block or throws.
+  const fleet = [
+    member("run-a", 1, "alpha", { repoRoot: REPO_A }),
+    member("run-a", 2, "bravo", { repoRoot: REPO_B }),
+  ];
+  const on = orderSessions(fleet, new Set(), true);
+  const working = on.groups.find((g) => g.tone === "working")!;
+  const rows = fleetRows(working);
+  assert.deepEqual(
+    rows.map((r) => r.kind),
+    ["repo", "repo"],
+  );
+  // Every session still rendered exactly once, in the order the arrow keys walk.
+  assert.deepEqual(renderedIds(rows), working.sessions.map((s) => s.id));
+  // And each frame holds its own single-member cluster rather than a bare session.
+  for (const row of rows) {
+    assert.equal(row.kind, "repo");
+    if (row.kind !== "repo") continue;
+    assert.deepEqual(row.blocks.map((b) => b.kind), ["cluster"]);
+  }
+});
+
+test("grouping is still idempotent, so the three call sites cannot disagree", () => {
+  // App orders once; BoardView and ConsoleView re-run this on the list they were handed. All
+  // three pass `byRepo` from the same store, so re-running must be a no-op.
+  const fleet = [
+    inRepo("charlie", REPO_B, IDLE),
+    inRepo("alpha", REPO_A),
+    inRepo("bravo", REPO_B),
+    inRepo("delta", null, IDLE),
+  ];
+  const held = new Set(["plain-charlie"]);
+  const once = orderSessions(fleet, held, true);
+  const twice = orderSessions(once.sessions, held, true);
+  assert.deepEqual(names(twice.sessions), names(once.sessions));
+  assert.deepEqual(
+    twice.groups.map((g) => g.repos),
+    once.groups.map((g) => g.repos),
+  );
+  assert.deepEqual(
+    twice.groups.map((g) => g.heldFrom),
+    once.groups.map((g) => g.heldFrom),
+  );
+});
+
+test("the arrow keys walk straight through a repository frame, in both layouts", () => {
+  // The end the whole placement decision is for, composed the way the cluster test above does
+  // it: the real ordering, the real `moveSelection`, and the real row expansion, walked the way
+  // a finger would. Repository grouping is the second thing that reorders rows WITHIN a column,
+  // so a frame that changed the rendered order without changing these arrays would land the
+  // cursor on a different card than the eye - silently, with nothing failing.
+  const fleet = [
+    inRepo("aaa", REPO_A),
+    inRepo("mmm", REPO_B),
+    inRepo("zulu", REPO_A),
+    member("run-a", 1, "delta", { repoRoot: REPO_B }),
+  ];
+  const ordered = orderSessions(fleet, new Set(), true);
+  const working = ordered.groups.find((g) => g.tone === "working")!;
+  assert.deepEqual(names(working.sessions), ["aaa", "zulu", "delta", "mmm"]);
+  // The rendered sequence - frames flattened - is that same list, which is what the arrow keys
+  // are about to be asserted against.
+  assert.deepEqual(renderedIds(fleetRows(working)), working.sessions.map((s) => s.id));
+
+  const columns = ordered.groups.map((g) => g.sessions.map((s) => s.id));
+  const ids = ordered.sessions.map((s) => s.id);
+  const byName = new Map(ordered.sessions.map((s) => [s.name, s.id]));
+  const walk = (mode: "board" | "console"): string[] => {
+    const seen: string[] = [];
+    let at: string | null = byName.get("aaa")!;
+    while (at) {
+      seen.push(ordered.sessions.find((s) => s.id === at)!.name);
+      at = moveSelection({ mode, key: "ArrowDown", ids, currentId: at, columns });
+    }
+    return seen;
+  };
+  // Out of repo A at `zulu`, into repo B and straight through the run cluster nested inside it -
+  // no row skipped, none visited twice, and no stop on a frame header.
+  assert.deepEqual(walk("board"), ["aaa", "zulu", "delta", "mmm"]);
+  assert.deepEqual(walk("console"), ["aaa", "zulu", "delta", "mmm"]);
+});
+
+test("the rendered sequence matches the column array across a free/held boundary too", () => {
+  // The same property with both partitions in play at once, which is where an off-by-one in
+  // `fleetRows`' two cursors would show up.
+  const fleet = [
+    inRepo("alpha", REPO_A, IDLE),
+    inRepo("bravo", REPO_B, IDLE),
+    inRepo("charlie", REPO_A, IDLE),
+    inRepo("delta", null, IDLE),
+  ];
+  const on = orderSessions(fleet, new Set(["plain-charlie"]), true);
+  const idle = on.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(renderedIds(fleetRows(idle)), idle.sessions.map((s) => s.id));
+});
+
+test("the rollup counts a repository across the whole board, not one column", () => {
+  // The denominator in `2 of 7`. Counted over the flat fleet because the number's entire job is
+  // to say the frame in front of you is a PART - a per-column count would report each part as
+  // the whole and leave nothing hinting that the rest exists.
+  const fleet = [
+    inRepo("alpha", REPO_A),
+    inRepo("bravo", REPO_A, IDLE),
+    inRepo("charlie", REPO_A, { state: "awaiting_input", activity: null }),
+    inRepo("delta", REPO_B),
+    inRepo("echo", null),
+  ];
+  const totals = repoSessionTotals(orderSessions(fleet, new Set(), true));
+  assert.equal(totals.get(REPO_A), 3);
+  assert.equal(totals.get(REPO_B), 1);
+  // A session in no repository is in no total, so nothing can render "1 of 1" for it.
+  assert.equal(totals.size, 2);
 });

@@ -7,9 +7,13 @@ import {
   clusterFallbackLabel,
   fleetRows,
   orderSessions,
+  repoSessionTotals,
   type FleetBlock,
+  type FleetRow,
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
+import { repoColor } from "../../lib/repo-color.ts";
+import { useUiConfig } from "../../lib/uiConfig.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
@@ -24,6 +28,7 @@ import {
   EnsembleRailGroup,
   FleetSectionHead,
   PipelineClusterHead,
+  RepoGroupHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { useTourTargetRef } from "../../tour/target-context.tsx";
@@ -45,6 +50,9 @@ function clusterNeedsYou(
     ? Boolean(runs?.get(block.runId)?.halt)
     : blockedMembersIn(block.sessions) > 0;
 }
+
+/** The repository frame row, named so the two render helpers below can take it as a parameter. */
+type FleetRepoRow = Extract<FleetRow, { kind: "repo" }>;
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
 interface PendingDrop {
@@ -112,12 +120,48 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // setting, and it should not still be in force tomorrow morning.
   const [wideCol, setWideCol] = useState<string | null>(null);
   const toggleWide = (id: string): void => setWideCol((prev) => (prev === id ? null : id));
+  // Repository frames the operator has folded away, by ROW key rather than by repository root.
+  // A repository is framed once per tone column and once per side of the free/held boundary, and
+  // keying by root would mean folding it in "idle" also folded away the sibling waiting for you
+  // in "needs you" - a gesture that hid the one card on the board that wanted a human. Local and
+  // un-persisted for the same reason `revealed` and `wideCol` above are: it is "let me read the
+  // rest of this column", not a setting, and it should not still be in force tomorrow morning.
+  //
+  // The key carries the frame's first member (see `fleetRows`), so a folded group REOPENS when
+  // that member leaves the column. That is a consequence rather than a bug: the fold is a
+  // transient gesture, and the alternative - a key stable across membership changes - is exactly
+  // the per-repository key that would fold "needs you" from "idle".
+  const [repoCollapsed, setRepoCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRepo = (key: string): void =>
+    setRepoCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
 
   // The SAME ordering App derived the arrow-key column arrays from, recomputed here rather
   // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
   // already ordered returns that order, and both sides stay one fact. (This is exactly the
   // `groupByTone` arrangement it replaces, now with the cluster spans the frames need.)
-  const groups = orderSessions(props.sessions, heldSessionIds(props.workflowRunsBySession)).groups;
+  // `groupBoardByRepo` read from the SAME `useUiConfig` store App and ConsoleView read it from,
+  // rather than threaded down as a prop. One store means the three orderings cannot disagree
+  // about whether the fleet is repository-grouped, which is the property `boardColumns` (and
+  // therefore the arrow keys) depends on.
+  //
+  // Hoisted into its own const rather than read inline in the call below: a hook buried in an
+  // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
+  // violation that follows is not something this file's tests would catch.
+  const groupByRepo = useUiConfig().groupBoardByRepo;
+  const order = orderSessions(
+    props.sessions,
+    heldSessionIds(props.workflowRunsBySession),
+    groupByRepo,
+  );
+  const groups = order.groups;
+  // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
+  // than per frame: the number is about the fleet, and a frame counting only its own column
+  // would report each part of a split repository as the whole.
+  const repoTotals = repoSessionTotals(order);
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -178,21 +222,41 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     />
   );
   /**
-   * One column's rows - section rules included - rendered by whichever row component this
-   * surface uses. The rule placement itself lives in `fleetRows`, so the board and the rail it
-   * morphs into cannot draw it in different places.
+   * One column's rows - section rules and repository frames included - rendered by whichever
+   * row component this surface uses. The rule and frame placement lives in `fleetRows`, so the
+   * board and the rail it morphs into cannot draw them in different places.
+   *
+   * `wrapRepo` takes the already-rendered children rather than the blocks, so the frame cannot
+   * become a second rendering of a row: a card inside a repository frame is the SAME element
+   * with the same props as one sitting loose beside it, exactly as the run cluster's frame is a
+   * wrapper and never a fork.
    */
   const sectioned = (
     g: FleetToneGroup,
     render: (block: FleetBlock) => React.JSX.Element,
+    wrapRepo: (row: FleetRepoRow, children: React.ReactNode) => React.JSX.Element,
   ): React.ReactNode[] =>
     fleetRows(g).map((row) =>
       row.kind === "section" ? (
         <FleetSectionHead key={`section-${row.section}`} kind={row.section} count={row.count} />
+      ) : row.kind === "repo" ? (
+        wrapRepo(row, repoCollapsed.has(row.key) ? null : row.blocks.map(render))
       ) : (
         render(row)
       ),
     );
+
+  /** One repository frame's head, shared by the board frame and the rail group below. */
+  const repoHead = (row: FleetRepoRow, variant: "board" | "rail"): React.JSX.Element => (
+    <RepoGroupHead
+      repoRoot={row.repoRoot}
+      here={row.blocks.reduce((n, b) => n + (b.kind === "session" ? 1 : b.sessions.length), 0)}
+      total={repoTotals.get(row.repoRoot) ?? 0}
+      variant={variant}
+      expanded={!repoCollapsed.has(row.key)}
+      onToggle={() => toggleRepo(row.key)}
+    />
+  );
 
   const railRow = (s: Session): React.JSX.Element => (
     <RailRow
@@ -385,6 +449,19 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         {block.sessions.map(railRow)}
                       </div>
                     ),
+                    // The rail's own repository group: a one-line head over its rows, the same
+                    // shape `rail-cluster` uses, so the drill-in morph does not change what a
+                    // repository looks like on the way from column to rail.
+                    (row, children) => (
+                      <div
+                        className="rail-cluster rail-repo"
+                        style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+                        key={row.key}
+                      >
+                        {repoHead(row, "rail")}
+                        {children}
+                      </div>
+                    ),
                   )
                 ) : (
                   // Sibling members of one run render inside a frame, in the SAME order the
@@ -418,6 +495,22 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                           />
                         )}
                         {block.sessions.map(tile)}
+                      </div>
+                    ),
+                    // The repository frame. Deliberately the same box the run cluster above
+                    // wears, re-tinted from ONE custom property so the border, the head and
+                    // the body cannot drift apart - the same way `.board-pipeline-head` borrows
+                    // the ensemble head and only recolours its glyph. Presentational only, like
+                    // that frame: no drag handlers, so a dragover started on a tile inside it
+                    // bubbles exactly as it did when the tile was a loose child.
+                    (row, children) => (
+                      <div
+                        className={`board-repo${repoCollapsed.has(row.key) ? " is-collapsed" : ""}`}
+                        style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+                        key={row.key}
+                      >
+                        {repoHead(row, "board")}
+                        {children}
                       </div>
                     ),
                   )

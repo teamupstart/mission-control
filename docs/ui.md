@@ -647,6 +647,26 @@ available:
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
   places, or have it in neither.
+- **Cards are grouped by the repository they belong to, and it ships on.** Each column
+  collects its cards under a heading naming the repository's directory, with a colour drawn
+  from the path so a project keeps the same colour across reloads and machines. The heading
+  says how much of the repository you are looking at - `2 agents` when all of it is here, or
+  `2 of 7` when the rest is elsewhere on the board - and clicking it folds the group away
+  while you read the rest of the column. The **Console** rail groups the same way, because the
+  board's focused column *is* that rail once you drill in. Grouping is on the repository, not
+  the checkout: a linked worktree groups with the repository it was cut from, so two checkouts
+  of one project read as one project. Sessions outside a repository stay loose at the foot of
+  the column rather than under an invented heading.
+  A repository never crosses a column, for the reason a cluster never does: work of one project
+  that is waiting on you sits in **needs you**, with that repository's heading repeated there,
+  instead of dragging its working siblings out of the column that says what they are - which is
+  what the `2 of 7` rollup exists to tie back together. Within the idle column the free/held
+  rule sits *above* the grouping, so a repository with one free agent and one a workflow is
+  holding is drawn once on each side of it. The colour is a scanning aid rather than an
+  identifier: the palette has six entries, so two repositories on a busy board can share one,
+  and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
+  Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
+  every column returns to one flat, tone-ordered list.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

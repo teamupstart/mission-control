@@ -52,6 +52,11 @@ test("a written cache round-trips", () => {
     guidedTour: false,
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
+    // FALSE, deliberately, because this field's default is true: a cache that read a stored
+    // `false` with `||` would hand back the default and re-group the board on every cold paint
+    // for the one operator who turned it off. Asserting the non-default value is the only way
+    // round-tripping this field says anything.
+    groupBoardByRepo: false,
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -64,6 +69,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.guidedTour, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
+  assert.equal(config.groupBoardByRepo, false);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {

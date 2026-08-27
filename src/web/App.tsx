@@ -67,6 +67,7 @@ import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { useUiConfig } from "./lib/uiConfig.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -1692,11 +1693,16 @@ export function App(): React.JSX.Element {
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
 
+  // Repository grouping reorders the fleet, so it belongs to this memo's inputs rather than to
+  // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
+  // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
+  // all three orderings agree by construction rather than by a prop being threaded correctly.
+  const groupByRepo = useUiConfig().groupBoardByRepo;
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds);
-  }, [sessions, filter, heldIds]);
+    return orderSessions(matched, heldIds, groupByRepo);
+  }, [sessions, filter, heldIds, groupByRepo]);
   const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the

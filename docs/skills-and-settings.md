@@ -234,6 +234,14 @@ The badge on a group is the general case; the badge in a panel's own header is t
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
 
+Display's **Layout** panel also carries **Group by repository**, which ships checked: it
+collects each fleet column's cards under a coloured heading naming the repository their session
+belongs to, in the Board and in the Console rail alike. It sits with Layout rather than with
+Board card below because it is about how a column is *arranged* rather than about which facts a
+card draws - and a one-tile preview, which is what the Board card panel offers, cannot show a
+grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
+why a repository can appear in more than one column.
+
 Display's fourth panel is **Board card**, and it is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
 permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card

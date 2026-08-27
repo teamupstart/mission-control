@@ -111,6 +111,11 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     hiddenDisplayItems: raw?.hiddenDisplayItems
       ? [...raw.hiddenDisplayItems]
       : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
+    // `??` and not `||`, which is the whole hazard for a boolean that DEFAULTS TO TRUE: a
+    // stored `false` is the operator's answer, and `||` would read it as absent and hand back
+    // the default - re-grouping the board on every cold paint for the one person who turned it
+    // off. The same trap the booleans above avoid the same way.
+    groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
   };
 }
 

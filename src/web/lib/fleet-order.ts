@@ -35,9 +35,43 @@ export interface FleetClusterSpan {
   length: number;
 }
 
+/**
+ * Where one repository's sessions sit inside ONE tone group.
+ *
+ * The same span shape as `FleetClusterSpan`, and for the same reason: the members are
+ * CONTIGUOUS in the group's rendered order, so a view slices `sessions` at
+ * `[startIndex, startIndex + length)` and frames exactly what the arrow keys will walk.
+ *
+ * A LEVEL ABOVE the run clusters, not a third `FleetClusterKind` beside them. An ai-conductor
+ * run is keyed by `(provider, repoRoot, slug)` and an ensemble's members are dispatched into
+ * one repository, so a run cluster always sits wholly inside one repository span - the nesting
+ * is total rather than a case to handle, which is why this is a separate array instead of a
+ * kind that would have had to be mutually exclusive with the others.
+ *
+ * Only present when the operator has repository grouping on. A group with it off carries an
+ * empty array, which is what makes that fleet's order byte-identical to the order this file
+ * produced before repository grouping existed.
+ */
+export interface FleetRepoSpan {
+  /** `Session.repoRoot`, exactly as the sessions carry it. Never null - see `repoPartition`. */
+  repoRoot: string;
+  /** Index into the tone group's `sessions`, not into the flat fleet. */
+  startIndex: number;
+  length: number;
+}
+
 /** A tone group plus where its run clusters are. */
 export interface FleetToneGroup extends ToneGroup {
   clusters: FleetClusterSpan[];
+  /**
+   * Where this group's repository frames are, in rendered order, or empty when the operator
+   * has repository grouping off.
+   *
+   * Sessions outside a repository (`repoRoot === null`) are in NO span and sort after every
+   * span, which is what lets a view draw them loose at the foot of the column rather than
+   * under an invented heading.
+   */
+  repos: FleetRepoSpan[];
   /**
    * Index into `sessions` where the sessions held by an open workflow run begin, or null when
    * this group has none.
@@ -117,18 +151,29 @@ export type FleetBlock =
  * thing true about the session. A held session that has stopped to ask a question is in
  * "needs you" and demoting it there would bury the one row on the board that wants a human.
  *
+ * REPOSITORIES ARE THE LEVEL ABOVE THE RUN CLUSTERS, and only when `byRepo` is on. The
+ * partition happens HERE rather than while rendering, and that is the whole reason this
+ * argument exists instead of a flag inside `BoardView`: the arrow keys walk index arrays
+ * derived from `groups[].sessions` (`App`'s `boardColumns`), so a grouping applied during
+ * render is Up/Down landing somewhere other than where the eye is. Sessions outside a
+ * repository sort after every repository within their partition, so they end up loose at the
+ * foot of the column.
+ *
  * Idempotent, and deliberately so: `App` orders the visible fleet once, and `BoardView` /
  * `ConsoleView` call this again on the list they were handed rather than being passed a
  * pre-split structure. Re-running it on its own output returns the same order, so the two
- * cannot disagree even though each computes it. That extends to `held`: it is an argument
- * rather than something read off the session precisely so both sides pass the same set.
+ * cannot disagree even though each computes it. That extends to `held` and to `byRepo`: both
+ * are arguments rather than something read off the session precisely so every side passes the
+ * same value - all three call sites read `byRepo` from the one `useUiConfig` store.
  *
- * `held` defaults to empty, which reproduces the pre-workflow ordering exactly - so a caller
- * that has no run map (and every test that predates one) is unaffected.
+ * `held` defaults to empty and `byRepo` to false, which together reproduce the pre-workflow,
+ * pre-repository ordering exactly - so a caller that has neither (and every test that predates
+ * them) is unaffected.
  */
 export function orderSessions(
   sessions: readonly Session[],
   held: ReadonlySet<string> = NO_HELD_SESSIONS,
+  byRepo = false,
 ): FleetOrder {
   const baseline = [...sessions].sort((a, b) => {
     const ta = TONE_ORDER[stateDisplay(a).tone];
@@ -136,7 +181,7 @@ export function orderSessions(
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline).map((group) => clusterGroup(group, held));
+  const groups = groupByTone(baseline).map((group) => clusterGroup(group, held, byRepo));
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 
@@ -173,7 +218,11 @@ function clusterOf(session: Session): { kind: FleetClusterKind; runId: string } 
  * run's own vocabulary and the only order the header's counts can be read against - falling
  * back to the baseline tiebreak when two members claim the same ordinal.
  */
-function clusterGroup(group: ToneGroup, held: ReadonlySet<string>): FleetToneGroup {
+function clusterGroup(
+  group: ToneGroup,
+  held: ReadonlySet<string>,
+  byRepo: boolean,
+): FleetToneGroup {
   // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
   // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
   // run id across everything handed to them, so a run with one free member and one held member
@@ -191,16 +240,76 @@ function clusterGroup(group: ToneGroup, held: ReadonlySet<string>): FleetToneGro
 
   const sessions: Session[] = [];
   const clusters: FleetClusterSpan[] = [];
+  const repos: FleetRepoSpan[] = [];
   let heldFrom: number | null = null;
   for (const [index, partition] of partitions.entries()) {
     if (index === 1) heldFrom = sessions.length;
-    const run = clusterPartition(partition);
-    for (const cluster of run.clusters) {
-      clusters.push({ ...cluster, startIndex: cluster.startIndex + sessions.length });
+    // Repositories partition INSIDE the free/held split and OUTSIDE the run clustering, which
+    // is the only order the three can compose in. Outside the held split, a repository span
+    // would straddle the boundary and swallow the section rule, exactly as a run cluster
+    // would. Inside the run clustering, a run's members would be split by a repository they
+    // all share. So a repository is grouped four times for a repository whose sessions are
+    // spread across three tone columns and both sides of one boundary - and each header's own
+    // rollup is what ties those parts back together.
+    for (const bucket of repoPartition(partition, byRepo)) {
+      if (bucket.repoRoot !== null) {
+        repos.push({
+          repoRoot: bucket.repoRoot,
+          startIndex: sessions.length,
+          length: bucket.sessions.length,
+        });
+      }
+      const run = clusterPartition(bucket.sessions);
+      for (const cluster of run.clusters) {
+        clusters.push({ ...cluster, startIndex: cluster.startIndex + sessions.length });
+      }
+      sessions.push(...run.sessions);
     }
-    sessions.push(...run.sessions);
   }
-  return { ...group, sessions, clusters, heldFrom };
+  return { ...group, sessions, clusters, repos, heldFrom };
+}
+
+/**
+ * One partition split into repository buckets, in first-appearance order, unowned last.
+ *
+ * With `byRepo` off this is one bucket carrying the whole partition under a null root, which
+ * is what makes the surrounding loop a no-op relative to the previous implementation: one
+ * `clusterPartition` call over the same array, and `repos` left empty.
+ *
+ * First-appearance order rather than alphabetical, so a repository lands where its
+ * highest-priority member already sat - the same "smallest move" rule `clusterPartition` uses
+ * for a run. Within a bucket the baseline order is preserved untouched, so the alphabetical
+ * reading order an operator already has inside a repository is not disturbed.
+ *
+ * The null bucket is emitted LAST and carries no span. A session outside a repository has no
+ * repository to be grouped under, and inventing an "(none)" heading for it would be a frame
+ * around the one thing these sessions have in common, which is nothing.
+ */
+interface RepoBucket {
+  repoRoot: string | null;
+  sessions: Session[];
+}
+
+function repoPartition(partition: readonly Session[], byRepo: boolean): RepoBucket[] {
+  if (!byRepo) return [{ repoRoot: null, sessions: [...partition] }];
+
+  const buckets = new Map<string, Session[]>();
+  const unowned: Session[] = [];
+  for (const session of partition) {
+    if (session.repoRoot === null) {
+      unowned.push(session);
+      continue;
+    }
+    const existing = buckets.get(session.repoRoot);
+    if (existing) existing.push(session);
+    else buckets.set(session.repoRoot, [session]);
+  }
+
+  // Annotated rather than inferred, so appending the null bucket below needs no cast. A `Map`'s
+  // iteration order is insertion order, which is what makes this first-appearance order.
+  const out: RepoBucket[] = [...buckets].map(([repoRoot, sessions]) => ({ repoRoot, sessions }));
+  if (unowned.length > 0) out.push({ repoRoot: null, sessions: unowned });
+  return out;
 }
 
 /** One contiguous run of sessions, with the siblings of one run pulled together. */
@@ -254,6 +363,29 @@ function clusterPartition(
 }
 
 /**
+ * How many sessions each repository has on the WHOLE board, by root.
+ *
+ * The denominator in a repository header's `2 of 7`. It has to be counted across every tone
+ * group, because the number's entire job is to say that the frame in front of you is a PART -
+ * a repository whose sessions are spread over three columns is framed three times, and a
+ * header stating only its own three cards would report each part as the whole and leave an
+ * operator with no hint that the rest exists.
+ *
+ * Over `order.sessions`, which is the flat fleet AFTER filtering: the nav-bar filter is applied
+ * before `orderSessions` runs, so this counts what is on screen rather than what exists. That
+ * is the honest reading of "on this board" - a header claiming 7 while a filter shows 2 would
+ * be describing a board nobody is looking at.
+ */
+export function repoSessionTotals(order: FleetOrder): ReadonlyMap<string, number> {
+  const totals = new Map<string, number>();
+  for (const session of order.sessions) {
+    if (session.repoRoot === null) continue;
+    totals.set(session.repoRoot, (totals.get(session.repoRoot) ?? 0) + 1);
+  }
+  return totals;
+}
+
+/**
  * What to call a cluster before its run's SSE summary has arrived.
  *
  * Taken from the member link, which is the only thing guaranteed to be there the instant a
@@ -294,9 +426,34 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
   return blocks;
 }
 
-/** A rendered row of a tone group: a section rule, a loose session, or a framed cluster. */
+/**
+ * A rendered row of a tone group: a section rule, a repository frame, a loose session, or a
+ * framed run cluster.
+ *
+ * The repository row NESTS its blocks rather than being a heading followed by siblings, because
+ * the frame that draws it has to contain them - a heading row plus flat siblings could not
+ * express "these cards are inside this box", and a view left to infer the end of a group from
+ * where the next heading starts is a view that can draw the box around the wrong cards.
+ */
 export type FleetRow =
   | { kind: "section"; section: "free" | "held"; count: number }
+  | {
+      kind: "repo";
+      repoRoot: string;
+      /**
+       * The React key, computed here for the reason a cluster's is: `repoRoot` alone is not
+       * one. A repository is framed once per tone column and once per side of the free/held
+       * boundary, so up to four rows share a root, and two frames keyed the same collide -
+       * React matches one fiber and the other inherits its collapse state. The tone and the
+       * first member's id disambiguate, and are as stable as the span itself.
+       *
+       * That per-ROW identity is also what makes collapsing safe: collapsing a repository in
+       * the idle column must not fold away the card of its sibling that is waiting for you in
+       * "needs you", which a key on the root alone would do.
+       */
+      key: string;
+      blocks: FleetBlock[];
+    }
   | FleetBlock;
 
 /**
@@ -318,19 +475,48 @@ export type FleetRow =
 export function fleetRows(group: FleetToneGroup): FleetRow[] {
   const blocks = fleetBlocks(group);
   const heldFrom = group.heldFrom;
-  if (heldFrom === null) return blocks;
+  if (heldFrom === null && group.repos.length === 0) return blocks;
 
+  const repoAt = new Map(group.repos.map((span) => [span.startIndex, span]));
   const rows: FleetRow[] = [];
+  // Two cursors, because a repository row swallows several blocks: `index` counts SESSIONS,
+  // which is what `heldFrom` and every span index are stated in, and `at` walks the block
+  // array. Counting only blocks would put the rules and the frames in the wrong places the
+  // moment a run cluster occupied more than one session, which is every cluster.
   let index = 0;
-  for (const block of blocks) {
-    if (index === 0 && heldFrom > 0) {
-      rows.push({ kind: "section", section: "free", count: heldFrom });
+  let at = 0;
+  const step = (block: FleetBlock): number => (block.kind === "session" ? 1 : block.sessions.length);
+  while (at < blocks.length) {
+    if (heldFrom !== null) {
+      if (index === 0 && heldFrom > 0) {
+        rows.push({ kind: "section", section: "free", count: heldFrom });
+      }
+      if (index === heldFrom) {
+        rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
+      }
     }
-    if (index === heldFrom) {
-      rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
+    const span = repoAt.get(index);
+    if (span) {
+      // The frame's own blocks, taken by session count rather than by block count for the
+      // reason above. The walk can only land exactly ON the span's end, because a repository
+      // partitions before the run clustering does - a cluster straddling a repository boundary
+      // cannot exist, so this never steps past `end` and leaves a block orphaned.
+      const key = `repo-${group.tone}-${span.repoRoot}-${group.sessions[span.startIndex]!.id}`;
+      const end = index + span.length;
+      const inner: FleetBlock[] = [];
+      while (index < end) {
+        const block = blocks[at]!;
+        inner.push(block);
+        index += step(block);
+        at += 1;
+      }
+      rows.push({ kind: "repo", repoRoot: span.repoRoot, key, blocks: inner });
+      continue;
     }
+    const block = blocks[at]!;
     rows.push(block);
-    index += block.kind === "session" ? 1 : block.sessions.length;
+    index += step(block);
+    at += 1;
   }
   return rows;
 }

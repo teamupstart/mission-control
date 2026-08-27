@@ -238,6 +238,7 @@ const uiFields = {
   guidedTour: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
+  groupBoardByRepo: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({

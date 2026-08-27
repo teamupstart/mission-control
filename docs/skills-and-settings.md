@@ -226,7 +226,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`Reads ~/`), **Harnesses**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`Reads ~/`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -394,7 +394,7 @@ arrives (a cold tab, a reconnect) the dots stay dark rather than claim an all-cl
 
 ### Reaching a setting from the palette
 
-Roughly seventy controls span the thirteen categories, so search is how you reach one you
+Roughly seventy controls span the fourteen categories, so search is how you reach one you
 half-remember without knowing which panel it lives in - and that search is the app-wide
 <kbd>⌘</kbd><kbd>K</kbd> palette, not a settings-only box. See
 [The palette (⌘K)](ui.md#the-palette-k) for the whole surface; what matters here is what it does

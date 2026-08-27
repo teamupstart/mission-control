@@ -19,6 +19,7 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "inspector", surface: "settings" },
   { id: "shipping", surface: "settings" },
   { id: "pipelines", surface: "settings" },
+  { id: "repo-index", surface: "settings" },
   // Away thresholds and the current away flag are operator configuration, but their controls
   // live in the top bar rather than Settings. They still participate in typed config coverage.
   { id: "away", surface: "runtime" },

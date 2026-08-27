@@ -32,6 +32,7 @@ import type { StandingInstructionsConfig } from "./standing-instructions.ts";
 import type { WorkflowPolicy } from "./workflow.ts";
 import type { SettingsBackupDomainId } from "./settings-backup-domains.ts";
 import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
+import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -243,6 +244,10 @@ const uiFields = {
   groupBoardByRepo: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
+const repoIndexFields = {
+  directories: "setting",
+} satisfies Record<keyof RepoIndexConfig, AppConfigValueClass>;
+
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
   expiresAt: z.number(),
@@ -298,6 +303,9 @@ export const APP_CONFIG_ENTRIES = {
     "costTelemetryEnabledAt", z.number().nullable(), "derived", null,
   ),
   costOtelLastSeen: wholeEntry("costOtelLastSeen", z.number(), "operational", null),
+  repoIndex: fieldsEntry(
+    "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
+  ),
 } as const;
 
 export type AppConfigEntry = (typeof APP_CONFIG_ENTRIES)[keyof typeof APP_CONFIG_ENTRIES];

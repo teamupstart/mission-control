@@ -267,9 +267,9 @@ test.describe("managed Pipeline run adoption", () => {
       // It is also the reason a trace of this failing showed a REAL `claude` session from the
       // developer's machine carded inside this throwaway daemon, which is exactly what the
       // fixture's own `MISSION_POLL_MS: "0"` says to avoid. Discovery still has to run here,
-      // so it cannot be zero; it can be slow enough to stop starving the daemon, and the
-      // worker is still adopted well inside every window below.
-      MISSION_POLL_MS: "1500",
+      // so it cannot be zero. Give the managed host a wide startup window between sweeps;
+      // the test waits for the worker's first observation before launching that host.
+      MISSION_POLL_MS: "10000",
     },
   });
   test.skip(tmuxMissing, "tmux is not installed on this machine");
@@ -291,6 +291,22 @@ test.describe("managed Pipeline run adoption", () => {
     const worker = startProviderWorker(conductorWorktree(daemon.repo, adoptedSlug));
 
     try {
+      await expect
+        .poll(
+          async () => {
+            const sessions = await request<Array<{
+              name: string;
+              pipeline: { slug: string } | null;
+            }>>(daemon, "/api/sessions");
+            return sessions.find((candidate) => candidate.name === worker.name)?.pipeline?.slug;
+          },
+          {
+            message: "the provider worker should be observed before the managed host starts",
+            timeout: 20_000,
+          },
+        )
+        .toBe(adoptedSlug);
+
       await dashboard.getByRole("button", { name: "Dispatch" }).click();
       const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
       await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);

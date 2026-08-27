@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>C - Path list - indexed directories</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="settings.css" />
+<style>
+  .ri-textarea {
+    width: 100%; min-height: 132px; resize: vertical;
+    font: 12.5px/1.75 var(--mono); color: var(--fg);
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 11px 12px; outline: none;
+  }
+  .ri-textarea:focus { border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+  .ri-save { display: flex; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+<main class="settings-page">
+  <div class="settings-rail">
+    <div class="settings-page-title">
+      <h2>Settings</h2>
+      <button class="settings-leave" type="button">← Fleet</button>
+    </div>
+    <button class="settings-rail-search" type="button">
+      <span aria-hidden>⌕</span><span>Search everything…</span><kbd>⌘K</kbd>
+    </button>
+    <div class="settings-nav-group">
+      <p class="settings-nav-label">Sessions <span class="settings-scope settings-scope-machine">This machine</span></p>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⚙</span>Harnesses</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⑂</span>Worktrees</button>
+      <button class="settings-nav-item is-active is-new" type="button"><span class="settings-nav-icon">▤</span>Repositories</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✦</span>Skills</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✎</span>Standing instructions</button>
+    </div>
+  </div>
+
+  <div class="settings-pane">
+    <div class="settings-panel-head">
+      <h2>Repositories</h2>
+      <span class="settings-scope settings-scope-machine">This machine</span>
+    </div>
+
+    <section class="settings-section">
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts, as one path per line -
+        the shape the Standing instructions panel uses for its text. Edit, save, done.
+      </p>
+
+      <div class="settings-section-head">
+        <h3>Indexed directories</h3>
+        <p class="settings-hint">One absolute path per line. A leading <code>~</code> is your home directory.</p>
+      </div>
+
+      <textarea class="ri-textarea" aria-label="Indexed directories, one per line">~/workspace
+~/code
+~/dev
+~/upstart</textarea>
+
+      <div class="ri-save">
+        <button class="btn btn-primary" type="button">Save</button>
+        <button class="btn btn-ghost" type="button">Revert</button>
+        <span class="ri-count">26 repositories indexed across 3 of 4 directories</span>
+      </div>
+
+      <p class="settings-hint">
+        Saving replaces the whole list, so removing a default is deleting its line. The four
+        defaults are what the box is pre-filled with on a machine that has never saved it.
+      </p>
+
+      <p class="ri-footnote">
+        <span aria-hidden>ℹ</span>
+        <span>Cheapest to build, and it gives up the three things the row list is for: no
+        per-row status, so <code>~/dev</code> not existing is invisible until a repo is missing
+        from the picker; no per-row Remove, so a slip deletes a line you meant to keep; and a
+        refusal can only be reported for the save as a whole rather than beside the line that
+        caused it.</span>
+      </p>
+    </section>
+  </div>
+</main>
+
+<nav class="mock-switch" aria-label="Mock-up screens">
+  <a href="index.html">all mock-ups</a>
+</nav>
+</body>
+</html>

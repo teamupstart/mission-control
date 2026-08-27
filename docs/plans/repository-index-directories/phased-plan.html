@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indexed directories: phased implementation</title>
+<style>
+  :root {
+    --page-bg: #ffffff;
+    --page-fg: #1a1d23;
+    --page-muted: #5b6472;
+    --page-dim: #78818f;
+    --page-border: #dfe3e9;
+    --page-soft: #f4f6f9;
+    --page-accent: #1f7a52;
+    --page-warn: #9a5b00;
+    --page-code: #f2f4f8;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0f1216;
+      --page-fg: #e4e8ee;
+      --page-muted: #9aa4b2;
+      --page-dim: #7f8896;
+      --page-border: #262d36;
+      --page-soft: #161b21;
+      --page-accent: #4ecf95;
+      --page-warn: #e0a34a;
+      --page-code: #161b21;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 0 20px 96px;
+    background: var(--page-bg); color: var(--page-fg);
+    font: 16px/1.65 var(--sans); overflow-wrap: break-word;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  header.doc { max-width: 900px; margin: 0 auto; padding: 48px 0 18px; border-bottom: 1px solid var(--page-border); }
+  header.doc h1 { margin: 0 0 8px; font-size: 33px; line-height: 1.15; letter-spacing: -0.02em; }
+  header.doc p { margin: 0; color: var(--page-muted); font-size: 15px; }
+  h2 { margin: 44px 0 12px; font-size: 23px; line-height: 1.25; letter-spacing: -0.01em; padding-bottom: 7px; border-bottom: 1px solid var(--page-border); }
+  h3 { margin: 30px 0 8px; font-size: 17.5px; letter-spacing: -0.005em; }
+  p, li { font-size: 15.5px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  li > ul { margin-top: 5px; }
+  strong { font-weight: 640; }
+  em { font-style: italic; }
+  a { color: var(--page-accent); }
+  code { font-family: var(--mono); font-size: 0.855em; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 5px; padding: 1px 5px; }
+  pre { margin: 16px 0; padding: 13px 15px; overflow-x: auto; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 9px; }
+  pre code { background: none; border: 0; padding: 0; font-size: 13.5px; line-height: 1.6; }
+  .lede { font-size: 16.5px; color: var(--page-muted); }
+  .tablewrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--page-border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 540px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-border); vertical-align: top; }
+  th { background: var(--page-soft); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--page-dim); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+  .figure { margin: 20px 0 26px; padding: 16px; border: 1px solid var(--page-border); border-radius: 11px; background: var(--page-soft); overflow-x: auto; }
+  .figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .figcap { margin: 10px 0 0; font-size: 13px; color: var(--page-dim); text-align: center; }
+  .note {
+    margin: 22px 0; padding: 13px 16px; border-radius: 9px;
+    border: 1px solid var(--page-border); border-left: 3px solid var(--page-warn);
+    background: var(--page-soft); font-size: 14.5px;
+  }
+  .note b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 4px; }
+  svg text { font-family: var(--sans); }
+</style>
+</head>
+<body>
+<header class="doc">
+  <h1>Indexed directories: phased implementation</h1>
+  <p class="lede">Implementation index for <a href="plan.html">the approved plan</a>, which the human
+  approved with four submitted decisions. This document is the merge-aware decomposition of that
+  plan and the record of what the repository said about it.</p>
+</header>
+
+<main>
+
+<h2>Source plan and incorporated decisions</h2>
+<p>Source of truth: <code>plan.md</code>, rendered at <a href="plan.html">plan.html</a>. Mock-ups in
+<a href="mockups/index.html">mockups/</a>, of which <code>a-directory-rows.html</code> is the
+adopted design.</p>
+<p>Submitted in the dashboard plan review and already written into <code>plan.md</code>:</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Decision</th><th>Answer</th><th>Consequence for implementation</th></tr></thead>
+  <tbody>
+    <tr><td>Panel shape</td><td>A - directory rows</td><td>Per-row status chip, per-row Remove, an
+    Add field, Restore defaults, Rescan now. Not a matrix, not a textarea.</td></tr>
+    <tr><td>Removal model</td><td>Remove only, plus Restore defaults</td><td>The stored row is
+    <code>{ path }</code> with no <code>enabled</code> field. There is no per-directory toggle to
+    build, test, or back up.</td></tr>
+    <tr><td>Environment precedence</td><td><code>MISSION_WORKSPACE_DIRS</code> wins, panel
+    read-only</td><td><code>indexedDirectories()</code> returns the override untouched when it is
+    set, and the panel renders a read-only list plus the variable's value.</td></tr>
+    <tr><td>After this plan</td><td>Create phased implementation plan</td><td>This document and its
+    one phase.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What the repository said</h2>
+<p>Investigated against the current checkout before the phase boundaries were drawn. Four findings
+changed the plan's shape; the rest confirmed it.</p>
+<ol>
+  <li><strong>A layer split would land red, so the vertical slice cannot be broken up.</strong>
+  <code>test/settings-backup-coverage.test.ts</code> asserts that every backup domain whose surface
+  is <code>settings</code> is referenced by at least one entry in <code>SETTINGS_CONTROLS</code>
+  (<code>src/web/lib/settings-search.ts</code>), and separately that the config-derived domain set
+  equals the <code>settings</code> plus <code>runtime</code> domain set exactly.
+  <code>test/settings-search.test.ts</code> then asserts that every control's anchor is one the
+  rendered <code>SettingsPage</code> actually carries. So the moment the <code>repoIndex</code>
+  app-config entry and its <code>repo-index</code> backup domain exist, the browser panel, its
+  anchors, and its search-index entries must exist too, or the suite fails. A server-first phase is
+  not an option here, and that is the whole reason this is one phase.</li>
+  <li><strong>The panel must render its controls before its first poll returns.</strong> Both
+  settings render tests drive <code>SettingsPage</code> through <code>renderToStaticMarkup</code>
+  with null subsystem state and no effects. <code>DispatchSettingsPanel</code> documents the
+  resulting contract: a daemon-backed panel renders disabled-but-present until its read lands.
+  <code>RepositoriesPanel</code> has to follow it, which is a design constraint on the component,
+  not a test detail.</li>
+  <li><strong>The e2e fixture needs one conditional, not a config-seeding mechanism.</strong>
+  <code>e2e/fixtures/daemon.ts</code> sets both <code>HOME</code> and <code>MISSION_HOME</code> to
+  the throwaway home and seeds its repository into <code>join(home, "workspace")</code>. The shipped
+  default <code>~/workspace</code> therefore already expands to exactly the fixture workspace. The
+  new spec needs the fixture to <em>omit</em> <code>MISSION_WORKSPACE_DIRS</code> under an opt-in
+  flag - after which discovery finds the seeded repo through the default config path - rather than
+  the config-row seeding the source plan assumed.</li>
+  <li><strong>Adding a settings category has a documented checklist wider than the plan
+  listed.</strong> <code>docs/agent-guides/change-contracts.md#registries</code> requires
+  <code>SETTINGS_CATEGORIES</code>, <code>renderCategory</code>, the panel component, and the search
+  anchors together, and states that categories are unconditional destinations with no availability
+  filter. It also requires README updates for a new capability and for a changed environment
+  variable, and <code>docs/skills-and-settings.md</code> carries both a per-group category table and
+  a "thirteen categories" count that becomes wrong.</li>
+</ol>
+<p>Confirmed as the plan assumed:</p>
+<ul>
+  <li><code>src/server/shipping/config.ts</code> is the exact pattern for a schema blob over
+  <code>app_config</code>, and <code>useShipping.ts</code> is the pattern for a polling hook with a
+  write guard.</li>
+  <li>No SQLite migration is needed: <code>app_config</code> is a key-value partition, and
+  <code>logicalConfigValue</code> handles a <code>generic</code> capture entry with no new case.</li>
+  <li><code>settingsRailDot</code> needs no new branch, and the ⌘K palette reads
+  <code>SETTINGS_CONTROLS</code>, so it needs no provider change.</li>
+  <li><code>listRepos()</code>'s 30-second cache, <code>scanRepos([]) === []</code>, and
+  <code>MAX_DEPTH</code>/<code>SKIP</code> are all as described.</li>
+</ul>
+
+<h2>Sizing and phase count</h2>
+<p><strong>Estimate: 600 to 750 gross non-test implementation lines</strong>, excluding tests and
+documentation prose. Assumptions behind the range: this repository's house style carries substantial
+explanatory doc comments (the estimate includes them), <code>src/web/styles.css</code> rules for the
+row list are counted as implementation, and the four documentation files are not.</p>
+<p>Rough distribution: shared contract ~90; app-config and backup-domain registration ~10; server
+config, expansion, validation and status probe ~170; <code>repos.ts</code> edits ~25; three routes
+~35; the polling hook ~90; <code>RepositoriesPanel.tsx</code> ~190; registry, search index and
+<code>SettingsPage</code> wiring ~50; stylesheet ~90.</p>
+<p><strong>One phase, one task.</strong> Above 200 lines the rubric's default is still a single
+phase, and here the default is also the only safe option: finding 1 shows that any split along the
+shared/server/web boundary leaves the repository failing its own settings-coverage and
+anchor-integrity tests at the intermediate merge. The alternatives were considered and rejected:</p>
+<ul>
+  <li><em>Server first, panel second</em> - fails <code>settings-backup-coverage.test.ts</code> and
+  <code>settings-search.test.ts</code> on merge of phase one, which violates the rule that a phase
+  ends with an operable, testable repository.</li>
+  <li><em>Panel first, server second</em> - a panel with no route behind it is a dead surface and a
+  second source of truth for the default list.</li>
+  <li><em>Feature first, e2e spec second</em> - the repository requires the Playwright spec in the
+  change that alters the UI. A test-only follow-up phase is exactly the kind of phase the rubric
+  forbids.</li>
+</ul>
+<p>The work is also one coherent slice for a mid-tier model: one config key, one server module, one
+route trio, one panel, and the four registry lines that tie them together.</p>
+
+<h2>Phases</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Phase</th><th>Name</th><th>Depends on</th><th>Repository</th><th>Outcome</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><a href="phase-1-repositories-settings-and-config-backed-discovery.md">Repositories
+      settings and config-backed discovery</a></td>
+      <td>This planning session's pull request</td>
+      <td>current (<code>mission-control</code>)</td>
+      <td>Repository detection reads its directory list from <code>app_config</code>, seeded with the
+      four defaults, and Settings gains the Repositories category that edits it.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<p>Dependency graph: <code>planning PR merge → Phase 1</code>. Nothing runs concurrently, because
+there is nothing else to run.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>With one phase there is no inter-phase contract to hold. What the phase must not quietly change,
+because other subsystems already depend on it:</p>
+<ul>
+  <li><code>MISSION_WORKSPACE_DIRS</code> keeps precedence and keeps its colon-separated syntax.
+  Every e2e spec, Demo mode, <code>test/pipeline-http.test.ts</code> and
+  <code>test/mcp-create-task.test.ts</code> rely on it.</li>
+  <li><code>listRepos()</code> keeps its signature, its cache, and its "never descend into a repo"
+  rule. Four callers read it.</li>
+  <li><code>SETTINGS_BACKUP_DOMAINS</code> and <code>APP_CONFIG_ENTRIES</code> are
+  append-only.</li>
+  <li>Indexing grants nothing. The Foreman, Workflows, Inspector and Shipping allowlists are
+  untouched.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>Owned by the phase and stated in its file: the extended <code>test/repos.test.ts</code>, the new
+<code>test/repo-index-http.test.ts</code>, the settings registry and backup coverage tests,
+<code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm run build</code>, and the new
+<code>e2e/specs/settings-repository-index.spec.ts</code> under <code>npm run test:e2e</code>.</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Indexed directories - mockups</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  body { background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg); min-height: 100vh; }
+  main { max-width: 940px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1 { font-size: 26px; font-weight: 640; letter-spacing: -0.015em; margin: 0 0 8px; }
+  .lede { font-size: 14px; line-height: 1.65; color: var(--muted); max-width: 66ch; margin: 0 0 36px; }
+  .cards { display: grid; gap: 14px; }
+  a.card {
+    display: grid; grid-template-columns: 42px 1fr auto; gap: 16px; align-items: start;
+    text-decoration: none; color: inherit;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--panel); padding: 18px 20px;
+    transition: border-color .14s ease, background .14s ease;
+  }
+  a.card:hover { border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 5%, var(--panel)); }
+  a.card.chosen { border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); background: color-mix(in oklab, var(--idle) 6%, var(--panel)); }
+  a.card.chosen .badge { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 42%, var(--border)); }
+  .badge { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); font: 600 14px var(--mono); color: var(--muted); }
+  .card h2 { margin: 0 0 5px; font-size: 16px; font-weight: 600; }
+  .card p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fact { font: 10.5px var(--mono); color: var(--dim); border: 1px solid var(--border-soft); border-radius: 999px; padding: 3px 8px; }
+  .go { font-size: 11.5px; color: var(--dim); align-self: center; }
+  .chip { display: inline-block; margin-left: 8px; font: 10px var(--mono); color: var(--idle); border: 1px solid color-mix(in oklab, var(--idle) 35%, var(--border)); border-radius: 999px; padding: 3px 8px; vertical-align: 2px; }
+  .note { margin-top: 34px; font-size: 12px; line-height: 1.7; color: var(--dim); border-top: 1px solid var(--border-soft); padding-top: 18px; }
+  .note code { font: 11px var(--mono); color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Indexed directories for repository detection</h1>
+  <p class="lede">Today the daemon scans exactly <code style="font:12px var(--mono);color:var(--fg)">~/workspace</code>,
+  and the only way to change that is an environment variable set before launch. This adds a
+  <b style="color:var(--fg)">Repositories</b> category to Settings holding the list of
+  directories that are walked, seeded with <code style="font:12px var(--mono);color:var(--fg)">~/workspace</code>,
+  <code style="font:12px var(--mono);color:var(--fg)">~/code</code>,
+  <code style="font:12px var(--mono);color:var(--fg)">~/dev</code> and
+  <code style="font:12px var(--mono);color:var(--fg)">~/upstart</code>, any of which can be
+  removed. Three takes below. <b style="color:var(--fg)">A is the adopted direction</b>; B and C are kept for the record.</p>
+
+  <div class="cards">
+    <a class="card chosen" href="a-directory-rows.html">
+      <span class="badge">A</span>
+      <span>
+        <h2>Directory rows <span class="chip">adopted</span></h2>
+        <p>One row per directory carrying its path, whether it is a seeded default, and what
+        the daemon actually found there - <em>14 repositories</em>, <em>not found</em>,
+        <em>not a directory</em> - with Remove on the row. An Add field, Restore defaults, and
+        Rescan now beneath. Four screens: as shipped, after edits with a refused path, under an
+        environment override, and emptied.</p>
+        <span class="facts"><span class="fact">per-row status</span><span class="fact">per-row remove</span><span class="fact">room to explain</span><span class="fact">4 states drawn</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="b-status-matrix.html">
+      <span class="badge">B</span>
+      <span>
+        <h2>Status matrix <span style="margin-left:8px;font:10px var(--mono);color:var(--dim);border:1px solid var(--border-soft);border-radius:999px;padding:3px 8px;vertical-align:2px;">not taken</span></h2>
+        <p>The same facts as a <code>settings-matrix</code> table: directory, source, status,
+        repo count, action. Denser, and it reuses a component that already exists. No room to
+        explain why a directory the app seeded itself reports <em>not found</em>.</p>
+        <span class="facts"><span class="fact">densest</span><span class="fact">reuses a component</span><span class="fact">no explanatory copy</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+
+    <a class="card" href="c-path-list.html">
+      <span class="badge">C</span>
+      <span>
+        <h2>Path list <span style="margin-left:8px;font:10px var(--mono);color:var(--dim);border:1px solid var(--border-soft);border-radius:999px;padding:3px 8px;vertical-align:2px;">not taken</span></h2>
+        <p>One path per line in a textarea, Save and Revert beneath. Cheapest to build. Gives
+        up per-row status, per-row removal, and a refusal that can point at the line that
+        caused it.</p>
+        <span class="facts"><span class="fact">cheapest</span><span class="fact">no status</span><span class="fact">whole-list save</span></span>
+      </span>
+      <span class="go">open →</span>
+    </a>
+  </div>
+
+  <p class="note">Mock-ups only. <code>tokens.css</code> is lifted from
+  <code>src/web/styles.css</code> and <code>settings.css</code> reproduces the settings page's
+  chrome by eye, so these read as the real app without being it. Nothing in this folder ships.
+  The plan is <code>../plan.md</code>, rendered at <code>../plan.html</code>.</p>
+</main>
+</body>
+</html>

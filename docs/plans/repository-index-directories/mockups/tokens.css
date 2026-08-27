@@ -1,0 +1,222 @@
+/* Lifted verbatim from src/web/styles.css so the mockups read as the real app.
+   Mockup-only file. Nothing here ships. */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #7c8798;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --exited: #707a88;
+  --neutral: #8b94a3;
+  --select: #35c08a;
+  --purple: #a371f7;
+  --foreman: var(--purple);
+
+  --claude: #d97757;
+  --codex: #10a37f;
+  --pi: #4d7cfe;
+
+  --radius: 13px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- the faked dashboard behind the dialog ---- */
+.stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 700px at 20% -10%, #101720 0%, transparent 60%),
+    var(--bg);
+}
+.stage-topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 46px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--dim);
+}
+.stage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+.stage-card {
+  height: 118px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  opacity: 0.5;
+}
+
+/* The mount point must not become a flex item of its own, or a wide step's max-content
+   width unseats the centering. */
+#root { display: contents; }
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(4, 6, 9, 0.72);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px;
+  overflow: auto;
+}
+
+/* ---- real dispatch-modal chrome ---- */
+.modal {
+  width: min(640px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.modal-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.modal-body { padding: 8px 18px 18px; }
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.spacer { flex: 1; }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 11.5px; font-weight: 560; color: var(--muted); }
+.field-hint { font-size: 11.5px; font-weight: 400; color: var(--dim); }
+.field-input {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+  width: 100%;
+}
+.field-input::placeholder { color: var(--dim); }
+.field-input:focus { border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+textarea.field-input { resize: vertical; min-height: 90px; line-height: 1.5; font-family: var(--sans); }
+
+.fake-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: var(--bg-2);
+}
+.fake-select::after {
+  content: "";
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: translateY(-2px) rotate(45deg);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral); flex: none; }
+
+.btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.btn-ghost { background: transparent; border-color: transparent; }
+.btn-primary {
+  color: #fff;
+  background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+  border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 3px 5px;
+  min-width: 15px;
+  display: inline-block;
+  text-align: center;
+}
+
+/* ---- mockup scaffolding (not part of the design) ---- */
+.mock-nav {
+  position: fixed;
+  z-index: 200;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(10, 12, 15, 0.92);
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--dim);
+  backdrop-filter: blur(8px);
+}
+.mock-nav a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 6px; border: 1px solid transparent; }
+.mock-nav a:hover { color: var(--fg); border-color: var(--border); }
+.mock-nav a.on { color: var(--fg); border-color: var(--border); background: var(--panel-2); }
+.mock-nav .keys { margin-left: auto; display: flex; align-items: center; gap: 6px; }

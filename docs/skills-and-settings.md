@@ -225,7 +225,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Harnesses**, **Worktrees**, **Skills** (writes `~/`), **Standing instructions**, **Cost** (writes `~/`), **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -234,7 +234,15 @@ The badge on a group is the general case; the badge in a panel's own header is t
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
 
-Display's fourth panel is **Board card**, and it is the checklist of every optional item a
+Display's **Layout** panel also carries **Group by repository**, which ships checked: it
+collects each fleet column's cards under a coloured heading naming the repository their session
+belongs to, in the Board and in the Console rail alike. It sits with Layout rather than with
+Board card below because it is about how a column is *arranged* rather than about which facts a
+card draws - and a one-tile preview, which is what the Board card panel offers, cannot show a
+grouping. See [Layout](ui.md#layout-console-or-board-in-settings) for what the heading says and
+why a repository can appear in more than one column.
+
+Display's last panel is **Board card**, and it is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
 permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card
 in every column immediately, and a live preview card in the panel redraws as you toggle, so

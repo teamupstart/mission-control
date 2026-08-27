@@ -230,6 +230,7 @@ const pipelinesFields = {
 const uiFields = {
   layout: "setting",
   conversationView: "setting",
+  lineDensity: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",
@@ -238,6 +239,7 @@ const uiFields = {
   guidedTour: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
+  groupBoardByRepo: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const ForemanLeaseSchema = z.object({

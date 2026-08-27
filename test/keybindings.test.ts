@@ -341,6 +341,11 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("k", { meta: true })),
     chordFromEvent(key("f", { meta: true })),
     chordFromEvent(key("F10", { shift: true })),
+    // Shift+L (fold the Line), from the same "l" that opens a diff file in Files. The same
+    // asymmetry Shift+S relies on above, and the reason this one is worth stating twice: a
+    // bare "l" was already taken, so the Line's chord is only expressible if shift survives
+    // the round trip.
+    chordFromEvent(key("L", { shift: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });

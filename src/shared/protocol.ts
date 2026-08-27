@@ -2752,6 +2752,28 @@ export const ConversationViewSchema = z.enum(CONVERSATION_VIEWS);
 export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 
 /**
+ * How much the Line strip SAYS - the same six stages, at two densities.
+ *
+ * `expanded` is the two-line strip: glyph, name, count and a sentence per stage.
+ * `condensed` drops the sentences and the wires for a single row of inline segments,
+ * which measures 38.5px against expanded's 86px in the console layout. The strip is
+ * `flex: none` inside a `height: 100dvh` shell that does not scroll, so those 47.5px go
+ * straight to the conversation pane underneath it
+ * (`docs/plans/line-collapse/plan.md`).
+ *
+ * A named set rather than a boolean, and here beside `CONVERSATION_VIEWS` for that key's
+ * reason exactly: the study drew a third `hidden` density - zero height, with a 3px
+ * segmented attention hairline in its place - and it was held in reserve rather than
+ * rejected. A `lineCollapsed: boolean` would have to be RENAMED the day it arrives, and
+ * this key is persisted on operators' machines. Adding a member to this list is free;
+ * renaming a stored key is not.
+ */
+export const LINE_DENSITIES = ["expanded", "condensed"] as const;
+export const LineDensitySchema = z.enum(LINE_DENSITIES);
+/** Derived from the array, not from the schema, so reading it costs the web no zod. */
+export type LineDensity = (typeof LINE_DENSITIES)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -2785,6 +2807,17 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 export const UI_CONFIG_DEFAULTS = {
   layout: "console",
   conversationView: "terminal",
+  /**
+   * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
+   * decided default rather than the cautious one.
+   *
+   * Defaulting to `expanded` would have been the no-op, and it frees nobody anything
+   * until they find the control. The strip's whole reading survives condensing: every
+   * count, every tone, every drawer, and the one sentence that is ever load-bearing
+   * ("N needs you") is promoted onto the row. What it costs is the per-stage prose,
+   * which is a hover or a click away. That trade was put to the operator and taken.
+   */
+  lineDensity: "condensed",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -2807,6 +2840,19 @@ export const UI_CONFIG_DEFAULTS = {
    * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
    */
   hiddenDisplayItems: ["worktree"],
+  /**
+   * TRUE, unlike `hiddenDisplayItems` above, and the difference is worth stating.
+   *
+   * That list defaults to "the card this build's predecessor drew" because every entry in it
+   * removes or restores a FACT on a card, and putting a new fact on every card on upgrade is
+   * what defaulting to today's rendering exists to prevent. Repository grouping adds no fact:
+   * every card says exactly what it said before, and what changes is the order they sit in and
+   * a heading above them. On a single-repository fleet - which is most of them - that heading
+   * is the only visible difference at all, and on a multi-repository one it answers the
+   * question the board could not previously answer. So it ships on, and an operator who wants
+   * one flat list per column unchecks it.
+   */
+  groupBoardByRepo: true,
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -2817,6 +2863,12 @@ export const UiConfigSchema = z.object({
    * honestly tab-scoped.
    */
   conversationView: ConversationViewSchema.default(UI_CONFIG_DEFAULTS.conversationView),
+  /**
+   * How dense the Line strip draws. An existing config missing this key parses to the
+   * default above like any other new key - no migration is owed, and forgetting a fold
+   * state costs nothing.
+   */
+  lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -2900,6 +2952,21 @@ export const UiConfigSchema = z.object({
   hiddenDisplayItems: z
     .array(z.string().min(1))
     .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
+  /**
+   * Whether the fleet's tone-grouped surfaces collect their cards by repository.
+   *
+   * A plain boolean rather than an entry in `hiddenDisplayItems`, and that is a boundary worth
+   * keeping. That array answers "which facts does a card draw"; this answers "how is a column
+   * arranged", which is not a property of any card and could not be expressed as one of its
+   * items - the Board card panel's own preview is a single tile, and a single tile cannot show
+   * a grouping.
+   *
+   * Named for the Board because that is the surface it was asked for and the one it changes
+   * most, and it governs the console rail too: the board's idle column BECOMES that rail on
+   * drill-in, so a grouping that stopped at the morph would read as the fleet regrouping when
+   * only the layout moved.
+   */
+  groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

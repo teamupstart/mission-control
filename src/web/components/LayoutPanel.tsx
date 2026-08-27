@@ -1,4 +1,5 @@
 import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
+import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -48,6 +49,7 @@ export function LayoutPanel({
   layout: LayoutMode;
   onLayoutChange: (mode: LayoutMode) => void;
 }): React.JSX.Element {
+  const groupByRepo = useUiConfig().groupBoardByRepo;
   return (
     <section className="settings-section">
       <div className="settings-section-head">
@@ -84,6 +86,56 @@ export function LayoutPanel({
         Every layout reaches the same sessions and actions, so only their arrangement changes.
         Console opens the selected session's detail as you move. Board keeps selection and detail
         apart: the arrow keys move a cursor over tiles and <kbd>Enter</kbd> opens the selected one.
+      </p>
+
+      {/* In THIS panel and not in Session display, and the line is worth stating: that panel's
+          subject is which facts a card draws, and its preview is a single tile. This is how a
+          column is ARRANGED, which is not a property of any card and which a one-tile preview
+          could not show. Layout already owns arrangement, so it owns this.
+
+          Reads and writes the shared store directly rather than taking props, exactly as
+          `BoardCardPanel` does: `useUiConfig()` is synchronous with shipped defaults, so the
+          control is present and correct on the first paint and the static render harness in
+          `test/settings-search.test.ts` can hand this nothing. */}
+      <h4 className="settings-subhead" data-anchor="display/board-grouping">
+        Grouping
+      </h4>
+      <label className={`settings-toggle${groupByRepo ? " is-on" : ""}`}>
+        <Tooltip
+          label={
+            groupByRepo
+              ? "Stop grouping the fleet by repository"
+              : "Group the fleet by repository again"
+          }
+        >
+          {/* Named explicitly for the reason the Board card checkboxes are: a checkbox inside a
+              `<label>` takes the label's WHOLE text as its accessible name, and the description
+              below is a paragraph. Without this the control announces the paragraph and
+              `getByRole("checkbox", { name })` cannot address it. */}
+          <input
+            type="checkbox"
+            aria-label="Group by repository"
+            checked={groupByRepo}
+            onChange={(e) => void updateUiConfig({ groupBoardByRepo: e.target.checked })}
+          />
+        </Tooltip>
+        <span className="settings-toggle-text">
+          <span className="settings-toggle-label">Group by repository</span>
+          <span className="settings-toggle-desc">
+            Collect the cards in each Board column - and the rows in the Console rail - by the
+            repository their session belongs to, under a coloured heading naming it. A linked
+            worktree groups with the repository it was cut from, so two checkouts of one project
+            read as one project. Sessions outside a repository stay loose at the foot of the
+            column. Unchecking this returns every column to one flat, tone-ordered list; a
+            workflow run's own frame is unaffected either way.
+          </span>
+        </span>
+      </label>
+      <p className="settings-hint">
+        A repository's sessions still sit in the column their own state puts them in, so a
+        repository with work in two states is grouped in both and each heading says which part
+        you are looking at. Headings fold away for as long as you are looking at the board; that
+        is a gesture rather than a setting, so it is not remembered.
       </p>
     </section>
   );

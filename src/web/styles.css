@@ -22106,6 +22106,163 @@ button.sc-row:focus-visible {
   }
 }
 
+/* ============================================================================
+   CONDENSED - the Line at one row, and the shipped default.
+
+   38.5px against expanded's 86px, measured in Chromium at 1512x900. The strip is
+   `flex: none` inside a `height: 100dvh` shell that does not scroll, so those
+   47.5px go straight to the conversation pane below it - which is the entire
+   point of the fold. See `docs/plans/line-collapse/plan.md`.
+
+   Every rule here is a SUBTRACTION from the expanded strip above rather than a
+   second strip: same stages, same tones, same buttons, same drawers. That is what
+   keeps one component honest at two densities - there is no branch here that could
+   drift from the branch above, because there is no second set of stage rules.
+
+   The height is as fixed as expanded's is. Nothing below is content-sized: the
+   sentences are gone from the DOM entirely, the urgent readout is `nowrap` and
+   ellipsizes, and the row is `align-items: center` on a single line box. A wordy
+   workflow name cannot grow this band any more than it can grow the other one.
+   ============================================================================ */
+.line.is-condensed {
+  align-items: center;
+  /* 7px against expanded's 12px. The band is a single 22px line box, and expanded's
+     padding was sized for a two-line card with its own 11px inset - carrying it over
+     would have spent a third of the saving on air. */
+  padding: 7px 22px;
+  gap: 2px;
+}
+/* Flat, not a card. Six bordered panels on one row read as six buttons in a toolbar
+   and cost 2px of border plus 26px of padding each; the divider carries the
+   separation instead. The stage is still a button and still hoverable - `:hover`
+   below gives it back a surface, which is what keeps it feeling pressable. */
+.line.is-condensed .line-stage {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 9px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 7px;
+}
+.line.is-condensed .line-stage:hover {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+/* Amber keeps a filled chip rather than only a border. At one row a 1px amber border on
+   a transparent segment is a thin outline among five other outlines; a tint is what makes
+   "this one needs you" survive the loss of the sentence that used to say so. */
+.line.is-condensed .line-stage.tone-attention {
+  background: color-mix(in oklab, var(--attention) 11%, transparent);
+  border-color: color-mix(in oklab, var(--attention) 38%, var(--border));
+}
+/* `margin-left: auto` pushed the count to the right edge of a full-width card. On one
+   row the count sits directly beside the name it belongs to, or six numbers drift away
+   from six labels and the row stops being readable left to right. */
+.line.is-condensed .ls-count {
+  margin-left: 0;
+  font-size: 12.5px;
+}
+
+/* The divider between segments. Replaces `.line-wire`, which needs 26px of width and a
+   second line to sit beside - see the component for why the wires go first. */
+.ls-div {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+/* The promoted urgent readout: the amber stages' sentences, and nothing on a calm fleet.
+   Right-aligned, away from the six segments, so it reads as a remark about the strip
+   rather than as a seventh stage - but the `auto` margin that does that lives on the
+   CARET after it, not here, so that a calm fleet with no readout still pins the caret to
+   the edge. `min-width: 0` with the ellipsis on the items is what holds the band's height
+   against a long workflow name. */
+.ls-urgent {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  /* Wide enough that two stages never read as one list. The daemon separates CLAUSES with
+     ` · `, so anything at that scale here would be ambiguous with the sentences it sits
+     between - this gap is the delimiter, and it has to be bigger than the one inside. */
+  gap: 16px;
+  padding-left: 14px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--attention);
+  overflow: hidden;
+}
+/* Each amber stage's own sentence. `min-width: 0` on the item as well as the row is what
+   lets the LAST one ellipsize rather than the row overflowing - a flex item's floor is its
+   content width, so without it a long workflow name pushes the caret off the end. */
+.ls-urgent-item {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The glyph ties the sentence back to its segment, which is the whole reason the readout is
+   per stage rather than one joined string. Dimmed against the sentence so it reads as an
+   attribution mark and not as the first word. */
+.ls-urgent-glyph {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: color-mix(in oklab, var(--attention) 72%, transparent);
+}
+
+/* The fold caret. Rendered at BOTH densities - it is how the strip is condensed as well
+   as how it is expanded - so it is a flex item of the nav rather than of the condensed
+   row, and it must not stretch: `align-self: center` keeps it a 24px control beside an
+   86px card as well as beside a 22px line. */
+.ls-fold {
+  flex: none;
+  align-self: center;
+  /* On the CARET, not on the readout beside it, and that is the whole placement rule for
+     the right end of the row. The caret is the last item either way, so one `auto` here
+     right-aligns the pair when there is a readout AND pins the caret to the edge when
+     there is not - a calm fleet used to leave it floating mid-row beside Shipped with the
+     rest of the band empty. Two `auto`s would have split the free space between them and
+     stranded the readout in the middle. */
+  margin-left: auto;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+.ls-fold:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+/* Expanded overrides the `auto` above with a real gap. The six stages are `flex: 1 1 0`
+   there and consume every spare pixel, so `auto` has nothing to distribute and collapses
+   to zero - which puts the caret flush against Shipped's border. Condensed is the only
+   density with free space for the `auto` to do anything with. */
+.line:not(.is-condensed) .ls-fold {
+  margin-left: 12px;
+}
+
+/* Narrow: the readout goes before the segments do. It is a remark, and six stages
+   squeezed past their counts is the opposite trade - the same rule the wires follow. */
+@media (max-width: 1000px) {
+  .ls-urgent {
+    display: none;
+  }
+}
+
 /* The stage whose drawer is showing. A ring and a caret, and deliberately not a tone: the
    four tones already mean something about the FLEET, and repainting an amber Review stage
    blue to say "this one is open" would have thrown away the only signal the strip exists
@@ -24829,6 +24986,118 @@ span.line-run-prov {
   background: none;
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attention) 55%, transparent);
   font-weight: 600;
+}
+
+/* ---- board column: the repository frame ----
+   One level above the run frames. Deliberately the SAME box as `.board-cluster` above, because
+   the board already teaches that a frame means "these belong together" - what this adds is the
+   repository's own colour, carried on ONE custom property (`--repo-c`, set inline from
+   `lib/repo-color.ts`) so the border, the head and the body are tinted from a single source and
+   cannot drift apart.
+
+   A run frame nests inside this one, which is the honest cost of the treatment: an engine run
+   belongs to exactly one repository, so a correlated column draws a box inside a box. */
+.board-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 8px;
+  border: 1px solid color-mix(in oklab, var(--repo-c) 42%, var(--border-soft));
+  border-radius: 13px;
+  background: color-mix(in oklab, var(--repo-c) 6%, transparent);
+}
+/* The direct children only. A tile inside a NESTED `.board-cluster` is already inset by that
+   frame's own `.board-cluster .tile` rule, and insetting it again here would step it twice. */
+.board-repo > .tile,
+.board-repo > .board-cluster {
+  margin: 0 8px;
+  width: auto;
+}
+/* Borrows `.board-cluster-head`'s box and re-tints it, the way `.board-pipeline-head` already
+   borrows it - so two frames in one column read as the same kind of structure rather than as
+   two inventions.
+
+   ONE line, unlike the head it borrows the box from, which is why the flex direction is
+   overridden here. That head needs two because it carries a strategy, a stage word, progress
+   dots and an attention badge; a repository carries a name and a count, and putting the count
+   on its own line spent a whole row of every column in the board on four characters. */
+.board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-bottom-color: color-mix(in oklab, var(--repo-c) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--repo-c) 11%, transparent);
+  border-radius: 12px 12px 0 0;
+}
+.board-repo-head:hover {
+  background: color-mix(in oklab, var(--repo-c) 18%, var(--panel));
+}
+.board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+/* Beside the title rather than under it, and it must not be squeezed: the title is the flexible
+   cell and ellipsises first, because a shortened repository name is still recognisable while
+   "2 of…" is not a number. */
+.board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* Folded away. The head keeps the full radius and drops its rule, so a collapsed group reads as
+   one pill rather than as a frame with nothing in it. */
+.board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+.board-repo.is-collapsed .board-repo-head {
+  border-bottom: 0;
+  border-radius: 12px;
+}
+/* The saturated end of the repository's colour, and the only place it runs at full strength: a
+   7px dot can carry a hue the frame around it could not without competing with the card tones
+   inside it. Same size as `.board-swatch` in the column head above it, deliberately - they
+   answer the same kind of question one level apart. Shared with the rail group below. */
+.brh-swatch {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--repo-c);
+}
+.brh-chevron {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
+  transition: transform 120ms ease;
+}
+/* Driven off `aria-expanded` rather than off the frame's `.is-collapsed` class, so the glyph
+   cannot point one way while the control announces the other - and so the rail group, which has
+   no wrapper class of its own, rotates by the same rule. */
+[aria-expanded="false"] .brh-chevron {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .brh-chevron {
+    transition: none;
+  }
+}
+/* The rail's repository group, in the rail's own register. Borrows `.rail-ensemble-group` for
+   its box exactly as `.rail-pipeline-group` does, so the board's drill-in morph does not change
+   what a repository looks like on the way from column to rail. */
+.rail-repo-group .reg-title {
+  font-family: var(--mono);
+}
+/* Beside the name, not adrift in the middle of the row. `.reg-stage` carries
+   `margin-left: auto` for the ensemble group, whose stage word belongs at the far end - but
+   here the chevron already claims that end, and two cells both taking the free space split it
+   and park the count halfway across the rail. Reset so the count reads as part of the title,
+   which is where the board head puts it too. */
+.rail-repo-group .reg-stage {
+  margin-left: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- empty columns: all-clear, and the stash the rest fold into ----

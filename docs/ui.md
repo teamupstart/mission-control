@@ -1,9 +1,25 @@
 # The Line (the pipeline strip above the fleet)
 
-A permanent ~90px strip sits above every fleet layout: **intake → backlog → working → review
+A permanent strip sits above every fleet layout: **intake → backlog → working → review
 → decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
 sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
 it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+
+It draws at one of two **densities**, and the shipped default is the shorter one:
+
+| Density | Band | What it draws |
+|---------|------|---------------|
+| **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
+| **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
+
+The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
+two is handed straight to the conversation pane below - about 11% more of the window on a
+900px-tall display. Condensing hides no facts: every count, colour and drawer is unchanged,
+and each stage's sentence stays in its tooltip and in its accessible name.
+
+Fold it with the **caret at the right of the strip**, with <kbd>Shift+L</kbd> from the fleet,
+or from **Settings → Display → The Line**. All three write one per-machine preference
+(`app_config.ui.lineDensity`), so it survives a reload and cannot disagree with itself.
 
 | Stage | The count is | The sentence says | Amber when |
 |-------|--------------|-------------------|------------|
@@ -50,9 +66,12 @@ reads it:
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
 
-Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
-clipped to one row so the strip's height never moves. The flowing dots on the wires respect
-`prefers-reduced-motion`: with it set, the wires stay and the dots go.
+Hovering a stage gives you what it is for, plus its sentence in full - at either density, and
+when expanded the visible line is clipped to one row so the strip's height never moves. The
+strip holds a fixed height **per density**: what changes the band is pressing the caret, never
+a workflow name getting longer or a stage going quiet. The flowing dots on the wires respect
+`prefers-reduced-motion`: with it set, the wires stay and the dots go - condensed draws no
+wires at all, so the setting does not arise there.
 
 ### The stage drawers
 
@@ -646,6 +665,26 @@ available:
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
   places, or have it in neither.
+- **Cards are grouped by the repository they belong to, and it ships on.** Each column
+  collects its cards under a heading naming the repository's directory, with a colour drawn
+  from the path so a project keeps the same colour across reloads and machines. The heading
+  says how much of the repository you are looking at - `2 agents` when all of it is here, or
+  `2 of 7` when the rest is elsewhere on the board - and clicking it folds the group away
+  while you read the rest of the column. The **Console** rail groups the same way, because the
+  board's focused column *is* that rail once you drill in. Grouping is on the repository, not
+  the checkout: a linked worktree groups with the repository it was cut from, so two checkouts
+  of one project read as one project. Sessions outside a repository stay loose at the foot of
+  the column rather than under an invented heading.
+  A repository never crosses a column, for the reason a cluster never does: work of one project
+  that is waiting on you sits in **needs you**, with that repository's heading repeated there,
+  instead of dragging its working siblings out of the column that says what they are - which is
+  what the `2 of 7` rollup exists to tie back together. Within the idle column the free/held
+  rule sits *above* the grouping, so a repository with one free agent and one a workflow is
+  holding is drawn once on each side of it. The colour is a scanning aid rather than an
+  identifier: the palette has six entries, so two repositories on a busy board can share one,
+  and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
+  Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
+  every column returns to one flat, tone-ordered list.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

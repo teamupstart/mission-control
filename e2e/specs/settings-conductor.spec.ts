@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -468,6 +468,8 @@ test.describe("with a verified local Conductor checkout", () => {
     expect(argv[argv.indexOf("--cwd") + 1]).toBe(checkout);
     expect(argv[argv.indexOf("--name") + 1]).toMatch(/^ai-conductor installer-[a-z0-9]+$/);
     const command = argv[argv.indexOf("--command") + 1] ?? "";
+    expect(command).toContain("'/usr/bin/env'");
+    expect(command).toContain(`'PATH=${join(daemon.home, "bin")}${delimiter}`);
     expect(command).toContain(`${checkout}/bin/install`);
     expect(command).toContain("read -r _");
     await page.getByRole("status").scrollIntoViewIfNeeded();

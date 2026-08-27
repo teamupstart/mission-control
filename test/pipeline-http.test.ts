@@ -782,6 +782,8 @@ test("installer routes use the workspace catalog, reject browser commands, and r
   assert.equal(opened[0]?.cwd, repo);
   assert.equal(opened[0]?.name, "ai-conductor installer");
   const command = opened[0]?.argv.at(-1) ?? "";
+  assert.ok(command.includes("'/usr/bin/env'"));
+  assert.ok(command.includes(`'PATH=${realpathSync(nodeBinDir)}${delimiter}`));
   assert.ok(command.includes(`'${repo}/bin/install'`));
   assert.match(command, /read -r _/);
   assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);

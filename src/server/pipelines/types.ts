@@ -157,8 +157,8 @@ export interface PipelineProvider {
    * terminal layer sees it.
    */
   installer?: {
-    /** Read-only preflight for the runtime the provider's installer will use. */
-    runtime(): Promise<PipelineInstallerRuntime>;
+    /** Read-only preflight plus the environment that pins the terminal to that runtime. */
+    runtime(): Promise<PipelineInstallerRuntimePreparation>;
     candidates(repoRoots: readonly string[]): Promise<PipelineInstallerCandidate[]>;
     terminalArgv(checkout: string): Promise<
       | {
@@ -276,6 +276,12 @@ export interface PipelineProvider {
     intent: string,
     repoRoot: string,
   ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
+}
+
+/** Server-only runtime evidence. `terminalEnv` never crosses the browser wire. */
+export interface PipelineInstallerRuntimePreparation {
+  reading: PipelineInstallerRuntime;
+  terminalEnv: Readonly<Record<string, string>>;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

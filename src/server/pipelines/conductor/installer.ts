@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 
 import {
   MAX_PIPELINE_INSTALLER_CANDIDATES,
@@ -11,6 +11,7 @@ import {
 
 import { mainRepoRoot } from "../../util/git.ts";
 import { run, type RunResult } from "../../util/exec.ts";
+import type { PipelineInstallerRuntimePreparation } from "../types.ts";
 
 const UPSTREAM_REMOTE = "github.com/mancej/ai-conductor";
 const EXPECTED_PACKAGE = "@james-stoup-agents/conductor";
@@ -19,6 +20,7 @@ const MAX_GIT_OUTPUT = 16 * 1024;
 const MAX_PACKAGE_BYTES = 64 * 1024;
 const MAX_VERSION_BYTES = 512;
 const MAX_NODE_VERSION_BYTES = 256;
+const MAX_NODE_EXEC_PATH_BYTES = 4096;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
@@ -34,7 +36,10 @@ export interface ConductorInstallerDeps {
 }
 
 export interface ConductorInstallerRuntimeDeps {
-  nodeVersion(): Promise<RunResult>;
+  path(): string;
+  nodeExecPath(path: string): Promise<RunResult>;
+  realpath(path: string): Promise<string>;
+  nodeVersion(nodeBin: string, path: string): Promise<RunResult>;
 }
 
 const DEFAULT_DEPS: ConductorInstallerDeps = {
@@ -60,8 +65,17 @@ const DEFAULT_DEPS: ConductorInstallerDeps = {
 };
 
 const DEFAULT_RUNTIME_DEPS: ConductorInstallerRuntimeDeps = {
-  nodeVersion: () =>
-    run("node", ["--version"], {
+  path: () => process.env.PATH ?? "",
+  nodeExecPath: (path) =>
+    run("node", ["-p", "process.execPath"], {
+      env: { ...process.env, PATH: path },
+      timeoutMs: 2_000,
+      maxBuffer: MAX_NODE_EXEC_PATH_BYTES,
+    }),
+  realpath,
+  nodeVersion: (nodeBin, path) =>
+    run(nodeBin, ["--version"], {
+      env: { ...process.env, PATH: path },
       timeoutMs: 2_000,
       maxBuffer: MAX_NODE_VERSION_BYTES,
     }),
@@ -97,24 +111,57 @@ export function conductorInstallerRuntimeReading(version: string | null): Pipeli
   };
 }
 
-/** Read-only runtime preflight. Never executes checkout code and never throws. */
-export async function conductorInstallerRuntime(
+function completedOutput(result: RunResult, maxBytes: number): string | null {
+  if (
+    result.code !== 0 ||
+    result.outcomeUnknown ||
+    result.overflowed ||
+    Buffer.byteLength(result.stdout, "utf8") > maxBytes
+  ) {
+    return null;
+  }
+  return result.stdout.trim();
+}
+
+/**
+ * Resolve the actual Node executable, probe it, and preserve the PATH that will select it.
+ *
+ * A hosted terminal starts another shell, whose initialization can select a different Node.
+ * Putting the resolved executable's directory first lets the launch route reset PATH after
+ * that initialization and keeps bin/install on the runtime that passed this check.
+ */
+export async function conductorInstallerRuntimePreparation(
   overrides: Partial<ConductorInstallerRuntimeDeps> = {},
-): Promise<PipelineInstallerRuntime> {
+): Promise<PipelineInstallerRuntimePreparation> {
   const deps = { ...DEFAULT_RUNTIME_DEPS, ...overrides };
+  const sourcePath = deps.path();
+  const unknown = (): PipelineInstallerRuntimePreparation => ({
+    reading: conductorInstallerRuntimeReading(null),
+    terminalEnv: { PATH: sourcePath },
+  });
   try {
-    const result = await deps.nodeVersion();
-    if (
-      result.code !== 0 ||
-      result.outcomeUnknown ||
-      result.overflowed ||
-      Buffer.byteLength(result.stdout, "utf8") > MAX_NODE_VERSION_BYTES
-    ) {
-      return conductorInstallerRuntimeReading(null);
-    }
-    return conductorInstallerRuntimeReading(result.stdout);
+    const reportedNodeBin = completedOutput(
+      await deps.nodeExecPath(sourcePath),
+      MAX_NODE_EXEC_PATH_BYTES,
+    );
+    if (reportedNodeBin === null) return unknown();
+    if (!isAbsolute(reportedNodeBin) || /[\r\n]/.test(reportedNodeBin)) return unknown();
+    const nodeBin = await deps.realpath(reportedNodeBin);
+    if (!isAbsolute(nodeBin)) return unknown();
+    const pinnedPath = sourcePath
+      ? `${dirname(nodeBin)}${delimiter}${sourcePath}`
+      : dirname(nodeBin);
+    const version = completedOutput(
+      await deps.nodeVersion(nodeBin, pinnedPath),
+      MAX_NODE_VERSION_BYTES,
+    );
+    if (version === null) return unknown();
+    return {
+      reading: conductorInstallerRuntimeReading(version),
+      terminalEnv: { PATH: pinnedPath },
+    };
   } catch {
-    return conductorInstallerRuntimeReading(null);
+    return unknown();
   }
 }
 

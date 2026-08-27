@@ -24,7 +24,7 @@ import { conductorBin, probeConductor } from "./probe.ts";
 import { registerConductorRepo } from "./register.ts";
 import {
   conductorInstallerCandidates,
-  conductorInstallerRuntime,
+  conductorInstallerRuntimePreparation,
   conductorInstallerTerminalArgv,
 } from "./installer.ts";
 import { resolveBinPath } from "../../util/exec.ts";
@@ -396,7 +396,7 @@ export const CONDUCTOR_PROVIDER: PipelineProvider = {
   probe: probeConductor,
   registerRepo: registerConductorRepo,
   installer: {
-    runtime: conductorInstallerRuntime,
+    runtime: conductorInstallerRuntimePreparation,
     candidates: conductorInstallerCandidates,
     terminalArgv: conductorInstallerTerminalArgv,
   },

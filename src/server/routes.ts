@@ -5682,8 +5682,13 @@ export function buildApp(
       return c.json(answer, 409);
     }
 
+    const installerArgv = [
+      "/usr/bin/env",
+      ...Object.entries(launch.terminalEnv).map(([name, value]) => `${name}=${value}`),
+      ...launch.argv,
+    ];
     const hold =
-      `${shellCommand(launch.argv)}\n` +
+      `${shellCommand(installerArgv)}\n` +
       `status=$?\n` +
       `printf '\\n[installer exited %s] press enter to close ' "$status"\n` +
       `read -r _\n`;

@@ -12,13 +12,13 @@ import {
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 
 import { stubRun } from "../src/server/util/exec.ts";
 import {
   conductorInstallerCandidates,
-  conductorInstallerRuntime,
+  conductorInstallerRuntimePreparation,
   conductorInstallerRuntimeReading,
   conductorInstallerTerminalArgv,
   recognizedConductorRemote,
@@ -76,15 +76,38 @@ test("installer runtime preflight distinguishes unsupported and supported Node v
   assert.equal(conductorInstallerRuntimeReading("v27.1.2").supported, true);
   assert.equal(conductorInstallerRuntimeReading("v26.0.0-nightly").supported, false);
 
-  const supported = await conductorInstallerRuntime({
-    nodeVersion: async () => stubRun({ stdout: "v26.7.0\n", stderr: "", code: 0 }),
+  const runtimeDeps = {
+    path: () => ["/daemon/bin", "/usr/bin"].join(delimiter),
+    nodeExecPath: async (path: string) => {
+      assert.equal(path, ["/daemon/bin", "/usr/bin"].join(delimiter));
+      return stubRun({ stdout: "/opt/node-26/bin/node\n", stderr: "", code: 0 });
+    },
+    realpath: async (path: string) => path,
+    nodeVersion: async (nodeBin: string, path: string) => {
+      assert.equal(nodeBin, "/opt/node-26/bin/node");
+      assert.equal(
+        path,
+        ["/opt/node-26/bin", "/daemon/bin", "/usr/bin"].join(delimiter),
+      );
+      return stubRun({ stdout: "v26.7.0\n", stderr: "", code: 0 });
+    },
+  };
+  const prepared = await conductorInstallerRuntimePreparation(runtimeDeps);
+  assert.deepEqual(prepared, {
+    reading: conductorInstallerRuntimeReading("v26.7.0"),
+    terminalEnv: {
+      PATH: ["/opt/node-26/bin", "/daemon/bin", "/usr/bin"].join(delimiter),
+    },
   });
+
+  const supported = prepared.reading;
   assert.equal(supported.current, "26.7.0");
   assert.equal(supported.supported, true);
 
-  const unavailable = await conductorInstallerRuntime({
-    nodeVersion: async () => stubRun({ stdout: "", stderr: "not found", code: 1 }),
-  });
+  const unavailable = (await conductorInstallerRuntimePreparation({
+    path: () => "/daemon/bin",
+    nodeExecPath: async () => stubRun({ stdout: "", stderr: "not found", code: 1 }),
+  })).reading;
   assert.equal(unavailable.current, null);
   assert.equal(unavailable.supported, false);
   assert.match(unavailable.detail, /could not determine/);

@@ -39,6 +39,7 @@ export function FileCommentQueue({
   onEdit,
   onDrop,
   onOpen,
+  onDismissPause,
   onDismissError,
 }: {
   /** In delivery order, `sending` and `awaiting` included at the head where they belong. */
@@ -55,6 +56,7 @@ export function FileCommentQueue({
   onDrop: (threadId: string) => void;
   /** Take the reader to this comment in the file it is about. */
   onOpen: (thread: FileCommentThread) => void;
+  onDismissPause: () => void;
   onDismissError: () => void;
 }): React.JSX.Element {
   const [editing, setEditing] = useState<{ messageId: string; body: string } | null>(null);
@@ -120,7 +122,19 @@ export function FileCommentQueue({
       </p>
 
       {review?.state === "paused" && review.pauseReason && (
-        <p className="file-review-paused" role="alert">{review.pauseReason}</p>
+        <p className="file-review-paused" role="alert">
+          <span>{review.pauseReason}</span>
+          <Tooltip label="Hide this warning without resuming the review or dropping the comment">
+            <button
+              className="btn"
+              aria-label="Dismiss review warning"
+              disabled={busy}
+              onClick={onDismissPause}
+            >
+              Dismiss
+            </button>
+          </Tooltip>
+        </p>
       )}
       {error && (
         <p className="file-review-error" role="alert">

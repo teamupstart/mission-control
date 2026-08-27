@@ -303,9 +303,14 @@ const workflows = new WorkflowManager(registry, personas.store, {
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });
+// The selected workflow's own graph decides this, and the task's KIND does not. Any kind can
+// carry a workflow - `DispatchModal` only defaults a diffless kind to None and drops that
+// default the moment an operator picks one by hand - and `bindDispatchedTaskWorkflow` arms
+// whatever was selected without consulting the kind either. Reading `ship` here meant a scout
+// dispatched with a Persona workflow got the binding, the run, and a Persona asking for
+// evidence, while its launch withheld the very tool that registers it.
 tasks.registerWorkflowEvidenceEligibility((task) =>
-  task.kind === "ship"
-  && Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
+  Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.

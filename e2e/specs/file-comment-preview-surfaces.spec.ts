@@ -80,6 +80,27 @@ const HTML_SOURCE = [
   "</html>",                                                    // 13
 ].join("\n");
 
+const HTML_HISTORY = "docs/plans/comment-history.html";
+const HTML_HISTORY_FILLER_COUNT = 72;
+const HTML_HISTORY_BOTTOM_LINE = 5 + HTML_HISTORY_FILLER_COUNT;
+const HTML_HISTORY_SOURCE = [
+  "<html>",
+  "<head><title>Comment history</title></head>",
+  "<body>",
+  "<p>Top reliability question.</p>",
+  ...Array.from(
+    { length: HTML_HISTORY_FILLER_COUNT },
+    (_, index) => `<p>Background paragraph ${index + 1}.</p>`,
+  ),
+  "<p>Bottom reliability question.</p>",
+  "</body>",
+  "</html>",
+].join("\n");
+
+const HTML_COMPACT = "docs/plans/compact-comment.html";
+const HTML_COMPACT_SOURCE =
+  "<html><body><p>Read <strong>this</strong> carefully.</p><p>Sibling.</p></body></html>";
+
 const HTML_BLOCKS = "docs/plans/blocks.html";
 /**
  * Blocks a tag allowlist did not name, which is the point of this document.
@@ -162,6 +183,10 @@ const MARKDOWN_COMMENT = "Thirty seconds contradicts the table below.";
 const TABLE_COMMENT = "This table is missing a units column.";
 const HTML_COMMENT = "This paragraph says the opposite of the heading.";
 const ROW_COMMENT = "Three retries in thirty seconds is not achievable.";
+const TOP_HISTORY_COMMENT = "Clarify the top reliability question.";
+const BOTTOM_HISTORY_COMMENT = "Close the bottom reliability question.";
+const COMPACT_HISTORY_COMMENT = "Keep this thread on the paragraph, not its inline child.";
+const COMPACT_SIBLING_COMMENT = "Keep this second same-line paragraph as its own thread.";
 const LONG_COMMENT = "This heading overstates what the report goes on to say.";
 const DRAFT_COMMENT = "Half a thought about this paragraph,";
 
@@ -429,6 +454,194 @@ test.describe("commenting on a rendered document", () => {
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
   });
 
+  test("an HTML block whose quote moved opens its existing thread after reload", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").getByText("Read this carefully.").click();
+    await writeComment(page, "line 4", HTML_COMMENT);
+
+    write(
+      cwd,
+      HTML,
+      HTML_SOURCE.replace(
+        "<p>Read <strong>this</strong> carefully.</p>",
+        "\n\n<p>Read <strong>this</strong> carefully.</p>",
+      ),
+    );
+    await page.reload();
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").getByText("Read this carefully.").click();
+    const existingThread = page.getByRole("region", { name: /^Comment MC-\w+ on line / });
+    await expect(existingThread.getByPlaceholder("Reply…")).toBeVisible();
+    await shoot(page.locator(".file-content"), page, "moved-html-thread-open");
+  });
+
+  test("the comments rail follows compact HTML after earlier lines are inserted", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const paragraph = frame.locator("p").filter({ hasText: "Read this carefully." });
+    await paragraph.click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    write(
+      cwd,
+      HTML_COMPACT,
+      [
+        "<html>",
+        "<body>",
+        "<aside>New context.</aside>",
+        "<p>Read <strong>this</strong> carefully.</p>",
+        "<p>Sibling.</p>",
+        "</body>",
+        "</html>",
+      ].join("\n"),
+    );
+    await page.reload();
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_COMPACT}` });
+    await rail.getByRole("button", { name: new RegExp(COMPACT_HISTORY_COMMENT) }).click();
+    await expect(paragraph).toHaveClass(/mission-comment-target/);
+    await shoot(page.locator(".file-main"), page, "moved-compact-html-history-target");
+  });
+
+  test("the comments rail lists resolved threads and jumps Preview and Editor to them", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_HISTORY, HTML_HISTORY_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_HISTORY);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const top = frame.getByText("Top reliability question.");
+    const bottom = frame.getByText("Bottom reliability question.");
+
+    await top.click();
+    await writeComment(page, "line 4", TOP_HISTORY_COMMENT);
+    await bottom.scrollIntoViewIfNeeded();
+    await bottom.click();
+    await writeComment(page, `line ${HTML_HISTORY_BOTTOM_LINE}`, BOTTOM_HISTORY_COMMENT);
+
+    await bottom.click();
+    const bottomThread = page.getByRole("region", {
+      name: new RegExp(`^Comment MC-\\w+ on line ${HTML_HISTORY_BOTTOM_LINE}$`),
+    });
+    await bottomThread.getByRole("button", { name: "Resolve" }).click();
+    await expect(bottomThread).toBeHidden();
+
+    const commentsToggle = page.getByRole("button", { name: "Comments", exact: true });
+    await expect(commentsToggle).toContainText("2");
+    await commentsToggle.click();
+    await expect(commentsToggle).toHaveAttribute("aria-expanded", "true");
+
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_HISTORY}` });
+    await expect(rail).toBeVisible();
+    await expect(rail.getByRole("list").getByRole("button")).toHaveCount(2);
+    await expect(rail.getByText("resolved", { exact: true })).toBeVisible();
+
+    await frame.locator("body").evaluate((body) => body.scrollTo({ top: body.scrollHeight }));
+    await rail.getByRole("button", { name: new RegExp(TOP_HISTORY_COMMENT) }).click();
+    await expect(top).toBeInViewport();
+    const topThread = page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ });
+    await expect(topThread.getByPlaceholder("Reply…")).toBeVisible();
+    await shoot(page.locator(".file-main"), page, "comment-history-preview-jump");
+
+    await page.getByRole("button", { name: "Editor" }).click();
+    const sourceScroller = page.locator(".file-codemirror .cm-scroller");
+    await sourceScroller.evaluate((element) => { element.scrollTop = 0; });
+    await rail.getByRole("button", { name: new RegExp(BOTTOM_HISTORY_COMMENT) }).click();
+    const resolvedThread = page.getByRole("region", {
+      name: new RegExp(`^Comment MC-\\w+ on line ${HTML_HISTORY_BOTTOM_LINE}$`),
+    });
+    await expect(resolvedThread.getByRole("button", { name: "Reopen" })).toBeVisible();
+    await expect.poll(() => sourceScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
+    await shoot(page.locator(".file-main"), page, "comment-history-rail");
+  });
+
+  test("the comments rail returns compact HTML to the originally commented block", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const frame = page.frameLocator("iframe.html-preview");
+    const paragraph = frame.locator("p").filter({ hasText: "Read this carefully." });
+    const inline = paragraph.locator("strong");
+    await inline.click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    const rail = page.getByRole("complementary", { name: `Comments on ${HTML_COMPACT}` });
+    await rail.getByRole("button", { name: new RegExp(COMPACT_HISTORY_COMMENT) }).click();
+
+    await expect(paragraph).toHaveClass(/mission-comment-target/);
+    await expect(inline).not.toHaveClass(/mission-comment-target/);
+    await shoot(page.locator(".file-main"), page, "compact-html-comment-target");
+  });
+
+  test("compact HTML blocks on one line open their own threads", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML_COMPACT);
+    await startCommenting(page);
+
+    const paragraphs = page.frameLocator("iframe.html-preview").locator("p");
+    await paragraphs.nth(0).click();
+    await writeComment(page, "line 1", COMPACT_HISTORY_COMMENT);
+
+    await paragraphs.nth(1).click();
+    await writeComment(page, "line 1", COMPACT_SIBLING_COMMENT);
+
+    await paragraphs.nth(0).click();
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 1$/ });
+    await expect(thread).toContainText(COMPACT_HISTORY_COMMENT);
+    await paragraphs.nth(1).click();
+    await expect(thread).toContainText(COMPACT_SIBLING_COMMENT);
+    await shoot(page.locator(".file-main"), page, "compact-html-thread-selection");
+  });
+
   test("a block is whatever the browser laid out as one, not whatever a list named", async ({
     dashboard: page,
     daemon,
@@ -520,7 +733,7 @@ test.describe("commenting on a rendered document", () => {
     await expectMarkerOnLine(page, 7);
   });
 
-  test("a block from a render the file has outrun is refused with a reason", async ({
+  test("a stale block warning refreshes the file in place", async ({
     dashboard: page,
     daemon,
   }) => {
@@ -545,9 +758,12 @@ test.describe("commenting on a rendered document", () => {
     await shoot(page.locator(".file-main"), page, "html-stale-refusal");
     // Refused, not guessed at: no thread was written on a line nobody pointed to.
     expect(storedThreads(daemon)).toEqual([]);
-    // "Dismiss" is the button's text; the sentence about it is a tooltip, not its name.
-    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+
+    // The remedy is next to the warning. It re-reads both the file list and the selected
+    // file, rather than making the reader find the toolbar's icon or reopen the tab.
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByText(/showing an older version of the file/)).toBeHidden();
+    await expect(frame.getByRole("heading", { name: "Rewritten entirely." })).toBeVisible();
   });
 
   test("the preview takes no comments while comment mode is off", async ({
@@ -645,14 +861,10 @@ test.describe("commenting on a rendered document", () => {
     expect(stored.quote).toBe("<h1>Pi is a capable terminal harness</h1>");
 
     /*
-     * Read back through the REVIEW QUEUE, which is the one surface existing comments open
-     * from, and not through `expectMarkerOnLine`.
-     *
-     * That helper flips to the Editor and reads the gutter, which every short document here
-     * does and which pins the same claim. On this one it would assert nothing useful: the
-     * marker is an inline widget at line 210, the Editor opens at line 1, and CodeMirror
-     * builds DOM only for its rendered viewport - so a marker that is perfectly correct is
-     * simply not drawn until something scrolls to it.
+     * Read back through the Review queue to keep its cross-file navigation covered. The
+     * Comments rail and repeated block click are the file-local routes. `expectMarkerOnLine`
+     * would assert nothing useful here: the marker is an inline widget at line 210, the Editor
+     * opens at line 1, and CodeMirror builds DOM only for its rendered viewport.
      */
     await page.getByRole("button", { name: "Review queue" }).click();
     await page
@@ -663,18 +875,12 @@ test.describe("commenting on a rendered document", () => {
       .toContainText(LONG_COMMENT);
   });
 
-  test("a block holding an unsubmitted draft still reopens it, because the queue cannot", async ({
+  test("a block holding an unsubmitted draft reopens it with its text intact", async ({
     dashboard: page,
     daemon,
   }) => {
-    /*
-     * The carve-out in the rule above, and the reason it has to exist.
-     *
-     * A draft has never been submitted, so the review queue does not list it - the queue holds
-     * `queued`, `sending` and `awaiting` only. Sending a draft to the queue would therefore be
-     * sending it nowhere: half a sentence, written on a block, that nothing on any surface can
-     * reach again. It is not an existing comment; it is this composer, unfinished.
-     */
+    /* A draft uses the same direct reopen path as a submitted thread, and must keep the
+       half-written text that was persisted before the reader moved to another block. */
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
@@ -697,15 +903,12 @@ test.describe("commenting on a rendered document", () => {
     await frame.getByText("Fish & chips, twice.").click();
     await expect(page.getByRole("textbox", { name: "Comment on line 5" })).toBeVisible();
 
-    // Back to the first block. Not refused - reopened, with what was typed still in it.
+    // Back to the first block: reopened directly, with what was typed still in it.
     await frame.getByText("Read this carefully.").click();
     const reopened = page.getByRole("textbox", { name: "Comment on line 4" });
     await expect(reopened).toBeVisible();
     await expect(reopened).toHaveValue(DRAFT_COMMENT);
-    await expect(
-      page.getByText("This block already has a comment. Open the Review queue to read it."),
-      "a draft is not an existing comment, so it is not sent to the queue",
-    ).toHaveCount(0);
+    expect(storedThreads(daemon)).toHaveLength(1);
 
     // And it can still be finished, which is the whole point of it staying reachable.
     await reopened.fill(HTML_COMMENT);
@@ -716,20 +919,12 @@ test.describe("commenting on a rendered document", () => {
       .toBe(HTML_COMMENT);
   });
 
-  test("a commented block in HTML Preview sends the reader to the review queue", async ({
+  test("a commented block in HTML Preview reopens its thread without duplicating it", async ({
     dashboard: page,
     daemon,
   }) => {
-    /*
-     * The one surface existing comments are read from is the queue, and this is the rule that
-     * makes that true of the HTML preview specifically.
-     *
-     * An HTML preview is an opaque sandbox this origin cannot draw into, so it carries no
-     * marker saying which of its blocks have already been commented on. Reopening a thread by
-     * clicking blocks would therefore be a hunt: the only way to find out is to click one and
-     * see. So a block that already carries a submitted comment is refused, in a sentence that
-     * names where the comment is - and no second comment is filed on it either.
-     */
+    /* The Comments rail supplies the visible index an opaque HTML Preview cannot draw into.
+       Pointing at a block already in that index opens its thread in the dock for follow-up. */
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
@@ -743,22 +938,13 @@ test.describe("commenting on a rendered document", () => {
     await writeComment(page, "line 4", HTML_COMMENT);
     await expect.poll(() => storedThreads(daemon).length).toBe(1);
 
-    // The same block again. Refused, and told where to go.
+    // The same block again opens the existing thread, never a second composer.
     await frame.getByText("Read this carefully.").click();
-    await expect(page.getByText("This block already has a comment. Open the Review queue to read it."))
-      .toBeVisible();
-    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ })).toHaveCount(0);
+    const existing = page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ });
+    await expect(existing).toContainText(HTML_COMMENT);
+    await expect(existing.getByPlaceholder("Reply…")).toBeVisible();
     await expect(page.getByRole("region", { name: "New comment on line 4" })).toHaveCount(0);
-    await shoot(page.locator(".file-main"), page, "html-existing-comment-refusal");
-    // Refused, not duplicated: pointing twice does not file a second comment on one block.
+    await shoot(page.locator(".file-main"), page, "html-existing-comment-thread");
     expect(storedThreads(daemon)).toHaveLength(1);
-
-    await page.getByRole("button", { name: "Review queue" }).click();
-    await page
-      .getByRole("region", { name: "Review queue" })
-      .getByRole("button", { name: new RegExp(`^Open comment MC-\\w+ on ${HTML} line 4$`) })
-      .click();
-    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ }))
-      .toContainText(HTML_COMMENT);
   });
 });

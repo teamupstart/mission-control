@@ -26,9 +26,10 @@ import type { HtmlBlockPathStep } from "@shared/protocol.ts";
  * So: `parse5`, which implements the HTML5 tree-construction algorithm and retains source
  * locations on every node. Its tree is the one the iframe built, implicit `<tbody>` and all.
  * It is already a direct dependency and already used for exactly this parity in
- * `archives/html.ts`. **No text is ever compared here**, so entities, nesting and whitespace
- * never enter into it, and two blocks with identical wording resolve by position rather than
- * competing.
+ * `archives/html.ts`. Creation resolves only by that path. History navigation validates the
+ * stored path against the exact source bytes for the original element, then uses those bytes
+ * to recover if the tree moved. It never compares DOM text, so entities and nested markup
+ * remain source-exact.
  *
  * Scripting stays ON - parse5's default - because the preview runs with
  * `sandbox="allow-scripts"`, so `<noscript>` content is raw text on both sides. That is the
@@ -63,9 +64,15 @@ export interface HtmlBlockAnchorResolution {
    * so searching the file for them later means something.
    */
   quote: string;
+  /** Exact source bytes for the clicked element, independent of its surrounding source line. */
+  blockQuote: string;
 }
 
 export type HtmlBlockAnchorResult = HtmlBlockAnchorResolution | HtmlBlockAnchorRefusal;
+
+export type HtmlBlockPathResult =
+  | { ok: true; blockPath: HtmlBlockPathStep[] }
+  | HtmlBlockAnchorRefusal;
 
 /**
  * One sentence a person can act on, and it is the same sentence for every way the walk can
@@ -98,6 +105,19 @@ function documentBody(source: string): ParsedElement | null {
   return elementChildren(html).find((node) => node.tagName === "body") ?? null;
 }
 
+function elementAtPath(
+  body: ParsedElement,
+  path: readonly HtmlBlockPathStep[],
+): ParsedElement | null {
+  let node = body;
+  for (const step of path) {
+    const child = elementChildren(node)[step.index];
+    if (!child || child.tagName !== step.tag) return null;
+    node = child;
+  }
+  return node;
+}
+
 export function resolveHtmlBlockAnchor(
   source: string,
   path: readonly HtmlBlockPathStep[],
@@ -106,15 +126,11 @@ export function resolveHtmlBlockAnchor(
   const body = documentBody(source);
   if (!body) return { ok: false, reason: STALE };
 
-  let node: ParsedElement = body;
-  for (const step of path) {
-    const child = elementChildren(node)[step.index];
-    // The tag check is the whole reason the bridge reports one. Indices alone would land on
-    // a NEIGHBOUR when the document has shifted, which is the failure worth refusing: a
-    // comment quietly anchored to the wrong paragraph reads exactly like a correct one.
-    if (!child || child.tagName !== step.tag) return { ok: false, reason: STALE };
-    node = child;
-  }
+  // The tag check is the whole reason the bridge reports one. Indices alone would land on
+  // a NEIGHBOUR when the document has shifted, which is the failure worth refusing: a
+  // comment quietly anchored to the wrong paragraph reads exactly like a correct one.
+  const node = elementAtPath(body, path);
+  if (!node) return { ok: false, reason: STALE };
 
   const location = node.sourceCodeLocation;
   // An element the parser INSERTED - an implicit `<tbody>`, a repaired wrapper - has no
@@ -130,5 +146,134 @@ export function resolveHtmlBlockAnchor(
   // It cannot come back empty. The slice always contains the element's own start tag, so
   // even a `<div>` with nothing in it quotes text a later `reanchor()` can search for -
   // which is exactly the property `CreateFileCommentSchema` refuses a comment for lacking.
-  return { ok: true, startLine, endLine, quote: boundQuote(sliceLines(source, startLine, endLine)) };
+  return {
+    ok: true,
+    startLine,
+    endLine,
+    quote: boundQuote(sliceLines(source, startLine, endLine)),
+    blockQuote: boundQuote(source.slice(location.startOffset, location.endOffset)),
+  };
+}
+
+/**
+ * Find the rendered element nearest a source range so a history row can jump to it.
+ *
+ * The returned path uses the same browser-tree contract as `resolveHtmlBlockAnchor`, only
+ * in reverse. Nodes inserted by HTML5 tree construction still remain in the path even
+ * though they have no source location, which is what keeps a table row below an implicit
+ * `<tbody>` reachable in the iframe. A validated stored path wins, followed by an element
+ * whose exact source bytes match the stored block quote, then the legacy line-wide quote.
+ * Otherwise the smallest covering source range wins, with the deepest node breaking ties.
+ * That puts a preview-authored thread back on its original block while an editor-authored
+ * line still lands on the nearest rendered element that covers it.
+ */
+export function resolveHtmlBlockPath(
+  source: string,
+  startLine: number,
+  endLine = startLine,
+  quote?: string,
+  preferredPath?: readonly HtmlBlockPathStep[],
+  blockQuote?: string,
+): HtmlBlockPathResult {
+  if (startLine < 1 || endLine < startLine) return { ok: false, reason: STALE };
+  const body = documentBody(source);
+  if (!body) return { ok: false, reason: STALE };
+
+  const coversRange = (node: ParsedElement): boolean => {
+    const location = node.sourceCodeLocation;
+    return Boolean(
+      location
+      && location.startLine <= startLine
+      && location.endLine >= endLine,
+    );
+  };
+  const exactSourceMatches = (node: ParsedElement, expected: string): boolean => {
+    const location = node.sourceCodeLocation;
+    return Boolean(
+      location
+      && boundQuote(source.slice(location.startOffset, location.endOffset)) === expected,
+    );
+  };
+
+  if (preferredPath && blockQuote) {
+    const preferred = elementAtPath(body, preferredPath);
+    if (preferred && exactSourceMatches(preferred, blockQuote)) {
+      return { ok: true, blockPath: [...preferredPath] };
+    }
+  }
+
+  let exactBlock: {
+    path: HtmlBlockPathStep[];
+    distance: number;
+    span: number;
+    depth: number;
+  } | null = null;
+  let best: {
+    path: HtmlBlockPathStep[];
+    span: number;
+    depth: number;
+    matchQuality: number;
+  } | null = null;
+
+  const visit = (node: ParsedElement, path: HtmlBlockPathStep[]): void => {
+    const location = node.sourceCodeLocation;
+    if (path.length > 0 && location && blockQuote && exactSourceMatches(node, blockQuote)) {
+      const distance = location.endLine < startLine
+        ? startLine - location.endLine
+        : location.startLine > endLine
+          ? location.startLine - endLine
+          : 0;
+      const span = location.endLine - location.startLine;
+      if (
+        !exactBlock
+        || distance < exactBlock.distance
+        || (
+          distance === exactBlock.distance
+          && (span < exactBlock.span || (span === exactBlock.span && path.length > exactBlock.depth))
+        )
+      ) {
+        exactBlock = { path, distance, span, depth: path.length };
+      }
+    }
+    if (
+      path.length > 0
+      && location
+      && coversRange(node)
+    ) {
+      const span = location.endLine - location.startLine;
+      const quoteMatch = quote !== undefined
+        && boundQuote(source.slice(location.startOffset, location.endOffset)) === quote;
+      const blockQuoteMatch = blockQuote !== undefined && exactSourceMatches(node, blockQuote);
+      const matchQuality = blockQuoteMatch ? 2 : quoteMatch ? 1 : 0;
+      if (
+        !best
+        || matchQuality > best.matchQuality
+        || (
+          matchQuality === best.matchQuality
+          && (span < best.span || (span === best.span && path.length > best.depth))
+        )
+      ) {
+        best = { path, span, depth: path.length, matchQuality };
+      }
+    }
+    elementChildren(node).forEach((child, index) => {
+      visit(child, [...path, { index, tag: child.tagName }]);
+    });
+  };
+
+  visit(body, []);
+  const found = best as {
+    path: HtmlBlockPathStep[];
+    span: number;
+    depth: number;
+    matchQuality: number;
+  } | null;
+  const recovered = exactBlock as {
+    path: HtmlBlockPathStep[];
+    distance: number;
+    span: number;
+    depth: number;
+  } | null;
+  if (recovered) return { ok: true, blockPath: recovered.path };
+  return found ? { ok: true, blockPath: found.path } : { ok: false, reason: STALE };
 }

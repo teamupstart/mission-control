@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>B - Status matrix - indexed directories</title>
+<link rel="stylesheet" href="tokens.css" />
+<link rel="stylesheet" href="settings.css" />
+<style>
+  .settings-matrix-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+  .settings-matrix { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .settings-matrix caption { caption-side: bottom; padding: 9px 12px; font-size: 11.5px; color: var(--dim); text-align: left; }
+  .settings-matrix thead th {
+    font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
+    text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2); white-space: nowrap;
+  }
+  .settings-matrix td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); }
+  .settings-matrix tr:last-child td { border-bottom: none; }
+  .settings-matrix td.path { font: 12.5px var(--mono); color: var(--fg); }
+  .settings-matrix td.num { font: 12px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }
+  .settings-matrix td.act { text-align: right; white-space: nowrap; }
+</style>
+</head>
+<body>
+<main class="settings-page">
+  <div class="settings-rail">
+    <div class="settings-page-title">
+      <h2>Settings</h2>
+      <button class="settings-leave" type="button">← Fleet</button>
+    </div>
+    <button class="settings-rail-search" type="button">
+      <span aria-hidden>⌕</span><span>Search everything…</span><kbd>⌘K</kbd>
+    </button>
+    <div class="settings-nav-group">
+      <p class="settings-nav-label">Sessions <span class="settings-scope settings-scope-machine">This machine</span></p>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⚙</span>Harnesses</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">⑂</span>Worktrees</button>
+      <button class="settings-nav-item is-active is-new" type="button"><span class="settings-nav-icon">▤</span>Repositories</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✦</span>Skills</button>
+      <button class="settings-nav-item" type="button"><span class="settings-nav-icon">✎</span>Standing instructions</button>
+    </div>
+  </div>
+
+  <div class="settings-pane">
+    <div class="settings-panel-head">
+      <h2>Repositories</h2>
+      <span class="settings-scope settings-scope-machine">This machine</span>
+    </div>
+
+    <section class="settings-section">
+      <p class="settings-hint settings-blurb">
+        The directories this daemon walks looking for git checkouts, as the matrix the
+        Harnesses page already uses for per-repository policy. One row per directory, one
+        column per fact about it.
+      </p>
+
+      <div class="settings-matrix-scroll">
+        <table class="settings-matrix">
+          <caption>Scanned to three levels. Removing a row stops the walk; nothing on disk changes.</caption>
+          <thead>
+            <tr><th>Directory</th><th>Source</th><th>Status</th><th style="text-align:right">Repos</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="path">~/workspace</td>
+              <td><span class="ri-chip ri-chip-default">default</span></td>
+              <td><span class="ri-chip ri-chip-ok">indexed</span></td>
+              <td class="num">14</td>
+              <td class="act"><button class="ri-remove" type="button">Remove</button></td>
+            </tr>
+            <tr>
+              <td class="path">~/code</td>
+              <td><span class="ri-chip ri-chip-default">default</span></td>
+              <td><span class="ri-chip ri-chip-ok">indexed</span></td>
+              <td class="num">3</td>
+              <td class="act"><button class="ri-remove" type="button">Remove</button></td>
+            </tr>
+            <tr>
+              <td class="path">~/dev</td>
+              <td><span class="ri-chip ri-chip-default">default</span></td>
+              <td><span class="ri-chip ri-chip-missing">not found</span></td>
+              <td class="num">-</td>
+              <td class="act"><button class="ri-remove" type="button">Remove</button></td>
+            </tr>
+            <tr>
+              <td class="path">~/upstart</td>
+              <td><span class="ri-chip ri-chip-default">default</span></td>
+              <td><span class="ri-chip ri-chip-ok">indexed</span></td>
+              <td class="num">9</td>
+              <td class="act"><button class="ri-remove" type="button">Remove</button></td>
+            </tr>
+            <tr>
+              <td class="path">/Volumes/scratch/forks</td>
+              <td><span class="ri-chip">added</span></td>
+              <td><span class="ri-chip ri-chip-ok">indexed</span></td>
+              <td class="num">2</td>
+              <td class="act"><button class="ri-remove" type="button">Remove</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ri-add">
+        <input class="field-input" type="text" placeholder="~/another-directory" aria-label="Directory to index" />
+        <button class="btn btn-primary" type="button">Add directory</button>
+      </div>
+
+      <div class="ri-actions">
+        <button class="btn" type="button">Rescan now</button>
+        <button class="btn" type="button">Restore defaults</button>
+        <span class="ri-count">28 repositories indexed</span>
+      </div>
+
+      <p class="ri-footnote">
+        <span aria-hidden>ℹ</span>
+        <span>Denser than the row list, and it reuses a component that already exists. The cost
+        is that a five-column table has nowhere to say what <em>not found</em> means on a
+        directory the app seeded itself, which is the normal state of two of these rows on most
+        machines.</span>
+      </p>
+    </section>
+  </div>
+</main>
+
+<nav class="mock-switch" aria-label="Mock-up screens">
+  <a href="index.html">all mock-ups</a>
+</nav>
+</body>
+</html>

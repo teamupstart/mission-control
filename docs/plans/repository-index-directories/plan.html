@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indexed directories for repository detection</title>
+<style>
+  :root {
+    --page-bg: #ffffff;
+    --page-fg: #1a1d23;
+    --page-muted: #5b6472;
+    --page-dim: #78818f;
+    --page-border: #dfe3e9;
+    --page-soft: #f4f6f9;
+    --page-accent: #1f7a52;
+    --page-warn: #9a5b00;
+    --page-code: #f2f4f8;
+    --svg-box: #ffffff;
+    --svg-line: #98a2b0;
+    --svg-new: #1f7a52;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0f1216;
+      --page-fg: #e4e8ee;
+      --page-muted: #9aa4b2;
+      --page-dim: #7f8896;
+      --page-border: #262d36;
+      --page-soft: #161b21;
+      --page-accent: #4ecf95;
+      --page-warn: #e0a34a;
+      --page-code: #161b21;
+      --svg-box: #171c23;
+      --svg-line: #7c8798;
+      --svg-new: #4ecf95;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 0 20px 96px;
+    background: var(--page-bg); color: var(--page-fg);
+    font: 16px/1.65 var(--sans); overflow-wrap: break-word;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  header.doc { max-width: 900px; margin: 0 auto; padding: 48px 0 18px; border-bottom: 1px solid var(--page-border); }
+  header.doc h1 { margin: 0 0 8px; font-size: 33px; line-height: 1.15; letter-spacing: -0.02em; }
+  header.doc p { margin: 0; color: var(--page-muted); font-size: 15px; }
+  h2 { margin: 44px 0 12px; font-size: 23px; line-height: 1.25; letter-spacing: -0.01em; padding-bottom: 7px; border-bottom: 1px solid var(--page-border); }
+  h3 { margin: 30px 0 8px; font-size: 17.5px; letter-spacing: -0.005em; }
+  p, li { font-size: 15.5px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  li > ul { margin-top: 5px; }
+  strong { font-weight: 640; }
+  code { font-family: var(--mono); font-size: 0.855em; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 5px; padding: 1px 5px; }
+  pre { margin: 16px 0; padding: 13px 15px; overflow-x: auto; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 9px; }
+  pre code { background: none; border: 0; padding: 0; font-size: 13.5px; line-height: 1.6; }
+  .lede { font-size: 16.5px; color: var(--page-muted); }
+  .tablewrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--page-border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 480px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-border); vertical-align: top; }
+  th { background: var(--page-soft); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--page-dim); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+  .figure { margin: 20px 0 26px; padding: 16px; border: 1px solid var(--page-border); border-radius: 11px; background: var(--page-soft); overflow-x: auto; }
+  .figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .figcap { margin: 10px 0 0; font-size: 13px; color: var(--page-dim); text-align: center; }
+  .note {
+    margin: 22px 0; padding: 13px 16px; border-radius: 9px;
+    border: 1px solid var(--page-border); border-left: 3px solid var(--page-warn);
+    background: var(--page-soft); font-size: 14.5px;
+  }
+  .note b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 18px 0; }
+  .cards div { border: 1px solid var(--page-border); border-radius: 9px; padding: 13px 15px; background: var(--page-soft); font-size: 14.5px; }
+  .cards div.pick { border-color: var(--page-accent); }
+  .cards b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 5px; }
+  .cards a { color: var(--page-accent); }
+  svg text { font-family: var(--sans); }
+</style>
+</head>
+<body>
+<header class="doc">
+  <h1>Indexed directories for repository detection</h1>
+  <p class="lede">Let an operator say, from Settings, which directories the daemon scans for
+  git checkouts. Ship it seeded with <code>~/workspace</code>, <code>~/code</code>,
+  <code>~/dev</code> and <code>~/upstart</code>, and let any of those four be removed.</p>
+</header>
+
+<main>
+
+<h2>Decisions taken</h2>
+<p>Submitted in the dashboard plan review, and applied below:</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+  <tbody>
+    <tr><td>Panel shape</td><td><strong>A - directory rows.</strong> Per-row status, per-row
+    Remove, room for the copy that explains a seeded default reporting <code>not
+    found</code>.</td></tr>
+    <tr><td>Removal model</td><td><strong>Remove only, plus Restore defaults.</strong> No
+    per-directory enable toggle; one mechanism, and undo is Add directory or Restore
+    defaults.</td></tr>
+    <tr><td>Environment precedence</td><td><strong><code>MISSION_WORKSPACE_DIRS</code> wins,
+    panel read-only while it is set.</strong></td></tr>
+    <tr><td>After this plan</td><td><strong>Create the phased implementation
+    plan.</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The problem</h2>
+<p>Repository detection scans exactly one directory. <code>workspaceRoots()</code> in
+<code>src/server/repos.ts</code> returns <code>[~/workspace]</code> unless
+<code>MISSION_WORKSPACE_DIRS</code> is set, and that setting is read from the daemon's
+environment at call time, which means:</p>
+<ul>
+  <li>It is invisible from the dashboard. Nothing in Settings mentions it, and the only
+  documentation is one row of <code>docs/configuration.md</code>.</li>
+  <li>It is a colon-separated PATH-style string an operator has to know the shape of, exported
+  before the daemon starts, in whatever launched it. For the packaged macOS app there is no
+  obvious place to put it at all.</li>
+  <li>A checkout that is not under <code>~/workspace</code> is invisible to every surface that
+  offers a repository, and each of them fails differently and quietly:
+    <ul>
+      <li>the dispatch repo picker (<code>GET /api/repos</code>) simply does not list it, so
+      the only route left is knowing the exact path;</li>
+      <li>MCP <code>create_task</code> resolves a bare repo NAME against the same index
+      (<code>task-repository-preparation.ts</code>), so an agent filing a task for
+      <code>~/code/foo</code> files it against nothing;</li>
+      <li>the Conductor pipeline installer offers candidates from the same list
+      (<code>pipelineInstallerCandidates</code>), so a repo outside the root cannot be adopted
+      from the UI.</li>
+    </ul>
+  </li>
+</ul>
+<p><code>~/code</code>, <code>~/dev</code> and <code>~/upstart</code> are common enough second
+homes that they are worth shipping as defaults rather than making every operator discover the
+setting first. They are also merely defaults: an operator who keeps nothing in
+<code>~/dev</code> should be able to delete that row and stop paying for a walk that finds
+nothing.</p>
+
+<h2>What ships</h2>
+<p>A new <strong>Repositories</strong> category in Settings, in the <em>Sessions</em> group,
+badged <em>This machine</em>. It holds one list: the directories indexed for repository
+detection.</p>
+<ul>
+  <li>The list arrives seeded with <code>~/workspace</code>, <code>~/code</code>,
+  <code>~/dev</code>, <code>~/upstart</code>.</li>
+  <li><strong>Remove</strong> deletes a row, including a seeded one. Removing all four is
+  allowed and means "index nothing"; the panel says so in place of an empty list.</li>
+  <li><strong>Add directory</strong> takes a typed path, accepts a leading <code>~</code>, and
+  is validated by the daemon before it lands.</li>
+  <li><strong>Restore defaults</strong> re-adds any of the four that are missing, without
+  touching the directories the operator added.</li>
+  <li>Each row states what the daemon actually found there: <code>12 repositories</code>,
+  <code>not found</code>, <code>not a directory</code>, or <code>unreadable</code>. A default
+  pointing at a directory that does not exist is the normal case for three of the four on most
+  machines, and a row that says so is the difference between a seeded list and a list that
+  looks broken.</li>
+  <li><strong>Rescan now</strong> drops the discovery cache, so a checkout cloned a moment ago
+  appears without waiting out the TTL.</li>
+</ul>
+<p>Nothing about depth or skipped directory names is exposed.
+<code>MISSION_REPOS_MAX_DEPTH</code> and the <code>SKIP</code> set stay where they are; this
+plan is about which directories are walked, not how.</p>
+
+<h3>Why the defaults work without a migration</h3>
+<p>The stored value is a schema blob over <code>app_config</code>, exactly like Shipping's and
+the Inspector's next door, and the default lives on the schema:</p>
+<pre><code>export const DEFAULT_INDEXED_DIRECTORIES = ["~/workspace", "~/code", "~/dev", "~/upstart"];
+
+export const RepoIndexConfigSchema = z.object({
+  directories: z
+    .array(z.object({ path: z.string().min(1) }))
+    .default(DEFAULT_INDEXED_DIRECTORIES.map((path) =&gt; ({ path }))),
+});</code></pre>
+<p>Zod applies a <code>.default()</code> only when the field is <code>undefined</code>, so:</p>
+<ul>
+  <li>a database that has never stored the key reads back the four defaults, on a fresh install
+  and on an upgrade alike, with no seeding migration to run and nothing to re-run if it
+  half-ran;</li>
+  <li>a stored <code>{ "directories": [] }</code> reads back as empty and stays empty, so a
+  removal is durable and the defaults do not grow back.</li>
+</ul>
+<p>That single property is the whole "seeded but removable" behavior. There is deliberately no
+<code>seeded: true</code> bookkeeping flag, because the stored list already distinguishes the
+two cases that matter.</p>
+
+<h3>Where the environment override stands</h3>
+<p><code>MISSION_WORKSPACE_DIRS</code> keeps winning. When it is set, the daemon indexes exactly
+what it names and the panel renders the configured list read-only, above a sentence naming the
+variable and its value. Three callers depend on that precedence and none of them can be asked
+to write config first:</p>
+<ul>
+  <li><code>e2e/fixtures/daemon.ts</code> points discovery at the fixture workspace by
+  environment, for every spec;</li>
+  <li>Demo mode does the same (<code>docs/plans/demo-mode/plan.md</code>);</li>
+  <li><code>test/pipeline-http.test.ts</code> and <code>test/mcp-create-task.test.ts</code> set
+  it above their imports.</li>
+</ul>
+<div class="note">
+  <b>Why read-only rather than editable</b>
+  A read-only panel is the honest rendering: an editable control whose value the daemon ignores
+  is worse than no control.
+</div>
+
+<h2>Design</h2>
+
+<h3>Contract</h3>
+<p>New browser-safe module <code>src/shared/repo-index.ts</code>:</p>
+<ul>
+  <li><code>DEFAULT_INDEXED_DIRECTORIES</code> - the four paths, in rail order.</li>
+  <li><code>IndexedDirectorySchema</code> - <code>{ path: string }</code>, non-empty,
+  trimmed.</li>
+  <li><code>RepoIndexConfigSchema</code> - <code>{ directories: IndexedDirectory[] }</code> with
+  the default above.</li>
+  <li><code>RepoIndexConfigPatchSchema</code> - the partial the <code>PUT</code> accepts.</li>
+  <li><code>IndexedDirectoryView</code> - one row as the panel reads it: <code>path</code>,
+  <code>resolved</code> (after <code>~</code> expansion and <code>realpath</code>),
+  <code>status</code> (<code>"ok" | "missing" | "not-a-directory" | "unreadable"</code>), and
+  <code>repoCount</code>.</li>
+  <li><code>RepoIndexView</code> - <code>{ directories, managedBy: "config" | "environment",
+  environmentVariable, defaultsMissing }</code>.</li>
+</ul>
+<p>It is <code>src/shared/</code> and therefore carries no <code>node:</code> import:
+<code>~</code> expansion and <code>stat</code> live on the server, and this module only
+describes the shape.</p>
+<p>Registry wiring, both append-only:</p>
+<ul>
+  <li><code>APP_CONFIG_ENTRIES</code> gains <code>repoIndex: fieldsEntry("repoIndex",
+  RepoIndexConfigSchema, "repo-index", { directories: "setting" })</code>.</li>
+  <li><code>SETTINGS_BACKUP_DOMAINS</code> gains <code>{ id: "repo-index", surface: "settings"
+  }</code>, appended last. The list's own rule is append, never rename or reorder, and the
+  backup service enumerates <code>APP_CONFIG_ENTRIES</code> rather than a second inclusion
+  list, so snapshot coverage follows from the entry.</li>
+</ul>
+
+<h3>Server</h3>
+<p>New <code>src/server/repo-index.ts</code>, on the
+<code>src/server/shipping/config.ts</code> pattern:</p>
+<ul>
+  <li><code>getRepoIndexConfig()</code> / <code>setRepoIndexConfig(patch)</code> -
+  schema-validated read and merge-write over <code>app_config</code>.</li>
+  <li><code>expandHome(path)</code> - the one place <code>~</code> becomes
+  <code>homedir()</code>.</li>
+  <li><code>indexedDirectories(): string[]</code> - the environment override when set,
+  otherwise the configured paths expanded and deduplicated. This is what
+  <code>workspaceRoots()</code> becomes.</li>
+  <li><code>repoIndexView()</code> - the configured list joined to a
+  <code>stat</code>/<code>realpath</code> probe per directory and the repo count from the
+  current scan, for the panel.</li>
+  <li>Write validation, refused with a message the panel prints:
+    <ul>
+      <li>empty or whitespace path;</li>
+      <li>a path that is not absolute after expansion;</li>
+      <li>any path that is the filesystem root, the home directory, or an <strong>ancestor</strong>
+      of the home directory, because a depth-3 walk from any of them is a scan of the whole machine
+      dressed up as a preference. Checked after canonicalization, not against the string as typed:
+      <code>~/..</code>, <code>/Users/me/..</code> and <code>/Users</code> all name an ancestor of
+      home while equalling none of the three literally, so <code>..</code> segments are normalized
+      away first and an existing path is resolved through its symlinks before the comparison;</li>
+      <li>a duplicate of a directory already listed, compared after expansion and
+      <code>realpath</code> so <code>~/workspace</code> and <code>/Users/me/workspace</code>
+      cannot both be added;</li>
+      <li>more than sixteen directories.</li>
+    </ul>
+  </li>
+</ul>
+<p><code>src/server/repos.ts</code> changes in three places and keeps everything else:</p>
+<ul>
+  <li><code>workspaceRoots()</code> delegates to <code>indexedDirectories()</code>. Its doc
+  comment stops naming <code>~/workspace</code> as the default and names the setting.</li>
+  <li><code>invalidateReposCache()</code> is exported, and <code>setRepoIndexConfig</code> calls
+  it, so an added directory shows up in the picker on the next open rather than up to 30 seconds
+  later.</li>
+  <li><code>scanRepos([])</code> already returns <code>[]</code>, so "index nothing" needs no
+  special case.</li>
+</ul>
+<p>Routes, beside the other config routes in <code>routes.ts</code>:</p>
+<ul>
+  <li><code>GET /api/repo-index</code> returns <code>RepoIndexView</code>.</li>
+  <li><code>PUT /api/repo-index</code> parses <code>RepoIndexConfigPatchSchema</code>, writes,
+  returns the new view.</li>
+  <li><code>POST /api/repo-index/rescan</code> invalidates the cache and returns the fresh
+  view.</li>
+</ul>
+
+<h3>Web</h3>
+<ul>
+  <li><code>src/web/useRepoIndex.ts</code> - a 4s polling hook with the
+  <code>useShipping</code> write guard, so a row removed by a click is not restored by a poll
+  that was already in flight.</li>
+  <li><code>src/web/components/RepositoriesPanel.tsx</code> - the panel. Rows carry
+  <code>data-anchor="repositories/directories"</code>, the add field
+  <code>repositories/add</code>, the rescan button <code>repositories/rescan</code>.</li>
+  <li><code>src/web/lib/settings-registry.ts</code> - a <code>repositories</code> category in
+  the <code>sessions</code> group, scope <code>machine</code>, placed after
+  <code>worktrees</code>, with keywords <em>repository, index, scan, directory, workspace,
+  discovery, picker, folder</em>.</li>
+  <li><code>src/web/lib/settings-search.ts</code> - three control entries pointing at those
+  anchors, backed by <code>backupDomains("repo-index")</code>.</li>
+  <li><code>src/web/components/SettingsPage.tsx</code> - one <code>case "repositories"</code>
+  and the hook call.</li>
+</ul>
+<p>Removal is a click with no confirm step, and undo is the Add field or Restore defaults. A
+removed row is a directory that stops being walked; nothing is deleted from disk, and the
+adjacent destructive controls (worktree Destroy) confirm because they delete files.</p>
+
+<h3>The flow that changes</h3>
+<p>Before, the indexed directories come from the process environment or a constant. After, they
+come from <code>app_config</code>, with the environment override kept ahead of it and the panel
+as a second reader of the same config.</p>
+
+<div class="figure">
+<svg viewBox="0 0 880 470" role="img" aria-label="Before and after: repository discovery reads its indexed directories from the environment or a hard-coded constant; afterwards it reads them from the repoIndex app_config row, with the environment override still winning when set, and the new Settings panel reading and writing the same row.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--svg-line)"/>
+    </marker>
+    <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--svg-new)"/>
+    </marker>
+  </defs>
+
+  <!-- BEFORE -->
+  <text x="0" y="16" font-size="12" letter-spacing="1.4" fill="var(--page-dim)">BEFORE</text>
+  <g font-size="12.5" fill="var(--page-fg)">
+    <rect x="0" y="34" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="53">Dispatch repo picker</text>
+    <rect x="0" y="72" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="91">MCP create_task</text>
+    <rect x="0" y="110" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="129">Pipeline installer</text>
+
+    <rect x="230" y="72" width="130" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="242" y="91">listRepos()</text>
+
+    <rect x="430" y="72" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="442" y="91">workspaceRoots()</text>
+
+    <rect x="650" y="42" width="220" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="662" y="61" font-family="var(--mono)" font-size="11.5">MISSION_WORKSPACE_DIRS</text>
+    <rect x="650" y="100" width="220" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="662" y="119" font-family="var(--mono)" font-size="11.5">"~/workspace" (constant)</text>
+  </g>
+  <g stroke="var(--svg-line)" fill="none" marker-end="url(#arrow)">
+    <path d="M150 49 C 195 49, 190 87, 228 87"/>
+    <path d="M150 87 H 228"/>
+    <path d="M150 125 C 195 125, 190 87, 228 87"/>
+    <path d="M360 87 H 428"/>
+    <path d="M580 87 C 615 87, 615 57, 648 57"/>
+    <path d="M580 87 C 615 87, 615 115, 648 115"/>
+  </g>
+
+  <line x1="0" y1="176" x2="880" y2="176" stroke="var(--page-border)"/>
+
+  <!-- AFTER -->
+  <text x="0" y="208" font-size="12" letter-spacing="1.4" fill="var(--page-dim)">AFTER</text>
+  <g font-size="12.5" fill="var(--page-fg)">
+    <rect x="0" y="226" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="245">Dispatch repo picker</text>
+    <rect x="0" y="264" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="283">MCP create_task</text>
+    <rect x="0" y="302" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="12" y="321">Pipeline installer</text>
+
+    <rect x="0" y="392" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--svg-new)"/>
+    <text x="12" y="411" fill="var(--svg-new)">Settings › Repositories</text>
+
+    <rect x="230" y="264" width="130" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="242" y="283">listRepos()</text>
+
+    <rect x="230" y="392" width="130" height="30" rx="7" fill="var(--svg-box)" stroke="var(--svg-new)"/>
+    <text x="240" y="411" font-family="var(--mono)" font-size="10.5" fill="var(--svg-new)">/api/repo-index</text>
+
+    <rect x="430" y="264" width="150" height="30" rx="7" fill="var(--svg-box)" stroke="var(--svg-new)"/>
+    <text x="442" y="283" fill="var(--svg-new)">indexedDirectories()</text>
+
+    <rect x="650" y="234" width="220" height="30" rx="7" fill="var(--svg-box)" stroke="var(--page-border)"/>
+    <text x="662" y="253" font-family="var(--mono)" font-size="11.5">MISSION_WORKSPACE_DIRS</text>
+    <text x="650" y="280" font-size="11" fill="var(--page-dim)">still wins when set</text>
+
+    <rect x="650" y="330" width="220" height="30" rx="7" fill="var(--svg-box)" stroke="var(--svg-new)"/>
+    <text x="662" y="349" font-family="var(--mono)" font-size="11.5" fill="var(--svg-new)">app_config: repoIndex</text>
+    <text x="650" y="376" font-size="11" fill="var(--page-dim)">seeded with the four defaults</text>
+  </g>
+  <g stroke="var(--svg-line)" fill="none" marker-end="url(#arrow)">
+    <path d="M150 241 C 195 241, 190 279, 228 279"/>
+    <path d="M150 279 H 228"/>
+    <path d="M150 317 C 195 317, 190 279, 228 279"/>
+    <path d="M360 279 H 428"/>
+    <path d="M580 279 C 615 279, 615 249, 648 249"/>
+  </g>
+  <g stroke="var(--svg-new)" fill="none" marker-end="url(#arrow-new)">
+    <path d="M580 279 C 615 279, 615 345, 648 345"/>
+    <path d="M150 407 H 228"/>
+    <path d="M360 407 C 500 407, 560 375, 700 362"/>
+  </g>
+  <g stroke="var(--svg-new)" fill="none" stroke-dasharray="4 3" marker-end="url(#arrow-new)">
+    <path d="M295 392 C 295 350, 295 320, 295 298"/>
+  </g>
+  <text x="303" y="345" font-size="11" fill="var(--svg-new)">invalidate cache</text>
+</svg>
+<p class="figcap">A write from the new panel invalidates the discovery cache, so the picker
+reflects an added directory on its next open rather than up to 30 seconds later.</p>
+</div>
+
+<h2>Mock-ups</h2>
+<p><strong>A - Directory rows</strong> is the adopted design, and it is what the Web section
+above describes. Four screens are switchable in the mock-up itself: as shipped, after edits with
+a refused path, under an environment override, and emptied. B and C are the two explorations it
+was chosen over, kept for the record rather than as live options. All three open from
+<a href="mockups/index.html"><code>mockups/index.html</code></a>.</p>
+<div class="cards">
+  <div class="pick">
+    <b>A - Directory rows (adopted)</b>
+    <a href="mockups/a-directory-rows.html">a-directory-rows.html</a> - one row per directory
+    with its status chip, repo count, and a Remove button; an Add field, Restore defaults and
+    Rescan now beneath.
+  </div>
+  <div>
+    <b>B - Status matrix (not taken)</b>
+    <a href="mockups/b-status-matrix.html">b-status-matrix.html</a> - the same data as a
+    <code>settings-matrix</code> table. Denser, and it reuses a component that exists, but there
+    is nowhere to explain what <em>not found</em> means on a seeded default.
+  </div>
+  <div>
+    <b>C - Path list (not taken)</b>
+    <a href="mockups/c-path-list.html">c-path-list.html</a> - one path per line in a textarea.
+    Cheapest to build, and it gives up per-row status, per-row removal, and validation that can
+    point at the offending line.
+  </div>
+</div>
+
+<h2>Tests</h2>
+<ul>
+  <li><code>test/repos.test.ts</code>, extended: configured directories are scanned, the
+  environment override wins over config, <code>~</code> is expanded, duplicates after
+  <code>realpath</code> collapse, an empty list scans nothing, and an absent config key yields
+  the four defaults.</li>
+  <li><code>test/repo-index-http.test.ts</code>, new: <code>GET</code> shape including
+  <code>status</code> and <code>repoCount</code>, each validation refusal, removal durability
+  across a re-read, Restore defaults adding only the missing ones, and a scan that sees a repo
+  created after the first read once the write has invalidated the cache.</li>
+  <li><code>test/settings-search.test.ts</code> and
+  <code>test/settings-sidebar-render.test.ts</code> walk the registries, so the new category and
+  its three anchors are covered by the existing integrity assertions;
+  <code>test/settings-backup-coverage.test.ts</code> covers the new domain.</li>
+  <li><code>e2e/specs/settings-repository-index.spec.ts</code>, new: open Settings and select
+  Repositories, assert the four seeded rows and that the <code>~/workspace</code> row reports the
+  fixture's repo; remove a default that is <em>not</em> <code>~/workspace</code>
+  (<code>~/dev</code>, which reports <code>not found</code> under the fixture), assert it is still
+  gone after a reload, and assert the dispatch picker still offers the fixture repo. Then Restore
+  defaults and assert <code>~/dev</code> is back.
+  <div class="note">
+    <b>Why not remove and re-add the workspace row</b>
+    That would be the more direct exercise of the round trip, and it is not what the spec does:
+    the fixture's <code>HOME</code> makes <code>~/workspace</code> the seeded workspace, so an add
+    of that path lands on the duplicate refusal rather than on the picker assertion. Removing a
+    different default keeps the picker's repo reachable, which is what makes the assertion after
+    the removal meaningful.
+  </div>
+  <div class="note">
+    <b>Fixture change this needs</b>
+    The spec needs the daemon fixture NOT to set <code>MISSION_WORKSPACE_DIRS</code>, since the
+    override would make the panel read-only. <code>e2e/fixtures/daemon.ts</code> gains an opt-in
+    flag that omits the variable; because the fixture already points <code>HOME</code> at its
+    throwaway home and seeds its repo into <code>&lt;home&gt;/workspace</code>, the shipped
+    default <code>~/workspace</code> then resolves to exactly the fixture workspace, so no
+    config-row seeding is needed. Every existing spec keeps the environment path unchanged. No
+    agent is launched, so no model tokens are spent.
+  </div>
+  </li>
+</ul>
+
+<h2>Documentation</h2>
+<ul>
+  <li><code>docs/configuration.md</code> - the <code>MISSION_WORKSPACE_DIRS</code> row becomes
+  an override of Settings › Repositories rather than the only way to change the default.</li>
+  <li><code>docs/dispatch-and-backlog.md</code> - the repo picker paragraph names the setting
+  instead of <code>~/workspace</code>.</li>
+  <li>The settings category list gains Repositories.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>Scan depth and the skipped-directory set. Both stay environment-only.</li>
+  <li>Per-directory include and exclude patterns.</li>
+  <li>Watching directories for change. Rescan now plus the existing TTL is the whole freshness
+  story.</li>
+  <li>Anything about which repositories are TRUSTED. Indexing a directory offers its checkouts
+  in a picker; it grants nothing. The Foreman, Workflows, Inspector and Shipping allowlists are
+  unchanged and remain the only grants, which is why this category sits in <em>Sessions</em>
+  rather than beside Trust.</li>
+</ul>
+
+</main>
+</body>
+</html>

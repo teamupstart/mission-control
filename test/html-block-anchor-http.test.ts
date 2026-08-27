@@ -73,6 +73,18 @@ async function resolve(
   return { status: res.status, data: (await res.json()) as Record<string, unknown> };
 }
 
+async function target(
+  sessionId: string,
+  body: unknown,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const res = await app.request(`/api/sessions/${sessionId}/html-block-target`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, data: (await res.json()) as Record<string, unknown> };
+}
+
 test("a clicked paragraph comes back as its source lines and its source slice", async () => {
   const { status, data } = await resolve("live", {
     path: "docs/page.html",
@@ -84,7 +96,32 @@ test("a clicked paragraph comes back as its source lines and its source slice", 
   // Source, not DOM text. `Read this & then the table.` is what a browser shows and what a
   // text-matching resolver would have stored; it appears nowhere in the file.
   assert.equal(data.quote, "<p>Read <strong>this</strong> &amp; then the table.</p>");
+  assert.deepEqual(data.blockPath, PARAGRAPH);
+  assert.equal(data.blockQuote, "<p>Read <strong>this</strong> &amp; then the table.</p>");
   assert.ok(typeof data.revision === "string" && data.revision.length > 0);
+});
+
+test("a stored source range comes back as the rendered path the iframe can reveal", async () => {
+  const { status, data } = await target("live", {
+    path: "docs/page.html",
+    startLine: 5,
+    endLine: 5,
+    quote: "<p>Read <strong>this</strong> &amp; then the table.</p>",
+    blockPath: PARAGRAPH,
+    blockQuote: "<p>Read <strong>this</strong> &amp; then the table.</p>",
+  });
+  assert.equal(status, 200);
+  assert.deepEqual(data.blockPath, PARAGRAPH);
+  assert.ok(typeof data.revision === "string" && data.revision.length > 0);
+
+  const row = await target("live", {
+    path: "docs/page.html",
+    startLine: 7,
+    endLine: 7,
+    quote: "<tr><td>3</td><td>30s</td></tr>",
+  });
+  assert.equal(row.status, 200);
+  assert.deepEqual(row.data.blockPath, ROW);
 });
 
 test("the revision is the one the daemon just read, so an anchor is not stamped with a guess", async () => {

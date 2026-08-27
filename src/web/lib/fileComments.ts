@@ -9,6 +9,7 @@
 // either. Derived ones do not notice.
 
 import type { FileCommentReview, FileCommentThread, SessionFileDocument } from "@shared/types.ts";
+import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import { boundQuote, normalizeQuote } from "@shared/file-comment-anchor.ts";
 import {
   holdsQueuePosition,
@@ -124,25 +125,61 @@ export function threadsByLine(
   return byLine;
 }
 
+function sameHtmlBlockPath(
+  left: readonly HtmlBlockPathStep[],
+  right: readonly HtmlBlockPathStep[],
+): boolean {
+  return left.length === right.length
+    && left.every((step, index) => {
+      const other = right[index];
+      return other?.index === step.index && other.tag === step.tag;
+    });
+}
+
+function preferredThread(threads: readonly FileCommentThread[]): FileCommentThread | null {
+  return threads.find((thread) => thread.status === "draft") ?? threads[0] ?? null;
+}
+
 /**
- * What a rendered preview says when the block pointed at already carries a comment.
+ * The existing thread a rendered block owns, or null when this is a new block to comment on.
  *
- * A rendered document does not open existing comments: the review queue is the one place a
- * comment this session already holds is read from, because it is the one surface that can
- * list every comment in every file - and an HTML preview is an opaque sandbox with no way to
- * mark which of its blocks have been commented on, so a reader clicking blocks to hunt for
- * one would be guessing.
- *
- * A refusal rather than silence, and it names where the comment IS. Doing nothing here is the
- * failure this whole surface exists to avoid; opening a second composer on a block that
- * already has one would file a duplicate.
- *
- * Every status this can be reached with is in the queue or has a review behind it - a `draft`
- * is not, and is deliberately not routed here: it has never been submitted, the queue cannot
- * list it, and it is not an existing comment but this composer, unfinished.
+ * Markdown has one source range per rendered block, so its line bucket remains sufficient.
+ * Compact HTML can put several distinct elements on the same line. A click carrying the
+ * server-resolved identity must therefore match that identity before the old line fallback.
+ * Only rows created before block identity shipped use that fallback; a different identified
+ * block on the same line is a new comment target rather than somebody else's thread.
  */
-export const PREVIEW_EXISTING_COMMENT_NOTICE =
-  "This block already has a comment. Open the Review queue to read it.";
+export function threadForRenderedBlock(
+  threads: readonly FileCommentThread[],
+  anchor: {
+    htmlBlockPath?: readonly HtmlBlockPathStep[] | null;
+    htmlBlockQuote?: string | null;
+  },
+  surface: "markdown" | "html",
+): FileCommentThread | null {
+  const path = anchor.htmlBlockPath;
+  const quote = anchor.htmlBlockQuote;
+  if (surface !== "html" || !path || !quote) return preferredThread(threads);
+
+  const identified = threads.filter(
+    (thread) => thread.surface === "html" && thread.htmlBlockPath && thread.htmlBlockQuote,
+  );
+  const exact = identified.filter(
+    (thread) => sameHtmlBlockPath(thread.htmlBlockPath!, path) && thread.htmlBlockQuote === quote,
+  );
+  if (exact.length > 0) return preferredThread(exact);
+
+  const pathMatches = identified.filter((thread) => sameHtmlBlockPath(thread.htmlBlockPath!, path));
+  if (pathMatches.length > 0) return preferredThread(pathMatches);
+
+  const quoteMatches = identified.filter((thread) => thread.htmlBlockQuote === quote);
+  if (quoteMatches.length === 1) return quoteMatches[0]!;
+
+  const legacy = threads.filter(
+    (thread) => thread.htmlBlockPath == null || thread.htmlBlockQuote == null,
+  );
+  return preferredThread(legacy);
+}
 
 /** How a thread's state reads on a marker and in a thread header. */
 export function threadStateLabel(thread: FileCommentThread): string {

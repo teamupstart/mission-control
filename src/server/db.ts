@@ -80,8 +80,10 @@ import {
   PROMPTED_DECISION_GAP_ID_MAX,
   PROMPTED_DECISION_GAP_PATH_MAX,
   PROMPTED_DECISION_SUMMARY_MAX,
+  HtmlBlockPathSchema,
   PromptedRecoveryStateSchema,
   PromptedCompletionDispositionSchema,
+  type HtmlBlockPathStep,
   type PromptedCompletionDisposition,
   type PromptedRecoveryClaim,
   type PromptedRecoveryDelivery,
@@ -2895,6 +2897,8 @@ export function openDb(): DatabaseSync {
       quote_hash   TEXT NOT NULL,     -- sha256(path + LF + normalized quote); excludes the line
       revision     TEXT,              -- file revision the anchor was last VALID against
       surface      TEXT NOT NULL,     -- editor | markdown | html
+      html_block_path  TEXT,           -- JSON browser-tree path for an HTML preview block
+      html_block_quote TEXT,           -- exact source bytes for that HTML element
       -- draft | queued | sending | awaiting | answered | unanswered | resolved | orphaned.
       -- unanswered is outside the outstanding tuple on purpose: auto-advance sends the
       -- next comment while this one has never been answered, and a timed-out thread left
@@ -3007,6 +3011,13 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   migrateWorktreeOrdinalHighWater(d);
+
+  // HTML preview comments originally persisted only a line-wide quote. When compact HTML
+  // puts several elements on one line, that cannot distinguish a paragraph from its inline
+  // child. Existing rows remain nullable and keep the legacy resolver; new rows carry the
+  // server-validated browser path plus the exact element source used to validate it.
+  addColumn(d, "file_comment_threads", "html_block_path", "TEXT");
+  addColumn(d, "file_comment_threads", "html_block_quote", "TEXT");
 
   // Which file each pipeline run's events offset indexes into. Added after `pipeline_runs`
   // shipped, so an existing row carries the empty-string default - which is exact: those
@@ -11303,6 +11314,8 @@ interface FileCommentThreadRow {
   quote_hash: string;
   revision: string | null;
   surface: string;
+  html_block_path: string | null;
+  html_block_quote: string | null;
   status: string;
   outdated: number;
   queue_seq: number | null;
@@ -11349,6 +11362,16 @@ function readThreadStatus(raw: string): FileCommentThreadStatus {
   return isFileCommentThreadStatus(raw) ? raw : "orphaned";
 }
 
+function readHtmlBlockPath(raw: string | null): HtmlBlockPathStep[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed = HtmlBlockPathSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function rowToFileCommentMessage(row: FileCommentMessageRow): FileCommentMessage {
   return {
     id: row.id,
@@ -11381,6 +11404,8 @@ function rowToFileCommentThread(
     quoteHash: row.quote_hash,
     revision: row.revision,
     surface: (isFileCommentSurface(row.surface) ? row.surface : "editor") as FileCommentSurface,
+    htmlBlockPath: readHtmlBlockPath(row.html_block_path),
+    htmlBlockQuote: row.html_block_quote,
     status: readThreadStatus(row.status),
     outdated: row.outdated !== 0,
     queueSeq: row.queue_seq,
@@ -11569,6 +11594,8 @@ export interface CreateFileCommentThreadInput {
   quoteHash: string;
   revision: string | null;
   surface: FileCommentSurface;
+  htmlBlockPath?: HtmlBlockPathStep[] | null;
+  htmlBlockQuote?: string | null;
   /** The opening comment. Written through `appendFileCommentMessage`, not a second insert. */
   body: string;
   now: number;
@@ -11619,9 +11646,10 @@ export function createFileCommentThread(input: CreateFileCommentThreadInput): Fi
       d.prepare(
         `INSERT INTO file_comment_threads
            (id, short_id, session_id, path, start_line, end_line, quote, quote_hash, revision,
-            surface, status, outdated, queue_seq, delivery_id, sent_at, answered_at,
+            surface, html_block_path, html_block_quote, status, outdated, queue_seq,
+            delivery_id, sent_at, answered_at,
             addressed_at, resolved_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
       ).run(
         input.id,
         shortId,
@@ -11633,6 +11661,8 @@ export function createFileCommentThread(input: CreateFileCommentThreadInput): Fi
         input.quoteHash,
         input.revision,
         input.surface,
+        input.htmlBlockPath == null ? null : JSON.stringify(input.htmlBlockPath),
+        input.htmlBlockQuote ?? null,
         input.now,
         input.now,
       );

@@ -30,9 +30,10 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  */
 
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
+const PREVIEW_TARGET_MESSAGE = "mission:file-preview-target";
 const PREVIEW_KEYBOARD_MESSAGE = "mission:file-preview-keyboard";
-const PREVIEW_SCROLL_SCRIPT = `let missionKeyboard=false;addEventListener("message",event=>{if(event.source===parent){if(event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number"){scrollBy({top:event.data.top});return}if(event.data?.type==="${PREVIEW_KEYBOARD_MESSAGE}")missionKeyboard=event.data.enabled===true}});document.addEventListener("keydown",event=>{if(!missionKeyboard)return;const plain=!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const typing=event.target instanceof Element&&Boolean(event.target.closest("input,textarea,select")||event.target instanceof HTMLElement&&event.target.isContentEditable);if(plain&&(event.key==="u"||event.key==="d")&&!typing){event.preventDefault();event.stopImmediatePropagation();scrollBy({top:(event.key==="d"?1:-1)*innerHeight});return}if(event.key==="Tab"){event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*");return}if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*")}},true)`;
-const PREVIEW_SCROLL_SCRIPT_HASH = "Vo2Wwba6NSMOcmp8/OA2G6D2xpK7W259yBAx+wREA3s=";
+const PREVIEW_SCROLL_SCRIPT = `let missionKeyboard=false;let missionTarget=null;function missionJump(path){if(!Array.isArray(path))return;let node=document.body;for(const step of path){if(!step||!Number.isInteger(step.index)||typeof step.tag!=="string")return;const child=node.children.item(step.index);if(!child||child.tagName.toLowerCase()!==step.tag)return;node=child}if(missionTarget)missionTarget.classList.remove("mission-comment-target");missionTarget=node;missionTarget.classList.add("mission-comment-target");missionTarget.scrollIntoView({block:"center",behavior:"smooth"})}addEventListener("message",event=>{if(event.source===parent){if(event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number"){scrollBy({top:event.data.top});return}if(event.data?.type==="${PREVIEW_TARGET_MESSAGE}"){missionJump(event.data.path);return}if(event.data?.type==="${PREVIEW_KEYBOARD_MESSAGE}")missionKeyboard=event.data.enabled===true}});document.addEventListener("keydown",event=>{if(!missionKeyboard)return;const plain=!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const typing=event.target instanceof Element&&Boolean(event.target.closest("input,textarea,select")||event.target instanceof HTMLElement&&event.target.isContentEditable);if(plain&&(event.key==="u"||event.key==="d")&&!typing){event.preventDefault();event.stopImmediatePropagation();scrollBy({top:(event.key==="d"?1:-1)*innerHeight});return}if(event.key==="Tab"){event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*");return}if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_KEYBOARD_MESSAGE}",action:"exit"},"*")}},true)`;
+const PREVIEW_SCROLL_SCRIPT_HASH = "0rx/acSQDoPQ3ODCtWXGEXkbl+oeGSA2rro56BhxnEk=";
 /**
  * What counts as a block, decided by the layout the browser actually produced.
  *
@@ -132,7 +133,7 @@ const PREVIEW_COMMENT_SCRIPT_HASH = "E9uJHE7aVw0AWiMsFk0PxXrh8C4oaVMrpGEYB7ux98Y
  * the definition and then keeping `:hover:not(:has(...))` in step with it - and computed
  * display, which is what the definition now rests on, cannot be written as a selector.
  */
-const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode .mission-comment-block{outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}`;
+const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode .mission-comment-block{outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}.mission-comment-target{outline:2px solid #5dd6c0;outline-offset:3px;background:rgba(93,214,192,0.12)}`;
 
 /**
  * Every anchor click leaves the document through the parent, or not at all.
@@ -168,6 +169,9 @@ const PREVIEW_CSP =
 export const HTML_PREVIEW_LINK_MESSAGE = PREVIEW_LINK_MESSAGE;
 /** The message the parent posts down to scroll a preview it cannot reach into. */
 export const HTML_PREVIEW_SCROLL_MESSAGE = PREVIEW_SCROLL_MESSAGE;
+
+/** Ask the opaque HTML preview to reveal a server-resolved structural path. */
+export const HTML_PREVIEW_TARGET_MESSAGE = PREVIEW_TARGET_MESSAGE;
 /** Keyboard bridge configuration and the exit request posted back by a Files preview. */
 export const HTML_PREVIEW_KEYBOARD_MESSAGE = PREVIEW_KEYBOARD_MESSAGE;
 /**

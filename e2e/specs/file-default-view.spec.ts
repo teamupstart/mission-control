@@ -255,19 +255,34 @@ test("Preview u and d paginate a rendered report by one page", async ({
   const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
   const body = report.locator("body");
   await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
-  const pageHeight = await body.evaluate(() => window.innerHeight);
-  expect(await body.evaluate(() => window.scrollY)).toBe(0);
+  const pageTargetError = (startY: number, direction: -1 | 1): Promise<number> =>
+    body.evaluate((_body, { startY, direction }) => {
+      const pageHeight = window.innerHeight;
+      const clientHeight = document.scrollingElement?.clientHeight ?? pageHeight;
+      const maxY = Math.max(
+        0,
+        (document.scrollingElement?.scrollHeight ?? clientHeight) - clientHeight,
+      );
+      const expectedY = Math.min(maxY, Math.max(0, startY + direction * pageHeight));
+      return window.scrollY - expectedY;
+    }, { startY, direction });
+  const beforeDownY = await body.evaluate(() => window.scrollY);
+  expect(beforeDownY).toBe(0);
 
   // The file row still owns focus after selection. Preview mode itself claims the key, so
   // pagination does not require an extra Tab into the rendered document and bare `d` does
   // not fall through to the dashboard's contextual Delete binding.
   await dashboard.keyboard.press("d");
-  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(pageHeight);
+  // Flex layout can resize the iframe by a couple of CSS pixels after it first becomes
+  // visible. Assert against the live page height used at the action boundary, not a stale
+  // height captured before that layout settles.
+  await expect.poll(() => pageTargetError(beforeDownY, 1)).toBe(0);
   await expect(report.getByRole("heading", { name: "Reconnect details" })).toBeVisible();
   await shoot(dashboard, "preview-page-down");
 
+  const beforeUpY = await body.evaluate(() => window.scrollY);
   await dashboard.keyboard.press("u");
-  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(0);
+  await expect.poll(() => pageTargetError(beforeUpY, -1)).toBe(0);
   await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
   await shoot(dashboard, "preview-page-up");
 });
@@ -322,6 +337,58 @@ test("an HTML report opens rendered, and its source only on request", async ({
   await modes.getByRole("button", { name: "Editor" }).click();
   await expect(dashboard.getByLabel(`Editor for ${REPORT}`)).toContainText("SSE reconnect audit");
   await expect(modes.getByRole("button", { name: "Editor" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a narrow Files toolbar keeps both modes and every action visible", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+  const toolbar = dashboard.locator(".file-main > .file-toolbar");
+  const modes = toolbar.getByRole("group", { name: "File view mode" });
+  const controls = [
+    modes.getByRole("button", { name: "Preview" }),
+    modes.getByRole("button", { name: "Editor" }),
+    toolbar.getByRole("button", { name: "Comment mode" }),
+    toolbar.getByRole("button", { name: "Comments" }),
+    toolbar.getByRole("button", { name: /^Open in/ }),
+    toolbar.getByRole("button", { name: "Extract files window" }),
+  ];
+
+  // The reported transition is an already-open Files tab becoming narrower, so resize only
+  // after navigation. Check both the reported boundary and the compact layout below it: the
+  // filename may keep yielding, but the view toggle may never become the sacrificial flex item.
+  const observations = [];
+  for (const width of [760, 640]) {
+    await dashboard.setViewportSize({ width, height: 800 });
+    const toolbarBox = await toolbar.boundingBox();
+    expect(toolbarBox).not.toBeNull();
+    const modeBox = await modes.boundingBox();
+    expect(modeBox).not.toBeNull();
+    const edges = [];
+    for (const control of controls) {
+      await expect(control).toBeVisible();
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      edges.push({
+        name: await control.getAttribute("aria-label") ?? await control.innerText(),
+        left: Math.round(box!.x),
+        right: Math.round(box!.x + box!.width),
+      });
+      expect(box!.x).toBeGreaterThanOrEqual(toolbarBox!.x);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(toolbarBox!.x + toolbarBox!.width);
+    }
+    const editorBox = await controls[1]!.boundingBox();
+    expect(editorBox!.x + editorBox!.width).toBeLessThanOrEqual(modeBox!.x + modeBox!.width);
+    observations.push({ width, edges });
+  }
+
+  observed(`narrow Files toolbar kept all controls in frame: ${JSON.stringify(observations)}`);
+  await shoot(dashboard, "narrow-files-toolbar");
 });
 
 test("a PNG opens as a fitted, read-only image preview", async ({ dashboard, daemon }) => {

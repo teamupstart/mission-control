@@ -6443,6 +6443,10 @@ export const HtmlBlockPathStepSchema = z.object({
   tag: z.string().trim().min(1).max(64).regex(/^[a-z0-9:-]+$/),
 });
 export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
+export const HtmlBlockPathSchema = z
+  .array(HtmlBlockPathStepSchema)
+  .min(1)
+  .max(HTML_BLOCK_PATH_LIMITS.depth);
 
 /**
  * Resolving a clicked preview block to a source line range.
@@ -6452,7 +6456,7 @@ export type HtmlBlockPathStep = z.infer<typeof HtmlBlockPathStepSchema>;
  */
 export const HtmlBlockAnchorSchema = z.object({
   path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
-  blockPath: z.array(HtmlBlockPathStepSchema).min(1).max(HTML_BLOCK_PATH_LIMITS.depth),
+  blockPath: HtmlBlockPathSchema,
   /**
    * The revision the render being clicked was built from, when the caller knows it.
    *
@@ -6467,6 +6471,23 @@ export const HtmlBlockAnchorSchema = z.object({
   revision: z.string().max(FILE_COMMENT_TEXT_LIMITS.path).nullable().optional(),
 });
 export type HtmlBlockAnchorBody = z.infer<typeof HtmlBlockAnchorSchema>;
+
+/** Locate a source-anchored thread in the rendered HTML tree without changing either. */
+export const HtmlBlockTargetSchema = z.object({
+  path: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.path),
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  quote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).optional(),
+  /** The server-validated browser-tree path captured when this HTML thread was created. */
+  blockPath: HtmlBlockPathSchema.optional(),
+  /** Exact source bytes for that element, used to validate or recover the structural path. */
+  blockQuote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).optional(),
+  revision: z.string().max(FILE_COMMENT_TEXT_LIMITS.path).nullable().optional(),
+}).refine((value) => value.endLine >= value.startLine, {
+  message: "endLine must not precede startLine",
+  path: ["endLine"],
+});
+export type HtmlBlockTargetBody = z.infer<typeof HtmlBlockTargetSchema>;
 
 /** A new line-anchored comment thread, with its opening comment. */
 export const CreateFileCommentSchema = z.object({
@@ -6497,7 +6518,27 @@ export const CreateFileCommentSchema = z.object({
   /** The document revision the anchor was taken against; null when it was unknown. */
   revision: z.string().max(256).nullable().optional().default(null),
   surface: z.enum(FILE_COMMENT_SURFACES),
+  /** Durable HTML-only identity returned by the server after resolving a preview click. */
+  htmlBlockPath: HtmlBlockPathSchema.nullable().optional().default(null),
+  /** Exact source bytes for the selected HTML element, separate from the line-wide quote. */
+  htmlBlockQuote: z.string().min(1).max(FILE_COMMENT_QUOTE_MAX).nullable().optional().default(null),
   body: z.string().trim().min(1).max(FILE_COMMENT_TEXT_LIMITS.body),
+}).superRefine((value, ctx) => {
+  const hasHtmlPath = value.htmlBlockPath !== null;
+  const hasHtmlQuote = value.htmlBlockQuote !== null;
+  if (value.surface === "html" && hasHtmlPath !== hasHtmlQuote) {
+    ctx.addIssue({
+      code: "custom",
+      path: hasHtmlPath ? ["htmlBlockQuote"] : ["htmlBlockPath"],
+      message: "an HTML block anchor requires both its path and exact source quote",
+    });
+  } else if (value.surface !== "html" && (hasHtmlPath || hasHtmlQuote)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["htmlBlockPath"],
+      message: "only HTML comments carry a block anchor",
+    });
+  }
 });
 export type CreateFileCommentBody = z.infer<typeof CreateFileCommentSchema>;
 
@@ -6563,21 +6604,21 @@ export const SetFileCommentStatusSchema = z.object({
 export type SetFileCommentStatusBody = z.infer<typeof SetFileCommentStatusSchema>;
 
 /**
- * Start, pause or resume a session's walkthrough.
+ * Start, pause, resume, or dismiss a session walkthrough warning.
  *
  * ONE route with an action rather than three, because "resume" and "start" differ in nothing
  * the machine can see - `started_at` is kept by the store on a resume rather than rewritten -
  * and splitting them into two doors would invite a caller to pick the wrong one and restart a
- * review's numbering halfway through it. The distinction that IS real is start-or-resume
- * against pause, and the enum states it.
+ * review's numbering halfway through it. Dismiss is distinct: it clears a visible pause reason
+ * without resuming the review or changing the queued comment it describes.
  *
- * `reason` is the operator's own note on a pause, and is refused on the other two: a reason
+ * `reason` is the operator's own note on a pause, and is refused on the other actions: a reason
  * attached to "running" would be a pause reason on a review that is not paused, which is the
  * one state `pause_reason` must never hold.
  */
 export const FileCommentReviewControlSchema = z
   .object({
-    action: z.enum(["start", "pause"]),
+    action: z.enum(["start", "pause", "dismiss"]),
     reason: z.string().trim().max(FILE_COMMENT_TEXT_LIMITS.pauseReason).optional(),
   })
   .refine((body) => body.action === "pause" || body.reason === undefined, {

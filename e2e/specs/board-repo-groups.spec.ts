@@ -169,45 +169,47 @@ test("the Board groups cards by repository out of the box, and a heading folds i
       `${name}'s frame carries a palette colour`,
     ).toMatch(/^#[0-9a-f]{6}$/i);
   }
-  // BOTH coloured edges, because the frame's whole identity treatment is the bracket its top
-  // and leading edges make - and an assertion on one of them passes over a restyle that dropped
-  // the other, which is the exact regression this pair exists to catch.
-  const edges = async (): Promise<{ top: string; left: string }> =>
-    firstFrame.evaluate((el) => {
-      const style = getComputedStyle(el);
-      return { top: style.borderTopColor, left: style.borderLeftColor };
-    });
-  const before = await edges();
-  const after = await firstFrame.evaluate((el) => {
-    (el as HTMLElement).style.setProperty("--repo-c", "#ff00ff");
-    const style = getComputedStyle(el);
-    return { top: style.borderTopColor, left: style.borderLeftColor };
-  });
-  expect(after.top, "the frame's top edge is mixed from --repo-c").not.toBe(before.top);
-  expect(after.left, "the frame's leading edge is mixed from --repo-c").not.toBe(before.left);
+  // What the frame paints, in ONE read, so every claim below compares against the same pristine
+  // baseline. Reading a "this surface is not tinted" value AFTER the property has already been
+  // overridden compares two reads taken under the same colour, which passes on a frame that is
+  // still washed by it - so the baseline is taken before anything is set, and exactly one
+  // override is applied afterwards.
+  const paint = async (
+    override: string | null,
+  ): Promise<{ top: string; left: string; body: string; head: string }> =>
+    firstFrame.evaluate((el, colour) => {
+      if (colour !== null) (el as HTMLElement).style.setProperty("--repo-c", colour);
+      const frame = getComputedStyle(el);
+      const head = getComputedStyle(el.querySelector(".board-repo-head")!);
+      return {
+        top: frame.borderTopColor,
+        left: frame.borderLeftColor,
+        body: frame.backgroundColor,
+        head: head.backgroundColor,
+      };
+    }, override);
+
+  const asDrawn = await paint(null);
+  // Magenta, which is in no palette entry, so a surface that moves cannot have moved by chance.
+  const overridden = await paint("#ff00ff");
+  await firstFrame.evaluate((el) => (el as HTMLElement).style.removeProperty("--repo-c"));
+
+  // BOTH coloured edges, because the frame's whole identity treatment is the bracket its top and
+  // leading edges make - and an assertion on one of them passes over a restyle that dropped the
+  // other, which is the exact regression this pair exists to catch.
+  expect(overridden.top, "the frame's top edge is mixed from --repo-c").not.toBe(asDrawn.top);
+  expect(overridden.left, "the frame's leading edge is mixed from --repo-c").not.toBe(
+    asDrawn.left,
+  );
   // The same mix on both, which is what makes the miter where a 2px edge meets a 3px one
   // invisible. Two edges of one hue at two strengths read as two marks, not as one bracket.
-  expect(before.left, "both coloured edges are the same mix of --repo-c").toBe(before.top);
+  expect(asDrawn.left, "both coloured edges are the same mix of --repo-c").toBe(asDrawn.top);
 
-  // And the hue is spent on those edges ONLY. The frame used to wash its body and tint its head
-  // band from the same property, which is what made a repository read like a session state; both
-  // are neutral now, so changing the property must move neither.
-  const surfaces = async (): Promise<{ body: string; head: string }> =>
-    firstFrame.evaluate((el) => ({
-      body: getComputedStyle(el).backgroundColor,
-      head: getComputedStyle(el.querySelector(".board-repo-head")!).backgroundColor,
-    }));
-  const neutral = await surfaces();
-  const tinted = await firstFrame.evaluate((el) => {
-    (el as HTMLElement).style.setProperty("--repo-c", "#ff00ff");
-    return {
-      body: getComputedStyle(el).backgroundColor,
-      head: getComputedStyle(el.querySelector(".board-repo-head")!).backgroundColor,
-    };
-  });
-  expect(tinted.body, "the frame's body is not tinted from --repo-c").toBe(neutral.body);
-  expect(tinted.head, "the head band is not tinted from --repo-c").toBe(neutral.head);
-  await firstFrame.evaluate((el) => (el as HTMLElement).style.removeProperty("--repo-c"));
+  // And the hue is spent on those edges ONLY. The frame used to wash its body at 6% and tint its
+  // head band at 11% from the same property, which is what made a repository read like a session
+  // state; both are neutral now, so a different colour must move neither.
+  expect(overridden.body, "the frame's body is not tinted from --repo-c").toBe(asDrawn.body);
+  expect(overridden.head, "the head band is not tinted from --repo-c").toBe(asDrawn.head);
 
   // The board head does not draw the swatch - the frame's own edges are already the colour. The
   // element is still rendered, because the rail needs it (see the Console case below); what is

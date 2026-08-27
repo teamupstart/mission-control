@@ -11,7 +11,11 @@ import {
   TASK_SOURCE_KIND_INFO,
 } from "@shared/task-source.ts";
 import type { TaskPriority } from "@shared/types.ts";
-import { resultText, runClaudeText, type ClaudeRunOptions } from "../claude-cli.ts";
+import {
+  runClaudeToolTrace,
+  type ClaudeRunOptions,
+  type ClaudeToolTrace,
+} from "../claude-cli.ts";
 import { defaultEnvironmentDeps } from "../environment/index.ts";
 import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
@@ -90,7 +94,7 @@ const MAX_SWEEP_ISSUES = 1000;
  * thousand round trips. Both bounds are needed, and whichever is reached first stops the walk and
  * reports the tail as out of reach.
  *
- * This bounds the REST rung only, because it is the only one that pages - the CLI reads once.
+ * This bounds the REST and UpstartClaw rungs. The CLI reads once.
  */
 const MAX_SWEEP_PAGES = 50;
 
@@ -106,51 +110,8 @@ const NO_JQL = "set a JQL query in this source's settings - an empty filter swee
 export const UPSTARTCLAW_JIRA_SKILL = "upstartclaw-core:working-with-jira";
 export const UPSTARTCLAW_JQL_TOOL =
   "mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql";
+const UPSTARTCLAW_CLOUD_ID = "d30daf5c-29ad-4817-bd10-bdd85ae8455f";
 const UPSTARTCLAW_TOOLS = `Skill,ToolSearch,${UPSTARTCLAW_JQL_TOOL}`;
-
-/** Structured output keeps the model out of the issue-mapping contract. */
-const UPSTARTCLAW_RESULT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["source", "issues", "truncated"],
-  properties: {
-    source: { type: "string", const: UPSTARTCLAW_JQL_TOOL },
-    truncated: { type: "boolean" },
-    issues: {
-      type: "array",
-      maxItems: MAX_SWEEP_ISSUES,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["key", "self", "fields"],
-        properties: {
-          key: { type: "string" },
-          self: { type: ["string", "null"] },
-          fields: {
-            type: "object",
-            additionalProperties: false,
-            required: ["summary", "description", "priority"],
-            properties: {
-              summary: { type: "string" },
-              description: { type: ["string", "null"] },
-              priority: {
-                anyOf: [
-                  { type: "null" },
-                  {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["name"],
-                    properties: { name: { type: "string" } },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-} as const;
 
 /** One issue, as much of Jira's JSON as we read. Everything is optional: it is a wire shape. */
 export interface JiraIssue {
@@ -1036,12 +997,12 @@ async function walkRest(
 /** The two external seams behind an UpstartClaw query, explicit so tests spend no tokens. */
 export interface JiraUpstartClawDeps {
   ready(): Promise<boolean>;
-  run(prompt: string, opts: ClaudeRunOptions): Promise<string>;
+  run(prompt: string, opts: ClaudeRunOptions): Promise<ClaudeToolTrace>;
 }
 
 const DEFAULT_UPSTARTCLAW_DEPS: JiraUpstartClawDeps = {
   ready: async () => upstartclawCoreReady(defaultEnvironmentDeps()),
-  run: runClaudeText,
+  run: runClaudeToolTrace,
 };
 
 /**
@@ -1053,44 +1014,144 @@ const DEFAULT_UPSTARTCLAW_DEPS: JiraUpstartClawDeps = {
  */
 export function upstartClawPrompt(cfg: JiraConfig, maxIssues: number): string {
   return [
-    "Query Upstart Jira and return only the structured result requested by the output schema.",
+    "Query Upstart Jira. Mission Control reads the Jira tool results directly, not your summary.",
     `First invoke the ${UPSTARTCLAW_JIRA_SKILL} skill.`,
     `Then use ToolSearch to load ${UPSTARTCLAW_JQL_TOOL} and call that tool directly.`,
     "Do not use Glean, web search, or any other Jira query. Do not change or augment the JQL.",
+    `Use this exact cloudId: ${JSON.stringify(UPSTARTCLAW_CLOUD_ID)}`,
     `Run this exact JQL string: ${JSON.stringify(cfg.jql)}`,
-    `Collect matching issues through pagination, stopping after ${maxIssues}.`,
-    "For each issue return its key, API or browse URL as self, summary, plain-text description, and Jira priority name.",
-    "Set truncated true only when more matching issues remain after the returned list.",
-    `Set source to ${JSON.stringify(UPSTARTCLAW_JQL_TOOL)} only after that tool answered successfully.`,
+    `Set maxResults to at most ${Math.min(cfg.limit, maxIssues)} on each call.`,
+    `Collect matching issues through pagination, stopping after ${maxIssues} issues or ${MAX_SWEEP_PAGES} calls.`,
+    "After every call, read issues.pageInfo.hasNextPage from the tool result.",
+    "When it is true and the bound is not reached, call the same tool again with nextPageToken set to the exact issues.pageInfo.endCursor value.",
+    "Stop only when hasNextPage is false or a stated bound is reached. Never infer completion from the number of issues returned.",
+    "Finish with a brief confirmation. Do not repeat or transform the issue data in the final answer.",
   ].join("\n");
 }
 
-/** Convert Claude's validated answer into the same Jira page shape the local paths use. */
-export function pageFromUpstartClaw(raw: string, cfg: JiraConfig): JiraWalk {
-  let answer: unknown;
-  try {
-    answer = JSON.parse(resultText(raw));
-  } catch {
-    return { issues: [], error: "UpstartClaw returned output that is not JSON", advisory: null };
+interface UpstartClawPage {
+  issues: JiraIssue[];
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
+function recordFrom(value: unknown): Record<string, unknown> | null {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
   }
-  if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
-    return { issues: [], error: "UpstartClaw returned an unexpected shape", advisory: null };
+  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : null;
+}
+
+/** Read the Atlassian MCP provider's page, not Claude's model-facing tool text or summary. */
+function pageFromUpstartClawTool(output: unknown): UpstartClawPage | { error: string } {
+  const answer = recordFrom(output);
+  const issues = recordFrom(answer?.issues);
+  const pageInfo = recordFrom(issues?.pageInfo);
+  if (!Array.isArray(issues?.nodes) || typeof pageInfo?.hasNextPage !== "boolean") {
+    return { error: "UpstartClaw's Jira tool returned an unexpected pagination shape" };
   }
-  const record = answer as Record<string, unknown>;
-  if (record.source !== UPSTARTCLAW_JQL_TOOL) {
-    return {
-      issues: [],
-      error: "UpstartClaw did not confirm that its Atlassian JQL search tool answered",
-      advisory: null,
-    };
+  const read = issuesFrom(JSON.stringify({ issues: issues.nodes }));
+  if ("error" in read) return { error: `UpstartClaw's Jira tool failed validation - ${read.error}` };
+  const cursor =
+    typeof pageInfo.endCursor === "string" && pageInfo.endCursor.length > 0
+      ? pageInfo.endCursor
+      : null;
+  if (pageInfo.hasNextPage && cursor === null) {
+    return { error: "UpstartClaw's Jira tool reported another page without an endCursor" };
   }
-  const read = issuesFrom(JSON.stringify({ issues: record.issues }));
-  if ("error" in read) return { issues: [], error: read.error, advisory: null };
-  return {
-    issues: read.issues,
-    error: null,
-    advisory: record.truncated === true ? tooBroad(cfg) : null,
-  };
+  return { issues: read.issues, hasNextPage: pageInfo.hasNextPage, endCursor: cursor };
+}
+
+function upstartClawFailure(error: string): JiraWalk {
+  return { issues: [], error, advisory: null };
+}
+
+/**
+ * Walk the exact MCP calls Claude made, using Jira's `hasNextPage` and cursor as the authority.
+ * A final model answer is deliberately ignored: it can explain a run, but cannot prove that the
+ * provider's result set ended.
+ */
+export function walkFromUpstartClawTrace(
+  trace: ClaudeToolTrace,
+  cfg: JiraConfig,
+  maxIssues: number,
+): JiraWalk {
+  const calls = trace.toolCalls.filter((call) => call.name === UPSTARTCLAW_JQL_TOOL);
+  if (calls.length === 0) {
+    return upstartClawFailure("UpstartClaw did not call its Atlassian JQL search tool");
+  }
+
+  const collected: JiraIssue[] = [];
+  const issueKeys = new Set<string>();
+  const cursors = new Set<string>();
+  let expectedToken: string | null = null;
+
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index]!;
+    const input = recordFrom(call.input);
+    const token =
+      typeof input?.nextPageToken === "string" && input.nextPageToken.length > 0
+        ? input.nextPageToken
+        : null;
+    const maxResults = input?.maxResults;
+    if (
+      input?.cloudId !== UPSTARTCLAW_CLOUD_ID ||
+      input.jql !== cfg.jql ||
+      !Number.isInteger(maxResults) ||
+      (maxResults as number) < 1 ||
+      (maxResults as number) > Math.min(cfg.limit, maxIssues)
+    ) {
+      return upstartClawFailure(
+        "UpstartClaw called Jira with a different cloud, JQL, or page size than configured",
+      );
+    }
+    if (token !== expectedToken) {
+      return upstartClawFailure(
+        "UpstartClaw did not pass Jira's exact endCursor back as nextPageToken",
+      );
+    }
+
+    const page = pageFromUpstartClawTool(call.output);
+    if ("error" in page) return upstartClawFailure(page.error);
+    const room = Math.max(0, maxIssues - collected.length);
+    const kept = page.issues.slice(0, room);
+    const clipped = kept.length < page.issues.length;
+    collected.push(...kept);
+    const fresh = freshKeys(kept, issueKeys);
+    if (index > 0 && kept.length > 0 && fresh === 0) {
+      return upstartClawFailure(notAdvancing());
+    }
+
+    const reachedBound = clipped || collected.length >= maxIssues || index + 1 >= MAX_SWEEP_PAGES;
+    if (!page.hasNextPage && !clipped) {
+      if (index + 1 !== calls.length) {
+        return upstartClawFailure("UpstartClaw queried Jira again after Jira reported its last page");
+      }
+      return { issues: collected, error: null, advisory: null };
+    }
+    if (reachedBound) {
+      if (index + 1 !== calls.length) {
+        return upstartClawFailure("UpstartClaw continued querying Jira after the sweep bound");
+      }
+      return { issues: collected, error: null, advisory: tooBroad(cfg) };
+    }
+
+    const cursor = page.endCursor!;
+    if (cursors.has(cursor)) return upstartClawFailure(notAdvancing());
+    cursors.add(cursor);
+    expectedToken = cursor;
+  }
+
+  return upstartClawFailure(
+    "UpstartClaw stopped before Jira's next page, so this filter's result is incomplete",
+  );
 }
 
 /** Run the selected JQL through the installed UpstartClaw Jira skill and read-only MCP tool. */
@@ -1122,9 +1183,8 @@ export async function readUpstartClaw(
     };
   }
   try {
-    const raw = await deps.run(upstartClawPrompt(cfg, maxIssues), {
+    const trace = await deps.run(upstartClawPrompt(cfg, maxIssues), {
       timeoutMs: UPSTARTCLAW_TIMEOUT_MS,
-      schema: JSON.stringify(UPSTARTCLAW_RESULT_SCHEMA),
       tools: UPSTARTCLAW_TOOLS,
       allowedTools: UPSTARTCLAW_TOOLS,
       settingSources: ["user"],
@@ -1133,7 +1193,7 @@ export async function readUpstartClaw(
     if (ctx.signal.aborted) {
       return { issues: [], error: "the sweep was abandoned", advisory: null };
     }
-    return pageFromUpstartClaw(raw, cfg);
+    return walkFromUpstartClawTrace(trace, cfg, maxIssues);
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return {

@@ -144,7 +144,13 @@ export interface ClaudeRunOptions {
   images?: readonly LlmImageInput[];
 }
 
-export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Promise<string> {
+type ClaudeOutputFormat = "json" | "stream-json";
+
+function runClaudeRaw(
+  prompt: string,
+  opts: ClaudeRunOptions,
+  outputFormat: ClaudeOutputFormat,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let images: ReturnType<typeof validateLlmImages>;
     try {
@@ -200,7 +206,11 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     // answer, and this flag would quietly make it dead code. (A caller that overrides
     // `cwd` writes outside what that sweep walks, which is a gap in the pruner rather
     // than an argument for this flag.)
-    const args = ["-p", "--output-format", "json"];
+    const args = ["-p", "--output-format", outputFormat];
+    // Claude Code requires verbose mode when stream-json is used with `-p`. The stream is
+    // selected only by callers that need raw tool events; ordinary text callers retain the
+    // historical JSON envelope byte for byte.
+    if (outputFormat === "stream-json") args.push("--verbose");
     if (images.length > 0) args.push("--input-format", "stream-json");
     args.push("--tools", opts.tools ?? "");
     if (opts.allowedTools) args.push("--allowed-tools", opts.allowedTools);
@@ -273,6 +283,103 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     );
     child.stdin.end();
   });
+}
+
+export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Promise<string> {
+  return runClaudeRaw(prompt, opts, "json");
+}
+
+/** One completed tool call captured from Claude Code's provider event stream. */
+export interface ClaudeToolCall {
+  name: string;
+  input: unknown;
+  /** The provider's structured output, separate from the text Claude sees or summarizes. */
+  output: unknown;
+}
+
+/** The final model text plus every provider-backed tool call made during the run. */
+export interface ClaudeToolTrace {
+  result: string;
+  toolCalls: ClaudeToolCall[];
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Parse Claude Code's newline-delimited SDK messages without treating model-facing tool text as
+ * provider data. `tool_use_result` is the SDK's structured MCP output; if a CLI version omits it,
+ * the matching call is absent from the trace and a caller that requires it can fail closed.
+ */
+export function parseClaudeToolTrace(raw: string): ClaudeToolTrace {
+  const pending = new Map<string, { name: string; input: unknown }>();
+  const toolCalls: ClaudeToolCall[] = [];
+  let result = "";
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new Error("claude stream-json returned a non-JSON event");
+    }
+    const frame = objectRecord(parsed);
+    if (!frame) throw new Error("claude stream-json returned an unexpected event");
+
+    if (frame.type === "assistant") {
+      const message = objectRecord(frame.message);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      for (const entry of content) {
+        const block = objectRecord(entry);
+        if (
+          block?.type === "tool_use" &&
+          typeof block.id === "string" &&
+          typeof block.name === "string"
+        ) {
+          pending.set(block.id, { name: block.name, input: block.input });
+        }
+      }
+      continue;
+    }
+
+    if (frame.type === "user" && Object.hasOwn(frame, "tool_use_result")) {
+      const message = objectRecord(frame.message);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      const results = content
+        .map(objectRecord)
+        .filter(
+          (block): block is Record<string, unknown> =>
+            block?.type === "tool_result" && typeof block.tool_use_id === "string",
+        );
+      // One SDK user frame represents one completed tool call. Refuse to guess which call owns
+      // the structured result if a future CLI combines several results into a single frame.
+      if (results.length === 1) {
+        const toolUseId = results[0]!.tool_use_id as string;
+        const call = pending.get(toolUseId);
+        if (call) {
+          toolCalls.push({ ...call, output: frame.tool_use_result });
+          pending.delete(toolUseId);
+        }
+      }
+      continue;
+    }
+
+    if (frame.type === "result" && typeof frame.result === "string") result = frame.result;
+  }
+
+  return { result, toolCalls };
+}
+
+/** Run one fresh Claude invocation and retain its structured MCP tool results. */
+export async function runClaudeToolTrace(
+  prompt: string,
+  opts: ClaudeRunOptions = {},
+): Promise<ClaudeToolTrace> {
+  return parseClaudeToolTrace(await runClaudeRaw(prompt, opts, "stream-json"));
 }
 
 /**

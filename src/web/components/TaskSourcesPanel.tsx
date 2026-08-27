@@ -384,17 +384,19 @@ function JiraFields({
 
       <label className="ts-field ts-field-wide">
         <span className="ts-field-label">Query via</span>
-        <select
-          className="field-input"
-          aria-label="How Jira queries are authenticated"
-          value={cfg.queryVia}
-          onChange={(e) =>
-            onChange({ ...cfg, queryVia: e.target.value as JiraConfig["queryVia"] })
-          }
-        >
-          <option value="local">Jira CLI or API token</option>
-          <option value="upstartclaw">UpstartClaw Claude skill</option>
-        </select>
+        <Tooltip label="Choose whether Jira queries use local Jira credentials or the UpstartClaw Claude skill">
+          <select
+            className="field-input"
+            aria-label="How Jira queries are authenticated"
+            value={cfg.queryVia}
+            onChange={(e) =>
+              onChange({ ...cfg, queryVia: e.target.value as JiraConfig["queryVia"] })
+            }
+          >
+            <option value="local">Jira CLI or API token</option>
+            <option value="upstartclaw">UpstartClaw Claude skill</option>
+          </select>
+        </Tooltip>
       </label>
 
       {cfg.queryVia === "upstartclaw" && (

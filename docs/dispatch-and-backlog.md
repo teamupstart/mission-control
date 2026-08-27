@@ -1137,8 +1137,10 @@ exposes only `Skill`, `ToolSearch`, and
 `mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql`, pre-approves those three,
 invokes `upstartclaw-core:working-with-jira` first, and sends the configured JQL unchanged. Glean,
 web search, filesystem tools, and write-capable Jira tools are unavailable. The returned issue
-list is schema-validated and then enters the same mapper and deduplication ledger as a local
-answer. Loading user settings also means user-level Claude hooks can run on every **Check it
+pages are read from the MCP provider's structured tool results and validated before entering the
+same mapper and deduplication ledger as a local answer. Jira's own `hasNextPage` and `endCursor`
+values decide whether another request is required; Claude's final summary cannot mark an
+incomplete filter healthy. Loading user settings also means user-level Claude hooks can run on every **Check it
 works** call and scheduled sweep; selecting this query method is the operator's explicit opt-in
 to that unattended behavior. Select it only for `upstartnetwork.atlassian.net`; install
 `upstartclaw-core` and finish `/upstartclaw-core:setup` interactively first. A selected source

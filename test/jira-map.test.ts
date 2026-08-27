@@ -26,7 +26,6 @@ import {
   searchUrl,
   pageFromCli,
   pageFromRest,
-  pageFromUpstartClaw,
   readUpstartClaw,
   siteHost,
   siteProblem,
@@ -34,6 +33,7 @@ import {
   UPSTARTCLAW_JIRA_SKILL,
   UPSTARTCLAW_JQL_TOOL,
   upstartClawPrompt,
+  walkFromUpstartClawTrace,
   type RestAnswer,
 } from "../src/server/task-sources/jira.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -92,6 +92,33 @@ const ISSUE = {
   },
 };
 
+const ISSUE_2 = {
+  ...ISSUE,
+  key: "MC-43",
+  self: "https://acme.atlassian.net/rest/api/3/issue/10043",
+  fields: { ...ISSUE.fields, summary: "Pagination drops the second page" },
+};
+
+const UPSTART_CLOUD_ID = "d30daf5c-29ad-4817-bd10-bdd85ae8455f";
+
+function upstartToolCall(
+  issues: unknown[],
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  nextPageToken?: string,
+  maxResults = 50,
+) {
+  return {
+    name: UPSTARTCLAW_JQL_TOOL,
+    input: {
+      cloudId: UPSTART_CLOUD_ID,
+      jql: "project = MC",
+      maxResults,
+      ...(nextPageToken ? { nextPageToken } : {}),
+    },
+    output: { issues: { nodes: issues, pageInfo } },
+  };
+}
+
 // ---- configuration the operator types ----
 
 test("an empty config is usable enough to store, and says what it defaults to", () => {
@@ -115,18 +142,55 @@ test("the UpstartClaw prompt preserves the JQL and requires the observed skill a
   assert.match(prompt, /stopping after 17/);
 });
 
-test("a skill answer enters the existing Jira mapper and reports a truncated filter", () => {
-  const raw = JSON.stringify({
-    result: JSON.stringify({
-      source: UPSTARTCLAW_JQL_TOOL,
-      truncated: true,
-      issues: [ISSUE],
-    }),
-  });
-  const page = pageFromUpstartClaw(raw, cfg({ queryVia: "upstartclaw" }));
-  assert.equal(page.error, null);
-  assert.deepEqual(page.issues, [ISSUE]);
-  assert.match(page.advisory!, /larger than one sweep can read/);
+test("the raw Jira tool cursor, not Claude's final answer, makes pagination authoritative", () => {
+  const first = upstartToolCall([ISSUE], { hasNextPage: true, endCursor: "cursor-2" });
+  const walk = walkFromUpstartClawTrace(
+    {
+      result: JSON.stringify({ truncated: false, issues: [ISSUE] }),
+      toolCalls: [
+        { ...first, output: JSON.stringify(first.output) },
+        upstartToolCall([ISSUE_2], { hasNextPage: false, endCursor: null }, "cursor-2"),
+      ],
+    },
+    cfg({ queryVia: "upstartclaw" }),
+    1_000,
+  );
+
+  assert.equal(walk.error, null);
+  assert.equal(walk.advisory, null);
+  assert.deepEqual(walk.issues, [ISSUE, ISSUE_2]);
+});
+
+test("an unfinished Jira tool cursor cannot be reported as a healthy complete filter", () => {
+  const walk = walkFromUpstartClawTrace(
+    {
+      result: JSON.stringify({ truncated: false, issues: [ISSUE] }),
+      toolCalls: [upstartToolCall([ISSUE], { hasNextPage: true, endCursor: "cursor-2" })],
+    },
+    cfg({ queryVia: "upstartclaw" }),
+    1_000,
+  );
+
+  assert.deepEqual(walk.issues, []);
+  assert.match(walk.error!, /stopped before Jira's next page/);
+  assert.equal(walk.advisory, null);
+});
+
+test("a model cannot substitute a different continuation cursor", () => {
+  const walk = walkFromUpstartClawTrace(
+    {
+      result: "done",
+      toolCalls: [
+        upstartToolCall([ISSUE], { hasNextPage: true, endCursor: "cursor-2" }),
+        upstartToolCall([ISSUE_2], { hasNextPage: false, endCursor: null }, "made-up-cursor"),
+      ],
+    },
+    cfg({ queryVia: "upstartclaw" }),
+    1_000,
+  );
+
+  assert.deepEqual(walk.issues, []);
+  assert.match(walk.error!, /exact endCursor back as nextPageToken/);
 });
 
 test("the skill path grants only Jira discovery tools and maps its answer without a real model", async () => {
@@ -144,11 +208,12 @@ test("the skill path grants only Jira discovery tools and maps its answer withou
         assert.equal(options.allowedTools, options.tools);
         assert.deepEqual(options.settingSources, ["user"]);
         assert.equal(options.cwd, ctx.repoRoot);
-        assert.ok(options.schema, "the adapter requires provider-validated issue JSON");
+        assert.equal(options.schema, undefined, "Claude's summary is not the Jira data contract");
         checkedOptions = true;
-        return JSON.stringify({
-          result: JSON.stringify({ source: UPSTARTCLAW_JQL_TOOL, truncated: false, issues: [ISSUE] }),
-        });
+        return {
+          result: "done",
+          toolCalls: [upstartToolCall([ISSUE], { hasNextPage: false, endCursor: null }, undefined, 1)],
+        };
       },
     },
   );
@@ -172,7 +237,7 @@ test("the skill path refuses blank JQL before setup checks or Claude", async () 
       },
       run: async () => {
         ranClaude = true;
-        return "";
+        return { result: "", toolCalls: [] };
       },
     },
   );
@@ -189,7 +254,7 @@ test("the skill path refuses an unfinished setup before spawning Claude", async 
     ready: async () => false,
     run: async () => {
       ran = true;
-      return "";
+      return { result: "", toolCalls: [] };
     },
   });
   assert.equal(ran, false);
@@ -207,7 +272,7 @@ test("the skill path refuses a non-Upstart Jira site before checking setup", asy
         checked = true;
         return true;
       },
-      run: async () => "",
+      run: async () => ({ result: "", toolCalls: [] }),
     },
   );
   assert.equal(checked, false);

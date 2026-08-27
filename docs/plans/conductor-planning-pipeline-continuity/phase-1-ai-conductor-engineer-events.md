@@ -26,7 +26,7 @@ Read the source plan and current plugin/ingest contracts. Do not edit Mission Co
 
 ## Scope
 
-- Stable generic Engineer run identity and optional opaque correlation identity.
+- Stable generic Engineer run identity, optional opaque correlation identity, and idempotent attempt lineage.
 - Product-neutral Engineer run and DECIDE step lifecycle events on `ConductorEventEmitter`.
 - Monotonic revisions, durable event journal, compact inspection, and replay after a revision.
 - Visualizer discovery/start/stop around supported Engineer emission paths.
@@ -69,12 +69,14 @@ Use a shared base shape with:
 - `schemaVersion: 1`;
 - `engineerRunId`;
 - optional opaque `correlationId`;
+- opaque `attemptKey`, supplied by an integration for correlated runs or engine-minted for direct runs;
+- Engineer attempt ordinal and optional predecessor run id;
 - canonical repository root;
 - monotonic `revision` scoped to the Engineer run;
 - ISO timestamp;
 - event-specific data.
 
-Step events add canonical step, attempt, and optional provider/model. The family covers run creation/start, routing, worktree creation, step start/complete/fail/retry/skip, land reconciliation, spec handoff, cancellation, failure, and settlement.
+Step events add canonical step, step-attempt number, and optional provider/model. The family covers run creation/start, routing, worktree creation, step start/complete/fail/retry/skip, land reconciliation, spec handoff, cancellation, failure, and settlement.
 
 Add every new kind to `EVENT_SINKS` with `persist: true`. Rendering may remain false unless the existing terminal renderer has a clear, tested representation. Keep the union and sink declaration exhaustive.
 
@@ -82,7 +84,8 @@ Add every new kind to `EVENT_SINKS` with `persist: true`. Rendering may remain f
 
 Create a focused module under `src/conductor/src/engine/engineer/` that owns:
 
-- creation and idempotent lookup by repository plus opaque correlation id;
+- creation and idempotent lookup by repository, opaque correlation id, and attempt key;
+- ordered attempt allocation and predecessor linkage within a correlation;
 - append under the existing lease/atomic-write conventions;
 - monotonic revision allocation;
 - a compact reducer/snapshot;
@@ -102,7 +105,7 @@ Extend `src/conductor/src/engine/engineer-cli.ts` using the existing detection/d
 - record a structured host/step transition;
 - cancel or fail a run through validated transitions.
 
-All success paths print one parseable JSON value. Validate outputs rather than relying on exit code. Reject unknown flags, cross-repository ids, incompatible correlation reuse, revision regression, illegal terminal reopen, and invalid canonical step names.
+All success paths print one parseable JSON value. Validate outputs rather than relying on exit code. Repeating one repository/correlation/attempt-key tuple returns the same run. A new attempt key creates a successor only when the previous correlated run is terminal. Reject unknown flags, cross-repository ids, incompatible correlation reuse, a second live attempt, attempt-key reuse with different inputs, revision regression, illegal terminal reopen, and invalid canonical step names.
 
 ### 4. Thread identity through mechanical Engineer commands
 
@@ -129,7 +132,7 @@ A structured skill/tool start may emit `engineer_step_started`. A tool return al
 - deterministic validation of the required artifact;
 - land-time reconciliation from the full validated artifact set.
 
-Emit failures when the host or deterministic command can establish them. Repeated attempts increment attempt/revision rather than overwriting history.
+Emit failures when the host or deterministic command can establish them. Repeated attempts within one step increment the step-attempt number and revision rather than overwriting history. Retrying after an Engineer run reaches terminal state creates a new Engineer run with the next run-attempt ordinal and a fresh run-local revision sequence.
 
 ### 6. Reconcile at land and handoff
 
@@ -158,6 +161,7 @@ Do not edit `CHANGELOG.md` or generated files by hand. Follow the repository's r
 - Existing visualizers that do not subscribe to the new kinds continue unchanged.
 - Existing inline and daemon runs use their current emitter, persister, and visualizer lifecycle.
 - Existing direct Engineer invocations without a correlation id still work and receive an engine-minted run id when lifecycle support is active.
+- Existing direct Engineer invocations without an attempt key receive an engine-minted attempt key and start at run attempt 1.
 - Existing worktrees and plans without an Engineer run marker remain valid.
 - Unknown future event fields are additive. Schema major mismatch is explicit.
 - The Engineer journal is not the implementation run journal and must never be mistaken for `.pipeline/events.jsonl` under a daemon worktree.
@@ -167,8 +171,9 @@ Do not edit `CHANGELOG.md` or generated files by hand. Follow the repository's r
 Add focused unit/integration coverage for:
 
 - event union and `EVENT_SINKS` exhaustiveness;
-- create idempotency and correlation/repository collision refusal;
-- concurrent revision allocation and terminal-state protection;
+- create idempotency by attempt key, correlation/repository collision refusal, and concurrent-live-attempt refusal;
+- terminal retry creates a distinct successor with correct ordinal/predecessor while terminal reopen remains illegal;
+- concurrent run-local revision allocation and independent successor cursors;
 - journal recovery, replay cursors, corruption, and schema mismatch;
 - visualizer start/stop and failure isolation around each supported Engineer path;
 - host start versus accepted completion semantics;
@@ -202,7 +207,7 @@ Use focused Vitest commands during development, then run the full required suite
 
 ## Downstream handoff
 
-Phase 2 may rely on the merged capability name, exact event discriminants, identity/revision fields, replay output, CLI JSON shapes, and handoff payload. Record those exact names in the Phase 1 PR description.
+Phase 2 may rely on the merged capability name, exact event discriminants, identity/attempt/revision fields, correlation inspection and per-run replay output, CLI JSON shapes, and handoff payload. Record those exact names in the Phase 1 PR description.
 
 Phase 2 must not reinterpret completion, infer identity from worktree names, or require Mission Control fields to be added back into AI Conductor. If implementation changes a proposed name or shape, document the deviation and reasoning in the PR so the consumer follows the merged contract.
 
@@ -212,3 +217,4 @@ Phase 2 must not reinterpret completion, infer identity from worktree names, or 
 - 2026-08-27: `engineerRunId`, Mission Control commission id, and final plan slug remain separate identities.
 - 2026-08-27: Completion semantics were placed here because only AI Conductor can validate its artifacts and skips.
 - 2026-08-27: Mission Control is context-only; a change there would create an unnecessary atomic cross-repository phase.
+- 2026-08-27: A terminal Engineer run is immutable. A correlated retry is a new ordered run attempt, never a reopen or revision reset on the old run.

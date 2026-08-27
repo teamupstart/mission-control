@@ -54,9 +54,9 @@ In the live `Add health check endpoint` example, accepted DECIDE artifacts exist
 | --- | --- | --- |
 | Engineer run and step event definitions | AI Conductor | Visualizers, event persistence, diagnostics |
 | Canonical step order, tier/track skips, artifact acceptance | AI Conductor | Mission Control frozen display copy |
-| Engineer event journal and replay cursor | AI Conductor | Mission Control provider adapter |
+| Engineer event journals and per-run replay cursors | AI Conductor | Mission Control provider adapter |
 | Pipeline commission id, initiating task, retention | Mission Control | Task/session cards, Runs, SSE |
-| Mapping one Engineer run to one commission | Mission Control provider adapter | Commission projection |
+| Mapping ordered Engineer attempts to one commission | Mission Control provider adapter | Commission projection |
 | Mission Control envelope and HTTP transport | Mission Control visualizer plugin | Mission Control ingest route |
 | Spec merge truth | GitHub/default branch and later provider run discovery | Commission lifecycle |
 | Implementation step state, halts, PR, and cost | Existing AI Conductor run state | Existing Mission Control run projection |
@@ -68,7 +68,7 @@ Mission Control never writes AI Conductor state. Any provider mutation uses a sa
 
 ### Generic Engineer run identity
 
-Add a stable, opaque `engineerRunId` for one idea-to-spec attempt. An integration may also provide an opaque generic `correlationId`, but AI Conductor does not interpret it. The identity survives authoring-worktree deletion and is present on every Engineer lifecycle event.
+Add a stable, opaque `engineerRunId` for one idea-to-spec attempt. An integration may also provide an opaque generic `correlationId` that groups successive attempts, but AI Conductor does not interpret it. Each correlated creation also receives an opaque `attemptKey` that makes that launch attempt idempotent. The run identity and attempt lineage survive authoring-worktree deletion and are present on every Engineer lifecycle event.
 
 The creation surface must be deterministic and machine-readable so Mission Control can create or reserve the Engineer run before launching the host. The exact command spelling may follow current CLI conventions, but it must return JSON containing at least:
 
@@ -77,13 +77,16 @@ interface EngineerRunCreatedV1 {
   schemaVersion: 1;
   engineerRunId: string;
   correlationId: string | null;
+  attemptKey: string;
+  attempt: number;
+  previousEngineerRunId: string | null;
   repoRoot: string;
   idea: string;
   eventRevision: number;
 }
 ```
 
-Creation is idempotent for the same correlation id and repository, and refuses reuse across repositories or incompatible ideas.
+Creation is idempotent for the same repository, correlation id, and attempt key. Repeating that tuple returns the same Engineer run, including after an uncertain command response. A new attempt key creates a new Engineer run only after the previous correlated run is terminal, increments the attempt ordinal, and records its predecessor. It refuses a second live run, cross-repository correlation reuse, incompatible ideas, and reuse of an attempt key with different inputs. A terminal Engineer run is immutable and is never reopened. Direct invocations without integration-supplied correlation or attempt keys continue to receive engine-minted values.
 
 ### Engineer lifecycle events
 
@@ -96,7 +99,7 @@ Extend the existing `ConductorEvent` union with product-neutral Engineer events.
 - spec handoff ready with exact plan slug, branch, and PR URL when one exists;
 - run cancelled, failed, or settled.
 
-Every event carries `schemaVersion`, `engineerRunId`, a monotonic run-local revision, repository identity, and an ISO timestamp. Step events carry the canonical step name and attempt number. Provider and model attribution are optional when the host knows them.
+Every event carries `schemaVersion`, `engineerRunId`, the Engineer attempt ordinal, a monotonic run-local revision, repository identity, and an ISO timestamp. The run-created event also carries correlation, attempt-key, and predecessor identity. Step events carry the canonical step name and a separate step-attempt number. Provider and model attribution are optional when the host knows them.
 
 Do not overload existing implementation `step_started` and `step_completed` events if doing so would make a worktree run and an Engineer authoring run indistinguishable. A distinct Engineer discriminant family is preferable to contextual guesses.
 
@@ -118,7 +121,7 @@ Engineer emission -> ConductorEventEmitter -> EventPersister -> durable Engineer
                                          -> registered visualizer plugins
 ```
 
-The journal lives under AI Conductor's durable Engineer state, not solely inside the authoring worktree that handoff removes. A compact inspect/replay surface returns the current snapshot plus events after a requested revision. It uses the repository's existing atomic-write, lease, and append-only event patterns.
+The journal lives under AI Conductor's durable Engineer state, not solely inside the authoring worktree that handoff removes. A compact inspect surface can list the ordered runs for a correlation id, and replay is requested for one exact Engineer run after its run-local revision. It uses the repository's existing atomic-write, lease, and append-only event patterns. Starting a later attempt never resets or appends to an earlier run's journal.
 
 Existing BUILD and SHIP event files and semantics remain unchanged.
 
@@ -142,17 +145,30 @@ CREATE TABLE pipeline_commissions (
   task_id             TEXT NOT NULL UNIQUE,
   provider            TEXT NOT NULL,
   repo_root           TEXT NOT NULL,
-  engineer_run_id     TEXT,
   correlation_id      TEXT NOT NULL,
   state_json          TEXT NOT NULL,
-  provider_revision   INTEGER NOT NULL DEFAULT 0,
+  active_attempt      INTEGER,
   run_slug            TEXT,
   updated_at          INTEGER NOT NULL
+);
+
+CREATE TABLE pipeline_commission_attempts (
+  commission_id       TEXT NOT NULL,
+  attempt             INTEGER NOT NULL,
+  launch_key          TEXT NOT NULL,
+  engineer_run_id     TEXT,
+  provider_revision   INTEGER NOT NULL DEFAULT 0,
+  state               TEXT NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  PRIMARY KEY (commission_id, attempt),
+  UNIQUE (commission_id, launch_key),
+  UNIQUE (commission_id, engineer_run_id)
 );
 
 CREATE TABLE pipeline_commission_events (
   commission_id       TEXT NOT NULL,
   seq                 INTEGER NOT NULL,
+  engineer_attempt    INTEGER,
   kind                TEXT NOT NULL,
   body                TEXT NOT NULL,
   observed_at         INTEGER NOT NULL,
@@ -162,33 +178,34 @@ CREATE TABLE pipeline_commission_events (
 
 Add nullable `pipeline_commission_id` to `tasks`. Keep the current provider/run link nullable until handoff yields the exact final slug. Legacy `pipeline_provider` and `pipeline_slug` values remain readable.
 
-The commission projection contains lifecycle, steps, current step, tier, track, authoring worktree, spec branch, spec PR, exact linked run, error, and update time. It is replaced whole on a newer provider revision. Unknown event kinds are stored opaquely; an unsupported schema produces an explicit unsupported state instead of resetting steps to pending.
+The commission projection contains lifecycle, ordered Engineer attempts, active attempt, steps, current step, tier, track, authoring worktree, spec branch, spec PR, exact linked run, error, and update time. Each attempt owns its Engineer run id and run-local provider revision, so a new run beginning at revision one is not mistaken for regression. Unknown event kinds are stored opaquely; an unsupported schema produces an explicit unsupported state instead of resetting steps to pending.
 
 ### Provider adapter and visualizer plugin
 
-Extend the provider interface with optional Engineer-run capability methods for create, inspect/replay, and cancel. The AI Conductor adapter invokes only provider-sanctioned commands and reads only provider-owned journals.
+Extend the provider interface with optional Engineer-run capability methods for create by correlation plus attempt key, inspect correlation lineage, replay one exact run, and cancel. The AI Conductor adapter invokes only provider-sanctioned commands and reads only provider-owned journals.
 
 Update `integrations/ai-conductor/mission-control/` to:
 
 - subscribe to the new Engineer event kinds;
-- use the event's `engineerRunId`, repository, and correlation id instead of pretending the authoring worktree is an implementation slug;
+- use the event's `engineerRunId`, Engineer attempt, repository, and correlation id instead of pretending the authoring worktree is an implementation slug;
 - append optional Engineer identity fields to the frozen envelope without changing existing run envelopes;
 - keep handlers synchronous and O(1), batching and retry behavior unchanged;
 - remain a transport and translation layer, not a second state authority.
 
-Extend `/ingest/conductor` to accept either the current implementation-run envelope or the additive Engineer envelope. Engineer ingestion resolves the commission by validated provider, repository, correlation id, and Engineer run id. Unknown, cross-repository, terminal, stale, or regressive events are refused before SQLite writes.
+Extend `/ingest/conductor` to accept either the current implementation-run envelope or the additive Engineer envelope. Engineer ingestion resolves the commission attempt by validated provider, repository, correlation id, attempt ordinal, and Engineer run id. Unknown, cross-repository, stale, cross-attempt, or regressive events are refused before SQLite writes. An idempotent duplicate for a terminal attempt is harmless, but no later event may reopen it or update the active-attempt projection.
 
-The normal five-second provider refresh reads only active commissions and replays from their last provider revision. Live plugin push supplies low latency; replay supplies correctness after a missed delivery or restart.
+The normal five-second provider refresh reads only active commissions and replays the active Engineer run from that attempt's last provider revision. Live plugin push supplies low latency; replay supplies correctness after a missed delivery or restart. Stored terminal attempts remain visible history and never share a replay cursor with the active attempt.
 
 ### Dispatch and handoff
 
 For a provider advertising `engineerLifecycleEventsV1`:
 
 1. Persist the commission and task binding.
-2. Create the generic provider Engineer run with the commission id as an opaque correlation id.
-3. Persist the returned Engineer run id.
-4. Launch the interactive host with the run context needed by the canonical Engineer workflow.
-5. Render the card from the commission immediately.
+2. Mint and persist commission attempt 1 plus an opaque launch key.
+3. Create the generic provider Engineer run with the commission id as correlation and the launch key as its attempt key.
+4. Persist the returned Engineer run id, attempt ordinal, and predecessor identity.
+5. Launch the interactive host with the run context needed by the canonical Engineer workflow.
+6. Render the card from the commission immediately.
 
 If any pre-launch step fails, no host starts and the task reports an actionable upgrade or provider error.
 
@@ -205,12 +222,13 @@ Generalize the existing phase-meter derivation to accept a commission-derived vi
 - the meter renders on the first Engineer card with all phases pending;
 - before the first provider event, copy reads **Starting Engineer** or **Routing idea** and no step is falsely in progress;
 - live DECIDE events advance the corresponding phase and popover;
+- a later Engineer attempt keeps the commission stable, shows **Retrying Engineer (attempt N)**, and retains earlier attempts as history without treating their terminal events as current progress;
 - handoff displays **Awaiting spec merge** and the spec PR link;
 - the post-merge worker appears in the same commission cluster and continues the same meter;
 - the Engineer composer remains available, while the provider worker composer stays disabled;
 - legacy uncommissioned runs retain their current UI.
 
-The Runs view shows one commission detail with authoring progress, the spec gate, and the linked implementation run. The gap between DECIDE and BUILD is a lifecycle gate, not a fake sixth phase or pipeline step.
+The Runs view shows one commission detail with ordered authoring attempts, current progress, the spec gate, and the linked implementation run. The gap between DECIDE and BUILD is a lifecycle gate, not a fake sixth phase or pipeline step. The active attempt owns the current meter; AI Conductor may immediately re-emit mechanically accepted prior artifacts when a new attempt legitimately reuses them.
 
 ## End-to-end flow
 
@@ -226,8 +244,8 @@ sequenceDiagram
   participant W as Provider worker
 
   U->>M: Dispatch Pipeline task
-  M->>M: Persist commission
-  M->>C: Create generic Engineer run
+  M->>M: Persist commission plus attempt 1 and launch key
+  M->>C: Create generic Engineer run for attempt 1
   M-->>U: Render full meter immediately
   M->>E: Launch interactive Engineer with run context
   E->>C: Emit run and DECIDE step lifecycle
@@ -246,15 +264,32 @@ sequenceDiagram
   M-->>U: Worker joins same meter through BUILD and SHIP
 ```
 
+### Retry identity flow
+
+```mermaid
+flowchart LR
+  C[Stable commission] --> K1[Attempt 1 launch key]
+  K1 -->|same-launch retry| R1[Engineer run 1]
+  R1 -->|terminal| K2[Attempt 2 new launch key]
+  C --> K2
+  K2 --> R2[Engineer run 2]
+  R1 -. predecessor .-> R2
+  R2 --> P[Active per-run replay cursor]
+```
+
+Repeating one launch key resolves the same run. Only a new launch key after terminal state creates a successor run. The commission id stays constant, the predecessor remains immutable history, and only the successor's run-local cursor drives current progress.
+
 ## Failure and recovery behavior
 
 - Provider capability absent: fail before host launch with an upgrade instruction. Do not silently use the misleading planned-run UX for a new capable-path dispatch.
-- Engineer run creation fails: retain a failed commission with no session and allow task retry to reuse it idempotently.
-- Live plugin push is missed: the bounded refresh replays from the provider revision.
-- Mission Control restarts: reload commissions from SQLite, then reconcile active provider Engineer runs before accepting new live events.
-- Engineer host exits mid-step: retain the last provider state and mark the host interrupted. Do not fabricate a step failure solely from process exit.
+- Engineer run creation fails before a run id is known: retain the commission attempt with no session and retry the same launch key, so a provider success with a lost response cannot create a duplicate run.
+- Engineer run fails or is attempt-cancelled: keep that run terminal and immutable. An explicit task retry retains the commission, mints the next launch key, and creates a new Engineer run attempt linked to its predecessor.
+- Live plugin push is missed: the bounded refresh replays the exact attempt from its run-local provider revision.
+- Mission Control restarts: reload commissions and their attempt cursors from SQLite, then reconcile the active provider Engineer run before accepting new live events.
+- Engineer host exits mid-step while its run remains non-terminal: retain the last provider state, mark the host interrupted, and resume that same attempt. Do not fabricate a step failure solely from process exit.
 - Land finds missing live completions: reconcile from validated artifacts. Land finds contradictory ordering or unsupported claims: refuse handoff.
-- Spec PR closes unmerged: keep a recoverable failed handoff state. A replacement PR must bind to the same Engineer run and exact plan slug.
+- Spec PR closes unmerged: keep a recoverable failed handoff state. If the handoff run is terminal, creating a replacement PR uses a new Engineer attempt under the same commission and must emit the same exact plan slug or fail closed.
+- Pipeline task cancellation: cancel the active provider attempt and make the commission terminal. Retrying a task-cancelled commission is refused; a later request is a new task and commission.
 - Daemon is down after merge: the commission stays merged/queued and says it is waiting for Conductor.
 - Worker appears before the next commission refresh: the exact run link joins it immediately.
 - Plugin is absent: replay remains authoritative, with greater latency.
@@ -288,14 +323,14 @@ The dependency chain is strict because each consumer needs the exact contract me
 
 | Surface | Planned change |
 | --- | --- |
-| `src/shared/pipeline.ts`, `src/shared/types.ts` | Add commission ids, lifecycle/projection types, task/run references, snapshot, and SSE contracts. |
-| `src/server/db.ts` | Add task binding, commission projection, bounded commission event ledger, migrations, and atomic readers/writers. |
-| `src/server/pipelines/types.ts` | Add optional provider Engineer-run create, inspect/replay, and cancel capabilities. |
-| `src/server/pipelines/conductor/` | Implement fork capability probing, sanctioned CLI calls, replay normalization, exact handoff binding, and strict execution-run discovery. |
-| `integrations/ai-conductor/mission-control/` | Forward Engineer events with additive identity fields and preserve existing batching/retry behavior. |
+| `src/shared/pipeline.ts`, `src/shared/types.ts` | Add commission ids, ordered Engineer attempts, lifecycle/projection types, task/run references, snapshot, and SSE contracts. |
+| `src/server/db.ts` | Add task binding, commission and attempt projections, per-run replay cursors, bounded event ledger, migrations, and atomic readers/writers. |
+| `src/server/pipelines/types.ts` | Add optional provider Engineer-run create-by-attempt-key, correlation-inspect, per-run replay, and cancel capabilities. |
+| `src/server/pipelines/conductor/` | Implement fork capability probing, sanctioned CLI calls, attempt lineage and replay normalization, exact handoff binding, and strict execution-run discovery. |
+| `integrations/ai-conductor/mission-control/` | Forward Engineer events with additive run/attempt identity fields and preserve existing batching/retry behavior. |
 | `src/server/pipelines/ingest.ts`, `src/server/routes.ts` | Validate and ingest generic Engineer envelopes into the correct commission. |
-| `src/server/dispatcher.ts` | Persist commission and provider Engineer run before host launch; stop reserving a raw-intent run slug on the capable path. |
-| `src/server/registry.ts`, task settlement | Project commission membership, bind exact handoff run, and preserve retry/cancel/session ownership semantics. |
+| `src/server/dispatcher.ts` | Persist commission attempt and provider Engineer run before host launch; append a new attempt after terminal retry; stop reserving a raw-intent run slug on the capable path. |
+| `src/server/registry.ts`, task settlement | Project commission/attempt membership, bind exact handoff run, and preserve retry/cancel/session ownership semantics. |
 | `src/web/useEventStream.ts` | Hold current commission projections from snapshot and incremental events. |
 | Board, Console, Runs, and pipeline model components | Render immediate progress, merge gate, exact run continuation, and commission clustering. |
 | `docs/pipelines.md`, `docs/dispatch-and-backlog.md` | Document the one-commission lifecycle and capability fallback. |
@@ -305,9 +340,9 @@ The dependency chain is strict because each consumer needs the exact contract me
 ### AI Conductor fork
 
 - Event union and sink exhaustiveness tests cover every new event kind.
-- Engineer run creation is idempotent and refuses repository/correlation collisions.
-- Revisions are monotonic across concurrent or repeated writes.
-- Replay after a revision returns no duplicates and reconstructs the same snapshot.
+- Engineer run creation is idempotent per launch key, refuses repository/correlation collisions and concurrent live attempts, and creates a distinct successor only after terminal state.
+- Revisions are monotonic within each run across concurrent or repeated writes, and a successor begins with an independent cursor.
+- Replay after a run-local revision returns no duplicates and reconstructs the same attempt snapshot; correlation inspection preserves ordered attempt lineage.
 - Visualizers start and stop on every supported Engineer entrypoint, including failures.
 - Step completion cannot be inferred only from Skill/PostToolUse return.
 - Land reconciles validated artifacts and refuses contradictory history.
@@ -317,10 +352,10 @@ The dependency chain is strict because each consumer needs the exact contract me
 
 ### Mission Control
 
-- Database upgrade and replay-safe commission writes, including bounded ledger retention.
+- Database upgrade and replay-safe commission/attempt writes, including bounded ledger retention.
 - Dispatch persists a commission and creates the provider Engineer run before either host launcher.
 - Provider capability or create failures happen before a session is spawned.
-- Engineer ingest rejects unknown, cross-repository, stale, regressive, terminal, and malformed events.
+- Engineer ingest rejects unknown, cross-repository, stale, cross-attempt, regressive, terminal-reopening, and malformed events.
 - Five-second reconciliation repairs missed live push without writing provider state.
 - Strict run discovery ignores authoring worktrees without `conduct-state.json`.
 - Handoff binds the exact final slug even when raw intent, branch, and authoring-worktree names differ.
@@ -339,6 +374,7 @@ The spec reproduces the current gap first, then proves:
 - architecture review and other DECIDE steps visibly start, complete, fail, and skip;
 - handoff shows **Awaiting spec merge** and the spec PR;
 - refresh and daemon restart preserve progress;
+- a terminal authoring attempt can be retried as a new run under the same commission without reopening or replaying the earlier run;
 - a simulated merge and daemon pickup advance the same commission;
 - a newly discovered provider worker joins the commission and continues the meter;
 - the old Engineer card stays interactive if retained;
@@ -355,6 +391,7 @@ npm run test:e2e -- e2e/specs/conductor-planning-continuity.spec.ts --workers=1
 ## Acceptance criteria
 
 - Every capable-provider Pipeline dispatch creates one durable commission before any host starts.
+- A retry after a terminal Engineer failure creates a new ordered Engineer attempt while retaining one commission and immutable prior history.
 - The first Engineer card renders the complete phase meter immediately without falsely claiming a running step.
 - Generic AI Conductor events advance canonical SETUP, UNDERSTAND, and DECIDE steps while the user participates in the interactive flow.
 - Track/tier decisions produce explicit provider-owned skips.

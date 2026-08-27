@@ -85,10 +85,11 @@ No phases may run concurrently. Phase 2 consumes the exact event, capability, an
 | Contract | Owner | Consumers may rely on |
 | --- | --- | --- |
 | `engineerLifecycleEventsV1` capability | Phase 1 | It is advertised only when create, event persistence, replay, and handoff identity are complete. |
-| Engineer event identity | Phase 1 | `schemaVersion`, `engineerRunId`, optional opaque correlation id, repository, monotonic revision, and timestamp are stable. |
+| Engineer event identity | Phase 1 | `schemaVersion`, `engineerRunId`, attempt key/ordinal, optional opaque correlation id, repository, run-local monotonic revision, and timestamp are stable. |
+| Engineer retry lineage | Phase 1 | Same-launch retries are idempotent by attempt key. A post-terminal retry creates an ordered successor run with an independent replay cursor and never reopens its predecessor. |
 | Step completion meaning | Phase 1 | Completion is accepted or reconciled, never inferred solely from tool return. |
 | Spec handoff payload | Phase 1 | Exact plan slug, branch, PR URL if present, and awaiting-merge meaning are available before worktree cleanup. |
-| Commission persistence | Phase 2 | One commission per task, monotonic provider revision, bounded authoring ledger, and restart-safe projection. |
+| Commission persistence | Phase 2 | One commission per task, ordered attempt records with independent provider revisions, bounded authoring ledger, and restart-safe projection. |
 | Plugin envelope | Phase 2 | Existing run envelopes remain valid; Engineer identity is additive and validated separately. |
 | Reconciliation | Phase 2 | Live push is latency; bounded provider replay restores correctness. |
 | UI view model | Phase 3 | Commission and provider run use one shared phase/status derivation without changing session composer authority. |
@@ -107,7 +108,7 @@ No phases may run concurrently. Phase 2 consumes the exact event, capability, an
 1. Phase 1 proves generic event and replay correctness in AI Conductor, including existing Engineer, inline, daemon, and visualizer compatibility.
 2. Phase 2 proves Mission Control migration, ingest, plugin, reducer, and replay behavior without activating a partial UI.
 3. Phase 3 reproduces the original user-visible gap in the built browser, then proves immediate rendering, live DECIDE advancement, handoff, merge, later-worker attachment, restart recovery, and layout quality.
-4. The final cross-repository fixture pins the capability name, event family, identity fields, revisions, handoff payload, and additive plugin envelope from both sides.
+4. The final cross-repository fixture pins the capability name, event family, identity and attempt-lineage fields, per-run revisions, handoff payload, and additive plugin envelope from both sides.
 
 ## Cross-phase audit record
 
@@ -116,3 +117,4 @@ No phases may run concurrently. Phase 2 consumes the exact event, capability, an
 - 2026-08-27, recovery audit: live plugin push and durable replay are complementary. No phase treats the in-memory plugin buffer as durable truth.
 - 2026-08-27, activation audit: Phase 2 lands additive dormant infrastructure. Phase 3 is the only phase that replaces current dispatch/card behavior, preventing a partially supported UX from shipping between phases.
 - 2026-08-27, repository audit: Phase 1 changes only the fork. Phases 2-3 change only Mission Control. Every cross-repository attachment is marked context-only.
+- 2026-08-27, Inspector retry audit: the commission remains stable across authoring retries, but every retry after terminal state creates a new Engineer run attempt with its own idempotency key and replay cursor. Terminal runs are never reopened.

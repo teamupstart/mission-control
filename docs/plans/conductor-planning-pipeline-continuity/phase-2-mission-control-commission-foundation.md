@@ -27,9 +27,9 @@ Inspect the merged provider contract and tests. Do not edit or open another AI C
 ## Scope
 
 - Shared commission identity, lifecycle, projection, and wire contracts.
-- SQLite migration for one commission per task plus a bounded commission event ledger.
-- Atomic commission store/reducer with monotonic provider revision.
-- Optional provider methods for Engineer run create, inspect/replay, and cancel.
+- SQLite migration for one commission per task, ordered Engineer attempts, and a bounded commission event ledger.
+- Atomic commission store/reducer with monotonic per-attempt provider revisions.
+- Optional provider methods for Engineer run create by launch key, correlation inspection, per-run replay, and cancel.
 - AI Conductor capability probe and JSON command parsing.
 - Additive Engineer envelope support in the existing Mission Control visualizer plugin.
 - Authenticated ingest, validation, reduction, and event deduplication for Engineer events.
@@ -53,7 +53,7 @@ Use the exact merged values, not the example names in the source plan:
 
 - capability identifier and capability probe output;
 - Engineer event discriminants and schema version;
-- Engineer run id, correlation id, repository, revision, and timestamp fields;
+- Engineer run id, correlation id, attempt key/ordinal, predecessor, repository, run-local revision, and timestamp fields;
 - create, inspect/replay, and cancel command JSON;
 - handoff fields and awaiting-merge meaning;
 - durable replay cursor semantics;
@@ -79,7 +79,7 @@ Extend `src/shared/pipeline.ts` with append-only ids and enums for:
 
 - `PipelineCommissionId`;
 - commission lifecycle;
-- Engineer run link and optional final `PipelineRunLink`;
+- ordered Engineer attempt links, active attempt, and optional final `PipelineRunLink`;
 - authoring step projection using existing `PipelineStep` and frozen provider vocabulary;
 - commission projection and key helpers.
 
@@ -93,20 +93,21 @@ In `src/server/db.ts`, add:
 
 - nullable `tasks.pipeline_commission_id`;
 - `pipeline_commissions` keyed by commission id with unique task id;
+- `pipeline_commission_attempts` keyed by commission id plus attempt, with unique launch keys, Engineer run bindings, and per-run replay cursors;
 - `pipeline_commission_events` keyed by commission id and daemon-assigned sequence;
 - indexes for task, provider/repository, lifecycle, and linked run where justified by actual reads.
 
 Use the repository's additive migration helpers so existing databases open safely. Validate persisted provider ids and JSON on read. A malformed row must degrade to an explicit unsupported/error projection or be quarantined according to existing DB patterns, not crash the whole daemon.
 
-Add atomic create/upsert/read/list/delete helpers. Provider revisions are monotonic and idempotent. Cap event rows per active commission and retire them only with the commission's defined retention lifecycle.
+Add atomic create/upsert/read/list/delete helpers. Provider revisions are monotonic and idempotent within one attempt; switching active attempts is a separate persisted transition. Cap event rows per active commission and retire them only with the commission's defined retention lifecycle.
 
 ### 3. Add the provider capability seam
 
 Extend `PipelineProvider` with an optional Engineer lifecycle capability object rather than concrete-provider branches in dispatch or routes. It should expose:
 
 - capability detection;
-- create/reserve Engineer run;
-- inspect/replay after revision;
+- create/reserve Engineer run by correlation and launch-attempt key;
+- inspect correlation lineage and replay one exact run after its run-local revision;
 - cancel/fail where the source plan requires it.
 
 Implement the AI Conductor adapter under `src/server/pipelines/conductor/` using the resolved provider binary and exact merged JSON. Apply timeouts, output parsing, bounded diagnostics, and never trust exit code alone. Never write provider files directly.
@@ -125,6 +126,8 @@ Create one server-owned reducer that converts validated generic Engineer events 
 - exact spec handoff fields;
 - terminal protection and explicit unsupported schema behavior.
 
+The reducer never reopens a terminal Engineer attempt. A successor attempt becomes active only through the explicit persisted commission-attempt transition, retains the same commission, and starts with its own provider revision cursor. Events from an older terminal attempt remain history and cannot change current progress.
+
 Mission Control does not second-guess AI Conductor step order or completion. Unknown event kinds are stored as evidence and leave the current projection unchanged.
 
 ### 5. Extend the visualizer plugin additively
@@ -133,7 +136,7 @@ Update `integrations/ai-conductor/mission-control/index.mjs`, its manifest if re
 
 - Subscribe to every new Engineer event kind.
 - For Engineer events, use identity carried by the event. Do not run it through the implementation `resolveRun` worktree/slug guess.
-- Extend the frozen envelope only with optional fields required to identify Engineer scope/run/correlation.
+- Extend the frozen envelope only with optional fields required to identify Engineer scope/run/correlation/attempt.
 - Preserve current implementation envelope bytes for old events.
 - Keep handlers synchronous and O(1), buffer size, batching, retry/backoff, token rotation, 413 handling, and bounded shutdown behavior.
 - Update the pinned event list and tested fork revision deliberately.
@@ -147,7 +150,7 @@ For Engineer events validate:
 - token authentication and request/body limits;
 - known provider and consented canonical repository;
 - known non-terminal commission;
-- correlation id and Engineer run id match the stored binding;
+- correlation id, Engineer attempt, and Engineer run id match the stored attempt binding;
 - event schema and required identity fields;
 - revision is newer or an idempotent duplicate;
 - handoff's final run key does not collide with another active commission.
@@ -158,8 +161,8 @@ Only after validation, append evidence, reduce the projection, update the task's
 
 Extend the existing pipeline watcher or add a sibling owned by the same pipeline subsystem. On the normal five-second cadence:
 
-- select only active commissions with an Engineer run id;
-- call provider replay after the stored revision;
+- select only active commissions whose active attempt has an Engineer run id;
+- call provider replay for that exact run after the attempt's stored revision;
 - feed returned events through the same validator/reducer used by live ingest;
 - emit only human-visible projection changes;
 - preserve the last good state on temporary read failure;
@@ -176,7 +179,8 @@ Keep the new dispatch path disabled or unused until Phase 3. A build containing 
 ## Data and compatibility details
 
 - Commission id is Mission Control-owned and opaque.
-- Engineer run id and provider revision are provider-owned.
+- Launch-attempt key is Mission Control-owned and opaque; Engineer run id, attempt ordinal, predecessor, and run-local provider revision are provider-owned.
+- Terminal attempts are immutable history. A retry appends a successor attempt and changes the active-attempt pointer without replacing the commission.
 - Final run link is null until exact handoff.
 - Existing `pipeline_runs` and `pipeline_events` remain implementation-run projections and ledgers.
 - Existing plugin envelopes and `/ingest/conductor` callers continue to work.
@@ -190,12 +194,12 @@ Add focused tests for:
 
 - old database upgrade and row parsing;
 - one-commission-per-task and cross-repository uniqueness;
-- atomic monotonic reducer writes and duplicate convergence;
+- atomic monotonic per-attempt reducer writes, active-attempt transitions, and duplicate convergence;
 - event-ledger cap and retirement;
 - provider capability/JSON parsing, timeouts, malformed output, and missing binary;
 - plugin old-envelope byte compatibility plus every new Engineer kind;
 - O(1) handler behavior, retry, token rotation, bounded shutdown, and unknown event handling;
-- ingest authentication, repository consent, id/run/correlation mismatch, stale revision, terminal commission, malformed handoff, and collision;
+- ingest authentication, repository consent, id/run/correlation/attempt mismatch, stale revision, terminal-attempt reopen, terminal commission, malformed handoff, and collision;
 - live-first, replay-first, and restart reconciliation yielding the same projection;
 - snapshot/upsert/remove exhaustiveness and bounded payload size.
 
@@ -227,7 +231,8 @@ Phase 3 may rely on:
 
 - exact shared commission types and key helpers;
 - migrated persistence and registry collection;
-- provider capability/create/replay methods;
+- provider capability/create/correlation-inspect/per-run-replay methods;
+- durable ordered attempt records and active-attempt transition rules;
 - one reducer for live and replay paths;
 - exact handoff-to-run binding;
 - snapshot and incremental SSE events.
@@ -240,3 +245,4 @@ Phase 3 must not duplicate reduction logic in React, bypass provider capability 
 - 2026-08-27: Existing run and authoring commission ledgers remain separate to preserve retention and key semantics.
 - 2026-08-27: Dispatch activation was deferred to Phase 3 so Phase 2 cannot ship a half-rendered commission UX.
 - 2026-08-27: AI Conductor is context-only; consumer adaptation follows the merged contract without modifying it.
+- 2026-08-27: Replay cursors are per Engineer attempt. The commission projection never compares a successor's revision against its predecessor's terminal revision.

@@ -255,14 +255,17 @@ test("Preview u and d paginate a rendered report by one page", async ({
   const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
   const body = report.locator("body");
   await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
-  const pageHeight = await body.evaluate(() => window.innerHeight);
+  const pageDownY = await body.evaluate(() => Math.min(
+    window.innerHeight,
+    (document.scrollingElement?.scrollHeight ?? window.innerHeight) - window.innerHeight,
+  ));
   expect(await body.evaluate(() => window.scrollY)).toBe(0);
 
   // The file row still owns focus after selection. Preview mode itself claims the key, so
   // pagination does not require an extra Tab into the rendered document and bare `d` does
   // not fall through to the dashboard's contextual Delete binding.
   await dashboard.keyboard.press("d");
-  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(pageHeight);
+  await expect.poll(() => body.evaluate(() => window.scrollY)).toBe(pageDownY);
   await expect(report.getByRole("heading", { name: "Reconnect details" })).toBeVisible();
   await shoot(dashboard, "preview-page-down");
 

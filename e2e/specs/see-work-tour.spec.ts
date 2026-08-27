@@ -320,7 +320,7 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   await dialog.getByRole("button", { name: "Show actions" }).click();
 
   dialog = step(dashboard, "Complete or run a retro");
-  await expect(dialog).toContainText("will not run a retro");
+  await expect(dialog).toContainText("keeps the task open");
   await expect(dashboard.getByRole("button", { name: "complete", exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Open Complete" }).click();
 

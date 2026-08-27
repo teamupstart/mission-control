@@ -112,7 +112,7 @@ test("every task kind keeps the exact intent prefix and receives conditional PR 
   assert.equal(isScoutTask(mkTask({ kind: "ship" })), false);
 });
 
-test("only a ship task whose selected graph runs Personas receives workflow evidence", () => {
+test("a task whose selected graph runs Personas receives workflow evidence", () => {
   const task = mkTask({ kind: "ship", workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID });
   const delivered = withTaskKindContract(task, task.intent, { workflowEvidence: true });
   assert.match(delivered, new RegExp(SUBMIT_WORKFLOW_EVIDENCE_TOOL));
@@ -129,6 +129,41 @@ test("only a ship task whose selected graph runs Personas receives workflow evid
   assert.match(delivered, /do not ask the human to resubmit the workflow/);
   const required = kindMissionMcpRequirement(task, null, true);
   assert.deepEqual(required?.tools, [SUBMIT_WORKFLOW_EVIDENCE_TOOL]);
+});
+
+/**
+ * The KIND does not decide this; the selected graph does.
+ *
+ * `DispatchModal` only DEFAULTS a diffless kind to None, and drops that default the moment an
+ * operator picks an after-work workflow by hand - so a scout can carry one, and
+ * `bindDispatchedTaskWorkflow` arms whatever was selected without consulting the kind either.
+ * Reading `ship` at these two seams gave that scout the binding, the run, and a Persona asking
+ * for evidence while withholding both the instructions and the tool that registers it.
+ */
+test("a scout that carries a Persona workflow gets both contracts and both tools", () => {
+  const task = mkTask({ kind: "scout", workflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID });
+  const delivered = withTaskKindContract(task, task.intent, { workflowEvidence: true });
+
+  assert.ok(delivered.startsWith(task.intent), "the operator's exact prefix survives");
+  const report = delivered.indexOf(SCOUT_APPENDIX_MARKER);
+  const evidence = delivered.indexOf("Workflow evidence readiness");
+  assert.ok(report > 0, "the scout still receives its report contract");
+  assert.ok(evidence > report, "the evidence contract follows the narrower kind contract");
+  assert.match(delivered, new RegExp(SUBMIT_WORKFLOW_EVIDENCE_TOOL));
+
+  assert.deepEqual(kindMissionMcpRequirement(task, null, true)?.tools, [
+    SUBMIT_SCOUT_ARTIFACTS_TOOL,
+    SUBMIT_WORKFLOW_EVIDENCE_TOOL,
+  ]);
+  // A scout with no workflow is unchanged: one tool, and no evidence instructions.
+  const plain = mkTask({ kind: "scout" });
+  assert.deepEqual(kindMissionMcpRequirement(plain, null, false)?.tools, [
+    SUBMIT_SCOUT_ARTIFACTS_TOOL,
+  ]);
+  assert.doesNotMatch(
+    withTaskKindContract(plain, plain.intent),
+    /Workflow evidence readiness/,
+  );
 });
 
 test("a ship task hands completed implementation back before any pull-request work", () => {

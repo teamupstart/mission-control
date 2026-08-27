@@ -251,6 +251,13 @@ Workflows and Personas turn the team's review practice into reusable, inspectabl
 blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
 reviewer or Command tile selects that exact result in the review worklist below.
 
+A Persona reviews the diff, the bounded transcript, and upstream Check results, plus whatever
+evidence the agent registered through Mission Control - gitignored screenshots, focused UTF-8
+logs, or a completed command's exact output, none of it committed. The conversation's live
+binding is what authorizes that registration, so it works the same on any kind of task and
+whether the workflow was chosen at dispatch or attached by hand to a session already running.
+See [workflows](docs/workflows.md) for the channels, their limits, and what a Persona can see.
+
 On **Workflow Runs**, <kbd>↑</kbd> and <kbd>↓</kbd> select and immediately load runs.
 From the selected run, <kbd>Tab</kbd> enters the pipeline; further Tabs or any arrow key move
 between stages. Press <kbd>Enter</kbd> on a completed stage to load its recorded details in the

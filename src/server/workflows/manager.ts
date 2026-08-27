@@ -1292,7 +1292,31 @@ export class WorkflowManager {
     return Boolean(version && versionSupportsWorkflowEvidence(version));
   }
 
-  /** Session-attributed intake used by the bundled Mission MCP tool. */
+  /**
+   * Session-attributed intake used by the bundled Mission MCP tool.
+   *
+   * The ACTIVE BINDING is the authority, exactly as it is for the browser's own staging and
+   * for reattached history - and not `tasks.workflow_id`. A workflow reaches a conversation
+   * two ways: selected before dispatch, which writes that column and arms the binding through
+   * `bindDispatchedTaskWorkflow`, or attached by an operator to a session that is already
+   * running, which writes only the binding because dispatch-time intent is not a record of
+   * what a live conversation is doing. Reading the column therefore refused every manually
+   * attached conversation with `workflow_unbound` while its Persona repair round was asking
+   * that same agent for evidence by name (see `testEvidenceRepairRecipe`) - a demand the
+   * daemon then would not accept, and the reported defect.
+   *
+   * Dropping the column also drops the task-versus-binding workflow equality check with it,
+   * which could only ever refuse a conversation whose real binding is the one about to
+   * consume the evidence. Staging is keyed on `binding.noteKey`, so the binding is what the
+   * evidence belongs to; agreeing with a task's earlier intent adds nothing to that.
+   *
+   * The task is still consulted, for the one thing it is authoritative about: which
+   * checkouts this work was issued. `scoutRepoSlots` resolves the slot vocabulary from it, so
+   * a multi-repo task keeps issuing `repo-02` and beyond. With no live task - a bound
+   * conversation that is not a task's, or one whose task has already settled while its repair
+   * rounds continue - the session's own checkout is the single slot, the same fallback the
+   * other two staging paths use.
+   */
   async stageAgentEvidence(
     sessionId: string,
     evidence: {
@@ -1306,27 +1330,22 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new WorkflowImageEvidenceError("session_unavailable", "The evidence session is not live", 404);
     }
-    const task = this.registry.taskForSession(session.id, session.cwd);
-    if (!task || !["dispatching", "running"].includes(task.status) || !task.workflowId) {
-      throw new WorkflowImageEvidenceError(
-        "workflow_unbound",
-        "The active task is not bound to a workflow",
-        403,
-      );
-    }
     const binding = this.store.activeBindingForNote(noteKeyFor(session));
     const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
-    if (
-      !binding
-      || version?.workflowId !== task.workflowId
-      || !version.graph.nodes.some((node) => node.kind === "persona")
-    ) {
+    if (!binding || !version || !versionSupportsWorkflowEvidence(version)) {
       throw new WorkflowImageEvidenceError(
         "workflow_unbound",
-        "The session does not have the selected Persona workflow binding",
+        "This session does not have an active Persona workflow binding",
         403,
       );
     }
+    const activeTask = this.registry.taskForSession(session.id, session.cwd);
+    const task = activeTask ?? {
+      repoRoot: session.repoRoot ?? session.cwd ?? "",
+      worktreePath: session.cwd,
+      baseSha: null,
+      extraRepos: [],
+    };
     return stageAgentWorkflowEvidence({
       store: this.store,
       noteKey: binding.noteKey,

@@ -326,6 +326,7 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
+import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { setupChecksView } from "./setup/index.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -338,6 +339,12 @@ import {
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
 import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
+import {
+  RepoIndexConfigError,
+  repoIndexView,
+  setRepoIndexConfig,
+} from "./repo-index.ts";
+import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -396,6 +403,7 @@ import {
 import { driverClearFor, resetSession } from "./reset.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
+  invalidateReposCache,
   listRepos,
   resolveRepoPath,
   resolveRepoRoot,
@@ -2964,6 +2972,33 @@ export function buildApp(
   app.get("/api/tasks", (c) => c.json(tasks.list()));
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
+
+  // The machine-local source of those workspace roots. The environment remains the
+  // launch-time authority; when present, the view says so and the saved list is read-only.
+  app.get("/api/repo-index", async (c) => c.json(await repoIndexView()));
+  app.put("/api/repo-index", async (c) => {
+    const override = repositoryIndexEnvironmentOverride();
+    if (override) {
+      return c.json({
+        error: `Repository index directories are read-only while ${override.variable} is set.`,
+      }, 409);
+    }
+    const parsed = await parseBody(c, RepoIndexConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      setRepoIndexConfig(parsed.data);
+      return c.json(await repoIndexView());
+    } catch (error) {
+      if (error instanceof RepoIndexConfigError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+  app.post("/api/repo-index/rescan", async (c) => {
+    invalidateReposCache();
+    return c.json(await repoIndexView());
+  });
 
   // Resolve a typed path to its canonical git repo root, so the Foreman allowlist
   // picker stores what the server actually gates on (a realpath'd top-level) and

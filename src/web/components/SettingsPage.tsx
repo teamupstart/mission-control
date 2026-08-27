@@ -12,6 +12,7 @@ import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { WorktreeSettingsPanel } from "./WorktreeSettingsPanel.tsx";
+import { RepositoriesPanel } from "./RepositoriesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { StandingInstructionsPanel } from "./StandingInstructionsPanel.tsx";
 import { ConductorPanel } from "./ConductorPanel.tsx";
@@ -30,6 +31,7 @@ import { SetupPanel } from "./SetupPanel.tsx";
 import { useSetupChecks } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
+import { useRepoIndex } from "../useRepoIndex.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useStandingInstructions } from "../useStandingInstructions.ts";
 import { useConductor } from "../useConductor.ts";
@@ -284,6 +286,7 @@ export function SettingsPage({
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
   const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
+  const repoIndex = useRepoIndex(shown === "repositories");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();
@@ -555,6 +558,8 @@ export function SettingsPage({
         return <HarnessesPanel state={harnesses} />;
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
+      case "repositories":
+        return <RepositoriesPanel state={repoIndex} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
       case "standing-instructions":

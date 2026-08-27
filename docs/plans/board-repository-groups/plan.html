@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grouping Board session cards by repository</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #5b6472;
+        --dim: #7c8798;
+        --border: #d8dee6;
+        --panel: #f6f8fa;
+        --accent: #2f6feb;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e7ebf1;
+          --muted: #939eae;
+          --dim: #7c8798;
+          --border: #242c37;
+          --panel: #151a21;
+          --accent: #4a9eff;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0 auto;
+        padding: 44px 26px 90px;
+        max-width: 940px;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.65 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+      }
+      h1 {
+        font-size: 30px;
+        line-height: 1.2;
+        margin: 0 0 26px;
+      }
+      h2 {
+        font-size: 21px;
+        margin: 40px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        font-size: 17px;
+        margin: 28px 0 8px;
+      }
+      strong {
+        font-weight: 640;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        padding: 1px 5px;
+        border-radius: 5px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+      }
+      ol,
+      ul {
+        padding-left: 24px;
+      }
+      li {
+        margin: 7px 0;
+      }
+      .table-scroll {
+        overflow-x: auto;
+        margin: 18px 0;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        min-width: 680px;
+        font-size: 14.5px;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 10px 13px;
+        border-bottom: 1px solid var(--border);
+      }
+      thead th {
+        background: var(--panel);
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      figure {
+        margin: 24px 0;
+      }
+      figcaption {
+        margin-top: 9px;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .note {
+        margin: 22px 0;
+        padding: 13px 16px;
+        border-left: 3px solid var(--accent);
+        border-radius: 0 8px 8px 0;
+        background: var(--panel);
+        font-size: 14.5px;
+      }
+      svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Grouping Board session cards by repository</h1>
+
+    <h2>Why</h2>
+    <p>
+      The Board answers what every agent is doing. It does not answer <strong>which project</strong>.
+      On a fleet running one repository that costs nothing; on a fleet running four it is the first
+      question an operator asks and the last one the screen answers - the only clue on a card is the
+      branch name, and branch conventions are per-repository, so
+      <code>harness/rotate-signing-key</code> and <code>mission/fix-the-parser</code> are two
+      guesses rather than two answers.
+    </p>
+    <p>
+      The board already knows how to say "these belong together": an ai-conductor run and an
+      ensemble each draw a framed cluster with a header naming the run. The repository is the level
+      above that, and it is missing.
+    </p>
+
+    <h2>What is added</h2>
+    <p>
+      A <strong>repository grouping level</strong> inside each Board column: the cards in a column
+      collect under a coloured heading naming the repository their session belongs to. It is
+      structurally the sibling of the run cluster the board already draws, one level out -
+      colour-coded so two projects are told apart at a glance, titled with the repository's own
+      directory name, and collapsible from its heading.
+    </p>
+    <p>On by default, with one checkbox to turn it off.</p>
+
+    <figure>
+      <svg viewBox="0 0 860 280" role="img" aria-labelledby="levels-title">
+        <title id="levels-title">
+          The board gains one level of structure. Today a tone column holds cards and the engine's
+          own run frames; with this change it holds repository groups, and a run frame sits inside
+          the repository it belongs to.
+        </title>
+        <style>
+          .col {
+            fill: var(--panel);
+            stroke: var(--border);
+          }
+          .card {
+            fill: none;
+            stroke: var(--border);
+          }
+          .spine {
+            fill: var(--dim);
+          }
+          .repo {
+            fill: none;
+            stroke: var(--accent);
+            stroke-dasharray: 4 3;
+          }
+          .run {
+            fill: none;
+            stroke: var(--dim);
+          }
+          .h {
+            font:
+              700 10px -apple-system,
+              sans-serif;
+            fill: var(--muted);
+          }
+          .t {
+            font:
+              500 10px var(--mono);
+            fill: var(--muted);
+          }
+          .ta {
+            font:
+              600 10px var(--mono);
+            fill: var(--accent);
+          }
+          .arrow {
+            fill: none;
+            stroke: var(--dim);
+            stroke-width: 1.2;
+          }
+        </style>
+
+        <defs>
+          <marker id="tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L8 4 L0 8 z" fill="var(--dim)" />
+          </marker>
+        </defs>
+
+        <!-- before -->
+        <g transform="translate(60,26)">
+          <text class="h" x="0" y="-10">TODAY</text>
+          <rect class="col" x="0" y="0" width="330" height="200" rx="9" />
+          <text class="t" x="12" y="20">working</text>
+          <rect class="card" x="12" y="30" width="306" height="26" rx="6" />
+          <rect class="spine" x="12" y="30" width="3" height="26" rx="1.5" />
+          <rect class="card" x="12" y="62" width="306" height="26" rx="6" />
+          <rect class="spine" x="12" y="62" width="3" height="26" rx="1.5" />
+          <rect class="run" x="12" y="94" width="306" height="94" rx="8" />
+          <text class="t" x="22" y="110">harness-retry-budget</text>
+          <rect class="card" x="22" y="118" width="286" height="26" rx="6" />
+          <rect class="spine" x="22" y="118" width="3" height="26" rx="1.5" />
+          <rect class="card" x="22" y="150" width="286" height="26" rx="6" />
+          <rect class="spine" x="22" y="150" width="3" height="26" rx="1.5" />
+        </g>
+
+        <path class="arrow" d="M402 126 h36" marker-end="url(#tip)" />
+
+        <!-- after -->
+        <g transform="translate(460,26)">
+          <text class="h" x="0" y="-10">WITH REPOSITORY GROUPS</text>
+          <rect class="col" x="0" y="0" width="330" height="240" rx="9" />
+          <text class="t" x="12" y="20">working</text>
+
+          <rect class="repo" x="12" y="28" width="306" height="76" rx="8" />
+          <text class="ta" x="22" y="44">mission-control</text>
+          <rect class="card" x="22" y="52" width="286" height="20" rx="6" />
+          <rect class="spine" x="22" y="52" width="3" height="20" rx="1.5" />
+          <rect class="card" x="22" y="76" width="286" height="20" rx="6" />
+          <rect class="spine" x="22" y="76" width="3" height="20" rx="1.5" />
+
+          <rect class="repo" x="12" y="112" width="306" height="118" rx="8" />
+          <text class="ta" x="22" y="128">ai-conductor</text>
+          <rect class="run" x="22" y="136" width="286" height="48" rx="7" />
+          <rect class="card" x="32" y="142" width="266" height="14" rx="5" />
+          <rect class="spine" x="32" y="142" width="3" height="14" rx="1.5" />
+          <rect class="card" x="32" y="162" width="266" height="14" rx="5" />
+          <rect class="spine" x="32" y="162" width="3" height="14" rx="1.5" />
+          <rect class="card" x="22" y="192" width="286" height="20" rx="6" />
+          <rect class="spine" x="22" y="192" width="3" height="20" rx="1.5" />
+        </g>
+      </svg>
+      <figcaption>
+        The structural change, and all of it: one level of grouping above the frames the board
+        already draws. The engine's run frame is untouched and sits inside the repository it belongs
+        to - it can only belong to one, because its own key is
+        <code>(provider, repoRoot, slug)</code>. The pixel-honest version of this - the real
+        components, three real tone columns, twelve sessions, three candidate treatments - is the
+        mock-up page beside this one, <a href="./mockups.html">mockups.html</a>.
+      </figcaption>
+    </figure>
+
+    <h3>Where the grouping comes from</h3>
+    <p>
+      <code>Session.repoRoot</code>, already shipped to the dashboard. It is the repo-level sibling
+      of <code>gitRoot</code>: for a linked worktree it points back at the
+      <strong>main repository</strong> rather than at the worktree's own directory, so two sessions
+      in two checkouts of one project group as one project. That is exactly the grouping being asked
+      for, and it is why this is <code>repoRoot</code> and not <code>cwd</code>.
+    </p>
+    <p>
+      A session with a null <code>repoRoot</code> is not in a repository. Those stay ungrouped and
+      last in the column rather than being collected under an invented heading.
+    </p>
+
+    <h3>Three rules this must not break</h3>
+    <ol>
+      <li>
+        <strong>A group never crosses a tone column.</strong> <code>orderSessions</code> already
+        refuses to let a run cluster drag a working sibling into "needs you", because a column that
+        fills with agents nobody has to act on is a column that stops being read. A repository group
+        inherits that rule, so a repository with six sessions appears in each column its sessions'
+        own states put them in. Each heading therefore carries a rollup -
+        <code>2 of 6 on the board</code> - which is the same device the ensemble head already uses
+        to tie a split run's halves together, and it prints <code>N agents</code> instead when every
+        session the repository has is in that one column.
+      </li>
+      <li>
+        <strong>The run cluster stays inside the repository group, and stays a cluster.</strong> An
+        ai-conductor run is keyed by <code>(provider, repoRoot, slug)</code>, so it belongs to
+        exactly one repository and the nesting is total rather than a case to handle. The engine's
+        own frame is unaffected.
+      </li>
+      <li>
+        <strong>One ordering, computed once.</strong> <code>orderSessions</code> is the single fleet
+        order, and the arrow keys walk index arrays derived from the same call -
+        <code>moveSelection</code> indexes a per-column list on the board and a flat list in the
+        console. Grouping that is applied while rendering rather than in the ordering is Up/Down
+        landing somewhere other than where the eye is.
+      </li>
+    </ol>
+
+    <h3>Colour</h3>
+    <p>
+      The colour comes from a stable hash of <code>repoRoot</code> into a fixed palette, so a
+      repository keeps its colour across reloads and machines, and the palette is deliberately kept
+      off every state hue - <code>--working</code> blue, <code>--idle</code> green,
+      <code>--attention</code> amber, <code>--danger</code> red, <code>--held</code> purple. A
+      repository colour that landed on one of those would teach the eye that a frame means a state.
+      The saturated end of the colour appears only in the heading's 7px swatch; the group itself is
+      tinted, so a card's own tone always wins inside it.
+    </p>
+
+    <h2>The choice: how strongly the grouping draws</h2>
+    <div class="note">
+      <strong>The mock-ups are <a href="./mockups.html">mockups.html</a>, beside this file.</strong>
+      Open that page: it draws one fleet four times - today's board, then each candidate - across
+      three real tone columns. The cards, the column heads, the free/held section rules and the
+      nested <code>ai-conductor</code> run frame are the real components against the real
+      stylesheet, reduced to the rules that actually match so the page is small enough to live here.
+      Only the repository grouping is new markup.
+    </div>
+    <p>
+      The fleet in it is deliberately awkward. <code>mission-control</code> has <strong>seven</strong>
+      sessions spread across all three columns <em>and</em> across the idle column's free/held
+      boundary, so it is grouped four separate times and every heading has to say which part you are
+      looking at. <code>ai-conductor</code> has four, two of them one engine run.
+      <code>upstart-platform-services</code> has exactly one. Two sessions are in no repository at
+      all. In the idle column the <code>mission-control</code> group is drawn collapsed. The cards
+      carry the flags a real board carries - an escalated decision, a draft, a queue depth, an open
+      and a merged pull request, Inspector findings, a pending review, a held session - because a
+      grouping treatment that only looks right over bare cards is not a treatment that has been
+      reviewed.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Treatment</th>
+            <th>Costs</th>
+            <th>Reads best when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1</strong></td>
+            <td>
+              <strong>Repository frame</strong> - the run cluster's own box, one level out: rounded
+              border, tinted body, two-line head
+            </td>
+            <td>
+              Nesting and width. A run inside a repository is a box inside a box, and the double
+              inset takes ~16px off every card in it. Four lines of header before the first card of
+              a group with a run in it
+            </td>
+            <td>
+              You want the grouping to be unmistakable, and prefer one visual idiom on the board
+              over a lighter second one
+            </td>
+          </tr>
+          <tr>
+            <td><strong>2</strong></td>
+            <td>
+              <strong>Repository swimlane</strong> - a 4px coloured rail down the group with a
+              one-line title above it, no border around the cards
+            </td>
+            <td>
+              The rail sits 14px from each card's own 3px state spine, so a column has two stripes
+              down its left edge
+            </td>
+            <td>
+              You want the group obvious but the run frame to stay the only box on the board, and
+              want cards to keep their width
+            </td>
+          </tr>
+          <tr>
+            <td><strong>3</strong></td>
+            <td>
+              <strong>Repository rule</strong> - a coloured heading rule between groups, and the
+              repository's colour as the lower third of each card's existing left spine
+            </td>
+            <td>
+              Subtlety. The split spine is a 3px strip and can read as an artifact until you know
+              what it is; the ungrouped sessions need their own heading here, because with no
+              container the cards after a heading belong to it
+            </td>
+            <td>
+              You want the colour on the cards themselves rather than on a container, so a card
+              stays identifiable after its heading has scrolled away
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      All three collapse from the heading, all three leave the engine's run frame intact, and all
+      three use the identical settings control.
+    </div>
+
+    <h2>Implementation</h2>
+    <ol>
+      <li>
+        <code>src/web/lib/fleet-order.ts</code> - the repository level joins the ordering, not the
+        rendering. A tone group's <code>sessions</code> gain a repository partition ahead of the
+        existing run clustering, and <code>fleetRows</code> grows one row kind so a column expands
+        into <code>(repository heading, blocks…)</code> rather than <code>blocks…</code>. This is
+        the controlled contract the whole feature turns on: <code>BoardView</code>,
+        <code>ConsoleView</code> and <code>App</code>'s arrow-key columns all read this one call, so
+        the partition happens here or the three disagree.
+      </li>
+      <li>
+        <code>src/web/components/layouts/BoardView.tsx</code> - draws the new row kind. The card
+        itself is untouched: the group is a wrapper, never a second rendering of a tile.
+      </li>
+      <li>
+        <code>src/web/components/session-bits.tsx</code> - a <code>RepoGroupHead</code>, beside
+        <code>EnsembleClusterHead</code> and <code>PipelineClusterHead</code>, so the three heads
+        share their box and cannot drift on what a frame header looks like.
+      </li>
+      <li>
+        <code>src/web/lib/repo-color.ts</code> - the hash and the palette, as one pure function, so
+        the board and any later surface that colours a repository read the same answer.
+      </li>
+      <li>
+        <code>src/web/styles.css</code> - the group's classes, in the tile and cluster block they
+        sit with.
+      </li>
+      <li>
+        <code>src/shared/protocol.ts</code> - one <code>UiConfig</code> boolean,
+        <code>groupBoardByRepo</code>, defaulting <strong>true</strong>. Board grouping is not a card
+        item, so it is deliberately NOT an entry in <code>DISPLAY_ITEMS</code>: that registry answers
+        "what does a card draw", and this answers "how is a column arranged".
+      </li>
+      <li>
+        <code>src/web/components/LayoutPanel.tsx</code> and
+        <code>src/web/lib/settings-search.ts</code> - the checkbox and its index entry, under a
+        <code>display/board-grouping</code> anchor, <code>kind: "toggle"</code> so the command
+        palette can flip it directly.
+      </li>
+    </ol>
+
+    <h3>Open, and deliberately not decided here</h3>
+    <p>
+      <strong>Collapse state is local and un-persisted</strong>, matching <code>revealed</code> and
+      <code>wideCol</code> in <code>BoardView</code>: collapsing a repository is "let me look at the
+      rest of the board for a second", not a setting. On a fleet with eight repositories that will
+      probably want to persist; that is a follow-up with its own storage decision, not a thing to
+      smuggle into this change.
+    </p>
+
+    <h2>Tests</h2>
+    <ul>
+      <li>
+        <code>test/fleet-order.test.ts</code> - the partition, in the same file that already pins the
+        run-cluster spans: a repository group never crosses a tone boundary, a run cluster never
+        straddles a repository, ungrouped sessions sort last, the order is still idempotent, and a
+        fleet with the setting off comes out byte-identical to today's order.
+      </li>
+      <li>
+        <code>test/board-columns.test.ts</code> - the rollup arithmetic
+        (<code>N of M on the board</code> versus <code>N agents</code>), which is a pure function
+        over the ordering and costs milliseconds to assert.
+      </li>
+      <li>
+        <code>e2e/specs/board-repo-groups.spec.ts</code> - new. Dispatches fake agents into two
+        repositories, switches to the Board, and asserts the headings are present
+        <strong>without anybody opening Settings</strong> (the on-by-default claim), that each names
+        its repository's directory name, that a session's card is inside its repository's group, that
+        the heading collapses and restores its cards, and that unchecking
+        <strong>Group by repository</strong> returns the column to one flat list. Only a browser
+        settles any of those.
+      </li>
+    </ul>
+  </body>
+</html>

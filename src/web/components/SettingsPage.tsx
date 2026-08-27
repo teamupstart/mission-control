@@ -22,6 +22,7 @@ import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
+import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
@@ -517,14 +518,16 @@ export function SettingsPage({
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
       case "display":
-        // Layout, Conversation and Appearance stacked, not three rail peers: all three are
-        // one browser's preference about this screen, and a category holding a single
-        // checkbox sat as a visual equal of the one that merges pull requests. Stacked
-        // outside in: how sessions are arranged, how a conversation is read, how the
-        // messages inside it are formatted.
+        // Layout, the Line, Conversation and Appearance stacked, not four rail peers: all
+        // of them are one browser's preference about this screen, and a category holding a
+        // single checkbox sat as a visual equal of the one that merges pull requests.
+        // Stacked outside in: how sessions are arranged, how the strip ABOVE every
+        // arrangement is drawn, how a conversation is read, how the messages inside it are
+        // formatted.
         return (
           <>
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
+            <LineDensityPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,

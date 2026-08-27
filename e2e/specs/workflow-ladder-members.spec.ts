@@ -151,7 +151,10 @@ test("the Workflows tab names the reviewers that approved a passed stage", async
 
   const rail = dashboard.getByRole("navigation", { name: "Sessions" });
   await expect(rail).toBeVisible();
-  await rail.getByRole("button").first().click();
+  // The first SESSION ROW, not the first button in the rail: the rail groups its rows by
+  // repository, so the first button is that heading's collapse control and clicking it folds
+  // the group instead of opening anything.
+  await rail.locator("button.rail-row").first().click();
   const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
   await tabs.getByRole("tab", { name: /Workflows$/ }).click();
 

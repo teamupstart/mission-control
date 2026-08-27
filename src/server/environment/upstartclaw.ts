@@ -228,6 +228,20 @@ async function pluginInstalled(deps: EnvironmentDeps): Promise<boolean> {
   return pluginDirPresent(root, deps);
 }
 
+/**
+ * Whether an unattended Claude run can use UpstartClaw's core MCP tools right now.
+ *
+ * Unlike the dispatch warning, absence is false rather than silence because callers of this
+ * predicate have explicitly selected an UpstartClaw-backed capability. A stale completed state
+ * file is not enough: the plugin must still be installed, and only the fully completed state is
+ * safe for an unattended background query.
+ */
+export async function upstartclawCoreReady(deps: EnvironmentDeps): Promise<boolean> {
+  if (!(await pluginInstalled(deps))) return false;
+  const state = await deps.readText(join(deps.homeDir, ...STATE_FILE));
+  return state.ok && gateValue(state.text) === COMPLETED;
+}
+
 /** The action-first instruction for a setup state the operator can resolve normally. */
 function fix(verb: string): string {
   return `${verb} ${SETUP_COMMAND} in an interactive Claude Code session before dispatching.`;

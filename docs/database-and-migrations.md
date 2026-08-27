@@ -36,8 +36,8 @@ key, holds rows only while consent stands, and is described in [Pipelines](pipel
 
 `pipeline_events` sits beside it and is the exception in that family: an append-only ledger of
 every engine event Mission Control has observed, and the one thing the pipelines integration
-keeps that its files cannot re-derive. The engine persists 44 of its 74 event kinds to disk,
-so for the other 30 an event pushed to `/ingest/conductor` is the only record that exists
+keeps that its files cannot re-derive. The engine persists 76 of its 104 event kinds to disk,
+so for the other 28 an event pushed to `/ingest/conductor` is the only Mission Control record
 anywhere. It is still bounded and still consent-scoped: rows are retired with the run they
 describe and with the repository whose consent authorised writing them, plus a per-run cap.
 Nothing in the projection is derived from it - a run's group, steps, halt and cost all come

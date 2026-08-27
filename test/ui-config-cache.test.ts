@@ -29,6 +29,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "terminal");
+  // Condensed, which is deliberately NOT the no-op default - see `UI_CONFIG_DEFAULTS`.
+  // Pinned here because this one line decides the Line's band height for every profile
+  // that has never touched the control.
+  assert.equal(config.lineDensity, "condensed");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
@@ -44,6 +48,7 @@ test("a written cache round-trips", () => {
   writeCache({
     layout: "console",
     conversationView: "chat",
+    lineDensity: "expanded",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -52,10 +57,16 @@ test("a written cache round-trips", () => {
     guidedTour: false,
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
+    // FALSE, deliberately, because this field's default is true: a cache that read a stored
+    // `false` with `||` would hand back the default and re-group the board on every cold paint
+    // for the one operator who turned it off. Asserting the non-default value is the only way
+    // round-tripping this field says anything.
+    groupBoardByRepo: false,
   });
   const config = readCache();
   assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "chat");
+  assert.equal(config.lineDensity, "expanded");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -64,6 +75,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.guidedTour, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
+  assert.equal(config.groupBoardByRepo, false);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {
@@ -87,6 +99,13 @@ test("a preference this cache forgets to copy would reset on every cold paint", 
     [],
     "a stored empty list is a real answer, not a miss",
   );
+
+  // And the same failure for the density, where dropping the copy is VISIBLE rather than
+  // merely wrong: the default is `condensed`, so an operator who chose `expanded` would
+  // get a 38.5px strip on the first frame and an 86px one the moment the daemon answered,
+  // stepping the whole conversation pane down a line on every cold load.
+  store.set("mission-control.ui", JSON.stringify({ lineDensity: "expanded" }));
+  assert.equal(readCache().lineDensity, "expanded", "the cached density was dropped");
 });
 
 test("the hidden list is handed back as a fresh array the panel can build a patch from", () => {
@@ -106,6 +125,15 @@ test("a rendering this build does not ship reads as the shipped one", () => {
   // build must not be adopted out of this cache and PUT to the daemon as if it were real.
   store.set("mission-control.ui", JSON.stringify({ conversationView: "hologram" }));
   assert.equal(readCache().conversationView, "terminal");
+});
+
+test("a density this build does not ship reads as the shipped one", () => {
+  // The third member the study drew and held in reserve - `hidden`, at zero height - is
+  // the realistic version of this: a profile that used a build which shipped it must not
+  // paint a strip this build cannot draw, and must not PUT the value back as if it were
+  // real. It falls to the shipped default, which is a strip you can see.
+  store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineDensity, "condensed");
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

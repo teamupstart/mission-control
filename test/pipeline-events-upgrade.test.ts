@@ -3,7 +3,7 @@
  * `(provider, repo_root, slug, fingerprint)`, which made a repeated event impossible to
  * store - the second occurrence of a byte-identical record was refused by SQLite before any
  * code could decide what it was. Conductor stamps no sequence number, so a retried step emits
- * exactly that, and for the 30 kinds it never writes to a file this ledger is the only record
+ * exactly that, and for the 28 kinds it never writes to a file this ledger is the only record
  * either occurrence ever had.
  *
  * The fix is a column and a claim (see `also_seq` in `src/server/db.ts`), and the half that

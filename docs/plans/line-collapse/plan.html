@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collapsing the Line - mockups and proposal</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --card: #ffffff;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #898781;
+    --rule: #e1e0d9;
+    --accent: #6f56c0;
+    --good: #0ca30c;
+    --warn: #b06d00;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --card: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --ink-3: #898781;
+      --rule: #2c2c2a;
+      --accent: #9a7bef;
+      --good: #3fb950;
+      --warn: #e3b341;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.6 var(--sans); }
+  main { max-width: 1000px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 27px; line-height: 1.22; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 { font-size: 20px; margin: 52px 0 8px; letter-spacing: -.01em; }
+  h3 { font-size: 15.5px; margin: 30px 0 6px; }
+  p { margin: 9px 0; color: var(--ink-2); }
+  p strong, li strong { color: var(--ink); }
+  .lede { font-size: 16.5px; color: var(--ink-2); margin-bottom: 20px; }
+  a { color: var(--accent); }
+  ul { color: var(--ink-2); margin: 9px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  code { font-family: var(--mono); font-size: .87em; background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+  table.doc { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.doc th, table.doc td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  table.doc th { color: var(--ink-3); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  table.doc td.num { font-family: var(--mono); white-space: nowrap; }
+  .scroll-x { overflow-x: auto; }
+  .status { display: inline-block; font: 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-2); }
+  blockquote { margin: 14px 0; padding: 2px 0 2px 16px; border-left: 3px solid var(--rule); color: var(--ink-2); font-style: italic; }
+
+  /* verdict pills */
+  .verdict { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+  .verdict li { margin: 0; font: 11.5px/1 var(--mono); letter-spacing: .02em; color: var(--ink-2); border: 1px solid var(--rule); border-radius: 999px; padding: 7px 11px; }
+  .verdict li.rec { border-color: var(--good); color: var(--ink); }
+  .verdict li.rec::before { content: "\2713  "; color: var(--good); }
+  .verdict li.risk::before { content: "\26A0  "; color: var(--warn); }
+  .verdict li.no::before { content: "\2715  "; color: #d33; }
+  .verdict li.freed { border-color: var(--accent); color: var(--ink); }
+  .verdict li.freed::before { content: "\2195  "; color: var(--accent); }
+
+  .cap { font-size: 12.5px; color: var(--ink-3); margin: 8px 0 0; }
+  .cap b { color: var(--ink-2); font-weight: 600; }
+
+  /* ============================================================
+     DARK ARTBOARDS - these depict the dark-only dashboard.
+     Tokens copied verbatim from src/web/styles.css :root, and the
+     .line rules below are the real ones so the mockups render at
+     the app's true metrics rather than an approximation.
+     ============================================================ */
+  .ab {
+    background: #0a0c0f; border: 1px solid var(--rule); border-radius: 12px;
+    padding: 20px; margin: 18px 0 0; overflow-x: auto;
+    --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+    --purple: #a371f7;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--sans); color: var(--fg);
+  }
+  .ab-pair { display: grid; gap: 18px; }
+  @media (min-width: 900px) { .ab-pair.two { grid-template-columns: 1fr 1fr; } }
+
+  /* the fake app window: fixed total height, so a shorter band = more
+     transcript visible. That clipping IS the argument. */
+  /* 16px/normal, NOT the page's 15px/1.6: `.line-stage` is `font: inherit`, so the band's
+     measured height depends on the inherited typography. With the page's metrics leaking in
+     the baseline artboard drew 88px against the app's real 86px. */
+  .win { position: relative; height: 392px; min-width: 860px; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; font-size: 16px; line-height: normal; }
+  .ab-pair.two .win { min-width: 0; }
+  .win-tb { flex: none; height: 57px; display: flex; align-items: center; gap: 14px; padding: 0 22px; border-bottom: 1px solid var(--border-soft); background: var(--bg); }
+  .win-brand { font-size: 13px; font-weight: 650; letter-spacing: -.01em; color: var(--fg); }
+  .tb-chip { font: 10.5px/1 var(--mono); letter-spacing: .05em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 9px; }
+  .tb-sp { margin-left: auto; }
+  .win-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px 1fr; overflow: hidden; position: relative; }
+  .win-rail { border-right: 1px solid var(--border-soft); background: color-mix(in oklab, var(--bg-2) 55%, transparent); padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
+  .rr { display: flex; align-items: center; gap: 7px; font: 10.5px/1.3 var(--mono); color: var(--dim); padding: 5px 7px; border-radius: 6px; }
+  .rr.on { background: var(--panel-2); color: var(--fg); }
+  .rr i { width: 6px; height: 6px; border-radius: 2px; flex: none; background: var(--dim); }
+  .rr.w i { background: var(--working); } .rr.a i { background: var(--attention); } .rr.i i { background: var(--idle); }
+  .win-conv { padding: 10px 16px; overflow: hidden; font-family: var(--mono); }
+  .cv { font-size: 11px; line-height: 1.55; color: var(--muted); padding-left: 14px; position: relative; }
+  .cv::before { content: ""; position: absolute; left: 3px; top: 3px; bottom: 0; width: 1px; background: var(--border); }
+  .cv .u { color: var(--fg); } .cv .c { color: var(--idle); } .cv .d { color: var(--dim); }
+  .cv .u::before { content: "\276F "; color: var(--working); }
+
+  /* height annotation on the band */
+  .band-tag { position: absolute; right: 8px; font: 10px/1 var(--mono); letter-spacing: .04em; color: var(--attention); background: color-mix(in oklab, #0a0c0f 82%, transparent); border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border)); border-radius: 4px; padding: 3px 6px; z-index: 8; }
+
+  /* ---- THE REAL LINE RULES, copied from src/web/styles.css ---- */
+  .line { display: flex; align-items: stretch; flex: none; margin-bottom: 0; padding: 12px 22px; border-bottom: 1px solid var(--border-soft); }
+  .line-stage { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 11px 13px; font: inherit; text-align: left; color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; position: relative; }
+  .ls-head { display: flex; align-items: baseline; gap: 8px; }
+  .ls-glyph { font-size: 13px; line-height: 1; color: var(--muted); }
+  .ls-name { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .ls-count { margin-left: auto; font-family: var(--mono); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; color: var(--dim); }
+  .ls-sub { min-height: 1.4em; font-family: var(--mono); font-size: 10px; line-height: 1.4; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .line-stage.tone-working .ls-count { color: var(--working); }
+  .line-stage.tone-idle .ls-count { color: var(--fg); }
+  .line-stage.tone-attention { border-color: color-mix(in oklab, var(--attention) 45%, var(--border)); }
+  .line-stage.tone-attention .ls-glyph,
+  .line-stage.tone-attention .ls-name,
+  .line-stage.tone-attention .ls-count,
+  .line-stage.tone-attention .ls-sub { color: var(--attention); }
+  .line-wire { flex: none; align-self: center; position: relative; width: 26px; height: 2px; background: var(--border); }
+  .line-wire::after { content: ""; position: absolute; top: -2px; left: 30%; width: 6px; height: 6px; border-radius: 50%; background: var(--working); }
+  .line-wire.hot { background: color-mix(in oklab, var(--attention) 35%, var(--border)); }
+  .line-wire.hot::after { background: var(--attention); }
+
+  /* ---- MOCKUP-ONLY: the proposed densities ---- */
+
+  /* Concept 1 - condensed: one row, counts and tones, no sentences, no wires. */
+  .line.is-condensed { align-items: center; padding: 7px 22px; gap: 2px; }
+  .line.is-condensed .line-wire { display: none; }
+  .line.is-condensed .line-stage { flex: 0 0 auto; flex-direction: row; align-items: baseline; gap: 7px; padding: 4px 9px; background: transparent; border-color: transparent; border-radius: 7px; }
+  .line.is-condensed .line-stage.tone-attention { background: color-mix(in oklab, var(--attention) 11%, transparent); border-color: color-mix(in oklab, var(--attention) 38%, var(--border)); }
+  .line.is-condensed .ls-sub { display: none; }
+  .line.is-condensed .ls-head { gap: 7px; }
+  .line.is-condensed .ls-count { margin-left: 0; font-size: 12.5px; }
+  .ls-div { flex: none; width: 1px; align-self: center; height: 12px; background: var(--border); }
+  .ls-urgent { margin-left: auto; display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; color: var(--attention); white-space: nowrap; padding-left: 12px; }
+  .ls-fold { flex: none; margin-left: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px; background: var(--panel); cursor: pointer; }
+
+  /* Concept 2 - hidden: the attention hairline, only when a stage is amber. */
+  .line-hairline { flex: none; display: flex; gap: 2px; height: 3px; padding: 0 22px; background: var(--bg); }
+  .line-hairline i { flex: 1 1 0; background: transparent; border-radius: 2px; }
+  .line-hairline i.amber { background: var(--attention); }
+
+  /* The 14px hover target that reveals the peek. ABSOLUTE, so it costs zero layout
+     height - it floats over the top of the conversation rather than taking a band. A
+     flex-item lip would have cost 14px, which is a sixth of what Hidden is meant to free. */
+  .peek-lip { position: absolute; top: 0; left: 0; right: 0; z-index: 5; height: 14px; display: flex; align-items: center; justify-content: center; background: linear-gradient(var(--bg), transparent); cursor: pointer; }
+  .peek-lip span { font-family: var(--mono); font-size: 9px; letter-spacing: .22em; color: var(--dim); }
+
+  /* Concept 3 - peek: the unpinned overlay, floating over an unmoved board. */
+  .line.is-peek { position: absolute; top: 0; left: 0; right: 0; z-index: 6; background: var(--bg-2); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 12px 12px; box-shadow: 0 14px 34px rgba(0,0,0,.62); }
+  .ls-pin { flex: none; align-self: center; margin-left: 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; cursor: pointer; }
+  .ls-pin.on { color: var(--working); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+
+  /* Concept 4 - the topbar chip group. */
+  .tb-line { display: flex; align-items: center; gap: 3px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  .tb-seg { display: flex; align-items: baseline; gap: 5px; padding: 3px 6px; border-radius: 5px; font-family: var(--mono); }
+  .tb-seg .g { font-size: 11px; color: var(--muted); }
+  .tb-seg .n { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg); }
+  .tb-seg.amber { background: color-mix(in oklab, var(--attention) 13%, transparent); }
+  .tb-seg.amber .g, .tb-seg.amber .n { color: var(--attention); }
+
+  /* the three-position density control */
+  .dens { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  .dens button { font: 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); background: transparent; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  .dens button.on { color: var(--fg); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
+
+  figure { margin: 18px 0 0; }
+  svg.diagram { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<main>
+<h1>Collapsing the Line</h1>
+<p class="lede">Five mockups for giving the conversation back the 86 vertical pixels the pipeline strip
+currently holds, each measured rather than estimated - and the one that was adopted, which keeps the
+amber alert the strip exists for.</p>
+<p><span class="status" style="border-color:var(--good);color:var(--ink)">Decided &middot; Concept 1 adopted &middot; mockups only, no code change</span></p>
+
+<div class="ab" style="background:transparent;border-color:var(--good)">
+  <p style="margin:0 0 8px;font:11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--good)">Decisions taken</p>
+  <table class="doc" style="color:var(--ink-2)"><tbody>
+  <tr><td>Which concepts to build</td><td><strong style="color:var(--ink)">Concept 1 - Condensed, the one-line ticker. Only that one.</strong></td></tr>
+  <tr><td>Default density on upgrade</td><td><strong style="color:var(--ink)">Condensed</strong></td></tr>
+  <tr><td>Does Hidden keep the attention hairline</td><td><strong style="color:var(--ink)">Keep the 3px segmented hairline</strong> - held in reserve, since Hidden is not in scope</td></tr>
+  </tbody></table>
+  <p class="cap" style="color:var(--ink-3)">Concepts 2, 3 and 4 are kept below as the design record rather than deleted - the rejected shapes are why the adopted one won. Concept 4 is deferred, not rejected.</p>
+</div>
+
+<blockquote>Collapse the bar entirely. It should be expandable to show again (pinned?). So something
+like pinned or unpinned, or collapsed or expanded, beyond what it already has. We want to free up
+more vertical real estate for the chat window.</blockquote>
+
+<p>Two vocabularies are in that sentence - <strong>pinned/unpinned</strong> and
+<strong>collapsed/expanded</strong> - and they are not the same axis. Separating them is most of the
+design work, so it is done up front rather than left to the concepts.</p>
+
+<h2>What the Line costs today, measured</h2>
+
+<p>Measured in Chromium at a 1512&times;900 viewport - a 14" MacBook Pro's logical size - against the
+real <code>src/web/styles.css</code>, in the console layout. These are read off the live layout, not
+estimated from the stylesheet:</p>
+
+<div class="scroll-x">
+<table class="doc">
+  <thead><tr><th>Band</th><th>Used height</th><th>How it is built</th></tr></thead>
+  <tbody>
+    <tr><td><code>.topbar</code></td><td class="num">57px</td><td>Not in scope here.</td></tr>
+    <tr><td><code>.line</code></td><td class="num"><strong>86px</strong></td><td>12px padding + 61px stage + 12px padding + 1px border</td></tr>
+    <tr><td><code>.line-stage</code></td><td class="num">61px</td><td>11px pad + 17px <code>.ls-head</code> + 6px gap + 14px <code>.ls-sub</code> + 11px pad + 2px border</td></tr>
+    <tr><td><code>.console</code></td><td class="num">757px</td><td>The rail and the conversation - everything the strip takes from.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two facts follow, and together they are the whole reason this is worth doing:</p>
+<ul>
+  <li><strong>The Line is <code>flex: none</code> inside a <code>height: 100dvh</code> flex column.</strong>
+  <code>.app-console</code> and <code>.app-board</code> do not scroll, so every pixel the strip uses is
+  taken directly off the conversation pane. There is no scrollback that hands it back.</li>
+  <li><strong>86px of 900px is 9.6% of the window.</strong> Reclaiming all of it takes the console pane
+  from 757px to 843px - an <strong>11.4% taller conversation</strong>, on the surface an operator spends
+  the whole day in.</li>
+</ul>
+
+<p><code>.ls-sub</code> - the sentence line - is 14px of content that costs 20px of band once its gap is
+counted, and it is the only part of the strip that is prose rather than a number. That makes it the
+natural first thing to give up, which is exactly what Concept 1 does.</p>
+
+<h3>Today: expanded, 86px</h3>
+
+<div class="ab">
+  <div class="win">
+    <div class="win-tb">
+      <span class="win-brand">Mission Control</span>
+      <span class="tb-chip">FLEET 11</span>
+      <span class="tb-chip tb-sp">FOREMAN</span>
+      <span class="tb-chip">$47.75</span>
+    </div>
+    <span class="band-tag" style="top: 150px;">.line - 86px</span>
+    <nav class="line">
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#8650;</span><span class="ls-name">Intake</span><span class="ls-count">3</span></span><span class="ls-sub">github-issues swept 6m ago &middot; next mission in 17h</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#9776;</span><span class="ls-name">Backlog</span><span class="ls-count">9</span></span><span class="ls-sub">next up: Support Conductor refused steps and plan-gap &hellip;</span></button>
+      <span class="line-wire hot"></span>
+      <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9654;</span><span class="ls-name">Working</span><span class="ls-count">11</span></span><span class="ls-sub">1 needs you &middot; 2 working &middot; 8 idle</span></button>
+      <span class="line-wire hot"></span>
+      <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9089;</span><span class="ls-name">Review</span><span class="ls-count">3</span></span><span class="ls-sub">No-Mistakes Review v10 &times;3 &middot; 2 stalled</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">&#10697;</span><span class="ls-name">Decide</span><span class="ls-count">0</span></span><span class="ls-sub">no ensembles live</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#9873;</span><span class="ls-name">Shipped</span><span class="ls-count">39</span></span><span class="ls-sub">this week &middot; ~$47.75 per PR today</span></button>
+    </nav>
+    <div class="win-body">
+      <div class="win-rail">
+        <div class="rr a on"><i></i>needs you</div>
+        <div class="rr w"><i></i>refactor registry</div>
+        <div class="rr w"><i></i>line drawers spec</div>
+        <div class="rr i"><i></i>ship log page</div>
+        <div class="rr i"><i></i>topbar ladder</div>
+        <div class="rr i"><i></i>db isolation</div>
+      </div>
+      <div class="win-conv">
+        <div class="cv"><span class="u">collapse the line strip</span></div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Reading <span class="c">src/web/components/LineStrip.tsx</span></div>
+        <div class="cv">The strip renders at a fixed height whatever it</div>
+        <div class="cv">is saying, including nothing - so a stage that</div>
+        <div class="cv">lost its sentence would shorten the whole strip</div>
+        <div class="cv">and step every card underneath it up by a line.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Measured the band in Chromium at 1512x900:</div>
+        <div class="cv">&nbsp; topbar &nbsp;&nbsp;57px</div>
+        <div class="cv">&nbsp; line &nbsp;&nbsp;&nbsp;&nbsp;86px</div>
+        <div class="cv">&nbsp; console &nbsp;757px</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">That 86px is 9.6% of the window, and it comes</div>
+        <div class="cv">straight off this pane - the shell is 100dvh</div>
+        <div class="cv">and does not scroll.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv"><span class="u">and what would we get back?</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><b>Baseline.</b> The window is a fixed 392px in every artboard on this page, so a
+  shorter band means more transcript on screen. The clipping at the bottom of the conversation is the
+  argument - watch where it lands as the band shrinks.</p>
+</div>
+
+<h2>Two axes, one control</h2>
+
+<div class="scroll-x">
+<table class="doc">
+  <thead><tr><th>Axis</th><th>Values</th><th>What it governs</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Density</strong></td><td>Expanded / Condensed / Hidden</td><td>How much the strip <em>says</em></td></tr>
+    <tr><td><strong>Pinning</strong></td><td>Pinned / Unpinned</td><td>Whether the strip <em>takes layout height</em> or floats over the board</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Crossed, that is six states, and a six-state chrome control is worse than the 86px it saves. The
+recommendation collapses it to <strong>three positions on one control</strong>, because pinning is only
+a real choice in the middle:</p>
+
+<ul>
+  <li><strong>Expanded</strong> - today's two-line strip. Pinned by definition; a floating 86px panel
+  over the board is strictly worse than the pinned one.</li>
+  <li><strong>Condensed</strong> - one line, counts and tones only. Pinned.</li>
+  <li><strong>Hidden</strong> - zero layout height. Unpinned by definition; the peek overlay is how you
+  reach it.</li>
+</ul>
+
+<p>So pinned/unpinned is not a switch the operator sets. It is <em>implied by the density they chose</em>.
+That is the honest version of the two-axis model, and it needs one control instead of two.</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 940 228" role="img" aria-label="State machine: Expanded, Condensed and Hidden are three positions on one control. The caret steps between them. From Hidden, hovering the lip or pressing the chord reveals a transient peek overlay that costs no layout height, and the attention hairline persists in Hidden.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-3)"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace, Menlo, monospace" font-size="12">
+    <rect x="20" y="34" width="200" height="62" rx="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="120" y="58" fill="var(--accent)" text-anchor="middle" font-size="12.5">EXPANDED</text>
+    <text x="120" y="78" fill="var(--ink-2)" text-anchor="middle" font-size="11">86px &middot; pinned</text>
+
+    <rect x="300" y="34" width="200" height="62" rx="9" fill="none" stroke="var(--good)" stroke-width="2"/>
+    <text x="400" y="58" fill="var(--good)" text-anchor="middle" font-size="12.5">CONDENSED</text>
+    <text x="400" y="78" fill="var(--ink-2)" text-anchor="middle" font-size="11">38.5px &middot; pinned &middot; default</text>
+
+    <rect x="580" y="34" width="200" height="62" rx="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="680" y="58" fill="var(--accent)" text-anchor="middle" font-size="12.5">HIDDEN</text>
+    <text x="680" y="78" fill="var(--ink-2)" text-anchor="middle" font-size="11">0px &middot; unpinned</text>
+
+    <line x1="222" y1="65" x2="296" y2="65" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+    <line x1="502" y1="65" x2="576" y2="65" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+    <text x="259" y="57" fill="var(--ink-3)" text-anchor="middle" font-size="10.5">caret</text>
+    <text x="539" y="57" fill="var(--ink-3)" text-anchor="middle" font-size="10.5">caret</text>
+
+    <line x1="580" y1="107" x2="780" y2="107" stroke="var(--warn)" stroke-width="3"/>
+    <text x="680" y="124" fill="var(--warn)" text-anchor="middle" font-size="10.5">attention hairline persists</text>
+
+    <line x1="680" y1="136" x2="680" y2="158" stroke="var(--ink-3)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ag)" marker-start="url(#ag)"/>
+    <text x="800" y="140" fill="var(--ink-3)" font-size="10.5">hover the lip,</text>
+    <text x="800" y="155" fill="var(--ink-3)" font-size="10.5">or the chord</text>
+
+    <rect x="580" y="162" width="200" height="52" rx="9" fill="none" stroke="var(--ink-3)" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="680" y="184" fill="var(--ink-2)" text-anchor="middle" font-size="12">PEEK OVERLAY</text>
+    <text x="680" y="202" fill="var(--ink-3)" text-anchor="middle" font-size="11">transient &middot; 0px cost</text>
+    <text x="800" y="192" fill="var(--ink-3)" font-size="10.5">pin &rarr; Expanded</text>
+  </g>
+</svg>
+<p class="cap"><b>One control, three positions.</b> The caret steps between densities and the choice
+persists. The peek overlay is transient and costs no layout height, which is what keeps Hidden from
+being a one-way door.</p>
+</figure>
+<h2>What must survive a collapse</h2>
+
+<p>The strip is not decoration, and <code>src/web/components/LineStrip.tsx</code> says so in its own
+header: it renders at a fixed height whatever it is saying, <em>including nothing</em>, because a strip
+that vanished when the fleet went quiet "would stop being the place you look". Collapsing it fights
+that intent directly. Everything below only works if it keeps the three things the strip exists for:</p>
+
+<ul>
+  <li><strong>The amber read.</strong> <code>tone-attention</code> is the one signal the strip was built
+  to carry - a session is stuck on you. A collapsed state that drops amber has not freed 86px, it has
+  deleted the feature. Every concept keeps an amber path, and the recommended Hidden state keeps a mark
+  on screen even with nothing else left.</li>
+  <li><strong>A stable board.</strong> The strip holds its height so the cards underneath never step up
+  and down. A collapse must be a deliberate act with a persisted result, never something that happens
+  on its own while the operator is reading - which is why Concept 5 is written down and then rejected.</li>
+  <li><strong>One gesture back.</strong> Collapsed must not mean buried.</li>
+</ul>
+
+<h2>Concept 1 - Condensed: the one-line ticker <span style="color:var(--good);font-size:13px;font-family:var(--mono);letter-spacing:.1em">ADOPTED</span></h2>
+
+<p>Drop <code>.ls-sub</code> and the wires. Six inline segments - glyph, name, count - on a single row in
+the same 22px gutters, with the density control at the right. The single most urgent sentence is
+<em>promoted</em> to ride at the right of the row, so the one piece of prose that is ever load-bearing is
+the one piece that survives.</p>
+
+<div class="ab">
+  <div class="win">
+    <div class="win-tb">
+      <span class="win-brand">Mission Control</span>
+      <span class="tb-chip">FLEET 11</span>
+      <span class="tb-chip tb-sp">FOREMAN</span>
+      <span class="tb-chip">$47.75</span>
+    </div>
+    <span class="band-tag" style="top: 103px;">.line - 38.5px</span>
+    <nav class="line is-condensed">
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#8650;</span><span class="ls-name">Intake</span><span class="ls-count">3</span></span></button>
+      <span class="ls-div"></span>
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#9776;</span><span class="ls-name">Backlog</span><span class="ls-count">9</span></span></button>
+      <span class="ls-div"></span>
+      <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9654;</span><span class="ls-name">Working</span><span class="ls-count">11</span></span></button>
+      <span class="ls-div"></span>
+      <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9089;</span><span class="ls-name">Review</span><span class="ls-count">3</span></span></button>
+      <span class="ls-div"></span>
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">&#10697;</span><span class="ls-name">Decide</span><span class="ls-count">0</span></span></button>
+      <span class="ls-div"></span>
+      <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#9873;</span><span class="ls-name">Shipped</span><span class="ls-count">39</span></span></button>
+      <span class="ls-urgent">1 needs you &middot; 2 stalled</span>
+      <button class="ls-fold" title="Expand the Line">&#9662;</button>
+    </nav>
+    <div class="win-body">
+      <div class="win-rail">
+        <div class="rr a on"><i></i>needs you</div>
+        <div class="rr w"><i></i>refactor registry</div>
+        <div class="rr w"><i></i>line drawers spec</div>
+        <div class="rr i"><i></i>ship log page</div>
+        <div class="rr i"><i></i>topbar ladder</div>
+        <div class="rr i"><i></i>db isolation</div>
+      </div>
+      <div class="win-conv">
+        <div class="cv"><span class="u">collapse the line strip</span></div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Reading <span class="c">src/web/components/LineStrip.tsx</span></div>
+        <div class="cv">The strip renders at a fixed height whatever it</div>
+        <div class="cv">is saying, including nothing - so a stage that</div>
+        <div class="cv">lost its sentence would shorten the whole strip</div>
+        <div class="cv">and step every card underneath it up by a line.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Measured the band in Chromium at 1512x900:</div>
+        <div class="cv">&nbsp; topbar &nbsp;&nbsp;57px</div>
+        <div class="cv">&nbsp; line &nbsp;&nbsp;&nbsp;&nbsp;86px</div>
+        <div class="cv">&nbsp; console &nbsp;757px</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">That 86px is 9.6% of the window, and it comes</div>
+        <div class="cv">straight off this pane - the shell is 100dvh</div>
+        <div class="cv">and does not scroll.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv"><span class="u">and what would we get back?</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><b>Condensed.</b> Two more transcript lines clear the fold than in the baseline. Amber
+  still reads per stage, and the promoted "1 needs you &middot; 2 stalled" keeps the one sentence that
+  was ever urgent.</p>
+</div>
+
+<ul class="verdict">
+  <li class="freed">frees 47.5px of 86px</li>
+  <li class="rec">all six drawers still reachable</li>
+  <li class="rec">amber survives, per stage</li>
+  <li class="risk">loses "next up: &hellip;" and the per-PR cost</li>
+</ul>
+
+<p>The segments stay buttons, so <code>aria-expanded</code>, the drawers and the keyboard path are
+unchanged - this is a density change, not a new surface. What it costs is the prose: "next up:
+&lt;task title&gt;" and "~$47.75 per PR today" are gone until you expand or open the drawer.</p>
+
+<h2>Concept 2 - Hidden: nothing, plus an attention hairline <span style="color:var(--ink-3);font-size:13px;font-family:var(--mono);letter-spacing:.1em">NOT IN SCOPE</span></h2>
+
+<p>Zero layout height. In its place a 3px full-width bar rendered <strong>only when a stage is
+amber</strong>, segmented into six so the amber segment's horizontal position still says which stage it
+is. A calm fleet shows nothing at all. This is the concept that answers "collapse the bar entirely"
+literally.</p>
+
+<div class="ab">
+  <div class="win">
+    <div class="win-tb">
+      <span class="win-brand">Mission Control</span>
+      <span class="tb-chip">FLEET 11</span>
+      <span class="tb-chip tb-sp">FOREMAN</span>
+      <span class="tb-chip">$47.75</span>
+    </div>
+    <span class="band-tag" style="top: 61px;">hairline - 3px</span>
+    <div class="line-hairline" title="Working and Review need you">
+      <i></i><i></i><i class="amber"></i><i class="amber"></i><i></i><i></i>
+    </div>
+    <div class="win-body">
+      <div class="peek-lip"><span>&middot;&middot;&middot;&middot;&middot;</span></div>
+      <div class="win-rail">
+        <div class="rr a on"><i></i>needs you</div>
+        <div class="rr w"><i></i>refactor registry</div>
+        <div class="rr w"><i></i>line drawers spec</div>
+        <div class="rr i"><i></i>ship log page</div>
+        <div class="rr i"><i></i>topbar ladder</div>
+        <div class="rr i"><i></i>db isolation</div>
+      </div>
+      <div class="win-conv">
+        <div class="cv"><span class="u">collapse the line strip</span></div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Reading <span class="c">src/web/components/LineStrip.tsx</span></div>
+        <div class="cv">The strip renders at a fixed height whatever it</div>
+        <div class="cv">is saying, including nothing - so a stage that</div>
+        <div class="cv">lost its sentence would shorten the whole strip</div>
+        <div class="cv">and step every card underneath it up by a line.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Measured the band in Chromium at 1512x900:</div>
+        <div class="cv">&nbsp; topbar &nbsp;&nbsp;57px</div>
+        <div class="cv">&nbsp; line &nbsp;&nbsp;&nbsp;&nbsp;86px</div>
+        <div class="cv">&nbsp; console &nbsp;757px</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">That 86px is 9.6% of the window, and it comes</div>
+        <div class="cv">straight off this pane - the shell is 100dvh</div>
+        <div class="cv">and does not scroll.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv"><span class="u">and what would we get back?</span></div>
+        <div class="cv">All 86px of it. This pane goes 757px &rarr; 843px,</div>
+        <div class="cv">which is 11.4% more conversation.</div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><b>Hidden.</b> Two more lines again, and the answer to the question now fits on screen.
+  The amber hairline sits under segments three and four - Working and Review - so the alert is not
+  hidden with the strip. The <span style="font-family:var(--mono)">&middot;&middot;&middot;&middot;&middot;</span>
+  lip is the 14px hover target that reveals the peek.</p>
+</div>
+
+<ul class="verdict">
+  <li class="freed">frees 83px amber / 86px calm</li>
+  <li class="rec">the full 11.4% taller conversation</li>
+  <li class="rec">alert survives the collapse</li>
+  <li class="risk">undiscoverable without the peek and a chord</li>
+</ul>
+
+<h2>Concept 3 - Peek: the unpinned overlay <span style="color:var(--ink-3);font-size:13px;font-family:var(--mono);letter-spacing:.1em">NOT IN SCOPE</span></h2>
+
+<p>How you read the strip from Hidden without giving the 86px back. The full two-line strip floats over
+the top of the board - <code>position: absolute</code>, a shadow, the board unmoved underneath - on hover
+of the lip, on the chord, or on focus. The pin button in its corner returns it to Expanded for good.</p>
+
+<div class="ab">
+  <div class="win">
+    <div class="win-tb">
+      <span class="win-brand">Mission Control</span>
+      <span class="tb-chip">FLEET 11</span>
+      <span class="tb-chip tb-sp">FOREMAN</span>
+      <span class="tb-chip">$47.75</span>
+    </div>
+    <div class="line-hairline"><i></i><i></i><i class="amber"></i><i class="amber"></i><i></i><i></i></div>
+    <div class="win-body">
+      <div class="peek-lip"><span>&middot;&middot;&middot;&middot;&middot;</span></div>
+      <div class="win-rail">
+        <div class="rr a on"><i></i>needs you</div>
+        <div class="rr w"><i></i>refactor registry</div>
+        <div class="rr w"><i></i>line drawers spec</div>
+        <div class="rr i"><i></i>ship log page</div>
+        <div class="rr i"><i></i>topbar ladder</div>
+        <div class="rr i"><i></i>db isolation</div>
+      </div>
+      <div class="win-conv">
+        <div class="cv"><span class="u">collapse the line strip</span></div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Reading <span class="c">src/web/components/LineStrip.tsx</span></div>
+        <div class="cv">The strip renders at a fixed height whatever it</div>
+        <div class="cv">is saying, including nothing - so a stage that</div>
+        <div class="cv">lost its sentence would shorten the whole strip</div>
+        <div class="cv">and step every card underneath it up by a line.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Measured the band in Chromium at 1512x900:</div>
+        <div class="cv">&nbsp; topbar &nbsp;&nbsp;57px</div>
+        <div class="cv">&nbsp; line &nbsp;&nbsp;&nbsp;&nbsp;86px</div>
+        <div class="cv">&nbsp; console &nbsp;757px</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">That 86px is 9.6% of the window, and it comes</div>
+        <div class="cv">straight off this pane - the shell is 100dvh</div>
+        <div class="cv">and does not scroll.</div>
+      </div>
+      <nav class="line is-peek">
+        <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#8650;</span><span class="ls-name">Intake</span><span class="ls-count">3</span></span><span class="ls-sub">github-issues swept 6m ago &middot; next in 17h</span></button>
+        <span class="line-wire"></span>
+        <button class="line-stage tone-idle"><span class="ls-head"><span class="ls-glyph">&#9776;</span><span class="ls-name">Backlog</span><span class="ls-count">9</span></span><span class="ls-sub">next up: Support Conductor refused steps &hellip;</span></button>
+        <span class="line-wire hot"></span>
+        <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9654;</span><span class="ls-name">Working</span><span class="ls-count">11</span></span><span class="ls-sub">1 needs you &middot; 2 working &middot; 8 idle</span></button>
+        <span class="line-wire hot"></span>
+        <button class="line-stage tone-attention"><span class="ls-head"><span class="ls-glyph">&#9089;</span><span class="ls-name">Review</span><span class="ls-count">3</span></span><span class="ls-sub">No-Mistakes Review v10 &times;3 &middot; 2 stalled</span></button>
+        <span class="line-wire"></span>
+        <button class="line-stage"><span class="ls-head"><span class="ls-glyph">&#10697;</span><span class="ls-name">Decide</span><span class="ls-count">0</span></span><span class="ls-sub">no ensembles live</span></button>
+        <button class="ls-pin" title="Pin the Line open">&#128204; pin</button>
+      </nav>
+    </div>
+  </div>
+  <p class="cap"><b>Peek.</b> The strip is over the board, not in it - the transcript underneath has not
+  moved a pixel, and it returns in full the moment the pointer leaves. Shipped is pushed off the end here
+  to make room for the pin, which is a real trade the build has to settle: pin in the corner, or pin in
+  the drawer header.</p>
+</div>
+
+<ul class="verdict">
+  <li class="freed">frees 86px, always</li>
+  <li class="rec">not a one-way door</li>
+  <li class="risk">covers the top of the conversation while open</li>
+  <li class="risk">hover-reveal needs a chord to be honest</li>
+</ul>
+
+<p>If Hidden is ever built, this is what it needs alongside it rather than an alternative to it - less a standalone concept than the
+mechanism Hidden needs in order to be reasonable.</p>
+
+<h2>Concept 4 - Fold into the topbar <span style="color:var(--warn);font-size:13px;font-family:var(--mono);letter-spacing:.1em">DEFERRED</span></h2>
+
+<p>Delete the band entirely and ride the six counts in the topbar as a compact chip group beside the
+fleet pulse. Strictly the best outcome available: the full 86px, and no new chrome anywhere on the page.</p>
+
+<div class="ab">
+  <div class="win">
+    <div class="win-tb">
+      <span class="win-brand">Mission Control</span>
+      <span class="tb-line">
+        <span class="tb-seg"><span class="g">&#8650;</span><span class="n">3</span></span>
+        <span class="tb-seg"><span class="g">&#9776;</span><span class="n">9</span></span>
+        <span class="tb-seg amber"><span class="g">&#9654;</span><span class="n">11</span></span>
+        <span class="tb-seg amber"><span class="g">&#9089;</span><span class="n">3</span></span>
+        <span class="tb-seg"><span class="g">&#10697;</span><span class="n">0</span></span>
+        <span class="tb-seg"><span class="g">&#9873;</span><span class="n">39</span></span>
+      </span>
+      <span class="tb-chip tb-sp">FOREMAN</span>
+      <span class="tb-chip">$47.75</span>
+    </div>
+    <div class="win-body">
+      <div class="win-rail">
+        <div class="rr a on"><i></i>needs you</div>
+        <div class="rr w"><i></i>refactor registry</div>
+        <div class="rr w"><i></i>line drawers spec</div>
+        <div class="rr i"><i></i>ship log page</div>
+        <div class="rr i"><i></i>topbar ladder</div>
+        <div class="rr i"><i></i>db isolation</div>
+      </div>
+      <div class="win-conv">
+        <div class="cv"><span class="u">collapse the line strip</span></div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Reading <span class="c">src/web/components/LineStrip.tsx</span></div>
+        <div class="cv">The strip renders at a fixed height whatever it</div>
+        <div class="cv">is saying, including nothing - so a stage that</div>
+        <div class="cv">lost its sentence would shorten the whole strip</div>
+        <div class="cv">and step every card underneath it up by a line.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">Measured the band in Chromium at 1512x900:</div>
+        <div class="cv">&nbsp; topbar &nbsp;&nbsp;57px</div>
+        <div class="cv">&nbsp; line &nbsp;&nbsp;&nbsp;&nbsp;86px</div>
+        <div class="cv">&nbsp; console &nbsp;757px</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">That 86px is 9.6% of the window, and it comes</div>
+        <div class="cv">straight off this pane - the shell is 100dvh</div>
+        <div class="cv">and does not scroll.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv"><span class="u">and what would we get back?</span></div>
+        <div class="cv">All 86px of it. This pane goes 757px &rarr; 843px,</div>
+        <div class="cv">which is 11.4% more conversation.</div>
+        <div class="cv"><span class="d">&nbsp;</span></div>
+        <div class="cv">No band at all - the counts moved into the bar.</div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><b>Topbar.</b> The most conversation of any concept here, and the only one that adds no
+  chrome to pay for it. Also the riskiest - see below.</p>
+</div>
+
+<ul class="verdict">
+  <li class="freed">frees 86px, no new chrome</li>
+  <li class="risk">fights the topbar rung ladder for width</li>
+  <li class="risk">can move <code>--topbar-h</code></li>
+  <li class="no">not recommended first</li>
+</ul>
+
+<p>The topbar is already on a responsive rung ladder - <code>fitTopbar</code> and
+<code>data-rung</code> - that sheds controls as the window narrows, and <code>--topbar-h</code> is
+measured off that element and read by every full-height surface on the page. Adding six counts fights
+the ladder for width and can change the measured height. This repository's agent memory also records
+that adding a segment to the title bar broke guards in four separate layers. Worth doing eventually;
+not worth doing first, and not in the same change as the collapse.</p>
+
+<h2>Concept 5 - Auto-collapse on conversation focus <span style="color:#d33;font-size:13px;font-family:var(--mono);letter-spacing:.1em">REJECTED</span></h2>
+
+<p>Condense automatically the moment the conversation takes focus; expand on Esc. No manual state at all.</p>
+
+<p>Rejected, and recorded here so it is not re-proposed: chrome that moves itself under the cursor is
+exactly what the strip's fixed height exists to prevent. The operator would lose the strip at the moment
+they clicked toward it. If it ships at all it ships as an opt-in, after the manual control exists.</p>
+
+<ul class="verdict"><li class="no">rejected &middot; moves chrome under the cursor</li></ul>
+<h2>Side by side</h2>
+
+<div class="scroll-x">
+<table class="doc">
+  <thead><tr><th>Concept</th><th>Band</th><th>Frees</th><th>Conversation</th><th>Amber survives?</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Today - Expanded</td><td class="num">86px</td><td class="num">-</td><td class="num">757px</td><td>yes, in full</td><td>baseline</td></tr>
+    <tr><td>1 - Condensed</td><td class="num">38.5px</td><td class="num">47.5px</td><td class="num">805px</td><td>yes, per stage</td><td><strong style="color:var(--good)">ADOPTED - new default</strong></td></tr>
+    <tr><td>2 - Hidden + hairline</td><td class="num">3px / 0px</td><td class="num">83px / 86px</td><td class="num">840px / 843px</td><td>yes, as a 3px mark</td><td>not in scope</td></tr>
+    <tr><td>3 - Peek overlay</td><td class="num">0px</td><td class="num">86px</td><td class="num">843px</td><td>n/a - transient</td><td>not in scope</td></tr>
+    <tr><td>4 - Into the topbar</td><td class="num">0px</td><td class="num">86px</td><td class="num">843px</td><td>yes, in the bar</td><td>defer to its own change</td></tr>
+    <tr><td>5 - Auto-collapse</td><td class="num">varies</td><td class="num">47.5px</td><td class="num">805px</td><td>yes</td><td>rejected</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="cap">Band heights for concepts 1 and 2 are measured off the artboards on this page in the same
+Chromium run as the baseline. Conversation figures are the 757px console pane plus what each concept
+frees, at a 900px window.</p>
+
+<h2>Adopted scope</h2>
+
+<p>Ship <strong>a two-position control</strong> - Expanded and Condensed - with
+<strong>Condensed as the new default.</strong> That is Concept 1 and nothing else.</p>
+
+<ul>
+  <li>Condensed frees <strong>47.5px</strong> with no new gesture to learn, every drawer still reachable
+  and amber intact per stage. Most of the available win, almost none of the risk.</li>
+  <li><strong>Expanded remains reachable</strong> and unchanged, so nothing is lost - only folded.</li>
+  <li>Defaulting to Condensed changes what every existing operator sees on upgrade. That was asked and
+  answered rather than assumed.</li>
+</ul>
+
+<p>Held in reserve, with the design question already settled so it does not have to be reopened: if
+<strong>Hidden</strong> is ever built it keeps the <strong>3px segmented attention hairline</strong>, and
+the <strong>peek overlay</strong> is the mechanism it needs in order not to be a one-way door.
+<strong>Concept 4</strong> is deferred rather than rejected.</p>
+
+<div class="ab">
+  <p style="margin:0 0 12px; font: 11px/1 var(--mono); letter-spacing:.14em; color:var(--muted); text-transform:uppercase;">The control, as adopted</p>
+  <div class="dens">
+    <button>Expanded</button>
+    <button class="on">Condensed</button>
+  </div>
+  <p class="cap" style="color:#7c8798;">Two positions, drawn here as a segmented control for the settings
+  panel. In the strip itself it is the single caret shown in the Concept 1 artboard. A third
+  <span style="font-family:var(--mono)">Hidden</span> position can join later without renaming anything,
+  which is the whole reason <code style="background:none;color:var(--muted)">lineDensity</code> is a named
+  set rather than a boolean.</p>
+</div>
+
+<h3>What the narrowed scope means for the build</h3>
+
+<p>Two consequences follow from the scope being Concept 1 alone, and both are cheaper than the
+three-state version:</p>
+
+<ul>
+  <li><strong>The guards move less.</strong> <code>test/line-strip-electron.test.ts</code> needs one new
+  case at 38.5px rather than a case per density, and nothing in this scope is 0px tall - so the tour's
+  <code>see-work:line</code> target always exists and <code>e2e/specs/see-work-tour.spec.ts</code> needs
+  no hidden-strip branch at all. That was the most awkward integration in the full proposal, and this
+  scope avoids it outright.</li>
+  <li><strong><code>lineDensity</code> stays a named set anyway.</strong> Two states would fit in a
+  boolean, and it should still not be one: the key is persisted on operators' machines, so a
+  <code>lineCollapsed: boolean</code> would have to be renamed the day Hidden arrives.</li>
+</ul>
+
+<h2>How it would be built</h2>
+
+<p>Sketch only - enough to price the concepts, not an implementation plan.</p>
+
+<ul>
+  <li><strong>State.</strong> A <code>lineDensity: "expanded" | "condensed" | "hidden"</code> key on
+  <code>UiConfig</code> in <code>src/shared/protocol.ts</code>, defaulted in
+  <code>UI_CONFIG_DEFAULTS</code>. That blob is the established home for exactly this kind of per-machine
+  display preference - <code>layout</code>, <code>conversationView</code> and
+  <code>hiddenDisplayItems</code> already live there, and a new key needs no migration. A named set rather
+  than a boolean, following <code>CONVERSATION_VIEWS</code>, because three states are already more than a
+  boolean and a fourth reading is plausible.</li>
+  <li><strong>Render.</strong> <code>LineStrip</code> grows a density prop and the caret. The
+  <code>WorkQueue</code> fold is the precedent to follow: one <code>.wq-collapsed</code> class hides the
+  body for every branch the panel renders, so no branch can forget to fold, and the header keeps
+  reporting the count that is still there.</li>
+  <li><strong>Gesture.</strong> The caret in the strip, plus a bindable chord through the existing
+  keybindings table.</li>
+</ul>
+
+<h3>Guards this will touch</h3>
+
+<p>Named so the cost is visible now rather than discovered mid-build.</p>
+
+<div class="scroll-x">
+<table class="doc">
+  <thead><tr><th>Guard</th><th>What it asserts today</th><th>What the collapse does to it</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>test/line-strip-electron.test.ts</code></td>
+      <td>Used height falls in a <strong>70-110px</strong> band, all six stages render, and the height is
+      identical whatever the strip is saying.</td>
+      <td>Condensed at 38.5px and Hidden at 0px are both outside that band. Needs a case per density rather
+      than a widened band - the band is the claim for Expanded and should stay that.</td>
+    </tr>
+    <tr>
+      <td><code>e2e/specs/line-strip.spec.ts</code>, <code>e2e/specs/line-drawers.spec.ts</code></td>
+      <td>Drive the strip and its drawers as drawn today.</td>
+      <td>Must either force Expanded or learn the new default.</td>
+    </tr>
+    <tr>
+      <td><code>e2e/specs/see-work-tour.spec.ts</code>, <code>src/web/tour/tours/see-work.ts</code></td>
+      <td>Point a tour step at the <code>see-work:line</code> target.</td>
+      <td>A hidden strip has nothing to point at. The tour must force Expanded for its duration or skip
+      the step.</td>
+    </tr>
+    <tr>
+      <td>Repository rule</td>
+      <td>Every new UI feature needs a Playwright spec in <code>e2e/</code>.</td>
+      <td>The density control needs its own spec - no exemptions.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Decisions, as answered</h2>
+
+<p>These were asked as selectable options in the Mission Control dashboard and resolved there:</p>
+<ol>
+  <li>Which concepts to build - <strong>Concept 1, Condensed. Only that one.</strong></li>
+  <li>What the default density is on upgrade - <strong>Condensed.</strong></li>
+  <li>Whether Hidden keeps the attention hairline - <strong>keep the 3px segmented hairline</strong>,
+  held in reserve, since Hidden itself is not in scope.</li>
+</ol>
+
+<p class="cap" style="margin-top:34px;">Source of truth: <code>docs/plans/line-collapse/plan.md</code>.
+This page is a rendering of it, not a fork. Baseline metrics measured in Chromium 1512&times;900 against
+<code>src/web/styles.css</code>; the <code>.line</code> rules in this page's stylesheet are copied
+verbatim from that file so the artboards render at the app's true metrics.</p>
+
+</main>
+</body>
+</html>

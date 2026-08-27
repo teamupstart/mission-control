@@ -64,9 +64,12 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
+import { toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { useUiConfig } from "./lib/uiConfig.ts";
+import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -334,6 +337,7 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
   const [layout, setLayout] = useLayoutMode();
+  const [lineDensity, setLineDensity] = useLineDensity();
   const foreman = useForeman();
   // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
   // popover and the Cost panel read the same `view` setting, so a local copy in the page
@@ -1692,11 +1696,16 @@ export function App(): React.JSX.Element {
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
 
+  // Repository grouping reorders the fleet, so it belongs to this memo's inputs rather than to
+  // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
+  // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
+  // all three orderings agree by construction rather than by a prop being threaded correctly.
+  const groupByRepo = useUiConfig().groupBoardByRepo;
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds);
-  }, [sessions, filter, heldIds]);
+    return orderSessions(matched, heldIds, groupByRepo);
+  }, [sessions, filter, heldIds, groupByRepo]);
   const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the
@@ -1824,9 +1833,24 @@ export function App(): React.JSX.Element {
   // The board's columns as ids, so the arrow keys can cross between them. Read off the same
   // `orderSessions` result the board renders - not a second grouping pass - so navigation
   // can't disagree with what's on screen, cluster reordering included.
+  // Sessions inside a folded repository frame. A fold takes cards out of the DOM, so navigation
+  // has to step over them: without this the cursor walked into rows nobody could see, nothing
+  // drew as selected, and Enter opened a session that was not on screen. Read from the same
+  // store the two views fold through, so what the arrow keys skip and what the board hides are
+  // one fact. Empty for every fleet nobody has folded, which is nearly all of them.
+  // Memoized because a fresh Set on every render would re-install the keyboard listener that
+  // reads it, and recompute `boardColumns` beneath it, on every render. Both inputs are stable
+  // between renders - the store hands back the same set until a fold changes it, and `fleet` is
+  // itself a memo - so this recomputes exactly when a fold or the fleet moves.
+  const collapsedRepoKeys = useRepoCollapsed();
+  const foldedIds = useMemo(
+    () => hiddenSessionIds(fleet.groups, collapsedRepoKeys),
+    [fleet, collapsedRepoKeys],
+  );
+
   const boardColumns = useMemo(
-    () => fleet.groups.map((g) => g.sessions.map((s) => s.id)),
-    [fleet],
+    () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
+    [fleet, foldedIds],
   );
 
   // Console's detail is its selection. Board keeps its detail separate from the arrow-key
@@ -2356,6 +2380,24 @@ export function App(): React.JSX.Element {
       // edited), so layout shortcuts don't drive a background session behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
 
+      // Fold or unfold the Line. Chrome above every layout, so it sits here with the other
+      // page-level toggles rather than among the session actions below - it drives no
+      // session and needs no selection.
+      //
+      // `!typing` and no modifier exemption: this is a bare letter, and the one thing it
+      // must never do is eat an `L` out of a half-written reply. Unlike interrupt below
+      // there is no argument for reaching it from inside the composer - the strip is still
+      // fully readable while you type, and the caret is one click away.
+      if (!typing && chord === bindings.lineDensity) {
+        e.preventDefault();
+        // `toggleLineDensity()` rather than `setLineDensity(next(lineDensity))`: this
+        // listener is registered by an effect with an explicit dependency list, and reading
+        // the density from render here made every press after the first a no-op. See that
+        // function for the whole story.
+        toggleLineDensity();
+        return;
+      }
+
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
       // strip that opened it.
       //
@@ -2457,7 +2499,10 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      const ids = visible.map((s) => s.id);
+      // The flat rail order, minus anything a folded repository frame is hiding. `visible` itself
+      // is NOT filtered: the views still need every session to draw a frame's count and to know
+      // what a fold is covering. Only what the keyboard walks is narrowed.
+      const ids = visible.filter((s) => !foldedIds.has(s.id)).map((s) => s.id);
       if (ids.length === 0) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
@@ -2765,7 +2810,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -3387,9 +3432,11 @@ export function App(): React.JSX.Element {
             pull requests that shipped this week, and the strip is where that is said. */}
         <LineStrip
           summary={lineSummary}
+          density={lineDensity}
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}
+          onDensity={setLineDensity}
         />
 
         {/* Dispatched, still provisioning. Here for the Line's reason and in the Line's slot:

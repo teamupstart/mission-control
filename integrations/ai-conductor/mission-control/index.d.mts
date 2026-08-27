@@ -14,7 +14,7 @@ export interface MissionControlRun {
 }
 
 /**
- * The event kinds this build subscribes to, frozen at ai-conductor 8b51392d.
+ * The event kinds this build subscribes to, frozen at ai-conductor 0.104.0 (`1631544a`).
  *
  * Enumerated because conductor's event bus has no wildcard subscription.
  */

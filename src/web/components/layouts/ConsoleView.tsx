@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import {
@@ -10,6 +9,7 @@ import {
 } from "../../lib/fleet-order.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { repoColor } from "../../lib/repo-color.ts";
+import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
@@ -52,16 +52,11 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   );
   const groups = order.groups.filter((g) => g.sessions.length > 0);
   const repoTotals = repoSessionTotals(order);
-  // Repository groups the operator has folded away, by row key. Local, un-persisted, and NOT
-  // shared with the board's own set: the two layouts are separate readings of the fleet, and a
-  // fold performed while reading the console is about the rail in front of you.
-  const [repoCollapsed, setRepoCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRepo = (key: string): void =>
-    setRepoCollapsed((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
+  // Which repository groups are folded, from the store `App` and the board read too. Shared
+  // rather than per-layout: the board's focused column BECOMES this rail on drill-in, so two
+  // fold states meant one repository could be open on one side of the morph and folded on the
+  // other - and `App` needs the same set to keep the arrow keys off folded rows.
+  const repoCollapsed = useRepoCollapsed();
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
   // pane there is no reader to hand focus to, so it always presents as the rail.
@@ -184,7 +179,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                     total={repoTotals.get(row.repoRoot) ?? 0}
                     variant="rail"
                     expanded={!repoCollapsed.has(row.key)}
-                    onToggle={() => toggleRepo(row.key)}
+                    onToggle={() => toggleRepoCollapsed(row.key)}
                   />
                   {!repoCollapsed.has(row.key) && row.blocks.map(renderBlock)}
                 </div>

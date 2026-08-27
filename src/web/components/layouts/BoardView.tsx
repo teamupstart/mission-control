@@ -13,6 +13,7 @@ import {
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
 import { repoColor } from "../../lib/repo-color.ts";
+import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
@@ -120,24 +121,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // setting, and it should not still be in force tomorrow morning.
   const [wideCol, setWideCol] = useState<string | null>(null);
   const toggleWide = (id: string): void => setWideCol((prev) => (prev === id ? null : id));
-  // Repository frames the operator has folded away, by ROW key rather than by repository root.
-  // A repository is framed once per tone column and once per side of the free/held boundary, and
-  // keying by root would mean folding it in "idle" also folded away the sibling waiting for you
-  // in "needs you" - a gesture that hid the one card on the board that wanted a human. Local and
-  // un-persisted for the same reason `revealed` and `wideCol` above are: it is "let me read the
-  // rest of this column", not a setting, and it should not still be in force tomorrow morning.
-  //
-  // The key carries the frame's first member (see `fleetRows`), so a folded group REOPENS when
-  // that member leaves the column. That is a consequence rather than a bug: the fold is a
-  // transient gesture, and the alternative - a key stable across membership changes - is exactly
-  // the per-repository key that would fold "needs you" from "idle".
-  const [repoCollapsed, setRepoCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRepo = (key: string): void =>
-    setRepoCollapsed((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
+  // Which repository frames are folded. From the shared store rather than local state, because
+  // `App` has to read the same set to build the arrow-key arrays: a fold takes cards out of the
+  // DOM, and navigation that did not know would step the cursor into rows nobody can see. See
+  // `lib/repo-collapse.ts`. Still un-persisted, and still keyed per ROW so folding a repository
+  // in one column cannot fold away its sibling in another.
+  const repoCollapsed = useRepoCollapsed();
 
   // The SAME ordering App derived the arrow-key column arrays from, recomputed here rather
   // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
@@ -254,7 +243,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       total={repoTotals.get(row.repoRoot) ?? 0}
       variant={variant}
       expanded={!repoCollapsed.has(row.key)}
-      onToggle={() => toggleRepo(row.key)}
+      onToggle={() => toggleRepoCollapsed(row.key)}
     />
   );
 

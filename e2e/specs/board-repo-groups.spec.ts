@@ -191,3 +191,45 @@ test("unchecking Group by repository returns the column to one flat list", async
   await expect(board.locator(".tile-goal", { hasText: "first flat card" })).toBeVisible();
   await expect(board.locator(".tile-goal", { hasText: "second flat card" })).toBeVisible();
 });
+
+test("the arrow keys skip a collapsed repository instead of vanishing into it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The consequence of collapse being a VIEW's state while the arrow keys walk the ORDERING.
+  // Fold a group and its cards leave the DOM, but nothing had told navigation that - so the
+  // cursor stepped into rows nobody can see: no tile drew as selected, the scroll-into-view had
+  // no element to reach, and Enter would have opened a session that was not on screen.
+  //
+  // Asserted through the keyboard rather than over the ordering, because the divergence only
+  // exists between the two and a unit test on either half would have passed.
+  await dispatchInto(dashboard, daemon, daemon.secondRepo, "aaa first alphabetically", 1);
+  await dispatchInto(dashboard, daemon, daemon.repo, "mmm second", 2);
+  await dispatchInto(dashboard, daemon, daemon.repo, "zzz third", 3);
+  await useBoardLayout(dashboard, daemon);
+
+  const board = dashboard.locator("main.board");
+  await expect(board.locator(".board-repo")).toHaveCount(2);
+  await expect(board.locator(".tile")).toHaveCount(3);
+
+  // Fold the frame holding the alphabetically FIRST card, which is the one an arrow press from
+  // nothing would otherwise land on.
+  const firstLeaf = leaf(daemon.secondRepo);
+  await dashboard.getByRole("button", { name: new RegExp(`Collapse ${firstLeaf}\\b`) }).click();
+  await expect(board.locator(".tile")).toHaveCount(2);
+
+  // One press from no selection: the cursor must land on a card that is actually drawn.
+  await dashboard.locator("main.board").click({ position: { x: 4, y: 4 } });
+  await dashboard.keyboard.press("ArrowDown");
+  const selected = board.locator(".tile.selected");
+  await expect(selected).toHaveCount(1);
+
+  // And walking the whole column never selects nothing, which is what stepping through the
+  // folded rows looked like.
+  for (let press = 0; press < 4; press += 1) {
+    await dashboard.keyboard.press("ArrowDown");
+    await expect(selected).toHaveCount(1);
+  }
+  // Every stop was one of the two visible cards, never a folded one.
+  await expect(selected.locator(".tile-goal")).not.toHaveText("aaa first alphabetically");
+});

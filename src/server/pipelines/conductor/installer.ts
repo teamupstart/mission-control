@@ -6,6 +6,7 @@ import {
   MAX_PIPELINE_INSTALLER_CANDIDATES,
   PIPELINE_INSTALLER_CHANGE_IDS,
   type PipelineInstallerCandidate,
+  type PipelineInstallerRuntime,
 } from "@shared/pipeline.ts";
 
 import { mainRepoRoot } from "../../util/git.ts";
@@ -17,7 +18,12 @@ const MAX_REPO_ROOTS = 500;
 const MAX_GIT_OUTPUT = 16 * 1024;
 const MAX_PACKAGE_BYTES = 64 * 1024;
 const MAX_VERSION_BYTES = 512;
+const MAX_NODE_VERSION_BYTES = 256;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
+const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
+
+export const CONDUCTOR_NODE_REQUIREMENT = ">=26.0.0";
+const CONDUCTOR_MIN_NODE = [26, 0, 0] as const;
 
 export interface ConductorInstallerDeps {
   realpath(path: string): Promise<string>;
@@ -25,6 +31,10 @@ export interface ConductorInstallerDeps {
   readFile(path: string, maxBytes: number): Promise<string>;
   mainRepoRoot(path: string): string | null;
   gitConfig(checkout: string): Promise<RunResult>;
+}
+
+export interface ConductorInstallerRuntimeDeps {
+  nodeVersion(): Promise<RunResult>;
 }
 
 const DEFAULT_DEPS: ConductorInstallerDeps = {
@@ -49,9 +59,64 @@ const DEFAULT_DEPS: ConductorInstallerDeps = {
     }),
 };
 
+const DEFAULT_RUNTIME_DEPS: ConductorInstallerRuntimeDeps = {
+  nodeVersion: () =>
+    run("node", ["--version"], {
+      timeoutMs: 2_000,
+      maxBuffer: MAX_NODE_VERSION_BYTES,
+    }),
+};
+
 export type ConductorInstallerVerification =
   | { ok: true; candidate: PipelineInstallerCandidate }
   | { ok: false; reason: string };
+
+/** Normalize the exact runtime answer `bin/install` itself reads from `node --version`. */
+export function conductorInstallerRuntimeReading(version: string | null): PipelineInstallerRuntime {
+  const match = version ? NODE_VERSION_PATTERN.exec(version.trim()) : null;
+  const current = match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+  const parts = match ? ([Number(match[1]), Number(match[2]), Number(match[3])] as const) : null;
+  const supported =
+    parts !== null &&
+    (parts[0] > CONDUCTOR_MIN_NODE[0] ||
+      (parts[0] === CONDUCTOR_MIN_NODE[0] &&
+        (parts[1] > CONDUCTOR_MIN_NODE[1] ||
+          (parts[1] === CONDUCTOR_MIN_NODE[1] && parts[2] >= CONDUCTOR_MIN_NODE[2]))));
+
+  return {
+    id: "node",
+    label: "Node.js",
+    current,
+    requirement: CONDUCTOR_NODE_REQUIREMENT,
+    supported,
+    detail: supported
+      ? `Node.js ${current} satisfies Conductor's ${CONDUCTOR_NODE_REQUIREMENT} requirement.`
+      : current
+        ? `Conductor requires Node.js 26 or newer, but this installer would use Node.js ${current}. Activate Node.js 26+ before installing.`
+        : "Conductor requires Node.js 26 or newer, but Mission Control could not determine the Node.js version this installer would use. Activate Node.js 26+ before installing.",
+  };
+}
+
+/** Read-only runtime preflight. Never executes checkout code and never throws. */
+export async function conductorInstallerRuntime(
+  overrides: Partial<ConductorInstallerRuntimeDeps> = {},
+): Promise<PipelineInstallerRuntime> {
+  const deps = { ...DEFAULT_RUNTIME_DEPS, ...overrides };
+  try {
+    const result = await deps.nodeVersion();
+    if (
+      result.code !== 0 ||
+      result.outcomeUnknown ||
+      result.overflowed ||
+      Buffer.byteLength(result.stdout, "utf8") > MAX_NODE_VERSION_BYTES
+    ) {
+      return conductorInstallerRuntimeReading(null);
+    }
+    return conductorInstallerRuntimeReading(result.stdout);
+  } catch {
+    return conductorInstallerRuntimeReading(null);
+  }
+}
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);

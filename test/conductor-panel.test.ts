@@ -19,6 +19,15 @@ import {
 import { configWithObservation, type ConductorState } from "../src/web/useConductor.ts";
 import { pipelineRepoKey, type PipelineProbe, type PipelinesView } from "../src/shared/pipeline.ts";
 
+const SUPPORTED_INSTALLER_RUNTIME = {
+  id: "node" as const,
+  label: "Node.js" as const,
+  current: "26.7.0",
+  requirement: ">=26.0.0",
+  supported: true,
+  detail: "Node.js 26.7.0 satisfies Conductor's >=26.0.0 requirement.",
+};
+
 // What is at stake: this panel is the CONSENT surface, and consent has to be legible in
 // both directions. Three different things can be false - the engine may not be installed,
 // the master switch may be off, and a repository may not be switched on - and an operator
@@ -276,6 +285,7 @@ test("a missing engine with no verified checkout gives copyable manual instructi
   state.installers = {
     provider: "ai-conductor",
     supported: true,
+    runtime: SUPPORTED_INSTALLER_RUNTIME,
     detail: "No verified local installer checkout was found in the workspace catalog.",
     candidates: [],
   };
@@ -295,6 +305,7 @@ test("a verified local main checkout is offered for review before any installer 
   state.installers = {
     provider: "ai-conductor",
     supported: true,
+    runtime: SUPPORTED_INSTALLER_RUNTIME,
     detail: "1 verified local installer checkout found.",
     candidates: [
       {
@@ -324,12 +335,46 @@ test("a verified local main checkout is offered for review before any installer 
 test("installer launch outcomes say only what the hosted terminal established", () => {
   const state = answered();
   state.installerNotice = {
-    tone: "ok",
-    detail: "Installer terminal opened. Finish the interactive installer there, then check again.",
+    tone: "attention",
+    detail:
+      "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts; finish the interactive installer there, then check again.",
   };
   const html = render(state);
   assert.match(html, /Installer terminal opened/);
   assert.doesNotMatch(html, /installation complete|Conductor installed/i);
+});
+
+test("an unsupported installer runtime is explicit and blocks review before consent", () => {
+  const state = answered({
+    probes: [probe({ found: false, binPath: null, version: null, projects: [] })],
+  });
+  state.installers = {
+    provider: "ai-conductor",
+    supported: true,
+    runtime: {
+      ...SUPPORTED_INSTALLER_RUNTIME,
+      current: "24.19.0",
+      supported: false,
+      detail:
+        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Activate Node.js 26+ before installing.",
+    },
+    detail: "1 verified local installer checkout found.",
+    candidates: [
+      {
+        provider: "ai-conductor",
+        checkout: "/Users/someone/workspace/ai-conductor",
+        remote: "github.com/mancej/ai-conductor",
+        version: "0.101.1",
+        changes: ["build-checkout"],
+      },
+    ],
+  };
+  const html = render(state);
+  assert.match(html, /Unsupported installer runtime/);
+  assert.match(html, /requires Node\.js 26 or newer/);
+  assert.match(html, /use Node\.js 24\.19\.0/);
+  assert.match(html, /<button type="button" class="btn" disabled=""[^>]*>Review installer<\/button>/);
+  assert.doesNotMatch(html, />Open installer</);
 });
 
 test("an engine that WAS found and then could not answer prints why", () => {

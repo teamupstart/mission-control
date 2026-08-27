@@ -600,7 +600,20 @@ export async function pipelineInstallerCandidates(
     return {
       provider,
       supported: false,
+      runtime: null,
       detail: "This pipeline provider does not offer guided installation from local source.",
+      candidates: [],
+    };
+  }
+  let runtime;
+  try {
+    runtime = await installer.runtime();
+  } catch {
+    return {
+      provider,
+      supported: true,
+      runtime: null,
+      detail: "Mission Control could not verify the runtime for this provider's installer.",
       candidates: [],
     };
   }
@@ -616,6 +629,7 @@ export async function pipelineInstallerCandidates(
     return {
       provider,
       supported: true,
+      runtime,
       detail:
         bounded.length > 0
           ? `${bounded.length} verified local installer ${bounded.length === 1 ? "checkout" : "checkouts"} found.`
@@ -626,6 +640,7 @@ export async function pipelineInstallerCandidates(
     return {
       provider,
       supported: true,
+      runtime,
       detail: "Mission Control could not verify local installer checkouts.",
       candidates: [],
     };
@@ -651,6 +666,10 @@ export async function pipelineInstallerLaunch(
   const installer = PIPELINE_PROVIDERS[provider].installer;
   if (!installer) return { ok: false, error: "This provider has no guided installer." };
   const read = await pipelineInstallerCandidates(provider, repoRoots);
+  if (!read.runtime) {
+    return { ok: false, error: "Mission Control could not verify the installer runtime." };
+  }
+  if (!read.runtime.supported) return { ok: false, error: read.runtime.detail };
   const candidate = read.candidates.find((entry) => entry.checkout === checkout);
   if (!candidate) {
     return {

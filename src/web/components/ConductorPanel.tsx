@@ -168,7 +168,8 @@ function ConductorManualInstall(): React.JSX.Element {
     <div className="conductor-manual-install">
       <p className="settings-hint">
         Mission Control will not download or run source for you. Clone the recognized upstream,
-        review it locally, then start its interactive installer yourself:
+        review it locally, activate Node.js 26 or newer, then start its interactive installer
+        yourself:
       </p>
       <div className="conductor-command-row">
         <code>{CLONE_COMMAND}</code>
@@ -205,6 +206,8 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
   const [selectedCheckout, setSelectedCheckout] = useState<string | null>(null);
   const [terminalId, setTerminalId] = useState<TerminalBackendId | null>(null);
   const candidates = state.installers?.candidates ?? [];
+  const runtime = state.installers?.runtime ?? null;
+  const runtimeReady = runtime?.supported === true;
   const selected = candidates.find((candidate) => candidate.checkout === selectedCheckout) ?? null;
   const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
   const terminal = available.find((target) => target.id === terminalId) ?? available[0] ?? null;
@@ -237,6 +240,14 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
       {state.installers?.supported && candidates.length === 0 && (
         <p className="settings-hint">{state.installers.detail}</p>
       )}
+      {runtime?.supported && (
+        <ConsoleState tone="ok">Installer runtime ready - {runtime.detail}</ConsoleState>
+      )}
+      {runtime && !runtime.supported && (
+        <p className="settings-warn" role="alert">
+          <strong>Unsupported installer runtime.</strong> {runtime.detail}
+        </p>
+      )}
 
       {candidates.length > 0 && (
         <ul className="conductor-installer-candidates" aria-label="Verified Conductor installer checkouts">
@@ -249,11 +260,17 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
                   {candidate.remote} · {candidate.version ? `version ${candidate.version}` : "version unknown"}
                 </small>
               </span>
-              <Tooltip label="Review this verified checkout and the changes its installer may offer">
+              <Tooltip
+                label={
+                  runtimeReady
+                    ? "Review this verified checkout and the changes its installer may offer"
+                    : "Activate a supported Node.js runtime before reviewing this installer"
+                }
+              >
                 <button
                   type="button"
                   className="btn"
-                  disabled={state.openingInstaller !== null}
+                  disabled={!runtimeReady || state.openingInstaller !== null}
                   onClick={() => setSelectedCheckout(candidate.checkout)}
                 >
                   Review installer
@@ -277,6 +294,10 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
             <div><dt>Checkout</dt><dd><code>{selected.checkout}</code></dd></div>
             <div><dt>Command</dt><dd><code>{command(selected)}</code></dd></div>
             <div><dt>Remote</dt><dd>{selected.remote}</dd></div>
+            <div>
+              <dt>Runtime</dt>
+              <dd>{runtime?.label} {runtime?.current} (requires {runtime?.requirement})</dd>
+            </div>
           </dl>
           <p className="settings-hint">Depending on your answers, the installer may:</p>
           <ul className="conductor-installer-changes">
@@ -290,7 +311,12 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
               <select
                 aria-label="Installer terminal backend"
                 value={terminal?.id ?? ""}
-                disabled={!terminals.targets || available.length === 0 || state.openingInstaller !== null}
+                disabled={
+                  !runtimeReady ||
+                  !terminals.targets ||
+                  available.length === 0 ||
+                  state.openingInstaller !== null
+                }
                 onChange={(event) => setTerminalId(event.target.value as TerminalBackendId)}
               >
                 {!terminals.targets && <option value="">Checking terminals…</option>}
@@ -317,7 +343,7 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={!terminal || state.openingInstaller !== null}
+                disabled={!runtimeReady || !terminal || state.openingInstaller !== null}
                 onClick={() => void state.openInstaller(selected.provider, selected.checkout, terminal!.id)}
               >
                 {state.openingInstaller === selected.checkout ? "Opening…" : "Open installer"}

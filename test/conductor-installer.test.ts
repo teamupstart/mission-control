@@ -18,6 +18,8 @@ import { after, test } from "node:test";
 import { stubRun } from "../src/server/util/exec.ts";
 import {
   conductorInstallerCandidates,
+  conductorInstallerRuntime,
+  conductorInstallerRuntimeReading,
   conductorInstallerTerminalArgv,
   recognizedConductorRemote,
   verifyConductorInstallerCheckout,
@@ -40,7 +42,10 @@ function checkout(name: string, remote = "https://github.com/mancej/ai-conductor
   chmodSync(join(repo, "bin/install"), 0o755);
   writeFileSync(
     join(repo, "src/conductor/package.json"),
-    JSON.stringify({ name: "@james-stoup-agents/conductor" }),
+    JSON.stringify({
+      name: "@james-stoup-agents/conductor",
+      engines: { node: ">=26.0.0" },
+    }),
   );
   writeFileSync(join(repo, "VERSION"), "0.101.1\n");
   git(repo, "add", "-A");
@@ -56,6 +61,34 @@ function checkout(name: string, remote = "https://github.com/mancej/ai-conductor
   );
   return repo;
 }
+
+test("installer runtime preflight distinguishes unsupported and supported Node versions", async () => {
+  assert.deepEqual(conductorInstallerRuntimeReading("v24.19.0"), {
+    id: "node",
+    label: "Node.js",
+    current: "24.19.0",
+    requirement: ">=26.0.0",
+    supported: false,
+    detail:
+      "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Activate Node.js 26+ before installing.",
+  });
+  assert.equal(conductorInstallerRuntimeReading("26.0.0").supported, true);
+  assert.equal(conductorInstallerRuntimeReading("v27.1.2").supported, true);
+  assert.equal(conductorInstallerRuntimeReading("v26.0.0-nightly").supported, false);
+
+  const supported = await conductorInstallerRuntime({
+    nodeVersion: async () => stubRun({ stdout: "v26.7.0\n", stderr: "", code: 0 }),
+  });
+  assert.equal(supported.current, "26.7.0");
+  assert.equal(supported.supported, true);
+
+  const unavailable = await conductorInstallerRuntime({
+    nodeVersion: async () => stubRun({ stdout: "", stderr: "not found", code: 1 }),
+  });
+  assert.equal(unavailable.current, null);
+  assert.equal(unavailable.supported, false);
+  assert.match(unavailable.detail, /could not determine/);
+});
 
 test("recognized upstream HTTPS and SSH remotes normalize to one credential-free label", () => {
   for (const remote of [

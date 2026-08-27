@@ -688,10 +688,26 @@ export interface PipelineInstallerCandidate {
   changes: PipelineInstallerChangeId[];
 }
 
+/** The provider-owned runtime preflight that must pass before installer code can run. */
+export interface PipelineInstallerRuntime {
+  /** Stable runtime id for browser rendering without provider-specific branching. */
+  id: string;
+  label: string;
+  /** Normalized detected version, or null when the executable did not answer clearly. */
+  current: string | null;
+  /** Provider requirement in the same form its package metadata declares. */
+  requirement: string;
+  supported: boolean;
+  /** Bounded, operator-facing explanation of the preflight result. */
+  detail: string;
+}
+
 /** The optional installer capability's answer for one provider. */
 export interface PipelineInstallerCandidatesResult {
   provider: PipelineProviderId;
   supported: boolean;
+  /** Null only when this provider has no guided installer capability. */
+  runtime: PipelineInstallerRuntime | null;
   detail: string;
   candidates: PipelineInstallerCandidate[];
 }

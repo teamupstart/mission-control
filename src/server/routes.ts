@@ -5699,7 +5699,7 @@ export function buildApp(
       outcome: result.ok ? "opened" : result.status === 504 ? "maybe-opening" : "refused",
       label: result.label,
       detail: result.ok
-        ? "Installer terminal opened. Finish the interactive installer there, then check again."
+        ? "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts; finish the interactive installer there, then check again."
         : (result.error ?? `${result.label} could not open the installer terminal.`),
     };
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);

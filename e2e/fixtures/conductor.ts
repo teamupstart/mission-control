@@ -63,6 +63,33 @@ export function writeConductorProjects(
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
 
 /**
+ * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
+ * actually executes fixture scripts. Every invocation other than the read-only version probe
+ * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ */
+export function writeConductorNodeRuntime(home: string, version: string): string {
+  const bin = join(home, "bin", "node");
+  mkdirSync(join(home, "bin"), { recursive: true });
+  writeFileSync(
+    bin,
+    [
+      `#!${process.execPath}`,
+      'const { spawnSync } = require("node:child_process");',
+      `const reported = ${JSON.stringify(version)};`,
+      'if (process.argv.length === 3 && process.argv[2] === "--version") {',
+      '  process.stdout.write(`v${reported}\\n`);',
+      "  process.exit(0);",
+      "}",
+      "const child = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
+      "process.exit(child.status ?? 1);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+/**
  * Give a disposable fixture repository the exact markers and upstream provenance the guided
  * installer verifier requires. The script is inert unless something actually executes it;
  * browser tests assert the fake terminal records it instead.

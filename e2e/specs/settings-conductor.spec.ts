@@ -417,6 +417,7 @@ test.describe("with a verified local Conductor checkout", () => {
       MISSION_PIPELINE_TICK_MS: "1000",
       MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
       MC_E2E_CONDUCTOR_CHECKOUT: "1",
+      MC_E2E_CONDUCTOR_NODE_VERSION: "26.7.0",
     },
   });
 
@@ -429,6 +430,7 @@ test.describe("with a verified local Conductor checkout", () => {
     const checkout = daemon.conductorCheckout!;
     await openConductor(page, daemon.baseURL);
 
+    await expect(page.getByText(/Installer runtime ready - Node\.js 26\.7\.0/)).toBeVisible();
     await expect(page.getByText(checkout, { exact: true })).toBeVisible();
     await expect(page.getByText("github.com/mancej/ai-conductor", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open installer" })).toHaveCount(0);
@@ -438,6 +440,7 @@ test.describe("with a verified local Conductor checkout", () => {
     await expect(confirmation).toContainText("Confirm machine-wide installation");
     await expect(confirmation).toContainText(checkout);
     await expect(confirmation).toContainText(`${checkout}/bin/install`);
+    await expect(confirmation).toContainText("Node.js 26.7.0 (requires >=26.0.0)");
     await expect(confirmation).toContainText("Link conduct-ts under your local bin directory");
     await expect(confirmation).toContainText("Link Conductor skills for supported agents");
     await expect(confirmation).toContainText("Update Claude user settings and hooks");
@@ -455,7 +458,9 @@ test.describe("with a verified local Conductor checkout", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
 
     await confirmation.getByRole("button", { name: "Open installer" }).click();
-    await expect(page.getByRole("status")).toContainText("Installer terminal opened");
+    await expect(page.getByRole("status")).toContainText(
+      "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts",
+    );
     await expect(page.getByText(/Setup needed .*conduct-ts is not on this daemon/)).toBeVisible();
     await expect.poll(() => installerTerminals(daemon.recordDir).length).toBe(1);
     const argv = installerTerminals(daemon.recordDir)[0]?.argv ?? [];
@@ -465,6 +470,7 @@ test.describe("with a verified local Conductor checkout", () => {
     const command = argv[argv.indexOf("--command") + 1] ?? "";
     expect(command).toContain(`${checkout}/bin/install`);
     expect(command).toContain("read -r _");
+    await page.getByRole("status").scrollIntoViewIfNeeded();
     await shoot(page, "06-installer-opened");
 
     daemon.installFakeConductor();
@@ -568,12 +574,59 @@ test.describe("with a verified local Conductor checkout", () => {
   });
 });
 
+test.describe("with a verified checkout under unsupported Node 24", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_CONDUCTOR_CHECKOUT: "1",
+      MC_E2E_CONDUCTOR_NODE_VERSION: "24.19.0",
+    },
+  });
+
+  test("surfaces the runtime and refuses installation before a terminal or consent change", async ({
+    page,
+    daemon,
+  }) => {
+    expect(daemon.conductorCheckout).not.toBeNull();
+    await openConductor(page, daemon.baseURL);
+
+    const warning = page.getByRole("alert");
+    await expect(warning).toContainText("Unsupported installer runtime");
+    await expect(warning).toContainText("requires Node.js 26 or newer");
+    await expect(warning).toContainText("would use Node.js 24.19.0");
+    const review = page.getByRole("button", { name: "Review installer" });
+    await expect(review).toBeDisabled();
+    const reviewBox = await review.boundingBox();
+    expect(reviewBox?.width, "the disabled review control must remain button-sized").toBeLessThan(
+      180,
+    );
+    await expect(page.getByRole("button", { name: "Open installer" })).toHaveCount(0);
+    await warning.scrollIntoViewIfNeeded();
+    await shoot(page, "11-unsupported-node-runtime");
+
+    const refused = await page.request.post(`${daemon.baseURL}/api/pipelines/install`, {
+      data: {
+        provider: "ai-conductor",
+        checkout: daemon.conductorCheckout!,
+        backend: "cmux",
+      },
+    });
+    expect(refused.status()).toBe(409);
+    expect((await refused.json()).detail).toContain("requires Node.js 26 or newer");
+    expect(installerTerminals(daemon.recordDir)).toEqual([]);
+    const config = await page.request.get(`${daemon.baseURL}/api/pipelines/config`);
+    expect((await config.json()).config).toMatchObject({ enabled: false, repos: [] });
+  });
+});
+
 test.describe("with a verified checkout and an unresponsive hosted terminal", () => {
   test.use({
     daemonEnv: {
       MISSION_PIPELINE_TICK_MS: "1000",
       MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
       MC_E2E_CONDUCTOR_CHECKOUT: "1",
+      MC_E2E_CONDUCTOR_NODE_VERSION: "26.7.0",
       MC_E2E_CMUX_MODE: "unknown",
     },
   });

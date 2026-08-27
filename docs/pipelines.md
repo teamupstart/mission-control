@@ -68,6 +68,12 @@ other URL details cannot leak through this surface. An unrecognized, malformed, 
 symlinked, non-executable, or out-of-catalog checkout is omitted rather than weakened into a
 warning.
 
+Before an installer can be reviewed or opened, Mission Control runs the same read-only
+`node --version` probe that ai-conductor's installer relies on. Conductor requires Node.js
+`>=26.0.0`. The panel names the detected version and blocks both the browser control and the
+server launch route when that runtime is older or cannot be determined. Activate Node.js 26+
+and check again before installation; no checkout code runs during this preflight.
+
 Selecting **Review installer** does not launch anything. A second confirmation names the exact
 checkout, the exact `bin/install` command, its recognized upstream, and the user-level changes
 the upstream installer may offer:
@@ -86,12 +92,15 @@ itself. It opens the upstream interactive installer in that visible terminal and
 terminal open after the installer exits so its result remains readable. Mission Control does
 not add update flags, worktree-root overrides, or non-interactive answers.
 
-Opening a terminal is not proof that Conductor installed. The engine card remains at **Setup
-needed** until **I installed it, check again** finds `conduct-ts`; an unresponsive terminal
-launch is reported only as possibly still opening. If no candidate verifies, no terminal can
-be hosted, or candidate discovery fails, the panel shows copyable commands for cloning the
-recognized upstream and running `./bin/install` manually. Those commands remain operator
-instructions: Mission Control never executes them from the browser.
+Opening a terminal is not proof that Conductor installed. In particular, upstream `bin/install`
+can finish other setup after skipping a failed `conduct-ts` build. Mission Control therefore
+reports only that the installer terminal opened, in an attention state, and the engine card
+remains at **Setup needed** until **I installed it, check again** finds `conduct-ts`. An
+unresponsive terminal launch is reported only as possibly still opening. If no candidate
+verifies, no terminal can be hosted, or candidate discovery fails, the panel shows copyable
+commands for cloning the recognized upstream, activating Node.js 26+, and running
+`./bin/install` manually. Those commands remain operator instructions: Mission Control never
+executes them from the browser.
 
 The compact commissioning line keeps three facts separate: **Engine → Register repo →
 Observe**. They are not interchangeable milestones:

@@ -4,6 +4,7 @@ import type {
   PipelineConsole,
   PipelineDaemonState,
   PipelineInstallerCandidate,
+  PipelineInstallerRuntime,
   PipelineProbe,
   PipelineProviderId,
   PipelineRepoRegistrationResult,
@@ -156,6 +157,8 @@ export interface PipelineProvider {
    * terminal layer sees it.
    */
   installer?: {
+    /** Read-only preflight for the runtime the provider's installer will use. */
+    runtime(): Promise<PipelineInstallerRuntime>;
     candidates(repoRoots: readonly string[]): Promise<PipelineInstallerCandidate[]>;
     terminalArgv(checkout: string): Promise<
       | {

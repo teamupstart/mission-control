@@ -9,6 +9,25 @@ export interface SetupChecksState {
   refresh(): Promise<void>;
 }
 
+const INSPECTION_ERROR = "Mission Control could not inspect this machine's setup.";
+
+export interface SetupChecksRead {
+  view: SetupChecksView | null;
+  error: string | null;
+}
+
+/** Keep a rejected optional read inside the panel's ordinary error state. */
+export async function readSetupChecks(
+  fetcher: () => Promise<SetupChecksView | null> = fetchSetupChecks,
+): Promise<SetupChecksRead> {
+  try {
+    const view = await fetcher();
+    return view ? { view, error: null } : { view: null, error: INSPECTION_ERROR };
+  } catch {
+    return { view: null, error: INSPECTION_ERROR };
+  }
+}
+
 /** Mount-time and operator-requested reads only. Machine setup has no polling side effects. */
 export function useSetupChecks(enabled: boolean): SetupChecksState {
   const [view, setView] = useState<SetupChecksView | null>(null);
@@ -25,11 +44,11 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     const id = ++request.current;
     setLoading(true);
     setError(null);
-    const next = await fetchSetupChecks();
+    const next = await readSetupChecks();
     if (!alive.current || id !== request.current) return;
     setLoading(false);
-    if (next) setView(next);
-    else setError("Mission Control could not inspect this machine's setup.");
+    if (next.view) setView(next.view);
+    setError(next.error);
   }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
   return { view, loading, error, refresh };

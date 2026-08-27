@@ -5,6 +5,15 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
 
+test("Setup recovers when its inspection request is rejected", async ({ page, daemon }) => {
+  await page.route("**/api/setup/checks", (route) => route.abort("connectionrefused"));
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  await expect(page.getByText("Mission Control could not inspect this machine's setup.")).toBeVisible();
+  const recheck = page.getByRole("button", { name: "Re-check" });
+  await expect(recheck).toBeEnabled();
+});
+
 test("Setup explains the machine and re-checks without executing a remedy", async ({ page, daemon }) => {
   await page.setViewportSize({ width: 1440, height: 1400 });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);

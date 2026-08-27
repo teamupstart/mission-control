@@ -12,7 +12,7 @@ test("the panel renders stable families, namespaced rows, and inert remedies", (
       error: null,
       refresh: async () => {},
       dismissBanner: async () => null,
-      view: { rows: [
+      view: { snapshotToken: "00000000-0000-4000-8000-000000000000", rows: [
         {
           rowId: { source: "dependency", id: "claude-cli" },
           label: "Claude Code",

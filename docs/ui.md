@@ -583,7 +583,8 @@ families of external tooling, keeps satisfied tools to a compact evidence line, 
 or incomplete tools their capability impact and a link or copyable remedy. **Re-check** reads the
 machine again without running any remedy. An App-level reminder appears once on first launch and
 again for newly broken required rows. It links here, can be dismissed durably, and does not add a
-second probe or polling loop.
+second probe or polling loop. The daemon binds dismissal to the displayed checks snapshot, so a
+tab cannot suppress a repair-regression sequence that another tab already observed.
 
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
 lets you switch live between them, and the choice persists per machine:

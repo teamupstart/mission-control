@@ -6685,6 +6685,7 @@ export type RespondToFileCommentsBody = z.infer<typeof RespondToFileCommentsSche
 
 /** Acknowledge the required setup rows shown by the browser's latest uncached read. */
 export const SetupBannerDismissRequestSchema = z.object({
+  snapshotToken: z.string().uuid(),
   acknowledged: z.array(SetupRowIdSchema),
 });
 export type SetupBannerDismissRequest = z.infer<typeof SetupBannerDismissRequestSchema>;

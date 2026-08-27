@@ -32,6 +32,28 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/guided-setup/${name}.png`);
 }
 
+test("a stale tab cannot dismiss a setup regression observed elsewhere", async ({
+  page,
+  daemon,
+}) => {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const staleBanner = page.getByRole("status", { name: "Machine setup needs attention" });
+  await expect(staleBanner).toBeVisible();
+
+  daemon.installFakeGh();
+  const currentPage = await page.context().newPage();
+  await currentPage.goto(`${daemon.baseURL}/#/settings/setup`);
+  await expect(currentPage.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+
+  daemon.removeFakeGh();
+  await currentPage.getByRole("button", { name: "Re-check" }).click();
+  await expect(currentPage.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+
+  await staleBanner.getByRole("button", { name: "Dismiss setup reminder" }).click();
+  await expect(staleBanner).toBeVisible();
+  await expect(staleBanner.getByRole("alert")).toContainText("Re-check before dismissing");
+});
+
 test("the setup reminder is durable, detects a regression, and the tour stays read-only", async ({
   page,
   daemon,

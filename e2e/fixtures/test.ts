@@ -54,10 +54,19 @@ export const test = base.extend<{
         if (!pinned.ok) throw new Error("the daemon should accept the guided-tour pin");
       }
       if (!setupReminder) {
+        const checks = await fetch(`${daemon.baseURL}/api/setup/checks`);
+        if (!checks.ok) throw new Error("the daemon should expose the first-launch Setup snapshot");
+        const snapshot = await checks.json() as {
+          snapshotToken: string;
+          banner: { attentionRowIds: unknown[] };
+        };
         const acknowledged = await fetch(`${daemon.baseURL}/api/setup/checks`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ acknowledged: [] }),
+          body: JSON.stringify({
+            snapshotToken: snapshot.snapshotToken,
+            acknowledged: snapshot.banner.attentionRowIds,
+          }),
         });
         if (!acknowledged.ok) {
           throw new Error("the daemon should accept the first-launch Setup acknowledgement");

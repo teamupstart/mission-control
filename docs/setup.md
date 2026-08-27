@@ -15,7 +15,9 @@ Mission Control also puts a dismissible reminder above the dashboard on first la
 a required Setup row becomes missing or needs setup. **Open Setup** links directly to this panel.
 Dismissal is stored on this machine. A repaired row retires its acknowledgement, so the reminder
 returns if that required capability later regresses. An inconclusive **Unknown** result does not
-raise the reminder.
+raise the reminder. A dismissal is bound to the required rows in the checks result it came from;
+if another tab observes repair or regression first, the stale dismissal is refused and asks the
+operator to re-check.
 
 The **Set up this machine** guided tour explains families, statuses, remedies, and **Re-check**
 without executing a remedy. Start it from **Help & tours** at the bottom of the Settings rail or

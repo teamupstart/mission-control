@@ -155,16 +155,21 @@ test("an unchanged acknowledgement performs no write", async () => {
 test("one dismissal write acknowledges first launch and every supplied broken row", async () => {
   const store = bannerStore({
     firstLaunchAcknowledged: false,
-    acknowledged: [{ source: "derived", id: "terminal-pair" }],
+    acknowledged: [],
   });
-  const response = await appFor(deps(null, null, store)).request("/api/setup/checks", {
+  const setupDeps = deps(null, null, store);
+  setupDeps.resolveBinPath = async (bin) => bin === "/fake/gh" ? null : bin;
+  const app = appFor(setupDeps);
+  const snapshot = await (await app.request("/api/setup/checks", { headers: LOOPBACK })).json() as {
+    snapshotToken: string;
+    banner: { attentionRowIds: Array<{ source: "dependency"; id: "gh-cli" | "gh-auth" }> };
+  };
+  const response = await app.request("/api/setup/checks", {
     method: "PUT",
     headers: { ...LOOPBACK, "content-type": "application/json" },
     body: JSON.stringify({
-      acknowledged: [
-        { source: "dependency", id: "gh-cli" },
-        { source: "dependency", id: "gh-auth" },
-      ],
+      snapshotToken: snapshot.snapshotToken,
+      acknowledged: snapshot.banner.attentionRowIds,
     }),
   });
 
@@ -172,10 +177,48 @@ test("one dismissal write acknowledges first launch and every supplied broken ro
   assert.equal(store.writes, 1);
   assert.deepEqual(store.value, {
     firstLaunchAcknowledged: true,
-    acknowledged: [
-      { source: "derived", id: "terminal-pair" },
-      { source: "dependency", id: "gh-cli" },
-      { source: "dependency", id: "gh-auth" },
-    ],
+    acknowledged: snapshot.banner.attentionRowIds,
   });
+});
+
+test("a stale snapshot cannot acknowledge a row after repair and regression", async () => {
+  const store = bannerStore({ firstLaunchAcknowledged: true, acknowledged: [] });
+  const setupDeps = deps(null, null, store);
+  let broken = true;
+  setupDeps.terminalTargets = () => broken
+    ? [{ id: "tmux", label: "tmux", glyph: "", blurb: "", detail: null, unavailable: "No emulator can raise this session." }]
+    : [{ id: "cmux", label: "cmux", glyph: "", blurb: "", detail: null, unavailable: null }];
+  const app = appFor(setupDeps);
+
+  const stale = await (await app.request("/api/setup/checks", { headers: LOOPBACK })).json() as {
+    snapshotToken: string;
+    banner: { attentionRowIds: Array<{ source: "derived"; id: "terminal-pair" }> };
+  };
+  broken = false;
+  await app.request("/api/setup/checks", { headers: LOOPBACK });
+  broken = true;
+  const regressed = await (await app.request("/api/setup/checks", { headers: LOOPBACK })).json() as {
+    banner: { visible: boolean; attentionCount: number };
+  };
+  assert.deepEqual(regressed.banner, {
+    visible: true,
+    attentionRowIds: [{ source: "derived", id: "terminal-pair" }],
+    attentionCount: 1,
+  });
+
+  const response = await app.request("/api/setup/checks", {
+    method: "PUT",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({
+      snapshotToken: stale.snapshotToken,
+      acknowledged: stale.banner.attentionRowIds,
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: "Setup checks changed. Re-check before dismissing.",
+  });
+  assert.equal(store.writes, 0);
+  assert.deepEqual(store.value, { firstLaunchAcknowledged: true, acknowledged: [] });
 });

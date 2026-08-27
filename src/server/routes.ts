@@ -330,6 +330,7 @@ import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
+import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
   getInspectorConfig,
@@ -968,6 +969,7 @@ export function buildApp(
   setupDeps?: SetupDeps,
 ): Hono {
   const app = new Hono();
+  const setupSnapshots = createSetupSnapshotTracker(randomUUID);
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
   const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
@@ -6036,13 +6038,16 @@ export function buildApp(
   // remedy remains inert data for the browser to link or copy. The one write during this read
   // only retires acknowledgements for rows the fresh result proved repaired or removed.
   app.get("/api/setup/checks", async (c) =>
-    c.json(await setupChecksView(setupDeps ?? defaultSetupDeps())));
+    c.json(setupSnapshots.issue(await setupChecksView(setupDeps ?? defaultSetupDeps()))));
   // The same resource path as the read, so dismissal adds no second setup read or endpoint.
   // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
   // probes, and any install behavior remain completely outside this write.
   app.put("/api/setup/checks", async (c) => {
     const parsed = await parseBody(c, SetupBannerDismissRequestSchema);
     if (!parsed.ok) return parsed.res;
+    if (!setupSnapshots.consume(parsed.data.snapshotToken, parsed.data.acknowledged)) {
+      return c.json({ error: "Setup checks changed. Re-check before dismissing." }, 409);
+    }
     const deps = setupDeps ?? defaultSetupDeps();
     deps.writeBannerDismissal(acknowledgeSetupRows(
       deps.readBannerDismissal(),

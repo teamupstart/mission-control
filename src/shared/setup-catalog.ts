@@ -294,6 +294,11 @@ export interface SetupChecksView {
   banner: SetupBannerView;
 }
 
+/** A server-issued binding between one checks observation and a later dismissal write. */
+export interface SetupChecksSnapshot extends SetupChecksView {
+  snapshotToken: string;
+}
+
 export interface SetupBannerView {
   visible: boolean;
   /** Required missing or unfinished rows in the fresh snapshot, whether acknowledged or not. */

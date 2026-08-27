@@ -18,9 +18,9 @@ Chromium and pinned in `test/line-strip-electron.test.ts`.
 | `src/web/lib/keybindings.ts` | <kbd>Shift+L</kbd> |
 | `test/line-strip-render.test.ts`, `test/line-strip-electron.test.ts`, `e2e/specs/line-density.spec.ts` | markup, geometry, and the wire |
 
-The rendered page with the pixel-accurate artboards is
-[`plan.html`](plan.html) - **open that, not this file.** The mockups are the deliverable and
-the markdown cannot carry them.
+[`plan.html`](plan.html) renders this plan as a page, with the pixel-accurate artboards for
+each concept. The mockups are a substantial part of the deliverable and markdown cannot carry
+them.
 
 ## Decisions taken
 

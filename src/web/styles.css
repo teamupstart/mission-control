@@ -24988,6 +24988,118 @@ span.line-run-prov {
   font-weight: 600;
 }
 
+/* ---- board column: the repository frame ----
+   One level above the run frames. Deliberately the SAME box as `.board-cluster` above, because
+   the board already teaches that a frame means "these belong together" - what this adds is the
+   repository's own colour, carried on ONE custom property (`--repo-c`, set inline from
+   `lib/repo-color.ts`) so the border, the head and the body are tinted from a single source and
+   cannot drift apart.
+
+   A run frame nests inside this one, which is the honest cost of the treatment: an engine run
+   belongs to exactly one repository, so a correlated column draws a box inside a box. */
+.board-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 8px;
+  border: 1px solid color-mix(in oklab, var(--repo-c) 42%, var(--border-soft));
+  border-radius: 13px;
+  background: color-mix(in oklab, var(--repo-c) 6%, transparent);
+}
+/* The direct children only. A tile inside a NESTED `.board-cluster` is already inset by that
+   frame's own `.board-cluster .tile` rule, and insetting it again here would step it twice. */
+.board-repo > .tile,
+.board-repo > .board-cluster {
+  margin: 0 8px;
+  width: auto;
+}
+/* Borrows `.board-cluster-head`'s box and re-tints it, the way `.board-pipeline-head` already
+   borrows it - so two frames in one column read as the same kind of structure rather than as
+   two inventions.
+
+   ONE line, unlike the head it borrows the box from, which is why the flex direction is
+   overridden here. That head needs two because it carries a strategy, a stage word, progress
+   dots and an attention badge; a repository carries a name and a count, and putting the count
+   on its own line spent a whole row of every column in the board on four characters. */
+.board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-bottom-color: color-mix(in oklab, var(--repo-c) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--repo-c) 11%, transparent);
+  border-radius: 12px 12px 0 0;
+}
+.board-repo-head:hover {
+  background: color-mix(in oklab, var(--repo-c) 18%, var(--panel));
+}
+.board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+/* Beside the title rather than under it, and it must not be squeezed: the title is the flexible
+   cell and ellipsises first, because a shortened repository name is still recognisable while
+   "2 of…" is not a number. */
+.board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* Folded away. The head keeps the full radius and drops its rule, so a collapsed group reads as
+   one pill rather than as a frame with nothing in it. */
+.board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+.board-repo.is-collapsed .board-repo-head {
+  border-bottom: 0;
+  border-radius: 12px;
+}
+/* The saturated end of the repository's colour, and the only place it runs at full strength: a
+   7px dot can carry a hue the frame around it could not without competing with the card tones
+   inside it. Same size as `.board-swatch` in the column head above it, deliberately - they
+   answer the same kind of question one level apart. Shared with the rail group below. */
+.brh-swatch {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--repo-c);
+}
+.brh-chevron {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
+  transition: transform 120ms ease;
+}
+/* Driven off `aria-expanded` rather than off the frame's `.is-collapsed` class, so the glyph
+   cannot point one way while the control announces the other - and so the rail group, which has
+   no wrapper class of its own, rotates by the same rule. */
+[aria-expanded="false"] .brh-chevron {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .brh-chevron {
+    transition: none;
+  }
+}
+/* The rail's repository group, in the rail's own register. Borrows `.rail-ensemble-group` for
+   its box exactly as `.rail-pipeline-group` does, so the board's drill-in morph does not change
+   what a repository looks like on the way from column to rail. */
+.rail-repo-group .reg-title {
+  font-family: var(--mono);
+}
+/* Beside the name, not adrift in the middle of the row. `.reg-stage` carries
+   `margin-left: auto` for the ensemble group, whose stage word belongs at the far end - but
+   here the chevron already claims that end, and two cells both taking the free space split it
+   and park the count halfway across the rail. Reset so the count reads as part of the title,
+   which is where the board head puts it too. */
+.rail-repo-group .reg-stage {
+  margin-left: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- empty columns: all-clear, and the stash the rest fold into ----
    An empty "needs you" keeps its column but not its share of the width: it has one
    sentence to say, and 250px says it. Everything else that empties leaves the board

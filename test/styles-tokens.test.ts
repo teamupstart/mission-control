@@ -34,6 +34,11 @@ const css = readFileSync(
  */
 const SET_FROM_JS = new Map<string, string>([
   ["--agent-accent", "a harness's colour, inline from AGENT_IDENTITY (see AGENTS.md)"],
+  // The repository frame's identity colour, inline on the frame from `lib/repo-color.ts`. The
+  // exact sibling of `--agent-accent`: derived per element from a shared table, so the
+  // stylesheet cannot declare it and a fallback would be a fifth colour nobody chose. Every
+  // rule reading it is inside a `.board-repo` / `.rail-repo` that sets it.
+  ["--repo-c", "a repository's colour, inline from repoColor() (see lib/repo-color.ts)"],
   ["--topbar-h", "measured in App.tsx (see AGENTS.md)"],
   ["--tt-caret", "the tooltip caret offset, inline from Tooltip.tsx"],
   ["--pct", "a bar's own fill percentage, inline from SpendChip.tsx"],

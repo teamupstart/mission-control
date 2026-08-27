@@ -2840,6 +2840,19 @@ export const UI_CONFIG_DEFAULTS = {
    * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
    */
   hiddenDisplayItems: ["worktree"],
+  /**
+   * TRUE, unlike `hiddenDisplayItems` above, and the difference is worth stating.
+   *
+   * That list defaults to "the card this build's predecessor drew" because every entry in it
+   * removes or restores a FACT on a card, and putting a new fact on every card on upgrade is
+   * what defaulting to today's rendering exists to prevent. Repository grouping adds no fact:
+   * every card says exactly what it said before, and what changes is the order they sit in and
+   * a heading above them. On a single-repository fleet - which is most of them - that heading
+   * is the only visible difference at all, and on a multi-repository one it answers the
+   * question the board could not previously answer. So it ships on, and an operator who wants
+   * one flat list per column unchecks it.
+   */
+  groupBoardByRepo: true,
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -2939,6 +2952,21 @@ export const UiConfigSchema = z.object({
   hiddenDisplayItems: z
     .array(z.string().min(1))
     .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
+  /**
+   * Whether the fleet's tone-grouped surfaces collect their cards by repository.
+   *
+   * A plain boolean rather than an entry in `hiddenDisplayItems`, and that is a boundary worth
+   * keeping. That array answers "which facts does a card draw"; this answers "how is a column
+   * arranged", which is not a property of any card and could not be expressed as one of its
+   * items - the Board card panel's own preview is a single tile, and a single tile cannot show
+   * a grouping.
+   *
+   * Named for the Board because that is the surface it was asked for and the one it changes
+   * most, and it governs the console rail too: the board's idle column BECOMES that rail on
+   * drill-in, so a grouping that stopped at the morph would read as the fleet regrouping when
+   * only the layout moved.
+   */
+  groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

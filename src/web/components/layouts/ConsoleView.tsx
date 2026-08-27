@@ -1,7 +1,16 @@
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
-import { clusterFallbackLabel, fleetRows, orderSessions } from "../../lib/fleet-order.ts";
+import {
+  clusterFallbackLabel,
+  fleetRows,
+  orderSessions,
+  repoSessionTotals,
+  type FleetBlock,
+} from "../../lib/fleet-order.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { repoColor } from "../../lib/repo-color.ts";
+import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
+import { useUiConfig } from "../../lib/uiConfig.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import {
@@ -9,6 +18,7 @@ import {
   EnsembleRailGroup,
   FleetSectionHead,
   PipelineClusterHead,
+  RepoGroupHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
@@ -31,10 +41,22 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
   // only here - the contract is that `orderSessions` returns them all, because App's board
   // column arrays depend on the indices lining up whether or not a column is on screen).
-  const groups = orderSessions(
+  // `groupBoardByRepo` from the SAME store BoardView and App read it from. The console rail is
+  // what the board's focused column morphs INTO, so a rail that grouped differently would read
+  // as the fleet regrouping when only the layout moved - the same reason the free/held rule is
+  // drawn by one shared component in both places.
+  const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
-  ).groups.filter((g) => g.sessions.length > 0);
+    useUiConfig().groupBoardByRepo,
+  );
+  const groups = order.groups.filter((g) => g.sessions.length > 0);
+  const repoTotals = repoSessionTotals(order);
+  // Which repository groups are folded, from the store `App` and the board read too. Shared
+  // rather than per-layout: the board's focused column BECOMES this rail on drill-in, so two
+  // fold states meant one repository could be open on one side of the morph and folded on the
+  // other - and `App` needs the same set to keep the arrow keys off folded rows.
+  const repoCollapsed = useRepoCollapsed();
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
   // pane there is no reader to hand focus to, so it always presents as the rail.
@@ -60,6 +82,40 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       )}
     />
   );
+
+  /**
+   * One rail row that is not a section rule: a loose session, or a run's framed siblings.
+   *
+   * Extracted so the repository group below renders its contents with the SAME spelling the
+   * top level uses. A repository frame containing a second copy of this JSX is a fork waiting
+   * to drift - the run frame inside a repository has to be the same frame as one sitting loose
+   * beside it, or a pipeline that moved into a grouped column would quietly lose its head.
+   */
+  const renderBlock = (block: FleetBlock): React.JSX.Element =>
+    block.kind === "session" ? (
+      railRow(block.session)
+    ) : (
+      // `block.key`, not the runId: a run split across the free/held boundary frames once per
+      // side, and two frames keyed by one run collide.
+      <div className="rail-cluster" key={block.key}>
+        {block.cluster === "pipeline" ? (
+          <PipelineClusterHead
+            run={props.pipelineRunByKey?.get(block.runId) ?? null}
+            slug={block.sessions[0]!.pipeline!.slug}
+            variant="rail"
+            onOpen={() => props.onOpenPipelineRun?.(block.sessions[0]!.pipeline!)}
+          />
+        ) : (
+          <EnsembleRailGroup
+            summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+            fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+            blockedHere={blockedMembersIn(block.sessions)}
+            onOpen={() => props.onOpenEnsemble?.(block.runId)}
+          />
+        )}
+        {block.sessions.map(railRow)}
+      </div>
+    );
 
   return (
     <div className="console" data-zone={zone}>
@@ -105,29 +161,30 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                   kind={row.section}
                   count={row.count}
                 />
-              ) : row.kind === "session" ? (
-                railRow(row.session)
-              ) : (
-                // `row.key`, not the runId: a run split across the free/held boundary
-                // frames once per side, and two frames keyed by one run collide.
-                <div className="rail-cluster" key={row.key}>
-                  {row.cluster === "pipeline" ? (
-                    <PipelineClusterHead
-                      run={props.pipelineRunByKey?.get(row.runId) ?? null}
-                      slug={row.sessions[0]!.pipeline!.slug}
-                      variant="rail"
-                      onOpen={() => props.onOpenPipelineRun?.(row.sessions[0]!.pipeline!)}
-                    />
-                  ) : (
-                    <EnsembleRailGroup
-                      summary={props.ensembleSummaryByRun?.get(row.runId) ?? null}
-                      fallbackLabel={clusterFallbackLabel(row.sessions[0]!)}
-                      blockedHere={blockedMembersIn(row.sessions)}
-                      onOpen={() => props.onOpenEnsemble?.(row.runId)}
-                    />
-                  )}
-                  {row.sessions.map(railRow)}
+              ) : row.kind === "repo" ? (
+                // A repository group, one level above the run frames inside it. `row.key`
+                // rather than the root, for the reason the cluster below gives: a repository is
+                // grouped once per tone section and once per side of the free/held boundary.
+                <div
+                  className="rail-cluster rail-repo"
+                  style={{ "--repo-c": repoColor(row.repoRoot) } as React.CSSProperties}
+                  key={row.key}
+                >
+                  <RepoGroupHead
+                    repoRoot={row.repoRoot}
+                    here={row.blocks.reduce(
+                      (n, b) => n + (b.kind === "session" ? 1 : b.sessions.length),
+                      0,
+                    )}
+                    total={repoTotals.get(row.repoRoot) ?? 0}
+                    variant="rail"
+                    expanded={!repoCollapsed.has(row.key)}
+                    onToggle={() => toggleRepoCollapsed(row.key)}
+                  />
+                  {!repoCollapsed.has(row.key) && row.blocks.map(renderBlock)}
                 </div>
+              ) : (
+                renderBlock(row)
               ),
             )}
           </div>

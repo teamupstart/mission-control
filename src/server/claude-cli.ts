@@ -124,6 +124,10 @@ export interface ClaudeRunOptions {
    * this for one caller cannot widen it for the others by accident.
    */
   tools?: string;
+  /** Tools pre-approved for this unattended run. Must be a subset of `tools`. */
+  allowedTools?: string;
+  /** Claude Code settings layers to load. Omitted by default so background LLM jobs stay isolated. */
+  settingSources?: readonly ("user" | "project" | "local")[];
   /**
    * Where the run spawns. Defaults to `HEADLESS_CWD` (a temp dir), which is right for
    * every tool-less caller: with no tools, a working directory is meaningless, and a
@@ -199,6 +203,10 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     const args = ["-p", "--output-format", "json"];
     if (images.length > 0) args.push("--input-format", "stream-json");
     args.push("--tools", opts.tools ?? "");
+    if (opts.allowedTools) args.push("--allowed-tools", opts.allowedTools);
+    if (opts.settingSources?.length) {
+      args.push("--setting-sources", opts.settingSources.join(","));
+    }
     // Unlike the deliberately absent resume flags above, this constrains only the reply
     // shape. It cannot connect this fresh invocation to any previous conversation.
     if (opts.schema) args.push("--json-schema", opts.schema);

@@ -337,11 +337,11 @@ function GithubFields({
 /**
  * The kind-specific half of a jira source.
  *
- * Two fields carry the whole configuration - the site and the filter - because everything
+ * The site, query path, and filter carry the whole configuration because everything
  * else a Jira query needs is already IN the JQL, and re-expressing project/status/assignee
  * as controls beside it would give two places to say one thing. The credential is
- * deliberately not here: it is the operator's `jira` CLI or their `JIRA_API_TOKEN` +
- * `JIRA_EMAIL`, so this panel has no secret to store and none to leak.
+ * deliberately not here: it is either the operator's `jira` CLI / environment credential or
+ * UpstartClaw's existing interactive authentication, so this panel stores no secret.
  */
 function JiraFields({
   cfg,
@@ -381,6 +381,28 @@ function JiraFields({
           />
         </Tooltip>
       </label>
+
+      <label className="ts-field ts-field-wide">
+        <span className="ts-field-label">Query via</span>
+        <select
+          className="field-input"
+          aria-label="How Jira queries are authenticated"
+          value={cfg.queryVia}
+          onChange={(e) =>
+            onChange({ ...cfg, queryVia: e.target.value as JiraConfig["queryVia"] })
+          }
+        >
+          <option value="local">Jira CLI or API token</option>
+          <option value="upstartclaw">UpstartClaw Claude skill</option>
+        </select>
+      </label>
+
+      {cfg.queryVia === "upstartclaw" && (
+        <p className="settings-warn ts-upstartclaw-note">
+          UpstartClaw runs unattended with your Claude user settings. User-level Claude hooks can
+          run on every check and scheduled sweep.
+        </p>
+      )}
 
       {/* Last of the inputs rather than second, though it is the most important one: it spans
           the row, so anything after it leaves a half-empty row above - and here it sits

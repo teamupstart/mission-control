@@ -20,8 +20,8 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  *
  *  1. The kind is REACHABLE - offered by the add control with its own blurb, arriving
  *     switched off (and filing parked tasks) with the Jira fields (not the GitHub ones), and
- *     keeping its filter and its autopilot opt-in across a reload, which is what proves the
- *     config went to the daemon rather than into component state.
+ *     keeping its filter, UpstartClaw query method, and autopilot opt-in across a reload,
+ *     which is what proves the config went to the daemon rather than into component state.
  *  2. An unusable source SAYS SO. The empty-filter sentence comes from the real daemon here,
  *     because the whole feature exists so a misconfigured source is never a silent empty
  *     sweep. The credential sentences are then fulfilled locally: what the panel owes an
@@ -126,6 +126,9 @@ test("a Jira source is addable, files parked tasks, and keeps the defaults it is
 
   // The Jira field group, and the shipped site default reaching the operator.
   await expect(page.getByLabel("Jira site")).toHaveValue("upstartnetwork.atlassian.net");
+  const queryVia = page.getByLabel("How Jira queries are authenticated");
+  await expect(queryVia).toHaveValue("local");
+  await expect(page.getByText(/User-level Claude hooks can run/)).toHaveCount(0);
   await expect(page.getByLabel("JQL filter")).toHaveValue("");
   await expect(page.getByRole("checkbox", { name: /priority from the Jira issue/ })).toBeChecked();
   // And not the other kind's, which would be a source configured for an upstream it will
@@ -139,7 +142,10 @@ test("a Jira source is addable, files parked tasks, and keeps the defaults it is
   await shoot(page, "jira-source-without-a-filter");
 
   // Text fields commit on blur, so filling the next one is what saves the last.
-  await page.getByLabel("Jira site").fill("acme.atlassian.net");
+  await queryVia.selectOption("upstartclaw");
+  await expect(
+    page.getByText(/User-level Claude hooks can run on every check and scheduled sweep/),
+  ).toBeVisible();
   await page.getByLabel("JQL filter").fill(JQL);
   await page.keyboard.press("Tab");
 
@@ -155,17 +161,21 @@ test("a Jira source is addable, files parked tasks, and keeps the defaults it is
     .poll(
       async () => {
         const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
-        const body = (await res.json()) as { sources?: { config?: { jql?: string } }[] };
-        return body.sources?.[0]?.config?.jql ?? "";
+        const body = (await res.json()) as {
+          sources?: { config?: { jql?: string; queryVia?: string } }[];
+        };
+        return body.sources?.[0]?.config ?? {};
       },
       { message: "the daemon should have stored the filter the panel accepted" },
     )
-    .toBe(JQL);
+    .toMatchObject({ jql: JQL, queryVia: "upstartclaw" });
 
   // And it survives a fresh page, which is what an operator comes back to tomorrow.
   await page.reload();
   await expect(page.getByLabel("JQL filter")).toHaveValue(JQL);
-  await expect(page.getByLabel("Jira site")).toHaveValue("acme.atlassian.net");
+  await expect(page.getByLabel("Jira site")).toHaveValue("upstartnetwork.atlassian.net");
+  await expect(page.getByLabel("How Jira queries are authenticated")).toHaveValue("upstartclaw");
+  await expect(page.getByText(/User-level Claude hooks can run/)).toBeVisible();
   await expect(
     page.getByRole("checkbox", { name: "Allow backlog autopilot to schedule swept tasks" }),
   ).toBeChecked();

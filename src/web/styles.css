@@ -18440,10 +18440,11 @@ button.wf-carried.is-link:focus-visible {
 .ts-check {
   grid-column: 1 / -1;
 }
-/* The "this filter sweeps nothing" warning, which is a sentence rather than a field: it
-   spans the row for the reason `.ts-field-wide` does, since a 220px grid cell would break
-   one line of prose across five. */
-.ts-no-jql {
+/* Jira's filter and user-settings warnings are sentences rather than fields. They span the
+   row for the reason `.ts-field-wide` does, since a 220px grid cell would break one line of
+   prose across five. */
+.ts-no-jql,
+.ts-upstartclaw-note {
   grid-column: 1 / -1;
 }
 /* One label -> priority mapping. The label field takes the room; the picker and the

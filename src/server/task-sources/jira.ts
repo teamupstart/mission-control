@@ -5,8 +5,15 @@ import type {
   TaskCandidate,
   TaskSourceImpl,
 } from "@shared/task-source.ts";
-import { JiraConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
+import {
+  DEFAULT_JIRA_SITE,
+  JiraConfigSchema,
+  TASK_SOURCE_KIND_INFO,
+} from "@shared/task-source.ts";
 import type { TaskPriority } from "@shared/types.ts";
+import { resultText, runClaudeText, type ClaudeRunOptions } from "../claude-cli.ts";
+import { defaultEnvironmentDeps } from "../environment/index.ts";
+import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 
@@ -17,8 +24,10 @@ import type { RunResult } from "../util/exec.ts";
 // onboarding docs, it already knows the site and the login, and using it is the same trade
 // the GitHub source makes with `gh`. When it is absent (or present and unusable) the sweep
 // falls back to Jira's REST API with `JIRA_API_TOKEN` + `JIRA_EMAIL` read from the daemon's
-// own environment - the convention those same operators already have exported. Nothing is
-// written to `app_config`, so there is no token in this app's database to leak.
+// own environment - the convention those same operators already have exported. A source can
+// instead explicitly select UpstartClaw, which runs the same JQL through the installed Jira
+// skill and its read-only Atlassian MCP search tool. Nothing is written to `app_config`, so
+// there is no token in this app's database to leak.
 //
 // The rule the whole file is arranged around: a credential that is missing, half-set or
 // rejected must arrive as a SENTENCE NAMING THE FIX, never as an empty sweep. An empty
@@ -30,6 +39,8 @@ import type { RunResult } from "../util/exec.ts";
 
 /** How long one Jira query may take before it is abandoned, on either rung. */
 const JIRA_TIMEOUT_MS = 20_000;
+/** A cold Claude run has to load one skill, discover one deferred tool, and call it. */
+const UPSTARTCLAW_TIMEOUT_MS = 90_000;
 
 /** Longest description carried into an intent, so one enormous issue can't fill a card. */
 const BODY_LIMIT = 4000;
@@ -90,6 +101,56 @@ const NO_PATH =
 
 /** What to say about an empty filter, which is storable but unusable. */
 const NO_JQL = "set a JQL query in this source's settings - an empty filter sweeps nothing";
+
+/** The exact skill and deferred MCP tool observed in a working Upstart Jira query. */
+export const UPSTARTCLAW_JIRA_SKILL = "upstartclaw-core:working-with-jira";
+export const UPSTARTCLAW_JQL_TOOL =
+  "mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql";
+const UPSTARTCLAW_TOOLS = `Skill,ToolSearch,${UPSTARTCLAW_JQL_TOOL}`;
+
+/** Structured output keeps the model out of the issue-mapping contract. */
+const UPSTARTCLAW_RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["source", "issues", "truncated"],
+  properties: {
+    source: { type: "string", const: UPSTARTCLAW_JQL_TOOL },
+    truncated: { type: "boolean" },
+    issues: {
+      type: "array",
+      maxItems: MAX_SWEEP_ISSUES,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["key", "self", "fields"],
+        properties: {
+          key: { type: "string" },
+          self: { type: ["string", "null"] },
+          fields: {
+            type: "object",
+            additionalProperties: false,
+            required: ["summary", "description", "priority"],
+            properties: {
+              summary: { type: "string" },
+              description: { type: ["string", "null"] },
+              priority: {
+                anyOf: [
+                  { type: "null" },
+                  {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["name"],
+                    properties: { name: { type: "string" } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
 
 /** One issue, as much of Jira's JSON as we read. Everything is optional: it is a wire shape. */
 export interface JiraIssue {
@@ -972,6 +1033,117 @@ async function walkRest(
   }
 }
 
+/** The two external seams behind an UpstartClaw query, explicit so tests spend no tokens. */
+export interface JiraUpstartClawDeps {
+  ready(): Promise<boolean>;
+  run(prompt: string, opts: ClaudeRunOptions): Promise<string>;
+}
+
+const DEFAULT_UPSTARTCLAW_DEPS: JiraUpstartClawDeps = {
+  ready: async () => upstartclawCoreReady(defaultEnvironmentDeps()),
+  run: runClaudeText,
+};
+
+/**
+ * The complete instruction for one skill-backed JQL query.
+ *
+ * The JQL is JSON-encoded rather than interpolated as prose, so quotes and newlines retain their
+ * exact bytes. The tool grant is the security boundary, but the prompt also states the intended
+ * route so a malformed query cannot redirect the model toward Glean or a general web search.
+ */
+export function upstartClawPrompt(cfg: JiraConfig, maxIssues: number): string {
+  return [
+    "Query Upstart Jira and return only the structured result requested by the output schema.",
+    `First invoke the ${UPSTARTCLAW_JIRA_SKILL} skill.`,
+    `Then use ToolSearch to load ${UPSTARTCLAW_JQL_TOOL} and call that tool directly.`,
+    "Do not use Glean, web search, or any other Jira query. Do not change or augment the JQL.",
+    `Run this exact JQL string: ${JSON.stringify(cfg.jql)}`,
+    `Collect matching issues through pagination, stopping after ${maxIssues}.`,
+    "For each issue return its key, API or browse URL as self, summary, plain-text description, and Jira priority name.",
+    "Set truncated true only when more matching issues remain after the returned list.",
+    `Set source to ${JSON.stringify(UPSTARTCLAW_JQL_TOOL)} only after that tool answered successfully.`,
+  ].join("\n");
+}
+
+/** Convert Claude's validated answer into the same Jira page shape the local paths use. */
+export function pageFromUpstartClaw(raw: string, cfg: JiraConfig): JiraWalk {
+  let answer: unknown;
+  try {
+    answer = JSON.parse(resultText(raw));
+  } catch {
+    return { issues: [], error: "UpstartClaw returned output that is not JSON", advisory: null };
+  }
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
+    return { issues: [], error: "UpstartClaw returned an unexpected shape", advisory: null };
+  }
+  const record = answer as Record<string, unknown>;
+  if (record.source !== UPSTARTCLAW_JQL_TOOL) {
+    return {
+      issues: [],
+      error: "UpstartClaw did not confirm that its Atlassian JQL search tool answered",
+      advisory: null,
+    };
+  }
+  const read = issuesFrom(JSON.stringify({ issues: record.issues }));
+  if ("error" in read) return { issues: [], error: read.error, advisory: null };
+  return {
+    issues: read.issues,
+    error: null,
+    advisory: record.truncated === true ? tooBroad(cfg) : null,
+  };
+}
+
+/** Run the selected JQL through the installed UpstartClaw Jira skill and read-only MCP tool. */
+export async function readUpstartClaw(
+  cfg: JiraConfig,
+  ctx: SweepContext,
+  maxIssues: number,
+  deps: JiraUpstartClawDeps = DEFAULT_UPSTARTCLAW_DEPS,
+): Promise<JiraWalk> {
+  if (!cfg.jql.trim()) {
+    return { issues: [], error: NO_JQL, advisory: null };
+  }
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", advisory: null };
+  }
+  if (siteHost(cfg.site).toLowerCase() !== DEFAULT_JIRA_SITE) {
+    return {
+      issues: [],
+      error: `UpstartClaw queries Upstart Jira only - set the site to ${DEFAULT_JIRA_SITE} or select the local Jira query method`,
+      advisory: null,
+    };
+  }
+  if (!(await deps.ready())) {
+    return {
+      issues: [],
+      error:
+        "UpstartClaw is not installed and fully set up - install upstartclaw-core and run /upstartclaw-core:setup in an interactive Claude Code session",
+      advisory: null,
+    };
+  }
+  try {
+    const raw = await deps.run(upstartClawPrompt(cfg, maxIssues), {
+      timeoutMs: UPSTARTCLAW_TIMEOUT_MS,
+      schema: JSON.stringify(UPSTARTCLAW_RESULT_SCHEMA),
+      tools: UPSTARTCLAW_TOOLS,
+      allowedTools: UPSTARTCLAW_TOOLS,
+      settingSources: ["user"],
+      cwd: ctx.repoRoot,
+    });
+    if (ctx.signal.aborted) {
+      return { issues: [], error: "the sweep was abandoned", advisory: null };
+    }
+    return pageFromUpstartClaw(raw, cfg);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      issues: [],
+      error: `UpstartClaw could not run this JQL${why ? ` - ${why}` : ""}`,
+      advisory: null,
+    };
+  }
+}
+
 /**
  * Climb the auth ladder, and let the rung that can page do the paging.
  *
@@ -1050,7 +1222,11 @@ async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
   const site = siteProblem(cfg.site);
   if (site) return { items: [], error: site };
 
-  return sweepResultFromWalk(await ladder(cfg, ctx, sweepPages(cfg)), cfg, ctx);
+  const walk =
+    cfg.queryVia === "upstartclaw"
+      ? await readUpstartClaw(cfg, ctx, MAX_SWEEP_ISSUES)
+      : await ladder(cfg, ctx, sweepPages(cfg));
+  return sweepResultFromWalk(walk, cfg, ctx);
 }
 
 /**
@@ -1074,6 +1250,10 @@ async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | n
   if (!cfg.jql.trim()) return NO_JQL;
   const site = siteProblem(cfg.site);
   if (site) return site;
+
+  if (cfg.queryVia === "upstartclaw") {
+    return (await readUpstartClaw({ ...cfg, limit: 1 }, ctx, 1)).error;
+  }
 
   const cred = restCredentialFrom(process.env);
   if (!cred && !(await hasBin(JIRA_BIN))) return credentialGap(process.env) ?? NO_PATH;

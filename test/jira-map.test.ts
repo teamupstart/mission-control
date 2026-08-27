@@ -26,9 +26,14 @@ import {
   searchUrl,
   pageFromCli,
   pageFromRest,
+  pageFromUpstartClaw,
+  readUpstartClaw,
   siteHost,
   siteProblem,
   sweepResultFromWalk,
+  UPSTARTCLAW_JIRA_SKILL,
+  UPSTARTCLAW_JQL_TOOL,
+  upstartClawPrompt,
   type RestAnswer,
 } from "../src/server/task-sources/jira.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -93,8 +98,121 @@ test("an empty config is usable enough to store, and says what it defaults to", 
   const fresh = JiraConfigSchema.parse({});
   assert.equal(fresh.site, DEFAULT_JIRA_SITE, "a freshly added source stores {}");
   assert.equal(fresh.jql, "", "no filter yet - preflight and sweep both refuse it by name");
+  assert.equal(fresh.queryVia, "local", "existing sources retain their CLI or token path");
   assert.equal(fresh.limit, 50);
   assert.equal(fresh.priorityFromJira, true);
+});
+
+// ---- UpstartClaw's selected query path ----
+
+test("the UpstartClaw prompt preserves the JQL and requires the observed skill and tool route", () => {
+  const jql = 'project = MRT and assignee = "jordan.mance@upstart.com"';
+  const prompt = upstartClawPrompt(cfg({ jql, queryVia: "upstartclaw" }), 17);
+  assert.match(prompt, new RegExp(UPSTARTCLAW_JIRA_SKILL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(prompt, new RegExp(UPSTARTCLAW_JQL_TOOL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(prompt.includes(JSON.stringify(jql)), "quotes survive as one exact JSON string");
+  assert.match(prompt, /Do not use Glean, web search/);
+  assert.match(prompt, /stopping after 17/);
+});
+
+test("a skill answer enters the existing Jira mapper and reports a truncated filter", () => {
+  const raw = JSON.stringify({
+    result: JSON.stringify({
+      source: UPSTARTCLAW_JQL_TOOL,
+      truncated: true,
+      issues: [ISSUE],
+    }),
+  });
+  const page = pageFromUpstartClaw(raw, cfg({ queryVia: "upstartclaw" }));
+  assert.equal(page.error, null);
+  assert.deepEqual(page.issues, [ISSUE]);
+  assert.match(page.advisory!, /larger than one sweep can read/);
+});
+
+test("the skill path grants only Jira discovery tools and maps its answer without a real model", async () => {
+  let capturedPrompt = "";
+  let checkedOptions = false;
+  const walk = await readUpstartClaw(
+    cfg({ queryVia: "upstartclaw" }),
+    ctx,
+    1,
+    {
+      ready: async () => true,
+      run: async (prompt, options) => {
+        capturedPrompt = prompt;
+        assert.equal(options.tools, `Skill,ToolSearch,${UPSTARTCLAW_JQL_TOOL}`);
+        assert.equal(options.allowedTools, options.tools);
+        assert.deepEqual(options.settingSources, ["user"]);
+        assert.equal(options.cwd, ctx.repoRoot);
+        assert.ok(options.schema, "the adapter requires provider-validated issue JSON");
+        checkedOptions = true;
+        return JSON.stringify({
+          result: JSON.stringify({ source: UPSTARTCLAW_JQL_TOOL, truncated: false, issues: [ISSUE] }),
+        });
+      },
+    },
+  );
+  assert.equal(walk.error, null);
+  assert.deepEqual(walk.issues, [ISSUE]);
+  assert.match(capturedPrompt, /project = MC/);
+  assert.equal(checkedOptions, true);
+});
+
+test("the skill path refuses blank JQL before setup checks or Claude", async () => {
+  let checkedSetup = false;
+  let ranClaude = false;
+  const walk = await readUpstartClaw(
+    cfg({ jql: "   ", queryVia: "upstartclaw" }),
+    ctx,
+    1,
+    {
+      ready: async () => {
+        checkedSetup = true;
+        return true;
+      },
+      run: async () => {
+        ranClaude = true;
+        return "";
+      },
+    },
+  );
+
+  assert.equal(checkedSetup, false);
+  assert.equal(ranClaude, false);
+  assert.match(walk.error!, /set a JQL query/);
+  assert.deepEqual(walk.issues, []);
+});
+
+test("the skill path refuses an unfinished setup before spawning Claude", async () => {
+  let ran = false;
+  const walk = await readUpstartClaw(cfg({ queryVia: "upstartclaw" }), ctx, 1, {
+    ready: async () => false,
+    run: async () => {
+      ran = true;
+      return "";
+    },
+  });
+  assert.equal(ran, false);
+  assert.match(walk.error!, /\/upstartclaw-core:setup/);
+});
+
+test("the skill path refuses a non-Upstart Jira site before checking setup", async () => {
+  let checked = false;
+  const walk = await readUpstartClaw(
+    cfg({ site: "acme.atlassian.net", queryVia: "upstartclaw" }),
+    ctx,
+    1,
+    {
+      ready: async () => {
+        checked = true;
+        return true;
+      },
+      run: async () => "",
+    },
+  );
+  assert.equal(checked, false);
+  assert.match(walk.error!, /Upstart Jira only/);
+  assert.match(walk.error!, /select the local Jira query method/);
 });
 
 // Operators paste what the browser shows them, and a source configured that way must not

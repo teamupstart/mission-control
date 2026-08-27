@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { overlayKeyFromEnv } from "../src/server/registry.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
@@ -45,6 +44,10 @@ printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
 chmodSync(fakeBin, 0o755);
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 
+// Both imports stay below the override. `registry.ts` reaches the harness registry, which reaches
+// `claude-cli.ts`; importing the registry statically would freeze the real binary before this
+// test's fake exists and make a supposedly isolated test spend a model call.
+const { overlayKeyFromEnv } = await import("../src/server/registry.ts");
 const { runClaudeText } = await import("../src/server/claude-cli.ts");
 
 function argv(): string[] {
@@ -93,6 +96,27 @@ test("text-only and empty-image print calls retain exact argv and raw stdin", as
     assert.deepEqual(argv(), ["-p", "--output-format", "json", "--tools", ""]);
     assert.equal(readFileSync(runStdin, "utf8"), "text-only prompt");
   }
+});
+
+test("a plugin-backed print call loads and pre-approves only its selected tools", async () => {
+  const tools = "Skill,ToolSearch,mcp__plugin_example__search";
+  await runClaudeText("query the configured source", {
+    timeoutMs: 5_000,
+    tools,
+    allowedTools: tools,
+    settingSources: ["user"],
+  });
+  assert.deepEqual(argv(), [
+    "-p",
+    "--output-format",
+    "json",
+    "--tools",
+    tools,
+    "--allowed-tools",
+    tools,
+    "--setting-sources",
+    "user",
+  ]);
 });
 
 test("image-bearing print calls use one fresh stream-json user message", async () => {

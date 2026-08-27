@@ -79,10 +79,12 @@ const PROBE_TTL_MS = Math.max(1000, Number(envVar("PIPELINE_PROBE_TTL_MS") ?? 30
 /**
  * How long a run whose events are being pushed may go without a full ledger read.
  *
- * The floor under demotion, and the reason demotion is safe to do at all. A pushed event is
+ * The floor under demotion, and the reason persisted events remain safe. A pushed event is
  * an event this build's plugin knew to subscribe to; conductor's bus has no wildcard, so a
  * conductor release that adds an event kind emits something the installed plugin never asked
- * for. That event still reaches `events.jsonl`, and this sweep is what picks it up.
+ * for. When Conductor persists that kind, it still reaches `events.jsonl` and this sweep picks
+ * it up. Unpersisted kinds have no such backstop, which is why the plugin allowlist is pinned
+ * exhaustively against each supported Conductor event union.
  *
  * So the tail is never actually switched off - it is switched from "every tick" to "every
  * minute", which is the difference between polling a file for changes and checking that
@@ -870,9 +872,9 @@ function forgetRunState(provider: PipelineProviderId, repoRoot: string, slug: st
  *
  * Two ways to yes, and they are the demotion contract stated as code: no live ingest (the
  * tail is primary, which is every run on every machine today), or the sweep coming due - the
- * backstop for events the installed plugin never subscribed to. A run this process has never
- * swept takes the second one, so a pipeline that starts while its plugin is already pushing
- * still gets its ledger read in full, once.
+ * backstop for persisted events the installed plugin never subscribed to. A run this process
+ * has never swept takes the second one, so a pipeline that starts while its plugin is already
+ * pushing still gets its ledger read in full, once.
  *
  * **A push is deliberately not a third way.** It is the obvious one to add and it defeats the
  * whole phase: the plugin flushes every 250ms, so "read the ledger of whatever was just

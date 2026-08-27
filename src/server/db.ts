@@ -2771,7 +2771,7 @@ export function openDb(): DatabaseSync {
       -- gate_verdict on a second attempt - are byte-identical and hash alike. Convergence on
       -- the fingerprint ALONE therefore cannot tell "the other path is describing the event I
       -- already have" from "this happened twice", and the ledger used to answer the second by
-      -- discarding it. For the 30 kinds conductor never persists this is the only record there
+      -- discarding it. For the 28 kinds conductor never persists this is the only record there
       -- is, so that answer traded away the exact thing the table exists for.
       --
       -- With this column the question is answerable: an event converges onto the oldest row

@@ -61,6 +61,18 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
 }
 
+/** The Settings picker, which is a different element from the strip `shoot` photographs. */
+async function shootSettings(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.getByRole("radiogroup", { name: "Line density" }).screenshot({
+    path: `${EVIDENCE}${name}.png`,
+  });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
+}
+
 /** The strip's used height, which is the whole subject of this file. */
 async function bandHeight(page: Page): Promise<number> {
   return page
@@ -225,4 +237,98 @@ test("the condensed row holds its band as the window narrows, and keeps the care
     expect(overflow, `the page scrolled sideways at ${width}px wide`).toBeLessThanOrEqual(0);
   }
   observed(`the condensed band stayed ${reference}px from 1512px down to 760px, never wrapping`);
+});
+
+
+test("the Settings picker sets the density, and the strip and the daemon both follow", async ({
+  page,
+  daemon,
+}) => {
+  // Raised by the Inspector on the first review round, and it was right: the specs above
+  // drive the caret and the chord, so a broken radio - or a Settings render path that threw
+  // before reaching this panel - could have shipped with every new spec still green. The
+  // panel is a third writer of one preference, and a third writer needs its own proof.
+  await page.setViewportSize(VIEWPORT);
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+
+  const picker = page.getByRole("radiogroup", { name: "Line density" });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole("radio")).toHaveCount(2);
+
+  const expanded = picker.getByRole("radio", { name: /^Expanded/ });
+  const condensed = picker.getByRole("radio", { name: /^Condensed/ });
+  // The shipped default, read on the surface an operator would read it on.
+  await expect(condensed).toBeChecked();
+  await expect(expanded).not.toBeChecked();
+  observed("Settings > Display > The Line opened with Condensed checked, the shipped default");
+
+  // ---- the thumbnails are icons, not full-width pictures ----
+  //
+  // The exact regression `settings-conversation-picker.spec.ts` was written for, and this
+  // panel copies that component's shape: an inline <svg> carrying a viewBox and no
+  // width/height is a replaced element with a ratio and no intrinsic size, so it takes 100%
+  // of the line and scales its height by the ratio. Exact rather than bounded because 44x32
+  // is a fixed CSS size no font metric moves.
+  const thumbs = picker.locator(".view-thumb");
+  await expect(thumbs).toHaveCount(2);
+  for (const box of await thumbs.evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    }),
+  )) {
+    expect(box, "a density thumbnail is drawing at pane width again").toEqual({
+      width: 44,
+      height: 32,
+    });
+  }
+
+  // ---- selecting Expanded reaches the daemon ----
+
+  await expanded.check();
+  await expect(expanded).toBeChecked();
+  await expect
+    .poll(async () => (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity)
+    .toBe("expanded");
+  observed("choosing Expanded in Settings wrote app_config.ui.lineDensity through the daemon");
+
+  // ---- and the strip itself follows, which is the point of the setting ----
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const line = page.getByRole("navigation", { name: "The Line" });
+  await expect(line).toBeVisible();
+  await expect(line).not.toHaveClass(/is-condensed/);
+  await expect(line.locator(".ls-sub")).toHaveCount(6);
+  observed("the fleet's strip drew expanded, with its six sentences back");
+
+  // ---- and back again, so neither direction is a one-way door ----
+
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  const backPicker = page.getByRole("radiogroup", { name: "Line density" });
+  await expect(backPicker.getByRole("radio", { name: /^Expanded/ })).toBeChecked();
+  await backPicker.getByRole("radio", { name: /^Condensed/ }).check();
+  await expect
+    .poll(async () => (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity)
+    .toBe("condensed");
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const backLine = page.getByRole("navigation", { name: "The Line" });
+  await expect(backLine).toHaveClass(/is-condensed/);
+  await expect(backLine.locator(".ls-sub")).toHaveCount(0);
+  observed("choosing Condensed again folded the strip back, both ways round");
+
+  // ---- the caret and the panel are the same preference, not two ----
+  //
+  // Three writers, one value. If the panel held its own state the strip would fold here and
+  // the radio would still read Condensed on the next visit.
+  await backLine.getByRole("button", { name: "Expand the Line" }).click();
+  await expect(backLine).not.toHaveClass(/is-condensed/);
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await expect(
+    page.getByRole("radiogroup", { name: "Line density" }).getByRole("radio", { name: /^Expanded/ }),
+  ).toBeChecked();
+  observed("folding with the caret moved the Settings radio too - one preference, three controls");
+  await shootSettings(page, "settings-picker");
 });

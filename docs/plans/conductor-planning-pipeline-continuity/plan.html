@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conductor Planning Pipeline Continuity</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--paper:#fff;--ink:#17202b;--muted:#5f6b78;--line:#dce3ec;--accent:#2359d1;--accent-soft:#eaf0ff;--feature:#0d7b68;--shadow:0 18px 48px rgba(21,35,58,.09)}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#edf3ff 0,#f6f8fb 360px);color:var(--ink);font:16px/1.58 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1120px;margin:0 auto;padding:42px 24px 80px}.page{background:var(--paper);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:clamp(24px,5vw,64px)}h1{font-size:clamp(2rem,5vw,3.7rem);line-height:1.02;letter-spacing:-.045em;margin:0 0 22px;max-width:900px}h2{font-size:1.65rem;line-height:1.2;margin:52px 0 14px;padding-top:12px;border-top:1px solid var(--line)}h3{font-size:1.18rem;margin:34px 0 10px}h4{font-size:1rem;margin:28px 0 8px}p{margin:0 0 15px}h2+p{font-size:1.05rem}.meta{display:inline-block;margin:0 10px 10px 0;padding:6px 10px;background:var(--accent-soft);border-radius:999px;color:#204b9b;font-size:.88rem}a{color:var(--accent);text-underline-offset:3px}code{font:0.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:color-mix(in srgb,var(--accent-soft) 65%,transparent);border:1px solid color-mix(in srgb,var(--line) 75%,transparent);border-radius:5px;padding:.1em .32em}pre{overflow:auto;background:#101827;color:#e8eef8;border-radius:12px;padding:18px;border:1px solid #2c3a50}pre code{background:none;border:0;padding:0;color:inherit}li{margin:7px 0}ul,ol{padding-left:1.45rem}.table-wrap,.diagram{overflow-x:auto;margin:20px 0 28px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--paper) 90%,var(--accent-soft))}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:color-mix(in srgb,var(--accent-soft) 70%,var(--paper))}tr:last-child td{border-bottom:0}.diagram{padding:12px}.diagram svg{display:block;min-width:900px;width:100%;height:auto}.node{fill:var(--paper);stroke:#8da1bd;stroke-width:1.5}.node.feature{stroke:var(--feature)}.node.accent{stroke:var(--accent)}.life{stroke:#c4ceda;stroke-dasharray:5 5}.arrow{stroke:#5b6b7e;stroke-width:1.7}.diagram text{fill:var(--ink);font:14px ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.diagram .phase-title{font-weight:700;font-size:16px}.diagram .muted,.diagram .arrow-label{fill:var(--muted);font-size:12px}@media(max-width:700px){main{padding:16px 10px 48px}.page{border-radius:14px;padding:24px 18px}h2{margin-top:38px}}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1018;--paper:#111927;--ink:#e8eef7;--muted:#a8b3c2;--line:#2c394b;--accent:#8fb1ff;--accent-soft:#1c2c4b;--feature:#68d4bf;--shadow:none}body{background:linear-gradient(180deg,#101b30 0,#0b1018 360px)}.meta{color:#bfd0ff}pre{background:#080d15}.node{fill:#131d2c}.table-wrap,.diagram{background:#101824}}
+</style>
+</head>
+<body>
+<main><article class="page"><h1 id="conductor-planning-pipeline-continuity">Conductor Planning Pipeline Continuity</h1>
+<p class="meta"><strong>Status:</strong> Approved for phased implementation on 2026-08-27  </p>
+<p class="meta"><strong>Repositories:</strong> Mission Control and the <code>mancej/ai-conductor</code> fork  </p>
+<p class="meta"><strong>Related upstream intake:</strong> <code>jstoup111/ai-conductor#1975</code>  </p>
+<p class="meta"><strong>Outcome:</strong> A Pipeline task is visible from dispatch through interactive DECIDE, the spec-merge gate, BUILD, and SHIP, even when different sessions and worktrees perform those parts.</p>
+<h2 id="answer">Answer</h2>
+<p>Create a durable Mission Control <strong>Pipeline commission</strong> at dispatch, then feed it from product-neutral Engineer lifecycle events emitted by AI Conductor and transported by Mission Control's existing visualizer plugin.</p>
+<p>The commission is the stable Mission Control identity for the whole idea-to-shipment lifecycle. It renders on the first Engineer card before a provider worktree or <code>conduct-state.json</code> exists. AI Conductor owns a separate generic Engineer run identity and emits structured run, step, and handoff events through its existing <code>ConductorEventEmitter</code> spine. The Mission Control plugin translates those events into the commission projection. When handoff reports the exact plan slug, branch, and spec PR, Mission Control binds that future run to the commission. After merge, the daemon-created implementation worktree is discovered normally and any worker session correlated to it automatically joins the same commission.</p>
+<p>The intended lifecycle is:</p>
+<ol>
+<li>Pipeline task dispatch creates and persists the commission, so the full meter renders immediately with every step pending.</li>
+<li>The Engineer host remains interactive while generic AI Conductor events advance SETUP, UNDERSTAND, and DECIDE.</li>
+<li>Successful handoff moves the commission to <strong>Awaiting spec merge</strong> and records the exact final plan slug, branch, and PR URL.</li>
+<li>After merge, ordinary AI Conductor daemon discovery creates the implementation run. Mission Control joins that run to the stored commission by its exact provider-owned slug.</li>
+<li>A later provider worker session inherits the same commission automatically and continues the meter through BUILD and SHIP.</li>
+</ol>
+<p>This supersedes the earlier proposed Mission Control-specific checkpoint MCP and the earlier plugin-only interpretation. A visualizer cannot invent events or load itself around a host workflow. AI Conductor therefore needs small, product-neutral lifecycle and replay extension points. Mission Control remains the sole owner of commission semantics, task/session binding, projection, and UI.</p>
+<h2 id="decisions-incorporated-from-review">Decisions incorporated from review</h2>
+<ul>
+<li>Implement the AI Conductor portion on the user's <code>mancej/ai-conductor</code> fork. Do not open an upstream implementation PR as part of these phases.</li>
+<li>Track upstream product intent through <code>jstoup111/ai-conductor#1975</code>, but keep the fork implementation independently reviewable.</li>
+<li>Emit both Engineer-run lifecycle events and DECIDE step lifecycle events.</li>
+<li>Use the existing Conductor event spine and plugin system. Do not add a parallel telemetry channel.</li>
+<li>Keep event names and payloads product-neutral. AI Conductor must not contain Mission Control commission rules, task ids, routes, or UI vocabulary.</li>
+<li>Keep the existing Mission Control visualizer plugin as the integration boundary. It may add optional fields to its frozen envelope and translate generic events into Mission Control state.</li>
+<li>Do not treat a Skill or tool invocation as proof of completion. It may establish start. Completion comes from accepted output, deterministic artifact validation, or land-time reconciliation.</li>
+<li>Persist or replay Engineer events so a missed live push or Mission Control restart does not permanently erase DECIDE state.</li>
+<li>Do not write DECIDE state into implementation <code>conduct-state.json</code>. That file continues to represent the daemon implementation run after merge.</li>
+<li>Preserve the existing interactive Engineer composer and provider-driven worker composer behavior.</li>
+</ul>
+<h2 id="why-the-current-behavior-has-a-gap">Why the current behavior has a gap</h2>
+<p>The current implementation joins three different identities too early:</p>
+<ul>
+<li>Mission Control reserves <code>Task.pipelineRun</code> from the raw intent before the final plan slug exists. <code>src/server/dispatcher.ts:856-887</code>, <code>src/server/pipelines/conductor/index.ts:349-409</code></li>
+<li>The managed Engineer is an interactive Agent SDK session, so <code>Session.pipeline</code> is intentionally null. <code>src/server/dispatcher.ts:889-966</code></li>
+<li>The card meter renders only when a provider-driven session has both a <code>Session.pipeline</code> link and an observed <code>PipelineRun</code>. <code>src/web/components/layouts/SessionTile.tsx:277-283</code></li>
+<li>AI Conductor dispatches <code>engineer</code> before ordinary plugin discovery and run lifecycle setup. <code>ai-conductor/src/conductor/src/index.ts:593-597</code>, <code>ai-conductor/src/conductor/src/index.ts:1211-1296</code></li>
+<li>Current visualizer plugins receive only a <code>ConductorEventEmitter</code> and can subscribe only to events the host emits. <code>ai-conductor/src/conductor/src/types/plugin.ts:39-56</code></li>
+<li>The interactive Engineer workflow performs DECIDE in the Claude or Codex host, while the implementation daemon creates <code>.pipeline/conduct-state.json</code> only after a plan reaches the default branch.</li>
+<li>Mission Control currently admits an authoring worktree as a run when it merely contains <code>.pipeline/</code>, then fills absent steps with <code>pending</code>. <code>src/server/pipelines/conductor/state.ts:515-567</code>, <code>src/server/pipelines/conductor/normalize.ts:80-107</code></li>
+</ul>
+<p>In the live <code>Add health check endpoint</code> example, accepted DECIDE artifacts existed while <code>.pipeline/conduct-state.json</code> did not. A five-second refresh could only reread the same absence, so the UI kept every phase pending. After merge, the implementation run verifies the committed DECIDE artifacts and fast-forwards them, which makes the UI appear to jump over planning.</p>
+<h2 id="ownership-model">Ownership model</h2>
+<div class="table-wrap"><table><thead><tr><th>Concern</th><th>Authority</th><th>Consumer</th></tr></thead><tbody><tr><td>Engineer run and step event definitions</td><td>AI Conductor</td><td>Visualizers, event persistence, diagnostics</td></tr><tr><td>Canonical step order, tier/track skips, artifact acceptance</td><td>AI Conductor</td><td>Mission Control frozen display copy</td></tr><tr><td>Engineer event journals and per-run replay cursors</td><td>AI Conductor</td><td>Mission Control provider adapter</td></tr><tr><td>Pipeline commission id, initiating task, retention</td><td>Mission Control</td><td>Task/session cards, Runs, SSE</td></tr><tr><td>Mapping ordered Engineer attempts to one commission</td><td>Mission Control provider adapter</td><td>Commission projection</td></tr><tr><td>Mission Control envelope and HTTP transport</td><td>Mission Control visualizer plugin</td><td>Mission Control ingest route</td></tr><tr><td>Spec merge truth</td><td>GitHub/default branch and later provider run discovery</td><td>Commission lifecycle</td></tr><tr><td>Implementation step state, halts, PR, and cost</td><td>Existing AI Conductor run state</td><td>Existing Mission Control run projection</td></tr><tr><td>Session composer and process behavior</td><td>Mission Control session registry</td><td>Board and Console</td></tr></tbody></table></div>
+<p>Mission Control never writes AI Conductor state. Any provider mutation uses a sanctioned AI Conductor CLI or library surface. AI Conductor never imports Mission Control concepts.</p>
+<h2 id="ai-conductor-extension-contract">AI Conductor extension contract</h2>
+<h3 id="generic-engineer-run-identity">Generic Engineer run identity</h3>
+<p>Add a stable, opaque <code>engineerRunId</code> for one idea-to-spec attempt. An integration may also provide an opaque generic <code>correlationId</code> that groups successive attempts, but AI Conductor does not interpret it. Each correlated creation also receives an opaque <code>attemptKey</code> that makes that launch attempt idempotent. The run identity and attempt lineage survive authoring-worktree deletion and are present on every Engineer lifecycle event.</p>
+<p>The creation surface must be deterministic and machine-readable so Mission Control can create or reserve the Engineer run before launching the host. The exact command spelling may follow current CLI conventions, but it must return JSON containing at least:</p>
+<pre><code>interface EngineerRunCreatedV1 {
+  schemaVersion: 1;
+  engineerRunId: string;
+  correlationId: string | null;
+  attemptKey: string;
+  attempt: number;
+  previousEngineerRunId: string | null;
+  repoRoot: string;
+  idea: string;
+  eventRevision: number;
+}</code></pre>
+<p>Creation is idempotent for the same repository, correlation id, and attempt key. Repeating that tuple returns the same Engineer run, including after an uncertain command response. A new attempt key creates a new Engineer run only after the previous correlated run is terminal, increments the attempt ordinal, and records its predecessor. It refuses a second live run, cross-repository correlation reuse, incompatible ideas, and reuse of an attempt key with different inputs. A terminal Engineer run is immutable and is never reopened. Direct invocations without integration-supplied correlation or attempt keys continue to receive engine-minted values.</p>
+<h3 id="engineer-lifecycle-events">Engineer lifecycle events</h3>
+<p>Extend the existing <code>ConductorEvent</code> union with product-neutral Engineer events. The implementation may use a shared base payload rather than repeat every field, but the observable contract covers:</p>
+<ul>
+<li>run created and authoring started;</li>
+<li>routing selected and authoring worktree created;</li>
+<li>DECIDE step started, completed, failed, retried, or intentionally skipped;</li>
+<li>land reconciliation completed or refused;</li>
+<li>spec handoff ready with exact plan slug, branch, and PR URL when one exists;</li>
+<li>run cancelled, failed, or settled.</li>
+</ul>
+<p>Every event carries <code>schemaVersion</code>, <code>engineerRunId</code>, the Engineer attempt ordinal, a monotonic run-local revision, repository identity, and an ISO timestamp. The run-created event also carries correlation, attempt-key, and predecessor identity. Step events carry the canonical step name and a separate step-attempt number. Provider and model attribution are optional when the host knows them.</p>
+<p>Do not overload existing implementation <code>step_started</code> and <code>step_completed</code> events if doing so would make a worktree run and an Engineer authoring run indistinguishable. A distinct Engineer discriminant family is preferable to contextual guesses.</p>
+<h3 id="emission-and-completion-semantics">Emission and completion semantics</h3>
+<ul>
+<li>Lifecycle setup wraps every supported Engineer entrypoint, including the direct CLI launcher and the deterministic commands used by a directly invoked Claude or Codex Engineer skill.</li>
+<li>Host hooks or structured skill/tool callbacks may emit start and failure signals when supported.</li>
+<li>A post-tool callback does not automatically mean the DECIDE step completed. Loading a skill or returning from its instruction loader is not accepted output.</li>
+<li>Deterministic commands record mechanical transitions such as worktree creation, land, and handoff.</li>
+<li>Land reconciles missing completion and skip events from validated artifacts before accepting the spec. Contradictory claims fail closed.</li>
+<li>The implementation keeps current human gates and does not cause Engineer to build, merge, or own the daemon.</li>
+</ul>
+<h3 id="persistence-and-replay">Persistence and replay</h3>
+<p>Engineer events use the existing event spine:</p>
+<pre><code>Engineer emission -&gt; ConductorEventEmitter -&gt; EventPersister -&gt; durable Engineer event journal
+                                         -&gt; registered visualizer plugins</code></pre>
+<p>The journal lives under AI Conductor's durable Engineer state, not solely inside the authoring worktree that handoff removes. A compact inspect surface can list the ordered runs for a correlation id, and replay is requested for one exact Engineer run after its run-local revision. It uses the repository's existing atomic-write, lease, and append-only event patterns. Starting a later attempt never resets or appends to an earlier run's journal.</p>
+<p>Existing BUILD and SHIP event files and semantics remain unchanged.</p>
+<h3 id="plugin-lifecycle">Plugin lifecycle</h3>
+<p>Refactor plugin discovery/lifecycle only as much as required to start registered visualizers around Engineer event emission. The <code>VisualizerPlugin.start(emitter)</code> observer contract may remain unchanged because the new events carry their own generic identity. Existing inline and daemon lifecycle behavior must remain backward compatible.</p>
+<p>Add a machine-readable capability such as <code>engineerLifecycleEventsV1</code>. Mission Control enables the new commissioning path only when the fork reports the complete event, replay, and handoff contract.</p>
+<h2 id="mission-control-commission-model">Mission Control commission model</h2>
+<h3 id="durable-identity-and-storage">Durable identity and storage</h3>
+<p>Mission Control mints an opaque <code>PipelineCommissionId</code> before any host starts and persists it on the Pipeline task. It is independent of task title, raw intent, worktree name, branch, plan slug, session id, and implementation run slug.</p>
+<p>Add a durable commission projection and bounded authoring event ledger:</p>
+<pre><code>CREATE TABLE pipeline_commissions (
+  id                  TEXT PRIMARY KEY,
+  task_id             TEXT NOT NULL UNIQUE,
+  provider            TEXT NOT NULL,
+  repo_root           TEXT NOT NULL,
+  correlation_id      TEXT NOT NULL,
+  state_json          TEXT NOT NULL,
+  active_attempt      INTEGER,
+  run_slug            TEXT,
+  updated_at          INTEGER NOT NULL
+);
+
+CREATE TABLE pipeline_commission_attempts (
+  commission_id       TEXT NOT NULL,
+  attempt             INTEGER NOT NULL,
+  launch_key          TEXT NOT NULL,
+  engineer_run_id     TEXT,
+  provider_revision   INTEGER NOT NULL DEFAULT 0,
+  state               TEXT NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  PRIMARY KEY (commission_id, attempt),
+  UNIQUE (commission_id, launch_key),
+  UNIQUE (commission_id, engineer_run_id)
+);
+
+CREATE TABLE pipeline_commission_events (
+  commission_id       TEXT NOT NULL,
+  seq                 INTEGER NOT NULL,
+  engineer_attempt    INTEGER,
+  kind                TEXT NOT NULL,
+  body                TEXT NOT NULL,
+  observed_at         INTEGER NOT NULL,
+  PRIMARY KEY (commission_id, seq)
+);</code></pre>
+<p>Add nullable <code>pipeline_commission_id</code> to <code>tasks</code>. Keep the current provider/run link nullable until handoff yields the exact final slug. Legacy <code>pipeline_provider</code> and <code>pipeline_slug</code> values remain readable.</p>
+<p>The commission projection contains lifecycle, ordered Engineer attempts, active attempt, steps, current step, tier, track, authoring worktree, spec branch, spec PR, exact linked run, error, and update time. Each attempt owns its Engineer run id and run-local provider revision, so a new run beginning at revision one is not mistaken for regression. Unknown event kinds are stored opaquely; an unsupported schema produces an explicit unsupported state instead of resetting steps to pending.</p>
+<h3 id="provider-adapter-and-visualizer-plugin">Provider adapter and visualizer plugin</h3>
+<p>Extend the provider interface with optional Engineer-run capability methods for create by correlation plus attempt key, inspect correlation lineage, replay one exact run, and cancel. The AI Conductor adapter invokes only provider-sanctioned commands and reads only provider-owned journals.</p>
+<p>Update <code>integrations/ai-conductor/mission-control/</code> to:</p>
+<ul>
+<li>subscribe to the new Engineer event kinds;</li>
+<li>use the event's <code>engineerRunId</code>, Engineer attempt, repository, and correlation id instead of pretending the authoring worktree is an implementation slug;</li>
+<li>append optional Engineer identity fields to the frozen envelope without changing existing run envelopes;</li>
+<li>keep handlers synchronous and O(1), batching and retry behavior unchanged;</li>
+<li>remain a transport and translation layer, not a second state authority.</li>
+</ul>
+<p>Extend <code>/ingest/conductor</code> to accept either the current implementation-run envelope or the additive Engineer envelope. Engineer ingestion resolves the commission attempt by validated provider, repository, correlation id, attempt ordinal, and Engineer run id. Unknown, cross-repository, stale, cross-attempt, or regressive events are refused before SQLite writes. An idempotent duplicate for a terminal attempt is harmless, but no later event may reopen it or update the active-attempt projection.</p>
+<p>The normal five-second provider refresh reads only active commissions and replays the active Engineer run from that attempt's last provider revision. Live plugin push supplies low latency; replay supplies correctness after a missed delivery or restart. Stored terminal attempts remain visible history and never share a replay cursor with the active attempt.</p>
+<h3 id="dispatch-and-handoff">Dispatch and handoff</h3>
+<p>For a provider advertising <code>engineerLifecycleEventsV1</code>:</p>
+<ol>
+<li>Persist the commission and task binding.</li>
+<li>Mint and persist commission attempt 1 plus an opaque launch key.</li>
+<li>Create the generic provider Engineer run with the commission id as correlation and the launch key as its attempt key.</li>
+<li>Persist the returned Engineer run id, attempt ordinal, and predecessor identity.</li>
+<li>Launch the interactive host with the run context needed by the canonical Engineer workflow.</li>
+<li>Render the card from the commission immediately.</li>
+</ol>
+<p>If any pre-launch step fails, no host starts and the task reports an actionable upgrade or provider error.</p>
+<p>At spec handoff, persist the exact plan slug, branch, and PR URL on the commission and set <code>Task.pipelineRun</code> to that exact provider link. Do not derive it from raw intent. A later observed implementation run with that key attaches to the commission automatically. Existing worktree-containment correlation continues to identify the provider worker session; the commission-to-run link joins it to the end-to-end lifecycle.</p>
+<h3 id="browser-projection-and-ui">Browser projection and UI</h3>
+<p>Add <code>pipelineCommissions</code> to the connect snapshot and whole-object <code>pipeline_commission_upsert</code> plus identity-only <code>pipeline_commission_remove</code> events. <code>useEventStream</code> stores them by commission id.</p>
+<p>Add <code>pipelineCommissionId</code> to <code>TaskSummary</code>. A worker session may resolve its commission from its exact run link; the Engineer session resolves it from the task binding. Do not set <code>Session.pipeline</code> on the Engineer host.</p>
+<p>Generalize the existing phase-meter derivation to accept a commission-derived view model while preserving the current provider-run path:</p>
+<ul>
+<li>the meter renders on the first Engineer card with all phases pending;</li>
+<li>before the first provider event, copy reads <strong>Starting Engineer</strong> or <strong>Routing idea</strong> and no step is falsely in progress;</li>
+<li>live DECIDE events advance the corresponding phase and popover;</li>
+<li>a later Engineer attempt keeps the commission stable, shows <strong>Retrying Engineer (attempt N)</strong>, and retains earlier attempts as history without treating their terminal events as current progress;</li>
+<li>handoff displays <strong>Awaiting spec merge</strong> and the spec PR link;</li>
+<li>the post-merge worker appears in the same commission cluster and continues the same meter;</li>
+<li>the Engineer composer remains available, while the provider worker composer stays disabled;</li>
+<li>legacy uncommissioned runs retain their current UI.</li>
+</ul>
+<p>The Runs view shows one commission detail with ordered authoring attempts, current progress, the spec gate, and the linked implementation run. The gap between DECIDE and BUILD is a lifecycle gate, not a fake sixth phase or pipeline step. The active attempt owns the current meter; AI Conductor may immediately re-emit mechanically accepted prior artifacts when a new attempt legitimately reuses them.</p>
+<h2 id="end-to-end-flow">End-to-end flow</h2>
+<div class="diagram" role="img" aria-label="Pipeline commission lifecycle from dispatch through Engineer events, spec merge, and a later provider worker"><svg viewBox="0 0 1120 530" xmlns="http://www.w3.org/2000/svg"><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#5b6b7e"/></marker></defs><rect x="30" y="18" width="120" height="38" rx="10" class="node"/><text x="90" y="42" text-anchor="middle">Operator</text><line x1="90" y1="56" x2="90" y2="510" class="life"/><rect x="180" y="18" width="120" height="38" rx="10" class="node"/><text x="240" y="42" text-anchor="middle">Mission Control</text><line x1="240" y1="56" x2="240" y2="510" class="life"/><rect x="350" y="18" width="120" height="38" rx="10" class="node"/><text x="410" y="42" text-anchor="middle">Engineer host</text><line x1="410" y1="56" x2="410" y2="510" class="life"/><rect x="510" y="18" width="120" height="38" rx="10" class="node"/><text x="570" y="42" text-anchor="middle">Conductor spine</text><line x1="570" y1="56" x2="570" y2="510" class="life"/><rect x="680" y="18" width="120" height="38" rx="10" class="node"/><text x="740" y="42" text-anchor="middle">MC plugin</text><line x1="740" y1="56" x2="740" y2="510" class="life"/><rect x="820" y="18" width="120" height="38" rx="10" class="node"/><text x="880" y="42" text-anchor="middle">Git + daemon</text><line x1="880" y1="56" x2="880" y2="510" class="life"/><rect x="970" y="18" width="120" height="38" rx="10" class="node"/><text x="1030" y="42" text-anchor="middle">Worker</text><line x1="1030" y1="56" x2="1030" y2="510" class="life"/><line x1="80" y1="86" x2="230" y2="86" class="arrow" marker-end="url(#arrow)"/><text x="155" y="78" text-anchor="middle" class="arrow-label">dispatch + commission</text><line x1="230" y1="130" x2="560" y2="130" class="arrow" marker-end="url(#arrow)"/><text x="395" y="122" text-anchor="middle" class="arrow-label">create Engineer run</text><line x1="230" y1="174" x2="400" y2="174" class="arrow" marker-end="url(#arrow)"/><text x="315" y="166" text-anchor="middle" class="arrow-label">launch interactive host</text><line x1="400" y1="218" x2="560" y2="218" class="arrow" marker-end="url(#arrow)"/><text x="480" y="210" text-anchor="middle" class="arrow-label">run and step events</text><line x1="560" y1="262" x2="730" y2="262" class="arrow" marker-end="url(#arrow)"/><text x="645" y="254" text-anchor="middle" class="arrow-label">visualizer delivery</text><line x1="730" y1="306" x2="230" y2="306" class="arrow" marker-end="url(#arrow)"/><text x="480" y="298" text-anchor="middle" class="arrow-label">commission upsert</text><line x1="400" y1="350" x2="560" y2="350" class="arrow" marker-end="url(#arrow)"/><text x="480" y="342" text-anchor="middle" class="arrow-label">land + exact handoff</text><line x1="230" y1="394" x2="870" y2="394" class="arrow" marker-end="url(#arrow)"/><text x="550" y="386" text-anchor="middle" class="arrow-label">await spec merge</text><line x1="870" y1="438" x2="1020" y2="438" class="arrow" marker-end="url(#arrow)"/><text x="945" y="430" text-anchor="middle" class="arrow-label">daemon starts worker</text><line x1="1020" y1="482" x2="230" y2="482" class="arrow" marker-end="url(#arrow)"/><text x="625" y="474" text-anchor="middle" class="arrow-label">existing run projection</text></svg></div>
+<h3 id="retry-identity-flow">Retry identity flow</h3>
+<div class="diagram" role="img" aria-label="A stable commission creates a distinct successor Engineer run after a terminal attempt"><svg viewBox="0 0 1100 235" xmlns="http://www.w3.org/2000/svg"><defs><marker id="retry-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#5b6b7e"/></marker></defs><rect x="30" y="65" width="160" height="70" rx="14" class="node accent"/><text x="110" y="94" text-anchor="middle" class="phase-title">Stable commission</text><text x="110" y="118" text-anchor="middle" class="muted">identity unchanged</text><rect x="245" y="30" width="170" height="70" rx="14" class="node"/><text x="330" y="59" text-anchor="middle" class="phase-title">Attempt 1 key</text><text x="330" y="83" text-anchor="middle" class="muted">same key is idempotent</text><rect x="475" y="30" width="170" height="70" rx="14" class="node"/><text x="560" y="59" text-anchor="middle" class="phase-title">Engineer run 1</text><text x="560" y="83" text-anchor="middle" class="muted">terminal, immutable</text><rect x="475" y="145" width="170" height="70" rx="14" class="node feature"/><text x="560" y="174" text-anchor="middle" class="phase-title">Attempt 2 key</text><text x="560" y="198" text-anchor="middle" class="muted">new after terminal</text><rect x="715" y="145" width="170" height="70" rx="14" class="node feature"/><text x="800" y="174" text-anchor="middle" class="phase-title">Engineer run 2</text><text x="800" y="198" text-anchor="middle" class="muted">successor + new cursor</text><rect x="930" y="145" width="145" height="70" rx="14" class="node accent"/><text x="1002" y="174" text-anchor="middle" class="phase-title">Active replay</text><text x="1002" y="198" text-anchor="middle" class="muted">run-local revision</text><line x1="190" y1="88" x2="245" y2="67" class="arrow" marker-end="url(#retry-arrow)"/><line x1="415" y1="65" x2="475" y2="65" class="arrow" marker-end="url(#retry-arrow)"/><line x1="190" y1="112" x2="475" y2="178" class="arrow" marker-end="url(#retry-arrow)"/><line x1="560" y1="100" x2="560" y2="145" class="arrow" marker-end="url(#retry-arrow)"/><text x="585" y="126" class="arrow-label">terminal</text><line x1="645" y1="180" x2="715" y2="180" class="arrow" marker-end="url(#retry-arrow)"/><line x1="885" y1="180" x2="930" y2="180" class="arrow" marker-end="url(#retry-arrow)"/><path d="M475 50 C450 10, 690 5, 715 155" fill="none" class="life"/><text x="600" y="18" text-anchor="middle" class="arrow-label">predecessor lineage</text></svg></div>
+<p>Repeating one launch key resolves the same run. Only a new launch key after terminal state creates a successor run. The commission id stays constant, the predecessor remains immutable history, and only the successor's run-local cursor drives current progress.</p>
+<h2 id="failure-and-recovery-behavior">Failure and recovery behavior</h2>
+<ul>
+<li>Provider capability absent: fail before host launch with an upgrade instruction. Do not silently use the misleading planned-run UX for a new capable-path dispatch.</li>
+<li>Engineer run creation fails before a run id is known: retain the commission attempt with no session and retry the same launch key, so a provider success with a lost response cannot create a duplicate run.</li>
+<li>Engineer run fails or is attempt-cancelled: keep that run terminal and immutable. An explicit task retry retains the commission, mints the next launch key, and creates a new Engineer run attempt linked to its predecessor.</li>
+<li>Live plugin push is missed: the bounded refresh replays the exact attempt from its run-local provider revision.</li>
+<li>Mission Control restarts: reload commissions and their attempt cursors from SQLite, then reconcile the active provider Engineer run before accepting new live events.</li>
+<li>Engineer host exits mid-step while its run remains non-terminal: retain the last provider state, mark the host interrupted, and resume that same attempt. Do not fabricate a step failure solely from process exit.</li>
+<li>Land finds missing live completions: reconcile from validated artifacts. Land finds contradictory ordering or unsupported claims: refuse handoff.</li>
+<li>Spec PR closes unmerged: keep a recoverable failed handoff state. If the handoff run is terminal, creating a replacement PR uses a new Engineer attempt under the same commission and must emit the same exact plan slug or fail closed.</li>
+<li>Pipeline task cancellation: cancel the active provider attempt and make the commission terminal. Retrying a task-cancelled commission is refused; a later request is a new task and commission.</li>
+<li>Daemon is down after merge: the commission stays merged/queued and says it is waiting for Conductor.</li>
+<li>Worker appears before the next commission refresh: the exact run link joins it immediately.</li>
+<li>Plugin is absent: replay remains authoritative, with greater latency.</li>
+<li>Authoring worktree contains <code>.pipeline/</code> but no execution state: it is not projected as a provider implementation run.</li>
+<li>Legacy plans, tasks, and runs without commission or Engineer event support continue unchanged.</li>
+</ul>
+<h2 id="compatibility-and-landing-order">Compatibility and landing order</h2>
+<ol>
+<li>Land the generic AI Conductor event, replay, capability, and handoff contract on <code>mancej/ai-conductor</code>. No Mission Control behavior is embedded there, and existing Engineer/BUILD/SHIP flows remain valid without a consumer.</li>
+<li>Land Mission Control's additive commission persistence, provider adapter, ingest support, plugin forwarding, and replay. Keep the new dispatch path inactive until the full UI consumer is present.</li>
+<li>Activate commission creation at Pipeline dispatch and land strict run discovery, the card, Runs, session clustering, handoff, documentation, and browser E2E behavior.</li>
+</ol>
+<p>The dependency chain is strict because each consumer needs the exact contract merged by its predecessor. No phase requires an atomic cross-repository merge.</p>
+<h2 id="implementation-surfaces">Implementation surfaces</h2>
+<h3 id="ai-conductor-fork">AI Conductor fork</h3>
+<div class="table-wrap"><table><thead><tr><th>Surface</th><th>Planned change</th></tr></thead><tbody><tr><td><code>src/conductor/src/types/events.ts</code></td><td>Add product-neutral Engineer run and DECIDE step lifecycle events with stable identity and revision.</td></tr><tr><td><code>src/conductor/src/engine/event-sinks.ts</code></td><td>Persist the new event family on the existing spine.</td></tr><tr><td><code>src/conductor/src/engine/event-persister.ts</code></td><td>Reuse or extend persistence for a durable Engineer journal outside disposable worktrees.</td></tr><tr><td><code>src/conductor/src/engine/visualizer-lifecycle.ts</code>, plugin discovery</td><td>Start registered visualizers around supported Engineer emission paths without changing existing run lifecycle behavior.</td></tr><tr><td><code>src/conductor/src/engine/engineer/</code></td><td>Add Engineer run identity, state reduction, append/replay, artifact reconciliation, and worktree marker support.</td></tr><tr><td><code>src/conductor/src/engine/engineer-cli.ts</code></td><td>Add machine-readable create/inspect/event capability and thread run identity through worktree, land, handoff, cancel, and failure paths.</td></tr><tr><td>Canonical Engineer host guidance and host hooks</td><td>Emit starts/failures where structured host signals exist and invoke the generic command path for supported providers.</td></tr><tr><td><code>docs/reference/cli.md</code>, <code>docs/reference/settings-and-hooks.md</code>, <code>docs/reference/steps.md</code></td><td>Document the generic lifecycle, replay, hook boundary, and completion semantics.</td></tr></tbody></table></div>
+<h3 id="mission-control">Mission Control</h3>
+<div class="table-wrap"><table><thead><tr><th>Surface</th><th>Planned change</th></tr></thead><tbody><tr><td><code>src/shared/pipeline.ts</code>, <code>src/shared/types.ts</code></td><td>Add commission ids, ordered Engineer attempts, lifecycle/projection types, task/run references, snapshot, and SSE contracts.</td></tr><tr><td><code>src/server/db.ts</code></td><td>Add task binding, commission and attempt projections, per-run replay cursors, bounded event ledger, migrations, and atomic readers/writers.</td></tr><tr><td><code>src/server/pipelines/types.ts</code></td><td>Add optional provider Engineer-run create-by-attempt-key, correlation-inspect, per-run replay, and cancel capabilities.</td></tr><tr><td><code>src/server/pipelines/conductor/</code></td><td>Implement fork capability probing, sanctioned CLI calls, attempt lineage and replay normalization, exact handoff binding, and strict execution-run discovery.</td></tr><tr><td><code>integrations/ai-conductor/mission-control/</code></td><td>Forward Engineer events with additive run/attempt identity fields and preserve existing batching/retry behavior.</td></tr><tr><td><code>src/server/pipelines/ingest.ts</code>, <code>src/server/routes.ts</code></td><td>Validate and ingest generic Engineer envelopes into the correct commission.</td></tr><tr><td><code>src/server/dispatcher.ts</code></td><td>Persist commission attempt and provider Engineer run before host launch; append a new attempt after terminal retry; stop reserving a raw-intent run slug on the capable path.</td></tr><tr><td><code>src/server/registry.ts</code>, task settlement</td><td>Project commission/attempt membership, bind exact handoff run, and preserve retry/cancel/session ownership semantics.</td></tr><tr><td><code>src/web/useEventStream.ts</code></td><td>Hold current commission projections from snapshot and incremental events.</td></tr><tr><td>Board, Console, Runs, and pipeline model components</td><td>Render immediate progress, merge gate, exact run continuation, and commission clustering.</td></tr><tr><td><code>docs/pipelines.md</code>, <code>docs/dispatch-and-backlog.md</code></td><td>Document the one-commission lifecycle and capability fallback.</td></tr></tbody></table></div>
+<h2 id="verification-strategy">Verification strategy</h2>
+<h3 id="ai-conductor-fork">AI Conductor fork</h3>
+<ul>
+<li>Event union and sink exhaustiveness tests cover every new event kind.</li>
+<li>Engineer run creation is idempotent per launch key, refuses repository/correlation collisions and concurrent live attempts, and creates a distinct successor only after terminal state.</li>
+<li>Revisions are monotonic within each run across concurrent or repeated writes, and a successor begins with an independent cursor.</li>
+<li>Replay after a run-local revision returns no duplicates and reconstructs the same attempt snapshot; correlation inspection preserves ordered attempt lineage.</li>
+<li>Visualizers start and stop on every supported Engineer entrypoint, including failures.</li>
+<li>Step completion cannot be inferred only from Skill/PostToolUse return.</li>
+<li>Land reconciles validated artifacts and refuses contradictory history.</li>
+<li>Handoff records exact plan slug, branch, and PR URL before authoring-worktree cleanup.</li>
+<li>Existing inline, daemon, uncommissioned Engineer, and BUILD/SHIP event behavior remains compatible.</li>
+<li>Run the repository-required harness integrity, typecheck, lint, unit, and focused acceptance suites from the repository-prescribed directories.</li>
+</ul>
+<h3 id="mission-control">Mission Control</h3>
+<ul>
+<li>Database upgrade and replay-safe commission/attempt writes, including bounded ledger retention.</li>
+<li>Dispatch persists a commission and creates the provider Engineer run before either host launcher.</li>
+<li>Provider capability or create failures happen before a session is spawned.</li>
+<li>Engineer ingest rejects unknown, cross-repository, stale, cross-attempt, regressive, terminal-reopening, and malformed events.</li>
+<li>Five-second reconciliation repairs missed live push without writing provider state.</li>
+<li>Strict run discovery ignores authoring worktrees without <code>conduct-state.json</code>.</li>
+<li>Handoff binds the exact final slug even when raw intent, branch, and authoring-worktree names differ.</li>
+<li>Session grouping precedence remains ensemble, commission, legacy pipeline.</li>
+<li>Engineer composer remains enabled and provider worker composer remains disabled.</li>
+<li>Snapshot and upsert sizes remain bounded.</li>
+<li>Run <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, and <code>npm run smoke</code>.</li>
+</ul>
+<h3 id="browser-end-to-end-coverage">Browser end-to-end coverage</h3>
+<p>Add a Playwright spec using fake agents and fake AI Conductor only. It must spend no model tokens and must not add <code>data-testid</code>.</p>
+<p>The spec reproduces the current gap first, then proves:</p>
+<ul>
+<li>the meter is on the Engineer card immediately after dispatch;</li>
+<li>architecture review and other DECIDE steps visibly start, complete, fail, and skip;</li>
+<li>handoff shows <strong>Awaiting spec merge</strong> and the spec PR;</li>
+<li>refresh and daemon restart preserve progress;</li>
+<li>a terminal authoring attempt can be retried as a new run under the same commission without reopening or replaying the earlier run;</li>
+<li>a simulated merge and daemon pickup advance the same commission;</li>
+<li>a newly discovered provider worker joins the commission and continues the meter;</li>
+<li>the old Engineer card stays interactive if retained;</li>
+<li>authoring <code>.pipeline/</code> artifacts never create a duplicate fake run;</li>
+<li>normal and narrow layouts remain readable and visually reviewed.</li>
+</ul>
+<p>Run:</p>
+<pre><code>npm run build
+npm run test:e2e -- e2e/specs/conductor-planning-continuity.spec.ts --workers=1</code></pre>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>Every capable-provider Pipeline dispatch creates one durable commission before any host starts.</li>
+<li>A retry after a terminal Engineer failure creates a new ordered Engineer attempt while retaining one commission and immutable prior history.</li>
+<li>The first Engineer card renders the complete phase meter immediately without falsely claiming a running step.</li>
+<li>Generic AI Conductor events advance canonical SETUP, UNDERSTAND, and DECIDE steps while the user participates in the interactive flow.</li>
+<li>Track/tier decisions produce explicit provider-owned skips.</li>
+<li>Successful handoff pauses the same commission at <strong>Awaiting spec merge</strong> with exact plan, branch, and PR identity.</li>
+<li>Missed push and restart recover from the provider Engineer journal.</li>
+<li>The later implementation run and any provider worker session automatically join the same commission by the exact final slug.</li>
+<li>Mission Control-specific logic remains confined to Mission Control and its visualizer plugin.</li>
+<li>AI Conductor uses its existing event spine and does not add a parallel telemetry channel.</li>
+<li>Existing uncommissioned tasks and implementation runs behave as before.</li>
+<li>Authoring worktrees are never projected as implementation runs.</li>
+<li>Focused unit, migration, contract, runtime, and built-browser tests cover the complete lifecycle.</li>
+</ul>
+<h2 id="out-of-scope">Out of scope</h2>
+<ul>
+<li>Automatically merging the spec PR.</li>
+<li>Combining Engineer and daemon into one long-lived agent process.</li>
+<li>Making Mission Control decide AI Conductor step order, skip rules, artifacts, gates, or retries.</li>
+<li>Changing downstream BUILD/SHIP provider routing.</li>
+<li>Inferring progress from transcript text, UI questions, filenames alone, or artifact timestamps alone.</li>
+<li>Requiring Mission Control-specific fields in AI Conductor core events.</li>
+<li>Opening or merging an upstream ai-conductor implementation PR.</li>
+</ul>
+<h2 id="estimated-implementation-size">Estimated implementation size</h2>
+<div class="table-wrap"><table><thead><tr><th>Area</th><th>Estimated non-test LOC</th></tr></thead><tbody><tr><td>AI Conductor Engineer event, persistence, replay, and lifecycle loading</td><td>450-700</td></tr><tr><td>Mission Control persistence, provider adapter, ingest, and plugin changes</td><td>500-750</td></tr><tr><td>Mission Control dispatch, session binding, card, Runs, and browser state</td><td>450-700</td></tr><tr><td>Documentation and compatibility support</td><td>100-160</td></tr><tr><td><strong>Estimated total</strong></td><td><strong>1,500-2,310</strong></td></tr></tbody></table></div>
+<p>Test code is expected to add another 1,000-1,500 lines across both repositories because the contract spans host entrypoints, durable event replay, database migration, dispatch ordering, session correlation, and built browser behavior.</p>
+<h2 id="review-status">Review status</h2>
+<p>The operator approved the generic event-stream interpretation and explicitly requested a phased implementation plan with scheduled work on the <code>mancej/ai-conductor</code> fork plus the required Mission Control integration tasks. There are no unresolved product choices in this plan.</p>
+<p>Implementation decomposition: <a href="phased-plan.md">phased-plan.md</a>.</p></article></main>
+</body>
+</html>

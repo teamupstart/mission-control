@@ -135,8 +135,9 @@
     </tr>
     <tr>
       <td>CodeMirror&rsquo;s built-in search panel</td>
-      <td><strong>Replaced</strong> by the shared find bar; <code>searchKeymap</code>&rsquo;s Mod-f
-      binding is dropped so the app has exactly one find</td>
+      <td><strong>Replaced</strong> by the shared find bar. Every panel-opening binding
+      <code>searchKeymap</code> carries is claimed, not just Mod-f, so the app has exactly one
+      find; find-next and find-previous step the shared ring</td>
     </tr>
     <tr>
       <td>Chord registration</td>
@@ -182,7 +183,8 @@ four:</p>
 
   <li><strong>Edit mode already has a find, and it is not ours.</strong> <code>basicSetup</code>
   from the <code>codemirror</code> package includes <code>@codemirror/search</code> (6.7.1 in
-  <code>package-lock.json</code>), whose <code>searchKeymap</code> binds Mod-f.
+  <code>package-lock.json</code>), whose <code>searchKeymap</code> binds Mod-f - and find-next,
+  find-previous and go-to-line besides, each of which can open that panel too.
   <code>App.tsx</code> returns early on <code>isTypingTarget</code> before it reaches the
   <code>findInConversation</code> branch, and CodeMirror&rsquo;s <code>.cm-content</code> is
   <code>contentEditable</code>, so with the caret in the editor Cmd+F opens CodeMirror&rsquo;s own
@@ -304,8 +306,10 @@ same chord everywhere else.</figcaption>
   <h3>4. Editor adapter<span class="rec">replaces CodeMirror&rsquo;s panel</span></h3>
   <p>Compute matches over the buffer text and paint them with a CodeMirror decoration
   <code>StateField</code> - the pattern <code>FileEditor.tsx</code> already uses for comment
-  markers. Drop <code>searchKeymap</code>&rsquo;s Mod-f binding so the app has one find and one
-  look, installed only where a caller supplies a find owner so the three other
+  markers. Claim every panel-opening binding <code>searchKeymap</code> carries, not just Mod-f -
+  its find-next and find-previous chords open the panel too when no query is set - so the app has
+  one find and one look. Find-next and find-previous are repurposed to step our ring rather than
+  deadened. Installed only where a caller supplies a find owner, so the three other
   <code>FileEditor</code> hosts keep the behaviour they have today.</p>
   <p>The Editor searches <strong>source</strong>, which is what it shows, so its count can
   legitimately differ from Preview&rsquo;s on the same file: a link destination is one occurrence

@@ -107,6 +107,27 @@ Verified against the checkout before writing this phase.
 - **Mod-f is claimed with the highest precedence.** Extension order gives `basicSetup`
   (first in the array) precedence over a later `keymap.of`, so the claim needs an explicit
   `Prec.highest` to beat `searchKeymap`. Verify at runtime that no CodeMirror panel opens.
+- **Claiming Mod-f alone is not enough, because Mod-f is not the only way in.**
+  `searchKeymap` also binds find-next and find-previous (`F3`, `Mod-g`, and their shifted
+  pairs) and go-to-line (`Mod-Alt-g`), and its find commands are documented to **open the
+  search panel when no query is set** - so the old panel is still one obscure chord away from a
+  reader who never presses Mod-f. The exit criterion says no CodeMirror panel can open from a
+  Files document, and one binding does not deliver it.
+  The find-owner editor therefore claims every panel-opening binding at `Prec.highest`, and
+  repurposes rather than deadens the useful ones: **find-next and find-previous drive our ring**,
+  so `F3` and `Mod-g` keep meaning what a reader expects while the bar owns the query. Go-to-line
+  is claimed and left inert, because it belongs to a panel this surface no longer has.
+  **A chord list is a list, and this repository has learned twice what lists do** - the comment
+  bridge's tag list "was never finished", which is why it now decides blocks by computed display.
+  So the guarantee is asserted over the DOM rather than over the list: a test exercises every
+  `searchKeymap` chord and asserts `.cm-panels` never appears. If a binding is ever missed, that
+  test fails rather than the panel quietly reappearing. Should enumeration prove leaky in
+  practice, the fallback is to stop taking `@codemirror/search`'s keymap for this editor at all -
+  either by configuring `search()` with a panel factory that yields nothing, or by composing the
+  editor's extensions without `basicSetup`'s search half - and that is a decision for the
+  implementation, made against a failing test rather than against a guess.
+  All of this is inside the find-owner path, so the other three `FileEditor` hosts keep
+  `searchKeymap` intact, panel and all.
 - **HTML find counts over source and says so.** The bar renders a short note for HTML
   documents ("matches located by block") because the count is taken over source text and can
   include matches the rendered page does not show. Phase 2 removes both the note and the
@@ -202,8 +223,11 @@ Verified against the checkout before writing this phase.
    callback:
    - a `StateEffect` and `StateField` pair following `commentModel`'s pattern (finding 4),
      with decorations built from the model's offsets;
-   - a highest-precedence keymap claiming Mod-f, calling the callback through a ref and
-     returning true so `searchKeymap` never sees the chord - **installed only when the caller
+   - a highest-precedence keymap claiming **every panel-opening binding `searchKeymap` carries**
+     - Mod-f, find-next and find-previous (`F3`, `Mod-g` and their shifted pairs), and
+     go-to-line (`Mod-Alt-g`) - calling the callback through a ref and returning true so
+     `searchKeymap` never sees any of them. Find-next and find-previous step **our** ring rather
+     than being deadened; go-to-line is claimed and inert. **Installed only when the caller
      supplies a find owner.** `FileEditor` has four hosts, and three of them (`PersonaEditor`,
      `SessionActionEditor`, `ForemanProfileEditor`) have no find session. Claiming the chord
      unconditionally would swallow it there and suppress CodeMirror's panel at the same time,
@@ -254,6 +278,11 @@ Verified against the checkout before writing this phase.
     a node for which the parser recorded no position still marks, reporting a null range.
 - `test/file-editor-find.test.ts` (new), or an addition to the existing editor markup test:
   decoration ranges for a known document and query.
+- The panel guarantee, in `e2e/` because only a browser can prove a panel did not appear: with a
+  Files document in Editor mode, press each chord `searchKeymap` binds - Mod-f, `F3`, `Mod-g`,
+  their shifted pairs, `Mod-Alt-g` - and assert `.cm-panels` is absent throughout, that `F3` and
+  `Mod-g` moved our current hit, and that the same chords in a Persona editor still open
+  CodeMirror's own panel, which is what proves the claim is scoped to the find owner.
 - `e2e/specs/file-find-in-document.spec.ts` (new): open Files on a markdown fixture, press
   Meta+f, assert the searchbox, fill a query, assert the `mark.find-hit` count and text,
   press Enter and assert `is-current` moved, switch to Editor and assert the query and case
@@ -272,7 +301,12 @@ Verified against the checkout before writing this phase.
 - A query matching only a link destination - `[label](matching-url)` - counts 1 in the Editor
   and 0 in Markdown preview. Both numbers are correct for what their surface shows; a Preview
   that reported 1 would be offering a match nothing can highlight or step to.
-- No CodeMirror search panel can be opened from a Files document, in either mode.
+- No CodeMirror search panel can be opened from a Files document, in either mode, **by any
+  binding `searchKeymap` carries** - not only Mod-f. Asserted by exercising each of those chords
+  and checking that `.cm-panels` never appears, so a missed binding fails a test rather than
+  quietly restoring the old panel.
+- `F3` and `Mod-g` step the shared ring, so find-next and find-previous keep working where a
+  reader expects them.
 - The Persona, Session action and Foreman profile editors are unchanged: Cmd+F there still does
   exactly what it does today, proving the Mod-f claim is installed only with a find owner. A
   swallowed chord in those three editors is a regression, not a partial rollout.
@@ -309,6 +343,14 @@ Phase 2 may rely on, and must not change:
   values (step 2), because Phase 2 replaces the source of that number for HTML documents with
   the frame's own report. Moving the decision here rather than working around it later is why
   Phase 2 needs no edit to the bar.
+- Review round 8 (PR #818): the plan claimed Mod-f only, while `searchKeymap` also binds
+  find-next, find-previous and go-to-line, and its find commands open the panel when no query is
+  set - so the exit criterion "no CodeMirror panel can open" was not delivered by the mechanism
+  beside it. Every panel-opening binding is now claimed for the find-owner editor, with find-next
+  and find-previous repurposed to step our ring rather than deadened, and the guarantee is
+  asserted over the DOM (`.cm-panels` absent after each chord) rather than over the chord list -
+  because a list is what the comment bridge already learned not to trust. The other three hosts
+  keep `searchKeymap` whole, since all of this sits inside the find-owner path.
 - Review round 7 (PR #818): run joining said "within a block", which over-joins - `foo<br>bar`
   would have matched `foobar`, and a `br` is a visible line break with no text node of its own to
   notice. Runs now break at every visible separation: a `br`, any non-phrasing element, and an

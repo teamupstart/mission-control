@@ -14,7 +14,7 @@ Rendered page: `docs/plans/files-find-in-document/plan.html`.
 | Question | Decision |
 | --- | --- |
 | Approach | **Option C** - character-accurate find in Markdown preview and Editor now, HTML preview jumps to the containing block through the endpoint that already exists, the hashed in-frame bridge lands later as its own change |
-| CodeMirror's built-in search panel | **Replaced** by the shared find bar; `searchKeymap`'s Mod-f binding is dropped so the app has exactly one find |
+| CodeMirror's built-in search panel | **Replaced** by the shared find bar. Every panel-opening binding `searchKeymap` carries is claimed, not just Mod-f, so the app has exactly one find; find-next and find-previous step the shared ring |
 | Chord registration | **Contextual claim.** The Files workspace takes `cmd+f` while a document is on screen; no new `ActionId`, no new Keyboard panel row |
 
 ## What is on screen today
@@ -43,7 +43,8 @@ opens find there. This is the first thing the work has to fix.
 
 **2. Edit mode already has a find, and it is not ours.** `basicSetup` from the
 `codemirror` package includes `@codemirror/search` (6.7.1 in `package-lock.json`), whose
-`searchKeymap` binds Mod-f. `App.tsx` returns early on `isTypingTarget` before it reaches
+`searchKeymap` binds Mod-f - and find-next, find-previous and go-to-line besides, each of which
+can open that panel too. `App.tsx` returns early on `isTypingTarget` before it reaches
 the `findInConversation` branch, and CodeMirror's `.cm-content` is `contentEditable`, so
 with the caret in the editor Cmd+F opens CodeMirror's own panel: different chrome,
 different count, different behaviour from anything else in the app, and invisible to the
@@ -81,8 +82,7 @@ too. Nothing here grows a second search model.
 Split `find.ts`: the generic primitives move into a `documentFind.ts`-style module with a
 `FindSession` (query, case flag, index - and deliberately **no hit list**, because each
 surface searches the string it renders and therefore has its own hits). `collectHits` and the
-conversation scopes
-stay conversation-specific, so the transcript's behaviour does not change.
+conversation scopes stay conversation-specific, so the transcript's behaviour does not change.
 
 ### 2. Shared chrome
 
@@ -110,10 +110,12 @@ the block it sits in, and the bar's count is that number.
 ### 4. Editor adapter - character-accurate, and it replaces CodeMirror's panel
 
 Compute matches over the buffer text and paint them with a CodeMirror decoration
-`StateField` - the pattern `FileEditor.tsx` already uses for comment markers. Drop
-`searchKeymap`'s Mod-f binding so the app has one find and one look, installed only where a
-caller supplies a find owner so the three other `FileEditor` hosts keep the behaviour they
-have today.
+`StateField` - the pattern `FileEditor.tsx` already uses for comment markers. Claim every
+panel-opening binding `searchKeymap` carries, not just Mod-f - its find-next and find-previous
+chords open the panel too when no query is set - so the app has one find and one look. Find-next
+and find-previous are repurposed to step our ring rather than deadened. Installed only where a
+caller supplies a find owner, so the three other `FileEditor` hosts keep the behaviour they have
+today.
 
 The Editor searches **source**, which is what it shows, so its count can legitimately differ
 from Preview's on the same file: a link destination is one occurrence here and none there.

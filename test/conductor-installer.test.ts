@@ -12,12 +12,14 @@ import {
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 
 import { stubRun } from "../src/server/util/exec.ts";
 import {
   conductorInstallerCandidates,
+  conductorInstallerRuntimePreparation,
+  conductorInstallerRuntimeReading,
   conductorInstallerTerminalArgv,
   recognizedConductorRemote,
   verifyConductorInstallerCheckout,
@@ -40,7 +42,10 @@ function checkout(name: string, remote = "https://github.com/mancej/ai-conductor
   chmodSync(join(repo, "bin/install"), 0o755);
   writeFileSync(
     join(repo, "src/conductor/package.json"),
-    JSON.stringify({ name: "@james-stoup-agents/conductor" }),
+    JSON.stringify({
+      name: "@james-stoup-agents/conductor",
+      engines: { node: ">=26.0.0" },
+    }),
   );
   writeFileSync(join(repo, "VERSION"), "0.101.1\n");
   git(repo, "add", "-A");
@@ -56,6 +61,61 @@ function checkout(name: string, remote = "https://github.com/mancej/ai-conductor
   );
   return repo;
 }
+
+test("installer runtime preflight distinguishes unsupported and supported Node versions", async () => {
+  assert.deepEqual(conductorInstallerRuntimeReading("v24.19.0"), {
+    id: "node",
+    label: "Node.js",
+    current: "24.19.0",
+    requirement: ">=26.0.0",
+    supported: false,
+    detail:
+      "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Restart Mission Control with Node.js 26+ active, then check again.",
+  });
+  assert.equal(conductorInstallerRuntimeReading("26.0.0").supported, true);
+  assert.equal(conductorInstallerRuntimeReading("v27.1.2").supported, true);
+  assert.equal(conductorInstallerRuntimeReading("v26.0.0-nightly").supported, false);
+  assert.equal(
+    conductorInstallerRuntimeReading(null).detail,
+    "Conductor requires Node.js 26 or newer, but Mission Control could not determine the Node.js version this installer would use. Restart Mission Control with Node.js 26+ active, then check again.",
+  );
+
+  const runtimeDeps = {
+    path: () => ["/daemon/bin", "/usr/bin"].join(delimiter),
+    nodeExecPath: async (path: string) => {
+      assert.equal(path, ["/daemon/bin", "/usr/bin"].join(delimiter));
+      return stubRun({ stdout: "/opt/node-26/bin/node\n", stderr: "", code: 0 });
+    },
+    realpath: async (path: string) => path,
+    nodeVersion: async (nodeBin: string, path: string) => {
+      assert.equal(nodeBin, "/opt/node-26/bin/node");
+      assert.equal(
+        path,
+        ["/opt/node-26/bin", "/daemon/bin", "/usr/bin"].join(delimiter),
+      );
+      return stubRun({ stdout: "v26.7.0\n", stderr: "", code: 0 });
+    },
+  };
+  const prepared = await conductorInstallerRuntimePreparation(runtimeDeps);
+  assert.deepEqual(prepared, {
+    reading: conductorInstallerRuntimeReading("v26.7.0"),
+    terminalEnv: {
+      PATH: ["/opt/node-26/bin", "/daemon/bin", "/usr/bin"].join(delimiter),
+    },
+  });
+
+  const supported = prepared.reading;
+  assert.equal(supported.current, "26.7.0");
+  assert.equal(supported.supported, true);
+
+  const unavailable = (await conductorInstallerRuntimePreparation({
+    path: () => "/daemon/bin",
+    nodeExecPath: async () => stubRun({ stdout: "", stderr: "not found", code: 1 }),
+  })).reading;
+  assert.equal(unavailable.current, null);
+  assert.equal(unavailable.supported, false);
+  assert.match(unavailable.detail, /could not determine/);
+});
 
 test("recognized upstream HTTPS and SSH remotes normalize to one credential-free label", () => {
   for (const remote of [

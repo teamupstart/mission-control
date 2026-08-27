@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   pipelineRepoKey,
   type PipelineHaltClass,
@@ -35,6 +35,8 @@ import {
 // arrives disabled" posture is supposed to make trustworthy.
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
+const originalPath = process.env.PATH;
+const nodeBinDir = join(home, "bin");
 process.env.HARNESS_HOME = join(home, "state");
 // Nothing on PATH, so the probe reports "not installed" deterministically - which is also
 // the state every machine without conductor is in, and therefore the one the panel's
@@ -53,20 +55,27 @@ const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
+const { PIPELINE_PROVIDERS } = await import("../src/server/pipelines/providers.ts");
 const {
   readConductorInvocations,
   seedConductorDaemon,
   seedConductorRun,
+  writeConductorNodeRuntime,
   writeFakeConductor,
   writeConductorProjects,
 } = await import("../e2e/fixtures/conductor.ts");
+writeConductorNodeRuntime(home, "26.7.0");
+process.env.PATH = `${nodeBinDir}${delimiter}${originalPath ?? ""}`;
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
 // Background probe/refresh promises can finish while the test worker is tearing its home
 // down. Linux may report ENOTEMPTY when one lands between recursive enumeration and removal,
 // so give the standard recursive remover a short bounded retry window.
-after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+after(() => {
+  process.env.PATH = originalPath;
+  rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+});
 
 /**
  * Poll `read` until it equals `want`, or fail saying what it was.
@@ -648,7 +657,10 @@ function installerCheckout(name: string): string {
   chmodSync(join(repo, "bin/install"), 0o755);
   writeFileSync(
     join(repo, "src/conductor/package.json"),
-    JSON.stringify({ name: "@james-stoup-agents/conductor" }),
+    JSON.stringify({
+      name: "@james-stoup-agents/conductor",
+      engines: { node: ">=26.0.0" },
+    }),
   );
   writeFileSync(join(repo, "VERSION"), "0.101.1\n");
   execFileSync("git", ["-C", repo, "remote", "add", "origin", "git@github.com:mancej/ai-conductor.git"]);
@@ -657,6 +669,73 @@ function installerCheckout(name: string): string {
 
 // Created while the module loads, before any route can fill `listRepos()`'s cache.
 const routeInstallerRepo = installerCheckout("installer-route");
+
+test("installer routes expose and enforce an unsupported Node runtime before launch", async () => {
+  writeConductorNodeRuntime(home, "24.19.0");
+  try {
+    const opened: FakeLaunch[] = [];
+    const { request } = fixture(opened);
+    const read = await request("/api/pipelines/installers?provider=ai-conductor");
+    assert.equal(read.status, 200);
+    const candidates = (await read.json()) as PipelineInstallerCandidatesResult;
+    assert.deepEqual(candidates.runtime, {
+      id: "node",
+      label: "Node.js",
+      current: "24.19.0",
+      requirement: ">=26.0.0",
+      supported: false,
+      detail:
+        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Restart Mission Control with Node.js 26+ active, then check again.",
+    });
+    assert.deepEqual(candidates.candidates.map((candidate) => candidate.checkout), [routeInstallerRepo]);
+
+    const launch = await request("/api/pipelines/install", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        checkout: routeInstallerRepo,
+        backend: "cmux",
+      }),
+    });
+    assert.equal(launch.status, 409);
+    const answer = (await launch.json()) as PipelineInstallerLaunchResult;
+    assert.equal(answer.outcome, "refused");
+    assert.match(answer.detail, /requires Node\.js 26 or newer/);
+    assert.equal(opened.length, 0, "unsupported Node is refused before terminal launch");
+    assert.deepEqual(getPipelinesConfig().repos, [], "runtime refusal never changes consent");
+  } finally {
+    writeConductorNodeRuntime(home, "26.7.0");
+  }
+});
+
+test("installer launch rechecks Node after candidate discovery", async () => {
+  const installer = PIPELINE_PROVIDERS["ai-conductor"].installer;
+  assert.ok(installer);
+  const candidates = installer.candidates;
+  installer.candidates = async (repoRoots) => {
+    const found = await candidates(repoRoots);
+    writeConductorNodeRuntime(home, "24.19.0");
+    return found;
+  };
+  try {
+    const opened: FakeLaunch[] = [];
+    const { request } = fixture(opened);
+    const launch = await request("/api/pipelines/install", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        checkout: routeInstallerRepo,
+        backend: "cmux",
+      }),
+    });
+    assert.equal(launch.status, 409);
+    assert.match(await launch.text(), /requires Node\.js 26 or newer/);
+    assert.equal(opened.length, 0, "a runtime change during discovery is refused before launch");
+  } finally {
+    installer.candidates = candidates;
+    writeConductorNodeRuntime(home, "26.7.0");
+  }
+});
 
 test("installer routes use the workspace catalog, reject browser commands, and reverify before launch", async () => {
   const opened: FakeLaunch[] = [];
@@ -670,6 +749,8 @@ test("installer routes use the workspace catalog, reject browser commands, and r
   assert.equal(read.status, 200);
   const candidates = (await read.json()) as PipelineInstallerCandidatesResult;
   assert.equal(candidates.supported, true);
+  assert.equal(candidates.runtime?.current, "26.7.0");
+  assert.equal(candidates.runtime?.supported, true);
   assert.deepEqual(candidates.candidates.map((candidate) => candidate.checkout), [repo]);
   assert.equal(candidates.candidates[0]?.remote, "github.com/mancej/ai-conductor");
 
@@ -692,12 +773,17 @@ test("installer routes use the workspace catalog, reject browser commands, and r
   assert.equal(launch.status, 200);
   const answer = (await launch.json()) as PipelineInstallerLaunchResult;
   assert.equal(answer.outcome, "opened");
-  assert.equal(answer.detail, "Installer terminal opened. Finish the interactive installer there, then check again.");
+  assert.equal(
+    answer.detail,
+    "Installer terminal opened. Setup is not complete until Mission Control detects conduct-ts; finish the interactive installer there, then check again.",
+  );
   assert.equal(opened.length, 1);
   assert.equal(opened[0]?.backend, "cmux");
   assert.equal(opened[0]?.cwd, repo);
   assert.equal(opened[0]?.name, "ai-conductor installer");
   const command = opened[0]?.argv.at(-1) ?? "";
+  assert.ok(command.includes("'/usr/bin/env'"));
+  assert.ok(command.includes(`'PATH=${realpathSync(nodeBinDir)}${delimiter}`));
   assert.ok(command.includes(`'${repo}/bin/install'`));
   assert.match(command, /read -r _/);
   assert.doesNotMatch(command, /allow-worktree-root|--update|--provider/);

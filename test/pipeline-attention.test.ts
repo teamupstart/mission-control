@@ -195,6 +195,11 @@ test("a halt row offers the verbs its own class calls for, and no repository-wid
   // console instead - and it is the only class that does.
   assert.match(row("protected-artifact"), /Reseal an artifact/);
   assert.doesNotMatch(row("needs-human"), /Reseal an artifact/);
+
+  const planGap = row("plan-gap");
+  assert.match(planGap, /Plan gap/);
+  assert.match(planGap, /revise and approve the plan before clearing the halt/i);
+  assert.doesNotMatch(planGap, /Grant DECIDE re-entry|Unpark|Reseal an artifact/);
 });
 
 // ---- the conversation window's ladder -----------------------------------------------------

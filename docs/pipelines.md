@@ -196,14 +196,14 @@ otherwise the consent would be in force with nothing on screen that could withdr
 
 ## ai-conductor
 
-File and control contracts verified against ai-conductor `8b51392d`. The live event vocabulary
+File and control contracts verified against ai-conductor `b9c19307`. The live event vocabulary
 is synchronized with ai-conductor 0.104.0 (`1631544a`, upstream `3ba53878`). Mission Control
 reads, per consented repository:
 
 | Path | What it is |
 | --- | --- |
 | `.worktrees/<slug>/` | One feature's worktree. The slug is the plan stem, which is the engine's own canonical key. Directories with no `.pipeline/` (its spec-authoring and autoresolve worktrees) are not pipelines and are skipped. |
-| `.worktrees/<slug>/.pipeline/conduct-state.json` | Per-step statuses as flat top-level keys, plus `last_step`, `complexity_tier`, `track` and `pr_url`. |
+| `.worktrees/<slug>/.pipeline/conduct-state.json` | Per-step statuses as flat top-level keys, plus `last_step`, `complexity_tier`, `track` and `pr_url`. `refused` means an entry condition, environmental guard, or human-judgement boundary ended the attempt without the step's own work failing; it remains unsatisfied and is displayed as refused. |
 | `.worktrees/<slug>/.pipeline/gates/<step>.json` | One gate's verdict. A `skipped: ` reason prefix marks a step that was skipped rather than one whose evidence passed. |
 | `.worktrees/<slug>/.pipeline/HALT`, `HALT.class` | Why it stopped. The first non-empty line of `HALT` is the reason; an absent or unrecognised class reads as `unclassified`. |
 | `.worktrees/<slug>/.pipeline/DONE` | The engine's converged marker. |
@@ -361,9 +361,12 @@ Five things follow that are worth knowing before pressing anything:
   projection the same request just wrote.
 
 An inbox row offers only what its halt's class calls for - a grant and an unpark for
-`needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact` - and
-never the repository-wide daemon verbs, because a row about one feature must not be able to
-stop every feature in the checkout. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
+`needs-human`, an unpark for `mechanical`, the reseal ceremony for `protected-artifact`, and
+no immediate verb for `plan-gap` - and never the repository-wide daemon verbs, because a row
+about one feature must not be able to stop every feature in the checkout. A plan-gap halt
+requires the approved plan to be revised and approved before the halt is cleared through the
+provider's resume procedure. `unpark` only removes a separate park marker, so presenting it as
+the halt's answer would be inaccurate. That table is `PIPELINE_HALT_ACTIONS`, and it is the one
 the run header consults as well: two surfaces deciding separately which verbs a run deserves
 agree only until somebody edits one of them.
 
@@ -547,6 +550,7 @@ and the runbook section that owns that class:
 | `needs-human` | Only an operator can clear it; the engine will not re-kick it. |
 | `mechanical` | The engine may re-kick it on its own once the cause clears. |
 | `protected-artifact` | A sealed decision artifact changed under the engine. |
+| `plan-gap` | The approved plan cannot deliver the stated outcome. Revise and approve the plan before clearing the halt. |
 | `legacy` | Raised before the engine classified halts. Read the reason and decide. |
 | `unclassified` | The engine recorded no class, so nothing here guesses one. |
 

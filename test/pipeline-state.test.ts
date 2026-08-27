@@ -112,6 +112,17 @@ test("a status word this build does not know is dropped rather than guessed at",
   assert.equal(state.steps.get("plan"), "done");
 });
 
+test("a refused step is retained as refused rather than disappearing", () => {
+  const root = repo("refused-status");
+  const worktree = seedConductorRun(root, "refused", {
+    steps: { build: "done", architecture_review_as_built: "refused" },
+    lastStep: "architecture_review_as_built",
+  });
+
+  const state = readConductState(worktree);
+  assert.equal(state.steps.get("architecture_review_as_built"), "refused");
+});
+
 test("missing, empty, truncated and wrong-shaped state files all degrade without throwing", () => {
   const root = repo("degraded");
   const missing = conductorWorktree(root, "missing");
@@ -207,6 +218,12 @@ test("a halt with no class, or an unrecognised one, is unclassified rather than 
     haltClass: "protected-artifact",
   });
   assert.equal(readHalt(known)?.class, "protected-artifact");
+
+  const planGap = seedConductorRun(root, "plan-gap", {
+    halt: "the approved plan cannot deliver the stated outcome",
+    haltClass: "plan-gap",
+  });
+  assert.equal(readHalt(planGap)?.class, "plan-gap");
 });
 
 test("a run with no halt marker has no halt, and DONE is read as a marker", () => {

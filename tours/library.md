@@ -3,39 +3,43 @@
 ## The Library
 <!-- stage: library -->
 
-Everything you author once and reuse. Nothing runs from here: saving an asset changes what a later run will do, and never starts one. Six shelves, each headed by the question it answers rather than by its noun.
+The library owns components you've built, or that come with Mission Control. 
 
-- **Missions · Sources:** Where does work come from?
-- **Workflows:** What counts as done?
-- **Commands:** What does each standard gate run?
-- **Personas:** Who does the reviewing?
-- **Actions:** What can a run tell the session to do?
-- **Ensembles:** Not sure of the best approach?
+- **Missions · Sources:** Task Sources. Tasks are synced in from external systems, or scheduled Mission Control jobs.
+- **Workflows:** Post-work verification. These are run after an agent has completed its work.
+- **Commands:** Test, lint, anything you shell out to run.
+- **Personas:** Identities for agents who act as judges during workflow runs.
+- **Actions:** A prompt sent back to the session at a stage in the workflow. I.E. Create Pull Request
+- **Ensembles:** Run several competing agent sessions and pick the best one, or the best ideas or components from each.
 
 ## The Persona library
 <!-- stage: persona-library -->
 
-A Persona is one reviewer's standards in Markdown. The rail groups them as System, Built-in, and Yours with their own counts, and each row's sub-label is the resolved runner and model - which is what tells two reviewers apart.
+A Persona is one reviewer's standards in Markdown. The rail groups them as System, Built-in, and Yours. Built-in may not be modified, but may be cloned and updated. Build your own, or use the standard library.
 
 ## What a Persona is, and what configures it
 <!-- stage: persona-anatomy -->
 
-The Markdown is the asset; everything above it is metadata about how that Markdown gets run. Provider and model open the control that set them, and a chip inherited from the app defaults draws quiet where one this Persona overrides draws solid.
+A Persona has 3 components:
+
+- **Model:** The provider + model a persona runs as
+- **Markdown:** The prompt a persona gets
+
 
 ## Editing one
 <!-- stage: persona-editing -->
 
-On a built-in the promoted verb reads Duplicate to edit, and that is the whole ownership rule: shipped roles are read-only, and a copy you own is one gesture with an honest name. On your own Persona the same button reads Save. Import .md, Import from path, and Check upstream sit in the rail footer.
+Shipped roles are read-only, but you can duplicate and customize them, then add them to a custom workflow of your choice. 
 
 ## The Action library
 <!-- stage: action-library -->
 
-An Action is a reusable instruction a workflow stage sends to the bound session - open a pull request, run a migration. It completes; it never judges. The rail and workspace are the Persona screen's, because this is one surface with different contents, and each row's sub-label is its contract rather than its description.
+An Action is a reusable instruction a workflow stage sends to the bound session - open a pull request, run a migration. It does not judge or review work. 
 
-## The contract, and the instruction
+## Optional: Associated a skill to an action
 <!-- stage: action-contract -->
 
-Requires skill and completes when are the one machine-checked contract in the Library: something observable has to happen before a stage may call this action done, and the sentence under the chips says so in full. Then the instruction, whose Markdown reaches the session byte for byte. Editing is the same promoted verb the Persona screen just showed, on the same shared workspace header.
+You may associate a specific skill to be invoked for an action (recommended). 
 
 ## A Command slot
 <!-- stage: command-slot -->

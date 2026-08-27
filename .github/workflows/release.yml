@@ -17,16 +17,17 @@ name: Release
 # `package.json` - rather than left for the action to infer, because there is no tag history to
 # infer it from and an invented first version would not match the shipped app.
 #
-# Release Please uses the `RELEASE_PLEASE_TOKEN` personal access token instead of GITHUB_TOKEN.
-# The organization policy prevents GitHub Actions' default token from opening pull requests. The
-# token must be scoped to this repository with contents, issues, and pull-request write access.
+# Release Please uses a short-lived installation token minted for the `mission-control-release`
+# GitHub App instead of GITHUB_TOKEN. The organization policy prevents GitHub Actions' default
+# token from opening pull requests. The App is installed only on this repository with contents,
+# issues, and pull-request write access.
 #
 # Two things this deliberately does NOT do:
 #
 #   * It does not publish to npm. The package is private and the artifact is a macOS app built
 #     on the user's own machine.
 #   * It does not attach a dmg to the GitHub Release. Because the release tag is pushed with the
-#     personal access token above, it starts `ci.yml` and that workflow's `package` job builds
+#     installation token above, it starts `ci.yml` and that workflow's `package` job builds
 #     the dmg as a separate release check. The dmg remains a 90-day Actions artifact.
 #
 # `CHANGELOG.md` is generated. Never hand-edit it.
@@ -37,8 +38,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 # Never cancel a release in flight: a cancelled run can leave the tag pushed and the Release
 # unpublished, which is exactly the state the updater cannot read.
@@ -51,11 +51,21 @@ jobs:
     runs-on: ubuntu-latest
     name: release-please
     steps:
+      - name: Mint the mission-control-release installation token
+        id: release-app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Open or update the release pull request, and release when one is merged
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ steps.release-app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

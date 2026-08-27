@@ -197,8 +197,8 @@ export interface PipelineProvider {
    *
    * NULL IS NOT AN EMPTY SET, and the caller's response differs from `readRepo`'s. There,
    * "could not look" must not retire a projection. Here, on a door, it refuses: an
-   * unreadable directory cannot license a durable write, and the file tail still backfills
-   * whatever was turned away.
+   * unreadable directory cannot license a durable write. The file tail later backfills only
+   * events Conductor persisted; an unpersisted event refused here has no recovery path.
    *
    * A provider that saw only PART of the truth still answers with the part it saw, rather
    * than with null. The two are different claims and only one of them is "I cannot look at

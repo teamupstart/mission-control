@@ -45,6 +45,8 @@ import type {
   AwayConfigPatch,
   CreateFileCommentBody,
   HtmlBlockAnchorBody,
+  HtmlBlockPathStep,
+  HtmlBlockTargetBody,
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
@@ -2067,8 +2069,16 @@ export async function resolveHtmlBlockAnchor(
   sessionId: string,
   body: HtmlBlockAnchorBody,
 ): Promise<
-  | { ok: true; startLine: number; endLine: number; quote: string; revision: string | null }
-  | { ok: false; error: string }
+  | {
+      ok: true;
+      startLine: number;
+      endLine: number;
+      quote: string;
+      blockPath: HtmlBlockPathStep[];
+      blockQuote: string;
+      revision: string | null;
+    }
+  | { ok: false; error: string; status: number | null }
 > {
   try {
     const res = await fetch(
@@ -2083,19 +2093,64 @@ export async function resolveHtmlBlockAnchor(
       startLine?: number;
       endLine?: number;
       quote?: string;
+      blockPath?: HtmlBlockPathStep[];
+      blockQuote?: string;
       revision?: string | null;
       error?: string;
     };
-    if (!res.ok || typeof data.startLine !== "number" || typeof data.quote !== "string") {
-      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (
+      !res.ok
+      || typeof data.startLine !== "number"
+      || typeof data.quote !== "string"
+      || !Array.isArray(data.blockPath)
+      || typeof data.blockQuote !== "string"
+    ) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
     return {
       ok: true,
       startLine: data.startLine,
       endLine: data.endLine ?? data.startLine,
       quote: data.quote,
+      blockPath: data.blockPath,
+      blockQuote: data.blockQuote,
       revision: data.revision ?? null,
     };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      status: null,
+    };
+  }
+}
+
+/** Which rendered HTML element currently covers a stored comment's source range. */
+export async function resolveHtmlBlockTarget(
+  sessionId: string,
+  body: HtmlBlockTargetBody,
+): Promise<
+  | { ok: true; blockPath: HtmlBlockPathStep[]; revision: string | null }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/html-block-target`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      blockPath?: HtmlBlockPathStep[];
+      revision?: string | null;
+      error?: string;
+    };
+    if (!res.ok || !Array.isArray(data.blockPath)) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true, blockPath: data.blockPath, revision: data.revision ?? null };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -2165,7 +2220,7 @@ export async function reorderFileComments(
  */
 export async function controlFileCommentReview(
   sessionId: string,
-  action: "start" | "pause",
+  action: "start" | "pause" | "dismiss",
   reason?: string,
 ): Promise<{ ok: true; review: FileCommentReview } | { ok: false; error: string }> {
   try {

@@ -87,6 +87,21 @@ test("a new thread is a draft carrying its opening comment as an ordinary messag
   assert.equal(thread.messageCount, 1);
 });
 
+test("an HTML thread persists its validated structural anchor", () => {
+  const htmlBlockPath = [{ index: 0, tag: "p" }];
+  const thread = make({
+    surface: "html",
+    htmlBlockPath,
+    htmlBlockQuote: "<p>charlie</p>",
+  });
+  assert.deepEqual(thread.htmlBlockPath, htmlBlockPath);
+  assert.equal(thread.htmlBlockQuote, "<p>charlie</p>");
+
+  const stored = loadFileCommentThread(thread.id);
+  assert.deepEqual(stored?.htmlBlockPath, htmlBlockPath);
+  assert.equal(stored?.htmlBlockQuote, "<p>charlie</p>");
+});
+
 test("short_id minting survives a forced collision rather than failing the insert", () => {
   // Seed a session's handle, force the next mint onto it, and the thread is still created.
   // A read-then-write pre-check would race another create in the same session, which is why

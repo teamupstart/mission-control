@@ -16,6 +16,7 @@ import {
   queueRowText,
   reviewAnnouncement,
   reviewQueue,
+  threadForRenderedBlock,
   unreadAgentReplies,
   unsentMessage,
 } from "../src/web/lib/fileComments.ts";
@@ -47,6 +48,8 @@ function thread(over: Partial<FileCommentThread> = {}): FileCommentThread {
     quoteHash: "hash",
     revision: null,
     surface: "editor",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     status: "queued",
     outdated: false,
     queueSeq: 1,
@@ -81,6 +84,64 @@ test("the queue is this session's comments in delivery order, with the outstandi
 
 test("nothing is outstanding between two turns", () => {
   assert.equal(outstandingThread([thread(), thread({ id: "t2", queueSeq: 2 })]), null);
+});
+
+test("compact HTML blocks match their own thread instead of the first thread on the line", () => {
+  const first = thread({
+    id: "first",
+    surface: "html",
+    htmlBlockPath: [{ index: 0, tag: "p" }],
+    htmlBlockQuote: "<p>First.</p>",
+  });
+  const second = thread({
+    id: "second",
+    surface: "html",
+    htmlBlockPath: [{ index: 1, tag: "p" }],
+    htmlBlockQuote: "<p>Second.</p>",
+  });
+  assert.equal(threadForRenderedBlock(
+    [first, second],
+    {
+      htmlBlockPath: [{ index: 1, tag: "p" }],
+      htmlBlockQuote: "<p>Second.</p>",
+    },
+    "html",
+  )?.id, "second");
+  assert.equal(threadForRenderedBlock(
+    [first],
+    {
+      htmlBlockPath: [{ index: 1, tag: "p" }],
+      htmlBlockQuote: "<p>Second.</p>",
+    },
+    "html",
+  ), null, "an unclaimed identified block opens a new composer");
+});
+
+test("HTML block matching recovers by source identity and preserves the legacy line fallback", () => {
+  const moved = thread({
+    id: "moved",
+    surface: "html",
+    htmlBlockPath: [{ index: 0, tag: "p" }],
+    htmlBlockQuote: "<p>Moved.</p>",
+  });
+  assert.equal(threadForRenderedBlock(
+    [moved],
+    {
+      htmlBlockPath: [{ index: 2, tag: "p" }],
+      htmlBlockQuote: "<p>Moved.</p>",
+    },
+    "html",
+  )?.id, "moved");
+
+  const legacy = thread({ id: "legacy", surface: "html" });
+  assert.equal(threadForRenderedBlock(
+    [legacy],
+    {
+      htmlBlockPath: [{ index: 4, tag: "p" }],
+      htmlBlockQuote: "<p>Legacy.</p>",
+    },
+    "html",
+  )?.id, "legacy");
 });
 
 test("a comment awaiting a reply is still the outstanding one", () => {

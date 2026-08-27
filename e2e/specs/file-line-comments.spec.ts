@@ -443,30 +443,13 @@ test.describe("line comments in the Files editor", () => {
     expect(queued[0]!.start_line).toBe(3);
     expect(queued[0]!.status).toBe("queued");
 
-    /*
-     * ---- and a rendered document does not reopen it ----
-     *
-     * Pointing at a block that already carries a submitted comment is refused, and the refusal
-     * names where the comment actually lives. A rendered document is where a comment is LEFT;
-     * the review queue is where the ones already left are read, because it is the surface that
-     * can list every comment in every file - and an HTML preview cannot draw a marker at all,
-     * so a reader with no markers would be clicking blocks to find out which had one.
-     */
+    /* The Comments rail gives rendered Preview a visible thread index, so pointing at a block
+       already carrying a comment opens that thread directly for follow-up. */
     await paragraph.hover();
     await preview.getByRole("button", { name: "Comment on line 3" }).click();
-    await expect(page.getByText("This block already has a comment. Open the Review queue to read it."))
-      .toBeVisible();
-    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ })).toHaveCount(0);
-    await shoot(page.locator(".file-main"), page, "preview-existing-comment-refusal");
-
-    // ---- which is exactly where it opens from ----
-    await page.getByRole("button", { name: "Review queue" }).click();
-    const queue = page.getByRole("region", { name: "Review queue" });
-    await queue
-      .getByRole("button", { name: new RegExp(`^Open comment MC-\\w+ on ${SOURCE} line 3$`) })
-      .click();
-    await expect(page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ }))
-      .toContainText(COMMENT);
+    const existing = page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
+    await expect(existing).toContainText(COMMENT);
+    await expect(existing.getByPlaceholder("Reply…")).toBeVisible();
     await shoot(page.locator(".file-main"), page, "preview-thread-open");
 
     // The Editor still keeps its gutter marker - the dock replaced the split column, not the

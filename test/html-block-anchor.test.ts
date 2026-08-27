@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 
-import { resolveHtmlBlockAnchor } from "../src/server/html-block-anchor.ts";
+import {
+  resolveHtmlBlockAnchor,
+  resolveHtmlBlockPath,
+} from "../src/server/html-block-anchor.ts";
 import { htmlPreviewSource } from "../src/web/lib/htmlPreview.ts";
 import type { HtmlBlockPathStep } from "../src/shared/protocol.ts";
 
@@ -129,6 +132,92 @@ test("a row in a table written without tbody anchors to its own line", () => {
   assert.equal(result.ok, true);
   assert.equal(result.ok && result.startLine, 4);
   assert.equal(result.ok && result.quote, "<tr><td>3</td><td>30s</td></tr>");
+});
+
+test("a stored source anchor resolves back through the browser tree", () => {
+  const source = [
+    "<body>",
+    "<p>Read <strong>this</strong> carefully.</p>",
+    "<table>",
+    "<tr><td>3</td><td>30s</td></tr>",
+    "</table>",
+    "</body>",
+  ].join("\n");
+  const paragraph = resolveHtmlBlockPath(
+    source,
+    2,
+    2,
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+  assert.deepEqual(paragraph, {
+    ok: true,
+    blockPath: [{ index: 0, tag: "p" }],
+  });
+
+  const row = resolveHtmlBlockPath(source, 4, 4, "<tr><td>3</td><td>30s</td></tr>");
+  assert.equal(row.ok, true);
+  assert.ok(
+    row.ok && row.blockPath.some((step) => step.tag === "tbody"),
+    "the inverse path keeps the implicit tbody the browser owns",
+  );
+  assert.equal(row.ok && row.blockPath.at(-1)?.tag, "tr");
+});
+
+test("a compact HTML thread returns to its original block instead of a nested inline child", () => {
+  const source =
+    "<html><body><p>Read <strong>this</strong> carefully.</p><p>Sibling.</p></body></html>";
+  const paragraphPath = [{ index: 0, tag: "p" }];
+  const resolved = resolveHtmlBlockAnchor(source, paragraphPath);
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.ok && resolved.quote, source);
+  assert.equal(
+    resolved.ok && resolved.blockQuote,
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+
+  const target = resolveHtmlBlockPath(
+    source,
+    1,
+    1,
+    resolved.ok ? resolved.quote : undefined,
+    paragraphPath,
+    resolved.ok ? resolved.blockQuote : undefined,
+  );
+  assert.deepEqual(target, { ok: true, blockPath: paragraphPath });
+});
+
+test("an exact block quote recovers a compact HTML block after its structural path moves", () => {
+  const source =
+    "<html><body><aside>New.</aside><p>Read <strong>this</strong> carefully.</p></body></html>";
+  const target = resolveHtmlBlockPath(
+    source,
+    1,
+    1,
+    source,
+    [{ index: 0, tag: "p" }],
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+  assert.deepEqual(target, { ok: true, blockPath: [{ index: 1, tag: "p" }] });
+});
+
+test("an exact block quote recovers after the element moves beyond its old line range", () => {
+  const source = [
+    "<html>",
+    "<body>",
+    "<aside>New.</aside>",
+    "<p>Read <strong>this</strong> carefully.</p>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+  const target = resolveHtmlBlockPath(
+    source,
+    1,
+    1,
+    "<html><body><p>Read <strong>this</strong> carefully.</p></body></html>",
+    [{ index: 0, tag: "p" }],
+    "<p>Read <strong>this</strong> carefully.</p>",
+  );
+  assert.deepEqual(target, { ok: true, blockPath: [{ index: 1, tag: "p" }] });
 });
 
 test("a block spanning several lines quotes all of them", () => {

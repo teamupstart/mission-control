@@ -40,6 +40,7 @@ import {
   FileCommentComposer,
   FileCommentThreadCard,
 } from "../src/web/components/FileCommentThread.tsx";
+import { FileCommentRail } from "../src/web/components/FileCommentRail.tsx";
 import {
   anchorForLine,
   isCommentableDocument,
@@ -131,6 +132,8 @@ function thread(over: Partial<FileCommentThread> = {}): FileCommentThread {
     quoteHash: "hash",
     revision: "rev-1",
     surface: "editor",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     status: "queued",
     outdated: false,
     queueSeq: 1,
@@ -279,6 +282,41 @@ test("a marker names its line and its state, and resolved threads hide behind th
     [],
     "threads belong to the session that wrote them",
   );
+});
+
+test("the comments rail indexes every thread, including resolved ones", () => {
+  const html = renderToStaticMarkup(
+    createElement(FileCommentRail, {
+      path: PATH,
+      threads: [
+        thread(),
+        thread({
+          id: "t-2",
+          shortId: "MC-b52a",
+          status: "resolved",
+          startLine: 9,
+          endLine: 9,
+          resolvedAt: 1_700_000_100_000,
+          messages: [{
+            ...thread().messages[0]!,
+            id: "m-2",
+            threadId: "t-2",
+            body: "This one is already closed.",
+          }],
+        }),
+      ],
+      selectedId: "t-2",
+      onOpen: () => {},
+      onClose: () => {},
+    }),
+  );
+  assert.match(html, new RegExp(`aria-label="Comments on ${PATH}"`));
+  assert.ok(html.includes("2 total"));
+  assert.ok(html.includes("MC-a41f"));
+  assert.ok(html.includes("MC-b52a"));
+  assert.ok(html.includes("This one is already closed."));
+  assert.ok(html.includes("resolved"));
+  assert.match(html, /aria-current="true"/);
 });
 
 test("the composer names the line it is anchored to and quotes it back", () => {
@@ -473,6 +511,8 @@ function composerState(over: Partial<FileCommentComposerState> = {}): FileCommen
     startLine: 3,
     endLine: 3,
     quote: "line two says something",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     text: "this is wrong",
     threadId: null,
     messageId: null,
@@ -505,6 +545,8 @@ test("a pending draft is written against the file it was opened on, not the one 
       quote: "line two says something",
       revision: "rev-a",
       surface: "editor",
+      htmlBlockPath: null,
+      htmlBlockQuote: null,
       body: "this is wrong",
     },
   });
@@ -515,6 +557,17 @@ test("a pending draft is written against the file it was opened on, not the one 
   assert.equal(draftCreateRequest(composerState({ text: "  spaced  " }))?.body.body, "spaced");
   assert.equal(draftCreateRequest(composerState({ text: "   " })), null);
   assert.equal(draftCreateRequest(composerState({ text: "" })), null);
+});
+
+test("an HTML draft carries its exact rendered block identity into creation", () => {
+  const htmlBlockPath = [{ index: 0, tag: "p" }];
+  const request = draftCreateRequest(composerState({
+    surface: "html",
+    htmlBlockPath,
+    htmlBlockQuote: "<p>line two says something</p>",
+  }));
+  assert.deepEqual(request?.body.htmlBlockPath, htmlBlockPath);
+  assert.equal(request?.body.htmlBlockQuote, "<p>line two says something</p>");
 });
 
 test("cancelling during the create request still deletes the row that request produced", () => {

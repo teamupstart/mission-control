@@ -47,7 +47,7 @@
 //    reader's words going missing - so it carries its owner now.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CreateFileCommentBody } from "@shared/protocol.ts";
+import type { CreateFileCommentBody, HtmlBlockPathStep } from "@shared/protocol.ts";
 import type { FileCommentSurface } from "@shared/file-comment-anchor.ts";
 import type { FileCommentThread } from "@shared/types.ts";
 import {
@@ -92,6 +92,8 @@ export interface FileCommentComposerState {
   startLine: number;
   endLine: number;
   quote: string;
+  htmlBlockPath: HtmlBlockPathStep[] | null;
+  htmlBlockQuote: string | null;
   text: string;
   /** Null until the first persistable keystroke has been written. */
   threadId: string | null;
@@ -114,6 +116,8 @@ export interface FileCommentRangeAnchor {
   endLine: number;
   quote: string;
   surface: FileCommentSurface;
+  htmlBlockPath?: HtmlBlockPathStep[] | null;
+  htmlBlockQuote?: string | null;
   /**
    * The revision the quote was actually sliced out of, when the surface knows it better than
    * the workspace does.
@@ -180,6 +184,8 @@ export function draftCreateRequest(
       quote: composer.quote,
       revision: composer.revision,
       surface: composer.surface,
+      htmlBlockPath: composer.htmlBlockPath,
+      htmlBlockQuote: composer.htmlBlockQuote,
       body,
     },
   };
@@ -472,7 +478,14 @@ export function useFileCommentDraft(input: {
    */
   const openAnchor = useCallback((
     line: number,
-    anchor: { startLine: number; endLine: number; quote: string; revision?: string | null },
+    anchor: {
+      startLine: number;
+      endLine: number;
+      quote: string;
+      revision?: string | null;
+      htmlBlockPath?: HtmlBlockPathStep[] | null;
+      htmlBlockQuote?: string | null;
+    },
     surface: FileCommentSurface,
   ): boolean => {
     const { sessionId, path, revision: current } = target.current;
@@ -492,6 +505,8 @@ export function useFileCommentDraft(input: {
       startLine: anchor.startLine,
       endLine: anchor.endLine,
       quote: anchor.quote,
+      htmlBlockPath: anchor.htmlBlockPath ?? null,
+      htmlBlockQuote: anchor.htmlBlockQuote ?? null,
       text: "",
       threadId: null,
       messageId: null,
@@ -542,6 +557,8 @@ export function useFileCommentDraft(input: {
       startLine: thread.startLine,
       endLine: thread.endLine,
       quote: thread.quote,
+      htmlBlockPath: thread.htmlBlockPath,
+      htmlBlockQuote: thread.htmlBlockQuote,
       text: opening?.body ?? "",
       threadId: thread.id,
       messageId: opening?.id ?? null,

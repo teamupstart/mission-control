@@ -72,9 +72,11 @@ Before an installer can be reviewed or opened, Mission Control runs the same rea
 `node --version` probe that ai-conductor's installer relies on. Conductor requires Node.js
 `>=26.0.0`. The panel names the detected version and blocks both the browser control and the
 server launch route when that runtime is older or cannot be determined. Activate Node.js 26+
-and check again before installation; no checkout code runs during this preflight. Mission
-Control resolves the Node executable that answered the probe and resets PATH inside the hosted
-terminal command so shell initialization cannot select a different Node for `bin/install`.
+for Mission Control, restart Mission Control from that environment, and check again before
+installation; changing the runtime in a separate shell cannot update the running process. No
+checkout code runs during this preflight. Mission Control resolves the Node executable that
+answered the probe and resets PATH inside the hosted terminal command so shell initialization
+cannot select a different Node for `bin/install`.
 
 Selecting **Review installer** does not launch anything. A second confirmation names the exact
 checkout, the exact `bin/install` command, its recognized upstream, and the user-level changes

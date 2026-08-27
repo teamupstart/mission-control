@@ -356,7 +356,7 @@ test("an unsupported installer runtime is explicit and blocks review before cons
       current: "24.19.0",
       supported: false,
       detail:
-        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Activate Node.js 26+ before installing.",
+        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Restart Mission Control with Node.js 26+ active, then check again.",
     },
     detail: "1 verified local installer checkout found.",
     candidates: [
@@ -373,6 +373,7 @@ test("an unsupported installer runtime is explicit and blocks review before cons
   assert.match(html, /Unsupported installer runtime/);
   assert.match(html, /requires Node\.js 26 or newer/);
   assert.match(html, /use Node\.js 24\.19\.0/);
+  assert.match(html, /Restart Mission Control with Node\.js 26\+ active, then check again/);
   assert.match(html, /<button type="button" class="btn" disabled=""[^>]*>Review installer<\/button>/);
   assert.doesNotMatch(html, />Open installer</);
 });

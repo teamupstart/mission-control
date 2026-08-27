@@ -597,6 +597,9 @@ test.describe("with a verified checkout under unsupported Node 24", () => {
     await expect(warning).toContainText("Unsupported installer runtime");
     await expect(warning).toContainText("requires Node.js 26 or newer");
     await expect(warning).toContainText("would use Node.js 24.19.0");
+    await expect(warning).toContainText(
+      "Restart Mission Control with Node.js 26+ active, then check again",
+    );
     const review = page.getByRole("button", { name: "Review installer" });
     await expect(review).toBeDisabled();
     const reviewBox = await review.boundingBox();

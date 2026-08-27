@@ -106,8 +106,8 @@ export function conductorInstallerRuntimeReading(version: string | null): Pipeli
     detail: supported
       ? `Node.js ${current} satisfies Conductor's ${CONDUCTOR_NODE_REQUIREMENT} requirement.`
       : current
-        ? `Conductor requires Node.js 26 or newer, but this installer would use Node.js ${current}. Activate Node.js 26+ before installing.`
-        : "Conductor requires Node.js 26 or newer, but Mission Control could not determine the Node.js version this installer would use. Activate Node.js 26+ before installing.",
+        ? `Conductor requires Node.js 26 or newer, but this installer would use Node.js ${current}. Restart Mission Control with Node.js 26+ active, then check again.`
+        : "Conductor requires Node.js 26 or newer, but Mission Control could not determine the Node.js version this installer would use. Restart Mission Control with Node.js 26+ active, then check again.",
   };
 }
 

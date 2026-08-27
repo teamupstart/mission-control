@@ -264,7 +264,7 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
                 label={
                   runtimeReady
                     ? "Review this verified checkout and the changes its installer may offer"
-                    : "Activate a supported Node.js runtime before reviewing this installer"
+                    : "Restart Mission Control with Node.js 26 or newer active before reviewing this installer"
                 }
               >
                 <button

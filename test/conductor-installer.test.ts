@@ -70,11 +70,15 @@ test("installer runtime preflight distinguishes unsupported and supported Node v
     requirement: ">=26.0.0",
     supported: false,
     detail:
-      "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Activate Node.js 26+ before installing.",
+      "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Restart Mission Control with Node.js 26+ active, then check again.",
   });
   assert.equal(conductorInstallerRuntimeReading("26.0.0").supported, true);
   assert.equal(conductorInstallerRuntimeReading("v27.1.2").supported, true);
   assert.equal(conductorInstallerRuntimeReading("v26.0.0-nightly").supported, false);
+  assert.equal(
+    conductorInstallerRuntimeReading(null).detail,
+    "Conductor requires Node.js 26 or newer, but Mission Control could not determine the Node.js version this installer would use. Restart Mission Control with Node.js 26+ active, then check again.",
+  );
 
   const runtimeDeps = {
     path: () => ["/daemon/bin", "/usr/bin"].join(delimiter),

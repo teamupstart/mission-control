@@ -685,7 +685,7 @@ test("installer routes expose and enforce an unsupported Node runtime before lau
       requirement: ">=26.0.0",
       supported: false,
       detail:
-        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Activate Node.js 26+ before installing.",
+        "Conductor requires Node.js 26 or newer, but this installer would use Node.js 24.19.0. Restart Mission Control with Node.js 26+ active, then check again.",
     });
     assert.deepEqual(candidates.candidates.map((candidate) => candidate.checkout), [routeInstallerRepo]);
 

@@ -239,7 +239,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
-  writeConductorNodeRuntime(home, extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION ?? "26.7.0");
+  const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
+  if (conductorNodeVersion !== undefined) {
+    writeConductorNodeRuntime(home, conductorNodeVersion);
+  }
   writeProductConsentBin(home);
   const conductor = writeFakeConductor(home);
   mkdirSync(workspace, { recursive: true });
@@ -291,10 +294,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
     MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
-    // The guided installer asks the same bare `node --version` that upstream bin/install
-    // asks. This shim reports the version selected by the spec and delegates every other
-    // invocation to the real test runtime, so no browser case depends on the host's Node.
-    PATH: `${join(home, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+    // Installer specs opt into a controllable bare `node --version`, matching upstream
+    // bin/install without placing a process wrapper in front of every unrelated fixture.
+    PATH:
+      conductorNodeVersion === undefined
+        ? (process.env.PATH ?? "")
+        : `${join(home, "bin")}${delimiter}${process.env.PATH ?? ""}`,
     // Every agent the daemon can launch, redirected at a fake. Missing even one would
     // let a real CLI start and spend real tokens.
     MISSION_CLAUDE_BIN: bins.claude,

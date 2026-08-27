@@ -317,8 +317,28 @@ test("a command that EXITS leaving a background process still has its group torn
  * One name each, because these two numbers are also the floor the elapsed-time assertion
  * checks. Spelled twice, they drift, and a `700 + 400` that no longer matches the run is a
  * green test asserting nothing.
+ *
+ * The timeout is a STARTUP BUDGET for the grandchild, not a claim about the product. It has
+ * now been widened twice for the same reason, so the reasoning is recorded here rather than
+ * rediscovered a third time: this case races the grandchild's startup against the
+ * supervisor's own teardown timer, and the timer is internal to `runSupervisedCheck` with no
+ * seam to synchronise on. Margin is therefore the only lever, and margin can always lose to
+ * a slow enough machine.
+ *
+ * 700ms went first. 1_200ms (a ~14x margin over the ~84ms this costs on an idle machine)
+ * then failed inside a full `make test` - 9_729 tests at MISSION_TEST_CONCURRENCY=6 on a
+ * host also carrying dozens of git worktrees - which is the environment that actually
+ * matters, because it is the one CI and the review gate run in. 6_000ms is ~70x, and the
+ * cost of buying that is bounded and small: this single case's floor moves from 1.6s to
+ * 6.4s against a suite that takes over seven minutes.
+ *
+ * What is deliberately NOT done here: skipping the case when the pid file is missing. A
+ * precondition that quietly opts out under load is a test that stops defending the
+ * SIGTERM-ignored path on exactly the machines where process teardown is hardest, and
+ * nobody would see it happen. If this budget is ever exhausted the assertion below still
+ * fails loudly and names why.
  */
-const STUBBORN_TIMEOUT_MS = 1_200;
+const STUBBORN_TIMEOUT_MS = 6_000;
 const STUBBORN_GRACE_MS = 400;
 
 test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
@@ -330,9 +350,12 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   // lever is margin, and both halves of it are deliberate. Measured on an idle machine: the
   // pid file landed at ~145ms with a node grandchild and ~84ms with this one, the residual
   // being the supervisor's own shim, which is the thing under test and cannot be avoided. So
-  // shell removes the ~60ms that was avoidable, and the budget carries the rest. A full suite
-  // at MISSION_TEST_CONCURRENCY=6 once stretched the old ~4.8x margin past breaking, and it
-  // surfaced as a bare ENOENT on this pid file - a symptom naming nothing about signals.
+  // shell removes the ~60ms that was avoidable, and the budget carries the rest - see
+  // STUBBORN_TIMEOUT_MS for why that budget is now 6s and what has already failed at less.
+  //
+  // Two `sh` spawns, and both are load-bearing: the outer one is the supervised command and
+  // the inner one is the GRANDCHILD this case is named for. Collapsing them would leave the
+  // supervisor's direct child ignoring TERM, which is a different and easier problem.
   writeFileSync(
     join(dir, "stubborn.sh"),
     [

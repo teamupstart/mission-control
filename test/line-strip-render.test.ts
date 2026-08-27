@@ -142,3 +142,151 @@ test("a stage with nothing to report still says what it is for", () => {
   // No dangling "Now:" over a stage whose fold said nothing.
   for (const label of labels) assert.doesNotMatch(label, /Now:\s*$/);
 });
+
+// ---- condensed: the fold, and what it is not allowed to cost ----
+//
+// The whole risk of a density is that it quietly stops SAYING something. Expanded is
+// pinned above; these pin that condensing drops the sentences and nothing else - every
+// stage, every name, every tone, every drawer, and the amber sentences promoted onto the
+// row. See `docs/plans/line-collapse/plan.md`.
+
+const renderCondensed = (
+  summary: LineSummary | null,
+  onDensity?: (next: "expanded" | "condensed") => void,
+): string =>
+  renderToStaticMarkup(
+    createElement(LineStrip, {
+      summary,
+      density: "condensed",
+      onStage: () => {},
+      ...(onDensity ? { onDensity } : {}),
+    }),
+  );
+
+test("condensed still draws all six stages, with the same accessible names", () => {
+  // The fold is a change to what is DRAWN, never to what is announced. A screen reader
+  // gets the identical strip at either density, which is what makes the default safe.
+  const html = renderCondensed(full);
+  assert.equal([...html.matchAll(/class="line-stage/g)].length, LINE_STAGES.length);
+  assert.match(html, /aria-label="Review, 5 runs live - No-Mistakes Review v8 ×4"/);
+  assert.match(html, /aria-label="Working, 5 sessions - 1 needs you, 4 working"/);
+  assert.match(html, /aria-label="Decide, 1 ensemble - Best of N, waiting on you"/);
+});
+
+test("condensed omits the sentence element rather than hiding it", () => {
+  // `display: none` would keep six nodes and, in some screen readers, still read them -
+  // and the sentence is not merely invisible when condensed, it is not being said.
+  const html = renderCondensed(full);
+  assert.equal([...html.matchAll(/class="ls-sub"/g)].length, 0);
+  assert.equal([...render(full).matchAll(/class="ls-sub"/g)].length, LINE_STAGES.length);
+});
+
+test("the sentence a condensed stage stopped printing is still in its tooltip", () => {
+  // Which is what makes dropping it a fold rather than a deletion, and is why the
+  // per-stage prose is one hover away at either density. The tooltip is unchanged by the
+  // fold: it carried the full sentence before this setting existed and still does.
+  const condensed = renderCondensed(full);
+  assert.match(
+    condensed,
+    /class="tt-desc">Workflow runs still in flight over the work their sessions did\. Now: No-Mistakes Review v8 ×4</,
+  );
+  // And it is the ONLY place that sentence appears now - it is in the tooltip instead of,
+  // not as well as, a visible row.
+  assert.equal([...condensed.matchAll(/No-Mistakes Review v8/g)].length, 2, "tooltip and aria-label only");
+  assert.equal([...render(full).matchAll(/No-Mistakes Review v8/g)].length, 3, "plus the visible ls-sub");
+});
+
+test("condensed keeps every stage's tone, which is the read the strip exists for", () => {
+  const html = renderCondensed(full);
+  assert.match(html, /class="line-stage tone-attention" aria-label="Working/);
+  assert.match(html, /class="line-stage tone-working" aria-label="Review/);
+  assert.match(html, /class="line-stage tone-idle" aria-label="Shipped/);
+});
+
+test("condensed trades the wires for plain dividers", () => {
+  // The wire needs 26px and a second line to sit beside. Six segments with nothing between
+  // them read as one run-on string, so the separation survives even though the wire cannot.
+  const html = renderCondensed(full);
+  assert.equal([...html.matchAll(/class="line-wire/g)].length, 0);
+  const divs = [...html.matchAll(/<span class="ls-div"[^>]*>/g)].map((m) => m[0]);
+  assert.equal(divs.length, LINE_STAGES.length - 1);
+  for (const div of divs) assert.match(div, /aria-hidden/);
+});
+
+test("condensed promotes the amber stages' sentences onto the row, verbatim", () => {
+  // The one thing the fold must not hide is the reason to look. Both amber stages ride the
+  // row; the two idle ones and the blue one do not, because they are not asking for anyone.
+  const html = renderCondensed(full);
+  const readout = /class="ls-urgent"[^>]*>(.*?)<\/span><\/span>/s.exec(html)?.[1] ?? "";
+  assert.ok(readout, "condensed drew no readout for an amber fleet");
+  // Verbatim, not re-folded: picking "1 needs you" out of the daemon's prose would make
+  // this file a second, worse implementation of a fold the server already did.
+  assert.match(readout, /1 needs you · 4 working/);
+  assert.match(readout, /Best of N · waiting on you/);
+  // And only the amber stages. Intake and Shipped are idle and Review is blue, so none of
+  // their sentences belong on a row that exists to say what needs a person.
+  assert.doesNotMatch(readout, /github-issues/);
+  assert.doesNotMatch(readout, /per PR today/);
+  assert.doesNotMatch(readout, /No-Mistakes/);
+});
+
+test("each promoted sentence is attributed to its stage rather than joined into one list", () => {
+  // The defect this shape exists to prevent: the daemon joins CLAUSES with " · "
+  // (`sentence()` in `src/server/line-summary.ts`), so joining two stages' sentences with
+  // the same separator makes "4 working" and "Best of N" neighbours in one list and the
+  // boundary between Working and Decide disappears.
+  const html = renderCondensed(full);
+  const items = [...html.matchAll(/class="ls-urgent-item"><span class="ls-urgent-glyph">([^<]*)<\/span>([^<]*)</g)];
+  assert.equal(items.length, 2, "two amber stages should be two items");
+  // The glyph is the strip's own vocabulary for that stage, so the sentence points back at
+  // the segment it came from.
+  assert.deepEqual(items.map((m) => m[1]), ["▶", "⧉"]);
+  assert.deepEqual(items.map((m) => m[2]), ["1 needs you · 4 working", "Best of N · waiting on you"]);
+});
+
+test("the readout says nothing to a screen reader, because the buttons already did", () => {
+  // Every sentence is in its own stage button's `aria-label` at BOTH densities - pinned
+  // above - so announcing them again here would read one fleet twice. A live region would
+  // be worse still: this text changes whenever any session changes state.
+  const html = renderCondensed(full);
+  assert.match(html, /<span class="ls-urgent" aria-hidden="true">/);
+  assert.doesNotMatch(html, /role="status"/);
+});
+
+test("a calm fleet spends no row on a readout at all", () => {
+  // The space is only taken when something is wrong. A permanent empty readout would be
+  // the `ls-sub` mistake again, one line up.
+  const calm: LineSummary = {
+    stages: LINE_STAGES.map((s) => stage({ stage: s, count: 1, sentence: "all clear", tone: "idle" })),
+  };
+  assert.doesNotMatch(renderCondensed(calm), /ls-urgent/);
+  assert.doesNotMatch(renderCondensed(null), /ls-urgent/);
+});
+
+test("the nav says which density it is in", () => {
+  assert.match(renderCondensed(full), /<nav class="line is-condensed" aria-label="The Line">/);
+});
+
+test("the fold caret appears only when something can act on it", () => {
+  // A control that cannot do anything should not be on screen - and this is what lets the
+  // tour and these tests render the strip without wiring a store to it.
+  assert.doesNotMatch(renderCondensed(full), /ls-fold/);
+  assert.doesNotMatch(render(full), /ls-fold/);
+  const withCaret = renderCondensed(full, () => {});
+  assert.match(withCaret, /class="ls-fold"/);
+});
+
+test("the caret reports the fold state, so it is legible without sight", () => {
+  // `aria-expanded` on the control is the relationship: pressed at false, the six stages
+  // regain their sentences. Without it the caret is an unlabelled triangle.
+  assert.match(renderCondensed(full, () => {}), /aria-expanded="false" aria-label="Expand the Line"/);
+  const expanded = renderToStaticMarkup(
+    createElement(LineStrip, {
+      summary: full,
+      density: "expanded",
+      onStage: () => {},
+      onDensity: () => {},
+    }),
+  );
+  assert.match(expanded, /aria-expanded="true" aria-label="Condense the Line"/);
+});

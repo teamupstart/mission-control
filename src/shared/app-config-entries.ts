@@ -230,6 +230,7 @@ const pipelinesFields = {
 const uiFields = {
   layout: "setting",
   conversationView: "setting",
+  lineDensity: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",

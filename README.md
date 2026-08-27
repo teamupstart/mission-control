@@ -112,8 +112,8 @@ picker, and the same rows, appear wherever you choose a repository - **Settings 
 **Settings → Repositories** controls which directories feed that index. A fresh machine starts
 with `~/workspace`, `~/code`, `~/dev`, and `~/upstart`; any row can be removed, including a
 seeded one, and **Restore defaults** adds back only the missing seeded rows. The panel reports
-missing, non-directory, and unreadable paths, and **Rescan now** makes a newly cloned checkout
-available without waiting for the discovery cache. `MISSION_WORKSPACE_DIRS` remains the
+missing, non-directory, unreadable, and unsafe paths, and **Rescan now** makes a newly cloned
+checkout available without waiting for the discovery cache. `MISSION_WORKSPACE_DIRS` remains the
 colon-separated launch-time override. While it is set, the panel names it and keeps the saved
 list read-only.
 

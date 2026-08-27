@@ -47,7 +47,7 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     const next = await readSetupChecks();
     if (!alive.current || id !== request.current) return;
     setLoading(false);
-    if (next.view) setView(next.view);
+    setView(next.view);
     setError(next.error);
   }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);

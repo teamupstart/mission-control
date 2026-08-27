@@ -14,6 +14,24 @@ test("Setup recovers when its inspection request is rejected", async ({ page, da
   await expect(recheck).toBeEnabled();
 });
 
+test("Setup clears stale results when a re-check is rejected", async ({ page, daemon }) => {
+  let rejectChecks = false;
+  await page.route("**/api/setup/checks", (route) => {
+    if (rejectChecks) return route.abort("connectionrefused");
+    return route.continue();
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  const claude = page.locator('[data-anchor="setup/dependency-claude-cli"]');
+  await expect(claude).toContainText("Ready");
+
+  rejectChecks = true;
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expect(page.getByText("Mission Control could not inspect this machine's setup.")).toBeVisible();
+  await expect(claude).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Re-check" })).toBeEnabled();
+});
+
 test("Setup explains the machine and re-checks without executing a remedy", async ({ page, daemon }) => {
   await page.setViewportSize({ width: 1440, height: 1400 });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);

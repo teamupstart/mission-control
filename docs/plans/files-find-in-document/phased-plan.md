@@ -116,7 +116,8 @@ the two are strictly ordered. Merge order is 1 then 2.
   `src/web/lib/htmlPreview.ts` nor the CSP; Phase 2 adds exactly one script and one hash and
   changes no existing script body.
 - **The block reveal survives as a fallback.** Phase 2 keeps it for the window before the
-  frame reports ready, and for a runtime without the CSS Custom Highlight API.
+  find bridge announces its own readiness - never another script's - and for a runtime without
+  the CSS Custom Highlight API.
 - **A reported count equals what was highlighted.** Wherever a count comes from, it may only
   include matches that surface renders. Phase 1 keeps HTML honest with a note because its
   count is source-derived; Phase 2 earns the number by counting only paintable ranges.

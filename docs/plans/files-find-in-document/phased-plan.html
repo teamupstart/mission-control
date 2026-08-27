@@ -304,7 +304,8 @@ ownership, so the two are strictly ordered.</figcaption>
   <code>src/web/lib/htmlPreview.ts</code> nor the CSP; Phase 2 adds exactly one script and one
   hash and changes no existing script body.</li>
   <li><strong>The block reveal survives as a fallback.</strong> Phase 2 keeps it for the window
-  before the frame reports ready, and for a runtime without the CSS Custom Highlight API.</li>
+  before the find bridge announces its own readiness - never another script&rsquo;s - and for a
+  runtime without the CSS Custom Highlight API.</li>
   <li><strong>A reported count equals what was highlighted.</strong> Wherever a count comes
   from, it may only include matches that surface renders. Phase 1 keeps HTML honest with a note
   because its count is source-derived; Phase 2 earns the number by counting only paintable

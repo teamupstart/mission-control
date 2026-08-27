@@ -59,10 +59,23 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
 4. **A keystroke inside the frame does not reach the parent.** The scroll bridge forwards only
    Tab and Escape, and handles `u`/`d` itself, and only while the parent has armed the
    keyboard bridge. So Cmd+F with focus inside the preview is currently lost.
-5. **The frame already announces readiness.** The comment bridge posts
-   `HTML_PREVIEW_READY_MESSAGE` as its last act, precisely because the parent cannot know when
-   a `srcdoc` document finished running its scripts. The find bridge uses the same signal, and
-   the parent falls back to Phase 1's block reveal until it arrives.
+5. **The existing readiness signal belongs to the comment bridge and cannot speak for a later
+   script.** `PREVIEW_COMMENT_SCRIPT` posts `HTML_PREVIEW_READY_MESSAGE` as its last act, and
+   the module's comment above it says why: "an arm message posted a moment early reaches a
+   window with no listener and is simply lost", so "the LAST thing this script does is tell the
+   parent it exists, and the parent replies with the current state. Ordering stops being a
+   question anybody has to get right." That guarantee is about the script that sends it. The
+   comment bridge is the second of the three injected scripts and the link bridge already runs
+   after it, so a find bridge injected fourth would be announced ready by a script that had not
+   yet run - reintroducing precisely the race that sentence removed, with a silent failure
+   mode: the parent's first find message arrives at a window with no find listener, is lost,
+   and nothing highlights until the reader edits the query. The find bridge therefore posts its
+   own readiness message.
+   The same signal is load-bearing for a second reason. The preview's `srcDoc` is rebuilt from
+   the debounced, stylesheet-inlined `previewText`, so an edit to the file reloads the document
+   and destroys the highlight along with it. A parent that replies to find-readiness with the
+   current find state restores the highlight after every such reload; a parent that only posts
+   on change does not.
 6. **Escape from inside the frame already has a meaning.** The keyboard bridge posts an "exit"
    action, which the workspace uses to hand focus back to the file list. With find open, that
    same message must close find first. This is a parent-side decision and needs no script
@@ -107,6 +120,13 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   extending the existing scroll bridge keeps the other three bodies and hashes untouched
   (non-goal 1), so the diff against the security boundary is one added script and one added
   hash.
+- **The find bridge announces its own readiness, and the parent answers it with state.** A
+  distinct `PREVIEW_FIND_READY_MESSAGE`, posted as the find script's last act, with the parent
+  replying with the current query, case flag and index - exactly the arm-on-ready handshake
+  `armFrame` already performs for comment mode. Nothing keys off another script's ready
+  message (finding 5). One handshake covers three cases that would otherwise each need their
+  own reasoning: find opened before the document finished loading, find already open when the
+  reader selects an HTML file, and the `srcDoc` reload that follows every edit.
 - **For HTML documents, the frame's count is the count.** It counts what is rendered, which is
   the invariant the whole feature rests on: every counted match is one a person can see. The
   source-derived count Phase 1 used for HTML is replaced, and the bar's note goes with it.
@@ -114,8 +134,10 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
 ## Implementation steps
 
 1. **`src/web/lib/htmlPreview.ts`**:
-   - add `PREVIEW_FIND_MESSAGE` (parent to frame: query, case flag, current index, or a clear)
-     and `PREVIEW_FIND_RESULT_MESSAGE` (frame to parent: count, current index);
+   - add `PREVIEW_FIND_MESSAGE` (parent to frame: query, case flag, current index, or a clear),
+     `PREVIEW_FIND_RESULT_MESSAGE` (frame to parent: count, current index), and
+     `PREVIEW_FIND_READY_MESSAGE` (frame to parent, posted by the find script as its last act -
+     never reuse the comment bridge's ready message, finding 5);
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
      which walks text nodes **through the two gates in the decision above** - skipping
      non-rendered containers and invisible subtrees, then dropping any range with no client
@@ -129,12 +151,17 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
      app's find colours;
    - export the two message constants beside the existing ones.
 2. **`src/web/components/FileWorkspace.tsx`**:
-   - post the find message to the frame on query, case-flag and index changes, and on clear;
+   - post the current find state to the frame whenever the find bridge announces readiness,
+     and on every later query, case-flag and index change, and on clear. The readiness reply is
+     not an optimisation: without it the first message can be lost and nothing highlights until
+     the reader edits the query, and the highlight does not come back after a `srcDoc` reload
+     (finding 5). Follow `armFrame`'s existing shape rather than inventing a second handshake;
    - accept the result message (verifying `event.source` is the preview frame, as the block
      handler already does) and use its count and index for HTML documents;
    - treat the keyboard bridge's exit action as "close find" while find is open (finding 6);
-   - drop the block-reveal call and the bar's note once the frame has reported ready; keep
-     both as the fallback path when it has not (finding 5).
+   - drop the block-reveal call and the bar's note once **the find bridge specifically** has
+     reported ready; keep both as the fallback path until then, and again if a reload has not
+     yet re-announced.
 3. **`test/html-preview.test.ts`**: extend the hash recomputation to the fourth script, and
    assert the CSP lists exactly four hashes and still carries `default-src 'none'`,
    `connect-src 'none'` and no `allow-same-origin`.
@@ -166,6 +193,10 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   reported count equals the number of highlighted ranges on a document that also contains the
   query in a head element, a body `style`, a `script`, an attribute and a hidden subtree.
 - Cmd+F works with focus inside the preview.
+- A query typed before the preview finished loading highlights as soon as it loads, with no
+  second keystroke, and the highlight returns by itself after an edit reloads the `srcDoc`.
+- No behaviour keys off the comment bridge's ready message. Injecting the find script in any
+  position must not change the outcome.
 - The CSP admits exactly four hashes, carries no new directive relaxation, and the sandbox
   attribute is unchanged.
 - HTML comments still anchor and resolve while find is open, with a highlight active.
@@ -176,8 +207,10 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
 ## Downstream handoff
 
 Nothing depends on this phase. If a later surface wants find inside a sandboxed preview -
-Scouts is the obvious candidate - it reuses this bridge and its message pair rather than
-adding a fifth script.
+Scouts is the obvious candidate - it reuses this bridge and its messages rather than adding a
+fifth script. The handshake travels with it: the find bridge's own readiness message and the
+parent's reply carrying current state are part of the contract, and no consumer may substitute
+another script's ready signal for it.
 
 ## Cross-phase audit record
 
@@ -199,3 +232,16 @@ adding a fifth script.
   together. Phase 1 needed no change: its Markdown adapter runs on a hast tree with no raw
   HTML, script or style nodes, and its HTML count is explicitly source-derived and labelled as
   such until this phase replaces it.
+- Review round 2 (PR #818): the find bridge was specified as reusing
+  `HTML_PREVIEW_READY_MESSAGE`, which the comment bridge posts - the second of three injected
+  scripts, with the link bridge already running after it. A fourth script announced by a script
+  that has not yet run reintroduces the arming race `htmlPreview.ts` documents at length, and
+  fails silently: the first find message reaches a window with no find listener and nothing
+  highlights until the reader edits the query. The find bridge now owns
+  `PREVIEW_FIND_READY_MESSAGE` and the parent answers it with current state, following
+  `armFrame`'s existing shape. The same handshake closes a second hole the review did not name:
+  the debounced `previewText` rebuilds `srcDoc` on every edit, reloading the document and
+  destroying the highlight, which a post-on-change-only parent never restores. Finding 5, the
+  decisions, both implementation steps, the exit criteria and the downstream handoff were
+  amended together. Phase 1 needed no change - it posts nothing into the frame beyond the
+  existing target message, which is request-response and carries no state.

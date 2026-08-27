@@ -42,6 +42,7 @@ export interface TourEntry {
 
 const SEE_WORK_TITLE = tourContent("see-work").title;
 const LIBRARY_TITLE = tourContent("library").title;
+const SETUP_TITLE = tourContent("setup").title;
 
 const SEE_WORK_ENTRY: TourEntry = {
   id: "see-work",
@@ -93,9 +94,37 @@ const LIBRARY_ENTRY: TourEntry = {
   entryRoute: { page: "library" },
 };
 
+const SETUP_ENTRY: TourEntry = {
+  id: "setup",
+  title: SETUP_TITLE,
+  settings: {
+    tooltip: "Tour the machine Setup panel and learn what each status and remedy means",
+    ariaLabel: `Start ${SETUP_TITLE} tour`,
+    heading: SETUP_TITLE,
+    hint: "Tour the machine Setup panel",
+  },
+  palette: {
+    rowId: "command:setup-tour",
+    title: `Start ${SETUP_TITLE} tour`,
+    detail: "Walk through required tools, status evidence, remedies, and Re-check.",
+    keywords: [
+      "tour",
+      "onboarding",
+      "setup",
+      "machine",
+      "dependencies",
+      "install",
+      "github",
+      "terminal",
+    ],
+    hint: "Start the guided machine Setup tour.",
+  },
+  entryRoute: { page: "settings", category: "setup" },
+};
+
 /** Every tour Mission Control offers, in the order its entry points list them. */
 export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
-  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY];
+  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, SETUP_ENTRY];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (seen.has(entry.id)) throw new Error(`duplicate tour entry ${entry.id}`);

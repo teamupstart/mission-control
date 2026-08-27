@@ -1,4 +1,8 @@
-import type { EnvironmentCheckId } from "./environment-checks.ts";
+import { z } from "zod";
+import {
+  ENVIRONMENT_CHECK_IDS,
+  type EnvironmentCheckId,
+} from "./environment-checks.ts";
 import type { PipelineProviderId } from "./pipeline.ts";
 
 // External tooling Mission Control can explain, split from the daemon probes for the same
@@ -255,6 +259,26 @@ export type SetupRowId =
   | { source: "environment-check"; id: EnvironmentCheckId }
   | { source: "derived"; id: SetupDerivedRowId };
 
+/** The persisted row identity keeps its namespace so ids from different sources cannot alias. */
+export const SetupRowIdSchema: z.ZodType<SetupRowId> = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("dependency"), id: z.enum(SETUP_DEPENDENCY_IDS) }),
+  z.object({ source: z.literal("environment-check"), id: z.enum(ENVIRONMENT_CHECK_IDS) }),
+  z.object({ source: z.literal("derived"), id: z.literal("terminal-pair") }),
+]);
+
+/** What this operator has acknowledged while the named rows remained unsatisfied. */
+export const SetupBannerDismissalSchema = z.object({
+  firstLaunchAcknowledged: z.boolean().default(false),
+  acknowledged: z.array(SetupRowIdSchema).default([]),
+});
+
+export type SetupBannerDismissal = z.output<typeof SetupBannerDismissalSchema>;
+
+export const DEFAULT_SETUP_BANNER_DISMISSAL: SetupBannerDismissal = {
+  firstLaunchAcknowledged: false,
+  acknowledged: [],
+};
+
 export interface SetupRowView {
   rowId: SetupRowId;
   label: string;
@@ -267,6 +291,15 @@ export interface SetupRowView {
 
 export interface SetupChecksView {
   rows: SetupRowView[];
+  banner: SetupBannerView;
+}
+
+export interface SetupBannerView {
+  visible: boolean;
+  /** Required missing or unfinished rows in the fresh snapshot, whether acknowledged or not. */
+  attentionRowIds: SetupRowId[];
+  /** The number the banner names to the operator. */
+  attentionCount: number;
 }
 
 /** Metadata the narrower environment-check contract does not carry itself. */
@@ -304,4 +337,9 @@ export const TERMINAL_PAIR_INFO = {
 /** A collision-proof anchor slug, including the row's id namespace. */
 export function setupRowAnchor(rowId: SetupRowId): string {
   return `setup/${rowId.source}-${rowId.id}`;
+}
+
+/** A stable, collision-proof key for comparing persisted discriminated row ids. */
+export function setupRowKey(rowId: SetupRowId): string {
+  return `${rowId.source}:${rowId.id}`;
 }

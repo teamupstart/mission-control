@@ -55,6 +55,7 @@ import {
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
+import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
   PROMPTED_COMPLETION_OUTCOMES,
@@ -6681,3 +6682,9 @@ export const RespondToFileCommentsSchema = z.object({
   addressed: z.boolean().optional().default(false),
 });
 export type RespondToFileCommentsBody = z.infer<typeof RespondToFileCommentsSchema>;
+
+/** Acknowledge the required setup rows shown by the browser's latest uncached read. */
+export const SetupBannerDismissRequestSchema = z.object({
+  acknowledged: z.array(SetupRowIdSchema),
+});
+export type SetupBannerDismissRequest = z.infer<typeof SetupBannerDismissRequestSchema>;

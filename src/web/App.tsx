@@ -131,6 +131,8 @@ import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
+import { SetupBanner } from "./components/SetupBanner.tsx";
+import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import { GuidedTourController } from "./tour/GuidedTourController.tsx";
@@ -151,6 +153,7 @@ import {
   type LibraryTourRun,
   type LibraryTourRuntime,
 } from "./tour/tours/library.ts";
+import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
 import { createTourTargetRegistry } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
@@ -344,6 +347,9 @@ export function App(): React.JSX.Element {
   // would leave the popover showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
+  // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
+  // panel's Re-check calls this same owner; there is no second hook and no polling tick.
+  const setup = useSetupChecks(true);
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
@@ -950,6 +956,7 @@ export function App(): React.JSX.Element {
     // The Library tour singles out a run rather than a session, and it pins it in `begin`
     // rather than as the run's `resource`: the run is a whole summary, not an id.
     "library": { resource: () => null, begin: beginLibraryRun },
+    "setup": { resource: () => null, begin: () => {} },
   }), [beginLibraryRun, beginSeeWorkRun, pickSeeWorkSession]);
 
   /**
@@ -1190,6 +1197,8 @@ export function App(): React.JSX.Element {
   const cleanupLibraryRun = useCallback(async (): Promise<void> => {
     setLibraryTourRun(null);
   }, []);
+  // Setup only navigates and spotlights existing page chrome, so it creates nothing to reclaim.
+  const cleanupSetupRun = useCallback(async (): Promise<void> => {}, []);
 
   /**
    * Close whichever tour is active.
@@ -1520,6 +1529,9 @@ export function App(): React.JSX.Element {
       return true;
     },
   }), [layout, navigate, requestWorkflowsTab]);
+  const setupNavigation = useMemo<SetupTourNavigation>(() => ({
+    showSetup: () => navigate({ page: "settings", category: "setup" }),
+  }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
     setLauncherFocusError(message);
@@ -2014,6 +2026,21 @@ export function App(): React.JSX.Element {
           registry={tourTargets}
           navigation={libraryNavigation}
           runtime={libraryTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
+    "setup": {
+      activeTaskId: null,
+      activeRunId: null,
+      cleanup: cleanupSetupRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={SETUP_TOUR}
+          registry={tourTargets}
+          navigation={setupNavigation}
+          runtime={null}
           isTop={isTop}
           onFinish={onFinish}
         />
@@ -3240,6 +3267,7 @@ export function App(): React.JSX.Element {
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}
         />
+        <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
 
         <AppPageShell
           page={route.page}
@@ -3405,6 +3433,7 @@ export function App(): React.JSX.Element {
               foreman={foreman}
               cost={cost}
               llm={llm}
+              setup={setup}
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}

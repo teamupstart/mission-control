@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SetupChecksView } from "@shared/setup-catalog.ts";
-import { fetchSetupChecks } from "./lib/api.ts";
+import { api, fetchSetupChecks } from "./lib/api.ts";
 
 export interface SetupChecksState {
   view: SetupChecksView | null;
   loading: boolean;
   error: string | null;
   refresh(): Promise<void>;
+  /** Persist the banner's current acknowledgement, returning a sentence on refusal. */
+  dismissBanner(): Promise<string | null>;
 }
 
 const INSPECTION_ERROR = "Mission Control could not inspect this machine's setup.";
@@ -35,6 +37,8 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
   const request = useRef(0);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   useEffect(() => {
     alive.current = true;
@@ -50,6 +54,18 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     setView(next.view);
     setError(next.error);
   }, []);
+  const dismissBanner = useCallback(async (): Promise<string | null> => {
+    const current = viewRef.current;
+    if (!current) return "Machine setup has not finished loading.";
+    const result = await api.dismissSetupBanner(current.banner.attentionRowIds);
+    if (!result.ok) return result.error ?? "The setup reminder could not be dismissed.";
+    if (alive.current) {
+      setView((latest) => latest === current
+        ? { ...current, banner: { ...current.banner, visible: false } }
+        : latest);
+    }
+    return null;
+  }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
-  return { view, loading, error, refresh };
+  return { view, loading, error, refresh, dismissBanner };
 }

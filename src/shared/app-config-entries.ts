@@ -31,6 +31,7 @@ import { TaskSourcesConfigSchema, type TaskSourcesConfig } from "./task-source.t
 import type { StandingInstructionsConfig } from "./standing-instructions.ts";
 import type { WorkflowPolicy } from "./workflow.ts";
 import type { SettingsBackupDomainId } from "./settings-backup-domains.ts";
+import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -289,6 +290,9 @@ export const APP_CONFIG_ENTRIES = {
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
   foremanLease: wholeEntry("foreman.lease", ForemanLeaseSchema, "operational", null),
+  // This records what one operator has already seen about this machine. Restoring it from
+  // another installation could suppress a new break or resurrect a reminder already handled.
+  setupBanner: wholeEntry("setup.banner", SetupBannerDismissalSchema, "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
   costTelemetryEnabledAt: wholeEntry(
     "costTelemetryEnabledAt", z.number().nullable(), "derived", null,

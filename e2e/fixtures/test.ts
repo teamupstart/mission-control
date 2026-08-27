@@ -29,13 +29,20 @@ export const test = base.extend<{
    * become a test of onboarding.
    */
   guidedTour: boolean;
+  /**
+   * Leave the first-launch Setup reminder intact for the spec that owns onboarding.
+   * Ordinary browser specs acknowledge it before the first page load so their layout and
+   * role selectors remain about the surface they were written to exercise.
+   */
+  setupReminder: boolean;
   daemon: DaemonHandle;
   dashboard: Page;
 }>({
   daemonEnv: [{}, { option: true }],
   guidedTour: [false, { option: true }],
+  setupReminder: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, guidedTour }, use) => {
+  daemon: async ({ daemonEnv, guidedTour, setupReminder }, use) => {
     const daemon = await startDaemon(daemonEnv);
     try {
       if (!guidedTour) {
@@ -45,6 +52,16 @@ export const test = base.extend<{
           body: JSON.stringify({ guidedTour: false }),
         });
         if (!pinned.ok) throw new Error("the daemon should accept the guided-tour pin");
+      }
+      if (!setupReminder) {
+        const acknowledged = await fetch(`${daemon.baseURL}/api/setup/checks`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ acknowledged: [] }),
+        });
+        if (!acknowledged.ok) {
+          throw new Error("the daemon should accept the first-launch Setup acknowledgement");
+        }
       }
       await use(daemon);
     } finally {

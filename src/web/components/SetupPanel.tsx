@@ -7,6 +7,7 @@ import {
 } from "@shared/setup-catalog.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 function CommandRemedy({ argv, note }: { argv: readonly string[]; note: string }): React.JSX.Element {
@@ -72,15 +73,23 @@ function SetupRow({ row }: { row: SetupRowView }): React.JSX.Element {
 }
 
 export function SetupPanel({ state }: { state: SetupChecksState }): React.JSX.Element {
+  const panelTourRef = useTourTargetRef<HTMLElement>("setup:panel");
+  const agentsTourRef = useTourTargetRef<HTMLElement>("setup:family-agents");
+  const githubTourRef = useTourTargetRef<HTMLElement>("setup:family-github");
+  const recheckTourRef = useTourTargetRef<HTMLButtonElement>("setup:recheck");
+  const familyTourRefs: Partial<Record<(typeof SETUP_FAMILY_IDS)[number], (node: HTMLElement | null) => void>> = {
+    agents: agentsTourRef,
+    github: githubTourRef,
+  };
   return (
     <section className="settings-section setup-panel">
-      <div className="setup-intro" data-anchor="setup/recheck">
+      <div className="setup-intro" data-anchor="setup/recheck" ref={panelTourRef}>
         <div>
           <p className="settings-hint">See what Mission Control can use on this machine and what an incomplete setup prevents.</p>
           <p className="setup-read-only">Commands are copied, never run from this page.</p>
         </div>
         <Tooltip label="Inspect this machine again">
-          <button type="button" className="btn btn-ghost" disabled={state.loading} onClick={() => void state.refresh()}>
+          <button type="button" className="btn btn-ghost" disabled={state.loading} onClick={() => void state.refresh()} ref={recheckTourRef}>
             {state.loading ? "Checking..." : "Re-check"}
           </button>
         </Tooltip>
@@ -90,7 +99,7 @@ export function SetupPanel({ state }: { state: SetupChecksState }): React.JSX.El
         const info = SETUP_FAMILY_INFO[family];
         const rows = state.view?.rows.filter((row) => row.family === family) ?? [];
         return (
-          <section className="setup-family" id={`setup-family-${family}`} key={family} aria-labelledby={`setup-family-${family}-title`}>
+          <section className="setup-family" id={`setup-family-${family}`} key={family} aria-labelledby={`setup-family-${family}-title`} ref={familyTourRefs[family]}>
             <header className="setup-family-head">
               <div>
                 <h3 id={`setup-family-${family}-title`}>{info.label}</h3>

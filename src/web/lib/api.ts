@@ -107,7 +107,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import type { SetupChecksView } from "@shared/setup-catalog.ts";
+import type { SetupChecksView, SetupRowId } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -304,7 +304,7 @@ export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId)
  */
 export const fetchEnvironmentChecks = () =>
   fetchJson<EnvironmentChecksView>("/api/environment/checks");
-/** A fresh read-only machine setup snapshot. Called only while Settings > Setup is open. */
+/** One fresh machine setup snapshot, shared by the App banner and Settings > Setup. */
 export const fetchSetupChecks = () => fetchJson<SetupChecksView>("/api/setup/checks");
 /**
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
@@ -1864,6 +1864,10 @@ export const api = {
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
+
+  // --- First-run setup reminder ---
+  dismissSetupBanner: (acknowledged: SetupRowId[]) =>
+    put(`/api/setup/checks`, { acknowledged }),
 
   // --- Away mode ---
   setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),

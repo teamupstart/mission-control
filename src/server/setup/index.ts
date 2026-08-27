@@ -31,6 +31,8 @@ import { resolveBin } from "../terminal/bin.ts";
 import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { resolveBinPath, run } from "../util/exec.ts";
+import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
+import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupSkillsRead } from "./types.ts";
 
 type SetupProbe = (deps: SetupDeps) => Promise<SetupStatus>;
@@ -184,6 +186,8 @@ export function defaultSetupDeps(): SetupDeps {
     conductorProbe: () => PIPELINE_PROVIDERS["ai-conductor"].probe(),
     terminalTargets: terminalTargetViews,
     environmentChecks: environmentCheckViews,
+    readBannerDismissal: getSetupBannerDismissal,
+    writeBannerDismissal: setSetupBannerDismissal,
   };
 }
 
@@ -222,5 +226,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
     if (family === "terminals") rows.push(derived);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
-  return { rows };
+  const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
+  if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
+  return { rows, banner: setupBannerView(rows, pruned.dismissal) };
 }

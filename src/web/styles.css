@@ -2733,6 +2733,10 @@ body {
   border-color: color-mix(in oklab, var(--idle) 38%, var(--border));
   background: color-mix(in oklab, var(--idle) 8%, var(--panel));
 }
+.app-banner-setup {
+  border-color: color-mix(in oklab, var(--attention) 42%, var(--border));
+  background: color-mix(in oklab, var(--attention) 9%, var(--panel));
+}
 .app-console > .app-banner,
 .app-board > .app-banner {
   margin: 0;

@@ -68,6 +68,12 @@ export const TOUR_TARGET_NAMESPACES = {
      */
     "session-workflow-ladder": "run",
   },
+  "setup": {
+    "panel": "page",
+    "family-agents": "page",
+    "family-github": "page",
+    "recheck": "page",
+  },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;
 
 type Namespaces = typeof TOUR_TARGET_NAMESPACES;

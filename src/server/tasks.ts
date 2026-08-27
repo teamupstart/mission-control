@@ -1513,7 +1513,15 @@ export class TaskManager {
   /** The same reconciliation for a restart: whatever the first completed sweep did not find. */
   private reconcileTasksWithNoLiveSession(): void {
     for (const t of this.registry.listTasks()) {
-      if (t.sessionId && !this.registry.getSession(t.sessionId)) this.agentWentAway(t);
+      if (!t.sessionId || this.registry.getSession(t.sessionId)) continue;
+      // A managed Pipeline reserves its SDK id before the driver starts so its first MCP
+      // call can prove which task launched it. A discovery sweep can complete inside that
+      // launch window, when the task already names the id but the supervisor has not yet
+      // registered the session. The registry's launch marker is the positive evidence that
+      // this absence is provisional, not a host that vanished while the daemon was down.
+      const launch = this.registry.managedPipelineLaunch(t.sessionId);
+      if (launch?.taskId === t.id) continue;
+      this.agentWentAway(t);
     }
   }
 

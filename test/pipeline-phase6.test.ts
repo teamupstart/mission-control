@@ -1177,6 +1177,40 @@ test("startup keeps a hostless SDK task when its exact provider run is active", 
   assert.deepEqual(task?.pipelineRun, link);
 });
 
+test("the first discovery sweep preserves a managed SDK host that is still launching", () => {
+  const registry = new Registry();
+  const sessionId = "sdk:pending-managed-launch";
+  new TaskManager(registry);
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-pending-managed-launch",
+      kind: "pipeline",
+      repoRoot: "/repo/pending-managed-launch",
+      status: "dispatching",
+      sessionId,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/pending-managed-launch",
+        slug: "pending-managed-launch",
+      },
+    }),
+  );
+  registry.beginManagedPipelineLaunch(
+    "pipeline-pending-managed-launch",
+    sessionId,
+    "/repo/pending-managed-launch",
+  );
+
+  // The process table is authoritative for sessions that existed before boot, but this
+  // SDK host has a reserved identity and has not reached supervisor registration yet.
+  registry.applyDiscovery([]);
+
+  const task = registry.getTask("pipeline-pending-managed-launch");
+  assert.equal(task?.status, "dispatching");
+  assert.equal(task?.sessionId, sessionId);
+  assert.equal(task?.error, null);
+});
+
 test("a legacy pipeline child binds its durable run and the processed projection settles the task", () => {
   const registry = new Registry();
   new TaskManager(registry);

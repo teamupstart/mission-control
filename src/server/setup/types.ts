@@ -2,6 +2,7 @@ import type { AgentType } from "@shared/types.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
 import type { PipelineProbe } from "@shared/pipeline.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
+import type { SetupBannerDismissal } from "@shared/setup-catalog.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
 import type { InstalledPluginsRead } from "../plugins/installed-plugins.ts";
@@ -28,4 +29,6 @@ export interface SetupDeps {
   conductorProbe(): Promise<PipelineProbe>;
   terminalTargets(): TerminalTargetView[];
   environmentChecks(deps: EnvironmentDeps): Promise<EnvironmentCheckView[]>;
+  readBannerDismissal(): SetupBannerDismissal;
+  writeBannerDismissal(dismissal: SetupBannerDismissal): void;
 }

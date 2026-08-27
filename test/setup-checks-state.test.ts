@@ -16,6 +16,9 @@ test("a rejected setup read becomes panel error state", async () => {
 });
 
 test("a successful setup read keeps its view and clears the error", async () => {
-  const view: SetupChecksView = { rows: [] };
+  const view: SetupChecksView = {
+    rows: [],
+    banner: { visible: true, attentionRowIds: [], attentionCount: 0 },
+  };
   assert.deepEqual(await readSetupChecks(async () => view), { view, error: null });
 });

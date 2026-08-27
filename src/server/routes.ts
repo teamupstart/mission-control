@@ -53,6 +53,7 @@ import {
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
+  SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -326,8 +327,9 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { setupChecksView } from "./setup/index.ts";
+import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import type { SetupDeps } from "./setup/types.ts";
+import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
   getInspectorConfig,
@@ -6030,9 +6032,24 @@ export function buildApp(
   app.get("/api/environment/checks", async (c) =>
     c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
 
-  // Uncached and read-only. Re-checking reflects installs and sign-ins without restarting,
-  // while every remedy remains inert data for the browser to link or copy.
-  app.get("/api/setup/checks", async (c) => c.json(await setupChecksView(setupDeps)));
+  // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
+  // remedy remains inert data for the browser to link or copy. The one write during this read
+  // only retires acknowledgements for rows the fresh result proved repaired or removed.
+  app.get("/api/setup/checks", async (c) =>
+    c.json(await setupChecksView(setupDeps ?? defaultSetupDeps())));
+  // The same resource path as the read, so dismissal adds no second setup read or endpoint.
+  // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
+  // probes, and any install behavior remain completely outside this write.
+  app.put("/api/setup/checks", async (c) => {
+    const parsed = await parseBody(c, SetupBannerDismissRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const deps = setupDeps ?? defaultSetupDeps();
+    deps.writeBannerDismissal(acknowledgeSetupRows(
+      deps.readBannerDismissal(),
+      parsed.data.acknowledged,
+    ));
+    return c.json({ ok: true });
+  });
 
   // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {

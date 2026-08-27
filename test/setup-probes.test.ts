@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import type { PipelineProbe } from "../src/shared/pipeline.ts";
@@ -9,6 +12,7 @@ import {
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView } from "../src/server/setup/index.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
+import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
 function conductor(found = true): PipelineProbe {
@@ -75,6 +79,39 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
     installedPlugins: async () => ({ ok: false, missing: false, reason: "EACCES", recordPath: "/record" }),
   }));
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
+});
+
+test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
+  const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
+  try {
+    writeFileSync(
+      join(pluginsDir, "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: [] }),
+      "utf8",
+    );
+    const reading = await installedPluginsRead(pluginsDir);
+    const view = await setupChecksView(deps({ installedPlugins: async () => reading }));
+    const row = view.rows.find(
+      (candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "claude-plugins",
+    );
+
+    assert.equal(row?.status.state, "unknown");
+    assert.match(row?.status.state === "unknown" ? row.status.evidence ?? "" : "", /unsupported schema/);
+
+    writeFileSync(
+      join(pluginsDir, "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: {} }),
+      "utf8",
+    );
+    const empty = await installedPluginsRead(pluginsDir);
+    const emptyView = await setupChecksView(deps({ installedPlugins: async () => empty }));
+    const emptyRow = emptyView.rows.find(
+      (candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "claude-plugins",
+    );
+    assert.equal(emptyRow?.status.state, "missing");
+  } finally {
+    rmSync(pluginsDir, { recursive: true, force: true });
+  }
 });
 
 test("one thrown probe becomes its own unknown row", async () => {

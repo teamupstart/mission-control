@@ -108,6 +108,36 @@ export type InstalledPluginsRead =
   | { ok: true; plugins: InstalledPlugin[]; recordPath: string }
   | { ok: false; missing: boolean; reason: string; recordPath: string };
 
+type InstalledPluginsParse =
+  | { ok: true; plugins: InstalledPlugin[] }
+  | { ok: false; reason: string };
+
+/** Validate the record envelope while keeping individual plugin entries forward-compatible. */
+function parseInstalledPluginsRecord(record: unknown): InstalledPluginsParse {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (expected an object)",
+    };
+  }
+  const plugins = (record as { plugins?: unknown }).plugins;
+  if (plugins === null || typeof plugins !== "object" || Array.isArray(plugins)) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (expected a plugins object)",
+    };
+  }
+  const entries = Object.entries(plugins as Record<string, unknown>);
+  const parsed = parseInstalledPlugins(record);
+  if (entries.length > 0 && parsed.length === 0) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (no usable plugin entries)",
+    };
+  }
+  return { ok: true, plugins: parsed };
+}
+
 /** The installed-plugin answer with absence kept distinct from an unreadable record. */
 export async function installedPluginsRead(
   pluginsDir: string = claudePluginsDir(),
@@ -115,7 +145,9 @@ export async function installedPluginsRead(
   const recordPath = path.join(pluginsDir, INSTALL_RECORD);
   const record = await readBoundedJson(recordPath, INSTALL_RECORD_MAX_BYTES);
   if (!record.ok) return { ...record, recordPath };
-  return { ok: true, plugins: parseInstalledPlugins(record.value), recordPath };
+  const parsed = parseInstalledPluginsRecord(record.value);
+  if (!parsed.ok) return { ok: false, missing: false, reason: parsed.reason, recordPath };
+  return { ok: true, plugins: parsed.plugins, recordPath };
 }
 
 /**

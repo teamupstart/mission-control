@@ -55,6 +55,7 @@ const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { refreshPipelineRepo, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
+const { PIPELINE_PROVIDERS } = await import("../src/server/pipelines/providers.ts");
 const {
   readConductorInvocations,
   seedConductorDaemon,
@@ -703,6 +704,35 @@ test("installer routes expose and enforce an unsupported Node runtime before lau
     assert.equal(opened.length, 0, "unsupported Node is refused before terminal launch");
     assert.deepEqual(getPipelinesConfig().repos, [], "runtime refusal never changes consent");
   } finally {
+    writeConductorNodeRuntime(home, "26.7.0");
+  }
+});
+
+test("installer launch rechecks Node after candidate discovery", async () => {
+  const installer = PIPELINE_PROVIDERS["ai-conductor"].installer;
+  assert.ok(installer);
+  const candidates = installer.candidates;
+  installer.candidates = async (repoRoots) => {
+    const found = await candidates(repoRoots);
+    writeConductorNodeRuntime(home, "24.19.0");
+    return found;
+  };
+  try {
+    const opened: FakeLaunch[] = [];
+    const { request } = fixture(opened);
+    const launch = await request("/api/pipelines/install", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ai-conductor",
+        checkout: routeInstallerRepo,
+        backend: "cmux",
+      }),
+    });
+    assert.equal(launch.status, 409);
+    assert.match(await launch.text(), /requires Node\.js 26 or newer/);
+    assert.equal(opened.length, 0, "a runtime change during discovery is refused before launch");
+  } finally {
+    installer.candidates = candidates;
     writeConductorNodeRuntime(home, "26.7.0");
   }
 });

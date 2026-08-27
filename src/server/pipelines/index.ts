@@ -13,6 +13,7 @@ import {
   type PipelineConsole,
   type PipelineInstallerCandidate,
   type PipelineInstallerCandidatesResult,
+  type PipelineInstallerRuntime,
   type PipelineProbe,
   type PipelinesConfig,
   type PipelineProviderId,
@@ -657,7 +658,7 @@ export type PipelineInstallerPreparation =
     }
   | { ok: false; error: string };
 
-/** Re-check catalog membership and provider evidence immediately before a terminal launch. */
+/** Re-check catalog membership, provider evidence, and runtime before a terminal launch. */
 export async function pipelineInstallerLaunch(
   provider: PipelineProviderId,
   checkout: string,
@@ -687,6 +688,13 @@ export async function pipelineInstallerLaunch(
     ) {
       return { ok: false, error: "The provider did not confirm the selected checkout." };
     }
+    let runtime: PipelineInstallerRuntime;
+    try {
+      runtime = await installer.runtime();
+    } catch {
+      return { ok: false, error: "Mission Control could not verify the installer runtime." };
+    }
+    if (!runtime.supported) return { ok: false, error: runtime.detail };
     return { ok: true, ...launch };
   } catch {
     return { ok: false, error: "The provider could not reverify that installer checkout." };

@@ -1513,7 +1513,16 @@ export class TaskManager {
   /** The same reconciliation for a restart: whatever the first completed sweep did not find. */
   private reconcileTasksWithNoLiveSession(): void {
     for (const t of this.registry.listTasks()) {
-      if (t.sessionId && !this.registry.getSession(t.sessionId)) this.agentWentAway(t);
+      if (!t.sessionId || this.registry.getSession(t.sessionId)) continue;
+      // A managed Pipeline dispatch publishes its preallocated session id before the SDK
+      // driver starts, so its launch-scoped MCP capability can already prove who is calling.
+      // If the first passive sweep completes inside that launch window, the missing session
+      // is expected: registration happens only after the driver has accepted turn one. The
+      // launch marker is the daemon-owned proof that this is an in-flight start rather than
+      // a stale task restored from disk. The dispatcher clears it in `finally` and owns a
+      // rejected start, so skipping here cannot strand a failed launch.
+      if (this.registry.managedPipelineLaunch(t.sessionId)?.taskId === t.id) continue;
+      this.agentWentAway(t);
     }
   }
 

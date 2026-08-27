@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { SetupPanel } from "../src/web/components/SetupPanel.tsx";
 
-test("the panel renders stable families, namespaced rows, and inert remedies", () => {
+test("the panel renders stable families, namespaced rows, and host-owned remedy states", () => {
   const html = renderToStaticMarkup(createElement(SetupPanel, {
     state: {
       loading: false,
@@ -36,7 +36,8 @@ test("the panel renders stable families, namespaced rows, and inert remedies", (
   for (const id of ["agents", "terminals", "github", "extensions", "pipelines"]) assert.match(html, new RegExp(`id="setup-family-${id}"`));
   assert.match(html, /data-anchor="setup\/dependency-claude-cli"/);
   assert.match(html, /\/fake\/claude/);
-  assert.match(html, /href="#\/settings\/conductor"/);
+  assert.match(html, /Checking workspace repositories/);
+  assert.match(html, /visible terminal where you can watch them and read the exit code/);
   assert.match(html, />Re-check</);
-  assert.doesNotMatch(html, />Install</);
+  assert.doesNotMatch(html, /name="argv"/);
 });

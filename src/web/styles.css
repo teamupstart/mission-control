@@ -31207,6 +31207,93 @@ body.foreman-sidecar-open .modal-backdrop {
   font-size: 11px;
 }
 
+.setup-remedy-actions {
+  margin-top: 9px;
+}
+
+.setup-remedy-actions .setup-command {
+  margin-top: 0;
+}
+
+.setup-run-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.setup-terminal-choice {
+  color: var(--dim);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.setup-terminal-choice select {
+  font-size: 11px;
+  min-height: 28px;
+}
+
+.setup-terminal-choice select {
+  max-width: 430px;
+}
+
+.setup-provider-checkout {
+  color: var(--dim);
+  font-size: 10px;
+  margin: 0;
+}
+
+.setup-provider-checkout code {
+  color: var(--muted);
+  margin-left: 5px;
+  overflow-wrap: anywhere;
+}
+
+.setup-provider-fallback {
+  margin-top: 8px;
+}
+
+.setup-provider-fallback .settings-warn {
+  margin: 0;
+}
+
+.setup-provider-fallback .setup-link {
+  margin-top: 6px;
+}
+
+.setup-terminal-reasons {
+  color: var(--dim);
+  font-size: 10px;
+  margin: 7px 0 0;
+  padding-left: 18px;
+}
+
+.setup-launch-notice {
+  border-left: 2px solid var(--border);
+  display: grid;
+  font-size: 10.5px;
+  gap: 3px;
+  margin-top: 9px;
+  max-width: 760px;
+  padding: 5px 8px;
+}
+
+.setup-launch-notice.is-attention {
+  border-color: var(--attention);
+  color: var(--muted);
+}
+
+.setup-launch-notice.is-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.setup-launch-notice span {
+  color: var(--dim);
+}
+
 .setup-link {
   display: inline-block;
   margin-top: 9px;

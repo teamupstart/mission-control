@@ -67,16 +67,42 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    action, which the workspace uses to hand focus back to the file list. With find open, that
    same message must close find first. This is a parent-side decision and needs no script
    change.
+7. **A previewed document is full of text nobody can see.** `title`, `style`, `script`,
+   `template` and `noscript` contents are ordinary text nodes, and so is text inside a
+   `display: none` or `visibility: hidden` subtree. The preview adds to that itself: the CSP
+   meta, the injected style block and the bridge scripts land in the head, and
+   `inlinePreviewStyles` rewrites each checkout `link` into a `style` element **wherever that
+   link appeared**, so a stylesheet's text can sit in the body. A naive text-node walk would
+   count matches in all of it, which is precisely the promise this phase is making. An
+   attribute-only test case cannot expose this, because an attribute value is not a text node
+   and a naive walk already reports zero for it.
 
 ## Decisions recorded in this phase
 
 - **Highlight with the CSS Custom Highlight API, not with `mark` elements.** The bridge builds
-  `Range` objects over text nodes and registers them in `CSS.highlights`, styled by
+  `Range` objects over rendered text nodes and registers them in `CSS.highlights`, styled by
   `::highlight()` rules added to the existing injected style block (`style-src 'unsafe-inline'`
   already permits it, so this adds no policy). Nothing is inserted into the document, so
   finding 3's block paths keep resolving and comment mode is unaffected. If the API is absent
   at runtime, the bridge reports zero and the parent keeps Phase 1's block reveal - a
   degradation, never a DOM mutation.
+- **Only text the frame can actually paint is counted.** A text-node walk is not a rendered-text
+  walk, and the difference is the whole promise of this phase (finding 7). Two gates, in this
+  order:
+  1. **Skip by container and by visibility.** Never descend into `script`, `style`, `template`,
+     `title`, `noscript` or a comment node - remembering that `inlinePreviewStyles` rewrites a
+     checkout `link` into a `style` element wherever that link sat, so CSS text can appear in
+     the body and not only in the head. Then skip any text whose nearest element is not visible,
+     via `Element.checkVisibility()` where available and a computed-style check otherwise.
+  2. **Gate on paintable geometry.** A candidate `Range` whose `getClientRects()` is empty
+     produces no box, so it cannot be highlighted and must not be counted. This is the
+     authority rather than the tag list: it catches `content-visibility`, a collapsed
+     ancestor, a zero-size box, and whatever the list did not think of - the same reason the
+     comment bridge decides blocks by computed display rather than by tag name.
+
+  The count the frame reports is the number of ranges that survive both gates, which is exactly
+  the number it highlighted. A count that can disagree with the highlights is the defect this
+  phase exists to remove, not a rounding error.
 - **The new script owns the chord forwarding.** Putting it in the new bridge rather than
   extending the existing scroll bridge keeps the other three bodies and hashes untouched
   (non-goal 1), so the diff against the security boundary is one added script and one added
@@ -91,10 +117,12 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    - add `PREVIEW_FIND_MESSAGE` (parent to frame: query, case flag, current index, or a clear)
      and `PREVIEW_FIND_RESULT_MESSAGE` (frame to parent: count, current index);
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
-     which walks text nodes, builds ranges, registers them under a named highlight, scrolls
-     the current range into view, posts its count, and clears on an empty query. It also
-     forwards the find chord up and announces itself when ready. No literal `<` anywhere in
-     the body (finding 2);
+     which walks text nodes **through the two gates in the decision above** - skipping
+     non-rendered containers and invisible subtrees, then dropping any range with no client
+     rects - builds ranges from what survives, registers them under a named highlight, scrolls
+     the current range into view, posts the surviving count, and clears on an empty query. It
+     also forwards the find chord up and announces itself when ready. No literal `<` anywhere
+     in the body (finding 2);
    - add its hash to `PREVIEW_CSP` and inject the script in `htmlPreviewSource` after the
      existing three;
    - add the `::highlight()` rules to `PREVIEW_COMMENT_STYLE` (or a sibling constant), in the
@@ -115,17 +143,28 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
 
 - `test/html-preview.test.ts`: hashes recomputed for all four scripts; CSP invariants asserted;
   a test that the find script body contains no literal `<`.
-- `e2e/specs/file-find-in-document.spec.ts` (extended, not replaced): on an HTML fixture whose
-  markup contains the query inside an attribute as well as in visible text, assert the count
-  equals the visible occurrences only, that stepping moves the highlight, and that the
-  document's own script still never runs (the existing no-script assertion in
-  `file-default-view.spec.ts` is the precedent).
+- `e2e/specs/file-find-in-document.spec.ts` (extended, not replaced). One HTML fixture carrying
+  the query in every place it must NOT be counted, because the count is the claim:
+  - in visible prose (the only occurrences the count may include);
+  - inside an attribute value;
+  - inside a `style` element in the **body**, which is where `inlinePreviewStyles` puts an
+    inlined checkout stylesheet, and inside a `script` element;
+  - inside the document `title`;
+  - inside a `display: none` subtree and a `visibility: hidden` one.
+
+  Assert that the reported count equals the visible occurrences alone, that the number of
+  highlighted ranges equals that count, that stepping moves the highlight, and that the
+  document's own script still never runs (the no-script assertion in
+  `file-default-view.spec.ts` is the precedent). An attribute-only case is not sufficient
+  coverage here and must not be mistaken for it - see finding 7.
 - A Scouts spec run to confirm an archived report still renders and comments unchanged.
 - `npm run typecheck`, `npm run lint`, `npm test`, then `npm run build && npm run test:e2e`.
 
 ## Merge and exit criteria
 
-- Find in an HTML preview marks visible text, counts only visible matches, and steps.
+- Find in an HTML preview marks visible text, counts only visible matches, and steps. The
+  reported count equals the number of highlighted ranges on a document that also contains the
+  query in a head element, a body `style`, a `script`, an attribute and a hidden subtree.
 - Cmd+F works with focus inside the preview.
 - The CSP admits exactly four hashes, carries no new directive relaxation, and the sandbox
   attribute is unchanged.
@@ -152,3 +191,11 @@ adding a fifth script.
   string, not a second policy, and the bridge reports positions rather than re-deciding what
   counts as a match.
 - Phase 1 introduces the HTML note; this phase retires it. Both files say so.
+- Review round 1 (PR #818): the bridge was specified as walking text nodes while promising a
+  visible-only count, which it could not have delivered - head and body `style`, `script`,
+  `template`, `title` and hidden subtrees are all text nodes, and the attribute-only test case
+  would have passed a naive implementation. Finding 7, the two counting gates in the decisions,
+  the implementation step, the fixture coverage and the exit criteria were all amended
+  together. Phase 1 needed no change: its Markdown adapter runs on a hast tree with no raw
+  HTML, script or style nodes, and its HTML count is explicitly source-derived and labelled as
+  such until this phase replaces it.

@@ -42,6 +42,11 @@ Investigated against the checkout before phasing. Each is recorded in the phase 
 6. **The frame must report its own count.** Phase 1 counts HTML matches over source text,
    which can include matches the rendered page never shows. Phase 2 replaces that number with
    the frame's, so Phase 1's bar takes the count as a supplied value from the start.
+7. **A text-node walk is not a rendered-text walk.** `title`, `style`, `script`, `template`
+   and hidden subtrees are all text nodes, and `inlinePreviewStyles` puts an inlined checkout
+   stylesheet's text wherever its `link` sat - including the body. Phase 2's count therefore
+   passes candidates through a container-and-visibility skip and then drops any range with no
+   client rects, so the number it reports is the number it highlighted.
 
 ## Sizing
 
@@ -112,6 +117,9 @@ the two are strictly ordered. Merge order is 1 then 2.
   changes no existing script body.
 - **The block reveal survives as a fallback.** Phase 2 keeps it for the window before the
   frame reports ready, and for a runtime without the CSS Custom Highlight API.
+- **A reported count equals what was highlighted.** Wherever a count comes from, it may only
+  include matches that surface renders. Phase 1 keeps HTML honest with a note because its
+  count is source-derived; Phase 2 earns the number by counting only paintable ranges.
 
 ## Final verification strategy
 

@@ -19,7 +19,11 @@ Two sheets, both real. Neither is a drawing of a board - both are the shipping c
 the shipping stylesheet, so what they show is what the board will show.
 
 - **[`mockups.html`](mockups.html)**, beside this file: nine board columns side by side at
-  their real width, on fixture sessions. Committed, shareable, no operator data in it.
+  their real width, on fixture sessions. Committed, shareable, and **synthetic on purpose** -
+  every path, repository name, task title and branch on it is invented (`/wt/acme-api` and
+  friends), because a committed page carries no operator data. Regenerating it from a live fleet
+  would put a checkout path and somebody's task titles into the repository, which is exactly
+  what the boundary in `AGENTS.md` forbids.
 - **`.evidence/repo-group-mockups/index.html`**, generated on the operator's machine: the same
   nine treatments, each drawn over **their own live fleet**, read from the running daemon. Every
   repository header folds and every column scrolls, so the disclosure and the sticky option can

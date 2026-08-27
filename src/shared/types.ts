@@ -31,7 +31,7 @@ import type {
 } from "./pipeline.ts";
 // Type-only in the opposite direction from protocol.ts's runtime schema imports, so the wire
 // status can reuse the document contract without introducing an emitted module cycle.
-import type { ForemanInstructionsSource } from "./protocol.ts";
+import type { ForemanInstructionsSource, HtmlBlockPathStep } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
@@ -3477,6 +3477,10 @@ export interface FileCommentThread {
   /** The file revision the anchor was last VALID against; null when it was unknown. */
   revision: string | null;
   surface: FileCommentSurface;
+  /** The server-validated browser-tree path captured for an HTML preview comment. */
+  htmlBlockPath: HtmlBlockPathStep[] | null;
+  /** Exact source bytes for that HTML element, separate from the line-wide anchor quote. */
+  htmlBlockQuote: string | null;
   status: FileCommentThreadStatus;
   /** The quote no longer resolves. A flag beside the status, reversible, never a status. */
   outdated: boolean;

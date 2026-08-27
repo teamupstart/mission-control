@@ -28,9 +28,6 @@ Hold these as **blocking**, not advisory:
   user hits it *before* the fix, because a fix built without one usually solves
   something adjacent. A diff that changes behaviour and cites no repro is not done.
 - **New behaviour with no test.** `node:test` + `node:assert/strict`, flat in `test/`.
-- **A capability that did not update `README.md` in the same change.** New env var, new
-  `make` target, new keyboard shortcut, new capability - all of it. Stale docs are a
-  rejected change here, not a follow-up ticket.
 - **A removed or renamed `className` with no matching `styles.css` edit.** Nothing in
   the toolchain catches this - no linter, no stylelint, no unused-CSS check - so the
   diff is the only place it can be caught.

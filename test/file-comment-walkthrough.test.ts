@@ -48,6 +48,8 @@ function thread(over: Partial<FileCommentThread> & { id: string }): FileCommentT
     quoteHash: "hash",
     revision: "r1",
     surface: "editor",
+    htmlBlockPath: null,
+    htmlBlockQuote: null,
     status: "queued",
     outdated: false,
     queueSeq: 0,

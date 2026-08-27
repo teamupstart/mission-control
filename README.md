@@ -57,6 +57,17 @@ raises a count of answers nobody has read yet, which expanding the thread clears
 whose MCP bundle cannot serve that tool is asked to quote the comment's id back in its next
 turn instead, and its answer is recovered from the conversation. See
 [walk the agent through your review](docs/ui.md#walk-the-agent-through-your-review).
+When a paused review explains why a comment was held, **Dismiss** hides that warning without
+resuming the review or dropping the comment. Resuming re-checks the file and shows the warning
+again if the quoted text is still missing.
+
+**Comments** opens a side rail for the selected file. It lists every thread, including resolved
+ones, with its source location and latest message. Selecting a row expands that thread and
+scrolls the current Preview or Editor to its anchored block or line; selecting a resolved thread
+also reveals its **Reopen** action. If an HTML Preview warning says the displayed file is out of
+date, **Refresh** re-reads the selected file in place and dismisses the warning. When the Files
+pane narrows, its filename, metadata, shortcut hints, spacing, and button padding compress before
+the Preview or Editor controls, so every file action remains visible.
 
 The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
 Foreman turns carry their purple provenance from the chat log into the terminal, and completion
@@ -239,6 +250,13 @@ System profile is never offered to workflows or ensembles as a Persona.
 Workflows and Personas turn the team's review practice into reusable, inspectable building
 blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
 reviewer or Command tile selects that exact result in the review worklist below.
+
+A Persona reviews the diff, the bounded transcript, and upstream Check results, plus whatever
+evidence the agent registered through Mission Control - gitignored screenshots, focused UTF-8
+logs, or a completed command's exact output, none of it committed. The conversation's live
+binding is what authorizes that registration, so it works the same on any kind of task and
+whether the workflow was chosen at dispatch or attached by hand to a session already running.
+See [workflows](docs/workflows.md) for the channels, their limits, and what a Persona can see.
 
 On **Workflow Runs**, <kbd>↑</kbd> and <kbd>↓</kbd> select and immediately load runs.
 From the selected run, <kbd>Tab</kbd> enters the pipeline; further Tabs or any arrow key move

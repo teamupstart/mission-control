@@ -1554,11 +1554,13 @@ This registers a stdio MCP server (`src/mcp/server.ts`) that each session launch
 the standard review, reporting, and status tools, plus task-scoped submission tools a session
 receives only when its work needs one: [`submit_ensemble_result`](ensembles.md#multi-agent-ensembles) for an
 ensemble member, [`submit_scout_artifacts`](archives.md) for a scout, and
-`submit_workflow_evidence` for a workflow-bound ship task whose immutable graph contains a
-Persona. The workflow tool registers contained gitignored screenshots and focused UTF-8 text
-or log artifacts by issued repository slot or across all applicable repositories before task
-completion. It never tells the agent to commit evidence. A ship task without such a workflow
-keeps its prior Mission MCP launch and receives no evidence instructions:
+`submit_workflow_evidence` for a workflow-bound task, of any kind, whose immutable graph
+contains a Persona. The workflow tool registers contained gitignored screenshots and focused
+UTF-8 text or log artifacts by issued repository slot or across all applicable repositories
+before task completion. It never tells the agent to commit evidence. A task without such a
+workflow keeps its prior Mission MCP launch and receives no evidence instructions. Registration
+is authorized by the conversation's live Persona binding, so a workflow attached by hand to a
+running session accepts evidence even though nothing selected one before dispatch.
 
 Registered evidence is visible in the session detail's shared **Image evidence** composer before
 **Ship it** or the built-in No-Mistakes review starts. A person can remove a stale registration,

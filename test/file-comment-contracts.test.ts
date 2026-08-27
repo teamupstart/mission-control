@@ -77,6 +77,28 @@ test("the surface is the closed renderer set and nothing else", () => {
   assert.equal(CreateFileCommentSchema.safeParse({ ...VALID, surface: "diff" }).success, false);
 });
 
+test("an HTML structural anchor is paired and remains HTML-only", () => {
+  const htmlBlockPath = [{ index: 0, tag: "p" }];
+  const htmlBlockQuote = "<p>quoted text</p>";
+  assert.equal(CreateFileCommentSchema.safeParse({
+    ...VALID,
+    surface: "html",
+    htmlBlockPath,
+    htmlBlockQuote,
+  }).success, true);
+  assert.equal(CreateFileCommentSchema.safeParse({
+    ...VALID,
+    surface: "html",
+    htmlBlockPath,
+  }).success, false);
+  assert.equal(CreateFileCommentSchema.safeParse({
+    ...VALID,
+    surface: "editor",
+    htmlBlockPath,
+    htmlBlockQuote,
+  }).success, false);
+});
+
 test("nothing lets a caller supply the hash or the handle", () => {
   // Both are computed on the daemon, exactly as `fingerprint()` is. A caller that could
   // choose the hash could make any comment collide with any other; one that could choose the

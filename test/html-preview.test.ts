@@ -72,6 +72,16 @@ test("the preview keyboard bridge is inert until Files arms it", () => {
   assert.doesNotMatch(bridge, /\[contenteditable=/);
 });
 
+test("the preview target bridge follows only a structural path from its parent", () => {
+  const bridge = bridgeContaining("mission:file-preview-target");
+  assert.match(bridge, /event\.source===parent/);
+  assert.match(bridge, /Array\.isArray\(path\)/);
+  assert.match(bridge, /node\.children\.item\(step\.index\)/);
+  assert.match(bridge, /child\.tagName\.toLowerCase\(\)!==step\.tag/);
+  assert.match(bridge, /scrollIntoView\(\{block:"center",behavior:"smooth"\}\)/);
+  assert.doesNotMatch(bridge, /textContent|innerText|innerHTML|outerHTML/);
+});
+
 test("the comment bridge announces itself, so arming it is never a guess about timing", () => {
   // A `srcdoc` document can fire a load event for the `about:blank` before it, so a parent
   // arming on load alone can post into a window that is about to be replaced - and the

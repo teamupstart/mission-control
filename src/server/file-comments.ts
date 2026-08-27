@@ -7,6 +7,7 @@ import {
 } from "@shared/file-comment-anchor.ts";
 import type { FileCommentAuthor, HumanSettableThreadStatus } from "@shared/file-comments.ts";
 import { isHumanSettableThreadStatus, isOutstandingThreadStatus } from "@shared/file-comments.ts";
+import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import {
   FileCommentStoreError,
   appendFileCommentMessage,
@@ -204,6 +205,8 @@ export class FileCommentManager {
     quote: string;
     revision: string | null;
     surface: FileCommentSurface;
+    htmlBlockPath: HtmlBlockPathStep[] | null;
+    htmlBlockQuote: string | null;
     body: string;
   }): FileCommentThread {
     if (!this.registry.getSession(input.sessionId)) {
@@ -227,6 +230,8 @@ export class FileCommentManager {
         quoteHash: fileCommentQuoteHash(input.path, quote),
         revision: input.revision,
         surface: input.surface,
+        htmlBlockPath: input.htmlBlockPath,
+        htmlBlockQuote: input.htmlBlockQuote,
         body: input.body,
         now,
       });

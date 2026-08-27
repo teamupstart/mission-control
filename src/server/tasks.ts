@@ -2793,19 +2793,30 @@ export class TaskManager {
     // the current file after a rebuild would report on a process this agent is not using.
     if (requiresSubmissionTool) {
       // Handed the descriptor resolved just above rather than a second resolution of it, so
-      // this reports on the very bundle the check above admitted.
+      // this reports on the very bundle the check above admitted - and asked about EVERY tool
+      // this assignment needs rather than one of them. The two requirements are independent:
+      // a scout needs its report tool, and a workflow-armed task of any kind needs the
+      // evidence tool. A scout carrying a Persona workflow needs both, so asking about the
+      // first and inferring the second would admit a bundle publishing only the older of the
+      // two - the same stale `dist/` this probe exists for, one tool later.
       const published = await (
         opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
       )(
-        [t.kind === "scout" ? SUBMIT_SCOUT_ARTIFACTS_TOOL : SUBMIT_WORKFLOW_EVIDENCE_TOOL],
+        [
+          ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
+          ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
+        ],
         s.startedAt,
         mcpDescriptor,
       );
       if (!published.ok) {
         return {
           ok: false,
+          // Names what this assignment needed, so a scout that also carries a workflow does
+          // not report only half of why it was refused.
           error: t.kind === "scout"
-            ? `this is a scout, and ${published.reason}, so the agent could not submit the report the task needs to finish`
+            ? `this is a scout${workflowEvidence ? " with a workflow that accepts evidence" : ""}, `
+              + `and ${published.reason}, so the agent could not hand over what the task needs to finish`
             : `this workflow accepts image evidence, and ${published.reason}`,
           scope: "task",
         };

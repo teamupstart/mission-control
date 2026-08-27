@@ -868,11 +868,18 @@ original comment, every reply in time order, and a box to add another. A line ca
 than one thread steps through them on each click, and closes on the last. <kbd>Esc</kbd> closes
 the panel, and <kbd>⌘</kbd><kbd>Enter</kbd> submits from either box.
 
+**Comments** in the toolbar opens the file's comment index as a side rail. It lists every
+thread on the selected file in source order, including resolved threads, with its location,
+state, message count, and most recent text. Selecting a row expands that thread and centers
+its anchor in the current reader: the rendered block in Preview and the source line in Editor.
+The rail is navigation rather than the review queue, so a thread remains findable after it is
+sent, answered, or resolved.
+
 **Resolve** closes a thread, and only a person ever does - a thread does not close itself and
-an agent cannot close one. Closed threads stop being drawn; **Resolved** in the toolbar
-brings them back, where each offers **Reopen**. That control appears only while comment mode
-is on and the file has at least one closed thread - it is part of deciding what you are
-looking at, not a permanent fixture of the toolbar.
+an agent cannot close one. Closed threads stop being drawn inline, but remain in the
+**Comments** rail. Selecting one brings its marker and thread back into the file, where it
+offers **Reopen**. **Resolved** still controls whether all closed markers are drawn together;
+it appears only while comment mode is on and the file has at least one closed thread.
 
 **In Preview, point at what you are reading.** With comment mode on, hovering a block of the
 rendered document outlines it, and the block you land on is the innermost one under the pointer -
@@ -901,16 +908,20 @@ Two things follow from a rendered document being a render:
 - **An HTML block can be refused.** The preview is a sandboxed frame the dashboard cannot
   read into, so a click is resolved against the file on disk. If the agent has rewritten the file
   under a render still on screen, that block no longer exists to point at, and the refusal says
-  so and asks you to reload the preview. It never guesses at a nearby line. Repeated wording and
-  duplicate headings are not a problem at all - blocks are matched by position, never by text.
+  so and offers **Refresh**, which re-reads the selected file and reloads its preview in place. It
+  never guesses at a nearby line. Repeated wording and duplicate headings are not a problem at all
+  - blocks are matched by position, never by text.
 
-**A rendered document is where a comment is left, not where the ones already left are read.**
-Markers are an Editor surface - the dot that says a line already carries a comment is drawn in
-the source - and an HTML preview is a sandboxed frame the dashboard cannot draw into at all, so
-a rendered document does not show which of its blocks have been commented on. Point at one that
-has and it says so, and says where the comment is: **Review (N)** in the Files toolbar, which
-lists every comment the session holds, across every file, and opens the one you pick. Nothing is
-filed twice by pointing twice.
+The Files toolbar responds to the width of the file pane itself. As that pane narrows, the path
+ellipsizes further, metadata and shortcut hints step out, and control spacing tightens. The
+Preview and Editor switch remains whole, and the other file actions remain visible rather than
+overlapping it.
+
+**A rendered document can reopen the thread already anchored to a block.** Markers remain an
+Editor surface because an HTML preview is a sandboxed frame the dashboard cannot draw into, but
+the **Comments** rail supplies the file-local index beside Preview. Point at a block that already
+has a thread and that thread opens in the dock for a reply or **Reopen**; it never files a second
+thread. **Review (N)** remains the session-wide outbox across files and opens the thread you pick.
 
 The exception is a comment you started and never submitted. A **draft** is not an existing
 comment - it is your composer with half a sentence in it, and the review queue does not list one
@@ -953,6 +964,11 @@ comment again on the text that is actually there** - that is the way past. Note 
 work, because the queue offers it: **Edit** rewrites what a comment *says*, not the text it
 *quotes*, so editing a held comment leaves it held. A comment's quoted text is fixed when you
 write it.
+
+The warning itself has a **Dismiss** control. Dismissing it clears the explanation across open
+Files surfaces, but leaves the review paused and the comment queued. It does not stand in for
+**Drop** or **Resume**. If you later resume while the quote is still missing, the new check
+holds the comment and shows the warning again.
 
 **Resume** is not a way past either. It re-runs the check against the file as it stands, so a
 comment whose quote is still missing is held again with the same reason. That is deliberate:

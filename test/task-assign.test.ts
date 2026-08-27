@@ -1163,6 +1163,58 @@ test("a scout is refused before reset when its scoped submission credential cann
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+/**
+ * An assignment asks about EVERY tool it needs, not just its kind's.
+ *
+ * The two requirements are independent: a scout needs its report tool, and a task with a
+ * Persona workflow armed needs the evidence tool. A scout carrying such a workflow needs both,
+ * and asking only about the first would admit a bundle that publishes only the older of the
+ * two - the same stale `dist/` the sibling case above exists for, one tool later.
+ */
+test("an assignment verifies every submission tool the task needs", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-scout-workflow-mcp-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
+  r.upsertTask(mkTask({ repoRoot: clone, kind: "scout", workflowId: "w-evidence" }));
+  tasks.registerWorkflowEvidenceEligibility((task) => Boolean(task.workflowId));
+  let asked: readonly string[] = [];
+  let reset = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    confirmReset: true,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "node",
+      args: ["server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpToolsForRunningSession: async (required) => {
+      asked = required;
+      return {
+        ok: false as const,
+        reason:
+          "Mission Control's MCP server at /dist/mcp/server.mjs does not publish "
+          + "submit_workflow_evidence. Run: npm run build",
+      };
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.deepEqual(
+    [...asked],
+    ["submit_scout_artifacts", "submit_workflow_evidence"],
+    "both requirements are asked about in one question",
+  );
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /with a workflow that accepts evidence/);
+  assert.match(res.error ?? "", /submit_workflow_evidence/, "name the tool that is missing");
+  assert.equal(reset, false, "nothing may be done to an agent that cannot finish the task");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("assigned scout and ship prompts keep intent first and receive the shared authorization", async () => {
   for (const kind of ["scout", "ship"] as const) {
     const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-${kind}-contract-`);

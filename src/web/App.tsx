@@ -64,6 +64,7 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
+import { toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -336,6 +337,7 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
   const [layout, setLayout] = useLayoutMode();
+  const [lineDensity, setLineDensity] = useLineDensity();
   const foreman = useForeman();
   // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
   // popover and the Cost panel read the same `view` setting, so a local copy in the page
@@ -2378,6 +2380,24 @@ export function App(): React.JSX.Element {
       // edited), so layout shortcuts don't drive a background session behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
 
+      // Fold or unfold the Line. Chrome above every layout, so it sits here with the other
+      // page-level toggles rather than among the session actions below - it drives no
+      // session and needs no selection.
+      //
+      // `!typing` and no modifier exemption: this is a bare letter, and the one thing it
+      // must never do is eat an `L` out of a half-written reply. Unlike interrupt below
+      // there is no argument for reaching it from inside the composer - the strip is still
+      // fully readable while you type, and the caret is one click away.
+      if (!typing && chord === bindings.lineDensity) {
+        e.preventDefault();
+        // `toggleLineDensity()` rather than `setLineDensity(next(lineDensity))`: this
+        // listener is registered by an effect with an explicit dependency list, and reading
+        // the density from render here made every press after the first a no-op. See that
+        // function for the whole story.
+        toggleLineDensity();
+        return;
+      }
+
       // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
       // strip that opened it.
       //
@@ -3412,9 +3432,11 @@ export function App(): React.JSX.Element {
             pull requests that shipped this week, and the strip is where that is said. */}
         <LineStrip
           summary={lineSummary}
+          density={lineDensity}
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}
+          onDensity={setLineDensity}
         />
 
         {/* Dispatched, still provisioning. Here for the Line's reason and in the Line's slot:

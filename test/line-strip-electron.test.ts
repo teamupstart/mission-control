@@ -10,6 +10,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import type { LineStageSummary, LineSummary } from "../src/shared/line.ts";
+import type { LineDensity } from "../src/shared/protocol.ts";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 /**
@@ -67,6 +68,27 @@ const FIXTURE_BUDGET_MS = ELECTRON_TIMEOUT_MS - 30_000;
 const HEIGHT_BUDGET = { min: 70, max: 110 };
 
 /**
+ * The condensed strip's budget, on the same terms: a band rather than a number, because
+ * pinning 38.5px would fail on a font metric nobody chose.
+ *
+ * Its own constant rather than a widening of the one above. The claim being made is that
+ * these are two DENSITIES with two budgets, and a single 30-110px band would have been
+ * satisfied by a condensed strip that quietly drew at expanded's height - which is exactly
+ * the regression this file exists to catch.
+ */
+const CONDENSED_BUDGET = { min: 28, max: 52 };
+
+/**
+ * The least the fold must be worth to be worth having.
+ *
+ * Measured at 47.5px (86 -> 38.5) in Chromium at 1512x900; asserted as a floor rather than
+ * an equality for the budgets' reason, and because this window is 1400x900 rather than the
+ * one the plan measured. A fold that saved 10px would pass every other test in this file
+ * and be pointless, which no assertion on either budget alone can say.
+ */
+const MIN_FOLD_SAVING = 35;
+
+/**
  * The window every number below is read in.
  *
  * The full-height Console cases are compared with each other, which says something about
@@ -109,8 +131,8 @@ const LONG: LineSummary = {
   ),
 };
 
-const strip = (summary: LineSummary | null): string =>
-  renderToStaticMarkup(createElement(LineStrip, { summary, onStage: () => {} }));
+const strip = (summary: LineSummary | null, density: LineDensity = "expanded"): string =>
+  renderToStaticMarkup(createElement(LineStrip, { summary, density, onStage: () => {} }));
 
 /**
  * A topbar stand-in of a realistic height.
@@ -139,8 +161,8 @@ function page(styles: string, body: string): string {
 }
 
 /** The console shell exactly as `App` composes it: header, strip, then the layout. */
-const consoleShell = (summary: LineSummary | null): string =>
-  `<div class="app app-console">${TOPBAR}${strip(summary)}
+const consoleShell = (summary: LineSummary | null, density: LineDensity = "expanded"): string =>
+  `<div class="app app-console">${TOPBAR}${strip(summary, density)}
      <div class="console"><div class="console-rail"></div><div class="console-detail"></div></div>
    </div>`;
 
@@ -148,6 +170,12 @@ const CASES: Array<[string, string]> = [
   ["console", consoleShell(FULL)],
   ["console-empty", consoleShell(null)],
   ["console-long", consoleShell(LONG)],
+  // The shipped default, and the three states again. A case per density rather than a
+  // widened budget: 70-110px is the claim for EXPANDED and stays that, and a band that can
+  // be either would assert nothing about either.
+  ["condensed", consoleShell(FULL, "condensed")],
+  ["condensed-empty", consoleShell(null, "condensed")],
+  ["condensed-long", consoleShell(LONG, "condensed")],
 ];
 
 let measured: Record<string, Measured>;
@@ -259,4 +287,78 @@ test("a sentence too long for its stage is clipped, not wrapped", () => {
     long.subOverflows.every((overflow) => overflow > 0),
     `every stage's sentence should have overflowed, got ${long.subOverflows.join(", ")}`,
   );
+});
+
+// ---- the fold, as used height ----
+//
+// A density is a claim about a BAND, and a band is the one thing a markup assertion cannot
+// see. `line-strip-render.test.ts` pins that condensed drops the sentences and keeps the
+// stages; only a laid-out window can say whether that bought anything.
+
+test("the condensed strip is about forty pixels, which is what the fold is for", () => {
+  const m = at("condensed");
+  // Still all six. A fold that dropped a stage would shrink the band and pass a height
+  // assertion on its own.
+  assert.equal(m.stages, 6);
+  assert.ok(
+    m.lineHeight >= CONDENSED_BUDGET.min && m.lineHeight <= CONDENSED_BUDGET.max,
+    `the condensed strip used ${m.lineHeight}px, outside ${CONDENSED_BUDGET.min}-${CONDENSED_BUDGET.max}px`,
+  );
+});
+
+test("condensing hands the conversation the height it took, and it is worth having", () => {
+  // The two facts that make this feature real, stated against each other rather than
+  // against a constant: the band shrank, and the pane below grew by what the band lost.
+  const expanded = at("console");
+  const condensed = at("condensed");
+  const saved = expanded.lineHeight - condensed.lineHeight;
+  assert.ok(
+    saved >= MIN_FOLD_SAVING,
+    `condensing freed only ${saved}px (${expanded.lineHeight} -> ${condensed.lineHeight}), `
+      + `which is under the ${MIN_FOLD_SAVING}px that makes the control worth its own setting`,
+  );
+  // `.app-console` is `height: 100dvh` and does not scroll, so every pixel the strip gives
+  // up has to arrive here. If it does not, something else in the shell absorbed it and the
+  // operator got a shorter strip for nothing.
+  //
+  // Within a pixel, NOT exactly equal, and the difference is the whole correctness of this
+  // assertion. The fixture `Math.round()`s every measurement independently
+  // (`test/fixtures/line-strip-browser.cjs`), and the real condensed band is 38.5px - so
+  // `lineHeight` rounds to 39 while the body's own height rounds from a different fractional
+  // part, and the two disagree by 1 depending only on where each landed. `assert.equal` here
+  // therefore asserted that two roundings of one 47.5px number got lucky together: it passed
+  // on macOS and failed on Linux CI with "the strip gave up 47px but the conversation gained
+  // 48px", which says nothing about the layout.
+  //
+  // The tolerance costs nothing this case was defending. The failure it exists to catch is
+  // the space being absorbed somewhere else in the shell, and that shows up as a discrepancy
+  // the size of the whole band - tens of pixels - never as one.
+  const gained = (condensed.bodyHeight ?? 0) - (expanded.bodyHeight ?? 0);
+  assert.ok(
+    Math.abs(gained - saved) <= 1,
+    `the strip gave up ${saved}px but the conversation gained ${gained}px - the space went `
+      + `somewhere other than the pane below it`,
+  );
+});
+
+test("the condensed strip is the same height whatever it is saying", () => {
+  // The expanded invariant, restated for the density that has no `ls-sub` to reserve a
+  // line for. What holds it now is the urgent readout's `nowrap` and its ellipsis - and a
+  // readout that wrapped would grow this band on exactly the busy fleet where the strip
+  // matters most, which is the failure this case is here for.
+  const full = at("condensed").lineBoxHeight;
+  assert.equal(at("condensed-empty").lineBoxHeight, full, "an empty condensed strip shrank");
+  assert.equal(at("condensed-long").lineBoxHeight, full, "a wordy condensed strip grew");
+});
+
+test("a condensed shell still ends at the viewport, so the reply box stays reachable", () => {
+  // Same promise the expanded shell makes, and not inherited from it: condensed adds two
+  // flex items to the nav (the readout and the caret) that expanded does not have, and
+  // either could have pushed the shell past 100dvh.
+  const m = at("condensed");
+  assert.ok(
+    m.bodyBottomOverflow !== null && m.bodyBottomOverflow <= 1,
+    `the condensed console body ended ${m.bodyBottomOverflow}px past the viewport`,
+  );
+  assert.ok((m.bodyHeight ?? 0) > 600, `the condensed console body collapsed to ${m.bodyHeight}px`);
 });

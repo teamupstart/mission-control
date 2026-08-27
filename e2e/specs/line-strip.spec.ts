@@ -91,7 +91,11 @@ test("the Line renders every stage, tracks the fleet live, and its stages reach 
 
   // ---- six stages, in pipeline order, each naming what its number counts ----
 
-  const names = await line.getByRole("button").evaluateAll((buttons) =>
+  // `.line-stage` rather than every button in the nav: the strip also carries the density
+  // caret, which is a control over the strip and not a stage in it. Scoped to the stages so
+  // this stays an assertion about the pipeline rather than a count of everything in the band
+  // - the caret has its own spec in `line-density.spec.ts`.
+  const names = await line.locator(".line-stage").evaluateAll((buttons) =>
     buttons.map((button) => button.getAttribute("aria-label") ?? ""),
   );
   expect(names).toHaveLength(STAGES.length);

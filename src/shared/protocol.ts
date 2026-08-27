@@ -2752,6 +2752,28 @@ export const ConversationViewSchema = z.enum(CONVERSATION_VIEWS);
 export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 
 /**
+ * How much the Line strip SAYS - the same six stages, at two densities.
+ *
+ * `expanded` is the two-line strip: glyph, name, count and a sentence per stage.
+ * `condensed` drops the sentences and the wires for a single row of inline segments,
+ * which measures 38.5px against expanded's 86px in the console layout. The strip is
+ * `flex: none` inside a `height: 100dvh` shell that does not scroll, so those 47.5px go
+ * straight to the conversation pane underneath it
+ * (`docs/plans/line-collapse/plan.md`).
+ *
+ * A named set rather than a boolean, and here beside `CONVERSATION_VIEWS` for that key's
+ * reason exactly: the study drew a third `hidden` density - zero height, with a 3px
+ * segmented attention hairline in its place - and it was held in reserve rather than
+ * rejected. A `lineCollapsed: boolean` would have to be RENAMED the day it arrives, and
+ * this key is persisted on operators' machines. Adding a member to this list is free;
+ * renaming a stored key is not.
+ */
+export const LINE_DENSITIES = ["expanded", "condensed"] as const;
+export const LineDensitySchema = z.enum(LINE_DENSITIES);
+/** Derived from the array, not from the schema, so reading it costs the web no zod. */
+export type LineDensity = (typeof LINE_DENSITIES)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -2785,6 +2807,17 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 export const UI_CONFIG_DEFAULTS = {
   layout: "console",
   conversationView: "terminal",
+  /**
+   * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
+   * decided default rather than the cautious one.
+   *
+   * Defaulting to `expanded` would have been the no-op, and it frees nobody anything
+   * until they find the control. The strip's whole reading survives condensing: every
+   * count, every tone, every drawer, and the one sentence that is ever load-bearing
+   * ("N needs you") is promoted onto the row. What it costs is the per-stage prose,
+   * which is a hover or a click away. That trade was put to the operator and taken.
+   */
+  lineDensity: "condensed",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -2830,6 +2863,12 @@ export const UiConfigSchema = z.object({
    * honestly tab-scoped.
    */
   conversationView: ConversationViewSchema.default(UI_CONFIG_DEFAULTS.conversationView),
+  /**
+   * How dense the Line strip draws. An existing config missing this key parses to the
+   * default above like any other new key - no migration is owed, and forgetting a fold
+   * state costs nothing.
+   */
+  lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -3254,7 +3293,7 @@ export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
  * The envelope is deliberately thin, and the thinness is the point: four addressing fields
  * that Mission Control has to be able to read, wrapped around an `event` it reads almost
  * nothing of. `event` is `unknown`-valued on purpose. ai-conductor's event union is
- * TypeScript-only, unversioned and seventy-odd members long, so a schema that described its
+ * TypeScript-only, unversioned and 104 kinds long, so a schema that described its
  * members would be a second copy of a contract with no first copy - and its first effect
  * would be to refuse the events of a conductor release newer than this build. What arrives
  * is stored verbatim and read for two fields (`type`, `ts`) it may not carry.

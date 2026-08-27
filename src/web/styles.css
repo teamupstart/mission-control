@@ -18584,10 +18584,11 @@ button.wf-carried.is-link:focus-visible {
 .ts-check {
   grid-column: 1 / -1;
 }
-/* The "this filter sweeps nothing" warning, which is a sentence rather than a field: it
-   spans the row for the reason `.ts-field-wide` does, since a 220px grid cell would break
-   one line of prose across five. */
-.ts-no-jql {
+/* Jira's filter and user-settings warnings are sentences rather than fields. They span the
+   row for the reason `.ts-field-wide` does, since a 220px grid cell would break one line of
+   prose across five. */
+.ts-no-jql,
+.ts-upstartclaw-note {
   grid-column: 1 / -1;
 }
 /* One label -> priority mapping. The label field takes the room; the picker and the
@@ -20703,7 +20704,7 @@ button.sc-row:focus-visible {
   border-radius: 7px;
   background: color-mix(in oklab, var(--idle) 5%, var(--panel-2));
 }
-.conductor-installer-candidates li > span {
+.conductor-installer-candidates li > span:not(.tt-anchor) {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -21079,6 +21080,7 @@ button.sc-row:focus-visible {
     flex-direction: column;
   }
   .conductor-installer-candidates li > .btn,
+  .conductor-installer-candidates li > .tt-anchor,
   .conductor-command-row .btn {
     align-self: flex-start;
   }
@@ -22100,6 +22102,163 @@ button.sc-row:focus-visible {
     gap: 6px;
   }
   .line-wire {
+    display: none;
+  }
+}
+
+/* ============================================================================
+   CONDENSED - the Line at one row, and the shipped default.
+
+   38.5px against expanded's 86px, measured in Chromium at 1512x900. The strip is
+   `flex: none` inside a `height: 100dvh` shell that does not scroll, so those
+   47.5px go straight to the conversation pane below it - which is the entire
+   point of the fold. See `docs/plans/line-collapse/plan.md`.
+
+   Every rule here is a SUBTRACTION from the expanded strip above rather than a
+   second strip: same stages, same tones, same buttons, same drawers. That is what
+   keeps one component honest at two densities - there is no branch here that could
+   drift from the branch above, because there is no second set of stage rules.
+
+   The height is as fixed as expanded's is. Nothing below is content-sized: the
+   sentences are gone from the DOM entirely, the urgent readout is `nowrap` and
+   ellipsizes, and the row is `align-items: center` on a single line box. A wordy
+   workflow name cannot grow this band any more than it can grow the other one.
+   ============================================================================ */
+.line.is-condensed {
+  align-items: center;
+  /* 7px against expanded's 12px. The band is a single 22px line box, and expanded's
+     padding was sized for a two-line card with its own 11px inset - carrying it over
+     would have spent a third of the saving on air. */
+  padding: 7px 22px;
+  gap: 2px;
+}
+/* Flat, not a card. Six bordered panels on one row read as six buttons in a toolbar
+   and cost 2px of border plus 26px of padding each; the divider carries the
+   separation instead. The stage is still a button and still hoverable - `:hover`
+   below gives it back a surface, which is what keeps it feeling pressable. */
+.line.is-condensed .line-stage {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 9px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 7px;
+}
+.line.is-condensed .line-stage:hover {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+/* Amber keeps a filled chip rather than only a border. At one row a 1px amber border on
+   a transparent segment is a thin outline among five other outlines; a tint is what makes
+   "this one needs you" survive the loss of the sentence that used to say so. */
+.line.is-condensed .line-stage.tone-attention {
+  background: color-mix(in oklab, var(--attention) 11%, transparent);
+  border-color: color-mix(in oklab, var(--attention) 38%, var(--border));
+}
+/* `margin-left: auto` pushed the count to the right edge of a full-width card. On one
+   row the count sits directly beside the name it belongs to, or six numbers drift away
+   from six labels and the row stops being readable left to right. */
+.line.is-condensed .ls-count {
+  margin-left: 0;
+  font-size: 12.5px;
+}
+
+/* The divider between segments. Replaces `.line-wire`, which needs 26px of width and a
+   second line to sit beside - see the component for why the wires go first. */
+.ls-div {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+/* The promoted urgent readout: the amber stages' sentences, and nothing on a calm fleet.
+   Right-aligned, away from the six segments, so it reads as a remark about the strip
+   rather than as a seventh stage - but the `auto` margin that does that lives on the
+   CARET after it, not here, so that a calm fleet with no readout still pins the caret to
+   the edge. `min-width: 0` with the ellipsis on the items is what holds the band's height
+   against a long workflow name. */
+.ls-urgent {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  /* Wide enough that two stages never read as one list. The daemon separates CLAUSES with
+     ` · `, so anything at that scale here would be ambiguous with the sentences it sits
+     between - this gap is the delimiter, and it has to be bigger than the one inside. */
+  gap: 16px;
+  padding-left: 14px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--attention);
+  overflow: hidden;
+}
+/* Each amber stage's own sentence. `min-width: 0` on the item as well as the row is what
+   lets the LAST one ellipsize rather than the row overflowing - a flex item's floor is its
+   content width, so without it a long workflow name pushes the caret off the end. */
+.ls-urgent-item {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The glyph ties the sentence back to its segment, which is the whole reason the readout is
+   per stage rather than one joined string. Dimmed against the sentence so it reads as an
+   attribution mark and not as the first word. */
+.ls-urgent-glyph {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: color-mix(in oklab, var(--attention) 72%, transparent);
+}
+
+/* The fold caret. Rendered at BOTH densities - it is how the strip is condensed as well
+   as how it is expanded - so it is a flex item of the nav rather than of the condensed
+   row, and it must not stretch: `align-self: center` keeps it a 24px control beside an
+   86px card as well as beside a 22px line. */
+.ls-fold {
+  flex: none;
+  align-self: center;
+  /* On the CARET, not on the readout beside it, and that is the whole placement rule for
+     the right end of the row. The caret is the last item either way, so one `auto` here
+     right-aligns the pair when there is a readout AND pins the caret to the edge when
+     there is not - a calm fleet used to leave it floating mid-row beside Shipped with the
+     rest of the band empty. Two `auto`s would have split the free space between them and
+     stranded the readout in the middle. */
+  margin-left: auto;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+.ls-fold:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+/* Expanded overrides the `auto` above with a real gap. The six stages are `flex: 1 1 0`
+   there and consume every spare pixel, so `auto` has nothing to distribute and collapses
+   to zero - which puts the caret flush against Shipped's border. Condensed is the only
+   density with free space for the `auto` to do anything with. */
+.line:not(.is-condensed) .ls-fold {
+  margin-left: 12px;
+}
+
+/* Narrow: the readout goes before the segments do. It is a remark, and six stages
+   squeezed past their counts is the opposite trade - the same rule the wires follow. */
+@media (max-width: 1000px) {
+  .ls-urgent {
     display: none;
   }
 }

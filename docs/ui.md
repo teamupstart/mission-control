@@ -1,9 +1,25 @@
 # The Line (the pipeline strip above the fleet)
 
-A permanent ~90px strip sits above every fleet layout: **intake → backlog → working → review
+A permanent strip sits above every fleet layout: **intake → backlog → working → review
 → decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
 sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
 it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+
+It draws at one of two **densities**, and the shipped default is the shorter one:
+
+| Density | Band | What it draws |
+|---------|------|---------------|
+| **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
+| **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
+
+The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
+two is handed straight to the conversation pane below - about 11% more of the window on a
+900px-tall display. Condensing hides no facts: every count, colour and drawer is unchanged,
+and each stage's sentence stays in its tooltip and in its accessible name.
+
+Fold it with the **caret at the right of the strip**, with <kbd>Shift+L</kbd> from the fleet,
+or from **Settings → Display → The Line**. All three write one per-machine preference
+(`app_config.ui.lineDensity`), so it survives a reload and cannot disagree with itself.
 
 | Stage | The count is | The sentence says | Amber when |
 |-------|--------------|-------------------|------------|
@@ -50,9 +66,12 @@ reads it:
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble, with confirmed cancellation; its header also counts unacknowledged failed runs until they are dismissed from the full ensemble page |
 | ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](library-and-line.md#the-ship-log) |
 
-Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
-clipped to one row so the strip's height never moves. The flowing dots on the wires respect
-`prefers-reduced-motion`: with it set, the wires stay and the dots go.
+Hovering a stage gives you what it is for, plus its sentence in full - at either density, and
+when expanded the visible line is clipped to one row so the strip's height never moves. The
+strip holds a fixed height **per density**: what changes the band is pressing the caret, never
+a workflow name getting longer or a stage going quiet. The flowing dots on the wires respect
+`prefers-reduced-motion`: with it set, the wires stay and the dots go - condensed draws no
+wires at all, so the setting does not arise there.
 
 ### The stage drawers
 
@@ -469,8 +488,7 @@ then Actions, then Commands, then Workflows, because a workflow is built out of 
 three and the builder's node palette is exactly those three assets. The Library's own shelf
 order is left alone; a page reordered to match a tour would be the tour dictating the product.
 
-1. **The Library** opens `#/library` and names the six shelves by the question each one heads,
-   reading those questions from the shelf registry rather than restating them.
+1. **The Library** opens `#/library` and names the six shelves with a short description of each.
 2. **The Persona library** opens a shipped built-in Persona and spotlights the rail's System,
    Built-in and Yours groups.
 3. **What a Persona is** spends two beats on one lesson: the property chips, then the guidance
@@ -479,7 +497,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    edit** - the ownership rule stated by the control rather than by a sentence.
 5. **The Action library** opens a shipped built-in Session action on the same rail and
    workspace grammar.
-6. **The contract, and the instruction** spotlights the labelled **Session action contract**
+6. **Optional: Associated a skill to an action** spotlights the labelled **Session action contract**
    region - the `requires skill` and `completes when` chips and the sentence they form - and
    then the instruction editor.
 7. **A Command slot** opens `#/library/commands/test` and spotlights the default rule.

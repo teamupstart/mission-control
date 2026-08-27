@@ -11,6 +11,14 @@ the full comparison and the boundaries this section summarizes.
 **Nothing here is required to run Mission Control**, and a machine without UpstartClaw
 installed behaves exactly as the rest of this README describes.
 
+Jira task sources can also select **UpstartClaw Claude skill** as their query method. That
+background path invokes `upstartclaw-core:working-with-jira`, discovers the Atlassian JQL search
+tool, and calls it directly with the stored JQL. It is read-only, limited to Upstart Jira, and
+blocked until the setup below is complete. Because the installed skill and MCP plugin live in
+Claude user settings, every **Check it works** call and scheduled sweep also loads those settings
+and can run user-level Claude hooks. Selecting the UpstartClaw query method is explicit consent to
+that unattended behavior. The default local Jira query method is unchanged.
+
 ### It already composes
 
 A dispatched session inherits your plugins either way it launches. A **terminal** dispatch

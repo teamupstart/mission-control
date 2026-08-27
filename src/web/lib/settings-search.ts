@@ -109,6 +109,26 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "line-density",
+    label: "Line density",
+    description: "Fold the pipeline strip to one row, or expand it to read each stage's sentence.",
+    category: "display",
+    anchor: "display/line-density",
+    keywords: [
+      "line",
+      "strip",
+      "pipeline",
+      "collapse",
+      "condense",
+      "fold",
+      "expand",
+      "vertical space",
+      "real estate",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     // A `toggle` rather than a `jump`, unlike the Board card checklist below: this is one
     // boolean, so the palette can flip it from the results list without opening the page.
     id: "board-grouping",

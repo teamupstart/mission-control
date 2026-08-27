@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -69,9 +69,10 @@ export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
  */
 export function writeConductorNodeRuntime(home: string, version: string): string {
   const bin = join(home, "bin", "node");
+  const nextBin = join(home, "bin", ".node-next");
   mkdirSync(join(home, "bin"), { recursive: true });
   writeFileSync(
-    bin,
+    nextBin,
     [
       `#!${process.execPath}`,
       'const { spawnSync } = require("node:child_process");',
@@ -89,7 +90,11 @@ export function writeConductorNodeRuntime(home: string, version: string): string
       "",
     ].join("\n"),
   );
-  chmodSync(bin, 0o755);
+  chmodSync(nextBin, 0o755);
+  // Linux refuses an in-place write while an earlier probe still executes this shim.
+  // Replacing the directory entry keeps the old inode alive for that process and gives
+  // subsequent probes the newly selected version without an ETXTBSY race.
+  renameSync(nextBin, bin);
   return bin;
 }
 

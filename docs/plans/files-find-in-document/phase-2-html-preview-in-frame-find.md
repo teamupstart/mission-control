@@ -96,9 +96,16 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   `Range` objects over rendered text nodes and registers them in `CSS.highlights`, styled by
   `::highlight()` rules added to the existing injected style block (`style-src 'unsafe-inline'`
   already permits it, so this adds no policy). Nothing is inserted into the document, so
-  finding 3's block paths keep resolving and comment mode is unaffected. If the API is absent
-  at runtime, the bridge reports zero and the parent keeps Phase 1's block reveal - a
-  degradation, never a DOM mutation.
+  finding 3's block paths keep resolving and comment mode is unaffected. If the API is absent at
+  runtime the bridge does not mutate the DOM instead - it declares that it cannot highlight, and
+  the parent keeps Phase 1's block reveal.
+- **Incapacity is declared, never reported as a result.** The readiness message carries whether
+  this frame can highlight, and the parent retires the block reveal and the bar's note **only
+  when readiness says it can**. A frame that cannot highlight must not answer with a count of
+  zero: zero is a claim about the document, and a query that does match would then get no
+  highlight, no block reveal, and a number saying there is nothing to find - worse than either
+  mode alone. The result message reports results; the ready message reports capability. Keeping
+  those two apart is what makes the fallback reachable at all.
 - **Only text the frame can actually paint is counted.** A text-node walk is not a rendered-text
   walk, and the difference is the whole promise of this phase (finding 7). Two gates, in this
   order:
@@ -137,7 +144,8 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    - add `PREVIEW_FIND_MESSAGE` (parent to frame: query, case flag, current index, or a clear),
      `PREVIEW_FIND_RESULT_MESSAGE` (frame to parent: count, current index), and
      `PREVIEW_FIND_READY_MESSAGE` (frame to parent, posted by the find script as its last act -
-     never reuse the comment bridge's ready message, finding 5);
+     never reuse the comment bridge's ready message, finding 5 - carrying whether this frame can
+     highlight, so the parent can decide whether the fallback is still needed);
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
      which walks text nodes **through the two gates in the decision above** - skipping
      non-rendered containers and invisible subtrees, then dropping any range with no client
@@ -159,9 +167,11 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    - accept the result message (verifying `event.source` is the preview frame, as the block
      handler already does) and use its count and index for HTML documents;
    - treat the keyboard bridge's exit action as "close find" while find is open (finding 6);
-   - drop the block-reveal call and the bar's note once **the find bridge specifically** has
-     reported ready; keep both as the fallback path until then, and again if a reload has not
-     yet re-announced.
+   - drop the block-reveal call and the bar's note only once **the find bridge specifically** has
+     reported ready **and that report says it can highlight**. Keep both until then, again after
+     a reload that has not yet re-announced, and permanently in a frame that declared it cannot
+     highlight - which is the one path where Phase 1's behaviour is the finished behaviour rather
+     than a stopgap.
 3. **`test/html-preview.test.ts`**: extend the hash recomputation to the fourth script, and
    assert the CSP lists exactly four hashes and still carries `default-src 'none'`,
    `connect-src 'none'` and no `allow-same-origin`.
@@ -185,6 +195,9 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   `file-default-view.spec.ts` is the precedent). An attribute-only case is not sufficient
   coverage here and must not be mistaken for it - see finding 7.
 - A Scouts spec run to confirm an archived report still renders and comments unchanged.
+- A case where the frame declares it cannot highlight: the bar keeps its note, the count stays
+  source-derived, and stepping still reveals the block. Reachable in a test by having the bridge
+  report the capability as false rather than by finding a browser without the API.
 - `npm run typecheck`, `npm run lint`, `npm test`, then `npm run build && npm run test:e2e`.
 
 ## Merge and exit criteria
@@ -197,6 +210,9 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   second keystroke, and the highlight returns by itself after an edit reloads the `srcDoc`.
 - No behaviour keys off the comment bridge's ready message. Injecting the find script in any
   position must not change the outcome.
+- With highlighting unavailable, a matching query still gets Phase 1's block reveal, its note,
+  and its source-derived count. There is no state in which a reader gets no highlight, no block
+  reveal, and a count of zero.
 - The CSP admits exactly four hashes, carries no new directive relaxation, and the sandbox
   attribute is unchanged.
 - HTML comments still anchor and resolve while find is open, with a highlight active.
@@ -245,3 +261,11 @@ another script's ready signal for it.
   decisions, both implementation steps, the exit criteria and the downstream handoff were
   amended together. Phase 1 needed no change - it posts nothing into the frame beyond the
   existing target message, which is request-response and carries no state.
+- Review round 3 (PR #818): the decisions promised Phase 1's block reveal when the CSS Custom
+  Highlight API is unavailable, while the implementation step retired that fallback the moment
+  the bridge reported ready. A frame without the API announces readiness too, so the reader
+  would have been left with no highlight, no block reveal, and a count of zero on a query that
+  matches. Readiness now carries the capability, the fallback is retired only on a report that
+  says it can highlight, and incapacity is declared on the ready message rather than disguised
+  as a zero result. Recorded in the decisions, both message and parent steps, the exit criteria
+  and the test list.

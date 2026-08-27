@@ -304,8 +304,13 @@ ownership, so the two are strictly ordered.</figcaption>
   <code>src/web/lib/htmlPreview.ts</code> nor the CSP; Phase 2 adds exactly one script and one
   hash and changes no existing script body.</li>
   <li><strong>The block reveal survives as a fallback.</strong> Phase 2 keeps it for the window
-  before the find bridge announces its own readiness - never another script&rsquo;s - and for a
-  runtime without the CSS Custom Highlight API.</li>
+  before the find bridge announces its own readiness - never another script&rsquo;s - and
+  permanently in a frame whose readiness declares it cannot highlight. Capability is declared on
+  the ready message; incapacity is never reported as a count of zero.</li>
+  <li><strong>A chord is only taken by a surface that can answer it.</strong> The Mod-f claim is
+  installed only where a caller supplies a find owner, so the three <code>FileEditor</code> hosts
+  without one - Persona, Session action, Foreman profile - keep exactly the behaviour they have
+  today rather than losing the chord to a bar that does not exist.</li>
   <li><strong>A reported count equals what was highlighted.</strong> Wherever a count comes
   from, it may only include matches that surface renders. Phase 1 keeps HTML honest with a note
   because its count is source-derived; Phase 2 earns the number by counting only paintable

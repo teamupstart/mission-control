@@ -116,8 +116,13 @@ the two are strictly ordered. Merge order is 1 then 2.
   `src/web/lib/htmlPreview.ts` nor the CSP; Phase 2 adds exactly one script and one hash and
   changes no existing script body.
 - **The block reveal survives as a fallback.** Phase 2 keeps it for the window before the
-  find bridge announces its own readiness - never another script's - and for a runtime without
-  the CSS Custom Highlight API.
+  find bridge announces its own readiness - never another script's - and permanently in a frame
+  whose readiness declares it cannot highlight. Capability is declared on the ready message;
+  incapacity is never reported as a count of zero.
+- **A chord is only taken by a surface that can answer it.** The Mod-f claim is installed only
+  where a caller supplies a find owner, so the three `FileEditor` hosts without one - Persona,
+  Session action, Foreman profile - keep exactly the behaviour they have today rather than
+  losing the chord to a bar that does not exist.
 - **A reported count equals what was highlighted.** Wherever a count comes from, it may only
   include matches that surface renders. Phase 1 keeps HTML honest with a note because its
   count is source-derived; Phase 2 earns the number by counting only paintable ranges.

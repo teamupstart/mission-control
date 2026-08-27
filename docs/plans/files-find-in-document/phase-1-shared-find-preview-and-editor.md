@@ -34,6 +34,9 @@ None. This is the first phase.
   document reader gets the bar, the count and the ring.
 - A new rebindable keybinding action. The submitted decision is a contextual claim.
 - Find in the Compare (conflict) panes, the image preview, or the diff viewer.
+- Find in the other three `FileEditor` hosts - the Persona, Session action and Foreman profile
+  editors. The adapter is built so they can have it, but giving each one a find owner is its own
+  change; they keep today's behaviour here.
 - Regular expressions or whole-word matching. Literal find, as `buildMatcher` already is.
 
 ## Repository findings
@@ -143,7 +146,12 @@ Verified against the checkout before writing this phase.
    - a `StateEffect` and `StateField` pair following `commentModel`'s pattern (finding 4),
      with decorations built from the model's offsets;
    - a highest-precedence keymap claiming Mod-f, calling the callback through a ref and
-     returning true so `searchKeymap` never sees the chord;
+     returning true so `searchKeymap` never sees the chord - **installed only when the caller
+     supplies a find owner.** `FileEditor` has four hosts, and three of them (`PersonaEditor`,
+     `SessionActionEditor`, `ForemanProfileEditor`) have no find session. Claiming the chord
+     unconditionally would swallow it there and suppress CodeMirror's panel at the same time,
+     leaving those three editors with no find at all where they have a working one today. A
+     chord is only taken by a surface that can answer it;
    - scroll the current hit into view through the existing `scrollTo` nonce mechanism
      (:440-462) rather than adding a second scroll path.
 6. **`src/web/components/FileWorkspace.tsx`**. Own the session:
@@ -187,7 +195,10 @@ Verified against the checkout before writing this phase.
 - Cmd+F and Ctrl+F over a Markdown preview and over the Editor both open the bar, count,
   mark and step; the Conversation tab never opens as a side effect.
 - The query, case flag and count survive the Preview/Editor toggle on the same file.
-- No CodeMirror search panel can be opened by any chord.
+- No CodeMirror search panel can be opened from a Files document, in either mode.
+- The Persona, Session action and Foreman profile editors are unchanged: Cmd+F there still does
+  exactly what it does today, proving the Mod-f claim is installed only with a find owner. A
+  swallowed chord in those three editors is a regression, not a partial rollout.
 - Find works in the extracted Files window.
 - An HTML preview reveals and outlines the block containing the current match, and the bar
   says matches are located by block.
@@ -219,3 +230,10 @@ Phase 2 may rely on, and must not change:
   values (step 2), because Phase 2 replaces the source of that number for HTML documents with
   the frame's own report. Moving the decision here rather than working around it later is why
   Phase 2 needs no edit to the bar.
+- Review round 3 (PR #818): the Mod-f claim was specified as unconditional, which would have
+  swallowed the chord in the three other `FileEditor` hosts - Persona, Session action and
+  Foreman profile - while also suppressing CodeMirror's panel there, leaving them with no find
+  at all where they have a working one today. It is now installed only when a caller supplies a
+  find owner, those three are named as a non-goal, and an exit criterion asserts their behaviour
+  is unchanged. The source plan's "generalises for free" sentence was corrected in the same
+  pass: the adapter is reusable by those hosts, not automatically inherited by them.

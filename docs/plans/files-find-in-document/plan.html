@@ -322,8 +322,12 @@ same chord everywhere else.</figcaption>
   and in the console and board details alike. No new <code>ActionId</code>: the ids key persisted
   overrides in <code>app_config.ui.keybindings</code> and are append-only, and one chord meaning
   &ldquo;find in what I am reading&rdquo; needs no second row in the Keyboard panel.</p>
-  <p>This also generalises for free: the Persona, Session action and Foreman profile editors all
-  host <code>FileEditor</code>, so they inherit the editor adapter&rsquo;s find.</p>
+  <p>The editor adapter is reusable rather than automatic. The Persona, Session action and Foreman
+  profile editors all host <code>FileEditor</code>, so the same find can be given to them later -
+  but each needs a find owner of its own (a session and a bar), and until it has one it keeps
+  exactly the behaviour it has today. The Mod-f claim is therefore installed only where a caller
+  supplies that owner: a chord taken by a surface that cannot answer it is worse than an unstyled
+  panel, because it leaves those three editors with no find at all.</p>
 </div>
 
 <figure>

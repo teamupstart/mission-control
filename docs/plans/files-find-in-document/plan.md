@@ -125,8 +125,12 @@ console and board details alike. No new `ActionId`: the ids key persisted overri
 `app_config.ui.keybindings` and are append-only, and one chord meaning "find in what I am
 reading" needs no second row in the Keyboard panel.
 
-This also generalises for free: the Persona, Session action and Foreman profile editors
-all host `FileEditor`, so they inherit the editor adapter's find.
+The editor adapter is reusable rather than automatic. The Persona, Session action and Foreman
+profile editors all host `FileEditor`, so the same find can be given to them later - but each
+needs a find owner of its own (a session and a bar), and until it has one it keeps exactly the
+behaviour it has today. The Mod-f claim is therefore installed only where a caller supplies
+that owner: a chord taken by a surface that cannot answer it is worse than an unstyled panel,
+because it leaves those three editors with no find at all.
 
 ## Alternatives considered
 

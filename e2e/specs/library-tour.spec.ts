@@ -33,7 +33,7 @@ const TITLES = [
   "What a Persona is, and what configures it",
   "Editing one",
   "The Action library",
-  "The contract, and the instruction",
+  "Optional: Associated a skill to an action",
   "A Command slot",
   "Overrides, and saving one",
   "The builder",
@@ -52,7 +52,7 @@ const BEATS: Record<string, number> = {
   "What a Persona is, and what configures it": 2,
   "Editing one": 1,
   "The Action library": 1,
-  "The contract, and the instruction": 2,
+  "Optional: Associated a skill to an action": 2,
   "A Command slot": 1,
   "Overrides, and saving one": 2,
   "The builder": 1,
@@ -291,9 +291,9 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(dialog.getByText("Author what runs", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("progressbar", { name: "Author what runs tour progress" }))
     .toHaveAttribute("aria-valuenow", "1");
-  // The six shelf labels and questions are authored with this stage in tours/library.md.
-  await expect(dialog).toContainText("Who does the reviewing?");
-  await expect(dialog).toContainText("What counts as done?");
+  // The six shelf labels and descriptions are authored with this stage in tours/library.md.
+  await expect(dialog).toContainText("Missions · Sources");
+  await expect(dialog).toContainText("Post-work verification");
   // And they are readable, not merely present: the longest shelf name is two words and a
   // separator, which a fixed-width term column draws straight through its own question.
   await expectDetailRowsReadable(dialog);
@@ -342,7 +342,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
     .toHaveCSS("outline-width", "2px");
   await dialog.getByRole("button", { name: "Next" }).click();
 
-  dialog = step(dashboard, "The contract, and the instruction");
+  dialog = step(dashboard, "Optional: Associated a skill to an action");
   await expect(dialog).toContainText("Step 6 of 15");
   const contract = dashboard.getByRole("region", { name: "Session action contract" });
   await expect(contract).toHaveCSS("outline-width", "2px");
@@ -351,7 +351,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(contract).toContainText("never because the session said so");
   await shoot(dashboard, "03-action-contract");
   await dialog.getByRole("button", { name: "Next" }).click();
-  dialog = step(dashboard, "The contract, and the instruction");
+  dialog = step(dashboard, "Optional: Associated a skill to an action");
   await expect(dashboard.getByRole("region", { name: "Session action instruction" }))
     .toHaveCSS("outline-width", "2px");
   await dialog.getByRole("button", { name: "Next" }).click();

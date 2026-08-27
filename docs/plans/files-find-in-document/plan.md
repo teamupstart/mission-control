@@ -60,8 +60,13 @@ too. Nothing here grows a second search model.
 ## What the work must deliver
 
 - Cmd+F over a document searches **that document** and never navigates away from Files.
-- One query, one count, one case-sensitivity flag, surviving the Preview <-> Editor
-  toggle, so switching modes keeps your place instead of restarting your search.
+- One query and one case-sensitivity flag, surviving the Preview <-> Editor toggle, so
+  switching modes keeps your search instead of restarting it. The **count is per surface**,
+  because the two surfaces show different strings: a markdown document's rendered text has
+  fewer occurrences than its source (a link destination in `[label](matching-url)` renders to
+  nothing), and a shared count would offer the reader matches Preview cannot highlight or step
+  to. Position crosses the toggle by source line - the same neighbourhood, not the same
+  character.
 - Enter / Shift+Enter step the ring and wrap, Escape closes, reopening keeps the last
   query. The conversation's bar already behaves this way and is the reference.
 - Works in the extracted Files window (`FileWindow.tsx`). That window is an `Overlay`,

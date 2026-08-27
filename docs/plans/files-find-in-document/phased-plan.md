@@ -107,9 +107,15 @@ the two are strictly ordered. Merge order is 1 then 2.
 
 ## Cross-phase contracts
 
-- **One matcher.** `documentFind.ts` owns literal matching, hit keys and the ring. Phase 2's
-  bridge reports positions it can highlight; it does not introduce a second policy for what
-  counts as a match.
+- **One matcher, applied per surface to the string that surface renders.** `documentFind.ts`
+  owns literal matching, hit keys and the ring. The Editor searches source; Markdown preview's
+  hits are the marks the rehype plugin produced; Phase 2's frame reports what it can highlight.
+  Three surfaces, one policy for what counts as a match, and never one hit list shared by two
+  surfaces showing different text - a markdown link destination is a source occurrence that
+  renders to nothing, so a shared count would offer a match nothing can reach.
+- **Hit keys are namespaced by surface**, so a rendered key and a source key can never be
+  mistaken for one another, and position crosses the Preview/Editor toggle by source line
+  rather than by a character mapping that the markdown transform does not preserve.
 - **The bar takes supplied numbers.** Count and current position are props, so the source of
   the HTML count can move from source text (Phase 1) to the frame's report (Phase 2) without
   touching `FindBar`.
@@ -136,9 +142,11 @@ the two are strictly ordered. Merge order is 1 then 2.
   hash test extended in Phase 2.
 - One Playwright spec, `e2e/specs/file-find-in-document.spec.ts`, created in Phase 1 and
   extended in Phase 2, covering: the chord not stealing the Conversation tab, count and
-  marks in Markdown preview, the ring stepping, the query and count surviving the
-  Preview/Editor toggle, and (Phase 2) an HTML document where the query also appears in an
-  attribute, counted only where it is visible.
+  marks in Markdown preview, the ring stepping, the query and case flag surviving the
+  Preview/Editor toggle with each surface's count re-derived over what it shows, a query
+  matching only a link destination counting 0 in Preview and 1 in the Editor, and (Phase 2) an
+  HTML document where the query also appears in an attribute, a body `style`, a `script`, the
+  `title` and hidden subtrees, counted only where it is visible.
 - `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build && npm run test:e2e` on
   both phases, per the repository's definition of done.
 

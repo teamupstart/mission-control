@@ -249,8 +249,13 @@ same chord everywhere else.</figcaption>
 <ul>
   <li>Cmd+F over a document searches <strong>that document</strong> and never navigates away from
   Files.</li>
-  <li>One query, one count, one case-sensitivity flag, surviving the Preview &harr; Editor toggle,
-  so switching modes keeps your place instead of restarting your search.</li>
+  <li>One query and one case-sensitivity flag, surviving the Preview &harr; Editor toggle, so
+  switching modes keeps your search instead of restarting it. The <strong>count is per
+  surface</strong>, because the two surfaces show different strings: a markdown document&rsquo;s
+  rendered text has fewer occurrences than its source (a link destination in
+  <code>[label](matching-url)</code> renders to nothing), and a shared count would offer the
+  reader matches Preview cannot highlight or step to. Position crosses the toggle by source
+  line - the same neighbourhood, not the same character.</li>
   <li>Enter / Shift+Enter step the ring and wrap, Escape closes, reopening keeps the last query.
   The conversation&rsquo;s bar already behaves this way and is the reference.</li>
   <li>Works in the extracted Files window (<code>FileWindow.tsx</code>). That window is an

@@ -5,8 +5,9 @@
 Pressing Cmd+F (or Ctrl+F) while a document is on screen in the Files workspace opens a
 find bar over that document, counts the matches, marks them, and steps between them with
 Enter / Shift+Enter - in **Markdown preview** and in the **Editor**, from one find session
-whose query, case flag and count survive the Preview/Editor toggle. HTML previews jump to
-the block containing the match. The chord stops switching the detail to Conversation.
+whose query and case flag survive the Preview/Editor toggle, each surface counting the string
+it actually shows. HTML previews jump to the block containing the match. The chord stops
+switching the detail to Conversation.
 
 Value: the documents this dashboard is built to read - plans, reports, source files - become
 searchable with the gesture every reader already has, and the app gains exactly one find
@@ -110,6 +111,26 @@ Verified against the checkout before writing this phase.
   documents ("matches located by block") because the count is taken over source text and can
   include matches the rendered page does not show. Phase 2 removes both the note and the
   caveat.
+- **Each surface's model is the string that surface renders.** One matcher, applied per
+  surface - not one hit list shared by two surfaces that show different text. The Editor shows
+  source, so its hits are offsets into `buffer.text`. Markdown preview shows rendered text, so
+  its hits are the marks the rehype plugin actually produced, reported back in document order.
+  A markdown document genuinely contains occurrences that render to nothing - a link
+  destination in `[label](matching-url)`, a reference definition, a fence info string, an
+  emphasis marker - and a shared source-derived count would have offered the reader matches
+  Preview cannot highlight or step to, breaking the invariant this whole feature rests on. So
+  the count is per surface, and each one is honest about what it shows. Hit keys are namespaced
+  by surface, so a rendered key and a source key can never be mistaken for one another.
+- **A source-to-rendered offset mapping is rejected, not deferred.** `remark` and `rehype` drop
+  emphasis markers, decode entities, rewrite autolinks and hoist reference definitions, so no
+  exact character mapping survives the transform. Only block-level `position` data is reliable,
+  which is why it is used for the coarse job below and for nothing finer.
+- **Position is carried across the toggle best-effort, and is not claimed to be exact.** The
+  current mark's block carries a source line range (`blockRangeFromNode`, already used for
+  comments), so switching to the Editor lands on the first hit at or after that line, and
+  switching back lands on the first mark in or after the Editor hit's line. The same
+  neighbourhood, not the same character - which is what these two surfaces can honestly promise
+  each other.
 
 ## Implementation steps
 
@@ -117,9 +138,13 @@ Verified against the checkout before writing this phase.
    `splitForHighlight`, `hitsInWindow`, `stepIndex` and `FindSegment` here unchanged;
    re-export them from `find.ts` so the transcript's imports and
    `test/conversation-find-model.test.ts` keep working. Add:
-   - a document find session shape holding the query, the case flag and the index;
-   - `documentHits(text, query, opts)` returning hits of `{ key, start, end, line }`, with
-     keys stable for a given query so React and the current-hit ring survive a re-render;
+   - a document find session shape holding the query, the case flag and the index. It does
+     **not** hold a hit list: hits belong to whichever surface is on screen, because the two
+     surfaces search different strings;
+   - `documentHits(text, query, opts, surface)` returning hits of `{ key, start, end, line }`
+     over **whatever string it is given** - source for the Editor, rendered text for a caller
+     that has one - with keys stable for a given query and namespaced by surface, so React, the
+     ring and the current-hit lookup cannot cross surfaces;
    - `hitLine(text, offset)` for the source line a hit sits on, which the HTML and editor
      jumps both need.
 2. **`src/web/components/FindBar.tsx`** (new). Lift the bar's markup out of
@@ -136,6 +161,9 @@ Verified against the checkout before writing this phase.
    `mark` element carrying `find-hit` and a find key, plus `is-current` on the active key.
    Skip nothing; a hit that straddles a highlight span boundary is clipped into both halves
    under one key, per finding 6.
+   **The plugin is Preview's model, not only its renderer.** It reports the keys it marked, in
+   document order, so the bar's count is literally the number of marks on screen and the ring
+   steps only over marks a reader can reach. Nothing derives Preview's count from source text.
 4. **`src/web/components/Markdown.tsx`**. Add an optional find prop (query, case flag,
    current key), thread it into the plugin list - restructuring `rehypePlugins` into a built
    array rather than nested ternaries - and add it to `markdownPropsEqual` per finding 5.
@@ -160,8 +188,11 @@ Verified against the checkout before writing this phase.
    - extend the existing capture-phase keydown effect: accept the find chord even when
      `extracted` (finding 9) and even when the target is a typing element, then
      `preventDefault` and `stopImmediatePropagation` so App stands down (finding 1);
-   - compute hits over `buffer.text` once, pass marks to `Markdown` in Preview and to
-     `FileEditor` in Editor, and render `FindBar` anchored in `.file-content`;
+   - in Editor, compute hits over `buffer.text` and hand them to `FileEditor`; in Markdown
+     preview, pass the query to `Markdown` and take the count and ordered keys back from what
+     the plugin marked. Never feed source hits to Preview or rendered hits to the Editor. The
+     bar shows the active surface's count, and position crosses the toggle by line as the
+     decisions describe. Render `FindBar` anchored in `.file-content`;
    - Escape closes find and must not also peel the detail layer - the same
      `stopPropagation` the conversation's bar performs;
    - HTML documents: on each step, resolve the current hit's line with
@@ -178,15 +209,18 @@ Verified against the checkout before writing this phase.
   the zero-length guard, clipped straddling hits, and `hitLine` at file start, end and
   across CRLF.
 - `test/markdown-find-marks.test.ts` (new): `renderToStaticMarkup` over the plugin's output -
-  the number of `mark.find-hit` elements equals the model's count, `is-current` appears
-  exactly once, and a match inside a fenced code block still marks.
+  the number of `mark.find-hit` elements equals the count the plugin reported, `is-current`
+  appears exactly once, a match inside a fenced code block still marks, and a query that occurs
+  **only** in a link destination, an image URL, a reference definition or a fence info string
+  produces no marks and a reported count of zero.
 - `test/file-editor-find.test.ts` (new), or an addition to the existing editor markup test:
   decoration ranges for a known document and query.
 - `e2e/specs/file-find-in-document.spec.ts` (new): open Files on a markdown fixture, press
   Meta+f, assert the searchbox, fill a query, assert the `mark.find-hit` count and text,
-  press Enter and assert `is-current` moved, switch to Editor and assert the same query and
-  count survive, assert the Conversation tab did not steal the keystroke, press Escape and
-  assert the bar closed. Mirror `conversation-terminal-view.spec.ts:249-259`, which is the
+  press Enter and assert `is-current` moved, switch to Editor and assert the query and case
+  flag survive with the count re-derived over source, assert the Conversation tab did not steal
+  the keystroke, press Escape and assert the bar closed. Include a fixture whose query appears
+  only in a link destination, asserting 0 in Preview and 1 in the Editor. Mirror `conversation-terminal-view.spec.ts:249-259`, which is the
   existing precedent for asserting find in a browser.
 - `npm run typecheck`, `npm run lint`, `npm test`, then `npm run build && npm run test:e2e`.
 
@@ -194,7 +228,11 @@ Verified against the checkout before writing this phase.
 
 - Cmd+F and Ctrl+F over a Markdown preview and over the Editor both open the bar, count,
   mark and step; the Conversation tab never opens as a side effect.
-- The query, case flag and count survive the Preview/Editor toggle on the same file.
+- The query and case flag survive the Preview/Editor toggle on the same file, and each
+  surface's count equals the number of marks it drew.
+- A query matching only a link destination - `[label](matching-url)` - counts 1 in the Editor
+  and 0 in Markdown preview. Both numbers are correct for what their surface shows; a Preview
+  that reported 1 would be offering a match nothing can highlight or step to.
 - No CodeMirror search panel can be opened from a Files document, in either mode.
 - The Persona, Session action and Foreman profile editors are unchanged: Cmd+F there still does
   exactly what it does today, proving the Mod-f claim is installed only with a find owner. A
@@ -208,8 +246,10 @@ Verified against the checkout before writing this phase.
 
 Phase 2 may rely on, and must not change:
 
-- `documentFind.ts`'s matcher and hit shape. It is the single matcher; the in-frame bridge
-  reports positions it can highlight, not a second count from a second matcher.
+- `documentFind.ts`'s matcher and hit shape. It is the single matcher, applied per surface to
+  the string that surface renders; the in-frame bridge reports positions it can highlight, not
+  a second count from a second matcher. Phase 2's frame-reported count is the HTML surface
+  arriving at the same rule the Markdown adapter already follows here.
 - `FindBar`'s props, including the optional note and the supplied count. Phase 2 retires the
   HTML note by passing nothing and feeds the frame's reported count through the same prop,
   neither of which requires editing the bar.
@@ -230,6 +270,17 @@ Phase 2 may rely on, and must not change:
   values (step 2), because Phase 2 replaces the source of that number for HTML documents with
   the frame's own report. Moving the decision here rather than working around it later is why
   Phase 2 needs no edit to the bar.
+- Review round 5 (PR #818): hits were specified as computed once over `buffer.text` and used by
+  both surfaces, while `rehypeFindMarks` can only mark rendered text. A query matching only a
+  link destination would have counted 1 in Preview with nothing to highlight or step to - the
+  bar offering a match the reader cannot reach, which is the exact invariant this feature rests
+  on. Each surface now models the string it renders, the plugin reports what it marked, hit keys
+  are namespaced by surface, and an offset mapping is rejected with its reasons.
+  **This changed a requirement I had written**, not only an implementation detail: "the count
+  survives the Preview/Editor toggle" was not achievable honestly, because a markdown
+  document's rendered text contains fewer occurrences than its source. The outcome, the
+  requirements list, the exit criteria and the source plan all now say the query and case flag
+  survive while each surface counts what it shows, with position carried across by line.
 - Review round 3 (PR #818): the Mod-f claim was specified as unconditional, which would have
   swallowed the chord in the three other `FileEditor` hosts - Persona, Session action and
   Foreman profile - while also suppressing CodeMirror's panel there, leaving them with no find

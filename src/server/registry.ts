@@ -1958,6 +1958,7 @@ export class Registry extends EventEmitter {
       nameSource: d.nameSource,
       state: "working",
       cwd: d.cwd,
+      workspaceRoot: d.cwd,
       gitBranch: d.gitBranch,
       gitRoot: d.gitRoot,
       repoRoot: d.repoRoot,
@@ -2185,6 +2186,7 @@ export class Registry extends EventEmitter {
       // immediately so note-keyed state never observes a synthetic-id interlude.
       state: input.initialState ?? "starting",
       cwd: input.cwd,
+      workspaceRoot: input.cwd,
       gitBranch: input.gitBranch ?? null,
       gitRoot: input.gitRoot ?? null,
       repoRoot: input.repoRoot ?? null,
@@ -2231,6 +2233,7 @@ export class Registry extends EventEmitter {
       paneDialog: null,
     };
     s.task = this.taskSummaryFor(s.id, s.cwd);
+    s.workspaceRoot = this.workspaceRootFor(s.id, s.cwd, s.runtime);
     s.note = this.noteSummaryFor(s);
     s.goal = this.goalSummaryFor(s);
     s.foremanInvite = this.foremanInviteFor(s);
@@ -6194,6 +6197,29 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * The checkout that file-facing surfaces inspect.
+   *
+   * A managed Pipeline host stays interactive and daemon-owned, so its process cwd and
+   * `Session.pipeline` remain unchanged. Only its workspace projection follows Engineer:
+   * first the exact provider run worktree once observed, otherwise the reported authoring
+   * checkout, otherwise the host cwd.
+   */
+  private workspaceRootFor(
+    sessionId: string,
+    cwd: string | null,
+    runtime: Session["runtime"],
+  ): string | null {
+    if (runtime !== "sdk") return cwd;
+    const task = this.activeTaskFor(sessionId, cwd);
+    if (task?.kind !== "pipeline" || task.sessionId !== sessionId) return cwd;
+    const link = task.pipelineRun;
+    const run = link
+      ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug))
+      : null;
+    return run?.worktree ?? task.pipelineWorkspacePath ?? cwd;
+  }
+
+  /**
    * The task a live session is running, for a server-side attribution boundary.
    *
    * The same correlation `taskSummaryFor` decorates a card with, exposed for the one caller
@@ -6303,7 +6329,14 @@ export class Registry extends EventEmitter {
   ): void {
     const key = pipelineRunKey(provider, repoRoot, slug);
     for (const session of [...this.sessions.values()]) {
-      if (session.runtime !== "terminal") continue;
+      if (session.runtime === "sdk") {
+        const workspaceRoot = this.workspaceRootFor(session.id, session.cwd, session.runtime);
+        if (session.workspaceRoot === workspaceRoot) continue;
+        const next = { ...session, workspaceRoot };
+        this.sessions.set(session.id, next);
+        this.emitSession(next);
+        continue;
+      }
       const named = session.pipeline
         ? pipelineRunKey(
             session.pipeline.provider,
@@ -6350,8 +6383,12 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s) return;
     const summary = this.taskSummaryFor(id, s.cwd);
-    if (JSON.stringify(s.task) === JSON.stringify(summary)) return;
-    const next = { ...s, task: summary };
+    const workspaceRoot = this.workspaceRootFor(id, s.cwd, s.runtime);
+    if (
+      JSON.stringify(s.task) === JSON.stringify(summary) &&
+      s.workspaceRoot === workspaceRoot
+    ) return;
+    const next = { ...s, task: summary, workspaceRoot };
     this.sessions.set(id, next);
     this.emitSession(next);
   }
@@ -8338,6 +8375,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   nameSource: byValue,
   state: byValue,
   cwd: byValue,
+  workspaceRoot: byValue,
   gitBranch: byValue,
   gitRoot: byValue,
   repoRoot: byValue,

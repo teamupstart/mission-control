@@ -151,7 +151,7 @@ function startProviderWorker(cwd: string): { name: string; cleanup: () => void }
   };
 }
 
-test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned", async ({
+test("SDK pipeline dispatch tracks the Engineer workspace without becoming provider-owned", async ({
   dashboard,
   daemon,
 }) => {
@@ -236,6 +236,13 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
         slug: "build-the-sdk-hosted-pipeline-route",
       },
     });
+  const tasks = await request<Array<{
+    id: string;
+    kind: string;
+    sessionId: string | null;
+  }>>(daemon, "/api/tasks");
+  const task = tasks.find((candidate) => candidate.kind === "pipeline");
+  expect(task?.sessionId).toMatch(/^sdk:/);
   await expect
     .poll(() => codexPrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
@@ -245,8 +252,103 @@ test("SDK pipeline dispatch invokes Engineer directly and stays provider-owned",
       "[Mission Control launch context: the reserved Pipeline run is " +
       "build-the-sdk-hosted-pipeline-route. If Engineer resumes a different existing run, " +
       "call adopt_pipeline_run with that run's slug before continuing. No call is needed " +
-      "when Engineer creates the reserved run.]",
+      "when Engineer creates the reserved run. After Engineer creates or enters its " +
+      "authoring worktree, call report_pipeline_workspace with that absolute path before " +
+      "editing files there.]",
     );
+
+  // Engineer authors the spec outside the host's fixed SDK cwd. This is the real shape
+  // behind the regression: the interactive session remains in the main checkout while the
+  // skill moves all Git-visible work into a provider-owned authoring worktree.
+  const authoring = join(daemon.repo, ".worktrees", "engineer-sdk-hosted-pipeline-route");
+  mkdirSync(join(daemon.repo, ".worktrees"), { recursive: true });
+  execFileSync(
+    "git",
+    [
+      "-C",
+      daemon.repo,
+      "worktree",
+      "add",
+      "-b",
+      "spec/sdk-hosted-pipeline-route",
+      authoring,
+      "HEAD",
+    ],
+    { stdio: "pipe" },
+  );
+  writeFileSync(join(authoring, "pipeline-change.html"), "<h1>Pipeline workspace</h1>\n");
+
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  let callerCredential: string | null = null;
+  await expect
+    .poll(() => {
+      callerCredential = codexPipelineCallerCredential(daemon);
+      return callerCredential;
+    })
+    .toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const reported = await fetch(`${daemon.baseURL}/mcp/pipelines/workspace`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": token,
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential!,
+    },
+    body: JSON.stringify({ path: authoring }),
+  });
+  expect(reported.status, await reported.text()).toBe(200);
+
+  let hostName = "";
+  await expect
+    .poll(async () => {
+      const sessions = await request<Array<{
+        id: string;
+        name: string;
+        cwd: string | null;
+        workspaceRoot?: string | null;
+        pipeline: unknown;
+      }>>(daemon, "/api/sessions");
+      const host = sessions.find((candidate) => candidate.id === task!.sessionId);
+      hostName = host?.name ?? "";
+      return host && {
+        cwd: host.cwd,
+        workspaceRoot: host.workspaceRoot,
+        pipeline: host.pipeline,
+      };
+    })
+    .toEqual({ cwd: daemon.repo, workspaceRoot: authoring, pipeline: null });
+
+  await request(daemon, "/api/ui/config", "PUT", { layout: "console" });
+  await dashboard.reload();
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .filter({ hasText: hostName })
+    .click();
+
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.locator(".detail-sub dd.mono").first()).toContainText(
+    "engineer-sdk-hosted-pipeline-route",
+  );
+  const tabs = detail.getByRole("tablist", { name: "Session detail" });
+  await tabs.getByRole("tab", { name: /Diff$/ }).click();
+  const changed = detail.getByRole("navigation", { name: "Changed files" });
+  await changed.getByRole("button", { name: /pipeline-change\.html/ }).click();
+  await detail.getByRole("button", { name: "Open in Files" }).click();
+  await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    detail
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: "pipeline-change.html" }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    detail.frameLocator('iframe[title="Preview of pipeline-change.html"]').getByRole("heading", {
+      name: "Pipeline workspace",
+    }),
+  ).toBeVisible();
+  await shoot(dashboard, "10-managed-workspace-files", detail);
 });
 
 test.describe("managed Pipeline run adoption", () => {

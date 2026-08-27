@@ -1,6 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -23,6 +31,40 @@ const {
 const { mkTask } = await import("./helpers/session-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
+
+let workspaceFixtureOrdinal = 0;
+
+function workspaceRepo(label: string): string {
+  const ordinal = workspaceFixtureOrdinal++;
+  const repoRoot = realpathSync(mkdtempSync(join(home, `${label}-${ordinal}-`)));
+  execFileSync("git", ["init", "-q", "-b", "main", repoRoot], { stdio: "pipe" });
+  writeFileSync(join(repoRoot, ".gitignore"), ".worktrees/\n");
+  execFileSync("git", ["-C", repoRoot, "add", ".gitignore"], { stdio: "pipe" });
+  execFileSync(
+    "git",
+    [
+      "-C",
+      repoRoot,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-qm",
+      "base",
+    ],
+    { stdio: "pipe" },
+  );
+  mkdirSync(join(repoRoot, ".worktrees"), { recursive: true });
+  return repoRoot;
+}
+
+function linkedWorktree(repoRoot: string, path: string): string {
+  execFileSync("git", ["-C", repoRoot, "worktree", "add", "-q", "--detach", path, "HEAD"], {
+    stdio: "pipe",
+  });
+  return realpathSync(path);
+}
 
 function fixture() {
   const registry = new Registry();
@@ -379,4 +421,181 @@ test("the adoption route rejects a different live caller", async () => {
   assert.equal(response.status, 403);
   assert.equal(registry.getTask(task.id)?.pipelineRun?.slug, "reserved-run");
   assert.equal(registry.listPipelineRuns()[0]?.slug, target.slug);
+});
+
+test("Pipeline workspace reports reject escaped locations and foreign Git ownership", () => {
+  const repoRoot = workspaceRepo("pipeline-workspace-containment");
+  const worktreesRoot = join(repoRoot, ".worktrees");
+  const valid = linkedWorktree(repoRoot, join(worktreesRoot, "engineer-valid"));
+  const outside = linkedWorktree(repoRoot, join(home, "pipeline-workspace-outside"));
+  const symlinkEscape = join(worktreesRoot, "engineer-symlink-escape");
+  symlinkSync(outside, symlinkEscape, "dir");
+
+  const foreignRepo = workspaceRepo("pipeline-workspace-foreign-owner");
+  const foreign = linkedWorktree(foreignRepo, join(worktreesRoot, "engineer-foreign"));
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const task = mkTask({
+    id: "pipeline-workspace-containment",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    pipelineRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "workspace-containment",
+    },
+  });
+  registry.upsertTask(task);
+
+  for (const [name, path] of [
+    ["same-repository worktree outside .worktrees", outside],
+    ["symlink resolving outside .worktrees", symlinkEscape],
+    ["direct child owned by another Git repository", foreign],
+  ] as const) {
+    assert.deepEqual(tasks.reportPipelineWorkspace(task.id, path), {
+      ok: false,
+      status: 409,
+      error: "the Pipeline workspace must be a direct .worktrees checkout of this task repository",
+    }, name);
+    assert.equal(registry.getTask(task.id)?.pipelineWorkspacePath ?? null, null, name);
+  }
+
+  const accepted = tasks.reportPipelineWorkspace(task.id, valid);
+  assert.equal(accepted.ok, true);
+  assert.equal(registry.getTask(task.id)?.pipelineWorkspacePath, valid);
+});
+
+test("the Pipeline workspace route rejects unauthenticated, mismatched, and conflicting callers", async () => {
+  const repoRoot = workspaceRepo("pipeline-workspace-route");
+  const workspace = linkedWorktree(repoRoot, join(repoRoot, ".worktrees", "engineer-route"));
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const host = registry.registerSdkSession({
+    id: "sdk:pipeline-workspace-route",
+    agent: "codex",
+    name: "pipeline workspace route",
+    cwd: repoRoot,
+    agentSessionId: "codex-pipeline-workspace-route",
+    gitBranch: "main",
+    gitRoot: repoRoot,
+    repoRoot,
+  });
+  const other = registry.registerSdkSession({
+    id: "sdk:pipeline-workspace-route-other",
+    agent: "codex",
+    name: "other pipeline workspace host",
+    cwd: repoRoot,
+    agentSessionId: "codex-pipeline-workspace-route-other",
+  });
+  const task = mkTask({
+    id: "pipeline-workspace-route",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    sessionId: host.id,
+    pipelineRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "workspace-route",
+    },
+  });
+  registry.upsertTask(task);
+  registry.registerManagedPipelineCaller(task.id, host.id, repoRoot, "workspace-route-valid");
+  registry.registerManagedPipelineCaller("missing-task", host.id, repoRoot, "workspace-route-missing-task");
+  registry.registerManagedPipelineCaller(task.id, other.id, repoRoot, "workspace-route-other-host");
+  registry.registerManagedPipelineCaller(task.id, host.id, join(repoRoot, "wrong"), "workspace-route-wrong-cwd");
+  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+
+  const cases = [
+    {
+      name: "unauthenticated",
+      headers: { [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-valid" },
+      status: 401,
+      error: "unauthorized",
+    },
+    {
+      name: "missing launch capability",
+      headers: { "x-harness-token": ensureToken() },
+      status: 403,
+      error: "the caller has no managed Pipeline launch capability",
+    },
+    {
+      name: "capability whose task disappeared",
+      headers: {
+        "x-harness-token": ensureToken(),
+        [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-missing-task",
+      },
+      status: 404,
+      error: "no matching Pipeline task",
+    },
+    {
+      name: "different task owner",
+      headers: {
+        "x-harness-token": ensureToken(),
+        [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-other-host",
+      },
+      status: 403,
+      error: "the caller does not own this Pipeline task",
+    },
+    {
+      name: "mismatched host cwd",
+      headers: {
+        "x-harness-token": ensureToken(),
+        [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-wrong-cwd",
+      },
+      status: 403,
+      error: "the caller does not match the managed Pipeline host",
+    },
+  ] as const;
+  for (const entry of cases) {
+    const response = await app.request("/mcp/pipelines/workspace", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...entry.headers },
+      body: JSON.stringify({ path: workspace }),
+    });
+    assert.equal(response.status, entry.status, entry.name);
+    assert.deepEqual(await response.json(), { error: entry.error }, entry.name);
+    assert.equal(registry.getTask(task.id)?.pipelineWorkspacePath ?? null, null, entry.name);
+  }
+
+  const outside = await app.request("/mcp/pipelines/workspace", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-valid",
+    },
+    body: JSON.stringify({ path: repoRoot }),
+  });
+  assert.equal(outside.status, 409);
+  assert.deepEqual(await outside.json(), {
+    error: "the Pipeline workspace must be a direct .worktrees checkout of this task repository",
+  });
+
+  const owner = mkTask({
+    id: "pipeline-workspace-route-owner",
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    pipelineWorkspacePath: workspace,
+  });
+  registry.upsertTask(owner);
+  const conflict = await app.request("/mcp/pipelines/workspace", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": ensureToken(),
+      [PIPELINE_CALLER_CREDENTIAL_HEADER]: "workspace-route-valid",
+    },
+    body: JSON.stringify({ path: workspace }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), {
+    error: `the Pipeline workspace is already owned by active task ${owner.id}`,
+  });
+  assert.equal(registry.getTask(task.id)?.pipelineWorkspacePath ?? null, null);
 });

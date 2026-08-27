@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
-import { activePaneDialog } from "@shared/session.ts";
+import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { taskPillParts } from "@shared/task.ts";
@@ -177,6 +177,7 @@ export function ConsoleDetail({
   session: Session;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
+  const workspaceRoot = sessionWorkspaceRoot(session);
   const workflowRuns = view.workflowRunsBySession?.get(session.id) ?? null;
   // The Workflows tab and the retro offer speak about ONE review; the chips and the bind
   // gate above read every one. Derived from the same list so the two cannot disagree.
@@ -552,8 +553,8 @@ export function ConsoleDetail({
             <dt>path</dt>
             {/* The tooltip carries the UNTRUNCATED path, and is the only place it is
                 readable. It goes wherever this cell goes. */}
-            <Tooltip label={session.cwd ?? "This session has no working directory"}>
-              <dd className="mono">{shortenCwd(session.cwd)}</dd>
+            <Tooltip label={workspaceRoot ?? "This session has no working directory"}>
+              <dd className="mono">{shortenCwd(workspaceRoot)}</dd>
             </Tooltip>
           </div>
         )}

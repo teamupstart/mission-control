@@ -121,7 +121,10 @@ test("the jump renders for every file, and says why when it cannot act", () => {
 
   // One control per rendered file, driven by the resolver rather than by `file.status`
   // at the call site - so "deleted" and "outside the checkout" cannot drift apart.
-  assert.match(viewer, /diffFileOpenTarget\(active, diff\.repoRoot, session\.cwd\)/);
+  assert.match(
+    viewer,
+    /diffFileOpenTarget\(active, diff\.repoRoot, sessionWorkspaceRoot\(session\)\)/,
+  );
   assert.match(viewer, /aria-disabled=\{target\.path === null\}/);
   assert.match(viewer, /label=\{target\.reason \?\? `Open \$\{file\.path\} in the Files tab`\}/);
   // `aria-disabled`, never `disabled`: a disabled button is not focusable and its tooltip

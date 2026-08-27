@@ -778,14 +778,26 @@ another live task already owning the same provider, repository, and slug. It the
 complete run link before starting the host, closing the interval in which two Mission Control
 dispatches could claim the same future run.
 
-Managed hosts also receive a launch-scoped `adopt_pipeline_run` Mission MCP tool. Engineer calls
-it only when it resumes a different existing run instead of creating the reserved slug. The tool
+Managed hosts also receive launch-scoped `adopt_pipeline_run` and
+`report_pipeline_workspace` Mission MCP tools. Engineer calls the first only when it resumes a
+different existing run instead of creating the reserved slug. The tool
 accepts only the observed slug. Mission Control derives the task, provider, repository, and live
 SDK host from daemon-issued launch context and captured caller evidence. Adoption is refused when
 the target is not projected, another active task owns it, the reserved run is already projected,
 or the caller is not that task's current managed host. The same task-scoped MCP identity is rebuilt
 when an SDK conversation resumes after a daemon restart. A missing or stale tool bundle fails the
 managed dispatch before the host starts; it never falls back to Terminal.
+
+Engineer calls `report_pipeline_workspace` immediately after creating or entering its authoring
+worktree. Mission Control accepts only an existing, exact Git worktree root directly under the
+task repository's `.worktrees/`, backed by that repository's shared Git directory, and not already
+claimed by another active Pipeline task. The reported path is stored separately from
+`Task.worktreePath`: it is provider-owned visibility state, so Mission Control never reclaims it.
+The managed host keeps its real process `cwd` in the main checkout and keeps
+`Session.pipeline = null`; only `Session.workspaceRoot` moves. Files, Diff, file preview/editing,
+and the displayed checkout path read that workspace root. When the reserved or adopted provider
+run appears, its projected worktree takes precedence automatically. A retry clears the prior
+reported authoring path before the new Engineer turn starts.
 
 Conductor owns downstream agent, model, and effort choices in either runtime. Model, Effort,
 attached repositories, After work, and the generic runtime picker stay unavailable. Agent is

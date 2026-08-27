@@ -783,6 +783,12 @@ export const McpAdoptPipelineRunSchema = z.object({
 }).strict();
 export type McpAdoptPipelineRun = z.infer<typeof McpAdoptPipelineRunSchema>;
 
+/** A managed Engineer host reports the provider-owned checkout where it is authoring. */
+export const McpReportPipelineWorkspaceSchema = z.object({
+  path: z.string().trim().min(1),
+}).strict();
+export type McpReportPipelineWorkspace = z.infer<typeof McpReportPipelineWorkspaceSchema>;
+
 /**
  * Identity added by the bundled MCP bridge when a retro follow-up reports no approved change.
  * There is intentionally no task id and no caller-controlled outcome: the daemon attributes

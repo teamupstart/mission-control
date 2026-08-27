@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -69,6 +71,7 @@ import {
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
+import { gitInfo } from "./util/git.ts";
 import {
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
@@ -605,6 +608,10 @@ export type PipelineRunAdoptionResult =
   | { ok: true; task: Task; replayed: boolean }
   | { ok: false; status: 403 | 404 | 409; error: string };
 
+export type PipelineWorkspaceReportResult =
+  | { ok: true; task: Task; replayed: boolean }
+  | { ok: false; status: 404 | 409; error: string };
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   kill: typeof kill;
@@ -998,6 +1005,79 @@ export class TaskManager {
     }
     if (observed.group === "processed") this.settlePipelineTask(observed);
     return { ok: true, task: this.registry.getTask(task.id) ?? adopted, replayed: false };
+  }
+
+  /** Persist the provider-owned authoring checkout used by a managed Pipeline host. */
+  reportPipelineWorkspace(
+    taskId: string,
+    requestedPath: string,
+  ): PipelineWorkspaceReportResult {
+    const task = this.registry.getTask(taskId);
+    if (!task) return { ok: false, status: 404, error: "no matching Pipeline task" };
+    if (
+      task.kind !== "pipeline" ||
+      (task.status !== "running" && task.status !== "dispatching")
+    ) {
+      return { ok: false, status: 409, error: "this task is not an active Pipeline task" };
+    }
+    if (!isAbsolute(requestedPath)) {
+      return { ok: false, status: 409, error: "the Pipeline workspace path must be absolute" };
+    }
+
+    let workspace: string;
+    let repoRoot: string;
+    let worktreesRoot: string;
+    try {
+      workspace = realpathSync(requestedPath);
+      repoRoot = realpathSync(task.repoRoot);
+      worktreesRoot = realpathSync(join(repoRoot, ".worktrees"));
+    } catch {
+      return { ok: false, status: 409, error: "the Pipeline workspace path does not exist" };
+    }
+    const info = gitInfo(workspace);
+    if (
+      dirname(workspace) !== worktreesRoot ||
+      info.root !== workspace ||
+      info.repoRoot !== repoRoot
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        error: "the Pipeline workspace must be a direct .worktrees checkout of this task repository",
+      };
+    }
+
+    const owner = this.registry.listTasks().find(
+      (candidate) =>
+        candidate.id !== task.id &&
+        candidate.kind === "pipeline" &&
+        (candidate.status === "running" || candidate.status === "dispatching") &&
+        candidate.pipelineWorkspacePath === workspace,
+    );
+    if (owner) {
+      return {
+        ok: false,
+        status: 409,
+        error: `the Pipeline workspace is already owned by active task ${owner.id}`,
+      };
+    }
+    if (task.pipelineWorkspacePath === workspace) {
+      return { ok: true, task, replayed: true };
+    }
+
+    const updated = { ...task, pipelineWorkspacePath: workspace, updatedAt: Date.now() };
+    try {
+      this.registry.upsertTask(updated);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 409,
+        error: `could not persist Pipeline workspace: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    return { ok: true, task: this.registry.getTask(task.id) ?? updated, replayed: false };
   }
 
   /** Settle every live task durably correlated with a provider-completed run. */

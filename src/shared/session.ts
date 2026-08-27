@@ -8,6 +8,13 @@ import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 import { canWriteTo } from "./pane.ts";
 
+/** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
+export function sessionWorkspaceRoot(
+  session: Pick<Session, "workspaceRoot" | "cwd">,
+): string | null {
+  return session.workspaceRoot ?? session.cwd;
+}
+
 /**
  * Whether Shift+Tab can cycle this session's permission mode: a live session whose harness
  * exposes that cycle as its live control, with a pane to inject the keystroke into. The ONE

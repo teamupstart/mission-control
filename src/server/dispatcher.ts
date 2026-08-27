@@ -262,7 +262,9 @@ export class Dispatcher {
       dispatchedAt: task.dispatchedAt ?? Date.now(),
       // A retry must prove its new provider run instead of inheriting the prior attempt's
       // slug and completing against a projection it did not launch.
-      ...(task.kind === "pipeline" ? { pipelineRun: null } : {}),
+      ...(task.kind === "pipeline"
+        ? { pipelineRun: null, pipelineWorkspacePath: null }
+        : {}),
     });
 
     try {
@@ -914,12 +916,12 @@ export class Dispatcher {
         );
       }
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run"],
+        ["adopt_pipeline_run", "report_pipeline_workspace"],
         mcp,
       );
       if (!published.ok) {
         throw new Error(
-          `managed Pipeline dispatch requires adopt_pipeline_run, but ${published.reason}`,
+          `managed Pipeline dispatch requires its Pipeline reporting tools, but ${published.reason}`,
         );
       }
       // Held in its own binding for the same reason `piText` is: turn one now has a second
@@ -929,7 +931,9 @@ export class Dispatcher {
         `${engineerCommand} ${task.intent}\n\n` +
         `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
         `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
-        `slug before continuing. No call is needed when Engineer creates the reserved run.]`;
+        `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
+        `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
+        `with that absolute path before editing files there.]`;
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });

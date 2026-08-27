@@ -23,8 +23,8 @@ export interface RepoIndexState {
   writing: boolean;
 }
 
-/** Poll and mutate the machine-local repository-index view from one guarded owner. */
-export function useRepoIndex(): RepoIndexState {
+/** Poll and mutate the machine-local repository-index view while its Settings panel is visible. */
+export function useRepoIndex(enabled = true): RepoIndexState {
   const [viewState, setViewState] = useState<RepoIndexView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
@@ -38,6 +38,7 @@ export function useRepoIndex(): RepoIndexState {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     const tick = async (): Promise<void> => {
       const at = writes.current;
@@ -50,7 +51,7 @@ export function useRepoIndex(): RepoIndexState {
       alive = false;
       clearInterval(id);
     };
-  }, [setView]);
+  }, [enabled, setView]);
 
   const update = useCallback(async (patch: RepoIndexConfigPatch): Promise<boolean> => {
     const current = viewRef.current;

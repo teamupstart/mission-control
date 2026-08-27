@@ -286,7 +286,7 @@ export function SettingsPage({
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
   const worktrees = useWorktrees(worktreesRevision, shown === "worktrees");
-  const repoIndex = useRepoIndex();
+  const repoIndex = useRepoIndex(shown === "repositories");
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();

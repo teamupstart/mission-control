@@ -77,6 +77,32 @@ test.describe("config-backed repository indexing", () => {
     await shoot(dashboard, "04-restored");
   });
 
+  test("repository indexing does not poll while another Settings category is visible", async ({
+    dashboard,
+    daemon,
+  }) => {
+    let reads = 0;
+    dashboard.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/repo-index") {
+        reads += 1;
+      }
+    });
+
+    await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
+    await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
+
+    await dashboard.getByRole("tab", { name: "Harnesses" }).click();
+    await expect(dashboard.getByRole("tab", { name: "Harnesses" }))
+      .toHaveAttribute("aria-selected", "true");
+    reads = 0;
+    await dashboard.waitForTimeout(4_500);
+    expect(reads).toBe(0);
+
+    await dashboard.getByRole("tab", { name: "Repositories" }).click();
+    await expect.poll(() => reads).toBeGreaterThan(0);
+    await expect(directoryRow(dashboard, "~/workspace")).toBeVisible();
+  });
+
   test("a missing saved path is not scanned if it later resolves above home", async ({
     dashboard,
     daemon,

@@ -66,27 +66,88 @@ export function claudePluginsDir(home = homedir()): string {
 }
 
 /**
- * Read a bounded JSON document, or null for every way that can fail.
+ * Read a bounded JSON document while preserving absence versus unreadability.
  *
- * Null rather than a thrown error because every caller here treats "no usable record" the same
- * way: fall back to knowing nothing, which costs a feature rather than a boot.
+ * A result rather than a thrown error keeps plugin discovery from affecting boot while allowing
+ * Setup to explain a broken record instead of calling it absent.
  */
-async function readBoundedJson(file: string, cap: number): Promise<unknown> {
+type BoundedJsonRead =
+  | { ok: true; value: unknown }
+  | { ok: false; missing: boolean; reason: string };
+
+async function readBoundedJson(file: string, cap: number): Promise<BoundedJsonRead> {
   let handle;
   try {
     handle = await open(file, "r");
-  } catch {
-    return null;
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    return {
+      ok: false,
+      missing: code === "ENOENT" || code === "ENOTDIR",
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
   try {
     const { bytes, exceeded } = await readFileWithinCap(handle, cap);
-    if (exceeded) return null;
-    return JSON.parse(bytes.toString("utf8"));
-  } catch {
-    return null;
+    if (exceeded) {
+      return { ok: false, missing: false, reason: "installed_plugins.json exceeds 1 MB" };
+    }
+    return { ok: true, value: JSON.parse(bytes.toString("utf8")) };
+  } catch (error) {
+    return {
+      ok: false,
+      missing: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
   } finally {
     await handle.close();
   }
+}
+
+export type InstalledPluginsRead =
+  | { ok: true; plugins: InstalledPlugin[]; recordPath: string }
+  | { ok: false; missing: boolean; reason: string; recordPath: string };
+
+type InstalledPluginsParse =
+  | { ok: true; plugins: InstalledPlugin[] }
+  | { ok: false; reason: string };
+
+/** Validate the record envelope while keeping individual plugin entries forward-compatible. */
+function parseInstalledPluginsRecord(record: unknown): InstalledPluginsParse {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (expected an object)",
+    };
+  }
+  const plugins = (record as { plugins?: unknown }).plugins;
+  if (plugins === null || typeof plugins !== "object" || Array.isArray(plugins)) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (expected a plugins object)",
+    };
+  }
+  const entries = Object.entries(plugins as Record<string, unknown>);
+  const parsed = parseInstalledPlugins(record);
+  if (entries.length > 0 && parsed.length === 0) {
+    return {
+      ok: false,
+      reason: "installed_plugins.json has an unsupported schema (no usable plugin entries)",
+    };
+  }
+  return { ok: true, plugins: parsed };
+}
+
+/** The installed-plugin answer with absence kept distinct from an unreadable record. */
+export async function installedPluginsRead(
+  pluginsDir: string = claudePluginsDir(),
+): Promise<InstalledPluginsRead> {
+  const recordPath = path.join(pluginsDir, INSTALL_RECORD);
+  const record = await readBoundedJson(recordPath, INSTALL_RECORD_MAX_BYTES);
+  if (!record.ok) return { ...record, recordPath };
+  const parsed = parseInstalledPluginsRecord(record.value);
+  if (!parsed.ok) return { ok: false, missing: false, reason: parsed.reason, recordPath };
+  return { ok: true, plugins: parsed.plugins, recordPath };
 }
 
 /**
@@ -146,9 +207,6 @@ export function parseInstalledPlugins(record: unknown): InstalledPlugin[] {
 export async function installedPlugins(
   pluginsDir: string = claudePluginsDir(),
 ): Promise<InstalledPlugin[]> {
-  const record = await readBoundedJson(
-    path.join(pluginsDir, INSTALL_RECORD),
-    INSTALL_RECORD_MAX_BYTES,
-  );
-  return parseInstalledPlugins(record);
+  const record = await installedPluginsRead(pluginsDir);
+  return record.ok ? record.plugins : [];
 }

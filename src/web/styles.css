@@ -17536,15 +17536,20 @@ button.wf-carried.is-link:focus-visible {
   color: var(--muted);
   white-space: nowrap;
 }
-/* Four scopes, four colours, in the order they escalate. Tokens, not literals - the same
-   ones the tone vocabulary uses elsewhere, so "amber" means the same thing here as on a
-   card. */
+/* Five precise claims across four colour levels, ordered by how far they reach. Tokens, not
+   literals - the same ones the tone vocabulary uses elsewhere, so "amber" means the same
+   thing here as on a card. Reading under ~/ keeps the local tone; writing there escalates. */
 .settings-scope-browser {
   color: var(--working);
   border-color: color-mix(in oklab, var(--working) 40%, var(--border));
   background: color-mix(in oklab, var(--working) 9%, transparent);
 }
 .settings-scope-machine {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+  background: color-mix(in oklab, var(--idle) 9%, transparent);
+}
+.settings-scope-home-read {
   color: var(--idle);
   border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
   background: color-mix(in oklab, var(--idle) 9%, transparent);
@@ -17559,9 +17564,9 @@ button.wf-carried.is-link:focus-visible {
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
   background: color-mix(in oklab, var(--danger) 9%, transparent);
 }
-/* The category's own scope, beside the panel it is about. The rail's badge is its
-   GROUP's, which can be gentler than a member's own (Skills sits under This machine and
-   writes `~/`), so this one is the precise claim. */
+/* The category's own scope, beside the panel it is about. The rail's badge is its GROUP's,
+   which can be less precise than a member's own (Setup reads `~/`; Skills writes it), so
+   this one is the precise claim. */
 .settings-panel-head {
   display: flex;
   align-items: center;
@@ -31033,4 +31038,188 @@ body.foreman-sidecar-open .modal-backdrop {
 
 .si-session-modal {
   max-width: 720px;
+}
+
+/* Setup is an inventory, not a wizard. Dense rows keep healthy tools quiet while missing
+   tools retain enough room for consequence and remedy without turning into cards in cards. */
+.setup-panel {
+  max-width: 980px !important;
+}
+
+.setup-intro,
+.setup-family-head,
+.setup-row-title,
+.setup-command {
+  align-items: center;
+  display: flex;
+}
+
+.setup-intro {
+  gap: 20px;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.setup-intro .settings-hint,
+.setup-read-only,
+.setup-family-head p,
+.setup-impact,
+.setup-why,
+.setup-evidence,
+.setup-loading {
+  margin: 0;
+}
+
+.setup-read-only,
+.setup-family-head p,
+.setup-evidence,
+.setup-loading {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.setup-read-only {
+  margin-top: 4px;
+}
+
+.setup-family + .setup-family {
+  margin-top: 24px;
+}
+
+.setup-family-head {
+  align-items: end;
+  border-bottom: 1px solid var(--border-soft);
+  gap: 16px;
+  justify-content: space-between;
+  padding: 0 2px 8px;
+}
+
+.setup-family-head h3 {
+  font-size: 13px;
+  margin: 0 0 3px;
+}
+
+.setup-family-head > span {
+  color: var(--dim);
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.setup-rows {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.setup-row {
+  border-top: 1px solid var(--border-soft);
+  padding: 12px 3px;
+}
+
+.setup-rows .setup-row:first-child {
+  border-top: 0;
+}
+
+.setup-row-main {
+  min-width: 0;
+}
+
+.setup-row-title {
+  gap: 8px;
+}
+
+.setup-row-title strong {
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+.setup-status,
+.setup-requirement {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .025em;
+  line-height: 1;
+  padding: 3px 6px;
+  text-transform: uppercase;
+}
+
+.setup-status-satisfied {
+  background: color-mix(in oklab, var(--idle) 9%, transparent);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+  color: var(--idle);
+}
+
+.setup-status-missing,
+.setup-status-needs-setup {
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  border-color: color-mix(in oklab, var(--attention) 38%, var(--border));
+  color: var(--attention);
+}
+
+.setup-status-unknown {
+  color: var(--muted);
+}
+
+.setup-requirement {
+  color: var(--dim);
+}
+
+.setup-requirement-required {
+  border-color: color-mix(in oklab, var(--attention) 28%, var(--border));
+}
+
+.setup-impact,
+.setup-why {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 6px;
+  max-width: 760px;
+}
+
+.setup-why {
+  color: var(--attention);
+}
+
+.setup-evidence {
+  font-family: var(--mono);
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.setup-command {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.setup-command code {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+
+.setup-command .btn,
+.setup-link {
+  font-size: 11px;
+}
+
+.setup-link {
+  display: inline-block;
+  margin-top: 9px;
+}
+
+.setup-loading {
+  padding: 13px 3px;
+}
+
+@media (max-width: 620px) {
+  .setup-intro,
+  .setup-family-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

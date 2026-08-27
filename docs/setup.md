@@ -6,6 +6,11 @@ its full verification suite. For the contributor expectations and test policy, s
 
 ## Prerequisites
 
+After Mission Control is running, open **Settings → Setup** for the machine-wide view of
+agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions, and
+ai-conductor. Missing rows explain what capability is unavailable and provide a documentation
+link or copyable command. The page never runs an installer or setup command.
+
 Install Node.js 24 or newer and verify it:
 
 ```sh

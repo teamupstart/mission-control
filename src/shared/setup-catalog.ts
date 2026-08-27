@@ -1,0 +1,307 @@
+import type { EnvironmentCheckId } from "./environment-checks.ts";
+import type { PipelineProviderId } from "./pipeline.ts";
+
+// External tooling Mission Control can explain, split from the daemon probes for the same
+// reason `ENVIRONMENT_CHECK_INFO` is split from `server/environment`: the dashboard needs
+// names, impact, and remedies, while only the daemon may inspect this machine.
+
+/**
+ * Every external dependency this build reports, in family order.
+ *
+ * **Append-only.** These ids are the natural key for later acknowledgement and install
+ * actions. Add at the end, never rename or reorder, so a stored reference from a newer or
+ * older build keeps naming the same tool.
+ */
+export const SETUP_DEPENDENCY_IDS = [
+  "claude-cli",
+  "codex-cli",
+  "pi-cli",
+  "tmux",
+  "cmux",
+  "wezterm",
+  "ghostty",
+  "gh-cli",
+  "gh-auth",
+  "claude-plugins",
+  "claude-skills",
+  "ai-conductor",
+] as const;
+
+export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
+
+/** The order the Setup panel teaches the machine in. */
+export const SETUP_FAMILY_IDS = [
+  "agents",
+  "terminals",
+  "github",
+  "extensions",
+  "pipelines",
+] as const;
+
+export type SetupFamilyId = (typeof SETUP_FAMILY_IDS)[number];
+
+export interface SetupFamilyInfo {
+  id: SetupFamilyId;
+  label: string;
+  description: string;
+}
+
+export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
+  agents: {
+    id: "agents",
+    label: "Agent CLIs",
+    description: "Mission Control launches these programs to create and continue coding sessions.",
+  },
+  terminals: {
+    id: "terminals",
+    label: "Terminals",
+    description: "A usable terminal path needs a window, and detached sessions may also need a multiplexer.",
+  },
+  github: {
+    id: "github",
+    label: "GitHub",
+    description: "The GitHub CLI carries pull requests, reviews, issues, and repository reads.",
+  },
+  extensions: {
+    id: "extensions",
+    label: "Claude Code extensions",
+    description: "Plugins add external capabilities; Mission Control skills add reusable session workflows.",
+  },
+  pipelines: {
+    id: "pipelines",
+    label: "Pipelines",
+    description: "External SDLC engines can drive and report gated feature work.",
+  },
+};
+
+export type SetupRequirement = "required" | "recommended" | "optional";
+
+/**
+ * How the panel helps with one unsatisfied row.
+ *
+ * Phase 1 only renders these. It never executes an argv. The complete union ships now so
+ * the later visible-terminal phase can add an action without changing the wire contract.
+ */
+export type SetupRemedy =
+  | { kind: "link"; url: string; label: string }
+  | { kind: "command"; argv: readonly string[]; note: string }
+  | { kind: "provider-installer"; provider: PipelineProviderId }
+  | { kind: "skill"; command: string };
+
+export interface SetupDependencyInfo {
+  id: SetupDependencyId;
+  label: string;
+  family: SetupFamilyId;
+  requirement: SetupRequirement;
+  /** What is unavailable while this row is not satisfied. */
+  enables: string;
+  remedy: SetupRemedy;
+}
+
+/** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
+export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo> = {
+  "claude-cli": {
+    id: "claude-cli",
+    label: "Claude Code",
+    family: "agents",
+    requirement: "recommended",
+    enables: "Without it, Claude sessions and Claude-backed background jobs cannot launch.",
+    remedy: {
+      kind: "command",
+      argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+      note: "Install the official Claude Code npm package without sudo.",
+    },
+  },
+  "codex-cli": {
+    id: "codex-cli",
+    label: "Codex CLI",
+    family: "agents",
+    requirement: "recommended",
+    enables: "Without it, Codex sessions and Codex-backed background jobs cannot launch.",
+    remedy: {
+      kind: "link",
+      url: "https://developers.openai.com/codex/cli",
+      label: "Open Codex installation guide",
+    },
+  },
+  "pi-cli": {
+    id: "pi-cli",
+    label: "Pi",
+    family: "agents",
+    requirement: "recommended",
+    enables: "Without it, Pi sessions cannot launch or resume.",
+    remedy: {
+      kind: "command",
+      argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
+      note: "Install the Pi coding agent package globally.",
+    },
+  },
+  tmux: {
+    id: "tmux",
+    label: "tmux",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds durable detached sessions, provided an installed emulator can raise them.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "tmux"],
+      note: "Install tmux with Homebrew.",
+    },
+  },
+  cmux: {
+    id: "cmux",
+    label: "cmux",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds visible, durable workspaces that need no second terminal to raise them.",
+    remedy: {
+      kind: "link",
+      url: "https://cmux.com/docs/getting-started",
+      label: "Open cmux installation guide",
+    },
+  },
+  wezterm: {
+    id: "wezterm",
+    label: "WezTerm",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds scriptable terminal windows and can raise detached tmux sessions.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "--cask", "wezterm"],
+      note: "Install WezTerm with Homebrew.",
+    },
+  },
+  ghostty: {
+    id: "ghostty",
+    label: "Ghostty",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds native terminal windows that Mission Control can discover and focus on macOS.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "--cask", "ghostty"],
+      note: "Install Ghostty with Homebrew.",
+    },
+  },
+  "gh-cli": {
+    id: "gh-cli",
+    label: "GitHub CLI",
+    family: "github",
+    requirement: "required",
+    enables: "Without it, Mission Control cannot inspect, open, review, or merge GitHub work.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "gh"],
+      note: "Install the GitHub CLI with Homebrew.",
+    },
+  },
+  "gh-auth": {
+    id: "gh-auth",
+    label: "GitHub authentication",
+    family: "github",
+    requirement: "required",
+    enables: "Without a github.com login, GitHub operations fail even when the CLI is installed.",
+    remedy: {
+      kind: "link",
+      url: "https://cli.github.com/manual/gh_auth_login",
+      label: "Open GitHub authentication guide",
+    },
+  },
+  "claude-plugins": {
+    id: "claude-plugins",
+    label: "Claude Code plugins",
+    family: "extensions",
+    requirement: "optional",
+    enables: "Without plugins, Claude sessions do not receive plugin-provided tools, hooks, or commands.",
+    remedy: {
+      kind: "link",
+      url: "https://docs.anthropic.com/en/docs/claude-code/plugins",
+      label: "Open Claude Code plugin guide",
+    },
+  },
+  "claude-skills": {
+    id: "claude-skills",
+    label: "Mission Control skills",
+    family: "extensions",
+    requirement: "optional",
+    enables: "Without them, sessions do not receive Mission Control's reusable workflow skills.",
+    remedy: {
+      kind: "link",
+      url: "#/settings/skills",
+      label: "Open Skills settings",
+    },
+  },
+  "ai-conductor": {
+    id: "ai-conductor",
+    label: "ai-conductor",
+    family: "pipelines",
+    requirement: "optional",
+    enables: "Without it, Mission Control cannot commission or observe gated ai-conductor runs.",
+    remedy: { kind: "provider-installer", provider: "ai-conductor" },
+  },
+};
+
+export type SetupStatus =
+  | { state: "satisfied"; evidence: string }
+  | { state: "missing" }
+  | { state: "needs-setup"; why: string; evidence: string | null }
+  | { state: "unknown"; why: string; evidence: string | null };
+
+export type SetupDerivedRowId = "terminal-pair";
+
+export type SetupRowId =
+  | { source: "dependency"; id: SetupDependencyId }
+  | { source: "environment-check"; id: EnvironmentCheckId }
+  | { source: "derived"; id: SetupDerivedRowId };
+
+export interface SetupRowView {
+  rowId: SetupRowId;
+  label: string;
+  family: SetupFamilyId;
+  requirement: SetupRequirement;
+  enables: string;
+  remedy: SetupRemedy;
+  status: SetupStatus;
+}
+
+export interface SetupChecksView {
+  rows: SetupRowView[];
+}
+
+/** Metadata the narrower environment-check contract does not carry itself. */
+export const ENVIRONMENT_ROW_METADATA: Record<
+  EnvironmentCheckId,
+  {
+    family: SetupFamilyId;
+    requirement: SetupRequirement;
+    enables: string;
+    remedy: SetupRemedy;
+  }
+> = {
+  "upstartclaw-core-setup": {
+    family: "extensions",
+    requirement: "optional",
+    enables: "Until setup finishes, UpstartClaw tools cannot authenticate reliably in dispatched sessions.",
+    remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+  },
+};
+
+/** The required capability row derived from terminal target composition. */
+export const TERMINAL_PAIR_INFO = {
+  rowId: { source: "derived", id: "terminal-pair" },
+  label: "A terminal window Mission Control can open",
+  family: "terminals",
+  requirement: "required",
+  enables: "Without a usable backend, dispatches cannot open a visible terminal window on their checkout.",
+  remedy: {
+    kind: "link",
+    url: "https://wezterm.org/installation.html",
+    label: "Open terminal installation guide",
+  },
+} as const satisfies Omit<SetupRowView, "status">;
+
+/** A collision-proof anchor slug, including the row's id namespace. */
+export function setupRowAnchor(rowId: SetupRowId): string {
+  return `setup/${rowId.source}-${rowId.id}`;
+}

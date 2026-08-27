@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { SetupChecksView } from "../src/shared/setup-catalog.ts";
+import { readSetupChecks } from "../src/web/useSetupChecks.ts";
+
+test("a rejected setup read becomes panel error state", async () => {
+  const result = await readSetupChecks(async () => {
+    throw new Error("daemon restarting");
+  });
+
+  assert.deepEqual(result, {
+    view: null,
+    error: "Mission Control could not inspect this machine's setup.",
+  });
+});
+
+test("a successful setup read keeps its view and clears the error", async () => {
+  const view: SetupChecksView = { rows: [] };
+  assert.deepEqual(await readSetupChecks(async () => view), { view, error: null });
+});

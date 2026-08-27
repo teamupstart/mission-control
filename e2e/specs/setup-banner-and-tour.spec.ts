@@ -54,9 +54,25 @@ test("a stale tab cannot dismiss a setup regression observed elsewhere", async (
   await expect(staleBanner.getByRole("alert")).toContainText("Re-check before dismissing");
 });
 
-test("a dismissal transport failure keeps the reminder actionable", async ({ page, daemon }) => {
+test("a dismissal transport failure stays actionable without leaking into a later reminder", async ({
+  page,
+  daemon,
+}) => {
   await page.goto(`${daemon.baseURL}/#/fleet`);
   const banner = page.getByRole("status", { name: "Machine setup needs attention" });
+  await expect(banner).toBeVisible();
+
+  await banner.getByRole("button", { name: "Dismiss setup reminder" }).click();
+  await expect(banner).toBeHidden();
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  daemon.installFakeGh();
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+
+  daemon.removeFakeGh();
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
   await expect(banner).toBeVisible();
 
   await daemon.crash();
@@ -64,6 +80,18 @@ test("a dismissal transport failure keeps the reminder actionable", async ({ pag
 
   await expect(banner.getByRole("alert")).toContainText("Failed to fetch");
   await expect(banner.getByRole("button", { name: "Dismiss setup reminder" })).toBeEnabled();
+
+  await daemon.restart();
+  daemon.installFakeGh();
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+  await expect(banner).toBeHidden();
+
+  daemon.removeFakeGh();
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await expect(banner).toBeVisible();
+  await expect(banner.getByRole("alert")).toHaveCount(0);
 });
 
 test("the setup reminder is durable, detects a regression, and the tour stays read-only", async ({

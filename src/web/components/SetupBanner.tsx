@@ -10,9 +10,23 @@ export function SetupBanner({
   view: SetupChecksView | null;
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
+  if (!view?.banner.visible) return null;
+
+  // Keep request-local state inside the visible episode. App owns this wrapper for the life of
+  // the dashboard, but a repaired row can hide the banner before a later regression shows it
+  // again. Unmounting this child prevents a prior episode's failure or busy state from returning.
+  return <VisibleSetupBanner view={view} onDismiss={onDismiss} />;
+}
+
+function VisibleSetupBanner({
+  view,
+  onDismiss,
+}: {
+  view: SetupChecksView;
+  onDismiss: () => Promise<string | null>;
+}): React.JSX.Element {
   const [dismissing, setDismissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (!view?.banner.visible) return null;
 
   const count = view.banner.attentionCount;
   const label = count > 0 ? "Machine setup needs attention" : "Review machine setup";

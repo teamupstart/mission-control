@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Board: how a repository group looks</title><style id="app-css">:root { color-scheme: dark; --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23; --border: #232a33; --border-soft: #1b2129; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798; --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149; --exited: #707a88; --neutral: #8b94a3; --select: #35c08a; --find: #e3b341; --purple: #a371f7; --foreman: var(--purple); --held: var(--purple); --syntax-type: #d97757; --pr-open: #3fb950; --pr-merged: var(--purple); --prio-low: var(--dim); --prio-med: var(--working); --prio-high: var(--attention); --prio-blocker: var(--danger); --cost: var(--purple); --board-col-wide: 520px; --radius: 13px; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28); --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+* { box-sizing: border-box; }
+html, body { margin: 0px; padding: 0px; }
+body { font-family: var(--sans); color: var(--fg); background: radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg); min-height: 100vh; -webkit-font-smoothing: antialiased; text-rendering: optimizelegibility; }
+@keyframes breathe { 
+  50% { opacity: 0.55; }
+}
+@keyframes ka-settle { 
+  50% { opacity: 0.45; }
+}
+.tone-working { --tone-color: var(--working); }
+.tone-idle { --tone-color: var(--idle); }
+.agent-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--agent-accent, var(--neutral)); box-shadow: 0 0 8px color-mix(in oklab, var(--agent-accent, var(--neutral)) 60%, transparent); }
+@keyframes blink { 
+  50% { opacity: 0.25; }
+}
+.card-runtime { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 1px 0px; }
+.rt-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border-soft); background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.rt-model { color: var(--fg); font-weight: 550; }
+.rt-1m { font-size: 8.5px; font-weight: 700; letter-spacing: 0.03em; padding: 1px 3px; border-radius: 3px; color: var(--working); background: color-mix(in oklab, var(--working) 16%, transparent); }
+.rt-think { text-transform: lowercase; color: var(--think-color, var(--muted)); border-color: color-mix(in oklab, var(--think-color, var(--muted)) 32%, var(--border-soft)); background: color-mix(in oklab, var(--think-color, var(--muted)) 12%, var(--panel-2)); }
+.rt-think-btn { cursor: pointer; font-size: 11px; line-height: 1; }
+.rt-think-btn:hover, .rt-think-btn.open { border-color: color-mix(in oklab, currentColor 48%, var(--border-soft)); }
+.rt-think-glyph { font-size: 9px; opacity: 0.85; }
+.rt-think-medium { --think-color: var(--working); }
+.rt-think-high { --think-color: var(--attention); }
+.rt-think-xhigh, .rt-think-max { --think-color: #e5877f; }
+.rt-ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.rt-meter { position: relative; display: block; width: 44px; height: 5px; border-radius: 3px; overflow: hidden; background: color-mix(in oklab, var(--border) 70%, var(--panel)); }
+.rt-meter-fill { display: block; height: 100%; border-radius: 3px; background: var(--idle); transition: width 0.35s; }
+.rt-ctx-num { font-variant-numeric: tabular-nums; }
+.rt-ctx-warn .rt-meter-fill { background: var(--attention); }
+.rt-ctx-warn .rt-ctx-num { color: var(--attention); }
+.tile-runtime-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.tile-runtime-line > .card-runtime { margin: 0px; }
+.mode { font-size: 10.5px; font-weight: 560; padding: 1px 6px; border-radius: 5px; background: transparent; }
+.mode-accept { color: var(--working); background: color-mix(in oklab, var(--working) 12%, transparent); }
+.mode-plan { color: var(--pr-merged); background: color-mix(in oklab, var(--pr-merged) 14%, transparent); }
+.mode-btn { display: inline-flex; align-items: center; gap: 3px; appearance: none; border: 1px solid transparent; font-style: inherit; font-variant: inherit; font-stretch: inherit; line-height: inherit; font-family: inherit; font-optical-sizing: inherit; font-size-adjust: inherit; font-kerning: inherit; font-feature-settings: inherit; font-variation-settings: inherit; font-language-override: inherit; font-size: 10.5px; font-weight: 560; cursor: pointer; transition: border-color 0.14s, background 0.14s; }
+.mode-btn:hover, .mode-btn.open { border-color: color-mix(currentcolor 38%, transparent); }
+.mode-caret { font-size: 8px; line-height: 1; opacity: 0.7; transform: translateY(-1px); }
+.tile-runtime-line .mode, .detail-head .mode { font-size: 11px; line-height: 1; padding: 3px 7px; border: 1px solid color-mix(in oklab, currentcolor 32%, var(--border-soft)); border-radius: 6px; }
+.tile-runtime-line .mode-btn:hover, .tile-runtime-line .mode-btn.open, .detail-head .mode-btn:hover, .detail-head .mode-btn.open { border-color: color-mix(in oklab, currentcolor 48%, var(--border-soft)); }
+@keyframes mode-spin { 
+  100% { transform: rotate(360deg); }
+}
+@keyframes turn-flash { 
+  0% { outline-color: color-mix(in oklab, var(--find) 85%, transparent); background-color: color-mix(in oklab, var(--find) 13%, transparent); }
+  100% { outline-color: transparent; background-color: transparent; }
+}
+@keyframes guided-pop { 
+  0% { opacity: 0; transform: translateY(-3px); }
+}
+@keyframes guided-pop-up { 
+  0% { opacity: 0; transform: translateY(3px); }
+}
+@keyframes settings-flash { 
+  0% { outline-color: var(--attention); background: color-mix(in oklab, var(--attention) 14%, transparent); }
+  100% { outline-color: transparent; background: transparent; }
+}
+.tt-desc { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0px; pointer-events: none; }
+.tt-anchor > :disabled { pointer-events: none; }
+@keyframes starting-strip-spin { 
+  100% { transform: rotate(360deg); }
+}
+@keyframes line-flow { 
+  0% { left: 0px; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { left: calc(100% - 6px); opacity: 0; }
+}
+.board-col { display: flex; flex-direction: column; min-height: 0px; flex: 1 1 0px; min-width: 250px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius); background: color-mix(in oklab, var(--bg-2) 55%, transparent); }
+.board-col-head { user-select: none; }
+@media (prefers-reduced-motion: no-preference) {
+.board-col, .board-detail { transition: flex-grow 0.34s, flex-basis 0.34s, min-width 0.34s, opacity 0.26s, border-width 0.34s, margin-left 0.34s; }
+}
+.board-col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); }
+.board-swatch { width: 7px; height: 7px; border-radius: 50%; background: var(--tone-color, var(--neutral)); }
+.board-col-head h2 { margin: 0px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--tone-color, var(--muted)); }
+.board-col-n { margin-left: auto; font-size: 11.5px; font-weight: 680; font-variant-numeric: tabular-nums; color: var(--dim); padding: 1px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: var(--panel); }
+.board-col-body { display: flex; flex-direction: column; gap: 9px; padding: 9px; overflow-y: auto; }
+.board-cluster-head { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 7px 9px 6px; font-style: inherit; font-variant: inherit; font-weight: inherit; font-stretch: inherit; line-height: inherit; font-family: inherit; font-optical-sizing: inherit; font-size-adjust: inherit; font-kerning: inherit; font-feature-settings: inherit; font-variation-settings: inherit; font-language-override: inherit; font-size: 11px; text-align: left; color: var(--muted); background: none; border-top: 0px; border-right: 0px; border-left: 0px; border-image: none; border-bottom: 1px solid var(--border-soft); border-radius: 12px 12px 0px 0px; cursor: pointer; }
+.board-cluster-head:hover { color: var(--fg); background: var(--panel); }
+.bch-title { flex: 1 1 auto; min-width: 0px; font-weight: 640; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bch-meta { flex: 0 1 auto; min-width: 0px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-repo { display: flex; flex: 0 0 auto; flex-direction: column; gap: 7px; padding: 0px 0px 7px; overflow: hidden; border-right-color: ; border-right-style: ; border-right-width: ; border-bottom-color: ; border-bottom-style: ; border-bottom-width: ; border-image-source: ; border-image-slice: ; border-image-width: ; border-image-outset: ; border-image-repeat: ; border-top: 2px solid color-mix(in oklab, var(--repo-c) 78%, transparent); border-left: 3px solid color-mix(in oklab, var(--repo-c) 78%, transparent); border-radius: 10px; background: color-mix(in oklab, var(--bg-2) 60%, transparent); }
+.board-repo:hover { border-top-color: color-mix(in oklab, var(--repo-c) 92%, transparent); border-left-color: color-mix(in oklab, var(--repo-c) 92%, transparent); }
+.board-repo > .tile, .board-repo > .board-cluster { margin: 0px 7px; width: auto; }
+.board-repo-head { flex-direction: row; align-items: center; gap: 8px; padding: 5px 9px; border-bottom-color: var(--border-soft); background: var(--panel); border-radius: 0px; }
+.board-repo-head:hover { background: var(--panel-2); }
+.board-repo-head .bch-title { flex: 0 1 auto; font-family: var(--mono); font-size: 11.5px; }
+.board-repo-head .bch-meta { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; color: var(--dim); background: color-mix(in oklab, var(--bg) 55%, var(--panel-2)); font-variant-numeric: tabular-nums; }
+.board-repo.is-collapsed { padding-bottom: 0px; }
+.board-repo.is-collapsed .board-repo-head { border-bottom: 0px; }
+.board-repo-head .brh-swatch { display: none; }
+.brh-swatch { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--repo-c); }
+.brh-chevron { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 12px; height: 12px; margin-left: auto; color: var(--dim); transition: transform 120ms; }
+.board-repo-head:hover .brh-chevron, .rail-repo-group:hover .brh-chevron { color: var(--muted); }
+[aria-expanded="false"] .brh-chevron { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) {
+.brh-chevron { transition: none; }
+}
+.tile { position: relative; display: flex; flex-direction: column; gap: 7px; width: 100%; padding: 10px 11px 9px 13px; text-align: left; font: inherit; color: var(--fg); background: linear-gradient(var(--panel), var(--panel-2)); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); cursor: pointer; transition: transform 0.14s, border-color 0.14s; }
+.tile::before { content: ""; position: absolute; left: 0px; top: 0px; bottom: 0px; width: 3px; border-radius: 10px 0px 0px 10px; background: var(--tone-color, var(--neutral)); }
+.tile-open { position: absolute; inset: 0px; z-index: 0; padding: 0px; border: 0px; background: none; border-radius: inherit; pointer-events: none; }
+.tile:hover { transform: translateY(-2px); border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 42%, var(--border)); }
+.tile-head { display: flex; align-items: center; gap: 8px; }
+.tile-name { flex: 1 1 0%; min-width: 0px; font-size: 12.5px; font-weight: 640; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-goal { font-size: 11.5px; line-height: 1.4; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+@keyframes tile-workflow-reveal { 
+  0% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+.tile-marks { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.tile-marks:empty { display: none; }
+.tile-flag { padding: 1px 6px; font-size: 10px; font-weight: 650; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); background: var(--bg-2); }
+.tile-flag.runtime-flag { letter-spacing: 0.01em; }
+.tile-foot { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--dim); }
+.tile-branch { flex: 1 1 0%; min-width: 0px; font-family: var(--mono); color: var(--idle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-seen { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile-activity { display: flex; align-items: center; gap: 6px; min-width: 0px; font-size: 11px; color: var(--muted); }
+.tile-activity .ta-glyph { flex: 0 0 auto; font-size: 10px; color: var(--working); animation: 1.6s linear 0s infinite normal none running activity-spin; }
+.tile-activity .ta-txt { min-width: 0px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@keyframes activity-spin { 
+  100% { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+.tile-activity .ta-glyph { animation: auto ease 0s 1 normal none running none; }
+}
+.tile .card-runtime { margin: 0px; }
+@media (max-width: 760px) {
+.board-col { max-height: none; }
+}</style><style>/* Page chrome for the mockup sheet - not part of the app. */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  font-family: var(--sans);
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%), var(--bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+.sheet {
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 34px 28px 60px;
+}
+.sheet h1 {
+  margin: 0 0 6px;
+  font-size: 21px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+.sheet .lede {
+  margin: 0 0 4px;
+  max-width: 78ch;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+.sheet h2 {
+  margin: 34px 0 10px;
+  font-size: 14px;
+  font-weight: 620;
+  color: var(--fg);
+}
+.grid {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 4px 2px 14px;
+}
+.mock {
+  flex: none;
+  width: 306px;
+}
+/* A fixed height, so every column starts on the same line and the five can be compared
+   by eye rather than by scrolling back up to check which one you are looking at. */
+.mock-cap {
+  min-height: 78px;
+  margin: 0 0 9px;
+  padding: 0 2px;
+}
+.mock-cap h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 3px;
+  font-size: 12.5px;
+  font-weight: 640;
+}
+.mock-cap .tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--muted);
+}
+.mock-cap.is-current .tag {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--exited) 40%, transparent);
+}
+.mock-cap p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+/* A real column, at a real width, with a real scroll box - so a sticky header and a
+   three-group column can both be judged as they will actually be met. Slightly shorter
+   than its content on purpose: the column scrolls, which is the only way to judge E. */
+.mock .board-col {
+  height: 720px;
+}
+.notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-top: 6px;
+}
+.note {
+  padding: 13px 15px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+}
+.note h4 {
+  margin: 0 0 7px;
+  font-size: 12px;
+  font-weight: 640;
+}
+.note ul {
+  margin: 0;
+  padding-left: 16px;
+}
+.note li {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.note li + li {
+  margin-top: 4px;
+}
+.note li b {
+  color: var(--fg);
+  font-weight: 600;
+}
+</style><style>/* ==========================================================================
+   Repository group restyle - four proposals, scoped by a variant class.
+
+   Every rule below is written so that deleting the `.v-*` scope turns it into the
+   block that would replace the current `.board-repo` / `.board-repo-head` rules in
+   src/web/styles.css. Nothing here touches the tile, the counts, the accessible
+   name or the disclosure behaviour - only the frame and its header.
+   ========================================================================== */
+
+/* ---- shared by every proposal: a drawn caret instead of the "⌄" glyph ----
+   The text glyph sits on its own baseline, so it never lines up with the row it
+   is in and it is the one part of the header that looks unfinished at any size.
+   The rotation still comes off `aria-expanded`, so the control and the glyph
+   cannot disagree. */
+.mock-alt .brh-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: var(--dim);
+}
+.mock-alt .board-repo-head:hover .brh-chevron {
+  color: var(--muted);
+}
+
+/* `flex: none` on every frame below, and it is not decoration. `.board-col-body` is a flex
+   column, so a frame that sets `overflow` to anything but `visible` loses its automatic
+   minimum size and is free to be SHRUNK by the column - which clipped the last card of a
+   group on a real board with nine idle sessions in it. The current frame gets away without
+   it only because it never sets `overflow`. */
+
+/* ==========================================================================
+   A - BEFORE. The look that shipped until this change, restated here.
+
+   Not a no-op panel any more: once the new frame landed in `src/web/styles.css`, a
+   panel with no overrides started drawing the NEW look, which would leave the sheet
+   with no control to compare against. These rules are the previous
+   `.board-repo` / `.board-repo-head` block, copied verbatim and scoped, so the "before"
+   column keeps showing what was actually replaced.
+   ========================================================================== */
+.v-a .board-repo {
+  flex: 0 1 auto;
+  gap: 7px;
+  padding: 0 0 8px;
+  overflow: visible;
+  border: 1px solid color-mix(in oklab, var(--repo-c) 42%, var(--border-soft));
+  border-radius: 13px;
+  background: color-mix(in oklab, var(--repo-c) 6%, transparent);
+}
+.v-a .board-repo > .tile,
+.v-a .board-repo > .board-cluster {
+  margin: 0 8px;
+  width: auto;
+}
+.v-a .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-bottom-color: color-mix(in oklab, var(--repo-c) 30%, var(--border-soft));
+  background: color-mix(in oklab, var(--repo-c) 11%, transparent);
+  border-radius: 12px 12px 0 0;
+}
+.v-a .board-repo-head:hover {
+  background: color-mix(in oklab, var(--repo-c) 18%, var(--panel));
+}
+.v-a .board-repo-head .bch-meta {
+  flex: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  font-variant-numeric: tabular-nums;
+}
+.v-a .board-repo.is-collapsed .board-repo-head {
+  border-bottom: 0;
+  border-radius: 12px;
+}
+/* The dot the board used to draw beside the name, before the frame's own edges carried
+   the colour. */
+.v-a .board-repo-head .brh-swatch {
+  display: block;
+}
+/* And the text glyph the caret replaced, at the size and line-height it had. */
+.v-a .brh-chevron {
+  display: inline;
+  width: auto;
+  height: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
+}
+
+/* ==========================================================================
+   B - Flush rule. No box at all.
+   The header becomes a label with a hairline running out to the column edge, and
+   the cards keep the column's full width. The repository colour survives as the
+   swatch and as the hairline's near end.
+   ========================================================================== */
+.v-b .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 0 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.v-b .board-repo > .tile,
+.v-b .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+}
+.v-b .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 2px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+}
+.v-b .board-repo-head:hover {
+  background: none;
+}
+.v-b .board-repo-head:hover .bch-title {
+  color: var(--fg);
+}
+.v-b .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: color-mix(in oklab, var(--fg) 78%, var(--dim));
+}
+.v-b .board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* The hairline. Fades out so it reads as a rule under the label rather than as a
+   divider across the column - a full-strength line here would be a second
+   section rule, which the tone columns already own. */
+.v-b .brh-rule {
+  flex: 1 1 auto;
+  min-width: 12px;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--repo-c) 55%, transparent),
+    color-mix(in oklab, var(--repo-c) 8%, transparent)
+  );
+}
+.v-b .brh-chevron {
+  margin-left: 0;
+}
+.v-b .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   C - Spine. The colour becomes an edge, not a fill.
+   One 2px rule down the left of the group carries the repository identity, so the
+   frame costs 11px of width and no background tint at all.
+   ========================================================================== */
+.v-c .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 0 0 2px 12px;
+  border: 0;
+  border-left: 2px solid color-mix(in oklab, var(--repo-c) 48%, transparent);
+  border-radius: 0;
+  background: none;
+}
+.v-c .board-repo:hover {
+  border-left-color: color-mix(in oklab, var(--repo-c) 78%, transparent);
+}
+.v-c .board-repo > .tile,
+.v-c .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+}
+.v-c .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 2px 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.v-c .board-repo-head:hover {
+  background: none;
+}
+.v-c .board-repo-head:hover .bch-title {
+  color: var(--fg);
+}
+.v-c .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: color-mix(in oklab, var(--fg) 78%, var(--dim));
+}
+.v-c .board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* The spine already says which repository this is; a dot 10px from it says it
+   twice and spends the header's first cell doing it. */
+.v-c .brh-swatch {
+  display: none;
+}
+.v-c .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   D - Quiet box. The current idea, executed without the wash.
+   Same containment as today, but the border and the body go neutral and the
+   repository colour is spent once, on a 3px cap at the head's leading edge.
+   ========================================================================== */
+.v-d .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 0 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  /* The colour goes on the frame's TOP edge, not down its side. A left cap here would be
+     a second vertical rail 8px from the card's own tone spine, which is the one line on
+     this board that must stay unambiguous - and a top edge is the one direction nothing
+     inside a card is already using. */
+  border-top: 2px solid color-mix(in oklab, var(--repo-c) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+}
+.v-d .board-repo > .tile,
+.v-d .board-repo > .board-cluster {
+  margin: 0 7px;
+  width: auto;
+}
+.v-d .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  /* Flush corners: the frame clips them, so the head fills the box's top edge
+     instead of floating inside a 1px gutter. */
+  border-radius: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.v-d .board-repo-head:hover {
+  background: var(--panel-2);
+}
+.v-d .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+/* A tag rather than loose text: the count is the one number in this row, and the
+   quiet box has no tint left to separate it from the name beside it. */
+.v-d .board-repo-head .bch-meta {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--dim);
+  background: color-mix(in oklab, var(--bg) 55%, var(--panel-2));
+  font-variant-numeric: tabular-nums;
+}
+.v-d .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+.v-d .board-repo.is-collapsed .board-repo-head {
+  border-bottom: 0;
+}
+
+/* ==========================================================================
+   E - Sticky strip. The header stops scrolling away.
+   Full-bleed to the column's edges, pinned to the top of the scrolling body, so a
+   column you have scrolled into still says which repository you are reading.
+   ========================================================================== */
+.v-e .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 0 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.v-e .board-repo > .tile,
+.v-e .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+}
+.v-e .board-repo-head {
+  position: sticky;
+  top: -9px;
+  z-index: 2;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  /* Full-bleed: cancels `.board-col-body`'s 9px padding on three sides so the
+     strip meets the column's own edges, the way a table's sticky header does. */
+  width: calc(100% + 18px);
+  margin: -9px -9px 0;
+  padding: 7px 9px 6px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--repo-c) 60%, var(--border-soft));
+  border-radius: 0;
+  background: color-mix(in oklab, var(--bg-2) 82%, var(--bg));
+  backdrop-filter: blur(7px);
+}
+.v-e .board-repo-head:hover {
+  background: color-mix(in oklab, var(--panel) 88%, var(--bg));
+}
+.v-e .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.v-e .board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.v-e .board-repo + .board-repo .board-repo-head {
+  margin-top: 0;
+}
+.v-e .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   F - Section label. The register the rest of the app already uses for a group of
+   settings: a small letter-spaced label over a full-width rule, no colour except
+   the swatch, cards at full width.
+   ========================================================================== */
+.v-f .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 3px 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.v-f .board-repo > .tile,
+.v-f .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+}
+.v-f .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 0 1px 5px;
+  border: 0;
+  /* The rule sits UNDER the label and runs the column's whole width, which is what
+     makes this read as a section rather than as a card with a title. */
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: none;
+}
+.v-f .board-repo-head:hover {
+  background: none;
+  border-bottom-color: color-mix(in oklab, var(--repo-c) 45%, var(--border));
+}
+.v-f .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.v-f .board-repo-head:hover .bch-title {
+  color: var(--fg);
+}
+.v-f .board-repo-head .bch-meta {
+  flex: none;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.v-f .brh-swatch {
+  width: 6px;
+  height: 6px;
+}
+.v-f .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   G - Chip. The header shrinks to a pill the width of its own words.
+   Nothing spans the column, so the group is announced rather than framed - the
+   cards below it are the only full-width thing in the column.
+   ========================================================================== */
+.v-g .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 1px 0 7px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.v-g .board-repo > .tile,
+.v-g .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+}
+.v-g .board-repo-head {
+  /* `width: fit-content` is the whole idea: the control is as wide as its words, so
+     the column's background reads through beside it. */
+  width: fit-content;
+  max-width: 100%;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 7px;
+  border: 1px solid color-mix(in oklab, var(--repo-c) 34%, var(--border-soft));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--repo-c) 9%, var(--panel));
+}
+.v-g .board-repo-head:hover {
+  border-color: color-mix(in oklab, var(--repo-c) 55%, var(--border));
+  background: color-mix(in oklab, var(--repo-c) 15%, var(--panel));
+}
+.v-g .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.v-g .board-repo-head .bch-meta {
+  flex: none;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.v-g .brh-chevron {
+  width: 11px;
+  height: 11px;
+  margin-left: 1px;
+}
+.v-g .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   H - Merged list. The boldest of the set: the group stops being a box around
+   boxes and becomes ONE surface, with its cards separated by hairlines instead of
+   by gaps and borders of their own.
+
+   This is the only proposal that touches the card inside a group, and it is why it
+   is worth showing: two thirds of what makes the current frame look heavy is the
+   card's own border repeating 8px inside the frame's.
+   ========================================================================== */
+.v-h .board-repo {
+  flex: none;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.v-h .board-repo > .tile {
+  margin: 0;
+  width: auto;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.v-h .board-repo > .board-cluster {
+  margin: 0;
+  width: auto;
+  border-radius: 0;
+  border-width: 1px 0 0;
+}
+/* The card's tone spine survives, because it is the one mark on a card that says what
+   the session is doing. Squared off, since the card no longer has a rounded corner for
+   it to follow. */
+.v-h .board-repo > .tile::before {
+  border-radius: 0;
+}
+.v-h .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in oklab, var(--repo-c) 10%, var(--panel-2));
+}
+.v-h .board-repo-head:hover {
+  background: color-mix(in oklab, var(--repo-c) 16%, var(--panel-2));
+}
+.v-h .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.v-h .board-repo-head .bch-meta {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   I - Quiet box + spine. D's chrome, C's colour placement.
+   The neutral frame and solid header band of D, with the repository colour on the
+   frame's leading EDGE rather than its top - so the box says "these belong
+   together" and the spine says "and this is which repository".
+
+   The one thing it gives up relative to D is stated where it happens: the spine
+   is a second vertical rule about 10px from the card's own tone spine. It is 3px
+   against the card's 3px, so it is held at 78% and the card's runs at full
+   strength - and unlike C, there is a border and a background between them.
+   ========================================================================== */
+.v-i .board-repo {
+  flex: none;
+  gap: 7px;
+  padding: 0 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  /* BOTH coloured edges: D's top rule and C's spine, at the SAME mix and meeting at the
+     corner. Identical colour is what makes the miter between a 2px and a 3px edge invisible,
+     so the two read as one bracket around the group's leading corner rather than as two
+     separate marks that happen to share a hue. */
+  border-top: 2px solid color-mix(in oklab, var(--repo-c) 78%, transparent);
+  border-left: 3px solid color-mix(in oklab, var(--repo-c) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+}
+.v-i .board-repo:hover {
+  border-top-color: color-mix(in oklab, var(--repo-c) 92%, transparent);
+  border-left-color: color-mix(in oklab, var(--repo-c) 92%, transparent);
+}
+.v-i .board-repo > .tile,
+.v-i .board-repo > .board-cluster {
+  margin: 0 7px;
+  width: auto;
+}
+.v-i .board-repo-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  /* Flush corners: the frame clips them, so the head fills the box's top edge
+     instead of floating inside a 1px gutter. */
+  border-radius: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.v-i .board-repo-head:hover {
+  background: var(--panel-2);
+}
+.v-i .board-repo-head .bch-title {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+/* D's tag, for D's reason: the count is the one number in this row and the quiet box
+   has no tint left to separate it from the name beside it. */
+.v-i .board-repo-head .bch-meta {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--dim);
+  background: color-mix(in oklab, var(--bg) 55%, var(--panel-2));
+  font-variant-numeric: tabular-nums;
+}
+/* The spine carries the colour, as in C. A dot 9px from a 3px rule of the same hue is
+   the same fact twice, and it costs the header's first cell. */
+.v-i .brh-swatch {
+  display: none;
+}
+.v-i .board-repo.is-collapsed {
+  padding-bottom: 0;
+}
+.v-i .board-repo.is-collapsed .board-repo-head {
+  border-bottom: 0;
+}
+</style></head><body><div class="sheet"><h1>Board: how a repository group looks</h1><p class="lede">The grouping itself does not change here - same partition, same counts, same one-click disclosure, same accessible name. What changes is how the frame and its header are drawn. Every column below is the real board column at its real width, with the real cards rendered by the shipping components: two groups open, one folded away.</p><p class="lede">Three repositories, three palette entries: <code>ai-harness</code> rose, <code>escape-velocity</code> indigo, <code>mission-control</code> coral - the same hash the board uses today, so the colours are the ones you will actually get.</p><h2>The proposals, side by side</h2><div class="grid"><div class="mock"><div class="mock-cap is-current"><h3>A - Before<span class="tag">replaced</span></h3><p>What the board drew until this change: a tinted frame, a tinted header band and a text-glyph chevron. Every group is a box inside a column, and each card is a box inside that.</p></div><section class="board-col tone-working v-a"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><span class="brh-chevron" aria-hidden="true">⌄</span></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><span class="brh-chevron" aria-hidden="true">⌄</span></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><span class="brh-chevron" aria-hidden="true">⌄</span></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>B - Flush rule<span class="tag">lightest</span></h3><p>No box. The header is a label with a hairline running out to the column edge, and the cards keep the column's full width.</p></div><section class="board-col tone-working mock-alt v-b"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>C - Spine<span class="tag">structural</span></h3><p>One 2px rule down the left of the group carries the identity. No fill, no border box, 14px of gutter.</p></div><section class="board-col tone-working mock-alt v-c"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>D - Quiet box<span class="tag">closest</span></h3><p>Today's containment, without the wash: a neutral border, a solid header band, and the repository colour spent once on the frame's 2px top edge.</p></div><section class="board-col tone-working mock-alt v-d"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>E - Sticky strip<span class="tag">scrolling</span></h3><p>A full-bleed strip pinned to the top of the column body, so a column you have scrolled into still says which repository you are reading.</p></div><section class="board-col tone-working mock-alt v-e"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>F - Section label<span class="tag">quietest</span></h3><p>The register the settings pages already use: a small letter-spaced label over a full-width rule, no colour but the dot, cards at full width.</p></div><section class="board-col tone-working mock-alt v-f"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>G - Chip<span class="tag">announced</span></h3><p>The header shrinks to a pill the width of its own words. Nothing spans the column, so the group is announced rather than framed.</p></div><section class="board-col tone-working mock-alt v-g"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>H - Merged list<span class="tag">boldest</span></h3><p>The group becomes ONE surface: the cards lose their own borders and gaps and are separated by hairlines, keeping only their tone spine.</p></div><section class="board-col tone-working mock-alt v-h"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div><div class="mock"><div class="mock-cap"><h3>I - Quiet box + spine<span class="tag">shipped</span></h3><p>D and C together: neutral border, solid header band, count tag - and the repository colour on both edges, D's top rule and C's spine, meeting at the corner.</p></div><section class="board-col tone-working mock-alt v-i"><header class="board-col-head"><span class="board-swatch" aria-hidden="true"></span><h2>working</h2><span class="board-col-n">4</span></header><div class="board-col-body"><div class="board-repo" style="--repo-c:#ee6392"><button class="board-cluster-head board-repo-head" aria-label="Collapse ai-harness - /Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">ai-harness</span><span class="bch-meta">2 of 8</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/ai-harness - 2 of 8 sessions in this repository, on this board</span><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Add search to document preview mode" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Add search to document preview mode</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Add search to document preview mode</span><span id="_R_12_" class="tt-desc">Open Add search to document preview mode</span></span><span class="tile-goal">Implement Cmd+F/Ctrl+F search functionality for document preview and edit modes with multiple proposed options</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">plan.md is written; plan.html was not. Continuing from there.</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:15%"></span></span><span class="rt-ctx-num">15%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-xhigh rt-think-btn" aria-label="Reasoning effort: xhigh. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>xhigh<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: xhigh - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/we-need-command-f-or-ctrl-f-to-a-979a29</span><span class="tile-seen">55s ago</span></span></div><div class="tile tone-working"><button type="button" class="tile-open" aria-label="Open Repository group visual refresh" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Repository group visual refresh</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Repository group visual refresh</span><span id="_R_12_" class="tt-desc">Open Repository group visual refresh</span></span><span class="tile-goal">Redesign the expandable repository groupings on the board</span><span class="tile-activity"><span class="ta-glyph" aria-hidden="true">⟳</span><span class="ta-txt">reading src/web/styles.css</span></span><span class="tile-marks"><span class="tile-flag runtime-flag" aria-label="This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one." aria-describedby="_R_n_">◈ Agent SDK</span><span id="_R_n_" class="tt-desc">This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.</span></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Opus 5<span class="rt-1m">1M</span></span><span id="_R_4p_" class="tt-desc">Model: claude-opus-5[1m]</span><span class="rt-ctx rt-ctx-ok" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:41%"></span></span><span class="rt-ctx-num">41%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-high rt-think-btn" aria-label="Reasoning effort: high. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>high<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: high - click to change it for this session</span><button class="mode mode-accept mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">auto<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/i-like-the-functionality-in-thes-a5efa4</span><span class="tile-seen">8s ago</span></span></div></div><div class="board-repo is-collapsed" style="--repo-c:#e0714a"><button class="board-cluster-head board-repo-head" aria-label="Expand mission-control - /Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board" aria-expanded="false" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">mission-control</span><span class="bch-meta">1 of 4</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/mission-control - 1 of 4 sessions in this repository, on this board</span></div><div class="board-repo" style="--repo-c:#7b7ef0"><button class="board-cluster-head board-repo-head" aria-label="Collapse escape-velocity - /Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here" aria-expanded="true" aria-describedby="_R_0_"><span class="brh-swatch" aria-hidden="true"></span><span class="bch-title">escape-velocity</span><span class="bch-meta">1 agent</span><svg class="brh-chevron" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.8 4.4 6 7.8l3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><span id="_R_0_" class="tt-desc">/Users/jordan.mance/workspace/escape-velocity - 1 session, all of them here</span><div class="tile tone-idle"><button type="button" class="tile-open" aria-label="Open Guided setup inventory" aria-current="false" aria-describedby="_R_1_"></button><span id="_R_1_" class="tt-desc">Open Guided setup inventory</span><span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757" aria-hidden="true"></span><span class="tile-name" aria-describedby="_R_12_">Guided setup inventory</span><span id="_R_12_" class="tt-desc">Open Guided setup inventory</span></span><span class="tile-goal">Add a guided Setup inventory for external tooling</span><span class="tile-marks"></span><span class="tile-runtime-line"><span class="card-runtime"><span class="rt-pill rt-model" aria-describedby="_R_4p_">Sonnet 5</span><span id="_R_4p_" class="tt-desc">Model: claude-sonnet-5</span><span class="rt-ctx rt-ctx-warn" aria-describedby="_R_cp_"><span class="rt-meter" aria-hidden="true"><span class="rt-meter-fill" style="width:73%"></span></span><span class="rt-ctx-num">73%</span></span><span id="_R_cp_" class="tt-desc">124k / 200k tokens in context</span></span><button class="rt-pill rt-think rt-think-medium rt-think-btn" aria-label="Reasoning effort: medium. Change effort for this session" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_59_"><span class="rt-think-glyph" aria-hidden="true">✦</span>medium<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_59_" class="tt-desc">Reasoning effort: medium - click to change it for this session</span><button class="mode mode-plan mode-btn" aria-haspopup="menu" aria-expanded="false" aria-describedby="_R_5p_">plan<span class="mode-caret" aria-hidden="true">⌄</span></button><span id="_R_5p_" class="tt-desc">Plan mode - read-only; the agent plans before acting - click to change (or Shift+Tab in the terminal)</span></span><span class="tile-foot"><span class="tile-branch">harness/guided-setup-inventory-31c0a1</span><span class="tile-seen">10m ago</span></span></div></div></div></section></div></div><h2>What each one trades</h2><div class="notes"><div class="note"><h4>A - Before</h4><ul><li><b>Three nested boxes</b> - column, group, card - and the group's tint sits between the other two, so the card's own tone spine competes with it.</li><li><b>The hue is spent on area.</b> A 6% wash over the body plus 11% over the head is enough colour to read as a state, which is the one thing a repository must not read as.</li><li><b>The chevron is a text glyph</b> (⌄), so it sits off the row's optical centre.</li><li><b>16px of the column</b> goes to the frame's border and inset on every group.</li></ul></div><div class="note"><h4>B - Flush rule</h4><ul><li><b>Nothing nests.</b> The cards sit at the same width and indent as an ungrouped card, so the group costs one 15px row and no horizontal space.</li><li><b>The colour becomes a line</b> - a swatch and the near end of the hairline - which is about a tenth of the pixels the current tint spends on it.</li><li>Weakest containment of the four: where a group <i>ends</i> is read from the next header, not from an edge. Least suited to a column with many small groups.</li></ul></div><div class="note"><h4>C - Spine</h4><ul><li><b>The group's extent is visible</b> without a box: the spine starts at the header and stops at the last card, which is exactly the fact the frame was drawing.</li><li><b>The colour lands on an edge</b>, where a hue can run near full strength without reading as a fill - the same trick the card's own tone spine already uses.</li><li>The 14px gutter is the cost, and it is paid once per group rather than twice.</li><li><b>Two vertical rules, 12px apart</b> - the group's spine and the card's own tone spine - which is the honest weakness here. Kept at 48% so the saturated one stays the card's.</li></ul></div><div class="note"><h4>D - Quiet box</h4><ul><li><b>Keeps the frame</b>, so nothing about scanning or drag targets changes - this is the smallest departure from what is on the board now.</li><li><b>One 2px top edge</b> instead of two translucent tints, and on the top rather than the side so it never reads as a second card spine. The head is a band, not a coloured pill.</li><li><b>The count becomes a tag</b>, which is what separates it from the name now that there is no tint to do it.</li><li>Still nests: 14px of column width per group, and a run cluster inside is still a box in a box.</li></ul></div><div class="note"><h4>E - Sticky strip</h4><ul><li><b>Survives the scroll.</b> The only proposal that answers "which repository is this card in" after the header has scrolled past - scroll a column to see it.</li><li><b>Full-bleed</b> to the column's edges, which is what makes it read as a section band rather than as a floating pill.</li><li><b>The cards keep the full width</b>, as in B - the strip is the only structure.</li><li>Costs the strip's opacity: it must hide the cards passing under it, so it is the one proposal that puts a solid surface over the column background.</li></ul></div><div class="note"><h4>F - Section label</h4><ul><li><b>Not a new invention.</b> This is the section heading the settings pages already draw, so a repository group reads like every other group of things in the app.</li><li><b>The rule runs the column's width</b> and sits under the label, which is what makes it a section rather than a card with a title.</li><li>The name goes uppercase and letter-spaced, so it stops competing with the card titles below it - and stops being monospace, which is the one identity cue it gives up.</li></ul></div><div class="note"><h4>G - Chip</h4><ul><li><b>Nothing spans the column but the cards.</b> The header is as wide as its words, so the column's background reads through beside it and the cards are the only full-width thing in the column.</li><li><b>The tint comes back, but on 90px instead of a whole frame</b> - a chip is small enough to carry the repository's hue without reading as a state.</li><li>Smallest hit target of the set: a pill, not a row. Still 24px tall, which clears the minimum, but it is the one option where the control is not the full width.</li></ul></div><div class="note"><h4>H - Merged list</h4><ul><li><b>Removes the nesting by removing the inner box.</b> Two thirds of what makes today's frame look heavy is the card's own border repeating 8px inside the frame's, and this is the only proposal that addresses that directly.</li><li><b>Densest of the set.</b> The gaps between cards inside a group go to zero, so a four-card group is about 30px shorter.</li><li><b>The only proposal that changes the card.</b> A card inside a group stops looking like a card outside one, which is a real cost: the board teaches that a tile is a tile.</li></ul></div><div class="note"><h4>I - Quiet box + spine</h4><ul><li><b>Containment and identity, separately.</b> The box is the group and the coloured bracket is the repository, so neither has to be read off a tint - which is the one thing today's frame asks a translucent wash to do twice.</li><li><b>Both edges, one mix.</b> The 2px top and the 3px spine are the same colour, so the miter where they meet is invisible and they read as one bracket rather than two marks that happen to share a hue.</li><li><b>The swatch goes.</b> A dot 9px from a 3px rule of the same hue is the same fact twice.</li><li><b>Two vertical rules again</b>, about 10px apart - but unlike C there is a border and a background between them, and the spine is held at 78% so the saturated one stays the card's. This is the most colour of any proposal here.</li><li>Costs the same 14px of column width per group that D does.</li></ul></div></div></div></body></html>

@@ -7,6 +7,7 @@ import {
   ENVIRONMENT_CHECK_INFO,
 } from "../src/shared/environment-checks.ts";
 import { ENVIRONMENT_CHECKS, environmentCheckViews } from "../src/server/environment/index.ts";
+import { upstartclawCoreReady } from "../src/server/environment/upstartclaw.ts";
 import type { EnvironmentDeps, FileRead } from "../src/server/environment/types.ts";
 
 // What is at stake: this surface warns an operator about somebody ELSE'S installation, at
@@ -98,6 +99,23 @@ test("a machine with no UpstartClaw at all says nothing", async () => {
   const view = await claw({});
   assert.equal(view.warning, null);
   assert.equal(view.detail, null);
+});
+
+test("an unattended UpstartClaw query requires both the installed plugin and completed setup", async () => {
+  assert.equal(await upstartclawCoreReady(deps({})), false);
+  assert.equal(
+    await upstartclawCoreReady(
+      deps({ files: { [STATE]: text("completed\n") }, dirs: INSTALLED_LAYOUT }),
+    ),
+    true,
+  );
+  assert.equal(
+    await upstartclawCoreReady(
+      deps({ files: { [STATE]: text("in_progress") }, dirs: INSTALLED_LAYOUT }),
+    ),
+    false,
+    "a state that passes the interactive setup gate is not reliable enough for a background sweep",
+  );
 });
 
 // The uninstall case, and the reason installation is checked BEFORE the state file rather

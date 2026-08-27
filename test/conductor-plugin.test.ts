@@ -34,6 +34,121 @@ const REPO = "/w/demo";
 const WORKTREE = "/w/demo/.worktrees/a-feature";
 
 /**
+ * The exhaustive event vocabulary synced into ai-conductor 0.104.0 at `1631544a`.
+ *
+ * Written out independently of the plugin's allowlist so deleting a subscription cannot
+ * make the test agree with the deletion. Conductor's emitter has no wildcard and the union
+ * is not published as a runtime value, so this pinned contract is the only local tripwire
+ * for a supported kind disappearing from the live delivery path.
+ */
+const AI_CONDUCTOR_0_104_0_EVENT_TYPES = [
+  "acceptance_red",
+  "attribution_divergence",
+  "auto_heal",
+  "auto_park",
+  "auto_park_contradiction",
+  "build_member_evidence_recomputed",
+  "build_member_evidence_reused",
+  "build_no_progress",
+  "build_progress",
+  "build_review_base",
+  "build_review_cache_hit",
+  "build_review_disposition_accepted",
+  "build_review_disposition_refused",
+  "build_review_disposition_version_invalidated",
+  "build_review_mechanical_allowance_exhausted",
+  "build_review_outer_verdict",
+  "build_review_reduced_coverage_accepted",
+  "build_review_repair_context",
+  "build_review_rubric_infrastructure_failure",
+  "build_review_rubric_prompt",
+  "build_review_rubric_result",
+  "build_review_rubric_skipped",
+  "build_review_rubric_started",
+  "build_review_stale_aggregate",
+  "build_review_stale_mirage_regrade",
+  "build_stall",
+  "checkpoint_reached",
+  "ci_failed",
+  "config_deprecated_key",
+  "config_skip",
+  "contained_live_checkout_drift",
+  "containment_check_unresolved",
+  "credentials_park",
+  "credentials_park_progress",
+  "dashboard_refresh",
+  "deprecated_step",
+  "feature_complete",
+  "feature_usage_total",
+  "finish_publication_blocked",
+  "finish_publication_disposition",
+  "finish_publication_transition",
+  "gate_blocked",
+  "gate_verdict",
+  "group_member_step",
+  "halt_cleared",
+  "halt_marker_write_failed",
+  "halt_record_push_failed",
+  "halt_record_write_failed",
+  "halt_record_written",
+  "kickback",
+  "loop_converged",
+  "loop_halt",
+  "mode_skip",
+  "navigation_back",
+  "operator_park_boundary",
+  "operator_rewind",
+  "over_scope_decision",
+  "parallel_completed",
+  "parallel_failure",
+  "parallel_started",
+  "pipeline_closeout",
+  "plan_growth",
+  "protected_artifact_rebaseline",
+  "protected_artifact_rebaseline_refused",
+  "protected_artifact_reseal",
+  "protected_artifact_reseal_refused",
+  "provider_attempt",
+  "provider_fallback",
+  "provider_stream_progress",
+  "rate_limit",
+  "rebase_changed",
+  "rebase_citation_residue",
+  "rebase_conflict_halt",
+  "rebase_gate_invalidated",
+  "rebase_gate_preserved",
+  "rebase_gate_reverified",
+  "rebase_mergeable_skip",
+  "rebase_noop",
+  "rebase_resolution_attempt",
+  "rebase_resolution_exhausted",
+  "rebase_resolution_failed",
+  "rebase_resolution_succeeded",
+  "recovery_needed",
+  "remediation_sealed_artifact_redirect",
+  "renderer_error",
+  "retry_decision",
+  "scratch_cleanup_failed",
+  "scratch_cleanup_reclaimed",
+  "scratch_cleanup_retained",
+  "self_host_containment_verdict",
+  "session_policy",
+  "session_reset",
+  "step_completed",
+  "step_failed",
+  "step_refused",
+  "step_retry",
+  "step_started",
+  "test_suite_verification",
+  "tier_skip",
+  "unattributed_dispatch",
+  "unattributed_progress",
+  "verdict_freshness",
+  "when_skip",
+  "zero_work_product",
+] as const;
+
+/**
  * A stand-in for `ConductorEventEmitter`.
  *
  * Per-type handler sets and no wildcard, which is the shape that forces the plugin to
@@ -80,17 +195,24 @@ function recordingFetch(reply: { ok: boolean; status: number } = { ok: true, sta
   return { calls, fetchImpl };
 }
 
-test("it subscribes per event type, because the bus has no wildcard", () => {
+test("it subscribes to the complete ai-conductor 0.104.0 event union", () => {
   const bus = stubBus();
   const plugin = createMissionControlVisualizer({ worktree: WORKTREE, token: "t" });
   plugin.start(bus);
+  assert.deepEqual(FORWARDED_EVENT_TYPES, AI_CONDUCTOR_0_104_0_EVENT_TYPES);
   assert.equal(bus.subscribed(), FORWARDED_EVENT_TYPES.length);
-  assert.ok(FORWARDED_EVENT_TYPES.includes("step_completed"));
   // The kinds conductor does NOT persist are the ones only this path can deliver, so their
   // absence from the list would make the plugin pointless for exactly the events it exists
   // for. Named individually rather than counted, so a regenerated list that quietly lost one
   // fails here.
-  for (const unpersisted of ["gate_verdict", "loop_halt", "halt_cleared", "pipeline_closeout"]) {
+  for (const unpersisted of [
+    "build_review_disposition_accepted",
+    "build_review_reduced_coverage_accepted",
+    "build_review_disposition_refused",
+    "gate_verdict",
+    "halt_cleared",
+    "pipeline_closeout",
+  ] as const) {
     assert.ok(FORWARDED_EVENT_TYPES.includes(unpersisted), `${unpersisted} must be forwarded`);
   }
 });
@@ -183,9 +305,9 @@ test("a daemon that is not there costs one warning and no exception", async () =
 });
 
 test("a batch the daemon could not take is retried, not dropped", async () => {
-  // The case the file tail cannot rescue. Conductor persists 44 of its 74 event kinds, so
-  // for a gate verdict or a halt this plugin is the only record that will ever exist - and a
-  // daemon restart is an ordinary event, not an exotic one.
+  // The case the file tail cannot rescue. Conductor persists 76 of its 104 event kinds, so
+  // for a gate verdict or a halt clear this plugin is the only Mission Control event record
+  // that will ever exist - and a daemon restart is an ordinary event, not an exotic one.
   let down = true;
   const delivered: Record<string, unknown>[] = [];
   const fetchImpl = (async (_url: unknown, init: unknown) => {

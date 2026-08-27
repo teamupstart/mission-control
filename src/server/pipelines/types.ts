@@ -4,6 +4,7 @@ import type {
   PipelineConsole,
   PipelineDaemonState,
   PipelineInstallerCandidate,
+  PipelineInstallerRuntime,
   PipelineProbe,
   PipelineProviderId,
   PipelineRepoRegistrationResult,
@@ -156,6 +157,8 @@ export interface PipelineProvider {
    * terminal layer sees it.
    */
   installer?: {
+    /** Read-only preflight plus the environment that pins the terminal to that runtime. */
+    runtime(): Promise<PipelineInstallerRuntimePreparation>;
     candidates(repoRoots: readonly string[]): Promise<PipelineInstallerCandidate[]>;
     terminalArgv(checkout: string): Promise<
       | {
@@ -197,8 +200,8 @@ export interface PipelineProvider {
    *
    * NULL IS NOT AN EMPTY SET, and the caller's response differs from `readRepo`'s. There,
    * "could not look" must not retire a projection. Here, on a door, it refuses: an
-   * unreadable directory cannot license a durable write, and the file tail still backfills
-   * whatever was turned away.
+   * unreadable directory cannot license a durable write. The file tail later backfills only
+   * events Conductor persisted; an unpersisted event refused here has no recovery path.
    *
    * A provider that saw only PART of the truth still answers with the part it saw, rather
    * than with null. The two are different claims and only one of them is "I cannot look at
@@ -273,6 +276,12 @@ export interface PipelineProvider {
     intent: string,
     repoRoot: string,
   ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
+}
+
+/** Server-only runtime evidence. `terminalEnv` never crosses the browser wire. */
+export interface PipelineInstallerRuntimePreparation {
+  reading: PipelineInstallerRuntime;
+  terminalEnv: Readonly<Record<string, string>>;
 }
 
 /** What a control verb acts on. `slug` is null for a repository-scoped verb. */

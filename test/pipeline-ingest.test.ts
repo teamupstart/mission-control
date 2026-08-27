@@ -25,6 +25,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -34,6 +35,7 @@ import { join } from "node:path";
 
 import type { PipelinesView } from "../src/shared/pipeline.ts";
 import type { ConductorIngestOutcome } from "../src/shared/protocol.ts";
+import { createMissionControlVisualizer } from "../integrations/ai-conductor/mission-control/index.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-ingest-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -137,6 +139,24 @@ function line(
   });
 }
 
+/** The real per-type emitter shape the plugin receives from ai-conductor. */
+function conductorBus() {
+  const handlers = new Map<string, Set<(event: Record<string, unknown>) => unknown>>();
+  return {
+    on(type: string, handler: (event: Record<string, unknown>) => unknown): void {
+      const held = handlers.get(type) ?? new Set();
+      held.add(handler);
+      handlers.set(type, held);
+    },
+    off(type: string, handler: (event: Record<string, unknown>) => unknown): void {
+      handlers.get(type)?.delete(handler);
+    },
+    emit(event: Record<string, unknown>): unknown[] {
+      return [...(handlers.get(String(event.type)) ?? [])].map((handler) => handler(event));
+    },
+  };
+}
+
 test("a push with no token is refused, and stores nothing", async () => {
   const { push } = fixture();
   seedConductorRun(repo, "a-feature", { steps: { build: "in_progress" } });
@@ -200,6 +220,78 @@ test("a kind this build has never heard of is stored, not refused", async () => 
   assert.deepEqual(
     pipelineEvents("ai-conductor", repo, "a-feature").map((r) => r.kind),
     ["quantum_gate_entangled", "unknown"],
+  );
+});
+
+test("new refusal and review-coverage events traverse the live spine before the next tick", async () => {
+  const liveRepo = gitRepo("live-coverage-repo");
+  const { registry, request } = fixture([liveRepo]);
+  const slug = "live-coverage";
+  const worktree = seedConductorRun(liveRepo, slug, {
+    steps: { worktree: "done", build: "in_progress" },
+    lastStep: "build",
+    events: [],
+  });
+  seedConductorDaemon(liveRepo, { pid: process.pid });
+  await refreshPipelineRepo(registry, "ai-conductor", liveRepo);
+  assert.equal(registry.listPipelineRuns().find((run) => run.slug === slug)?.group, "building");
+
+  // Conductor writes its authoritative state first, then emits. The reduced-coverage event
+  // deliberately does not enter events.jsonl, so only the plugin can put it on Mission
+  // Control's event timeline. The state projection remains file-owned and is merely folded
+  // early by the same accepted batch.
+  seedConductorRun(liveRepo, slug, {
+    steps: { worktree: "done", build: "done" },
+    lastStep: "build",
+    halt: "build review continued with operator-approved reduced coverage",
+    haltClass: "needs-human",
+  });
+  const projected: string[] = [];
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "pipeline_upsert" && event.run.slug === slug) projected.push(event.run.group);
+  });
+  const fetchImpl = ((url: string | URL | Request, init?: RequestInit) =>
+    request(new URL(String(url)).pathname, init)) as typeof fetch;
+  const plugin = createMissionControlVisualizer({
+    worktree,
+    token: ensureToken(),
+    url: "http://127.0.0.1:7317",
+    fetchImpl,
+  });
+  const bus = conductorBus();
+  plugin.start(bus);
+  assert.deepEqual(bus.emit({
+    type: "step_refused",
+    step: "build_review",
+    kind: "needs-human",
+    reason: "mechanical rubric coverage was reduced",
+  }), [undefined]);
+  assert.deepEqual(bus.emit({
+    type: "build_review_reduced_coverage_accepted",
+    feature: slug,
+    lapId: "lap-2",
+    rubric: "test-quality",
+    reason: "browser tooling unavailable",
+    operator: "operator",
+  }), [undefined]);
+  await plugin.stop();
+  await drainPipelineRefreshes(registry);
+  unsubscribe();
+
+  assert.equal(
+    readFileSync(join(worktree, ".pipeline", "events.jsonl"), "utf8").trim(),
+    "",
+    "the tail has no copy to recover",
+  );
+  const timeline = pipelineEvents("ai-conductor", liveRepo, slug);
+  assert.deepEqual(timeline.map((row) => [row.kind, row.source, row.producerSeq]), [
+    ["step_refused", "ingest", 1],
+    ["build_review_reduced_coverage_accepted", "ingest", 2],
+  ]);
+  assert.deepEqual(projected, ["halted"], "the live batch should publish one immediate SSE projection");
+  assert.equal(
+    registry.listPipelineRuns().find((run) => run.slug === slug)?.halt?.class,
+    "needs-human",
   );
 });
 
@@ -560,9 +652,9 @@ test("a run being pushed about does not have its ledger re-read per batch", asyn
   await refreshPipelineRepo(registry, "ai-conductor", repo);
   assert.equal(countPipelineEvents("ai-conductor", repo, "a-feature"), 1);
 
-  // The engine appends a kind this build's plugin never subscribed to - conductor's bus has
-  // no wildcard - so this event exists ONLY in the file. It is the exact thing the sweep is
-  // for, and the exact thing that never arrives by push.
+  // The engine appends a persisted kind this build's plugin never subscribed to -
+  // conductor's bus has no wildcard - so this event exists ONLY in the file. It is the exact
+  // thing the sweep is for, and the exact thing that never arrives by push.
   appendFileSync(
     join(conductorWorktree(repo, "a-feature"), ".pipeline", "events.jsonl"),
     `${JSON.stringify({ type: "a_kind_the_plugin_never_subscribed_to" })}\n`,

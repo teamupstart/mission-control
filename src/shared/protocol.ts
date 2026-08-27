@@ -3265,7 +3265,7 @@ export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
  * The envelope is deliberately thin, and the thinness is the point: four addressing fields
  * that Mission Control has to be able to read, wrapped around an `event` it reads almost
  * nothing of. `event` is `unknown`-valued on purpose. ai-conductor's event union is
- * TypeScript-only, unversioned and seventy-odd members long, so a schema that described its
+ * TypeScript-only, unversioned and 104 kinds long, so a schema that described its
  * members would be a second copy of a contract with no first copy - and its first effect
  * would be to refuse the events of a conductor release newer than this build. What arrives
  * is stored verbatim and read for two fields (`type`, `ts`) it may not carry.

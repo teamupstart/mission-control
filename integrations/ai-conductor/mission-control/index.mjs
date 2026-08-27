@@ -24,12 +24,13 @@ import { basename, dirname, join, sep } from "node:path";
 //    says so once.
 //  - **A failed delivery is RETRIED, not discarded.** This is the one place the "best-effort
 //    is safe because the tail backfills it" argument does not hold, so it is worth being
-//    exact about where it stops. Conductor persists 44 of its 74 event kinds to
-//    `events.jsonl`; `gate_verdict`, `loop_halt`, `halt_cleared`, `pipeline_closeout` and the
-//    rest of the unpersisted set reach `daemon.log` as text and nowhere else. For those, this
-//    plugin is the only durable record there is, and a batch dropped because the daemon was
-//    restarting is gone for good. So a failed batch goes back to the front of the queue and
-//    is retried with backoff; what is still bounded is the BUFFER, not the attempt.
+//    exact about where it stops. Conductor persists 76 of its 104 event kinds to
+//    `events.jsonl`; `build_review_reduced_coverage_accepted`, `gate_verdict`,
+//    `halt_cleared`, `pipeline_closeout` and the rest of the unpersisted set have no file-tail
+//    recovery path. For those, this plugin is the only Mission Control record there is, and a
+//    batch dropped because the daemon was restarting is gone for good. So a failed batch goes
+//    back to the front of the queue and is retried with backoff; what is still bounded is the
+//    BUFFER, not the attempt.
 //  - **Except at shutdown, which is where that stops.** `stop()` runs its drain under a
 //    deadline, and a deadline that expires has nowhere to put the batch: conductor is
 //    exiting, this plugin writes nothing to disk, and there is no next attempt. Those events
@@ -86,7 +87,7 @@ const MAX_RETRY_MS = 30_000;
  * The in-flight request is aborted and its batch is requeued, which inside the deadline means
  * another attempt - and past the deadline means nothing at all. `stop()` returns to a
  * conductor that is exiting, and a buffer this process never wrote down dies with it. For
- * everything conductor persists the file tail still has it; for the 30 kinds it does not, the
+ * everything conductor persists the file tail still has it; for the 28 kinds it does not, the
  * events are gone. Two seconds is the price of the engine's exit not being ours to hold.
  */
 const SHUTDOWN_MS = 2_000;
@@ -107,7 +108,7 @@ const SHUTDOWN_MS = 2_000;
 const SHUTDOWN_RETRY_MS = 50;
 
 /**
- * The event kinds this build forwards, frozen at ai-conductor 8b51392d.
+ * The event kinds this build forwards, frozen at ai-conductor 0.104.0 (`1631544a`).
  *
  * Enumerated because conductor's bus has no wildcard: `.on()` takes one type. So this list
  * is what a copy of this directory knows about, for ever, and a conductor release that adds
@@ -131,11 +132,28 @@ export const FORWARDED_EVENT_TYPES = Object.freeze([
   "build_no_progress",
   "build_progress",
   "build_review_base",
+  "build_review_cache_hit",
+  "build_review_disposition_accepted",
+  "build_review_disposition_refused",
+  "build_review_disposition_version_invalidated",
+  "build_review_mechanical_allowance_exhausted",
+  "build_review_outer_verdict",
+  "build_review_reduced_coverage_accepted",
+  "build_review_repair_context",
+  "build_review_rubric_infrastructure_failure",
+  "build_review_rubric_prompt",
+  "build_review_rubric_result",
+  "build_review_rubric_skipped",
+  "build_review_rubric_started",
+  "build_review_stale_aggregate",
   "build_review_stale_mirage_regrade",
   "build_stall",
   "checkpoint_reached",
   "ci_failed",
+  "config_deprecated_key",
   "config_skip",
+  "contained_live_checkout_drift",
+  "containment_check_unresolved",
   "credentials_park",
   "credentials_park_progress",
   "dashboard_refresh",
@@ -149,22 +167,30 @@ export const FORWARDED_EVENT_TYPES = Object.freeze([
   "gate_verdict",
   "group_member_step",
   "halt_cleared",
+  "halt_marker_write_failed",
+  "halt_record_push_failed",
+  "halt_record_write_failed",
+  "halt_record_written",
   "kickback",
   "loop_converged",
   "loop_halt",
   "mode_skip",
   "navigation_back",
   "operator_park_boundary",
+  "operator_rewind",
+  "over_scope_decision",
   "parallel_completed",
   "parallel_failure",
   "parallel_started",
   "pipeline_closeout",
+  "plan_growth",
   "protected_artifact_rebaseline",
   "protected_artifact_rebaseline_refused",
   "protected_artifact_reseal",
   "protected_artifact_reseal_refused",
   "provider_attempt",
   "provider_fallback",
+  "provider_stream_progress",
   "rate_limit",
   "rebase_changed",
   "rebase_citation_residue",
@@ -182,10 +208,15 @@ export const FORWARDED_EVENT_TYPES = Object.freeze([
   "remediation_sealed_artifact_redirect",
   "renderer_error",
   "retry_decision",
+  "scratch_cleanup_failed",
+  "scratch_cleanup_reclaimed",
+  "scratch_cleanup_retained",
+  "self_host_containment_verdict",
   "session_policy",
   "session_reset",
   "step_completed",
   "step_failed",
+  "step_refused",
   "step_retry",
   "step_started",
   "test_suite_verification",
@@ -506,10 +537,9 @@ export function createMissionControlVisualizer(options = {}) {
    * down still costs a bounded amount of memory, it just spends it on the oldest events
    * instead of discarding them at the door.
    *
-   * This matters more than a retry usually would. Conductor persists 44 of its 74 event kinds
-   * to `events.jsonl`; for the other 30 - gate verdicts, halts, closeouts - a delivery this
-   * plugin gives up on is the only record that ever existed. The file tail cannot backfill
-   * what was never written to a file.
+   * This matters more than a retry usually would. Conductor persists 76 of its 104 event
+   * kinds to `events.jsonl`; for the other 28 - reduced-coverage acceptances, gate verdicts,
+   * halt clears, closeouts - a delivery this plugin gives up on has no file-tail recovery.
    */
   const requeue = (batch) => {
     failures += 1;
@@ -686,7 +716,7 @@ export function createMissionControlVisualizer(options = {}) {
       // deadline. It is still where delivery ends: this returns into a conductor that is
       // exiting, `stopped` has already closed the retry schedule, and nothing here writes to
       // disk, so a buffer that is not empty when this returns is a buffer that is lost. The
-      // file tail covers everything conductor persists; the 30 kinds it does not persist are
+      // file tail covers everything conductor persists; the 28 kinds it does not persist are
       // the ones this costs, and the README says so in those words.
       //
       // The in-flight request is settled FIRST, because `flush()` hands back the open one
@@ -700,7 +730,7 @@ export function createMissionControlVisualizer(options = {}) {
       // trying again, not a reason to stop: the commonest way to get one is a daemon being
       // restarted, which refuses instantly and is back within a second, well inside a budget
       // that exists for exactly this. Treating that first refusal as terminal threw away
-      // events while holding two unspent seconds, and for the 30 kinds conductor does not
+      // events while holding two unspent seconds, and for the 28 kinds conductor does not
       // persist there is nothing to recover them from.
       //
       // The pause is what keeps the retry honest rather than hot: a refused connection returns

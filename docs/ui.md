@@ -488,8 +488,7 @@ then Actions, then Commands, then Workflows, because a workflow is built out of 
 three and the builder's node palette is exactly those three assets. The Library's own shelf
 order is left alone; a page reordered to match a tour would be the tour dictating the product.
 
-1. **The Library** opens `#/library` and names the six shelves by the question each one heads,
-   reading those questions from the shelf registry rather than restating them.
+1. **The Library** opens `#/library` and names the six shelves with a short description of each.
 2. **The Persona library** opens a shipped built-in Persona and spotlights the rail's System,
    Built-in and Yours groups.
 3. **What a Persona is** spends two beats on one lesson: the property chips, then the guidance
@@ -498,7 +497,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    edit** - the ownership rule stated by the control rather than by a sentence.
 5. **The Action library** opens a shipped built-in Session action on the same rail and
    workspace grammar.
-6. **The contract, and the instruction** spotlights the labelled **Session action contract**
+6. **Optional: Associated a skill to an action** spotlights the labelled **Session action contract**
    region - the `requires skill` and `completes when` chips and the sentence they form - and
    then the instruction editor.
 7. **A Command slot** opens `#/library/commands/test` and spotlights the default rule.

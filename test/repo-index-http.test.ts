@@ -141,6 +141,13 @@ test("the environment override wins and preserves the saved rows read-only", asy
   assert.equal(view.directories[0]?.repoCount, 1);
   assert.deepEqual(view.savedDirectories.map((row) => row.path), ["~/workspace"]);
   assert.equal(view.savedDirectories[0]?.repoCount, null);
+
+  const refused = await putDirectories(["~/dev"]);
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "Repository index directories are read-only while MISSION_WORKSPACE_DIRS is set.",
+  });
+  assert.deepEqual((await getView()).savedDirectories.map((row) => row.path), ["~/workspace"]);
 });
 
 test("validation refuses empty, relative, broad, duplicate, and oversized lists", async () => {

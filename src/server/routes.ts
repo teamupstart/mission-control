@@ -344,6 +344,7 @@ import {
   repoIndexView,
   setRepoIndexConfig,
 } from "./repo-index.ts";
+import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -2976,6 +2977,12 @@ export function buildApp(
   // launch-time authority; when present, the view says so and the saved list is read-only.
   app.get("/api/repo-index", async (c) => c.json(await repoIndexView()));
   app.put("/api/repo-index", async (c) => {
+    const override = repositoryIndexEnvironmentOverride();
+    if (override) {
+      return c.json({
+        error: `Repository index directories are read-only while ${override.variable} is set.`,
+      }, 409);
+    }
     const parsed = await parseBody(c, RepoIndexConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     try {

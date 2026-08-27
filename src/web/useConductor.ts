@@ -366,7 +366,7 @@ export function useConductor(active: boolean): ConductorState {
         await queued;
         const result = await openPipelineInstaller({ provider, checkout, backend });
         if (result.outcome === "opened") {
-          setInstallerNotice({ tone: "ok", detail: result.detail });
+          setInstallerNotice({ tone: "attention", detail: result.detail });
           return true;
         }
         if (result.outcome === "maybe-opening") {

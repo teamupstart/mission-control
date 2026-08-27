@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { overlayKeyFromEnv } from "../src/server/registry.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
@@ -30,22 +29,48 @@ const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
 const fakeBin = join(dir, "fake-claude.sh");
 const runArgs = join(dir, "args");
 const runStdin = join(dir, "stdin");
+const runReady = join(dir, "ready");
+const runPid = join(dir, "pid");
 process.env.RUN_ARGS = runArgs;
 process.env.RUN_STDIN = runStdin;
+process.env.RUN_READY = runReady;
+process.env.RUN_PID = runPid;
 writeFileSync(
   fakeBin,
   `#!/bin/sh
 cat > "$RUN_STDIN"
 : > "$RUN_ARGS"
-for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
-printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
-  "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS"
+stream_output=
+previous=
+for a in "$@"; do
+  printf '%s\\n' "$a" >> "$RUN_ARGS"
+  if [ "$previous" = "--output-format" ] && [ "$a" = "stream-json" ]; then stream_output=1; fi
+  previous="$a"
+done
+if [ "$RUN_CLAUDE_WAIT" = "1" ]; then
+  printf '%s' "$$" > "$RUN_PID"
+  : > "$RUN_READY"
+  sleep 60
+fi
+if [ "$stream_output" = "1" ]; then
+  printf '%s\\n' \\
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__plugin_example__search","input":{"query":"exact"}}]}}' \\
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}' \\
+    '{"type":"result","result":"model summary"}'
+else
+  printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
+    "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS"
+fi
 `,
 );
 chmodSync(fakeBin, 0o755);
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 
-const { runClaudeText } = await import("../src/server/claude-cli.ts");
+// Both imports stay below the override. `registry.ts` reaches the harness registry, which reaches
+// `claude-cli.ts`; importing the registry statically would freeze the real binary before this
+// test's fake exists and make a supposedly isolated test spend a model call.
+const { overlayKeyFromEnv } = await import("../src/server/registry.ts");
+const { runClaudeText, runClaudeToolTrace } = await import("../src/server/claude-cli.ts");
 
 function argv(): string[] {
   return readFileSync(runArgs, "utf8").split("\n").slice(0, -1);
@@ -92,6 +117,104 @@ test("text-only and empty-image print calls retain exact argv and raw stdin", as
     await runClaudeText("text-only prompt", { timeoutMs: 5_000, images });
     assert.deepEqual(argv(), ["-p", "--output-format", "json", "--tools", ""]);
     assert.equal(readFileSync(runStdin, "utf8"), "text-only prompt");
+  }
+});
+
+test("a plugin-backed print call loads and pre-approves only its selected tools", async () => {
+  const tools = "Skill,ToolSearch,mcp__plugin_example__search";
+  await runClaudeText("query the configured source", {
+    timeoutMs: 5_000,
+    tools,
+    allowedTools: tools,
+    settingSources: ["user"],
+  });
+  assert.deepEqual(argv(), [
+    "-p",
+    "--output-format",
+    "json",
+    "--tools",
+    tools,
+    "--allowed-tools",
+    tools,
+    "--setting-sources",
+    "user",
+  ]);
+});
+
+test("a tool trace retains provider output separately from Claude's summary", async () => {
+  const tools = "Skill,ToolSearch,mcp__plugin_example__search";
+  const trace = await runClaudeToolTrace("query the configured source", {
+    timeoutMs: 5_000,
+    tools,
+    allowedTools: tools,
+    settingSources: ["user"],
+  });
+
+  assert.deepEqual(argv(), [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--tools",
+    tools,
+    "--allowed-tools",
+    tools,
+    "--setting-sources",
+    "user",
+  ]);
+  assert.equal(trace.result, "model summary");
+  assert.deepEqual(trace.toolCalls, [
+    {
+      name: "mcp__plugin_example__search",
+      input: { query: "exact" },
+      output: { rows: [{ id: 1 }], pageInfo: { hasNextPage: false } },
+    },
+  ]);
+});
+
+test("a pre-aborted signal prevents a headless Claude process from spawning", async () => {
+  rmSync(runArgs, { force: true });
+  await assert.rejects(
+    runClaudeText("do not start", { timeoutMs: 60_000, signal: AbortSignal.abort() }),
+    /claude -p aborted/,
+  );
+  assert.equal(existsSync(runArgs), false, "an already-cancelled run still spawned claude -p");
+});
+
+test("an abort signal stops a live headless Claude process promptly", async () => {
+  rmSync(runReady, { force: true });
+  rmSync(runPid, { force: true });
+  process.env.RUN_CLAUDE_WAIT = "1";
+  const controller = new AbortController();
+  const run = runClaudeText("wait for cancellation", {
+    timeoutMs: 60_000,
+    signal: controller.signal,
+  });
+  try {
+    const readyBy = Date.now() + 3_000;
+    while (!existsSync(runReady) && Date.now() < readyBy) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(existsSync(runReady), true, "the fake Claude process never started waiting");
+    const pid = Number(readFileSync(runPid, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0, "the fake Claude process did not record its pid");
+    const started = Date.now();
+    controller.abort();
+    await assert.rejects(run, /claude -p aborted/);
+    let stopped = false;
+    while (!stopped && Date.now() - started < 3_000) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch (error) {
+        stopped = (error as NodeJS.ErrnoException).code === "ESRCH";
+        if (!stopped) throw error;
+      }
+    }
+    assert.equal(stopped, true, "cancellation left the detached Claude process running");
+  } finally {
+    delete process.env.RUN_CLAUDE_WAIT;
+    controller.abort();
   }
 });
 

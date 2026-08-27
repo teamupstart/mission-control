@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -61,6 +61,42 @@ export function writeConductorProjects(
 
 /** The version the fake installation reports, through its `VERSION` file. */
 export const FAKE_CONDUCTOR_VERSION = "0.101.1-e2e";
+
+/**
+ * Put a controllable `node --version` on the daemon's PATH without changing the runtime that
+ * actually executes fixture scripts. Every invocation other than the read-only version probe
+ * delegates to the real Node binary, so fake CLIs with `#!/usr/bin/env node` keep working.
+ */
+export function writeConductorNodeRuntime(home: string, version: string): string {
+  const bin = join(home, "bin", "node");
+  const nextBin = join(home, "bin", ".node-next");
+  mkdirSync(join(home, "bin"), { recursive: true });
+  writeFileSync(
+    nextBin,
+    [
+      `#!${process.execPath}`,
+      'const { spawnSync } = require("node:child_process");',
+      `const reported = ${JSON.stringify(version)};`,
+      'if (process.argv.length === 3 && process.argv[2] === "--version") {',
+      '  process.stdout.write(`v${reported}\\n`);',
+      "  process.exit(0);",
+      "}",
+      'if (process.argv.length === 4 && process.argv[2] === "-p" && process.argv[3] === "process.execPath") {',
+      '  process.stdout.write(`${process.argv[1]}\\n`);',
+      "  process.exit(0);",
+      "}",
+      "const child = spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });",
+      "process.exit(child.status ?? 1);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(nextBin, 0o755);
+  // Linux refuses an in-place write while an earlier probe still executes this shim.
+  // Replacing the directory entry keeps the old inode alive for that process and gives
+  // subsequent probes the newly selected version without an ETXTBSY race.
+  renameSync(nextBin, bin);
+  return bin;
+}
 
 /**
  * Give a disposable fixture repository the exact markers and upstream provenance the guided

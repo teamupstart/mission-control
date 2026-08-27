@@ -34,27 +34,28 @@ a source this file knows nothing about.
 
 **Never commit a token.** There is no configuration file here for one, deliberately.
 
-## It does nothing yet
+## Live lifecycle
 
-ai-conductor's plugin registry discovers `kind: visualizer` plugins, and nothing in
-production starts them - `src/index.ts` wires only the built-in OTel visualizer inline, and
-the daemon entrypoint wires none. So this plugin is found, its manifest is checked, and
-`start()` is never called.
+ai-conductor 0.104.0 starts registered `kind: visualizer` plugins on the same
+`ConductorEventEmitter` that its built-in writers use, after event persistence is attached,
+and awaits each plugin's bounded `stop()` during shutdown. This plugin therefore observes the
+existing Conductor event spine. It does not introduce a second emitter or a second projection
+authority.
 
-That is fine and expected. Mission Control observes conductor by reading its files, which
-needs no plugin at all; installing this early costs nothing and does nothing. When the
-visualizer lifecycle wiring lands upstream, it begins delivering with no further change here.
+Mission Control still observes Conductor's files independently. Installing the plugin changes
+when the daemon learns about a transition and preserves events Conductor does not persist; it
+does not change which files own run state.
 
 ## What it is for
 
-Conductor persists 44 of its 74 event kinds to each worktree's `.pipeline/events.jsonl`.
-Mission Control tails that file, so for those 44 this plugin buys **latency and nothing
+Conductor persists 76 of its 104 event kinds to each worktree's `.pipeline/events.jsonl`.
+Mission Control tails that file, so for those 76 this plugin buys **latency and nothing
 else** - the same facts, sooner.
 
-The other 30 are the point. `gate_verdict`, `loop_halt`, `halt_cleared`,
-`pipeline_closeout`, `protected_artifact_reseal` and the rest of the unpersisted set reach
-`daemon.log` as text and nowhere else. For those, this plugin is the only durable record
-there is.
+The other 28 are the point. `build_review_reduced_coverage_accepted`, `gate_verdict`,
+`halt_cleared`, `pipeline_closeout`, `protected_artifact_reseal` and the rest of the
+unpersisted set have no `events.jsonl` record. For those, this plugin is the only Mission
+Control event record there is.
 
 ## What it will not do
 
@@ -88,8 +89,8 @@ Control controls. So:
   seconds, so the first refusal is not the answer. **When the deadline expires there is
   no later.** `stop()` returns, conductor exits, and whatever is still buffered goes with the
   process - the batch is in memory rather than on a retry schedule, and this plugin writes
-  nothing to disk. `stats().buffered` is the count that was lost. For the 44 kinds conductor
-  persists, Mission Control's file tail still has them and this is a delay; for the other 30
+  nothing to disk. `stats().buffered` is the count that was lost. For the 76 kinds conductor
+  persists, Mission Control's file tail still has them and this is a delay; for the other 28
   it is a real loss, bounded to the case where the daemon was unreachable for the two seconds
   of the engine's exit.
 - **Delivery is otherwise best-effort for the events conductor persists, and only for those.**
@@ -97,11 +98,12 @@ Control controls. So:
   conductor release added a kind this build never subscribed to - is picked up by Mission
   Control's file tail, which is why the tail is never switched off, only slowed down. For
   those events, undelivered means late. **The tail can only recover what conductor wrote
-  down**, and it writes down 44 of its 74 event kinds. For the other 30 - gate verdicts,
-  halts, closeouts, the protected-artifact reseals - this plugin is the only durable record
-  there will ever be, so "best-effort" for them means exactly what it says: an event this
-  drops is gone. That is why a failed batch is retried rather than trusted to the tail, and
-  why the shutdown deadline above is the boundary worth knowing about rather than a footnote.
+  down**, and it writes down 76 of its 104 event kinds. For the other 28 - reduced-coverage
+  acceptances, gate verdicts, halt clears, closeouts, and protected-artifact reseals - this
+  plugin is the only Mission Control event record there will be, so "best-effort" for them
+  means exactly what it says: an event this drops is gone. That is why a failed batch is
+  retried rather than trusted to the tail, and why the shutdown deadline above is the
+  boundary worth knowing about rather than a footnote.
 
 ## Which run an event belongs to
 
@@ -162,9 +164,11 @@ daemon serving it.
 
 Re-copy the directory after a conductor upgrade. `harness_version` in `plugin.yml` pins the
 tested range and conductor refuses an out-of-range plugin loudly rather than starting one
-that half-works. New event kinds are not forwarded until this build's list is regenerated. For
-a kind conductor persists, the file tail picks it up on its backfill sweep meanwhile, which is
-a delay and not a loss; for a new kind it does *not* persist, nothing observes it at all until
-the list is regenerated. Re-copying promptly is what keeps that window short.
+that half-works. The current list is pinned to ai-conductor 0.104.0 (`1631544a`) and checked
+exhaustively by Mission Control's contract suite. New event kinds are not forwarded until
+this build's list is regenerated. For a kind conductor persists, the file tail picks it up on
+its backfill sweep meanwhile, which is a delay and not a loss; for a new kind it does *not*
+persist, nothing observes it at all until the list is regenerated. Re-copying promptly is
+what keeps that window short.
 
 The full picture is in `docs/pipelines.md` in the Mission Control repository.

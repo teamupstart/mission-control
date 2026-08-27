@@ -328,6 +328,7 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
     name: "Complete task and close session",
   });
   await expect(completeDialog).toBeVisible();
+  await expect(completeDialog).toContainText("will not run a retro");
   dialog = step(dashboard, "Complete the tour");
   await expect(dialog).toContainText("Tour demo");
   await expectTourButtonsCentered(dialog);

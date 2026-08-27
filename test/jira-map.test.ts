@@ -208,6 +208,7 @@ test("the skill path grants only Jira discovery tools and maps its answer withou
         assert.equal(options.allowedTools, options.tools);
         assert.deepEqual(options.settingSources, ["user"]);
         assert.equal(options.cwd, ctx.repoRoot);
+        assert.equal(options.signal, ctx.signal);
         assert.equal(options.schema, undefined, "Claude's summary is not the Jira data contract");
         checkedOptions = true;
         return {
@@ -259,6 +260,56 @@ test("the skill path refuses an unfinished setup before spawning Claude", async 
   });
   assert.equal(ran, false);
   assert.match(walk.error!, /\/upstartclaw-core:setup/);
+});
+
+test("the skill path does not spawn Claude when cancellation lands during setup checks", async () => {
+  const controller = new AbortController();
+  let ran = false;
+  const walk = await readUpstartClaw(
+    cfg({ queryVia: "upstartclaw" }),
+    { ...ctx, signal: controller.signal },
+    1,
+    {
+      ready: async () => {
+        controller.abort();
+        return true;
+      },
+      run: async () => {
+        ran = true;
+        return { result: "", toolCalls: [] };
+      },
+    },
+  );
+
+  assert.equal(ran, false);
+  assert.deepEqual(walk, {
+    issues: [],
+    error: "the sweep was abandoned",
+    advisory: null,
+  });
+});
+
+test("the skill path passes cancellation to a live run and reports an abandoned sweep", async () => {
+  const controller = new AbortController();
+  const walk = await readUpstartClaw(
+    cfg({ queryVia: "upstartclaw" }),
+    { ...ctx, signal: controller.signal },
+    1,
+    {
+      ready: async () => true,
+      run: async (_prompt, options) => {
+        assert.equal(options.signal, controller.signal);
+        controller.abort();
+        throw new Error("fake Claude process was cancelled");
+      },
+    },
+  );
+
+  assert.deepEqual(walk, {
+    issues: [],
+    error: "the sweep was abandoned",
+    advisory: null,
+  });
 });
 
 test("the skill path refuses a non-Upstart Jira site before checking setup", async () => {

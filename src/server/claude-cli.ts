@@ -111,6 +111,8 @@ export { unwrapEnvelope as resultText };
 export interface ClaudeRunOptions {
   model?: string;
   timeoutMs?: number;
+  /** Cancels the run and its detached process group. A pre-aborted signal prevents spawning. */
+  signal?: AbortSignal;
   /** A rendered JSON Schema passed to Claude Code's structured-output validator. */
   schema?: string;
   /**
@@ -158,6 +160,10 @@ function runClaudeRaw(
       images = validateLlmImages(opts.images);
     } catch (error) {
       reject(error);
+      return;
+    }
+    if (opts.signal?.aborted) {
+      reject(new Error("claude -p aborted"));
       return;
     }
     // `--tools` with an empty value is a valid Claude Code CLI flag (verified to exit 0)
@@ -232,14 +238,23 @@ function runClaudeRaw(
     live.add(child);
     let out = "";
     let err = "";
-    const done = (): void => {
-      clearTimeout(timer);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
+      return true;
     };
-    const timer = setTimeout(() => {
+    const onAbort = (): void => {
       killTree(child);
-      done();
-      reject(new Error("claude -p timed out"));
+      if (done()) reject(new Error("claude -p aborted"));
+    };
+    timer = setTimeout(() => {
+      killTree(child);
+      if (done()) reject(new Error("claude -p timed out"));
     }, opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS);
     timer.unref?.();
     // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
@@ -255,11 +270,10 @@ function runClaudeRaw(
     child.stdout.on("data", (d: string) => (out += d));
     child.stderr.on("data", (d: string) => (err += d));
     child.on("error", (e) => {
-      done();
-      reject(e);
+      if (done()) reject(e);
     });
     child.on("close", (code) => {
-      done();
+      if (!done()) return;
       if (code === 0) resolve(out);
       else reject(new Error(`claude exited ${code}: ${err.slice(0, 300)}`));
     });
@@ -276,6 +290,13 @@ function runClaudeRaw(
     // `close` handler already reports the real exit code and stderr, which is what
     // the caller should retry-then-escalate on.
     child.stdin.on("error", () => {});
+    // Register after the process listeners exist, then recheck to close the narrow race between
+    // the pre-spawn check and listener registration. The process group is killed either way.
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
     child.stdin.write(
       images.length === 0
         ? prompt

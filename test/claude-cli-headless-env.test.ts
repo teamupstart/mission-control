@@ -29,8 +29,12 @@ const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
 const fakeBin = join(dir, "fake-claude.sh");
 const runArgs = join(dir, "args");
 const runStdin = join(dir, "stdin");
+const runReady = join(dir, "ready");
+const runPid = join(dir, "pid");
 process.env.RUN_ARGS = runArgs;
 process.env.RUN_STDIN = runStdin;
+process.env.RUN_READY = runReady;
+process.env.RUN_PID = runPid;
 writeFileSync(
   fakeBin,
   `#!/bin/sh
@@ -43,6 +47,11 @@ for a in "$@"; do
   if [ "$previous" = "--output-format" ] && [ "$a" = "stream-json" ]; then stream_output=1; fi
   previous="$a"
 done
+if [ "$RUN_CLAUDE_WAIT" = "1" ]; then
+  printf '%s' "$$" > "$RUN_PID"
+  : > "$RUN_READY"
+  sleep 60
+fi
 if [ "$stream_output" = "1" ]; then
   printf '%s\\n' \\
     '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__plugin_example__search","input":{"query":"exact"}}]}}' \\
@@ -161,6 +170,52 @@ test("a tool trace retains provider output separately from Claude's summary", as
       output: { rows: [{ id: 1 }], pageInfo: { hasNextPage: false } },
     },
   ]);
+});
+
+test("a pre-aborted signal prevents a headless Claude process from spawning", async () => {
+  rmSync(runArgs, { force: true });
+  await assert.rejects(
+    runClaudeText("do not start", { timeoutMs: 60_000, signal: AbortSignal.abort() }),
+    /claude -p aborted/,
+  );
+  assert.equal(existsSync(runArgs), false, "an already-cancelled run still spawned claude -p");
+});
+
+test("an abort signal stops a live headless Claude process promptly", async () => {
+  rmSync(runReady, { force: true });
+  rmSync(runPid, { force: true });
+  process.env.RUN_CLAUDE_WAIT = "1";
+  const controller = new AbortController();
+  const run = runClaudeText("wait for cancellation", {
+    timeoutMs: 60_000,
+    signal: controller.signal,
+  });
+  try {
+    const readyBy = Date.now() + 3_000;
+    while (!existsSync(runReady) && Date.now() < readyBy) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(existsSync(runReady), true, "the fake Claude process never started waiting");
+    const pid = Number(readFileSync(runPid, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0, "the fake Claude process did not record its pid");
+    const started = Date.now();
+    controller.abort();
+    await assert.rejects(run, /claude -p aborted/);
+    let stopped = false;
+    while (!stopped && Date.now() - started < 3_000) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch (error) {
+        stopped = (error as NodeJS.ErrnoException).code === "ESRCH";
+        if (!stopped) throw error;
+      }
+    }
+    assert.equal(stopped, true, "cancellation left the detached Claude process running");
+  } finally {
+    delete process.env.RUN_CLAUDE_WAIT;
+    controller.abort();
+  }
 });
 
 test("image-bearing print calls use one fresh stream-json user message", async () => {

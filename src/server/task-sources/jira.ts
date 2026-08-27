@@ -1174,7 +1174,11 @@ export async function readUpstartClaw(
       advisory: null,
     };
   }
-  if (!(await deps.ready())) {
+  const ready = await deps.ready();
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", advisory: null };
+  }
+  if (!ready) {
     return {
       issues: [],
       error:
@@ -1189,12 +1193,16 @@ export async function readUpstartClaw(
       allowedTools: UPSTARTCLAW_TOOLS,
       settingSources: ["user"],
       cwd: ctx.repoRoot,
+      signal: ctx.signal,
     });
     if (ctx.signal.aborted) {
       return { issues: [], error: "the sweep was abandoned", advisory: null };
     }
     return walkFromUpstartClawTrace(trace, cfg, maxIssues);
   } catch (error) {
+    if (ctx.signal.aborted) {
+      return { issues: [], error: "the sweep was abandoned", advisory: null };
+    }
     const why = error instanceof Error ? error.message : String(error);
     return {
       issues: [],

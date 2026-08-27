@@ -19,6 +19,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * in the same frame and a spec asserting "the cards are grouped" would pass over a board that
  * had simply drawn one box round everything.
  *
+ * The last two cases cover surfaces the Board cases cannot reach. One walks the ARROW KEYS over a
+ * folded frame: collapse is a view's state while navigation walks the ordering, and the cursor
+ * used to step into rows nobody could see. The other covers the CONSOLE RAIL, which is a second
+ * rendering of the same grouping - rows loose in the rail, or a folded group that kept them,
+ * would have left every Board assertion above green.
+ *
  * No model tokens: both dispatched agents are `e2e/fixtures/fake-agents.ts`.
  */
 
@@ -70,6 +76,18 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   // band only takes on the next load.
   await page.reload();
   await expect(page.locator("main.board")).toBeVisible();
+}
+
+/** The Console layout, whose rail draws the same grouping the Board's columns do. */
+async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  expect(response.ok, "the daemon accepted the Console layout").toBe(true);
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
 }
 
 const leaf = (path: string): string => path.replace(/\/+$/, "").split("/").pop()!;
@@ -232,4 +250,58 @@ test("the arrow keys skip a collapsed repository instead of vanishing into it", 
   }
   // Every stop was one of the two visible cards, never a folded one.
   await expect(selected.locator(".tile-goal")).not.toHaveText("aaa first alphabetically");
+});
+
+test("the Console rail groups its rows by repository, and a heading folds them", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The rail is a SECOND rendering of the same grouping - `ConsoleView` draws its own frame and
+  // reads the same fold store - and every assertion above it exercises only the Board. A
+  // regression here (rows rendering loose in the rail, or a folded group keeping its rows) would
+  // have left those green, which is the gap this closes.
+  //
+  // It matters because the board's focused column BECOMES this rail on drill-in: a grouping that
+  // stopped at the morph would read as the fleet regrouping when only the layout moved.
+  await dispatchInto(dashboard, daemon, daemon.repo, "rail first card", 1);
+  await dispatchInto(dashboard, daemon, daemon.repo, "rail second card", 2);
+  await dispatchInto(dashboard, daemon, daemon.secondRepo, "rail other repo", 3);
+  await useConsoleLayout(dashboard, daemon);
+
+  const rail = dashboard.getByRole("navigation", { name: "Sessions" });
+  const frames = rail.locator(".rail-repo");
+  await expect(frames).toHaveCount(2);
+  await expect(rail.locator("button.rail-row")).toHaveCount(3);
+
+  const own = leaf(daemon.repo);
+  const other = leaf(daemon.secondRepo);
+  const ownFrame = frames.filter({
+    has: dashboard.locator(".rail-repo-group .reg-title", { hasText: new RegExp(`^${own}$`) }),
+  });
+  const otherFrame = frames.filter({
+    has: dashboard.locator(".rail-repo-group .reg-title", { hasText: new RegExp(`^${other}$`) }),
+  });
+
+  // CONTAINMENT, which is the claim a frame makes: the two sessions dispatched into one
+  // repository are inside that repository's frame, not merely somewhere in the rail.
+  await expect(ownFrame.locator("button.rail-row")).toHaveCount(2);
+  await expect(otherFrame.locator("button.rail-row")).toHaveCount(1);
+  // And no row is left loose outside a frame, which is what "rendering loose in the rail" means.
+  await expect(rail.locator("button.rail-row")).toHaveCount(
+    await ownFrame.locator("button.rail-row").count()
+      + await otherFrame.locator("button.rail-row").count(),
+  );
+
+  // The head says which repository and how much of it, in the rail's own register.
+  await expect(ownFrame.locator(".reg-stage")).toHaveText("2 agents");
+
+  // Folding takes its rows away and leaves the other frame alone.
+  await dashboard.getByRole("button", { name: new RegExp(`Collapse ${own}\\b`) }).click();
+  await expect(ownFrame.locator("button.rail-row")).toHaveCount(0);
+  await expect(otherFrame.locator("button.rail-row")).toHaveCount(1);
+  await expect(rail.locator("button.rail-row")).toHaveCount(1);
+
+  // And back, through the label that flipped with the state.
+  await dashboard.getByRole("button", { name: new RegExp(`Expand ${own}\\b`) }).click();
+  await expect(ownFrame.locator("button.rail-row")).toHaveCount(2);
 });

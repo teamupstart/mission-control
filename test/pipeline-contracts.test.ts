@@ -100,6 +100,7 @@ test("the vocabularies read out of provider files are checked, not cast", () => 
     "in_progress",
     "done",
     "failed",
+    "refused",
     "skipped",
     "stale",
   ]);
@@ -107,6 +108,7 @@ test("the vocabularies read out of provider files are checked, not cast", () => 
     "needs-human",
     "mechanical",
     "protected-artifact",
+    "plan-gap",
     "legacy",
     "unclassified",
   ]);
@@ -119,13 +121,15 @@ test("the vocabularies read out of provider files are checked, not cast", () => 
     "processed",
   ]);
   assert.equal(isPipelineStepState("in_progress"), true);
+  assert.equal(isPipelineStepState("refused"), true);
   assert.equal(isPipelineStepState("quantum"), false);
   assert.equal(isPipelineHaltClass("needs-human"), true);
+  assert.equal(isPipelineHaltClass("plan-gap"), true);
   assert.equal(isPipelineHaltClass("needs-a-human"), false);
 });
 
 test("the frozen step table is conductor's own 22-step sequence plus its four out-of-band steps", () => {
-  // Copied from ai-conductor `8b51392d`'s `ALL_STEPS` and `OUT_OF_BAND_STEPS`. Written out
+  // Copied from ai-conductor `b9c19307`'s `ALL_STEPS` and `OUT_OF_BAND_STEPS`. Written out
   // so that re-freezing the copy against a newer engine is a deliberate, reviewable edit
   // rather than a diff nobody can read.
   const steps = PIPELINE_STEPS["ai-conductor"];
@@ -421,13 +425,18 @@ test("a grant may name any DECIDE step except the ones the engine refuses", () =
 test("what a halt offers, and what a daemon state offers, is decided once", () => {
   // Both records are exhaustive over their tuple, which is the compile-time half. The runtime
   // half is that what they offer is coherent: a halt row never carries a repository verb, and
-  // a class with no verb at all has a console instead.
+  // a class with no verb at all has a console instead, except plan-gap: its recovery starts
+  // outside Mission Control by revising and approving the plan.
   for (const haltClass of PIPELINE_HALT_CLASSES) {
     for (const action of PIPELINE_HALT_ACTIONS[haltClass]) {
       assert.equal(PIPELINE_ACTION_INFO[action].scope, "run", `${haltClass}/${action}`);
     }
     const ways = PIPELINE_HALT_ACTIONS[haltClass].length + PIPELINE_HALT_CONSOLES[haltClass].length;
-    assert.ok(ways > 0, `${haltClass} needs at least one way out`);
+    if (haltClass === "plan-gap") {
+      assert.equal(ways, 0, "plan-gap is guidance-only until its approved plan is revised");
+    } else {
+      assert.ok(ways > 0, `${haltClass} needs at least one way out`);
+    }
   }
   assert.deepEqual([...PIPELINE_HALT_CONSOLES["protected-artifact"]], ["reseal"]);
   assert.deepEqual(
@@ -477,6 +486,8 @@ test("a grant is licensed by the halt it answers, wherever the question is asked
     PIPELINE_HALT_CLASSES.filter((haltClass) => pipelineGrantAllowed({ class: haltClass })),
     ["needs-human"],
   );
+  assert.deepEqual([...PIPELINE_HALT_ACTIONS["plan-gap"]], []);
+  assert.deepEqual([...PIPELINE_HALT_CONSOLES["plan-gap"]], []);
 });
 
 test("a request is checked against what the verb says it needs, in both directions", () => {

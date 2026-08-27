@@ -207,6 +207,20 @@ test("the strip carries all 22 sequential steps even when the state file names t
   assert.equal(steps.find((s) => s.name === "explore")?.state, "in_progress");
 });
 
+test("the strip preserves a refused step instead of synthesizing pending", () => {
+  const state = readConductState(
+    seedConductorRun(repo("fold-refused"), "feat", {
+      steps: { architecture_review_as_built: "refused" },
+      lastStep: "architecture_review_as_built",
+    }),
+  );
+
+  assert.equal(
+    foldSteps(state).find((step) => step.name === "architecture_review_as_built")?.state,
+    "refused",
+  );
+});
+
 test("an out-of-band step appears only when it actually ran", () => {
   // `remediate` is dispatched in RESPONSE to a failing SHIP gate. Drawing it as a pending
   // box on every healthy run would promise a step that mostly never happens.

@@ -292,7 +292,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(dialog.getByRole("progressbar", { name: "Author what runs tour progress" }))
     .toHaveAttribute("aria-valuenow", "1");
   // The six shelf labels and descriptions are authored with this stage in tours/library.md.
-  await expect(dialog).toContainText("Identities for agents who act as judges");
+  await expect(dialog).toContainText("Tasks are synced in from external systems");
   await expect(dialog).toContainText("Post-work verification");
   // And they are readable, not merely present: the longest shelf name is two words and a
   // separator, which a fixed-width term column draws straight through its own question.

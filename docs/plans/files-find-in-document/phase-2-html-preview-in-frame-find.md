@@ -88,7 +88,9 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
    link appeared**, so a stylesheet's text can sit in the body. A naive text-node walk would
    count matches in all of it, which is precisely the promise this phase is making. An
    attribute-only test case cannot expose this, because an attribute value is not a text node
-   and a naive walk already reports zero for it.
+   and a naive walk already reports zero for it. Nor can geometry alone expose it:
+   `visibility: hidden` and `opacity: 0` text is laid out and returns client rects, so it is
+   invisible to a reader and perfectly visible to `getClientRects()`.
 
 ## Decisions recorded in this phase
 
@@ -107,21 +109,33 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
   mode alone. The result message reports results; the ready message reports capability. Keeping
   those two apart is what makes the fallback reachable at all.
 - **Only text the frame can actually paint is counted.** A text-node walk is not a rendered-text
-  walk, and the difference is the whole promise of this phase (finding 7). Two gates, in this
+  walk, and the difference is the whole promise of this phase (finding 7). Three gates, in this
   order:
-  1. **Skip by container and by visibility.** Never descend into `script`, `style`, `template`,
-     `title`, `noscript` or a comment node - remembering that `inlinePreviewStyles` rewrites a
-     checkout `link` into a `style` element wherever that link sat, so CSS text can appear in
-     the body and not only in the head. Then skip any text whose nearest element is not visible,
-     via `Element.checkVisibility()` where available and a computed-style check otherwise.
-  2. **Gate on paintable geometry.** A candidate `Range` whose `getClientRects()` is empty
-     produces no box, so it cannot be highlighted and must not be counted. This is the
-     authority rather than the tag list: it catches `content-visibility`, a collapsed
-     ancestor, a zero-size box, and whatever the list did not think of - the same reason the
-     comment bridge decides blocks by computed display rather than by tag name.
+  1. **Skip by container.** Never descend into `script`, `style`, `template`, `title`,
+     `noscript` or a comment node - remembering that `inlinePreviewStyles` rewrites a checkout
+     `link` into a `style` element wherever that link sat, so CSS text can appear in the body
+     and not only in the head.
+  2. **Skip by visibility, with the options spelled out.** `Element.checkVisibility()` does
+     **not** consider `visibility: hidden` or `opacity: 0` by default - it answers `true` for
+     both - so the bare call would pass exactly the text this phase promises to exclude. Call it
+     with the flags set, and pass both the current and the original spellings, since unknown
+     dictionary members are ignored and the two names shipped at different times:
+     `{ visibilityProperty: true, checkVisibilityCSS: true, opacityProperty: true,
+     checkOpacity: true, contentVisibilityAuto: true }`. Keep a computed-style fallback for
+     `display` and `visibility` where the method is absent.
+     The fallback reads the **nearest element's own computed** `visibility`, which is the right
+     question rather than a convenience: `visibility` inherits and a descendant may re-assert
+     `visible` inside a hidden subtree, so an ancestor scan would wrongly drop text a reader can
+     actually see, while the computed value already accounts for both.
+  3. **Gate on paintable geometry.** A candidate `Range` whose `getClientRects()` is empty
+     generates no box at all, so it cannot be highlighted and must not be counted. This catches
+     `display: none`, a collapsed ancestor, a zero-size box and whatever the container list did
+     not think of - but it is **not** a paintedness test and must not be trusted as one:
+     `visibility: hidden` and `opacity: 0` text is laid out and still returns rects, which is
+     precisely why gate 2 carries its own flags rather than leaning on this one.
 
-  The count the frame reports is the number of ranges that survive both gates, which is exactly
-  the number it highlighted. A count that can disagree with the highlights is the defect this
+  The count the frame reports is the number of ranges that survive all three gates, which is
+  exactly the number it highlighted. A count that can disagree with the highlights is the defect this
   phase exists to remove, not a rounding error.
 - **The new script owns the chord forwarding.** Putting it in the new bridge rather than
   extending the existing scroll bridge keeps the other three bodies and hashes untouched
@@ -147,9 +161,9 @@ which this phase retires), and `FileWorkspace` owning the find session and the c
      never reuse the comment bridge's ready message, finding 5 - carrying whether this frame can
      highlight, so the parent can decide whether the fallback is still needed);
    - add `PREVIEW_FIND_SCRIPT`, gated on `event.source === parent` like every other bridge,
-     which walks text nodes **through the two gates in the decision above** - skipping
-     non-rendered containers and invisible subtrees, then dropping any range with no client
-     rects - builds ranges from what survives, registers them under a named highlight, scrolls
+     which walks text nodes **through the three gates in the decision above** - skipping
+     non-rendered containers, then invisible subtrees (with `checkVisibility`'s flags spelled
+     out, never the bare call), then dropping any range with no client rects - builds ranges from what survives, registers them under a named highlight, scrolls
      the current range into view, posts the surviving count, and clears on an empty query. It
      also forwards the find chord up and announces itself when ready. No literal `<` anywhere
      in the body (finding 2);
@@ -243,7 +257,7 @@ another script's ready signal for it.
 - Review round 1 (PR #818): the bridge was specified as walking text nodes while promising a
   visible-only count, which it could not have delivered - head and body `style`, `script`,
   `template`, `title` and hidden subtrees are all text nodes, and the attribute-only test case
-  would have passed a naive implementation. Finding 7, the two counting gates in the decisions,
+  would have passed a naive implementation. Finding 7, the counting gates in the decisions,
   the implementation step, the fixture coverage and the exit criteria were all amended
   together. Phase 1 needed no change: its Markdown adapter runs on a hast tree with no raw
   HTML, script or style nodes, and its HTML count is explicitly source-derived and labelled as
@@ -261,6 +275,17 @@ another script's ready signal for it.
   decisions, both implementation steps, the exit criteria and the downstream handoff were
   amended together. Phase 1 needed no change - it posts nothing into the frame beyond the
   existing target message, which is request-response and carries no state.
+- Review round 4 (PR #818): the visibility gate was specified as a bare
+  `Element.checkVisibility()`, which in Chromium ignores `visibility: hidden` and `opacity: 0`
+  by default and answers `true` for both - so the prescribed implementation would have counted
+  and "highlighted" the fixture's hidden occurrence, failing this phase's own promise and its
+  own test. Round 1's claim that the geometry gate is "the authority" was the deeper error and
+  is corrected with it: `getClientRects()` proves a box EXISTS, not that anything is painted,
+  and hidden or fully transparent text is laid out and returns rects. The gate list is now three
+  - container, visibility with every flag spelled out (both the current and original option
+  spellings, plus a computed-style fallback reading the nearest element's own `visibility`,
+  because that property inherits and a descendant may re-assert it), then geometry - and the
+  geometry gate is explicitly labelled as not a paintedness test.
 - Review round 3 (PR #818): the decisions promised Phase 1's block reveal when the CSS Custom
   Highlight API is unavailable, while the implementation step retired that fallback the moment
   the bridge reported ready. A frame without the API announces readiness too, so the reader

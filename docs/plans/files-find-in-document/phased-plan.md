@@ -42,11 +42,14 @@ Investigated against the checkout before phasing. Each is recorded in the phase 
 6. **The frame must report its own count.** Phase 1 counts HTML matches over source text,
    which can include matches the rendered page never shows. Phase 2 replaces that number with
    the frame's, so Phase 1's bar takes the count as a supplied value from the start.
-7. **A text-node walk is not a rendered-text walk.** `title`, `style`, `script`, `template`
-   and hidden subtrees are all text nodes, and `inlinePreviewStyles` puts an inlined checkout
-   stylesheet's text wherever its `link` sat - including the body. Phase 2's count therefore
-   passes candidates through a container-and-visibility skip and then drops any range with no
-   client rects, so the number it reports is the number it highlighted.
+7. **A text-node walk is not a rendered-text walk, and geometry cannot finish the job.**
+   `title`, `style`, `script`, `template` and hidden subtrees are all text nodes, and
+   `inlinePreviewStyles` puts an inlined checkout stylesheet's text wherever its `link` sat -
+   including the body. Phase 2's count therefore passes candidates through three gates:
+   container, then visibility with `checkVisibility`'s flags spelled out (its default ignores
+   `visibility: hidden` and `opacity: 0`), then a client-rects check. The last one proves a box
+   exists, not that anything is painted - hidden and fully transparent text is laid out and
+   returns rects - so it is the backstop, never the whole rule.
 
 ## Sizing
 

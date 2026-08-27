@@ -706,7 +706,7 @@ export interface PipelineInstallerRuntime {
 export interface PipelineInstallerCandidatesResult {
   provider: PipelineProviderId;
   supported: boolean;
-  /** Null only when this provider has no guided installer capability. */
+  /** Null when this provider has no guided installer or its runtime probe could not be read. */
   runtime: PipelineInstallerRuntime | null;
   detail: string;
   candidates: PipelineInstallerCandidate[];

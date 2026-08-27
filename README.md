@@ -109,6 +109,14 @@ row that gets nothing added, because the only thing left to add would be a path.
 picker, and the same rows, appear wherever you choose a repository - **Settings → Trust**,
 **Standing instructions**, and **Task sources**.
 
+**Settings → Repositories** controls which directories feed that index. A fresh machine starts
+with `~/workspace`, `~/code`, `~/dev`, and `~/upstart`; any row can be removed, including a
+seeded one, and **Restore defaults** adds back only the missing seeded rows. The panel reports
+missing, non-directory, and unreadable paths, and **Rescan now** makes a newly cloned checkout
+available without waiting for the discovery cache. `MISSION_WORKSPACE_DIRS` remains the
+colon-separated launch-time override. While it is set, the panel names it and keeps the saved
+list read-only.
+
 Open **Backlog details** to choose whether Foreman may automatically schedule a task added
 from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the backlog until
 you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**

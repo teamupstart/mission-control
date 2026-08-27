@@ -1,16 +1,16 @@
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
+import { indexedDirectories } from "./repo-index-config.ts";
 
 /**
  * Index the git repositories a dispatch can target. The dispatch form needs the
  * user's *repos* - not the live sessions' cwds, which are throwaway worktrees the
- * harness itself created. We scan a small set of workspace roots (default
- * `~/workspace`) for git checkouts and hand back their top-level paths.
+ * harness itself created. We scan the configured indexed directories for git
+ * checkouts and hand back their top-level paths.
  */
 
 /** Cache the scan briefly so the endpoint stays cheap under the UI's polling. */
@@ -24,15 +24,21 @@ const SKIP = new Set(["node_modules", "dist", "build", "target", "vendor", ".nex
 let cache: { at: number; repos: string[] } | null = null;
 
 /**
- * Roots to scan for repos. Defaults to `~/workspace`; override with
- * `MISSION_WORKSPACE_DIRS` (colon-separated, like PATH) to point at other trees.
+ * Roots to scan for repos. Settings > Repositories owns the saved list, while
+ * `MISSION_WORKSPACE_DIRS` (colon-separated, like PATH) keeps launch-time precedence.
  */
 export function workspaceRoots(): string[] {
-  const override = envVar("WORKSPACE_DIRS") ?? envVar("WORKSPACE_DIR");
-  const raw = override
-    ? override.split(":").map((s) => s.trim()).filter(Boolean)
-    : [join(homedir(), "workspace")];
-  return raw;
+  return indexedDirectories();
+}
+
+/** Drop the short-lived scan cache after the root list changes or an operator requests it. */
+export function invalidateReposCache(): void {
+  cache = null;
+}
+
+/** Timestamp of the scan currently backing `listRepos`, for the Settings freshness readout. */
+export function reposCacheScannedAt(): number | null {
+  return cache?.at ?? null;
 }
 
 /**

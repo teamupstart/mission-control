@@ -149,6 +149,10 @@ import type {
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
+import type {
+  RepoIndexConfigPatch,
+  RepoIndexView,
+} from "@shared/repo-index.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -347,6 +351,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/** Machine-local roots that feed every repository picker and name resolver. */
+export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
  * The Task sources panel in one read: what is configured, how each is doing, and which
  * kinds this build offers. One route rather than a config/status pair, for the reason
@@ -1835,6 +1841,11 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+
+  // --- Repository discovery roots ---
+  setRepoIndex: (cfg: RepoIndexConfigPatch) =>
+    put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg),
+  rescanRepoIndex: () => post<ActionResult & RepoIndexView>(`/api/repo-index/rescan`),
 
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,

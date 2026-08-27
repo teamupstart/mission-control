@@ -45,7 +45,7 @@ export interface DaemonHandle {
   home: string;
   /** Where the fake agent binaries record the argv/env they were launched with. */
   recordDir: string;
-  /** The workspace root `MISSION_WORKSPACE_DIRS` points at. */
+  /** The seeded workspace root, normally selected by `MISSION_WORKSPACE_DIRS`. */
   workspace: string;
   /** Absolute path of the seeded git repository a dispatch can branch from. */
   repo: string;
@@ -268,6 +268,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       ? seedConductorInstallerCheckout(seedRepo(workspace, "ai-conductor"))
       : null;
   const startsMissing = extraEnv.MC_E2E_CONDUCTOR_STARTS_MISSING === "1";
+  const useRepoIndexDefaults = extraEnv.MC_E2E_USE_REPO_INDEX_DEFAULTS === "1";
   const installRoot = join(home, "installed-conductor");
   const installBin = join(installRoot, "bin/conduct-ts");
 
@@ -279,7 +280,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     writeFileSync(join(installRoot, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
   };
 
-  const isolatedEnv = {
+  const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
@@ -383,6 +384,15 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the `daemonEnv` fixture option rather than by editing this shared list.
     ...extraEnv,
   };
+
+  // One repository-settings spec must exercise the config-backed defaults. Scrub every
+  // supported spelling so an operator's shell cannot quietly keep the panel environment-owned.
+  if (useRepoIndexDefaults) {
+    for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+      delete isolatedEnv[`${prefix}_WORKSPACE_DIRS`];
+      delete isolatedEnv[`${prefix}_WORKSPACE_DIR`];
+    }
+  }
 
   let log = "";
   let exited: { code: number | null; signal: string | null } | null = null;

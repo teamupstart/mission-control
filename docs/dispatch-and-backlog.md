@@ -339,9 +339,11 @@ kind those surfaces support.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
-The repo picker is a **searchable index of your workspace** - the daemon scans
-`~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
-repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
+The repo picker is a **searchable index of your workspace** - the daemon scans the directories
+listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~/dev`, and
+`~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
+override. Select the repo to base the task on rather than typing a path. Type to filter;
+arrow/enter to pick.
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
 root shares a long leading prefix, and a list of paths as narrow as the field ellipsizes away
 the only part that tells two rows apart. The full path is on the row's tooltip, and it is

@@ -547,6 +547,11 @@ Reduced-motion preference turns off both Driver.js animation and the spike's tra
 
 ## Layout (console or board in Settings)
 
+The Settings rail begins its machine-level session tools with **Setup**. That panel reports five
+families of external tooling, keeps satisfied tools to a compact evidence line, and gives missing
+or incomplete tools their capability impact and a link or copyable remedy. **Re-check** reads the
+machine again without running any remedy.
+
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
 lets you switch live between them, and the choice persists per machine:
 

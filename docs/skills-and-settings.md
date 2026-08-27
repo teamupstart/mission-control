@@ -226,13 +226,20 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Harnesses**, **Worktrees**, **Skills** (writes `~/`), **Standing instructions**, **Cost** (writes `~/`), **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`Reads ~/`), **Harnesses**, **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+
+**Setup** is the read-only inventory for external tools Mission Control depends on or can
+integrate with. It groups agent CLIs, terminal backends, GitHub CLI and authentication, Claude
+Code plugins and Mission Control skills, and ai-conductor. Each missing or incomplete row says
+what is unavailable and offers a link or copyable command. Re-check runs a fresh probe sweep;
+there is no poll, install button, or command execution on this page. Its own badge says
+`Reads ~/` because those probes inspect binaries and configuration without changing them.
 
 Display's fourth panel is **Board card**, and it is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,

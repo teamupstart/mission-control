@@ -5,6 +5,11 @@ vendor-specific conditionals through the application. A harness describes an age
 capabilities. Terminal backends describe how Mission Control can discover, focus, capture,
 or write a concrete pane.
 
+For the machine's current binary presence and terminal composition, open **Settings → Setup**.
+It uses the same harness and terminal binary resolvers as launch, so an environment override
+cannot make the launcher and setup report disagree. The panel only links to or copies remedies;
+it never installs or executes them.
+
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's
 [harness registry](../src/server/harness/index.ts) adds process, filesystem, transcript,

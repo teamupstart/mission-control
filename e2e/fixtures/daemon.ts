@@ -300,6 +300,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // Setup reports these registered emulators too. Pin both to absent paths inside the
+    // disposable home so a developer's installed apps cannot make the browser result differ
+    // from CI. Specs that need one can still override it through `daemonEnv` below.
+    WEZTERM_BIN: join(home, "missing-wezterm"),
+    GHOSTTY_BIN: join(home, "missing-ghostty"),
     // The keep-awake provider, redirected at a fake that records its argv. With the
     // override present this daemon is "supported" on any platform - which is the point:
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a

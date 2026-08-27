@@ -25,6 +25,8 @@ import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
+import { SetupPanel } from "./SetupPanel.tsx";
+import { useSetupChecks } from "../useSetupChecks.ts";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useWorktrees } from "../useWorktrees.ts";
 import { useTaskSources } from "../useTaskSources.ts";
@@ -72,7 +74,7 @@ const FLASH_MS = 3200;
  */
 const ANCHOR_WAIT_MS = 5000;
 
-/** How far this category's writes reach, as the badge the rail and the panel head carry. */
+/** How far this category reaches, as the badge the rail and the panel head carry. */
 function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.JSX.Element {
   const { label, hint } = SETTINGS_SCOPES[scope];
   return (
@@ -276,6 +278,7 @@ export function SettingsPage({
 }): React.JSX.Element {
   const shown = category;
   const skills = useSkills();
+  const setup = useSetupChecks(shown === "setup");
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
   const harnesses = useHarnesses(harnessesRevision);
@@ -541,6 +544,8 @@ export function SettingsPage({
         // that category into a drawer of browser preferences, which is the thing its own
         // stacking comment above exists to avoid.
         return <DispatchSettingsPanel />;
+      case "setup":
+        return <SetupPanel state={setup} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

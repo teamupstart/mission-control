@@ -30,13 +30,14 @@ export const SETTINGS_GROUPS = [
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
 
 /**
- * How far a setting's writes reach, worst case, as four answers a human can act on.
+ * How far a category reaches, as five claims a human can act on.
  *
  * A group carries the scope of its members in general; a CATEGORY carries its own, which
- * is sometimes stronger - Skills sits in *Sessions* (this machine) but symlinks into `~/`,
- * so its panel header says `Writes ~/` where the rail's group label says This machine. The
- * rail is the summary, the panel header is the precise claim, and neither is allowed to be
- * softer than the truth.
+ * is sometimes more precise - Setup reads tool configuration under `~/`, while Skills sits
+ * in the same *Sessions* group but symlinks into `~/`. Their panel headers therefore say
+ * `Reads ~/` and `Writes ~/` respectively, where the rail's group label says This machine.
+ * The rail is the summary, the panel header is the precise claim, and neither is allowed to
+ * be softer than the truth.
  */
 export const SETTINGS_SCOPES = {
   browser: {
@@ -46,6 +47,10 @@ export const SETTINGS_SCOPES = {
   machine: {
     label: "This machine",
     hint: "Changes what the daemon does locally. Nothing leaves this machine.",
+  },
+  "home-read": {
+    label: "Reads ~/",
+    hint: "Inspects tools and configuration in your home directory without changing them.",
   },
   home: {
     label: "Writes ~/",
@@ -132,6 +137,15 @@ export const SETTINGS_CATEGORIES = [
     group: "screen",
     scope: "browser",
     keywords: ["guided", "wizard", "steps", "walkthrough", "questions", "keyboard", "form"],
+  },
+  {
+    id: "setup",
+    label: "Setup",
+    icon: "✓",
+    blurb: "External tools this machine can use and what is still missing",
+    group: "sessions",
+    scope: "home-read",
+    keywords: ["install", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
   },
   {
     id: "harnesses",

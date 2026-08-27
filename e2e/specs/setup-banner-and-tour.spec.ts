@@ -54,6 +54,18 @@ test("a stale tab cannot dismiss a setup regression observed elsewhere", async (
   await expect(staleBanner.getByRole("alert")).toContainText("Re-check before dismissing");
 });
 
+test("a dismissal transport failure keeps the reminder actionable", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const banner = page.getByRole("status", { name: "Machine setup needs attention" });
+  await expect(banner).toBeVisible();
+
+  await daemon.crash();
+  await banner.getByRole("button", { name: "Dismiss setup reminder" }).click();
+
+  await expect(banner.getByRole("alert")).toContainText("Failed to fetch");
+  await expect(banner.getByRole("button", { name: "Dismiss setup reminder" })).toBeEnabled();
+});
+
 test("the setup reminder is durable, detects a regression, and the tour stays read-only", async ({
   page,
   daemon,

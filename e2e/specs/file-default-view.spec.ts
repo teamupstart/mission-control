@@ -258,9 +258,10 @@ test("Preview u and d paginate a rendered report by one page", async ({
   const pageTargetError = (startY: number, direction: -1 | 1): Promise<number> =>
     body.evaluate((_body, { startY, direction }) => {
       const pageHeight = window.innerHeight;
+      const clientHeight = document.scrollingElement?.clientHeight ?? pageHeight;
       const maxY = Math.max(
         0,
-        (document.scrollingElement?.scrollHeight ?? pageHeight) - pageHeight,
+        (document.scrollingElement?.scrollHeight ?? clientHeight) - clientHeight,
       );
       const expectedY = Math.min(maxY, Math.max(0, startY + direction * pageHeight));
       return window.scrollY - expectedY;

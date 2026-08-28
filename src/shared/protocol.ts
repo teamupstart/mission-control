@@ -29,6 +29,7 @@ import {
 } from "./standing-instructions.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
+import { SETUP_DEPENDENCY_IDS } from "./setup-catalog.ts";
 import {
   FILE_COMMENT_QUOTE_MAX,
   FILE_COMMENT_SURFACES,
@@ -2712,6 +2713,21 @@ export const PipelineInstallerLaunchSchema = z
   })
   .strict();
 export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunchSchema>;
+
+/**
+ * Open one catalog-owned setup remedy in a selected visible terminal.
+ *
+ * Strict on purpose. The browser identifies the dependency and terminal, and nothing else.
+ * The daemon resolves any provider checkout and owns argv, shell text, cwd, environment, and
+ * the window title.
+ */
+export const SetupInstallerLaunchSchema = z
+  .object({
+    id: z.enum(SETUP_DEPENDENCY_IDS),
+    backend: z.enum(TERMINAL_BACKEND_IDS),
+  })
+  .strict();
+export type SetupInstallerLaunchBody = z.infer<typeof SetupInstallerLaunchSchema>;
 
 /**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.

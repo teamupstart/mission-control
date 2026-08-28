@@ -5,6 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
@@ -118,6 +119,7 @@ import {
   PipelineConsoleSchema,
   PipelineForemanEpisodeSchema,
   PipelineInstallerLaunchSchema,
+  SetupInstallerLaunchSchema,
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
@@ -331,6 +333,11 @@ import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import type { SetupDeps } from "./setup/types.ts";
+import {
+  DEFAULT_SETUP_INSTALL_CATALOG,
+  executeSetupInstall,
+  type SetupInstallRouteDeps,
+} from "./setup/install.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -976,6 +983,8 @@ export function buildApp(
   settingsBackups?: SettingsBackupService,
   /** Read-only setup probe seams. Optional so existing focused route tests stay unchanged. */
   setupDeps?: SetupDeps,
+  /** Visible-terminal setup execution seams. Browser input never enters these values. */
+  setupInstallDeps?: SetupInstallRouteDeps,
 ): Hono {
   const app = new Hono();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);
@@ -6126,6 +6135,26 @@ export function buildApp(
       parsed.data.acknowledged,
     ));
     return c.json({ ok: true });
+  });
+
+  /**
+   * Open one catalog-owned remedy in a visible terminal. The request carries identity and a
+   * terminal selection only; argv, cwd, environment, title, and shell text stay daemon-owned.
+   */
+  app.post("/api/setup/install", async (c) => {
+    const parsed = await parseBody(c, SetupInstallerLaunchSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await executeSetupInstall(parsed.data, {
+      catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
+      homeDir: setupInstallDeps?.homeDir ?? homedir(),
+      listRepoRoots: setupInstallDeps?.listRepoRoots ?? listRepos,
+      listProviderInstallers:
+        setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
+      prepareProviderInstaller:
+        setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+      launchTerminal: terminalLauncher,
+    });
+    return c.json(result.body, result.status as ContentfulStatusCode);
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

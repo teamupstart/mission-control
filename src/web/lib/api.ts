@@ -70,6 +70,7 @@ import type {
   UiConfigView,
   PipelinesConfigPatch,
   PipelineInstallerLaunchBody,
+  SetupInstallerLaunchBody,
   TaskSourcesConfigPatch,
   ReorderTask,
   UpdateTask,
@@ -164,6 +165,14 @@ export interface ActionResult {
   pendingTurn?: PendingTurn;
   /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
   status?: number;
+}
+
+/** What the visible setup terminal launch established, never whether installation finished. */
+export interface SetupInstallerLaunchResult extends ActionResult {
+  id?: SetupInstallerLaunchBody["id"];
+  outcome?: "opened" | "maybe-opening" | "refused";
+  label?: string;
+  detail?: string;
 }
 
 /**
@@ -310,6 +319,9 @@ export const fetchEnvironmentChecks = () =>
   fetchJson<EnvironmentChecksView>("/api/environment/checks");
 /** One fresh machine setup snapshot, shared by the App banner and Settings > Setup. */
 export const fetchSetupChecks = () => fetchJson<SetupChecksSnapshot>("/api/setup/checks");
+/** Ask the daemon to resolve and open one catalog-owned remedy in a visible terminal. */
+export const openSetupInstaller = (body: SetupInstallerLaunchBody) =>
+  post<SetupInstallerLaunchResult>("/api/setup/install", body);
 /**
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.

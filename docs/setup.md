@@ -9,7 +9,17 @@ its full verification suite. For the contributor expectations and test policy, s
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions, and
 ai-conductor. Missing rows explain what capability is unavailable and provide a documentation
-link or copyable command. The page never runs an installer or setup command.
+link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
+choose an available backend and Mission Control opens a visible terminal running the catalog's
+fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
+browser sends only the dependency id and terminal backend. The terminal remains open after the
+command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+
+Mission Control never runs the installer inside the daemon. Provider installers such as
+ai-conductor additionally require the daemon to resolve exactly one checkout from its verified
+workspace candidates, then reverify that candidate when the button is pressed. If there is no
+verified checkout, or more than one, Setup links to **Settings → Conductor** instead of offering
+a button that must fail or guess.
 
 Mission Control also puts a dismissible reminder above the dashboard on first launch, or when
 a required Setup row becomes missing or needs setup. **Open Setup** links directly to this panel.

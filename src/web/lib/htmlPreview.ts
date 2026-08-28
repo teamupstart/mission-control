@@ -12,8 +12,8 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  * The contract both surfaces get:
  *
  * - `default-src 'none'` with `connect-src 'none'`, so a previewed document reaches nothing.
- * - `script-src` naming exactly three SHA-256 hashes, so the ONLY JavaScript that can run is
- *   the three bridge scripts below. `allow-scripts` on the iframe is what lets those run; the
+ * - `script-src` naming exactly four SHA-256 hashes, so the ONLY JavaScript that can run is
+ *   the four bridge scripts below. `allow-scripts` on the iframe is what lets those run; the
  *   document's own `<script>` is blocked by the hash allowlist, not by the sandbox.
  * - No `allow-same-origin`, ever. The pair `allow-scripts allow-same-origin` would let a
  *   previewed page reach into the dashboard origin and undo the whole boundary.
@@ -23,10 +23,15 @@ import { workspaceAssetPath } from "./workspaceLinks.ts";
  * relax it to make an archived report render: an archive is untrusted input that may have
  * been copied in from another machine.
  *
- * Every bridge here is the SAME capability, three times: it reads the document it is already
+ * Every bridge here is the SAME capability, four times: it reads the document it is already
  * inside and posts a message to the parent that sent it. None of them fetches, navigates,
  * writes, or reaches the dashboard origin, and none of them is granted a token. A bridge
  * that needed one would be a bridge that does not belong here.
+ *
+ * The find bridge adds one further rule of its own, for a reason particular to this module:
+ * it does not INSERT anything into the previewed document. The comment bridge addresses a
+ * block by element index, so a `mark` element wrapped around a match would shift those
+ * indices and make a later comment anchor to a neighbour. See `PREVIEW_FIND_SCRIPT`.
  */
 
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
@@ -159,10 +164,151 @@ const PREVIEW_COMMENT_STYLE = `html.mission-comment-mode,html.mission-comment-mo
 const PREVIEW_LINK_MESSAGE = "mission:file-preview-link";
 const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href)return;event.preventDefault();if(href.startsWith("#")){const raw=href.slice(1);if(!raw){scrollTo({top:0});return}let id=raw;try{id=decodeURIComponent(raw)}catch{}(document.getElementById(id)||[...document.getElementsByName(id)].find(target=>target instanceof HTMLAnchorElement))?.scrollIntoView();return}parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
 const PREVIEW_LINK_SCRIPT_HASH = "0DQ6IkD0vFcUQsY+X6LP861dP2RW9HXIVdbSAi5MkBk=";
+
+/**
+ * The fourth bridge: find inside the preview, over the text a reader can actually see.
+ *
+ * The Files workspace can count and mark matches in a Markdown preview and in the Editor
+ * because it owns their DOM. It owns nothing here, so before this bridge existed an HTML
+ * match was located BY BLOCK: counted over the file's source, resolved to a structural path
+ * by the daemon, and revealed with `PREVIEW_TARGET_MESSAGE`. That count includes text the
+ * rendered page never shows - a link `href`, a `style` body, a `display:none` aside - which
+ * breaks the one invariant this feature rests on: every counted match is one a person can
+ * see and step to. This bridge takes the count back from the source and gives it to the
+ * frame, which is the only context that knows what it painted.
+ *
+ * **It inserts nothing into the document, and that is not a preference.** The comment bridge
+ * addresses a block by indexing element children from `document.body`, and the daemon
+ * resolves that same path against a parse5 tree of the source. Wrapping matches in `mark`
+ * elements would shift those indices, so a comment anchored after a highlight would resolve
+ * to a neighbour - silently. Highlighting therefore goes through the CSS Custom Highlight
+ * API: `Range` objects registered in `CSS.highlights` and painted by the `::highlight()`
+ * rules in `PREVIEW_FIND_STYLE`. Not one node is created, moved or classed.
+ *
+ * **It gains no capability the other three lack.** It reads the document it is already
+ * inside and posts to the parent that sent it. No fetch, no navigation, no storage, no
+ * token, and `allow-same-origin` remains absent. The find message is gated on
+ * `event.source===parent`, exactly as the scroll and comment bridges gate theirs.
+ *
+ * **It announces its OWN readiness, and never leans on the comment bridge's.**
+ * `PREVIEW_READY_MESSAGE` is posted as the comment bridge's last act, and that guarantee is
+ * about the script that sends it: the comment bridge is injected second, so a fourth script
+ * announced by it would be announced before it had run. The parent's first find message
+ * would reach a window with no find listener and be lost, and nothing would highlight until
+ * the reader edited the query. So this script posts `PREVIEW_FIND_READY_MESSAGE` as its own
+ * last statement and the parent replies with the current query, case flag and index - the
+ * same arm-on-ready handshake `armFrame` already performs. One handshake covers find opened
+ * before the document loaded, find already open when an HTML file is selected, and the
+ * `srcDoc` reload that follows every edit.
+ *
+ * **Readiness carries CAPABILITY, because incapacity is not a result.** A frame without the
+ * Custom Highlight API cannot mark anything, and answering a matching query with a count of
+ * zero would leave the reader with no highlight, no block reveal and a number claiming there
+ * is nothing to find. So `highlight` rides on the ready message, and the parent keeps the
+ * block-reveal fallback and its "by block" note unless that flag is true.
+ *
+ * **Only text the frame can paint is counted**, through three gates in this order:
+ *
+ * 1. *By container.* `script`, `style`, `template`, `title` and `noscript` hold ordinary text
+ *    nodes, and `inlinePreviewStyles` rewrites a checkout `link` into a `style` element
+ *    WHEREVER that link sat - so CSS text can appear in the body, not only in the head. Their
+ *    contents are never descended into. Comment nodes are not text nodes and are skipped by
+ *    the node-type test.
+ * 2. *By visibility, with the flags spelled out.* `Element.checkVisibility()` does NOT
+ *    consider `visibility:hidden` or `opacity:0` by default - it answers `true` for both - so
+ *    the bare call would pass exactly the text this bridge promises to exclude. Both the
+ *    current and the original option spellings are passed, because unknown dictionary members
+ *    are ignored and the two names shipped at different times. Where the method is absent the
+ *    fallback reads the nearest element's OWN computed `visibility`, which is the right
+ *    question rather than a convenience: `visibility` inherits, and a descendant may
+ *    re-assert `visible` inside a hidden subtree, so an ancestor scan would wrongly drop text
+ *    a reader can see.
+ * 3. *By paintable geometry.* A candidate `Range` with no client rects generates no box, so
+ *    it cannot be highlighted and must not be counted. This is NOT a paintedness test and is
+ *    not trusted as one - `visibility:hidden` and `opacity:0` text is laid out and returns
+ *    rects, which is precisely why gate 2 carries its own flags.
+ *
+ * **The match is made over RUNS, not node by node.** `foo<strong>bar</strong>` searched for
+ * `foobar` finds nothing node by node while the reader sees one continuous word, so eligible
+ * text nodes are joined into a run and matched as one string. A run breaks at every VISIBLE
+ * separation: a `br` (a line break with no text node of its own, so `foo<br>bar` must not
+ * match `foobar`), and any element that establishes its own box - asked as
+ * `missionBlock(node)===node`, so this bridge and the comment bridge answer "is this one box
+ * of text" with the same definition rather than each keeping a tag list. A node the gates
+ * excluded for occupying NO space (`display:none`, a `script` body) does not break the run,
+ * because that text is absent from what the reader sees and the visible characters either
+ * side really are adjacent; a node excluded while still occupying space
+ * (`visibility:hidden`) DOES break it, because it leaves a visible gap.
+ *
+ * Run breaks are therefore driven by a VISIBILITY TRANSITION (`lit!==shown`) as much as by a
+ * box, which is what keeps those two rules consistent now that the walk descends into a hidden
+ * subtree rather than stopping at it: entering one breaks the run, and a paragraph that
+ * re-asserts `visible` inside it is broken away on both sides, because the gap surrounds it.
+ *
+ * `missionBlock` is called rather than copied, and the cross-script reference is safe in
+ * either injection order: function declarations are hoisted per script at execution, and
+ * this bridge only calls it from a message handler that runs long after all four scripts
+ * have. Nothing here keys off another script's ready message.
+ *
+ * **One logical hit is one `Range`**, even when its ends lie in different text nodes - a
+ * Range spans element boundaries natively and the API paints every fragment - and the
+ * reported count is logical hits, never the number of ranges' client rects, both of which
+ * are larger for a hit that wraps a line. That is the same rule the Markdown adapter
+ * follows, for the same reason: a count that can disagree with the highlights is the defect
+ * this bridge exists to remove.
+ *
+ * **It forwards the find chord**, because a keystroke inside a sandbox never reaches the
+ * parent: the scroll bridge forwards only Tab and Escape. `preventDefault` runs before the
+ * message is posted so the host browser's own find does not open over the dashboard. The
+ * chord is a named message rather than an implied side effect - without a wire format the
+ * keystroke stays lost.
+ *
+ * That forwarding is INERT until the parent has sent a find message, exactly as the keyboard
+ * bridge is inert until armed, and for a sharper reason than symmetry: Scouts shares this
+ * module and never sends one. An unconditional handler would cancel Cmd+F inside an archived
+ * report and post it to a parent that ignores it, leaving a reader of a Scouts report with no
+ * find at all - the browser's own having been swallowed. The Files preview is armed by the
+ * workspace's first post, which happens on mount and again on the ready handshake, so it is
+ * armed long before anyone can press the chord.
+ *
+ * The runs are rebuilt on every find message rather than cached. A previewed document is
+ * static - no script of its own can run - but computed visibility is not: comment mode
+ * toggles classes, and `content-visibility:auto` answers differently as the reader scrolls.
+ * A cache would be a second source of truth about what is on screen.
+ *
+ * NO LITERAL `<` ANYWHERE IN THIS BODY, for `PREVIEW_COMMENT_SCRIPT`'s reason: the hash test
+ * extracts each script with `/<script>([^<]+)<\/script>/g`, so one comparison operator would
+ * truncate this body. Hence `part.to>at` rather than `at<part.to`, and `i!==ranges.length`
+ * rather than `i<ranges.length` - which terminates identically for a counter stepping by one.
+ */
+const PREVIEW_FIND_MESSAGE = "mission:file-preview-find";
+const PREVIEW_FIND_RESULT_MESSAGE = "mission:file-preview-find-result";
+const PREVIEW_FIND_READY_MESSAGE = "mission:file-preview-find-ready";
+const PREVIEW_FIND_CHORD_MESSAGE = "mission:file-preview-find-chord";
+const PREVIEW_FIND_HIGHLIGHT = "mission-find";
+const PREVIEW_FIND_CURRENT_HIGHLIGHT = "mission-find-current";
+const PREVIEW_FIND_SCRIPT = `let missionFindArmed=false;let missionFindQuery="";let missionFindCase=false;let missionFindRanges=[];const missionFindSkip=["script","style","template","title","noscript"];function missionFindCan(){return typeof CSS!=="undefined"&&Boolean(CSS.highlights)&&typeof Highlight==="function"}function missionFindSpace(el){const style=getComputedStyle(el);if(style.display==="none")return"gone";if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true,opacityProperty:true,checkOpacity:true,contentVisibilityAuto:true})?"shown":"hidden";return style.visibility==="visible"?"shown":"hidden"}function missionFindRuns(){const runs=[];let run=null;const add=(node,text)=>{if(!run){run={text:"",parts:[]};runs.push(run)}run.parts.push({node,at:run.text.length,to:run.text.length+text.length});run.text+=text};const cut=()=>{run=null};const walk=(holder,shown)=>{for(const node of holder.childNodes){if(node.nodeType===3){if(shown&&node.data)add(node,node.data);continue}if(node.nodeType!==1)continue;const tag=node.tagName.toLowerCase();if(missionFindSkip.includes(tag))continue;const space=missionFindSpace(node);if(space==="gone")continue;if(tag==="br"){cut();continue}const lit=space==="shown";const breaks=lit!==shown||missionBlock(node)===node;if(breaks)cut();walk(node,lit);if(breaks)cut()}};if(document.body)walk(document.body,missionFindSpace(document.body)==="shown");return runs}function missionFindHits(text,re){const out=[];re.lastIndex=0;let m;while((m=re.exec(text))!==null){if(m[0]===""){re.lastIndex+=1;continue}out.push({at:m.index,to:m.index+m[0].length})}return out}function missionFindRange(run,at,to){const range=document.createRange();let open=false;for(const part of run.parts){if(!open&&part.to>at){range.setStart(part.node,at-part.at);open=true}if(open&&part.to>=to){range.setEnd(part.node,to-part.at);return range}}return null}function missionFindCollect(){if(!missionFindQuery)return[];const re=new RegExp(missionFindQuery.replace(/[.*+?^\${}()|[\\]\\\\]/g,"\\\\$&"),missionFindCase?"g":"gi");const found=[];for(const run of missionFindRuns())for(const hit of missionFindHits(run.text,re)){const range=missionFindRange(run,hit.at,hit.to);if(range&&range.getClientRects().length)found.push(range)}return found}function missionFindRender(current){const rest=new Highlight();const one=new Highlight();for(let i=0;i!==missionFindRanges.length;i++){if(i===current)one.add(missionFindRanges[i]);else rest.add(missionFindRanges[i])}CSS.highlights.set("${PREVIEW_FIND_HIGHLIGHT}",rest);CSS.highlights.set("${PREVIEW_FIND_CURRENT_HIGHLIGHT}",one)}function missionFindShow(current){const range=missionFindRanges[current];if(!range)return;const holder=range.startContainer.parentElement;if(holder)holder.scrollIntoView({block:"nearest",behavior:"instant"});const box=range.getBoundingClientRect();if(!box.height&&!box.width)return;if(box.top>=0&&innerHeight>=box.bottom)return;scrollBy({top:box.top+box.height/2-innerHeight/2,behavior:"instant"})}addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_FIND_MESSAGE}")return;missionFindArmed=true;missionFindQuery=typeof event.data.query==="string"?event.data.query:"";missionFindCase=event.data.caseSensitive===true;if(!missionFindCan())return;missionFindRanges=missionFindCollect();const count=missionFindRanges.length;const asked=Number.isInteger(event.data.index)?event.data.index:0;const current=count?Math.min(Math.max(asked,0),count-1):-1;missionFindRender(current);missionFindShow(current);parent.postMessage({type:"${PREVIEW_FIND_RESULT_MESSAGE}",query:missionFindQuery,caseSensitive:missionFindCase,count,index:current},"*")});document.addEventListener("keydown",event=>{if(!missionFindArmed)return;if(event.key!=="f"&&event.key!=="F")return;if(event.altKey||!event.metaKey&&!event.ctrlKey)return;event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_FIND_CHORD_MESSAGE}"},"*")},true);parent.postMessage({type:"${PREVIEW_FIND_READY_MESSAGE}",highlight:missionFindCan()},"*")`;
+const PREVIEW_FIND_SCRIPT_HASH = "kXZ5FhbjDBH/6STvmyhgKZequtkUH/eVM8svZjJs4jc=";
+
+/**
+ * What a found match looks like, in the two weights the dashboard's own marks use.
+ *
+ * A sibling of `PREVIEW_COMMENT_STYLE` rather than a line inside it, because it belongs to a
+ * different bridge and `style-src 'unsafe-inline'` already permits both - so this adds no
+ * policy. The colours are the app's `--find` hue written literally: a custom property
+ * declared on the dashboard's `:root` means nothing in a separate document.
+ *
+ * `::highlight()` accepts only `color`, `background-color`, `text-decoration`, `text-shadow`
+ * and `-webkit-text-stroke`, so there is no rounding or ring here to match `mark.find-hit`
+ * exactly. The two weights - a tint for every hit and the solid hue for the current one - are
+ * what a reader actually reads, and those carry across.
+ */
+const PREVIEW_FIND_STYLE = `::highlight(${PREVIEW_FIND_HIGHLIGHT}){background-color:rgba(227,179,65,0.28);color:inherit}::highlight(${PREVIEW_FIND_CURRENT_HIGHLIGHT}){background-color:#e3b341;color:#10130a}`;
 const PREVIEW_CSP =
   "default-src 'none'; connect-src 'none'; script-src "
   + `'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_COMMENT_SCRIPT_HASH}' `
-  + `'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; `
+  + `'sha256-${PREVIEW_LINK_SCRIPT_HASH}' 'sha256-${PREVIEW_FIND_SCRIPT_HASH}'; `
+  + "style-src 'unsafe-inline'; img-src data: blob:; "
   + "font-src data:; form-action 'none'; navigate-to 'none'";
 
 /** The message a preview posts up when a non-fragment link is clicked inside it. */
@@ -193,6 +339,42 @@ export const HTML_PREVIEW_BLOCK_MESSAGE = PREVIEW_BLOCK_MESSAGE;
 export const HTML_PREVIEW_READY_MESSAGE = PREVIEW_READY_MESSAGE;
 
 /**
+ * The find state the parent posts down: `query`, `caseSensitive` and `index`.
+ *
+ * An empty query is the clear - there is no separate message for it, so the frame has one
+ * code path and cannot end up highlighting a query the bar no longer holds.
+ */
+export const HTML_PREVIEW_FIND_MESSAGE = PREVIEW_FIND_MESSAGE;
+/**
+ * What the frame answers with: `count`, `index`, and the `query`/`caseSensitive` it counted.
+ *
+ * The query rides along so the parent can drop a reply to a state it has already moved past,
+ * and keep showing the number it does have rather than a fresher-looking wrong one.
+ */
+export const HTML_PREVIEW_FIND_RESULT_MESSAGE = PREVIEW_FIND_RESULT_MESSAGE;
+/**
+ * The find bridge's own readiness, posted as its last act, carrying `highlight`.
+ *
+ * NEVER substitute `HTML_PREVIEW_READY_MESSAGE` for this. That one is the comment bridge's,
+ * which is injected second, so it cannot speak for a script that has not run yet - and the
+ * failure is silent: the first find message reaches a window with no find listener. The
+ * parent answers this one with the current find state, which is also what restores the
+ * highlight after the `srcDoc` reload that follows every edit.
+ *
+ * `highlight` is the capability, not a result. False means this frame cannot mark anything,
+ * and the parent must keep the block-reveal fallback rather than trust a count of zero.
+ */
+export const HTML_PREVIEW_FIND_READY_MESSAGE = PREVIEW_FIND_READY_MESSAGE;
+/**
+ * The reader pressed the find chord with focus inside the preview.
+ *
+ * A sandbox is a separate browsing context, so the keystroke reaches no dashboard listener.
+ * The frame cancels it and posts this instead; the parent must verify `event.source` is its
+ * own frame before acting, because this message opens a UI surface.
+ */
+export const HTML_PREVIEW_FIND_CHORD_MESSAGE = PREVIEW_FIND_CHORD_MESSAGE;
+
+/**
  * The sandbox attribute every preview iframe must carry.
  *
  * Exported as a constant so no call site can quietly add a token. `allow-scripts` alone is
@@ -206,11 +388,17 @@ export function htmlPreviewSource(source: string): string {
   // both listen on `document` in the capture phase, listeners run in registration order, and
   // `stopImmediatePropagation` only reaches the ones registered after. A paragraph containing
   // a link therefore takes a comment while comment mode is on, instead of navigating.
+  //
+  // The find bridge is injected LAST, and nothing depends on that position: it announces its
+  // own readiness rather than borrowing the comment bridge's, and its one cross-script call
+  // (`missionBlock`) happens inside a message handler, long after every script has run.
   const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`
     + `<style>${PREVIEW_COMMENT_STYLE}</style>`
+    + `<style>${PREVIEW_FIND_STYLE}</style>`
     + `<script>${PREVIEW_SCROLL_SCRIPT}</script>`
     + `<script>${PREVIEW_COMMENT_SCRIPT}</script>`
-    + `<script>${PREVIEW_LINK_SCRIPT}</script>`;
+    + `<script>${PREVIEW_LINK_SCRIPT}</script>`
+    + `<script>${PREVIEW_FIND_SCRIPT}</script>`;
   // This prefix must be parsed before a single checkout-controlled byte. Searching
   // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
   // after which `allow-scripts` would run the document's own JavaScript unrestricted.

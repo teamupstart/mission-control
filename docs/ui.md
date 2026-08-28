@@ -916,12 +916,30 @@ one find rather than a second one with different chrome and a different count.
 The Persona, Session action and Foreman profile editors are unaffected: they have no find session
 of their own, so they keep CodeMirror's panel.
 
-An **HTML preview** is a sandboxed document this app cannot read into, so its matches are found
-over the file's source and the block containing the current match is revealed and outlined -
-which is why the bar says **by block** there. That phrase is exact: the ring is over the blocks
-this app can reach, so two occurrences on one source line count once, because a reveal told only
-a line cannot tell them apart. The Editor, which shows the source itself, still counts both.
-Character-accurate find inside that frame is a later change.
+An **HTML preview** is a sandboxed document this app cannot read into, so find there is answered
+by the preview itself. A hash-pinned bridge inside the frame marks each match where it sits,
+reports how many it painted, and steps between them, so the number in the bar is the number of
+things highlighted - and only text a reader can actually see is counted. A word in the page
+title, in an attribute, in a stylesheet or script, or in a hidden subtree is not a match,
+because none of them is on screen.
+
+**On screen is the test, not the subtree it sits in.** `visibility` inherits, so a paragraph
+inside a `visibility: hidden` block can set `visibility: visible` and be perfectly readable -
+and that paragraph's words are matches, while the hidden text around it is not, in the same
+subtree. `display: none` has no such exception: nothing inside it is laid out, so nothing inside
+it can be found. Matches split by inline markup are one match; matches separated by a line break
+or a hidden gap are not joined across it, because the reader sees a break there.
+
+<kbd>⌘F</kbd> works with the caret inside the preview too - the frame cancels the keystroke and
+hands it out - and <kbd>Esc</kbd> in there closes find before it hands focus back to the file
+list.
+
+Where a browser cannot register those highlights at all, the bar falls back to the older
+behaviour and says so: matches are found over the file's source and the block containing the
+current match is revealed and outlined, with the bar reading **by block**. That phrase is exact -
+the ring is over the blocks this app can reach, so two occurrences on one source line count once,
+because a reveal told only a line cannot tell them apart. The Editor, which shows the source
+itself, still counts both.
 
 ### Comment on a line
 

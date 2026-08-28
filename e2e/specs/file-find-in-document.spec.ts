@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { FrameLocator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -72,8 +72,59 @@ const REPORT_HTML = `<!doctype html>
 </body></html>
 `;
 
+/*
+ * The counting fixture, and the count IS the claim.
+ *
+ * `smuggled` appears exactly THREE times where a reader can see it, and eight times where they
+ * cannot. Every one of the invisible eight is an ordinary text node or an attribute value, so
+ * a naive text-node walk would report eleven - which is the defect this document exists to
+ * catch. An attribute-only case cannot expose it, because an attribute value is not a text node
+ * and a naive walk already reports zero for one.
+ *
+ * The THIRD visible one is the case that catches the opposite defect, and it is the reason the
+ * `visibility: hidden` div has two children. `visibility` inherits, so a descendant may set
+ * `visibility: visible` and be on screen inside a hidden subtree - which means a walk that
+ * treats a hidden element as terminal cannot find it however carefully it asks about the
+ * element it did reach. `#reasserted` is that paragraph; the sibling above it is the hidden
+ * text that must still not be counted. Both live in the same subtree on purpose: only a gate
+ * asked at every level gets both answers right.
+ *
+ * The three run cases are separate words so a count for one cannot be read off another:
+ *
+ * - `joinme` split by inline markup, which a reader sees as ONE word;
+ * - `gapme` split by a `visibility: hidden` span, which leaves a visible gap on screen, so it
+ *   must NOT join - and the hidden span's own text is not countable either;
+ * - `brme` split by a `br`, a line break with no text node of its own.
+ *
+ * The `style` element sits in the BODY on purpose: that is where `inlinePreviewStyles` puts an
+ * inlined checkout stylesheet, so a head-only skip list would miss it.
+ */
+const COUNTED_HTML = `<!doctype html>
+<html>
+<head>
+  <title>smuggled in the title</title>
+</head>
+<body>
+  <p id="visible-one" data-note="smuggled in an attribute">First visible smuggled word.</p>
+  <style>/* smuggled in a body stylesheet */ .smuggled-rule { color: red }</style>
+  <script>const smuggled = "smuggled in a script";</script>
+  <template><p>smuggled in a template</p></template>
+  <noscript>smuggled in a noscript</noscript>
+  <div style="display: none"><p>smuggled while display none</p></div>
+  <div style="visibility: hidden">
+    <p>smuggled while visibility hidden</p>
+    <p id="reasserted" style="visibility: visible">Third visible smuggled word.</p>
+  </div>
+  <p id="visible-two">Second visible smuggled word.</p>
+  <p id="joined">joi<strong>nme</strong> together</p>
+  <p id="gapped">gap<span style="visibility: hidden">gapme hidden</span>me apart</p>
+  <p id="broken">br<br>me apart</p>
+</body></html>
+`;
+
 const PLAN = "docs/plans/reconnect/plan.md";
 const REPORT = "docs/reports/reconnect/report.html";
+const COUNTED = "docs/reports/reconnect/counted.html";
 
 async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -127,6 +178,7 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
   writeFileSync(join(cwd, PLAN), PLAN_MD);
   mkdirSync(join(cwd, "docs", "reports", "reconnect"), { recursive: true });
   writeFileSync(join(cwd, REPORT), REPORT_HTML);
+  writeFileSync(join(cwd, COUNTED), COUNTED_HTML);
 
   await useConsoleLayout(page, daemon);
   await page
@@ -440,118 +492,362 @@ test("find works in the extracted Files window", async ({ dashboard, daemon }) =
   await shoot(dashboard, "extracted-window-find");
 });
 
-test("an HTML preview reveals the block holding the current match, and says so", async ({
+/*
+ * ---- find INSIDE the sandboxed HTML preview ----
+ *
+ * The preview is a separate browsing context this origin cannot read, so everything below is
+ * asserted through the frame's own scripting surface: `CSS.highlights` for what was painted,
+ * and `Range.toString()` for which words. That is the only place the claim can be checked -
+ * the parent has no access to the document, and a unit test has no layout, so
+ * `checkVisibility` and `getClientRects` have nothing to answer.
+ */
+
+/** What the frame has actually highlighted, read out of its own highlight registry. */
+async function highlighted(frame: FrameLocator): Promise<{
+  count: number;
+  current: string[];
+  rest: string[];
+}> {
+  return frame.locator("body").evaluate(() => {
+    const registry = (CSS as unknown as {
+      highlights?: Map<string, Iterable<Range>>;
+    }).highlights;
+    const read = (name: string): string[] => {
+      const found = registry?.get(name);
+      return found ? [...found].map((range) => range.toString()) : [];
+    };
+    const current = read("mission-find-current");
+    const rest = read("mission-find");
+    return { count: current.length + rest.length, current, rest };
+  });
+}
+
+async function openReport(page: Page, path: string, heading: RegExp): Promise<FrameLocator> {
+  await page
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: path })
+    .click();
+  const frame = page.frameLocator(`iframe[title="Preview of ${path}"]`);
+  await expect(frame.locator("body")).toBeVisible();
+  await expect(frame.locator("body")).toHaveText(heading);
+  return frame;
+}
+
+test("find in an HTML preview marks the words a reader can see, and counts only those", async ({
   dashboard,
   daemon,
 }) => {
+  /*
+   * The whole promise of the in-frame bridge, on a document built to break a naive one - in
+   * both directions.
+   *
+   * `smuggled` sits in the title, an attribute, a BODY stylesheet, a script, a template, a
+   * noscript, a `display: none` subtree and a `visibility: hidden` paragraph - eight places a
+   * reader cannot see it, and all but the attribute are ordinary text nodes. Three occurrences
+   * are visible, and one of those three is a paragraph that re-asserts `visibility: visible`
+   * INSIDE the hidden subtree. A text-node walk reports eleven; a walk that stops at the hidden
+   * div reports two. Only a rendered-text walk asked at every level reports three, and the
+   * number the bar shows must equal the number of things highlighted.
+   */
   await openFilesTab(dashboard, daemon);
-  await dashboard
-    .getByRole("listbox", { name: "Session files" })
-    .getByRole("option", { name: REPORT })
-    .click();
-  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  const frame = await openReport(dashboard, COUNTED, /First visible smuggled word/);
+
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("smuggled");
+  await expect(readout(dashboard)).toHaveText("1 / 3");
+  // The bar no longer caveats an HTML count, because the count is no longer taken over source.
+  await expect(dashboard.locator(".file-content .find-bar .find-note")).toHaveCount(0);
+
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(3);
+  const first = await highlighted(frame);
+  // Exactly one current hit, and the other two are the plain weight.
+  expect(first.current).toEqual(["smuggled"]);
+  expect(first.rest).toEqual(["smuggled", "smuggled"]);
+  /*
+   * WHICH occurrences, proved by where the highlights sit rather than by their text.
+   *
+   * All three are the same eight characters, so comparing strings cannot tell them apart or
+   * tell the ring apart. The frame reports the paragraph each range starts in, which can - and
+   * that is also the only way to state the negative: the hidden sibling of `#reasserted` is
+   * absent from this list, and it would be present in a walk without the visibility gate.
+   */
+  const holderOf = async (): Promise<string | null> => frame.locator("body").evaluate(() => {
+    const registry = (CSS as unknown as {
+      highlights?: Map<string, Iterable<Range>>;
+    }).highlights;
+    const found = registry?.get("mission-find-current");
+    const range = found ? [...found][0] : undefined;
+    return range?.startContainer.parentElement?.closest("p")?.id ?? null;
+  });
+  const ring: (string | null)[] = [];
+  for (let step = 0; step !== 3; step++) {
+    await expect(readout(dashboard)).toHaveText(`${step + 1} / 3`);
+    ring.push(await holderOf());
+    expect((await highlighted(frame)).current).toHaveLength(1);
+    if (step === 1) await shoot(dashboard, "html-in-frame-highlight");
+    await dashboard.keyboard.press("Enter");
+  }
+  /*
+   * Document order, and every id names a paragraph a reader can see.
+   *
+   * `#reasserted` between them is the assertion that a hidden subtree is DESCENDED into rather
+   * than skipped; its unnamed hidden sibling never appears, which is the assertion that
+   * descending did not cost the gate.
+   */
+  expect(ring).toEqual(["visible-one", "reasserted", "visible-two"]);
+  // The ring wrapped to the top on the last press of that loop.
+  await expect(readout(dashboard)).toHaveText("1 / 3");
+  await expect.poll(holderOf).toBe("visible-one");
+
+  /*
+   * The document's own script still never runs.
+   *
+   * `allow-scripts` runs the four hashed bridges and nothing else, and adding a fourth hash
+   * must not have widened that. The fixture's script would have declared `smuggled` as a
+   * global if the hash allowlist had let it.
+   */
+  const ranAnything = await frame.locator("body").evaluate(
+    () => "smuggled" in (globalThis as unknown as Record<string, unknown>),
+  );
+  expect(ranAnything, "the previewed document's own script executed").toBe(false);
+
+  // Closing find clears the highlight outright - which the block reveal's outline could not do.
+  await dashboard.keyboard.press("Escape");
+  await expect(searchbox(dashboard)).toHaveCount(0);
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(0);
+});
+
+test("a run is joined across inline markup and broken at every visible separation", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * Two failures with the same shape and opposite signs, and only a browser can tell them
+   * apart. Matching node by node misses `joi<strong>nme</strong>`, which a reader sees as one
+   * word. Joining by block over-reaches the other way: a `visibility: hidden` span leaves a
+   * visible gap and a `br` is a rendered line break, so neither may be read across.
+   */
+  await openFilesTab(dashboard, daemon);
+  const frame = await openReport(dashboard, COUNTED, /together/);
+
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("joinme");
+  await expect(readout(dashboard)).toHaveText("1 / 1");
+  // ONE hit, and it is highlighted WHOLE - a Range spans the element boundary natively, so the
+  // count is logical hits rather than the fragments the API paints.
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(1);
+  expect((await highlighted(frame)).current).toEqual(["joinme"]);
+
+  // A visible gap is not a join, and the hidden span's own copy is not countable either.
+  await searchbox(dashboard).fill("gapme");
+  await expect(readout(dashboard)).toHaveText("No results");
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(0);
+
+  // A rendered line break separates as firmly as a paragraph does, and it has no text node of
+  // its own for a walk to notice.
+  await searchbox(dashboard).fill("brme");
+  await expect(readout(dashboard)).toHaveText("No results");
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(0);
+});
+
+test("Cmd+F works with focus inside the preview, which cannot reach the parent as a keystroke", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * Finding 4 of the phase, end to end. A sandbox is a separate browsing context, so its
+   * keydown never bubbles to the dashboard - and the scroll bridge forwards only Tab and
+   * Escape. The find bridge cancels the chord and posts it, and the workspace validates the
+   * sender before opening a UI surface with it.
+   */
+  await openFilesTab(dashboard, daemon);
+  const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
+
+  // Focus really is inside the frame: the click lands on the frame's own document.
+  await frame.locator("h1").click();
+  expect(await frame.locator("body").evaluate(
+    () => document.hasFocus(),
+  )).toBe(true);
+  await expect(searchbox(dashboard)).toHaveCount(0);
+
+  await dashboard.keyboard.press("ControlOrMeta+f");
+  await expect(searchbox(dashboard)).toBeFocused();
+  await searchbox(dashboard).fill("budget is bounded");
+  await expect(readout(dashboard)).toHaveText("1 / 2");
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
+  await shoot(dashboard, "html-chord-from-inside-frame");
+
+  // Escape from inside the frame closes find rather than handing focus to the file list, which
+  // is what the keyboard bridge's exit means while find is the innermost thing open.
+  await frame.locator("h1").click();
+  await dashboard.keyboard.press("Escape");
+  await expect(searchbox(dashboard)).toHaveCount(0);
+});
+
+test("a find chord posted by any other frame is ignored", async ({ dashboard, daemon }) => {
+  /*
+   * The `event.source` check, proved by mutation rather than by reading the code.
+   *
+   * This message OPENS a UI surface, so an arbitrary sender must not be able to fire it. The
+   * baseline is read first - the bar is closed - and the same message is then shown to work
+   * from the real frame, so a handler that had simply stopped listening would fail here too.
+   */
+  await openFilesTab(dashboard, daemon);
+  const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
+  await expect(searchbox(dashboard)).toHaveCount(0);
+
+  // An unrelated frame in the dashboard document, posting the exact message.
+  await dashboard.evaluate(() => {
+    const other = document.createElement("iframe");
+    other.id = "impostor";
+    other.srcdoc = "<p>not the preview</p>";
+    document.body.append(other);
+  });
+  await dashboard.waitForFunction(
+    () => (document.querySelector("#impostor") as HTMLIFrameElement | null)?.contentWindow != null,
+  );
+  await dashboard.evaluate(() => {
+    (document.querySelector("#impostor") as HTMLIFrameElement).contentWindow!.eval(
+      'parent.postMessage({type:"mission:file-preview-find-chord"},"*")',
+    );
+  });
+  // Given a moment to be wrong in.
+  await dashboard.waitForTimeout(250);
+  await expect(searchbox(dashboard)).toHaveCount(0);
+
+  // And the same message from the preview frame does open it, so the refusal above is the
+  // source check and not a listener that never ran.
+  await frame.locator("h1").click();
+  await dashboard.keyboard.press("ControlOrMeta+f");
+  await expect(searchbox(dashboard)).toBeFocused();
+});
+
+test("a query typed before the preview loaded highlights by itself, and survives an edit", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The handshake, which is the part with no second chance: the parent cannot know when a
+   * `srcdoc` document has finished running its scripts, so a find message posted early reaches
+   * a window with no find listener and is lost. The bridge announces its OWN readiness - not
+   * the comment bridge's, which is posted by a script that runs before it - and the parent
+   * answers with the current state.
+   *
+   * The same exchange covers the `srcDoc` reload that follows every debounced edit, which
+   * destroys the highlight along with the document.
+   */
+  await openFilesTab(dashboard, daemon);
+  // Find open, with a query, on a markdown document - then select the HTML one. The preview
+  // has not loaded when the query already exists, which is the ordering that used to lose it.
+  await openPlan(dashboard);
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("budget is bounded");
+  await expect(readout(dashboard)).toHaveText("1 / 1");
+
+  const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
+  // The bar reopens empty for a new document by design, so the query is retyped here; what is
+  // being asserted is that the FRAME picks it up without a second keystroke once it is loaded.
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("budget is bounded");
+  await expect(readout(dashboard)).toHaveText("1 / 2");
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
+
+  /*
+   * Now reload the document under the highlight, by editing the file through the Editor.
+   *
+   * `previewText` is debounced and the `srcDoc` is rebuilt from it, so this really is a fresh
+   * document with a fresh bridge that was never told anything. Nothing but the ready handshake
+   * brings the highlight back.
+   */
+  const modes = dashboard.getByRole("group", { name: "File view mode" });
+  await modes.getByRole("button", { name: "Editor" }).click();
+  const editor = dashboard.getByLabel(`Editor for ${REPORT}`);
+  await expect(editor).toBeVisible();
+  await editor.click();
+  await dashboard.keyboard.press("ControlOrMeta+End");
+  await dashboard.keyboard.type("\n<!-- edited -->\n");
+  await modes.getByRole("button", { name: "Preview" }).click();
+
+  const reloaded = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  await expect(readout(dashboard)).toHaveText(/\/ 2$/);
+  await expect
+    .poll(async () => (await highlighted(reloaded)).count, {
+      message: "the highlight never came back after the srcDoc reload",
+    })
+    .toBe(2);
+});
+
+test("a frame that cannot highlight keeps the block reveal, its note and its own count", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * The one path where Phase 1's behaviour is the finished behaviour rather than a stopgap.
+   *
+   * Readiness carries CAPABILITY, not a result, and this is why: a frame that cannot register
+   * highlights must not answer a matching query with a count of zero, because that leaves the
+   * reader no highlight, no block reveal, and a number saying there is nothing to find. The
+   * incapacity is declared here by having the frame re-announce itself with `highlight: false`,
+   * which is the same message a browser without the API would send - and far more reachable
+   * than finding such a browser.
+   */
+  await openFilesTab(dashboard, daemon);
+  const frame = await openReport(dashboard, REPORT, /SSE reconnect audit/);
 
   await dashboard.keyboard.press("Meta+f");
   await searchbox(dashboard).fill("budget is bounded");
-  // The count is taken over SOURCE here, because the sandbox is opaque to this origin - so
-  // the bar says what the number means rather than implying character accuracy it lacks.
+  // In-frame first, so the downgrade below is a change and not the initial state.
+  await expect(dashboard.locator(".file-content .find-bar .find-note")).toHaveCount(0);
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
+
+  await frame.locator("body").evaluate(() => {
+    parent.postMessage({ type: "mission:file-preview-find-ready", highlight: false }, "*");
+  });
+
+  // The note is back, the count is the source-derived by-block one, and stepping reveals the
+  // block again - all three together, because they are one decision.
   await expect(dashboard.locator(".file-content .find-bar .find-note")).toHaveText("by block");
   await expect(readout(dashboard)).toHaveText("1 / 2");
-
-  // The block containing the match is revealed and outlined, through the daemon's existing
-  // block resolver and the target message the comment jump already uses.
-  const verdict = report.locator("#verdict");
+  const verdict = frame.locator("#verdict");
   await expect(verdict).toHaveClass(/mission-comment-target/);
-  await expect
-    .poll(() => report.locator("body").evaluate(() => window.scrollY))
-    .toBeGreaterThan(0);
-  /*
-   * And it is actually ON SCREEN.
-   *
-   * The two assertions above are both true the instant the reveal begins: the class is set
-   * before the scroll, and `scrollY > 0` holds from the first frame of a `behavior: "smooth"`
-   * animation. Neither says the reader can see the block, which is the whole claim - and a
-   * screenshot taken between them caught the top of the report instead of the reveal.
-   */
-  await expect
-    .poll(() => verdict.evaluate((element) => {
-      const box = element.getBoundingClientRect();
-      return box.top >= 0 && box.bottom <= window.innerHeight ? "in view" : "off screen";
-    }), { message: "the revealed block never settled inside the frame's viewport" })
-    .toBe("in view");
-  await shoot(dashboard, "html-block-reveal");
-
-  /*
-   * Stepping MOVES the outline, and only one block carries it.
-   *
-   * The frame can show one outline - `missionJump` removes the previous target as it sets the
-   * next - and both reveal sources now feed one decision that posts on change. This is the
-   * assertion that the restructuring kept the frame following the ring.
-   */
-  const second = report.locator("#second");
-  await expect(second).not.toHaveClass(/mission-comment-target/);
   await searchbox(dashboard).focus();
   await dashboard.keyboard.press("Enter");
   await expect(readout(dashboard)).toHaveText("2 / 2");
-  await expect(second).toHaveClass(/mission-comment-target/);
+  await expect(frame.locator("#second")).toHaveClass(/mission-comment-target/);
   await expect(verdict).not.toHaveClass(/mission-comment-target/);
-
-  /*
-   * Two occurrences on ONE source line, in two different blocks, are one ring entry.
-   *
-   * This surface is told a LINE, so both would produce byte-identical resolve requests and the
-   * same answer: offering two entries promised a step that cannot happen, and the reveal could
-   * land on the block belonging to the other occurrence. The ring is therefore over the
-   * locations this surface can actually reach, which is what "by block" means. Phase 2's
-   * in-frame bridge reports character positions and retires both the grouping and the note.
-   */
-  await searchbox(dashboard).fill("paired");
-  await expect(readout(dashboard)).toHaveText("1 / 1");
-  // Stepping cannot stall on an entry it could not distinguish, because there is only one.
-  await dashboard.keyboard.press("Enter");
-  await expect(readout(dashboard)).toHaveText("1 / 1");
-  // The Editor, which shows source, still counts both occurrences - each surface counts what
-  // it shows, and here that difference is the honest one.
-  await dashboard.getByRole("group", { name: "File view mode" })
-    .getByRole("button", { name: "Editor" })
-    .click();
-  await expect(decorations(dashboard)).toHaveCount(2);
-  await expect(readout(dashboard)).toHaveText("1 / 2");
+  await shoot(dashboard, "html-capability-false-fallback");
 });
 
-test("a closed find leaves the last HTML outline standing, which the sandbox cannot clear", async ({
+test("an HTML comment still anchors while a find highlight is active", async ({
   dashboard,
   daemon,
 }) => {
   /*
-   * A KNOWN LIMITATION, pinned so it stays deliberate.
+   * The constraint that decided the implementation, asserted rather than trusted.
    *
-   * Closing find over an HTML document leaves the last revealed block outlined. That is the
-   * sandbox's limit, not an oversight: the frame's `missionJump` removes the previous target
-   * only as it sets a new one, and a path that walks nowhere resolves to `document.body`, so
-   * posting "nothing" would outline the whole page instead of clearing it. A real clear needs a
-   * new hash-pinned bridge script and a CSP change, which is Phase 2's scoped edit to
-   * `htmlPreview.ts` - explicitly out of this phase.
-   *
-   * Phase 2 should DELETE this test and assert the outline goes. Until then it is here so the
-   * behaviour cannot drift unnoticed in either direction.
+   * The comment bridge addresses a block by indexing element children from `document.body`,
+   * and the daemon resolves that same path against a parse5 tree of the SOURCE. Wrapping
+   * matches in `mark` elements would have shifted those indices, so a comment anchored after a
+   * highlight would resolve to a neighbour - silently. The Custom Highlight API inserts
+   * nothing, and this is what proves the tree the daemon sees is still the tree the frame has.
    */
   await openFilesTab(dashboard, daemon);
-  await dashboard
-    .getByRole("listbox", { name: "Session files" })
-    .getByRole("option", { name: REPORT })
-    .click();
-  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  const frame = await openReport(dashboard, COUNTED, /Second visible smuggled word/);
 
   await dashboard.keyboard.press("Meta+f");
-  await searchbox(dashboard).fill("budget is bounded");
-  const verdict = report.locator("#verdict");
-  await expect(verdict).toHaveClass(/mission-comment-target/);
+  await searchbox(dashboard).fill("smuggled");
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(3);
 
-  await dashboard.keyboard.press("Escape");
-  await expect(searchbox(dashboard)).toHaveCount(0);
-  // Still outlined, and the reader has no cue that it is stale. Recorded, not defended.
-  await expect(verdict).toHaveClass(/mission-comment-target/);
+  // Comment on the paragraph AFTER the first highlight, which is exactly the anchor an
+  // inserted element would have shifted.
+  await dashboard.getByRole("button", { name: /Comment/i }).first().click();
+  await frame.locator("#visible-two").click();
+  const composer = dashboard.getByRole("textbox", { name: /comment/i }).first();
+  await expect(composer).toBeVisible();
+  // The daemon resolved the path against the source and sliced the quote out of it, so the
+  // quote proves which element the index landed on.
+  await expect(dashboard.locator(".file-comment-dock")).toContainText("Second visible smuggled");
+  // And the highlight is still there, unmoved, with comment mode on over it.
+  await expect.poll(async () => (await highlighted(frame)).count).toBe(3);
+  await shoot(dashboard, "html-comment-with-highlight");
 });

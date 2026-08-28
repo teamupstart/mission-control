@@ -287,6 +287,73 @@ fifth script. The handshake travels with it: the find bridge's own readiness mes
 parent's reply carrying current state are part of the contract, and no consumer may substitute
 another script's ready signal for it.
 
+## Implementation record
+
+What was built as written, and the three places the repository argued for something else.
+
+**Followed as written.** One added script (`PREVIEW_FIND_SCRIPT`) and one added CSP hash, with
+the other three bodies and hashes byte-identical - pinned literally in
+`test/html-preview.test.ts`, because recomputing hashes from the emitted scripts proves the CSP
+matches them and only a literal can prove the scripts themselves did not move. No sandbox token,
+no new directive, no element inserted into the previewed document. `PREVIEW_FIND_READY_MESSAGE`
+is the find bridge's own and is posted as its last statement; the parent answers it with current
+state; the block-reveal fallback, its note and its source-derived count are retired together on
+`htmlInFrame`, and only on a readiness report that says the frame can highlight.
+
+**Deviation 1 - `missionBlock` is called, not restated.** The phase asked run breaks to use "the
+definition `missionBlock` in the comment bridge already uses". The find bridge calls
+`missionBlock(node)===node` rather than re-expressing the display rule, so the two bridges cannot
+drift on what one box of text is. The cross-script reference is order-independent: function
+declarations are hoisted per script at execution, and the call happens inside a message handler
+that runs long after all four scripts have. That keeps the phase's own exit criterion - injecting
+the find script in any position must not change the outcome.
+
+**Deviation 2 - readiness is not torn down by a `srcDoc` reload.** The phase asked the fallback
+to return "again after a reload that has not yet re-announced". Taken literally that fires on
+every debounced keystroke, because `previewText` rebuilds the `srcDoc`, and it flashes the count
+and the "by block" note in and out while the reader types. It also buys nothing: the reload
+re-runs the hash-pinned script, which re-announces within the same load, and the parent's reply
+restores the highlight - which is the handshake the phase added for exactly this. Readiness is
+therefore dropped on document IDENTITY changes and when the preview leaves the screen, not on
+every revision of the same document. The behaviour the criterion protects is covered by
+`a query typed before the preview loaded highlights by itself, and survives an edit`.
+
+**Deviation 3 - a superseded reply keeps the previous count, rather than reading as zero.** The
+result message echoes the query it counted, as specified. Refusing a non-matching reply and
+showing nothing in its place made the bar read `No results` on every character of a query that
+matches, for the length of one round trip. The refusal happens in the handler, so the number on
+screen is always one the frame reported for a query the reader actually asked for; the last such
+number stands until the next arrives.
+
+**Correction found in completion review - a hidden element is not terminal.** The gate list as
+written stops at `visibility: hidden`, and the first implementation stopped the WALK there too.
+`visibility` inherits, so a descendant may set `visibility: visible` and be genuinely on screen
+inside a hidden subtree - and a walk that never entered the hidden element cannot find it however
+carefully it asks about the element it did reach. This is round 4's defect arrived at from the
+other side: that round fixed a gate that counted invisible text, this one fixed a walk that
+missed visible text. The walk now descends carrying whether the current subtree is lit, a text
+node is eligible when the nearest element above it is lit, and run breaks are driven by a
+visibility transition (`lit!==shown`) as well as by a box - so entering a hidden subtree breaks
+the run and a re-asserting paragraph inside it is broken away on both sides. `display: none`
+stays terminal, because it removes the subtree from layout and nothing can put it back; so does
+`opacity: 0`, which `checkVisibility` reports for a descendant as well as for the element that
+set it. The `visibility: hidden` div in the counting fixture now carries two children - the
+hidden text that must still not be counted, and `#reasserted`, which must be - so one subtree
+proves both directions. Reverting the descent makes that spec report 2 where it must report 3.
+
+**Also worth naming.** In-frame hits carry no source line, because the frame never sees the
+file's bytes - so the Preview/Editor toggle can no longer carry the reader's place across for an
+HTML document and starts the new surface's ring at its first hit. Lining the frame's ordinals up
+against the source's would have been worse: they are ordinals over different sets, so the reader
+would land on a match they had not selected. The scroll of the current hit is
+`scrollIntoView({block:"nearest"})` on the hit's nearest element followed by a rect-based
+`scrollBy`, which handles a nested scroll container and then centres the word itself; both are
+instant rather than smooth, because a find step is not a reveal.
+
+Phase 1's `a closed find leaves the last HTML outline standing` test is deleted, as Phase 1 said
+it should be: in-frame find posts no target message, so no outline is set, and an empty query
+clears the highlight outright.
+
 ## Cross-phase audit record
 
 - Reconciled against Phase 1 as written: Phase 1 must let the bar's count come from a value

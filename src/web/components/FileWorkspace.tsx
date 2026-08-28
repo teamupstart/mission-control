@@ -66,6 +66,10 @@ import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 import {
   HTML_PREVIEW_BLOCK_MESSAGE,
   HTML_PREVIEW_COMMENT_MESSAGE,
+  HTML_PREVIEW_FIND_CHORD_MESSAGE,
+  HTML_PREVIEW_FIND_MESSAGE,
+  HTML_PREVIEW_FIND_READY_MESSAGE,
+  HTML_PREVIEW_FIND_RESULT_MESSAGE,
   HTML_PREVIEW_LINK_MESSAGE,
   HTML_PREVIEW_KEYBOARD_MESSAGE,
   HTML_PREVIEW_READY_MESSAGE,
@@ -942,6 +946,12 @@ export function FileWorkspace({
    * What survives the Preview/Editor toggle is the query and the case flag, plus the reader's
    * place carried across BY SOURCE LINE - the same neighbourhood, not the same character,
    * which is what these two surfaces can honestly promise each other.
+   *
+   * The HTML preview is the third surface and the only one this origin cannot read, so it
+   * reports rather than being searched: its bridge counts what it painted and posts the
+   * number back. Its hits therefore have no source line and no key here at all - see
+   * `htmlInFrame`, which is also the one switch back to the block-reveal fallback for a frame
+   * that cannot highlight.
    */
   const [find, setFind] = useState<DocumentFindSession | null>(null);
   /** Bumped to put the caret back in the query box when the chord is pressed again. */
@@ -958,6 +968,30 @@ export function FileWorkspace({
    * on the first render that has hits to resolve against.
    */
   const [pendingFindLine, setPendingFindLine] = useState<number | null>(null);
+  /**
+   * What the sandboxed preview's find bridge has told us about ITSELF, or null before it has.
+   *
+   * `highlight` is a CAPABILITY, not a result. A frame that cannot register CSS custom
+   * highlights still announces itself, and answering a matching query with a count of zero
+   * would leave the reader no highlight, no block reveal, and a number saying there is
+   * nothing to find. So the block-reveal fallback and the bar's "by block" note are retired
+   * only on `highlight === true`, and every announcement replaces the last - a reload, or a
+   * frame that has lost the API, is free to say so again.
+   *
+   * Keyed on nothing but the bridge's own message (`HTML_PREVIEW_FIND_READY_MESSAGE`), never
+   * the comment bridge's: that one is posted by the second of four injected scripts and
+   * cannot speak for the fourth.
+   */
+  const [htmlFindBridge, setHtmlFindBridge] = useState<{ highlight: boolean } | null>(null);
+  /**
+   * The count the frame reported, with the query it counted.
+   *
+   * The query rides along so a reply to a state the reader has already moved past is dropped
+   * rather than shown: keeping the number we have beats replacing it with a fresher-looking
+   * wrong one for a frame or two.
+   */
+  const [htmlFindResult, setHtmlFindResult] =
+    useState<{ query: string; caseSensitive: boolean; count: number } | null>(null);
   /** Which string find is searching right now, or null when there is nothing to search. */
   const findSurface: "markdown" | "html" | "source" | null =
     buffer?.document.text == null || comparing
@@ -999,19 +1033,45 @@ export function FileWorkspace({
     (): number[] => (findSurface === "html" ? hitLinesByBlock(sourceFindHits) : []),
     [findSurface, sourceFindHits],
   );
+  /**
+   * Whether the HTML surface's find is being answered INSIDE the frame right now.
+   *
+   * The one switch between the two HTML behaviours, so nothing can retire half of the
+   * fallback. False - before the bridge announces itself, after a reload that has not yet
+   * re-announced, and permanently in a frame that declared it cannot highlight - keeps the
+   * whole of Phase 1: the source-derived count, the by-block ring, the daemon resolve, the
+   * target reveal, and the bar's note. True replaces all of it with the frame's own count
+   * over the text it actually painted.
+   */
+  const htmlInFrame = findSurface === "html" && htmlFindBridge?.highlight === true;
+  /**
+   * The frame's count: the last one it reported for a query the bar was actually holding.
+   *
+   * The LAST such count rather than only a matching one, and the difference is what the
+   * reader sees. A round trip separates the keystroke from the reply, and treating the gap as
+   * "no count yet" flashed `No results` over a query that matches on every character typed.
+   * Carrying the previous number for that frame is the honest reading of "we have not been
+   * told otherwise yet"; the message handler is where a reply for a query the reader has
+   * already left is refused, so this can never be a count for a search nobody asked for.
+   */
+  const htmlFrameCount = htmlInFrame && find?.query !== "" ? htmlFindResult?.count ?? 0 : 0;
   const findCount = findSurface === "markdown"
     ? renderedFindHits.length
     : findSurface === "html"
-      ? htmlFindLines.length
+      ? (htmlInFrame ? htmlFrameCount : htmlFindLines.length)
       : sourceFindHits.length;
   /** Clamped here rather than on the way in, because hits move under a stored index. */
   const findIndex = findCount === 0 ? -1 : Math.min(Math.max(find?.index ?? 0, 0), findCount - 1);
   const findCurrentKey = findSurface === "markdown"
     ? renderedFindHits[findIndex]?.key ?? null
     : findSurface === "html"
-      // Namespaced like every other surface's key, and keyed on the line because the line is
-      // the whole of what this surface can address.
-      ? (htmlFindLines[findIndex] === undefined ? null : `block:${htmlFindLines[findIndex]}`)
+      // In-frame find has no key this origin can hold: the hit is a Range inside a document
+      // it cannot read, addressed by ordinal and nothing else. In the fallback the key is
+      // namespaced like every other surface's and keyed on the line, because the line is the
+      // whole of what block reveal can address.
+      ? (htmlInFrame || htmlFindLines[findIndex] === undefined
+        ? null
+        : `block:${htmlFindLines[findIndex]}`)
       : sourceFindHits[findIndex]?.key ?? null;
   /**
    * The source line of every hit on the active surface, in the same order.
@@ -1024,9 +1084,15 @@ export function FileWorkspace({
     findSurface === "markdown"
       ? renderedFindHits.map((hit) => hit.range?.startLine ?? null)
       : findSurface === "html"
-        ? htmlFindLines
+        // In-frame find reports ordinals over RENDERED text, and this origin cannot map one
+        // back to a source line - the frame never sees the file's bytes. Null per hit rather
+        // than reusing the by-block lines: those are ordinals over a different set (source
+        // occurrences, including ones the page does not show), so lining them up would carry
+        // the reader to a match they had not selected. A null is not a candidate, so the
+        // toggle starts the new surface's ring at its first hit, which is honest.
+        ? (htmlInFrame ? Array.from({ length: findCount }, () => null) : htmlFindLines)
         : sourceFindHits.map((hit) => hit.line),
-  [findSurface, htmlFindLines, renderedFindHits, sourceFindHits]);
+  [findCount, findSurface, htmlFindLines, htmlInFrame, renderedFindHits, sourceFindHits]);
   // Read through refs by the callbacks below, refreshed during render for the reason every
   // other ref in this file is: the very first press after a state change uses current values.
   const findCountRef = useRef(findCount);
@@ -1078,6 +1144,9 @@ export function FileWorkspace({
     setFind(null);
     setPendingFindLine(null);
     setRenderedFindHits([]);
+    // The frame's count goes with the session. Its highlight is cleared by the empty query
+    // the posting effect sends next, which is the same code path a cleared query takes.
+    setHtmlFindResult(null);
   }, []);
   const stepFind = useCallback((direction: 1 | -1): void => {
     setPendingFindLine(null);
@@ -1249,6 +1318,9 @@ export function FileWorkspace({
    */
   useEffect(() => {
     lastFindRef.current = { query: "", caseSensitive: false };
+    // Two HTML documents in a row keep the same mounted iframe, so the bridge's report has to
+    // be dropped with the session: it was about the document that just left.
+    setHtmlFindBridge(null);
     closeFind();
   }, [closeFind, selectedPath, session.id]);
 
@@ -1348,16 +1420,22 @@ export function FileWorkspace({
   }, [armFrame, htmlCommenting]);
 
   /*
-   * An HTML match, revealed by BLOCK - through the two paths that already ship.
+   * An HTML match, revealed by BLOCK - the FALLBACK, for a frame that cannot mark its own.
    *
-   * The sandboxed preview is opaque to this origin, so find over an HTML document counts over
-   * the file's own source and the current hit's line is resolved to a rendered block by the
-   * daemon (`resolveHtmlBlockTarget`), then revealed with the same `HTML_PREVIEW_TARGET_MESSAGE`
-   * the comment jump uses. No new iframe script and no CSP change: character-accurate find
-   * inside the frame needs a hash-pinned bridge, which is its own scoped change.
+   * This is the whole of what an origin can do from outside a document it cannot read: find
+   * counts over the file's own source, and the current hit's line is resolved to a rendered
+   * block by the daemon (`resolveHtmlBlockTarget`), then revealed with the same
+   * `HTML_PREVIEW_TARGET_MESSAGE` the comment jump uses.
    *
-   * The bar says so, because the count is taken over source and can therefore include matches
-   * the rendered page does not show.
+   * It is no longer the only path - see `htmlInFrame` and the find bridge below - but it is
+   * still the right one whenever the frame has not said it can highlight: before it has
+   * announced itself, after a reload that has not re-announced, and permanently in a frame
+   * without the CSS Custom Highlight API. There is no state in which a reader gets no
+   * highlight, no block reveal and a count of zero.
+   *
+   * The bar says so while this path is live, because the count is taken over source and can
+   * therefore include matches the rendered page does not show. `htmlInFrame` retires the note
+   * and the reveal together, so the caveat and the behaviour it describes cannot part company.
    *
    * A failed resolve is not reported. There is exactly one cause - the file moved under a
    * render still on screen, which is the debounce window - and a reader stepping matches gets
@@ -1372,7 +1450,9 @@ export function FileWorkspace({
    * own, which is what let a find reveal displace a live comment jump - see `htmlRevealChoice`.
    */
   const [htmlFindTarget, setHtmlFindTarget] = useState<HtmlRevealTarget | null>(null);
-  const currentHtmlFindLine = findSurface === "html" ? htmlFindLines[findIndex] ?? null : null;
+  const currentHtmlFindLine = htmlInFrame || findSurface !== "html"
+    ? null
+    : htmlFindLines[findIndex] ?? null;
   useEffect(() => {
     if (findSurface !== "html" || !previewPath || currentHtmlFindLine === null) {
       // Find has nothing to reveal - closed, no matches, or another surface. Dropping the
@@ -1409,13 +1489,16 @@ export function FileWorkspace({
    * changes, because re-posting an unchanged target would re-run the frame's smooth scroll
    * under a reader who had scrolled away from it.
    *
-   * **What this cannot do is clear an outline**, and that limit is the sandbox's, not a
-   * shortcut. `missionJump` removes the previous target only as it sets a new one, and a path
-   * that walks nowhere resolves to `document.body` - so posting "nothing" would outline the
-   * whole page rather than clear it. Giving the frame a clear needs a new hash-pinned script
-   * and a CSP change, which is Phase 2's scoped edit to `htmlPreview.ts`. Until then: dropping
-   * find's target restores the comment jump's block when one is live, and where neither source
-   * has a target the last outline stays until the frame reloads.
+   * **What this cannot do is clear an outline**, and that limit is `missionJump`'s: it removes
+   * the previous target only as it sets a new one, and a path that walks nowhere resolves to
+   * `document.body` - so posting "nothing" would outline the whole page rather than clear it.
+   * Dropping find's target restores the comment jump's block when one is live, and where
+   * neither source has a target the last outline stays until the frame reloads.
+   *
+   * The find bridge does not inherit that limit, because it never sets an outline: it paints
+   * `Range` objects through `CSS.highlights`, which a message with an empty query clears
+   * outright. So a stale outline is now only ever the fallback's, and only in a frame that
+   * cannot highlight.
    */
   const htmlReveal = htmlRevealChoice(htmlTarget, htmlFindTarget);
   const htmlRevealKey = htmlReveal?.key ?? "";
@@ -1453,9 +1536,150 @@ export function FileWorkspace({
     return () => window.removeEventListener("message", onReady);
   }, [armFrame, previewPath, revealHtmlTarget]);
 
+  /*
+   * ---- find INSIDE the frame ----
+   *
+   * The block reveal above is what this origin can do from outside a document it cannot read.
+   * The find bridge moves the work to the one context that knows what it painted, so an HTML
+   * match is marked where it is, counted only when a reader can see it, and stepped like any
+   * other surface's. `htmlInFrame` is the single switch between the two, so the fallback is
+   * retired whole or not at all.
+   *
+   * The handshake is `armFrame`'s, deliberately, rather than a second shape: the frame
+   * announces its OWN readiness and this answers with the current state. That one exchange
+   * covers find opened before the document loaded, find already open when an HTML file is
+   * selected, and the `srcDoc` reload that follows every debounced edit - which destroys the
+   * highlight along with the document, and which a parent that only posted on change would
+   * never restore.
+   *
+   * Nothing here keys off `HTML_PREVIEW_READY_MESSAGE`. That is the comment bridge's, posted
+   * by the second of four injected scripts, so it cannot speak for the fourth.
+   */
+  const htmlFindPost = useMemo(
+    () => (find && htmlShowing
+      // The CLAMPED index, which is the one the reader is looking at. The frame clamps again
+      // against its own count, because only it knows that count.
+      ? { query: find.query, caseSensitive: find.caseSensitive, index: Math.max(findIndex, 0) }
+      : null),
+    [find, findIndex, htmlShowing],
+  );
+  const postFindToFrame = useCallback(
+    (post: { query: string; caseSensitive: boolean; index: number } | null): void => {
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      // An empty query IS the clear, so a closed bar and a cleared query take one path in the
+      // frame and it can never be left highlighting something the bar no longer holds.
+      frame?.contentWindow?.postMessage({
+        type: HTML_PREVIEW_FIND_MESSAGE,
+        query: post?.query ?? "",
+        caseSensitive: post?.caseSensitive ?? false,
+        index: post?.index ?? 0,
+      }, "*");
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!htmlShowing) return;
+    postFindToFrame(htmlFindPost);
+  }, [htmlFindPost, htmlShowing, postFindToFrame]);
+  const htmlFindPostRef = useRef(htmlFindPost);
+  htmlFindPostRef.current = htmlFindPost;
+  const findSessionRef = useRef(find);
+  findSessionRef.current = find;
+  useEffect(() => {
+    if (!previewPath) return;
+    const onFindReady = (event: MessageEvent): void => {
+      const data = event.data as { type?: unknown; highlight?: unknown } | null;
+      if (data?.type !== HTML_PREVIEW_FIND_READY_MESSAGE) return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      // Every announcement replaces the last, so a reloaded frame - or one that has lost the
+      // highlight API - is free to say so again and be believed.
+      setHtmlFindBridge({ highlight: data.highlight === true });
+      postFindToFrame(htmlFindPostRef.current);
+    };
+    window.addEventListener("message", onFindReady);
+    return () => window.removeEventListener("message", onFindReady);
+  }, [postFindToFrame, previewPath]);
+  useEffect(() => {
+    if (!previewPath) return;
+    const onFindResult = (event: MessageEvent): void => {
+      const data = event.data as {
+        type?: unknown;
+        query?: unknown;
+        caseSensitive?: unknown;
+        count?: unknown;
+      } | null;
+      if (data?.type !== HTML_PREVIEW_FIND_RESULT_MESSAGE) return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      if (!Number.isInteger(data.count)) return;
+      const session = findSessionRef.current;
+      // A reply about a search the reader has already left is refused rather than shown. The
+      // reported index is NOT adopted: the parent owns the ring, and clamping a stored index
+      // against the count it just received gives the same answer without a feedback loop.
+      if (
+        !session
+        || data.query !== session.query
+        || (data.caseSensitive === true) !== session.caseSensitive
+      ) return;
+      setHtmlFindResult({
+        query: session.query,
+        caseSensitive: session.caseSensitive,
+        count: data.count as number,
+      });
+    };
+    window.addEventListener("message", onFindResult);
+    return () => window.removeEventListener("message", onFindResult);
+  }, [previewPath]);
+  /*
+   * The chord, arriving as a message because a keystroke inside a sandbox cannot arrive as a
+   * keystroke. One entry point, two ways in - the workspace's own listener and this.
+   *
+   * `event.source` is checked for a reason sharper than the other handlers': this message
+   * OPENS A UI SURFACE, so it must not be actionable by an arbitrary sender. The extracted
+   * files window renders a second workspace, and neither may be opened by the other's frame.
+   */
+  useEffect(() => {
+    if (!previewPath) return;
+    const onFindChord = (event: MessageEvent): void => {
+      if ((event.data as { type?: unknown } | null)?.type !== HTML_PREVIEW_FIND_CHORD_MESSAGE) {
+        return;
+      }
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      openFind();
+    };
+    window.addEventListener("message", onFindChord);
+    return () => window.removeEventListener("message", onFindChord);
+  }, [openFind, previewPath]);
+  /*
+   * A frame that is not on screen has told us nothing about the document that is.
+   *
+   * Dropping both facts when the preview leaves is what keeps `htmlInFrame` a statement about
+   * the frame currently mounted, rather than about one the reader has toggled away from. The
+   * next frame re-announces, which is the whole point of the handshake.
+   */
+  useEffect(() => {
+    if (htmlShowing) return;
+    setHtmlFindBridge(null);
+    setHtmlFindResult(null);
+  }, [htmlShowing]);
+
   // A sandbox is a separate browsing context, so its keydown events never bubble to App.
   // The armed bridge claims only Preview's fixed navigation keys and sends exit back here,
   // where focus can return to the selected file without exposing the frame's document.
+  //
+  // With find open, that same exit closes find first. Escape inside the frame means "get me
+  // out of the thing I am in", and the find bar is the innermost of those - the same layering
+  // App's own Escape follows, and the same one the bar's Escape already applies from outside.
   useEffect(() => {
     if (!previewPath) return;
     const onKeyboard = (event: MessageEvent): void => {
@@ -1465,11 +1689,15 @@ export function FileWorkspace({
         ".file-content .html-preview",
       );
       if (!frame || event.source !== frame.contentWindow) return;
+      if (findSessionRef.current) {
+        closeFind();
+        return;
+      }
       focusCurrentFileRow(workspaceRef.current!);
     };
     window.addEventListener("message", onKeyboard);
     return () => window.removeEventListener("message", onKeyboard);
-  }, [previewPath]);
+  }, [closeFind, previewPath]);
 
   /**
    * The receiving half of the comment bridge, and a sibling of the link handler above.
@@ -1967,7 +2195,7 @@ export function FileWorkspace({
           {find && (
             <FindBar
               label="Find in this document"
-              note={findSurface === "html" ? "by block" : null}
+              note={findSurface === "html" && !htmlInFrame ? "by block" : null}
               query={find.query}
               onQuery={(query) => reviseFind({ query })}
               caseSensitive={find.caseSensitive}

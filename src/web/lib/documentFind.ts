@@ -318,3 +318,27 @@ export function frameFindCount(
     && result.document === document;
   return current ? result.count : null;
 }
+
+/**
+ * The ring index to hand a frame that is about to answer: the one on screen, or the one the
+ * reader stored.
+ *
+ * Two different questions wear the same name here, which is how the wrong one gets used. While
+ * the count is KNOWN, the clamped index is the truth - it is the hit the reader is looking at,
+ * and it cannot point past a ring that just shrank. While the count is NOT known - across the
+ * `srcDoc` reload that `frameFindCount` refuses to carry a count over - the clamped index is
+ * -1, because clamping against a ring of unknown size has no answer. Posting `max(-1, 0)` in
+ * that state sends 0, which silently moves a reader who was on the third match back to the
+ * first every time the document reloads under them.
+ *
+ * So the stored index is posted instead, and the clamping is left to the frame, which is the
+ * only party that knows its own count - the same division of labour the count itself follows.
+ */
+export function frameFindIndex(
+  session: DocumentFindSession | null,
+  clamped: number,
+  countKnown: boolean,
+): number {
+  if (!session) return 0;
+  return Math.max(countKnown ? clamped : session.index, 0);
+}

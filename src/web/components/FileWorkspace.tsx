@@ -52,6 +52,7 @@ import {
   hitLinesByBlock,
   stepIndex,
   frameFindCount,
+  frameFindIndex,
   type DocumentFindSession,
   type FrameFindResult,
   type DocumentHit,
@@ -1564,11 +1565,16 @@ export function FileWorkspace({
    */
   const htmlFindPost = useMemo(
     () => (find && htmlShowing
-      // The CLAMPED index, which is the one the reader is looking at. The frame clamps again
-      // against its own count, because only it knows that count.
-      ? { query: find.query, caseSensitive: find.caseSensitive, index: Math.max(findIndex, 0) }
+      ? {
+        query: find.query,
+        caseSensitive: find.caseSensitive,
+        // See `frameFindIndex`: the clamped index while the count is known, the stored one
+        // while it is not, because clamping against a ring of unknown size posts 0 and moves
+        // the reader.
+        index: frameFindIndex(find, findIndex, findCountKnown),
+      }
       : null),
-    [find, findIndex, htmlShowing],
+    [find, findCountKnown, findIndex, htmlShowing],
   );
   const postFindToFrame = useCallback(
     (post: { query: string; caseSensitive: boolean; index: number } | null): void => {

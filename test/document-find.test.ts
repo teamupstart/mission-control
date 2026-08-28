@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   documentHits,
   frameFindCount,
+  frameFindIndex,
   hitLine,
   hitLinesByBlock,
   hitsInWindow,
@@ -340,4 +341,31 @@ test("no reply yet, and no session at all, are both unknown rather than zero", (
   assert.equal(frameFindCount(null, session("budget"), DOC), null);
   // No find session: there is no query to have an answer about.
   assert.equal(frameFindCount(null, null, DOC), null);
+});
+
+test("the index handed to a frame does not move the reader while the count is unknown", () => {
+  /*
+   * A regression introduced by the fix for Inspector round 2, caught by re-reading it.
+   *
+   * Keying the count to the previewed source makes it null across a reload, which makes the
+   * CLAMPED index -1 there - clamping against a ring of unknown size has no answer. The posted
+   * index was `max(clamped, 0)`, so a reader sitting on the third match was moved back to the
+   * first every time the document reloaded under them, silently.
+   *
+   * This case is NOT covered end to end, and the attempt is instructive: switching to the
+   * Editor and back unmounts the preview, which clears the bridge and drops the workspace into
+   * the source-derived fallback, so the browser test passed with and without the fix. The
+   * reachable path is a change to the file on disk while Preview is on screen. The rule is
+   * pinned here instead, where the mutation actually fails.
+   */
+  const on3rd = session("budget", false, 2);
+  // Count known: the clamped index is what the reader is looking at.
+  assert.equal(frameFindIndex(on3rd, 2, true), 2);
+  // Count known and the ring shrank under them: still the clamped one, never past the end.
+  assert.equal(frameFindIndex(on3rd, 1, true), 1);
+  // Count UNKNOWN: the stored index, so the reload leaves the reader where they were.
+  assert.equal(frameFindIndex(on3rd, -1, false), 2);
+  // And never a negative, whichever branch produced it.
+  assert.equal(frameFindIndex(session("budget", false, -5), -1, false), 0);
+  assert.equal(frameFindIndex(null, -1, false), 0);
 });

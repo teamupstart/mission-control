@@ -752,6 +752,11 @@ test("a query typed before the preview loaded highlights by itself, and survives
   await expect(readout(dashboard)).toHaveText("1 / 2");
   await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
 
+  // Step onto the SECOND hit before the reload, so the assertion after it is about the
+  // reader's place and not only about the count coming back.
+  await dashboard.keyboard.press("Enter");
+  await expect(readout(dashboard)).toHaveText("2 / 2");
+
   /*
    * Now reload the document under the highlight, by editing the file through the Editor.
    *
@@ -769,12 +774,23 @@ test("a query typed before the preview loaded highlights by itself, and survives
   await modes.getByRole("button", { name: "Preview" }).click();
 
   const reloaded = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  await expect(readout(dashboard)).toHaveText(/\/ 2$/);
   await expect
     .poll(async () => (await highlighted(reloaded)).count, {
       message: "the highlight never came back after the srcDoc reload",
     })
     .toBe(2);
+  /*
+   * And the reader is still on the hit they had selected.
+   *
+   * Worth being exact about what this does and does not prove. Leaving Preview for the Editor
+   * unmounts the frame, which drops the bridge report and puts the workspace in the
+   * source-derived fallback for the round trip - so this asserts the position survives the
+   * whole Editor-edit-Preview journey, and it passes with or without `frameFindIndex`'s rule
+   * about an unknown count. That rule is pinned in `test/document-find.test.ts`, where the
+   * mutation actually fails; its reachable path is a change to the file on disk while Preview
+   * stays on screen.
+   */
+  await expect(readout(dashboard)).toHaveText("2 / 2");
 });
 
 test("a frame that cannot highlight keeps the block reveal, its note and its own count", async ({

@@ -41,9 +41,8 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   mkdirSync(EVIDENCE, { recursive: true });
   // `Tooltip` portals a bubble over whatever is being photographed once anything is hovered.
   await page.mouse.move(0, 0);
-  // The grid sits below two other groups on a long page, so a viewport shot of the settings
-  // route photographs the background jobs above it and none of the subject. Scrolled and framed
-  // on the thing the assertion beside it just proved.
+  // Frame the grid itself so the evidence shows both its new leading position and its controls
+  // at a readable scale.
   if (target) await target.scrollIntoViewIfNeeded();
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   // oxlint-disable-next-line no-console
@@ -90,6 +89,19 @@ async function kindDefaults(daemon: DaemonHandle): Promise<Record<string, {
   const config = await (await fetch(`${daemon.baseURL}/api/harnesses/config`)).json();
   return config.kindDefaults;
 }
+
+test("Task kinds lead the page and the app-wide provider selector is gone", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openModels(dashboard, daemon.baseURL);
+
+  const groups = dashboard.locator(".settings-section > .foreman-models");
+  await expect(groups.first().getByText("Task kinds", { exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("radio", { name: "Claude Code" })).toHaveCount(0);
+  await expect(dashboard.getByRole("radio", { name: "Codex" })).toHaveCount(0);
+  await shoot(dashboard, "00-task-kinds-first");
+});
 
 test("a kind's row is written per field, and its neighbours are left alone", async ({
   dashboard,

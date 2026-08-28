@@ -278,7 +278,7 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
   }
 
   return (
-    <div className="foreman-models" data-anchor="models/task-kinds">
+    <div className="foreman-models task-kind-defaults" data-anchor="models/task-kinds">
       <p className="settings-group-label">Task kinds</p>
       <p className="settings-hint foreman-models-hint">
         A dispatched <strong>plan</strong> can run on a different harness and model from a{" "}

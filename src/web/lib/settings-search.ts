@@ -659,45 +659,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
     backup: backupDomains("pipelines"),
   },
-  // Two entries, because there are now two controls and `models/provider` only names one of
-  // them. That anchor is the APP-WIDE radio; the per-job providers live in the matrix below
-  // it, and an operator searching "run the goal job on Codex" who lands on the radio has been
-  // sent to the control that specifically does not answer that.
-  {
-    id: "llm-runner",
-    label: "App-wide model provider",
-    description: "Which provider the app's own calls use when a job hasn't chosen its own.",
-    category: "models",
-    anchor: "models/provider",
-    keywords: ["provider", "runner", "claude", "codex", "app-wide", "default"],
-    kind: "jump",
-    backup: backupDomains("models"),
-  },
-  {
-    id: "llm-jobs",
-    label: "Background job providers and models",
-    description: "A provider and a model per job - titling, goals, digests, workflow context.",
-    category: "models",
-    anchor: "models/jobs",
-    keywords: [
-      "title",
-      "goal",
-      "digest",
-      "workflow",
-      "provider",
-      "runner",
-      "job",
-      "per job",
-      "override",
-      "inherit",
-    ],
-    kind: "jump",
-    backup: backupDomains("models"),
-  },
-  // A third entry on this category, because the grid below the jobs answers a different
-  // question from either control above it: not "what does the app spend on itself" but "what
-  // does a dispatched plan run as". Someone searching "plan model" wants this row and nothing
-  // else on the page.
+  // This is the first configurable group on the Models page: people most often arrive to
+  // decide what their plan, ship, scout, or chat tasks launch with.
   {
     id: "task-kind-defaults",
     label: "Agent, model and effort per task kind",
@@ -724,6 +687,27 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     ],
     kind: "jump",
     backup: backupDomains("harnesses"),
+  },
+  {
+    id: "llm-jobs",
+    label: "Background job providers and models",
+    description: "A provider and a model per job - titling, goals, digests, workflow context.",
+    category: "models",
+    anchor: "models/jobs",
+    keywords: [
+      "title",
+      "goal",
+      "digest",
+      "workflow",
+      "provider",
+      "runner",
+      "job",
+      "per job",
+      "override",
+      "inherit",
+    ],
+    kind: "jump",
+    backup: backupDomains("models"),
   },
   // Re-pointed here from the Foreman and GitHub Inspector categories when their model
   // controls moved. The IDS are unchanged - `foreman-models` and `review-model` are the keys

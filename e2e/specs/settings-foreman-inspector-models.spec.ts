@@ -82,7 +82,6 @@ test("every app-owned model call is on one page, in its own group", async ({
   // than a quieter page.
   await openModels(dashboard, daemon.baseURL);
 
-  await expect(dashboard.getByRole("radio", { name: "Claude Code" })).toBeChecked();
   await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toBeVisible();
   await expect(dashboard.getByRole("combobox", { name: "Foreman provider" })).toBeVisible();
   for (const name of ROLE_PROVIDERS) {
@@ -103,7 +102,7 @@ test("two Foreman roles run on different providers, and only those roles move", 
   await openModels(dashboard, daemon.baseURL);
 
   // Every role starts inheriting, and the option says what it inherits FROM - which for a
-  // Foreman role is Foreman's own All roles value, not the app-wide picker. One extra rung
+  // Foreman role is Foreman's own All roles value, not the app-wide default. One extra rung
   // than a background job has, and the one an operator would otherwise have to guess.
   for (const name of ROLE_PROVIDERS) {
     await expect(dashboard.getByRole("combobox", { name })).toHaveValue("");
@@ -208,13 +207,19 @@ test("a Foreman role's own provider change resets only that role's stranded mode
   await shoot(dashboard, "04-role-provider-reset-says-so", "models/foreman");
 });
 
-test("the Inspector's review row is here, and its Inherit follows the app-wide picker", async ({
+test("the Inspector's review row is here, and its Inherit follows the app-wide default", async ({
   dashboard,
   daemon,
 }) => {
   // The regression this phase fixes, from the browser: an unset Inspector provider resolved to
   // a literal `claude`, so it was the one subsystem that ignored the app-wide setting. Now the
   // row's Inherit option names what it will actually get, and the daemon agrees.
+  const configured = await fetch(`${daemon.baseURL}/api/llm/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runner: "codex" }),
+  });
+  expect(configured.ok).toBe(true);
   await openModels(dashboard, daemon.baseURL);
 
   // Named for its group, because Foreman calls one of its four roles "Review" too and this
@@ -222,48 +227,13 @@ test("the Inspector's review row is here, and its Inherit follows the app-wide p
   const provider = dashboard.getByRole("combobox", { name: "Inspector Review provider" });
   await expect(provider).toHaveValue("");
 
-  await dashboard.getByRole("radio", { name: "Codex" }).check();
-  await openModels(dashboard, daemon.baseURL);
-
   const status = await (await fetch(`${daemon.baseURL}/api/inspector/status`)).json();
   expect(
     status.runner.id,
-    "an unset Inspector provider ignored the app-wide picker, as it did before this phase",
+    "an unset Inspector provider ignored the app-wide default",
   ).toBe("codex");
   expect(status.model.id).toBe("gpt-5.6-sol");
   await shoot(dashboard, "05-inspector-inherits-app-wide", "models/inspector");
-});
-
-test("moving the app-wide provider updates the groups that inherit it, with no reload", async ({
-  dashboard,
-  daemon,
-}) => {
-  // Three blobs, three hooks, one page - and the app-wide radio changes what the other two
-  // will spawn with while nothing tells them to look again. Every row below it is a readout
-  // of a resolution the daemon performed, so a stale one does not merely lag: it prints the
-  // OLD provider's default model id as this row's answer, which is the single thing the page
-  // exists to state. Asserted with no reload, because a reload hides exactly this.
-  await openModels(dashboard, daemon.baseURL);
-  await expect(
-    dashboard.getByRole("combobox", { name: "Foreman Review provider" })
-      .getByRole("option").first(),
-  ).toHaveText("Inherit - Claude Code");
-
-  await dashboard.getByRole("radio", { name: "Codex" }).check();
-
-  for (const name of ROLE_PROVIDERS) {
-    await expect(
-      dashboard.getByRole("combobox", { name }).getByRole("option").first(),
-    ).toHaveText("Inherit - Codex");
-  }
-  await expect(
-    dashboard.getByRole("combobox", { name: "Foreman Review model" }).getByRole("option").first(),
-  ).toHaveText(/Default - gpt-5\.6-sol/);
-  await expect(
-    dashboard.getByRole("combobox", { name: "Inspector Review provider" })
-      .getByRole("option").first(),
-  ).toHaveText("Inherit - Codex");
-  await shoot(dashboard, "06-app-wide-reaches-both-groups", "models/foreman");
 });
 
 test("a role's pinned model survives an app-wide provider change, in the browser", async ({
@@ -272,7 +242,7 @@ test("a role's pinned model survives an app-wide provider change, in the browser
 }) => {
   // The sequence the pinning rule exists for, walked the way an operator reaches it: never
   // touch Foreman's provider or the role's, save a Claude Review model, then move the app-wide
-  // radio. Nothing writes Foreman's blob on that last step, so the pin has to have been
+  // default. Nothing writes Foreman's blob on that last step, so the pin has to have been
   // recorded when the MODEL was saved or the role inherits Codex and the resolver replaces the
   // operator's model with a Codex default - a changed model, and a changed account, with no
   // edit to that role at all.
@@ -280,7 +250,12 @@ test("a role's pinned model survives an app-wide provider change, in the browser
   await dashboard.getByRole("combobox", { name: "Foreman Review model" })
     .selectOption("claude-opus-5");
 
-  await dashboard.getByRole("radio", { name: "Codex" }).check();
+  const configured = await fetch(`${daemon.baseURL}/api/llm/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runner: "codex" }),
+  });
+  expect(configured.ok).toBe(true);
   await openModels(dashboard, daemon.baseURL);
 
   await expect(dashboard.getByRole("combobox", { name: "Foreman Review model" }))
@@ -362,14 +337,19 @@ test("the Inspector's model is pinned when it is saved, and survives the app-wid
 }) => {
   // The Foreman sequence above, walked on the Inspector's row - which did NOT pin before this
   // fix, so it was the asymmetric slot: a Claude model chosen while its provider was inherited
-  // stored half a pair, and the app-wide radio then handed a Codex provider a Claude model id.
+  // stored half a pair, and the app-wide default then handed a Codex provider a Claude model id.
   // This is the one call in the app that writes where other people read, so it is also the
   // worst place to discover a pair that cannot be spawned.
   await openModels(dashboard, daemon.baseURL);
   await dashboard.getByRole("combobox", { name: "Inspector Review model" })
     .selectOption("claude-opus-5");
 
-  await dashboard.getByRole("radio", { name: "Codex" }).check();
+  const configured = await fetch(`${daemon.baseURL}/api/llm/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runner: "codex" }),
+  });
+  expect(configured.ok).toBe(true);
   await openModels(dashboard, daemon.baseURL);
 
   await expect(dashboard.getByRole("combobox", { name: "Inspector Review provider" }))

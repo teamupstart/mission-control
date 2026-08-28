@@ -4,8 +4,7 @@ import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
-import { isLlmRunnerId, LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
-import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
+import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import type { ForemanConfigPatch, InspectorConfigPatch } from "@shared/protocol.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { InspectorState } from "../useInspector.ts";
@@ -14,7 +13,6 @@ import type { LlmState } from "../useLlm.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 import { TaskKindDefaultsGroup } from "./TaskKindDefaults.tsx";
 import { modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
-import { Tooltip } from "./Tooltip.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
 //
@@ -40,22 +38,6 @@ import { Tooltip } from "./Tooltip.tsx";
 // models are absent for a different reason: they choose what a launched agent runs as, which
 // is the dispatch ladder, not a call this app makes on its own account. They stay on
 // Foreman's Launches tab.
-
-/** Where the value in a box came from, when it is not the box's own. See `modelSourceNote`. */
-function runnerNote(state: LlmState): string | null {
-  const runner = state.status?.runner;
-  if (!runner) return null;
-  if (runner.unknown) {
-    // Said out loud rather than swallowed. A stored id this build cannot resolve looks
-    // identical to an unset one once it has been replaced, and the operator would read the
-    // selected row as their own choice rather than as a fallback from what they asked for.
-    return `"${runner.unknown}" is not a provider this build has, so it fell back to the default.`;
-  }
-  if (runner.source === "config") return null;
-  return runner.source === "env"
-    ? `From ${LLM_RUNNER_ENV_VAR} in the daemon's environment, which outranks this picker.`
-    : "Shipped default.";
-}
 
 export function LlmSettingsPanel({
   state,
@@ -87,34 +69,6 @@ export function LlmSettingsPanel({
   const { config, status, update, error } = state;
   const runners = status?.runners ?? [];
   /**
-   * Move the app-wide provider, then make the two groups that INHERIT it say so.
-   *
-   * Foreman's four roles and the Inspector's review resolve through this picker whenever they
-   * have chosen nothing themselves, but they live in their own blobs behind their own hooks -
-   * so this write changes what they will spawn with while nothing tells them to look again.
-   * Without the two refreshes their rows go on naming the old provider, and printing the old
-   * provider's default model id, for up to a poll interval. On the one page whose whole claim
-   * is that it says what each call will actually spawn, that is the failure to avoid.
-   */
-  const changeAppWide = async (id: LlmRunnerId): Promise<void> => {
-    await update({ runner: id });
-    await Promise.all([foreman.refresh(), inspector.refresh()]);
-  };
-  // The operator's OWN stored choice first, then what the daemon resolved.
-  //
-  // Not `status.runner.id` alone, which is what this was: the status is re-read from the
-  // daemon after every write, so a radio driven by it does not move on the click that changed
-  // it - it moves a round trip later. The model boxes beside it were already optimistic, so
-  // the one control on the page that lagged was the one being clicked.
-  //
-  // Reading config first cannot disagree with the daemon, because the config value is the TOP
-  // rung of `resolveLlmRunner`: whenever it names a provider this build has, the resolved
-  // answer is that same provider. An env-pinned installation is exactly the case where the
-  // config value is empty, so it falls through here and the daemon's answer shows.
-  const stored = config?.runner.trim() ?? "";
-  const active = (stored && isLlmRunnerId(stored) ? stored : null) ?? status?.runner.id ?? null;
-  const note = runnerNote(state);
-  /**
    * What a row's own provider change just reset, per job.
    *
    * Held here rather than derived, because after the write there is nothing left to derive
@@ -123,32 +77,18 @@ export function LlmSettingsPanel({
    * the next edit to that row clears the line.
    */
   const [reset, setReset] = useState<Partial<Record<LlmJobId, string>>>({});
-  // An env var outranks anything typed here, so the picker must not pretend otherwise -
-  // a control that silently loses to the environment is worse than a disabled one.
-  const runnerPinned = status?.runner.source === "env";
 
   return (
     <section className="settings-section">
-      {/* Names no harness, deliberately. The point being made is that the two axes are
-          independent, and an illustration spelled "review a Codex session with Claude" makes
-          that point by enumerating two harnesses - wording Pi would silently have made stale.
-          The dashboard's rule is that copy naming which agents a
-          feature reaches is COMPUTED (`agentList`); copy that needs no enumeration to be
-          true should not acquire one. */}
+      {/* The dispatch defaults are the most frequently customized controls on this page, so
+          they lead rather than sitting after every app-owned model call. */}
+      <TaskKindDefaultsGroup state={harnesses} />
+
       <p className="settings-hint">
-        Mission Control does a good deal of model work of its own - naming an untitled task,
-        rewriting a prompt into the sentence on a card, judging a stuck session, reviewing a
-        pull request. Every one of those calls is on your account, and every one this app keeps
-        a fixed slot for is on this page: the provider it goes through, the model it spawns
-        with, and which of them it inherited rather than chose. It has nothing to do with the
-        agent in a card - which harness a session runs and which model judges it are
-        independent choices, so the cheap jobs can run somewhere cheaper than whatever is in
-        your cards. What is deliberately not a slot here is named at the bottom.
-      </p>
-      <p className="settings-hint">
-        The <strong>Task kinds</strong> grid further down is the other half of the page, and it
-        is about exactly the opposite: the agent in a card, and what a dispatched task of each
-        kind launches on.
+        The remaining sections configure Mission Control's own model work - naming an untitled
+        task, rewriting a prompt into the sentence on a card, judging a stuck session, and
+        reviewing a pull request. These calls are independent of the agent in a card. Each row
+        chooses its own provider and model, while Inherit follows the app-wide provider default.
       </p>
 
       {/* The daemon has not answered. Said out loud, because everything below falls back to
@@ -160,53 +100,6 @@ export function LlmSettingsPanel({
           below are showing defaults, not its current state.
         </p>
       )}
-
-      <fieldset className="settings-radios llm-runners" data-anchor="models/provider">
-        <legend>Provider</legend>
-        {runners.length === 0 ? (
-          <p className="settings-hint">
-            {config
-              ? "This build has no providers installed."
-              : "Unknown - the daemon hasn't said which providers it has."}
-          </p>
-        ) : (
-          runners.map((r) => (
-            <Tooltip
-              key={r.id}
-              label={
-                runnerPinned
-                  ? "Pinned by an environment variable - unset it to choose here"
-                  : `Run the app's own background jobs through ${r.label}`
-              }
-            >
-              <label className="alert-row">
-                <input
-                  type="radio"
-                  name="llm-runner"
-                  checked={active === r.id}
-                  disabled={!config || runnerPinned}
-                  // Nothing is cleared. This picker says which provider a job runs on when
-                  // the job has not said for itself, so it has no business disturbing one
-                  // that has: a model set in a row below is a pinned pair, and the write
-                  // path records the outgoing provider onto any legacy row that has a model
-                  // but no provider yet. Only Inherit rows re-resolve.
-                  onChange={() => void changeAppWide(r.id)}
-                />
-                <span>{r.label}</span>
-              </label>
-            </Tooltip>
-          ))
-        )}
-        {note && <p className="foreman-model-source">{note}</p>}
-        {runners.length === 1 && (
-          // Stated rather than hidden: one row is the honest picture of a build with one
-          // provider, and a control that appears only once there is a choice leaves nobody
-          // able to see what the app is running as today.
-          <p className="settings-hint">
-            Only one provider is available. Every offline call below goes through it.
-          </p>
-        )}
-      </fieldset>
 
       <div className="foreman-models" data-anchor="models/jobs">
         <p className="settings-group-label">Background jobs</p>
@@ -220,10 +113,9 @@ export function LlmSettingsPanel({
         <p className="settings-hint foreman-models-hint">
           Each job can run on its own provider - name a task with Claude while compacting
           Workflow context with Codex. Pinning a model pins its provider, literally: choosing a
-          model on an Inherit row records the provider it belongs to, so the app-wide picker
-          above leaves that row alone and only re-resolves the rows still on Inherit. Changing a
-          row's OWN provider works the other way and sends that row's model back to Inherit,
-          unless the new provider offers the same id.
+          model on an Inherit row records the provider it belongs to, so later default changes
+          leave that row alone. Changing a row's OWN provider works the other way and sends that
+          row's model back to Inherit, unless the new provider offers the same id.
         </p>
         <SettingsMatrix
           caption="Background jobs, and what each one runs on"
@@ -282,13 +174,6 @@ export function LlmSettingsPanel({
 
       <InspectorModelGroup inspector={inspector} providers={runners} appWide={status?.runner} />
 
-      {/* Not the app's own calls at all - the harness in a CARD, per task kind. It sits on this
-          page because the question a person arrives with is "which model runs my planning", and
-          being told that Mission Control's own titling calls live under Models while a plan
-          task's model lives somewhere else answers a question nobody asked. The groups stay
-          visibly separate, and the copy in each says which calls it is about. */}
-      <TaskKindDefaultsGroup state={harnesses} />
-
       <p className="settings-hint llm-elsewhere">
         A Persona's model, and an Ensemble judge's, stay on the Persona - there is one per row
         rather than a fixed slot, so they live in <strong>Workflows</strong>. The models Foreman
@@ -317,7 +202,7 @@ function ForemanModelsGroup({
 }: {
   foreman: ForemanState;
   providers: LlmProviderView[];
-  /** What the app-wide picker above resolved to - what Foreman's OWN Inherit option means. */
+  /** What the app-wide provider default resolved to - what Foreman's OWN Inherit option means. */
   appWide: ResolvedLlmRunner | undefined;
 }): React.JSX.Element {
   const { config, status, update } = foreman;
@@ -364,7 +249,7 @@ function ForemanModelsGroup({
                 <ProviderSelect
                   id="foreman-provider"
                   name="Foreman provider"
-                  tooltip="Which provider Foreman's model roles run through when they have not chosen their own. Inherit follows the app-wide picker."
+                  tooltip="Which provider Foreman's model roles run through when they have not chosen their own. Inherit follows the app-wide provider default."
                   value={config?.runner ?? ""}
                   inherited={appWide}
                   providers={providers}
@@ -440,7 +325,7 @@ function ForemanModelsGroup({
  * The Inspector's single review model - the one call in the app that writes somewhere public.
  *
  * A one-row grid rather than a pair of fields, so it reads as another slot in the same table
- * and inherits the same vocabulary: Inherit means the app-wide picker, pinning a model pins
+ * and inherits the same vocabulary: Inherit means the app-wide provider default, pinning a model pins
  * its provider, and a pair that cannot be honoured says so in the row.
  */
 function InspectorModelGroup({

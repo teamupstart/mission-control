@@ -44,8 +44,15 @@ export function FindBar({
   onQuery: (q: string) => void;
   caseSensitive: boolean;
   onCaseSensitive: (on: boolean) => void;
-  /** How many matches the ACTIVE surface has. Supplied - see this component's header. */
-  count: number;
+  /**
+   * How many matches the ACTIVE surface has, or null when it cannot say YET.
+   *
+   * Null is only reachable for a surface this origin cannot read - the sandboxed HTML preview,
+   * whose count arrives by message - and it is NOT the same as zero. Zero renders as
+   * `No results`, which is a claim about the document; null renders as no number at all,
+   * because for the frame or two a round trip takes, "not known" is the only honest answer.
+   */
+  count: number | null;
   /** Index into that surface's matches, or -1. */
   index: number;
   /**
@@ -71,12 +78,16 @@ export function FindBar({
     el.select();
   }, [focusNonce]);
 
+  // Null is tested BEFORE zero, deliberately: an unknown count must not borrow `No results`,
+  // which says the document has none. Both leave stepping disabled, so neither offers a ring
+  // this bar cannot deliver.
   const readout =
-    query === ""
+    query === "" || count === null
       ? ""
       : count === 0
         ? "No results"
         : `${index + 1} / ${count}`;
+  const steppable = count !== null && count > 0;
 
   return (
     <div className={`find-bar${note ? " has-note" : ""}`}>
@@ -132,7 +143,7 @@ export function FindBar({
         <button
           type="button"
           className="find-btn"
-          disabled={count === 0}
+          disabled={!steppable}
           aria-label="Previous match"
           onClick={() => onStep(-1)}
         >
@@ -143,7 +154,7 @@ export function FindBar({
         <button
           type="button"
           className="find-btn"
-          disabled={count === 0}
+          disabled={!steppable}
           aria-label="Next match"
           onClick={() => onStep(1)}
         >

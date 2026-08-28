@@ -51,6 +51,7 @@ import {
   documentHits,
   hitLinesByBlock,
   stepIndex,
+  frameFindCount,
   type DocumentFindSession,
   type DocumentHit,
 } from "../lib/documentFind.ts";
@@ -1045,20 +1046,24 @@ export function FileWorkspace({
    */
   const htmlInFrame = findSurface === "html" && htmlFindBridge?.highlight === true;
   /**
-   * The frame's count: the last one it reported for a query the bar was actually holding.
+   * The frame's count for the query the bar is holding RIGHT NOW, or null while its reply for
+   * that query is still in flight. See `frameFindCount`, which owns the reasoning.
    *
-   * The LAST such count rather than only a matching one, and the difference is what the
-   * reader sees. A round trip separates the keystroke from the reply, and treating the gap as
-   * "no count yet" flashed `No results` over a query that matches on every character typed.
-   * Carrying the previous number for that frame is the honest reading of "we have not been
-   * told otherwise yet"; the message handler is where a reply for a query the reader has
-   * already left is refused, so this can never be a count for a search nobody asked for.
+   * Only a query or case-flag change opens that window; stepping the ring leaves both alone,
+   * so the count never goes unknown under a reader pressing Enter.
    */
-  const htmlFrameCount = htmlInFrame && find?.query !== "" ? htmlFindResult?.count ?? 0 : 0;
+  const htmlFrameCount = htmlInFrame ? frameFindCount(htmlFindResult, find) : 0;
+  /**
+   * Null when the surface on screen cannot yet say how many matches it has.
+   *
+   * Only the frame-reported surface can be in that state - every other surface searches a
+   * string this origin holds, so its count is available in the same render.
+   */
+  const findCountKnown = findSurface !== "html" || !htmlInFrame || htmlFrameCount !== null;
   const findCount = findSurface === "markdown"
     ? renderedFindHits.length
     : findSurface === "html"
-      ? (htmlInFrame ? htmlFrameCount : htmlFindLines.length)
+      ? (htmlInFrame ? htmlFrameCount ?? 0 : htmlFindLines.length)
       : sourceFindHits.length;
   /** Clamped here rather than on the way in, because hits move under a stored index. */
   const findIndex = findCount === 0 ? -1 : Math.min(Math.max(find?.index ?? 0, 0), findCount - 1);
@@ -2200,7 +2205,7 @@ export function FileWorkspace({
               onQuery={(query) => reviseFind({ query })}
               caseSensitive={find.caseSensitive}
               onCaseSensitive={(caseSensitive) => reviseFind({ caseSensitive })}
-              count={findCount}
+              count={findCountKnown ? findCount : null}
               index={findIndex}
               focusNonce={findFocus}
               onStep={stepFind}

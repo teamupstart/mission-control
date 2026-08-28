@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   documentHits,
+  frameFindCount,
   hitLine,
   hitLinesByBlock,
   hitsInWindow,
@@ -245,4 +246,68 @@ test("htmlRevealChoice keys on the block AND the nonce, so a repeat jump is a ne
     htmlRevealChoice({ blockPath: path, nonce: 4 }, null)?.key,
     htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
   );
+});
+
+/*
+ * ---- the count a frame reports, and the window before it arrives ----
+ *
+ * A surface this origin cannot read reports its own count by message, so a round trip
+ * separates the keystroke from the number. What may be shown in that window is not a
+ * presentation detail: the HTML preview's whole reason for counting inside the frame is that
+ * the count equals what is highlighted, and both of the obvious answers break it.
+ */
+
+const session = (query: string, caseSensitive = false, index = 0) => (
+  { query, caseSensitive, index }
+);
+
+test("a frame's count for the query the bar is holding is the count", () => {
+  assert.equal(
+    frameFindCount({ query: "budget", caseSensitive: false, count: 3 }, session("budget")),
+    3,
+  );
+  // Zero from the frame is a real answer about the document, not an absent one.
+  assert.equal(
+    frameFindCount({ query: "nope", caseSensitive: false, count: 0 }, session("nope")),
+    0,
+  );
+});
+
+test("a previous query's count is never displayed once the query moves on", () => {
+  /*
+   * The defect GitHub Inspector found on PR #827, pinned.
+   *
+   * The first implementation carried the last agreed count through the window, reasoning that
+   * it beat flashing `No results` over a query that matches. It does not: the frame applies
+   * the new query and repaints BEFORE its reply is delivered, so changing a three-hit query to
+   * a no-hit one showed `1 / 3` over a document with nothing highlighted. Null is the answer,
+   * and the bar renders it as no number rather than as `No results`.
+   */
+  const stale = { query: "budget", caseSensitive: false, count: 3 };
+  assert.equal(frameFindCount(stale, session("zzz")), null);
+  // Every intermediate state of typing is the same window, not just the final one.
+  for (const typed of ["b", "bu", "bud", "budge"]) {
+    assert.equal(frameFindCount(stale, session(typed)), null, `stale count shown for ${typed}`);
+  }
+});
+
+test("flipping the case flag re-opens the window, because it re-runs the search", () => {
+  const found = { query: "Budget", caseSensitive: false, count: 3 };
+  assert.equal(frameFindCount(found, session("Budget", false)), 3);
+  // `Aa` changes the answer exactly as retyping does, so the old number is just as wrong.
+  assert.equal(frameFindCount(found, session("Budget", true)), null);
+});
+
+test("an empty query is counted, not awaited", () => {
+  // Nothing was asked, so nothing is outstanding: zero rather than null, which keeps the bar
+  // from sitting in a permanent "not known" state whenever find is open and empty.
+  assert.equal(frameFindCount(null, session("")), 0);
+  assert.equal(frameFindCount({ query: "x", caseSensitive: false, count: 2 }, session("")), 0);
+});
+
+test("no reply yet, and no session at all, are both unknown rather than zero", () => {
+  // Before the frame has answered once - find opened over a preview still loading.
+  assert.equal(frameFindCount(null, session("budget")), null);
+  // No find session: there is no query to have an answer about.
+  assert.equal(frameFindCount(null, null), null);
 });

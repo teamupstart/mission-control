@@ -254,3 +254,47 @@ export function hitLinesByBlock(hits: readonly DocumentHit[]): number[] {
   }
   return lines;
 }
+
+/** What a sandboxed frame reported, and the search state it counted. */
+export interface FrameFindResult {
+  query: string;
+  caseSensitive: boolean;
+  count: number;
+}
+
+/**
+ * The count a frame-reported surface may DISPLAY right now: a number, or null for "not known
+ * yet".
+ *
+ * A surface this origin cannot read reports its own count, and a round trip separates the
+ * keystroke from the reply. Only three answers are honest in that window, and two of them are
+ * wrong:
+ *
+ * - **The previous query's count is wrong.** It was the first thing tried here, on the
+ *   reasoning that carrying the last agreed number beat flashing `No results` over a query
+ *   that matches. That reasoning ignored the frame: it applies the new query and repaints
+ *   before its reply is delivered, so changing a three-hit query to a no-hit one showed
+ *   `1 / 3` over a document with nothing highlighted. The count-to-highlight invariant is the
+ *   whole point of counting in the frame, and this broke it.
+ * - **Zero is wrong**, for the mirror reason. Zero is a claim about the document - the bar
+ *   renders it as `No results` - and the old highlights may still be painted when it is made.
+ * - **Null is the truth.** No reply for this query has arrived, so this origin does not know.
+ *   The bar shows no number rather than a false one, and cannot offer a step into a ring whose
+ *   size it does not know.
+ *
+ * The window is a frame or two, which is why the wrong answers are easy to talk yourself into
+ * and hard to see. Keyed on the case flag as well as the query, because `Aa` re-runs the
+ * search exactly as retyping does.
+ */
+export function frameFindCount(
+  result: FrameFindResult | null,
+  session: DocumentFindSession | null,
+): number | null {
+  if (!session) return null;
+  // An empty query is not a search awaiting an answer; there is nothing to count.
+  if (session.query === "") return 0;
+  if (!result) return null;
+  const current = result.query === session.query
+    && result.caseSensitive === session.caseSensitive;
+  return current ? result.count : null;
+}

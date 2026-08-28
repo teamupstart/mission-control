@@ -318,12 +318,23 @@ therefore dropped on document IDENTITY changes and when the preview leaves the s
 every revision of the same document. The behaviour the criterion protects is covered by
 `a query typed before the preview loaded highlights by itself, and survives an edit`.
 
-**Deviation 3 - a superseded reply keeps the previous count, rather than reading as zero.** The
-result message echoes the query it counted, as specified. Refusing a non-matching reply and
-showing nothing in its place made the bar read `No results` on every character of a query that
-matches, for the length of one round trip. The refusal happens in the handler, so the number on
-screen is always one the frame reported for a query the reader actually asked for; the last such
-number stands until the next arrives.
+**Deviation 3 - a superseded reply is unknown, not the previous count and not zero.** The result
+message echoes the query it counted, as specified. What to show for the round trip after that
+took two attempts, and the first was wrong:
+
+- *Rejected, and shipped briefly:* keep the previous count. The reasoning was that carrying the
+  last agreed number beat flashing `No results` over a query that matches. It ignored the frame,
+  which applies the new query and repaints **before** its reply is delivered - so changing a
+  three-hit query to a no-hit one showed `1 / 3` over a document with nothing highlighted. That
+  is the count-to-highlight invariant this phase exists to establish, broken by the phase itself.
+  Found by GitHub Inspector on PR #827.
+- *Rejected:* zero. The bar renders zero as `No results`, which is a claim about the document,
+  and the old highlights may still be painted when it is made. Wrong in the mirror direction.
+- *Taken:* **null, meaning not known yet.** `frameFindCount` in `documentFind.ts` owns the rule
+  and is unit-tested against Inspector's exact scenario; `FindBar` accepts `count: number | null`
+  and renders null as no number at all, with stepping disabled, because it cannot offer a ring
+  whose size it does not know. Only a query or case-flag change opens that window - stepping
+  leaves both alone - so a reader pressing Enter never sees it.
 
 **Correction found in completion review - a hidden element is not terminal.** The gate list as
 written stops at `visibility: hidden`, and the first implementation stopped the WALK there too.

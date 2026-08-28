@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, link, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 export const WORKTREE_POOL_MARKER = ".mission-control-worktree-pool";
@@ -33,8 +34,9 @@ export async function readWorktreePoolMarker(poolPath: string): Promise<Worktree
 
 /**
  * Create the pool marker before any slot can be exposed, or verify the marker already
- * belongs to the same durable pool. The exclusive create makes two daemon instances race
- * safely: the loser reads and verifies the winner's bytes.
+ * belongs to the same durable pool. A complete temporary file is hard-linked into place so
+ * two daemon instances race safely: the destination never exposes the winner's partial bytes,
+ * and a loser reads and verifies the complete linked inode.
  */
 export async function ensureWorktreePoolMarker(poolPath: string, poolId: string): Promise<void> {
   await mkdir(poolPath, { recursive: true });
@@ -44,15 +46,24 @@ export async function ensureWorktreePoolMarker(poolPath: string, poolId: string)
   }
   const markerPath = join(poolPath, WORKTREE_POOL_MARKER);
   const marker: WorktreePoolMarker = { schemaVersion: WORKTREE_POOL_MARKER_VERSION, poolId };
+  const temporaryPath = join(
+    poolPath,
+    `${WORKTREE_POOL_MARKER}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  await writeFile(temporaryPath, `${JSON.stringify(marker)}\n`, { encoding: "utf8", flag: "wx" });
   try {
-    await writeFile(markerPath, `${JSON.stringify(marker)}\n`, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    const existing = await readWorktreePoolMarker(poolPath);
-    if (existing?.poolId === poolId) return;
-    throw new Error(
-      `native worktree pool marker at ${markerPath} is missing, unreadable, or belongs to another pool`,
-      { cause: error },
-    );
+    try {
+      await link(temporaryPath, markerPath);
+    } catch (error) {
+      const existing = await readWorktreePoolMarker(poolPath);
+      if (existing?.poolId === poolId) return;
+      throw new Error(
+        `native worktree pool marker at ${markerPath} is missing, unreadable, or belongs to another pool`,
+        { cause: error },
+      );
+    }
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
   }
 }
 

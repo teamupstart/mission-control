@@ -308,6 +308,79 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   });
 });
 
+test("the first discovery sweep does not settle a managed Pipeline host that is still launching", async () => {
+  const registry = new Registry();
+  const taskId = "pipeline-sdk-first-sweep";
+  registry.upsertTask(
+    mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot: "/repo/first-sweep",
+      intent: "Keep the managed host through the first sweep",
+      title: "Keep the managed host",
+    }),
+  );
+  // Installs the same sessions-observed reconciliation the daemon owns.
+  new TaskManager(registry);
+  let statusDuringStart: string | undefined;
+  const stopped: string[] = [];
+  const supervisor = {
+    async start(input: Parameters<SdkSupervisor["start"]>[0]): Promise<Session> {
+      assert.deepEqual(registry.managedPipelineLaunch(input.sessionId!), {
+        taskId,
+        sessionId: input.sessionId,
+        cwd: "/repo/first-sweep",
+      });
+      registry.applyDiscovery([]);
+      statusDuringStart = registry.getTask(taskId)?.status;
+      return registry.registerSdkSession({
+        id: input.sessionId!,
+        agent: input.agent,
+        name: input.name,
+        cwd: input.cwd,
+        agentSessionId: "codex-first-sweep",
+        gitBranch: null,
+        gitRoot: input.gitRoot,
+        repoRoot: input.repoRoot,
+      });
+    },
+    async stop(id: string): Promise<void> {
+      stopped.push(id);
+    },
+    taskLiveness: () => null,
+    liveSessionForTask: () => null,
+    handleFor: () => null,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      launchRuntime: "agent-sdk",
+      cwd: "/repo/first-sweep",
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/first-sweep",
+        slug: "keep-the-managed-host-through-the-first-sweep",
+      },
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  assert.equal(statusDuringStart, "dispatching");
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  assert.match(registry.getTask(taskId)?.sessionId ?? "", /^sdk:/);
+  assert.deepEqual(stopped, []);
+});
+
 test("managed Pipeline dispatch refuses a stale MCP bundle before host launch", async () => {
   const registry = new Registry();
   registry.upsertTask(mkTask({

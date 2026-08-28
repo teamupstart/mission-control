@@ -1,40 +1,324 @@
+import { useEffect, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
   setupRowAnchor,
-  type SetupRemedy,
+  type SetupDependencyId,
   type SetupRowView,
 } from "@shared/setup-catalog.ts";
+import type {
+  PipelineInstallerCandidatesResult,
+  PipelineProviderId,
+} from "@shared/pipeline.ts";
+import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import {
+  fetchPipelineInstallers,
+  openSetupInstaller,
+  type SetupInstallerLaunchResult,
+} from "../lib/api.ts";
+import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-function CommandRemedy({ argv, note }: { argv: readonly string[]; note: string }): React.JSX.Element {
+function CopyCommand({ argv, note }: { argv: readonly string[]; note: string }): React.JSX.Element {
   const text = argv.join(" ");
   const copy = useCopyFeedback({ resetOn: text });
   return (
-    <div className="setup-command">
-      <code>{text}</code>
-      <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : note}>
-        <button type="button" className="btn btn-ghost" onClick={() => void copy.copy(text)}>
-          {copy.copied ? COPY_FEEDBACK_LABEL : "Copy"}
-        </button>
-      </Tooltip>
+    <>
+      <div className="setup-command">
+        <code>{text}</code>
+        <Tooltip label={copy.copied ? COPY_FEEDBACK_LABEL : note}>
+          <button type="button" className="btn btn-ghost" onClick={() => void copy.copy(text)}>
+            {copy.copied ? COPY_FEEDBACK_LABEL : "Copy"}
+          </button>
+        </Tooltip>
+      </div>
       {copy.error && <span className="settings-error">{copy.error}</span>}
+    </>
+  );
+}
+
+interface TerminalChoice {
+  targets: TerminalTargetView[] | null;
+  failed: boolean;
+  selected: TerminalTargetView | null;
+  select(id: TerminalBackendId): void;
+}
+
+function useTerminalChoice(): TerminalChoice {
+  const terminals = useTerminalTargets();
+  const [selectedId, setSelectedId] = useState<TerminalBackendId | null>(null);
+  const available = terminals.targets?.filter((target) => target.unavailable === null) ?? [];
+  const selected = available.find((target) => target.id === selectedId) ?? available[0] ?? null;
+
+  useEffect(() => {
+    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
+  }, [selected, selectedId]);
+
+  return { ...terminals, selected, select: setSelectedId };
+}
+
+function TerminalPicker({
+  label,
+  choice,
+  busy,
+}: {
+  label: string;
+  choice: TerminalChoice;
+  busy: boolean;
+}): React.JSX.Element {
+  const noTerminal = choice.targets !== null && !choice.targets.some((target) => target.unavailable === null);
+  return (
+    <>
+      <label className="setup-terminal-choice">
+        <span>Visible terminal</span>
+        <Tooltip label={`Choose the visible terminal that will run the ${label} installer`}>
+          <select
+            aria-label={`Terminal for ${label}`}
+            value={choice.selected?.id ?? ""}
+            disabled={!choice.targets || noTerminal || busy}
+            onChange={(event) => choice.select(event.target.value as TerminalBackendId)}
+          >
+            {!choice.targets && <option value="">Checking terminals...</option>}
+            {choice.targets?.map((target) => (
+              <option key={target.id} value={target.id} disabled={target.unavailable !== null}>
+                {target.label}{target.unavailable ? `: ${target.unavailable}` : ""}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+      </label>
+      {choice.failed && (
+        <p className="settings-warn">Mission Control could not check terminal availability.</p>
+      )}
+      {noTerminal && (
+        <ul className="setup-terminal-reasons" aria-label={`Unavailable terminals for ${label}`}>
+          {choice.targets?.map((target) => (
+            <li key={target.id}><strong>{target.label}</strong>: {target.unavailable}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function LaunchNotice({ result }: { result: SetupInstallerLaunchResult | null }): React.JSX.Element | null {
+  if (!result) return null;
+  const attention = result.outcome === "opened" || result.outcome === "maybe-opening";
+  const detail = result.detail || result.error || "The installer terminal was refused.";
+  return (
+    <div className={`setup-launch-notice is-${attention ? "attention" : "error"}`} role="status">
+      <strong>{detail}</strong>
+      {attention && <span>When the installer finishes, press Re-check.</span>}
     </div>
   );
 }
 
-function Remedy({ remedy }: { remedy: SetupRemedy }): React.JSX.Element {
-  if (remedy.kind === "command") return <CommandRemedy argv={remedy.argv} note={remedy.note} />;
-  if (remedy.kind === "skill") return <CommandRemedy argv={[remedy.command]} note="Copy skill command" />;
-  const destination = remedy.kind === "provider-installer" ? "#/settings/conductor" : remedy.url;
-  const label = remedy.kind === "provider-installer" ? "Open Conductor settings" : remedy.label;
+function RunButton({
+  disabled,
+  opening,
+  onClick,
+}: {
+  disabled: boolean;
+  opening: boolean;
+  onClick(): void;
+}): React.JSX.Element {
   return (
-    <Tooltip label={label}>
-      <a className="setup-link" href={destination} target={destination.startsWith("http") ? "_blank" : undefined} rel={destination.startsWith("http") ? "noreferrer" : undefined}>
-        {label}<span aria-hidden> ↗</span>
+    <Tooltip label="Open this daemon-owned install command in the selected visible terminal">
+      <button
+        type="button"
+        className="btn btn-primary"
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {opening ? "Opening..." : "Run in a terminal"}
+      </button>
+    </Tooltip>
+  );
+}
+
+function CommandRemedy({
+  id,
+  label,
+  argv,
+  note,
+}: {
+  id: SetupDependencyId;
+  label: string;
+  argv: readonly string[];
+  note: string;
+}): React.JSX.Element {
+  const terminal = useTerminalChoice();
+  const [opening, setOpening] = useState(false);
+  const [result, setResult] = useState<SetupInstallerLaunchResult | null>(null);
+
+  async function launch(): Promise<void> {
+    if (!terminal.selected) return;
+    setOpening(true);
+    setResult(null);
+    try {
+      setResult(await openSetupInstaller({ id, backend: terminal.selected.id }));
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  return (
+    <div className="setup-remedy-actions">
+      <CopyCommand argv={argv} note={note} />
+      <div className="setup-run-controls">
+        <TerminalPicker label={label} choice={terminal} busy={opening} />
+        <RunButton
+          disabled={!terminal.selected || opening}
+          opening={opening}
+          onClick={() => void launch()}
+        />
+      </div>
+      <LaunchNotice result={result} />
+    </div>
+  );
+}
+
+interface ProviderRead {
+  loading: boolean;
+  result: PipelineInstallerCandidatesResult | null;
+  error: string | null;
+}
+
+function useProviderInstallers(provider: PipelineProviderId): ProviderRead {
+  const [read, setRead] = useState<ProviderRead>({ loading: true, result: null, error: null });
+  useEffect(() => {
+    let live = true;
+    setRead({ loading: true, result: null, error: null });
+    void fetchPipelineInstallers(provider).then((result) => {
+      if (!live) return;
+      setRead(result
+        ? { loading: false, result, error: null }
+        : {
+            loading: false,
+            result: null,
+            error: "Mission Control could not check for a verified local installer checkout.",
+          });
+    });
+    return () => { live = false; };
+  }, [provider]);
+  return read;
+}
+
+function ProviderFallback({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div className="setup-provider-fallback">
+      <p className="settings-warn">{children}</p>
+      <Tooltip label="Open the Conductor settings that own provider source setup">
+        <a className="setup-link" href="#/settings/conductor">Open Conductor settings<span aria-hidden> ↗</span></a>
+      </Tooltip>
+    </div>
+  );
+}
+
+function ProviderInstallerRemedy({
+  id,
+  label,
+  provider,
+}: {
+  id: SetupDependencyId;
+  label: string;
+  provider: PipelineProviderId;
+}): React.JSX.Element {
+  const terminal = useTerminalChoice();
+  const read = useProviderInstallers(provider);
+  const [opening, setOpening] = useState(false);
+  const [result, setResult] = useState<SetupInstallerLaunchResult | null>(null);
+  const candidates = read.result?.candidates ?? [];
+  const runtimeReady = read.result?.runtime?.supported === true;
+
+  async function launch(): Promise<void> {
+    if (!terminal.selected || candidates.length !== 1) return;
+    setOpening(true);
+    setResult(null);
+    try {
+      setResult(await openSetupInstaller({
+        id,
+        backend: terminal.selected.id,
+      }));
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  if (read.loading) return <p className="setup-loading">Checking workspace repositories...</p>;
+  if (read.error) return <ProviderFallback>{read.error}</ProviderFallback>;
+  if (!read.result) {
+    return <ProviderFallback>Mission Control could not read installer candidates.</ProviderFallback>;
+  }
+  if (!read.result.supported) return <ProviderFallback>{read.result.detail}</ProviderFallback>;
+  if (candidates.length === 0) {
+    return (
+      <ProviderFallback>
+        No verified local installer checkout was found. Settings &gt; Conductor owns source setup.
+      </ProviderFallback>
+    );
+  }
+  if (!runtimeReady) {
+    return <ProviderFallback>{read.result.runtime?.detail ?? read.result.detail}</ProviderFallback>;
+  }
+  if (candidates.length > 1) {
+    return (
+      <ProviderFallback>
+        Multiple verified local installer checkouts were found. Mission Control will not choose
+        between them from Setup.
+      </ProviderFallback>
+    );
+  }
+
+  return (
+    <div className="setup-remedy-actions">
+      <p className="setup-provider-checkout">
+        Verified checkout <code>{candidates[0]!.checkout}</code>
+      </p>
+      <div className="setup-run-controls">
+        <TerminalPicker label={label} choice={terminal} busy={opening} />
+        <RunButton
+          disabled={!terminal.selected || opening}
+          opening={opening}
+          onClick={() => void launch()}
+        />
+      </div>
+      <LaunchNotice result={result} />
+    </div>
+  );
+}
+
+function Remedy({ row }: { row: SetupRowView }): React.JSX.Element {
+  const remedy = row.remedy;
+  if (remedy.kind === "command") {
+    return row.rowId.source === "dependency"
+      ? <CommandRemedy id={row.rowId.id} label={row.label} argv={remedy.argv} note={remedy.note} />
+      : <CopyCommand argv={remedy.argv} note={remedy.note} />;
+  }
+  if (remedy.kind === "provider-installer") {
+    return row.rowId.source === "dependency"
+      ? <ProviderInstallerRemedy id={row.rowId.id} label={row.label} provider={remedy.provider} />
+      : (
+          <Tooltip label="Open the Conductor settings that own provider source setup">
+            <a className="setup-link" href="#/settings/conductor">Open Conductor settings<span aria-hidden> ↗</span></a>
+          </Tooltip>
+        );
+  }
+  if (remedy.kind === "skill") {
+    return <CopyCommand argv={[remedy.command]} note="Copy skill command" />;
+  }
+  return (
+    <Tooltip label={remedy.label}>
+      <a
+        className="setup-link"
+        href={remedy.url}
+        target={remedy.url.startsWith("http") ? "_blank" : undefined}
+        rel={remedy.url.startsWith("http") ? "noreferrer" : undefined}
+      >
+        {remedy.label}<span aria-hidden> ↗</span>
       </a>
     </Tooltip>
   );
@@ -64,7 +348,7 @@ function SetupRow({ row }: { row: SetupRowView }): React.JSX.Element {
             <p className="setup-impact">{row.enables}</p>
             {status.state !== "missing" && <p className="setup-why">{status.why}</p>}
             {status.state !== "missing" && status.evidence && <p className="setup-evidence">{status.evidence}</p>}
-            <Remedy remedy={row.remedy} />
+            <Remedy row={row} />
           </>
         )}
       </div>
@@ -86,7 +370,7 @@ export function SetupPanel({ state }: { state: SetupChecksState }): React.JSX.El
       <div className="setup-intro" data-anchor="setup/recheck" ref={panelTourRef}>
         <div>
           <p className="settings-hint">See what Mission Control can use on this machine and what an incomplete setup prevents.</p>
-          <p className="setup-read-only">Commands are copied, never run from this page.</p>
+          <p className="setup-read-only">Commands stay copyable. Runnable remedies open in a visible terminal where you can watch them and read the exit code.</p>
         </div>
         <Tooltip label="Inspect this machine again">
           <button type="button" className="btn btn-ghost" disabled={state.loading} onClick={() => void state.refresh()} ref={recheckTourRef}>

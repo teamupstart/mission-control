@@ -8,6 +8,7 @@ import { gitInfo, mainRepoRoot, worktreeRepositoryIdentity } from "../src/server
 import {
   ensureWorktreePoolMarker,
   findWorktreePoolMarker,
+  readWorktreePoolMarker,
 } from "../src/server/worktrees/marker.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -176,6 +177,22 @@ test("the native pool marker is discoverable from a checkout path without SQLite
     () => ensureWorktreePoolMarker(pool, "another-pool"),
     /belongs to another pool/,
   );
+});
+
+test("concurrent native pool marker creation never exposes incomplete marker bytes", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-race-")));
+  const pool = join(root, "pool");
+  const results = await Promise.allSettled(
+    Array.from({ length: 256 }, () => ensureWorktreePoolMarker(pool, "pool-identity-race")),
+  );
+  assert.deepEqual(
+    results.filter((result) => result.status === "rejected"),
+    [],
+  );
+  assert.deepEqual(await readWorktreePoolMarker(pool), {
+    schemaVersion: 1,
+    poolId: "pool-identity-race",
+  });
 });
 
 test("the native pool marker refuses a symlinked pool root", async () => {

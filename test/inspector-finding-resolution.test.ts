@@ -232,7 +232,9 @@ function registryStub(): Registry {
 }
 
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 10_000;
+  // This is a hang ceiling, not a performance assertion. The Inspector's analogous clean-review
+  // fixture uses the same budget because six test files run concurrently and can delay a tick.
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));

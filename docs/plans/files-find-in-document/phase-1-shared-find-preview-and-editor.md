@@ -331,6 +331,32 @@ Phase 2 may rely on, and must not change:
 - The `HTML_PREVIEW_TARGET_MESSAGE` block-reveal path, which stays as the fallback whenever
   the frame has not reported itself ready.
 
+### Phase 2 must do this, and Phase 1 could not
+
+**Clear the reveal outline when nothing is being revealed.** Closing find over an HTML document
+leaves the last revealed block outlined, and this phase cannot fix it. The frame's `missionJump`
+removes the previous target only as it sets a new one; a non-array path returns early and an
+empty array walks zero steps to `document.body`, so posting "nothing" would outline the whole
+page. The three bridges are injected into the implicit `<head>`, so `document.body.children`
+holds only checkout-controlled elements and there is no invisible element to park the outline
+on, and the sandbox is `allow-scripts` with no `allow-same-origin`, so the parent cannot reach
+the frame's DOM. The only correct fix adds a clear branch to `PREVIEW_SCROLL_SCRIPT` and
+recomputes `PREVIEW_SCROLL_SCRIPT_HASH` - an edit to `src/web/lib/htmlPreview.ts` and its CSP,
+which this phase is explicitly forbidden to make and Phase 2 already makes.
+
+This was raised as a review finding during Phase 1 and put to the operator, who chose to keep
+the constraint rather than relax it, so the behaviour ships as a known limitation. Two things
+carry it forward rather than leaving it to be rediscovered:
+
+- `e2e/specs/file-find-in-document.spec.ts` pins the current behaviour in "a closed find leaves
+  the last HTML outline standing, which the sandbox cannot clear", with a comment telling Phase 2
+  to **delete that test** and assert the outline goes.
+- The reveal decision already funnels through one owner (`htmlRevealChoice`), so Phase 2 adds the
+  clear message at a single call site rather than to two competing effects.
+
+Phase 2 should also note that adding the branch changes that script's pinned hash, which
+`test/html-preview.test.ts` recomputes and verifies.
+
 ## Implementation record
 
 What was built, where it departed from the route above, and why. The outcome, the scope, the

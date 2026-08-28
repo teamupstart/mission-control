@@ -66,6 +66,7 @@ const REPORT_HTML = `<!doctype html>
   <section style="height: 100vh">
     <h2>Reconnect details</h2>
     <p id="verdict">The reconnect budget is bounded.</p>
+    <p id="second">The budget is bounded here too.</p>
     <p>paired alpha</p><p>paired beta</p>
   </section>
 </body></html>
@@ -456,7 +457,7 @@ test("an HTML preview reveals the block holding the current match, and says so",
   // The count is taken over SOURCE here, because the sandbox is opaque to this origin - so
   // the bar says what the number means rather than implying character accuracy it lacks.
   await expect(dashboard.locator(".file-content .find-bar .find-note")).toHaveText("by block");
-  await expect(readout(dashboard)).toHaveText("1 / 1");
+  await expect(readout(dashboard)).toHaveText("1 / 2");
 
   // The block containing the match is revealed and outlined, through the daemon's existing
   // block resolver and the target message the comment jump already uses.
@@ -482,6 +483,21 @@ test("an HTML preview reveals the block holding the current match, and says so",
   await shoot(dashboard, "html-block-reveal");
 
   /*
+   * Stepping MOVES the outline, and only one block carries it.
+   *
+   * The frame can show one outline - `missionJump` removes the previous target as it sets the
+   * next - and both reveal sources now feed one decision that posts on change. This is the
+   * assertion that the restructuring kept the frame following the ring.
+   */
+  const second = report.locator("#second");
+  await expect(second).not.toHaveClass(/mission-comment-target/);
+  await searchbox(dashboard).focus();
+  await dashboard.keyboard.press("Enter");
+  await expect(readout(dashboard)).toHaveText("2 / 2");
+  await expect(second).toHaveClass(/mission-comment-target/);
+  await expect(verdict).not.toHaveClass(/mission-comment-target/);
+
+  /*
    * Two occurrences on ONE source line, in two different blocks, are one ring entry.
    *
    * This surface is told a LINE, so both would produce byte-identical resolve requests and the
@@ -502,4 +518,40 @@ test("an HTML preview reveals the block holding the current match, and says so",
     .click();
   await expect(decorations(dashboard)).toHaveCount(2);
   await expect(readout(dashboard)).toHaveText("1 / 2");
+});
+
+test("a closed find leaves the last HTML outline standing, which the sandbox cannot clear", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * A KNOWN LIMITATION, pinned so it stays deliberate.
+   *
+   * Closing find over an HTML document leaves the last revealed block outlined. That is the
+   * sandbox's limit, not an oversight: the frame's `missionJump` removes the previous target
+   * only as it sets a new one, and a path that walks nowhere resolves to `document.body`, so
+   * posting "nothing" would outline the whole page instead of clearing it. A real clear needs a
+   * new hash-pinned bridge script and a CSP change, which is Phase 2's scoped edit to
+   * `htmlPreview.ts` - explicitly out of this phase.
+   *
+   * Phase 2 should DELETE this test and assert the outline goes. Until then it is here so the
+   * behaviour cannot drift unnoticed in either direction.
+   */
+  await openFilesTab(dashboard, daemon);
+  await dashboard
+    .getByRole("listbox", { name: "Session files" })
+    .getByRole("option", { name: REPORT })
+    .click();
+  const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
+  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("budget is bounded");
+  const verdict = report.locator("#verdict");
+  await expect(verdict).toHaveClass(/mission-comment-target/);
+
+  await dashboard.keyboard.press("Escape");
+  await expect(searchbox(dashboard)).toHaveCount(0);
+  // Still outlined, and the reader has no cue that it is stale. Recorded, not defended.
+  await expect(verdict).toHaveClass(/mission-comment-target/);
 });

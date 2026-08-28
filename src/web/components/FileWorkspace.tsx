@@ -142,6 +142,41 @@ export function scrollActiveFileReader(
   return true;
 }
 
+/** A block the sandboxed preview has been asked to reveal, from either source. */
+export interface HtmlRevealTarget {
+  blockPath: HtmlBlockPathStep[];
+  nonce: number;
+}
+
+/**
+ * Which reveal the sandboxed HTML preview should be showing, and its identity.
+ *
+ * There are two sources - a comment jump ("take me to this thread") and find stepping its ring
+ * - and the frame can only show ONE outline, because `missionJump` removes the previous target
+ * as it sets the next. They used to post into the frame independently, from two effects, with
+ * no arbitration except a one-time replay when the iframe reloaded: whichever fired last won,
+ * and a live find reveal could silently displace a comment jump the reader had just asked for.
+ *
+ * The comment jump wins when both are live. It is an explicit navigation the reader performed,
+ * where find's reveal follows the ring and is re-sent by the next step anyway.
+ *
+ * The `key` is what makes the posting effect fire exactly when the answer CHANGES: re-posting
+ * an unchanged target would re-run the frame's smooth scroll under a reader who had scrolled
+ * away from it. The nonce is part of the key on purpose, so asking for the same block twice -
+ * a deep link followed again, or find stepping back onto it - is a new request rather than a
+ * no-op.
+ */
+export function htmlRevealChoice(
+  comment: HtmlRevealTarget | null,
+  find: HtmlRevealTarget | null,
+): { source: "comment" | "find"; target: HtmlRevealTarget; key: string } | null {
+  const source = comment ? "comment" : find ? "find" : null;
+  const target = comment ?? find;
+  if (!source || !target) return null;
+  const path = target.blockPath.map((step) => `${step.index}${step.tag}`).join("/");
+  return { source, target, key: `${source}:${target.nonce}:${path}` };
+}
+
 export function adjacentFilePath(
   paths: readonly string[],
   selectedPath: string | null,
@@ -1308,14 +1343,9 @@ export function FileWorkspace({
   }, []);
   const commentingRef = useRef(htmlCommenting);
   commentingRef.current = htmlCommenting;
-  const htmlTargetRef = useRef(htmlTarget);
-  htmlTargetRef.current = htmlTarget;
   useEffect(() => {
     armFrame(htmlCommenting);
   }, [armFrame, htmlCommenting]);
-  useEffect(() => {
-    revealHtmlTarget(htmlTarget);
-  }, [htmlTarget, revealHtmlTarget]);
 
   /*
    * An HTML match, revealed by BLOCK - through the two paths that already ship.
@@ -1335,11 +1365,19 @@ export function FileWorkspace({
    * keystroke would be louder than the thing that went wrong.
    */
   const htmlFindRequests = useRef(0);
-  const htmlFindTargetRef = useRef<{ blockPath: HtmlBlockPathStep[]; nonce: number } | null>(null);
+  /**
+   * STATE rather than a ref, because it is now an input to the one reveal decision below.
+   *
+   * As a ref it was written and read by two effects that each posted into the frame on their
+   * own, which is what let a find reveal displace a live comment jump - see `htmlRevealChoice`.
+   */
+  const [htmlFindTarget, setHtmlFindTarget] = useState<HtmlRevealTarget | null>(null);
   const currentHtmlFindLine = findSurface === "html" ? htmlFindLines[findIndex] ?? null : null;
   useEffect(() => {
     if (findSurface !== "html" || !previewPath || currentHtmlFindLine === null) {
-      htmlFindTargetRef.current = null;
+      // Find has nothing to reveal - closed, no matches, or another surface. Dropping the
+      // target hands the frame back to the comment jump if one is live.
+      setHtmlFindTarget(null);
       return;
     }
     let live = true;
@@ -1352,9 +1390,7 @@ export function FileWorkspace({
       revision: previewRevision,
     }).then((result) => {
       if (!live || request !== htmlFindRequests.current || !result.ok) return;
-      const target = { blockPath: result.blockPath, nonce: request };
-      htmlFindTargetRef.current = target;
-      revealHtmlTarget(target);
+      setHtmlFindTarget({ blockPath: result.blockPath, nonce: request });
     });
     return () => { live = false; };
   }, [
@@ -1362,9 +1398,35 @@ export function FileWorkspace({
     findSurface,
     previewPath,
     previewRevision,
-    revealHtmlTarget,
     session.id,
   ]);
+
+  /*
+   * ONE owner of what the frame is showing.
+   *
+   * Both sources feed `htmlRevealChoice` and this single effect posts its answer, so the last
+   * DECISION wins rather than the last effect to run. It fires only when the answer's key
+   * changes, because re-posting an unchanged target would re-run the frame's smooth scroll
+   * under a reader who had scrolled away from it.
+   *
+   * **What this cannot do is clear an outline**, and that limit is the sandbox's, not a
+   * shortcut. `missionJump` removes the previous target only as it sets a new one, and a path
+   * that walks nowhere resolves to `document.body` - so posting "nothing" would outline the
+   * whole page rather than clear it. Giving the frame a clear needs a new hash-pinned script
+   * and a CSP change, which is Phase 2's scoped edit to `htmlPreview.ts`. Until then: dropping
+   * find's target restores the comment jump's block when one is live, and where neither source
+   * has a target the last outline stays until the frame reloads.
+   */
+  const htmlReveal = htmlRevealChoice(htmlTarget, htmlFindTarget);
+  const htmlRevealKey = htmlReveal?.key ?? "";
+  const htmlRevealRef = useRef(htmlReveal);
+  htmlRevealRef.current = htmlReveal;
+  const postedRevealKey = useRef("");
+  useEffect(() => {
+    if (!htmlReveal || htmlRevealKey === postedRevealKey.current) return;
+    postedRevealKey.current = htmlRevealKey;
+    revealHtmlTarget(htmlReveal.target);
+  }, [htmlReveal, htmlRevealKey, revealHtmlTarget]);
   useEffect(() => {
     if (!previewPath) return;
     const onReady = (event: MessageEvent): void => {
@@ -1374,9 +1436,18 @@ export function FileWorkspace({
       );
       if (!frame || event.source !== frame.contentWindow) return;
       armFrame(commentingRef.current);
-      // A comment jump wins when both are live: it is an explicit request to go somewhere,
-      // where find's reveal follows the ring and will be re-sent by the next step anyway.
-      revealHtmlTarget(htmlTargetRef.current ?? htmlFindTargetRef.current);
+      /*
+       * A reloaded document has no outline at all, so the current decision is re-posted -
+       * through the same `htmlRevealChoice` the effect above uses, rather than a second rule
+       * that could disagree with it. The posted key is cleared first because this is the one
+       * case where an UNCHANGED target must be sent again.
+       */
+      postedRevealKey.current = "";
+      const reveal = htmlRevealRef.current;
+      if (reveal) {
+        postedRevealKey.current = reveal.key;
+        revealHtmlTarget(reveal.target);
+      }
     };
     window.addEventListener("message", onReady);
     return () => window.removeEventListener("message", onReady);

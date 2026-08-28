@@ -152,3 +152,97 @@ test("hitLinesByBlock keeps document order and revisits a line that recurs", () 
   assert.deepEqual(hitLinesByBlock(of(1, 2, 1)), [1, 2, 1]);
   assert.deepEqual(hitLinesByBlock([]), []);
 });
+
+// ---- which reveal the sandboxed HTML preview shows ----
+
+test("htmlRevealChoice gives the comment jump precedence over a live find reveal", async () => {
+  const { htmlRevealChoice } = await import("../src/web/components/FileWorkspace.tsx");
+  const comment = { blockPath: [{ index: 1, tag: "section" }], nonce: 7 };
+  const find = { blockPath: [{ index: 2, tag: "p" }], nonce: 3 };
+
+  /*
+   * The frame can show only ONE outline - `missionJump` removes the previous target as it sets
+   * the next - and two sources can ask. They used to post independently from two effects, so
+   * whichever fired last won and a find reveal could displace a comment jump the reader had
+   * just performed. The comment jump wins because it is an explicit navigation; find's reveal
+   * follows the ring and is re-sent by the next step anyway.
+   */
+  assert.equal(htmlRevealChoice(comment, find)?.source, "comment");
+  assert.deepEqual(htmlRevealChoice(comment, find)?.target, comment);
+
+  // Find owns the frame when nothing else is asking.
+  assert.equal(htmlRevealChoice(null, find)?.source, "find");
+  assert.deepEqual(htmlRevealChoice(null, find)?.target, find);
+
+  // Nobody asking is its own answer, and NOT an instruction to reveal something.
+  assert.equal(htmlRevealChoice(null, null), null);
+});
+
+test("a comment jump arriving over a find reveal takes the frame, and is re-posted", async () => {
+  const { htmlRevealChoice } = await import("../src/web/components/FileWorkspace.tsx");
+  const comment = { blockPath: [{ index: 1, tag: "section" }], nonce: 7 };
+  const find = { blockPath: [{ index: 2, tag: "p" }], nonce: 3 };
+
+  /*
+   * The clobbering half of the report. Find owns the frame, then the reader opens a comment
+   * thread: the answer flips to the comment's block AND its key changes, so the single posting
+   * effect actually sends it. Under the two independent effects this depended on which one
+   * happened to fire last, and a later find step could displace the comment jump silently.
+   */
+  const before = htmlRevealChoice(null, find);
+  const after = htmlRevealChoice(comment, find);
+  assert.equal(before?.source, "find");
+  assert.equal(after?.source, "comment");
+  assert.notEqual(after?.key, before?.key, "the key must change, or nothing would be posted");
+
+  /*
+   * And once a comment jump is live, find stepping its ring cannot take the frame back - which
+   * is the precedence, not an accident of effect ordering.
+   */
+  const stepped = htmlRevealChoice(comment, { blockPath: [{ index: 5, tag: "p" }], nonce: 4 });
+  assert.equal(stepped?.source, "comment");
+  assert.equal(stepped?.key, after?.key, "a find step must not re-post over a comment jump");
+});
+
+test("no source asking is not an instruction to clear, which this phase cannot send", async () => {
+  const { htmlRevealChoice } = await import("../src/web/components/FileWorkspace.tsx");
+  /*
+   * The other half of the report, recorded honestly rather than papered over. Closing find with
+   * no comment jump live leaves nothing to reveal, and the answer is `null` - which the posting
+   * effect treats as "send nothing", NOT as "clear the outline".
+   *
+   * It cannot mean clear: the frame's `missionJump` only removes the previous target as it sets
+   * a new one, and a path that walks nowhere resolves to `document.body`, so posting "nothing"
+   * would outline the whole page. A real clear needs a new hash-pinned script and a CSP change,
+   * which is Phase 2's scoped edit. The last outline therefore stays until the frame reloads.
+   */
+  assert.equal(htmlRevealChoice(null, null), null);
+});
+
+test("htmlRevealChoice keys on the block AND the nonce, so a repeat jump is a new request", async () => {
+  const { htmlRevealChoice } = await import("../src/web/components/FileWorkspace.tsx");
+  const path = [{ index: 1, tag: "section" }, { index: 0, tag: "p" }];
+
+  // Identical input is one request: re-posting would re-run the frame's smooth scroll under a
+  // reader who had scrolled away from it.
+  assert.equal(
+    htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
+    htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
+  );
+  // A new nonce on the SAME block is a fresh ask - find stepping back onto it, or a deep link
+  // followed twice - and must not be swallowed as a no-op.
+  assert.notEqual(
+    htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
+    htmlRevealChoice(null, { blockPath: path, nonce: 5 })?.key,
+  );
+  // A different block at the same nonce is a different answer.
+  assert.notEqual(
+    htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
+    htmlRevealChoice(null, { blockPath: [{ index: 9, tag: "div" }], nonce: 4 })?.key,
+  );
+  // The two sources never collide on a key, even naming the same block at the same nonce.
+  assert.notEqual(
+    htmlRevealChoice({ blockPath: path, nonce: 4 }, null)?.key,
+    htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
+  );
+});

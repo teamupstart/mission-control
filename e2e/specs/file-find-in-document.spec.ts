@@ -817,7 +817,14 @@ test("a frame that cannot highlight keeps the block reveal, its note and its own
   await expect.poll(async () => (await highlighted(frame)).count).toBe(2);
 
   await frame.locator("body").evaluate(() => {
-    parent.postMessage({ type: "mission:file-preview-find-ready", highlight: false }, "*");
+    // A nonce as well as the flag, because a real frame always mints and reports one: the
+    // parent refuses a readiness message it cannot attribute to a document, so a fixture
+    // without one would be testing the guard rather than the fallback.
+    parent.postMessage({
+      type: "mission:file-preview-find-ready",
+      highlight: false,
+      nonce: "cannot-highlight-fixture",
+    }, "*");
   });
 
   // The note is back, the count is the source-derived by-block one, and stepping reveals the

@@ -238,7 +238,7 @@ test("the find bridge is gated on its parent and announces its own readiness las
    */
   assert.match(
     bridge,
-    /parent\.postMessage\(\{type:"mission:file-preview-find-ready",highlight:missionFindCan\(\)\}," ?\*"\)$/,
+    /parent\.postMessage\(\{type:"mission:file-preview-find-ready",highlight:missionFindCan\(\),nonce:missionFindNonce\}," ?\*"\)$/,
   );
   // And it does not borrow the other bridge's ready message anywhere.
   assert.doesNotMatch(bridge, /"mission:file-preview-ready"/);
@@ -349,12 +349,21 @@ test("the find bridge matches over runs and breaks them at every visible separat
   assert.match(bridge, /range\.setEnd\(part\.node/);
   assert.match(bridge, /count=missionFindRanges\.length/);
   /*
-   * And the result ECHOES the document token it was given, rather than leaving the parent to
-   * label it on arrival. A `srcDoc` navigation keeps the same WindowProxy, so a result queued
-   * by the outgoing document still passes the parent's `event.source` check - the echo is the
-   * only thing that tells the two documents apart.
+   * And a result names the document it counted in with a nonce this document MINTED FOR ITSELF.
+   *
+   * Two weaker schemes were tried and are pinned as rejected here. `event.source` sees one
+   * WindowProxy across a `srcDoc` navigation, so it cannot tell the outgoing document from its
+   * replacement. A token the parent sends down and the frame echoes fails for a sharper reason:
+   * the parent posts through that same WindowProxy as soon as the source changes, before the
+   * replacement has necessarily loaded, so the document being replaced can receive a token
+   * naming its successor and answer for it out of its own DOM. Only a self-minted value is
+   * beyond a predecessor's reach.
    */
-  assert.match(bridge, /token:event\.data\.token/);
+  assert.match(bridge, /const missionFindNonce=Math\.random\(\)\+"-"\+Date\.now\(\)/);
+  assert.match(bridge, /nonce:missionFindNonce/);
+  // Never derived from anything the parent said, which is the whole guarantee.
+  assert.doesNotMatch(bridge, /nonce:event\.data/);
+  assert.doesNotMatch(bridge, /token:event\.data/);
   // The literal matcher is the same policy `documentFind.ts` applies, character for character.
   assert.ok(bridge.includes("replace(/[.*+?^${}()|[\\]\\\\]/g,\"\\\\$&\")"));
 });

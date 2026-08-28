@@ -373,13 +373,34 @@ WindowProxy, so a find-result queued by the document being replaced still passes
 check, and stamping it with whatever source is current accepts the old count for the new document
 - whose highlights have never been drawn. The parent was asserting on the frame's behalf.
 
-The find message now carries a `token` naming the document, the frame echoes it back untouched,
-and `frameFindCount` compares that echo. Every field of the result is now an echo - query, case
-flag, token - which is the actual invariant: **a result describes the search and the document it
-counted, and the parent only ever checks whether that is still the one on screen.** The token is
-a counter rather than the source string because it crosses `postMessage` on every keystroke and
-only has to differ; nothing reads it. The find script's hash moved with it, which is expected -
-non-goal 1 protects the other three bridges, not this one.
+**Correction found in review rounds 4 and 5 - only the document can name itself.** Round 2's fix
+keyed the count to the document but let the PARENT decide, on arrival, which document a result was
+about. Two successive schemes failed, and the second failure is the instructive one:
+
+1. *Parent stamps on receipt* (round 4's finding). A `srcDoc` navigation keeps the same
+   WindowProxy, so a find-result queued by the document being replaced still passes the
+   `event.source` check; stamping it with whatever source is current accepts the old count for
+   the new document, whose highlights have never been drawn.
+2. *Parent mints a token, frame echoes it* (round 5's finding). Also unsound, and for a sharper
+   reason: the parent posts through that same WindowProxy the moment the source changes, which is
+   before the replacement has necessarily loaded - so the OUTGOING document can receive a token
+   naming its successor and answer for it out of its own DOM. An echo is only as trustworthy as
+   the value's origin.
+3. *Taken:* **the frame mints a nonce per document and reports it.** A value a document generated
+   for itself is the one thing its predecessor cannot produce. It rides on the ready message and
+   on every result.
+
+The parent's own document counter is still needed, and pairing the two is the point: the nonce is
+the only identity the outgoing document cannot forge, and the counter is the only thing that knows
+a reload is PENDING. `liveFindNonce` is the nonce of the last document to announce itself **and
+only while the counter still matches**, so a count is attributed to a document only while this
+origin's view of what is mounted agrees with the document that introduced itself. Either fact
+alone is insufficient.
+
+So the wire carries no document identity downward at all, and every field of a result either
+echoes what the parent sent (query, case flag) or belongs to the frame (nonce). The find script's
+hash moved with this, which is expected - non-goal 1 protects the other three bridges, not this
+one.
 
 **Also worth naming.** In-frame hits carry no source line, because the frame never sees the
 file's bytes - so the Preview/Editor toggle can no longer carry the reader's place across for an

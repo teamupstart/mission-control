@@ -287,8 +287,8 @@ const PREVIEW_FIND_READY_MESSAGE = "mission:file-preview-find-ready";
 const PREVIEW_FIND_CHORD_MESSAGE = "mission:file-preview-find-chord";
 const PREVIEW_FIND_HIGHLIGHT = "mission-find";
 const PREVIEW_FIND_CURRENT_HIGHLIGHT = "mission-find-current";
-const PREVIEW_FIND_SCRIPT = `let missionFindArmed=false;let missionFindQuery="";let missionFindCase=false;let missionFindRanges=[];const missionFindSkip=["script","style","template","title","noscript"];function missionFindCan(){return typeof CSS!=="undefined"&&Boolean(CSS.highlights)&&typeof Highlight==="function"}function missionFindSpace(el){const style=getComputedStyle(el);if(style.display==="none")return"gone";if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true,opacityProperty:true,checkOpacity:true,contentVisibilityAuto:true})?"shown":"hidden";return style.visibility==="visible"?"shown":"hidden"}function missionFindRuns(){const runs=[];let run=null;const add=(node,text)=>{if(!run){run={text:"",parts:[]};runs.push(run)}run.parts.push({node,at:run.text.length,to:run.text.length+text.length});run.text+=text};const cut=()=>{run=null};const walk=(holder,shown)=>{for(const node of holder.childNodes){if(node.nodeType===3){if(shown&&node.data)add(node,node.data);continue}if(node.nodeType!==1)continue;const tag=node.tagName.toLowerCase();if(missionFindSkip.includes(tag))continue;const space=missionFindSpace(node);if(space==="gone")continue;if(tag==="br"){cut();continue}const lit=space==="shown";const breaks=lit!==shown||missionBlock(node)===node;if(breaks)cut();walk(node,lit);if(breaks)cut()}};if(document.body)walk(document.body,missionFindSpace(document.body)==="shown");return runs}function missionFindHits(text,re){const out=[];re.lastIndex=0;let m;while((m=re.exec(text))!==null){if(m[0]===""){re.lastIndex+=1;continue}out.push({at:m.index,to:m.index+m[0].length})}return out}function missionFindRange(run,at,to){const range=document.createRange();let open=false;for(const part of run.parts){if(!open&&part.to>at){range.setStart(part.node,at-part.at);open=true}if(open&&part.to>=to){range.setEnd(part.node,to-part.at);return range}}return null}function missionFindCollect(){if(!missionFindQuery)return[];const re=new RegExp(missionFindQuery.replace(/[.*+?^\${}()|[\\]\\\\]/g,"\\\\$&"),missionFindCase?"g":"gi");const found=[];for(const run of missionFindRuns())for(const hit of missionFindHits(run.text,re)){const range=missionFindRange(run,hit.at,hit.to);if(range&&range.getClientRects().length)found.push(range)}return found}function missionFindRender(current){const rest=new Highlight();const one=new Highlight();for(let i=0;i!==missionFindRanges.length;i++){if(i===current)one.add(missionFindRanges[i]);else rest.add(missionFindRanges[i])}CSS.highlights.set("${PREVIEW_FIND_HIGHLIGHT}",rest);CSS.highlights.set("${PREVIEW_FIND_CURRENT_HIGHLIGHT}",one)}function missionFindShow(current){const range=missionFindRanges[current];if(!range)return;const holder=range.startContainer.parentElement;if(holder)holder.scrollIntoView({block:"nearest",behavior:"instant"});const box=range.getBoundingClientRect();if(!box.height&&!box.width)return;if(box.top>=0&&innerHeight>=box.bottom)return;scrollBy({top:box.top+box.height/2-innerHeight/2,behavior:"instant"})}addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_FIND_MESSAGE}")return;missionFindArmed=true;missionFindQuery=typeof event.data.query==="string"?event.data.query:"";missionFindCase=event.data.caseSensitive===true;if(!missionFindCan())return;missionFindRanges=missionFindCollect();const count=missionFindRanges.length;const asked=Number.isInteger(event.data.index)?event.data.index:0;const current=count?Math.min(Math.max(asked,0),count-1):-1;missionFindRender(current);missionFindShow(current);parent.postMessage({type:"${PREVIEW_FIND_RESULT_MESSAGE}",query:missionFindQuery,caseSensitive:missionFindCase,count,index:current,token:event.data.token},"*")});document.addEventListener("keydown",event=>{if(!missionFindArmed)return;if(event.key!=="f"&&event.key!=="F")return;if(event.altKey||!event.metaKey&&!event.ctrlKey)return;event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_FIND_CHORD_MESSAGE}"},"*")},true);parent.postMessage({type:"${PREVIEW_FIND_READY_MESSAGE}",highlight:missionFindCan()},"*")`;
-const PREVIEW_FIND_SCRIPT_HASH = "JWnhsz94yb+VA9337w9WLyAMJPzQVdBrjUzTounUF80=";
+const PREVIEW_FIND_SCRIPT = `const missionFindNonce=Math.random()+"-"+Date.now();let missionFindArmed=false;let missionFindQuery="";let missionFindCase=false;let missionFindRanges=[];const missionFindSkip=["script","style","template","title","noscript"];function missionFindCan(){return typeof CSS!=="undefined"&&Boolean(CSS.highlights)&&typeof Highlight==="function"}function missionFindSpace(el){const style=getComputedStyle(el);if(style.display==="none")return"gone";if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true,opacityProperty:true,checkOpacity:true,contentVisibilityAuto:true})?"shown":"hidden";return style.visibility==="visible"?"shown":"hidden"}function missionFindRuns(){const runs=[];let run=null;const add=(node,text)=>{if(!run){run={text:"",parts:[]};runs.push(run)}run.parts.push({node,at:run.text.length,to:run.text.length+text.length});run.text+=text};const cut=()=>{run=null};const walk=(holder,shown)=>{for(const node of holder.childNodes){if(node.nodeType===3){if(shown&&node.data)add(node,node.data);continue}if(node.nodeType!==1)continue;const tag=node.tagName.toLowerCase();if(missionFindSkip.includes(tag))continue;const space=missionFindSpace(node);if(space==="gone")continue;if(tag==="br"){cut();continue}const lit=space==="shown";const breaks=lit!==shown||missionBlock(node)===node;if(breaks)cut();walk(node,lit);if(breaks)cut()}};if(document.body)walk(document.body,missionFindSpace(document.body)==="shown");return runs}function missionFindHits(text,re){const out=[];re.lastIndex=0;let m;while((m=re.exec(text))!==null){if(m[0]===""){re.lastIndex+=1;continue}out.push({at:m.index,to:m.index+m[0].length})}return out}function missionFindRange(run,at,to){const range=document.createRange();let open=false;for(const part of run.parts){if(!open&&part.to>at){range.setStart(part.node,at-part.at);open=true}if(open&&part.to>=to){range.setEnd(part.node,to-part.at);return range}}return null}function missionFindCollect(){if(!missionFindQuery)return[];const re=new RegExp(missionFindQuery.replace(/[.*+?^\${}()|[\\]\\\\]/g,"\\\\$&"),missionFindCase?"g":"gi");const found=[];for(const run of missionFindRuns())for(const hit of missionFindHits(run.text,re)){const range=missionFindRange(run,hit.at,hit.to);if(range&&range.getClientRects().length)found.push(range)}return found}function missionFindRender(current){const rest=new Highlight();const one=new Highlight();for(let i=0;i!==missionFindRanges.length;i++){if(i===current)one.add(missionFindRanges[i]);else rest.add(missionFindRanges[i])}CSS.highlights.set("${PREVIEW_FIND_HIGHLIGHT}",rest);CSS.highlights.set("${PREVIEW_FIND_CURRENT_HIGHLIGHT}",one)}function missionFindShow(current){const range=missionFindRanges[current];if(!range)return;const holder=range.startContainer.parentElement;if(holder)holder.scrollIntoView({block:"nearest",behavior:"instant"});const box=range.getBoundingClientRect();if(!box.height&&!box.width)return;if(box.top>=0&&innerHeight>=box.bottom)return;scrollBy({top:box.top+box.height/2-innerHeight/2,behavior:"instant"})}addEventListener("message",event=>{if(event.source!==parent||event.data?.type!=="${PREVIEW_FIND_MESSAGE}")return;missionFindArmed=true;missionFindQuery=typeof event.data.query==="string"?event.data.query:"";missionFindCase=event.data.caseSensitive===true;if(!missionFindCan())return;missionFindRanges=missionFindCollect();const count=missionFindRanges.length;const asked=Number.isInteger(event.data.index)?event.data.index:0;const current=count?Math.min(Math.max(asked,0),count-1):-1;missionFindRender(current);missionFindShow(current);parent.postMessage({type:"${PREVIEW_FIND_RESULT_MESSAGE}",query:missionFindQuery,caseSensitive:missionFindCase,count,index:current,nonce:missionFindNonce},"*")});document.addEventListener("keydown",event=>{if(!missionFindArmed)return;if(event.key!=="f"&&event.key!=="F")return;if(event.altKey||!event.metaKey&&!event.ctrlKey)return;event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:"${PREVIEW_FIND_CHORD_MESSAGE}"},"*")},true);parent.postMessage({type:"${PREVIEW_FIND_READY_MESSAGE}",highlight:missionFindCan(),nonce:missionFindNonce},"*")`;
+const PREVIEW_FIND_SCRIPT_HASH = "xbT72ApOO5Ajom0Ab8qjNon5oRoS7B4n0i8i9XDEvw8=";
 
 /**
  * What a found match looks like, in the two weights the dashboard's own marks use.
@@ -339,28 +339,27 @@ export const HTML_PREVIEW_BLOCK_MESSAGE = PREVIEW_BLOCK_MESSAGE;
 export const HTML_PREVIEW_READY_MESSAGE = PREVIEW_READY_MESSAGE;
 
 /**
- * The find state the parent posts down: `query`, `caseSensitive`, `index` and `token`.
+ * The find state the parent posts down: `query`, `caseSensitive` and `index`.
  *
  * An empty query is the clear - there is no separate message for it, so the frame has one
  * code path and cannot end up highlighting a query the bar no longer holds.
  *
- * `token` identifies the DOCUMENT the parent is talking about, and the frame echoes it back
- * untouched. It exists because `event.source` cannot tell one document from another: a
- * `srcDoc` navigation keeps the same WindowProxy, so a result queued by the document that is
- * being replaced still passes the source check. The parent cannot label such a result itself
- * without asserting on the frame's behalf which document it counted - which is exactly the
- * mislabelling the echo removes. The frame does not interpret the value.
+ * It carries NO document identity, deliberately. A parent-minted token was tried and is not
+ * sound: the parent posts through the iframe's WindowProxy, which survives a `srcDoc`
+ * navigation, so a token naming the incoming document can be received and echoed by the
+ * OUTGOING one - which then answers for the new document with a count from the old DOM. Only
+ * the frame can name its own document; see `HTML_PREVIEW_FIND_READY_MESSAGE`.
  */
 export const HTML_PREVIEW_FIND_MESSAGE = PREVIEW_FIND_MESSAGE;
 /**
- * What the frame answers with: `count`, `index`, and the `query`, `caseSensitive` and `token`
- * it counted.
+ * What the frame answers with: `count`, `index`, the `query` and `caseSensitive` it counted,
+ * and the `nonce` of the document it counted them in.
  *
- * Every one of those is an echo, and that is the design: a result describes ITSELF, so the
- * parent can drop one belonging to a search or a document it has already moved past instead of
- * stamping it with whatever is current. The query and case flag cover a superseded search; the
- * token covers a superseded document, which the source check cannot see (see
- * `HTML_PREVIEW_FIND_MESSAGE`).
+ * A result describes ITSELF, so the parent can drop one belonging to a search or a document it
+ * has already moved past instead of stamping it with whatever is current. The query and case
+ * flag are echoes of what the parent sent; the nonce is the frame's OWN, minted once per
+ * document at script execution and never received from the parent - which is what an outgoing
+ * document cannot forge for its replacement.
  */
 export const HTML_PREVIEW_FIND_RESULT_MESSAGE = PREVIEW_FIND_RESULT_MESSAGE;
 /**
@@ -374,6 +373,14 @@ export const HTML_PREVIEW_FIND_RESULT_MESSAGE = PREVIEW_FIND_RESULT_MESSAGE;
  *
  * `highlight` is the capability, not a result. False means this frame cannot mark anything,
  * and the parent must keep the block-reveal fallback rather than trust a count of zero.
+ *
+ * It also carries `nonce`: the identity THIS document minted for itself. That is the only
+ * trustworthy answer to "which document am I talking to", because every other candidate is
+ * reachable by the document being replaced - `event.source` sees one WindowProxy across a
+ * `srcDoc` navigation, and a token the parent sends down can be received and echoed by the
+ * outgoing document. A nonce a document generated itself cannot be produced by its
+ * predecessor, so pairing it with the parent's own knowledge that a reload is pending is what
+ * makes a count attributable to a document at all.
  */
 export const HTML_PREVIEW_FIND_READY_MESSAGE = PREVIEW_FIND_READY_MESSAGE;
 /**

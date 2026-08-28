@@ -1006,7 +1006,13 @@ export function FileWorkspace({
    * the comment bridge's: that one is posted by the second of four injected scripts and
    * cannot speak for the fourth.
    */
-  const [htmlFindBridge, setHtmlFindBridge] = useState<{ highlight: boolean } | null>(null);
+  const [htmlFindBridge, setHtmlFindBridge] = useState<{
+    highlight: boolean;
+    /** The nonce that document minted for itself, from its own ready message. */
+    nonce: string;
+    /** The parent's document counter at the moment that ready arrived. */
+    token: number;
+  } | null>(null);
   /**
    * The count the frame reported, with the query it counted.
    *
@@ -1074,8 +1080,22 @@ export function FileWorkspace({
    * Only a query or case-flag change opens that window; stepping the ring leaves both alone,
    * so the count never goes unknown under a reader pressing Enter.
    */
+  /**
+   * The nonce of the document the frame is showing RIGHT NOW, or null when there is not one
+   * this origin can vouch for.
+   *
+   * Two facts have to agree, and each covers what the other cannot. The frame's nonce is the
+   * only identity the outgoing document cannot forge for its successor. The parent's token is
+   * the only thing that knows a reload is PENDING - the source changed, so whatever announced
+   * itself last is describing a document that is being replaced. Requiring both means a count
+   * is attributed to a document only while the parent's own view of what is mounted still
+   * matches the document that introduced itself.
+   */
+  const liveFindNonce = htmlFindBridge && htmlFindBridge.token === previewToken
+    ? htmlFindBridge.nonce
+    : null;
   const htmlFrameCount = htmlInFrame
-    ? frameFindCount(htmlFindResult, find, previewToken)
+    ? frameFindCount(htmlFindResult, find, liveFindNonce)
     : 0;
   /**
    * Null when the surface on screen cannot yet say how many matches it has.
@@ -1593,18 +1613,12 @@ export function FileWorkspace({
         // while it is not, because clamping against a ring of unknown size posts 0 and moves
         // the reader.
         index: frameFindIndex(find, findIndex, findCountKnown),
-        token: previewToken,
       }
       : null),
-    [find, findCountKnown, findIndex, htmlShowing, previewToken],
+    [find, findCountKnown, findIndex, htmlShowing],
   );
   const postFindToFrame = useCallback(
-    (post: {
-      query: string;
-      caseSensitive: boolean;
-      index: number;
-      token: number;
-    } | null): void => {
+    (post: { query: string; caseSensitive: boolean; index: number } | null): void => {
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
@@ -1615,8 +1629,6 @@ export function FileWorkspace({
         query: post?.query ?? "",
         caseSensitive: post?.caseSensitive ?? false,
         index: post?.index ?? 0,
-        // A clear still names its document, so the frame's echo is meaningful either way.
-        token: post?.token ?? previewTokenRef.current.token,
       }, "*");
     },
     [],
@@ -1632,15 +1644,26 @@ export function FileWorkspace({
   useEffect(() => {
     if (!previewPath) return;
     const onFindReady = (event: MessageEvent): void => {
-      const data = event.data as { type?: unknown; highlight?: unknown } | null;
+      const data = event.data as {
+        type?: unknown;
+        highlight?: unknown;
+        nonce?: unknown;
+      } | null;
       if (data?.type !== HTML_PREVIEW_FIND_READY_MESSAGE) return;
+      if (typeof data.nonce !== "string" || data.nonce === "") return;
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
       if (!frame || event.source !== frame.contentWindow) return;
       // Every announcement replaces the last, so a reloaded frame - or one that has lost the
-      // highlight API - is free to say so again and be believed.
-      setHtmlFindBridge({ highlight: data.highlight === true });
+      // highlight API - is free to say so again and be believed. The token recorded beside the
+      // nonce is what makes a later source change invalidate this pairing without needing a
+      // second message: see `liveFindNonce`.
+      setHtmlFindBridge({
+        highlight: data.highlight === true,
+        nonce: data.nonce,
+        token: previewTokenRef.current.token,
+      });
       postFindToFrame(htmlFindPostRef.current);
     };
     window.addEventListener("message", onFindReady);
@@ -1654,14 +1677,14 @@ export function FileWorkspace({
         query?: unknown;
         caseSensitive?: unknown;
         count?: unknown;
-        token?: unknown;
+        nonce?: unknown;
       } | null;
       if (data?.type !== HTML_PREVIEW_FIND_RESULT_MESSAGE) return;
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
       if (!frame || event.source !== frame.contentWindow) return;
-      if (!Number.isInteger(data.count) || !Number.isInteger(data.token)) return;
+      if (!Number.isInteger(data.count) || typeof data.nonce !== "string") return;
       const session = findSessionRef.current;
       // A reply about a search the reader has already left is refused rather than shown. The
       // reported index is NOT adopted: the parent owns the ring, and clamping a stored index
@@ -1675,11 +1698,11 @@ export function FileWorkspace({
         query: session.query,
         caseSensitive: session.caseSensitive,
         count: data.count as number,
-        // The frame's OWN echo of which document it counted, never `previewToken` read here.
-        // A result queued by the document being replaced still passes the source check above,
-        // so labelling it with whatever is current is how the old count gets accepted for the
-        // new document. `frameFindCount` compares this against the live token.
-        documentToken: data.token as number,
+        // The counting document's OWN nonce, never anything read from this side. A result
+        // queued by the document being replaced passes the source check above, and would echo
+        // a parent-minted token just as readily, so this is the only field that can tell the
+        // two documents apart. `frameFindCount` compares it against `liveFindNonce`.
+        documentNonce: data.nonce,
       });
     };
     window.addEventListener("message", onFindResult);

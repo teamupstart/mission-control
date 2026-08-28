@@ -262,13 +262,13 @@ const session = (query: string, caseSensitive = false, index = 0) => (
   { query, caseSensitive, index }
 );
 /**
- * The document token the frame echoed. Two distinct documents; `EDITED` is the same file after
- * an edit rebuilt the `srcDoc`, so the frame that counted `DOC` no longer exists.
+ * Nonces two documents minted for themselves. `EDITED` is the same file after an edit rebuilt
+ * the `srcDoc`, so the document that counted under `DOC` no longer exists.
  */
-const DOC = 7;
-const EDITED = 8;
-const reply = (query: string, count: number, caseSensitive = false, documentToken = DOC) => (
-  { query, caseSensitive, count, documentToken }
+const DOC = "doc-a-0.4817";
+const EDITED = "doc-b-0.9931";
+const reply = (query: string, count: number, caseSensitive = false, documentNonce = DOC) => (
+  { query, caseSensitive, count, documentNonce }
 );
 
 test("a frame's count for the query and document the bar is holding is the count", () => {
@@ -333,22 +333,28 @@ test("a count does not survive the srcDoc reload that destroys the highlights it
 
 test("a result queued by the document being replaced is refused, however it is timed", () => {
   /*
-   * GitHub Inspector round 4 on PR #827, and the hole in round 2's own fix.
+   * GitHub Inspector rounds 4 and 5 on PR #827, and two successive holes in round 2's own fix.
    *
    * A `srcDoc` navigation keeps the SAME WindowProxy, so `event.source === frame.contentWindow`
-   * still passes for a find-result the outgoing document queued before it was replaced. Round 2
-   * keyed the count to the document but let the PARENT stamp which document that was, on
-   * arrival - so a late result from the old frame was labelled with the new source and accepted
-   * for a document whose highlights had never been drawn. The frame echoes the token it was
-   * given instead, which makes the result describe itself.
+   * still passes for a find-result the outgoing document queued before it was replaced.
+   *
+   * Round 2 keyed the count to the document but let the PARENT stamp which document that was,
+   * on arrival, so a late result from the old frame was labelled with the new source. Round 4
+   * had the frame echo a token the parent sent down - which the OUTGOING document can also
+   * receive and echo, because the parent posts through that same WindowProxy the moment the
+   * source changes, before the replacement has necessarily loaded. Only a nonce the document
+   * minted for itself is beyond its predecessor's reach.
    */
   const late = reply("budget", 3, false, DOC);
   assert.equal(frameFindCount(late, session("budget"), EDITED), null);
   // Two edits in quick succession: a result from any earlier document is equally refused.
-  assert.equal(frameFindCount(late, session("budget"), 9), null);
+  assert.equal(frameFindCount(late, session("budget"), "doc-c-0.1122"), null);
   // A token the parent has moved PAST is refused as firmly as one it has not reached, so a
   // reordered pair cannot resurrect an old count.
-  assert.equal(frameFindCount(reply("budget", 3, false, 9), session("budget"), EDITED), null);
+  assert.equal(
+    frameFindCount(reply("budget", 3, false, "doc-c-0.1122"), session("budget"), EDITED),
+    null,
+  );
 });
 
 test("an empty query is counted, not awaited, whatever the document is doing", () => {
@@ -391,4 +397,17 @@ test("the index handed to a frame does not move the reader while the count is un
   // And never a negative, whichever branch produced it.
   assert.equal(frameFindIndex(session("budget", false, -5), -1, false), 0);
   assert.equal(frameFindIndex(null, -1, false), 0);
+});
+
+test("no vouched-for document means no count, whatever a result claims", () => {
+  /*
+   * The other half of Inspector round 5. The frame's nonce alone is not enough: the parent has
+   * to know a reload is PENDING, which only its own view of the source can tell it. Until the
+   * replacement announces itself there is no nonce this origin can vouch for, so there is no
+   * count - and a result carrying any nonce at all, including a plausible one, is refused.
+   */
+  assert.equal(frameFindCount(reply("budget", 3), session("budget"), null), null);
+  assert.equal(frameFindCount(reply("budget", 3, false, EDITED), session("budget"), null), null);
+  // An empty query is still not awaiting anything, even with no live document.
+  assert.equal(frameFindCount(reply("budget", 3), session(""), null), 0);
 });

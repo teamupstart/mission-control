@@ -261,21 +261,26 @@ export interface FrameFindResult {
   caseSensitive: boolean;
   count: number;
   /**
-   * The document token the FRAME echoed back, identifying which document it counted.
+   * The nonce the counting document minted for ITSELF, naming which document this count is in.
    *
    * A count is a statement about one document as much as about one query. The preview's
    * `srcDoc` is rebuilt whenever the previewed source changes, which reloads the document and
    * destroys its highlights with it, so a count carried across that boundary describes a
    * document that no longer exists.
    *
-   * Echoed by the frame rather than stamped by the parent on receipt, and the difference is a
-   * real defect rather than a style: a `srcDoc` navigation keeps the same WindowProxy, so a
-   * result queued by the outgoing document still passes the parent's `event.source` check. A
-   * parent that labelled it with whatever document is current would accept the old count for
-   * the new document - whose highlights do not exist yet - which is the very thing keying on
-   * the document was added to prevent.
+   * Neither the parent's `event.source` check nor a parent-minted token can tell those two
+   * documents apart, and both were tried:
+   *
+   * - `event.source` sees ONE WindowProxy across a `srcDoc` navigation, so a result queued by
+   *   the outgoing document passes it.
+   * - A token the parent sends down and the frame echoes is reachable by the outgoing document
+   *   too: the parent posts through that same WindowProxy as soon as the source changes, which
+   *   is before the replacement has necessarily loaded, so the document being replaced can
+   *   receive a token naming its successor and answer for it out of its own DOM.
+   *
+   * A nonce the document generated itself is the one thing its predecessor cannot produce.
    */
-  documentToken: number;
+  documentNonce: string;
 }
 
 /**
@@ -307,7 +312,13 @@ export interface FrameFindResult {
  *   trip - a parse, a style pass and four scripts - and it was originally left uncovered on the
  *   reasoning that clearing bought nothing but a flicker. The flicker was the `No results`
  *   this function no longer has to show; once "not known" is representable, clearing is free.
- *   The token is the frame's own echo, not a label the parent applied - see `documentToken`.
+ *   Identified by the counting document's OWN nonce - see `documentNonce` for why nothing the
+ *   parent can mint or check will do.
+ *
+ * `liveNonce` is null whenever the parent has no nonce it can vouch for as belonging to the
+ * document currently mounted - before the first ready handshake, and after the source changed
+ * until the replacement announces itself. Unknown, in other words, which is the honest answer
+ * for exactly the interval a reload occupies.
  *
  * All three windows are a frame or more, which is why the wrong answers are easy to talk
  * yourself into and hard to see.
@@ -315,15 +326,15 @@ export interface FrameFindResult {
 export function frameFindCount(
   result: FrameFindResult | null,
   session: DocumentFindSession | null,
-  documentToken: number,
+  liveNonce: string | null,
 ): number | null {
   if (!session) return null;
   // An empty query is not a search awaiting an answer; there is nothing to count.
   if (session.query === "") return 0;
-  if (!result) return null;
+  if (!result || liveNonce === null) return null;
   const current = result.query === session.query
     && result.caseSensitive === session.caseSensitive
-    && result.documentToken === documentToken;
+    && result.documentNonce === liveNonce;
   return current ? result.count : null;
 }
 

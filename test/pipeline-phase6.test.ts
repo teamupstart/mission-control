@@ -234,7 +234,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     supervisor,
     missionMcpDescriptor: async () => mcp,
     verifyMissionMcpTools: async (tools, descriptor) => {
-      assert.deepEqual(tools, ["adopt_pipeline_run"]);
+      assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
       callerCredential = descriptor?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
       assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       return { ok: true };
@@ -262,7 +262,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     agent: "codex",
     name: "Build the SDK path",
     cwd: "/repo/sdk",
-    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
+    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
     // A pipeline task on this arm launches a directly streamable agent conversation, so it
     // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
@@ -274,7 +274,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
     // one is the exact defect that would make every pipeline launch render in full.
     launchPresentation: {
-      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
+      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
       displayText: "Build the SDK path\nwithout changing the daemon",
     },
     model: null,

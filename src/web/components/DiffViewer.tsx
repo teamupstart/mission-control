@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
+import { sessionWorkspaceRoot } from "@shared/session.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import {
   diffFileOpenTarget,
@@ -83,7 +84,7 @@ function DiffViewerContent({
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;
   const activeTarget = active && diff?.ok
-    ? diffFileOpenTarget(active, diff.repoRoot, session.cwd)
+    ? diffFileOpenTarget(active, diff.repoRoot, sessionWorkspaceRoot(session))
     : null;
   const { bindings } = useKeybindings();
 

@@ -922,12 +922,12 @@ export class SdkSupervisor {
         );
       }
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run"],
+        ["adopt_pipeline_run", "report_pipeline_workspace"],
         mcp,
       );
       if (!published.ok) {
         throw new Error(
-          `managed Pipeline resume requires adopt_pipeline_run, but ${published.reason}`,
+          `managed Pipeline resume requires its Pipeline reporting tools, but ${published.reason}`,
         );
       }
     }

@@ -6,6 +6,7 @@ import {
   canCycleMode,
   canInterruptSession,
   provisioningTasks,
+  sessionWorkspaceRoot,
 } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api, fetchRepos } from "./lib/api.ts";
@@ -1593,8 +1594,9 @@ export function App(): React.JSX.Element {
     probe = false,
   ): boolean | Promise<boolean> => {
     const session = sessions.find((candidate) => candidate.id === sessionId);
+    const workspaceRoot = session ? sessionWorkspaceRoot(session) : null;
     let ambiguousRoot = false;
-    const target = session?.cwd ? workspaceFileTarget(href, session.cwd, () => {
+    const target = workspaceRoot ? workspaceFileTarget(href, workspaceRoot, () => {
       ambiguousRoot = true;
       return true;
     }) : null;

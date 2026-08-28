@@ -50,6 +50,7 @@ import {
   McpCreateTaskV2Schema,
   type McpCreateTaskV2,
   McpAdoptPipelineRunSchema,
+  McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
@@ -205,7 +206,7 @@ import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket } from "@shared/session.ts";
+import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -2327,9 +2328,9 @@ export function buildApp(
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     try {
-      return c.json({ files: await listSessionFiles(session.cwd) });
+      return c.json({ files: await listSessionFiles(sessionWorkspaceRoot(session)!) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
@@ -2338,11 +2339,11 @@ export function buildApp(
   app.get("/api/sessions/:id/file", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     try {
-      return c.json(await readSessionFile(session.cwd, parsed.data.path));
+      return c.json(await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path));
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2361,12 +2362,12 @@ export function buildApp(
     async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, SaveSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
       const result = await saveSessionFile(
-        session.cwd,
+        sessionWorkspaceRoot(session)!,
         parsed.data.path,
         parsed.data.text,
         parsed.data.expectedRevision,
@@ -2397,12 +2398,12 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-anchor", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockAnchorSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(session.cwd, parsed.data.path);
+      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2438,12 +2439,12 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-target", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockTargetSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(session.cwd, parsed.data.path);
+      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2675,11 +2676,11 @@ export function buildApp(
   app.post("/api/sessions/:id/file/open", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, OpenSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      const file = await resolveSessionFilePath(session.cwd, parsed.data.path);
+      const file = await resolveSessionFilePath(sessionWorkspaceRoot(session)!, parsed.data.path);
       const result = await openFile(parsed.data.target, file);
       const body = {
         ok: result.ok,
@@ -3291,7 +3292,7 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, StandardsRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const root = await repoRootOf(session.cwd);
+    const root = await repoRootOf(sessionWorkspaceRoot(session));
     return c.json(readStandards(root, parsed.data.paths));
   });
 
@@ -3468,9 +3469,9 @@ export function buildApp(
     // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
     // diffs from the merge-base and would answer with everything since that sha.
     const commit = c.req.query("commit");
-    if (commit) return c.json(await computeCommitDiff(session.cwd, commit));
+    if (commit) return c.json(await computeCommitDiff(sessionWorkspaceRoot(session), commit));
     const source = c.req.query("base") || undefined;
-    return c.json(await computeSessionDiff(session.cwd, source));
+    return c.json(await computeSessionDiff(sessionWorkspaceRoot(session), source));
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -3831,6 +3832,42 @@ export function buildApp(
         ? { kind: "managed", session }
         : { kind: "managed-launch", sessionId: caller.sessionId },
     );
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, replayed: result.replayed });
+  });
+
+  app.post("/mcp/pipelines/workspace", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportPipelineWorkspaceSchema);
+    if (!parsed.ok) return parsed.res;
+    const credential = c.req.header(PIPELINE_CALLER_CREDENTIAL_HEADER);
+    const caller = credential ? registry.managedPipelineCaller(credential) : null;
+    if (!caller) {
+      return c.json({ error: "the caller has no managed Pipeline launch capability" }, 403);
+    }
+    const task = registry.getTask(caller.taskId);
+    if (!task) return c.json({ error: "no matching Pipeline task" }, 404);
+    if (task.sessionId !== caller.sessionId) {
+      return c.json({ error: "the caller does not own this Pipeline task" }, 403);
+    }
+    const session = registry.getSession(caller.sessionId);
+    if (session?.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    if (session) {
+      if (
+        session.cwd !== caller.cwd ||
+        session.runtime !== "sdk" ||
+        session.pipeline !== null
+      ) {
+        return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+      }
+    } else {
+      const launch = registry.managedPipelineLaunch(caller.sessionId);
+      if (!launch) return c.json({ error: "no matching active session" }, 404);
+      if (launch.taskId !== task.id || launch.cwd !== caller.cwd) {
+        return c.json({ error: "the caller does not match the pending managed Pipeline host" }, 403);
+      }
+    }
+    const result = tasks.reportPipelineWorkspace(task.id, parsed.data.path);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, replayed: result.replayed });
   });

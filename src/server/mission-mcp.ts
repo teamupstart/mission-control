@@ -69,6 +69,7 @@ export const MISSION_MCP_TOOLS = [
   // map it would also have to be added to.
   "respond_to_file_comments",
   "adopt_pipeline_run",
+  "report_pipeline_workspace",
   SUBMIT_ENSEMBLE_RESULT_TOOL,
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,

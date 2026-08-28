@@ -3,7 +3,7 @@ import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
-import { liveActivity } from "@shared/session.ts";
+import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
@@ -110,6 +110,7 @@ export function SessionTile({
    */
   pipelineRun?: PipelineRun | null;
 }): React.JSX.Element {
+  const workspaceRoot = sessionWorkspaceRoot(session);
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
   // it is pressed.
@@ -408,9 +409,9 @@ export function SessionTile({
               sixty characters of bookkeeping, and this row is two cells sharing one line's
               width. The whole path is on hover, which is the same bargain every other
               shortened path in the app makes. */}
-          {shown("worktree") && session.cwd && (
-            <Tooltip label={session.cwd}>
-              <span className="tile-worktree">{repoLeaf(session.cwd)}</span>
+          {shown("worktree") && workspaceRoot && (
+            <Tooltip label={workspaceRoot}>
+              <span className="tile-worktree">{repoLeaf(workspaceRoot)}</span>
             </Tooltip>
           )}
           {shown("lastSeen") && (

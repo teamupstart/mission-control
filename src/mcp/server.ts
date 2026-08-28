@@ -728,6 +728,47 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "report_pipeline_workspace",
+  {
+    title: "Report the Pipeline authoring workspace",
+    description:
+      "Use from a managed Pipeline Engineer host immediately after creating or entering its provider-owned authoring worktree, before editing files there.",
+    inputSchema: {
+      path: z.string().trim().min(1).describe("Absolute path to the Engineer authoring worktree"),
+    },
+  },
+  async ({ path }) => {
+    if (!PIPELINE_CALLER_CREDENTIAL) {
+      return textResult("Mission Control did not issue Pipeline host identity to this session.", true);
+    }
+    try {
+      const res = await http(
+        "/mcp/pipelines/workspace",
+        "POST",
+        { path },
+        false,
+        undefined,
+        { [PIPELINE_CALLER_CREDENTIAL_HEADER]: PIPELINE_CALLER_CREDENTIAL },
+      );
+      const body = (await res.json()) as { replayed?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(
+          `Mission Control refused the Pipeline workspace (${res.status}): ${body.error ?? "unknown refusal"}`,
+          true,
+        );
+      }
+      return textResult(
+        body.replayed
+          ? `Mission Control is already tracking ${path}.`
+          : `Mission Control now tracks Pipeline files and diffs in ${path}.`,
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // The no-change exit for a POST-MERGE retro follow-up. It accepts no task id, outcome, or
 // dependency instruction: the daemon derives the calling Task from inherited session evidence
 // and refuses the operation unless that Task owns a durable retro-followup relation.

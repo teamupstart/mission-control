@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   documentHits,
+  frameFindCount,
+  frameFindIndex,
   hitLine,
   hitLinesByBlock,
   hitsInWindow,
@@ -245,4 +247,167 @@ test("htmlRevealChoice keys on the block AND the nonce, so a repeat jump is a ne
     htmlRevealChoice({ blockPath: path, nonce: 4 }, null)?.key,
     htmlRevealChoice(null, { blockPath: path, nonce: 4 })?.key,
   );
+});
+
+/*
+ * ---- the count a frame reports, and the window before it arrives ----
+ *
+ * A surface this origin cannot read reports its own count by message, so a round trip
+ * separates the keystroke from the number. What may be shown in that window is not a
+ * presentation detail: the HTML preview's whole reason for counting inside the frame is that
+ * the count equals what is highlighted, and both of the obvious answers break it.
+ */
+
+const session = (query: string, caseSensitive = false, index = 0) => (
+  { query, caseSensitive, index }
+);
+/**
+ * Nonces two documents minted for themselves. `EDITED` is the same file after an edit rebuilt
+ * the `srcDoc`, so the document that counted under `DOC` no longer exists.
+ */
+const DOC = "doc-a-0.4817";
+const EDITED = "doc-b-0.9931";
+const reply = (query: string, count: number, caseSensitive = false, documentNonce = DOC) => (
+  { query, caseSensitive, count, documentNonce }
+);
+
+test("a frame's count for the query and document the bar is holding is the count", () => {
+  assert.equal(frameFindCount(reply("budget", 3), session("budget"), DOC), 3);
+  // Zero from the frame is a real answer about the document, not an absent one.
+  assert.equal(frameFindCount(reply("nope", 0), session("nope"), DOC), 0);
+});
+
+test("a previous query's count is never displayed once the query moves on", () => {
+  /*
+   * The defect GitHub Inspector found on PR #827, round 1, pinned.
+   *
+   * The first implementation carried the last agreed count through the window, reasoning that
+   * it beat flashing `No results` over a query that matches. It does not: the frame applies
+   * the new query and repaints BEFORE its reply is delivered, so changing a three-hit query to
+   * a no-hit one showed `1 / 3` over a document with nothing highlighted. Null is the answer,
+   * and the bar renders it as no number rather than as `No results`.
+   */
+  const stale = reply("budget", 3);
+  assert.equal(frameFindCount(stale, session("zzz"), DOC), null);
+  // Every intermediate state of typing is the same window, not just the final one.
+  for (const typed of ["b", "bu", "bud", "budge"]) {
+    assert.equal(
+      frameFindCount(stale, session(typed), DOC),
+      null,
+      `stale count shown for ${typed}`,
+    );
+  }
+});
+
+test("flipping the case flag re-opens the window, because it re-runs the search", () => {
+  const found = reply("Budget", 3, false);
+  assert.equal(frameFindCount(found, session("Budget", false), DOC), 3);
+  // `Aa` changes the answer exactly as retyping does, so the old number is just as wrong.
+  assert.equal(frameFindCount(found, session("Budget", true), DOC), null);
+});
+
+test("a count does not survive the srcDoc reload that destroys the highlights it counted", () => {
+  /*
+   * The defect GitHub Inspector found on PR #827, round 2, and the same mistake as round 1 in
+   * a much larger window.
+   *
+   * The preview's `srcDoc` is rebuilt whenever the previewed source changes, which reloads the
+   * document and destroys its `CSS.highlights`. The count was keyed to the query and the case
+   * flag but not to the document, so across a reload the bar kept the old number - and kept
+   * stepping enabled - over a frame with nothing highlighted at all. That window is a parse, a
+   * style pass and four scripts, not a message round trip.
+   *
+   * The original justification for leaving it was that clearing bought nothing but a flicker.
+   * The flicker was `No results`, which round 1's fix removed: with "not known" representable,
+   * clearing is free.
+   */
+  const counted = reply("budget", 3, false, DOC);
+  // Same query, same case flag, one edit later: the count describes a document that is gone.
+  assert.equal(frameFindCount(counted, session("budget"), EDITED), null);
+  // And it comes back by itself when the reloaded frame reports against the new document.
+  assert.equal(
+    frameFindCount(reply("budget", 3, false, EDITED), session("budget"), EDITED),
+    3,
+  );
+});
+
+test("a result queued by the document being replaced is refused, however it is timed", () => {
+  /*
+   * GitHub Inspector rounds 4 and 5 on PR #827, and two successive holes in round 2's own fix.
+   *
+   * A `srcDoc` navigation keeps the SAME WindowProxy, so `event.source === frame.contentWindow`
+   * still passes for a find-result the outgoing document queued before it was replaced.
+   *
+   * Round 2 keyed the count to the document but let the PARENT stamp which document that was,
+   * on arrival, so a late result from the old frame was labelled with the new source. Round 4
+   * had the frame echo a token the parent sent down - which the OUTGOING document can also
+   * receive and echo, because the parent posts through that same WindowProxy the moment the
+   * source changes, before the replacement has necessarily loaded. Only a nonce the document
+   * minted for itself is beyond its predecessor's reach.
+   */
+  const late = reply("budget", 3, false, DOC);
+  assert.equal(frameFindCount(late, session("budget"), EDITED), null);
+  // Two edits in quick succession: a result from any earlier document is equally refused.
+  assert.equal(frameFindCount(late, session("budget"), "doc-c-0.1122"), null);
+  // A token the parent has moved PAST is refused as firmly as one it has not reached, so a
+  // reordered pair cannot resurrect an old count.
+  assert.equal(
+    frameFindCount(reply("budget", 3, false, "doc-c-0.1122"), session("budget"), EDITED),
+    null,
+  );
+});
+
+test("an empty query is counted, not awaited, whatever the document is doing", () => {
+  // Nothing was asked, so nothing is outstanding: zero rather than null, which keeps the bar
+  // from sitting in a permanent "not known" state whenever find is open and empty.
+  assert.equal(frameFindCount(null, session(""), DOC), 0);
+  assert.equal(frameFindCount(reply("x", 2), session(""), DOC), 0);
+  assert.equal(frameFindCount(reply("x", 2), session(""), EDITED), 0);
+});
+
+test("no reply yet, and no session at all, are both unknown rather than zero", () => {
+  // Before the frame has answered once - find opened over a preview still loading.
+  assert.equal(frameFindCount(null, session("budget"), DOC), null);
+  // No find session: there is no query to have an answer about.
+  assert.equal(frameFindCount(null, null, DOC), null);
+});
+
+test("the index handed to a frame does not move the reader while the count is unknown", () => {
+  /*
+   * A regression introduced by the fix for Inspector round 2, caught by re-reading it.
+   *
+   * Keying the count to the previewed source makes it null across a reload, which makes the
+   * CLAMPED index -1 there - clamping against a ring of unknown size has no answer. The posted
+   * index was `max(clamped, 0)`, so a reader sitting on the third match was moved back to the
+   * first every time the document reloaded under them, silently.
+   *
+   * This case is NOT covered end to end, and the attempt is instructive: switching to the
+   * Editor and back unmounts the preview, which clears the bridge and drops the workspace into
+   * the source-derived fallback, so the browser test passed with and without the fix. The
+   * reachable path is a change to the file on disk while Preview is on screen. The rule is
+   * pinned here instead, where the mutation actually fails.
+   */
+  const on3rd = session("budget", false, 2);
+  // Count known: the clamped index is what the reader is looking at.
+  assert.equal(frameFindIndex(on3rd, 2, true), 2);
+  // Count known and the ring shrank under them: still the clamped one, never past the end.
+  assert.equal(frameFindIndex(on3rd, 1, true), 1);
+  // Count UNKNOWN: the stored index, so the reload leaves the reader where they were.
+  assert.equal(frameFindIndex(on3rd, -1, false), 2);
+  // And never a negative, whichever branch produced it.
+  assert.equal(frameFindIndex(session("budget", false, -5), -1, false), 0);
+  assert.equal(frameFindIndex(null, -1, false), 0);
+});
+
+test("no vouched-for document means no count, whatever a result claims", () => {
+  /*
+   * The other half of Inspector round 5. The frame's nonce alone is not enough: the parent has
+   * to know a reload is PENDING, which only its own view of the source can tell it. Until the
+   * replacement announces itself there is no nonce this origin can vouch for, so there is no
+   * count - and a result carrying any nonce at all, including a plausible one, is refused.
+   */
+  assert.equal(frameFindCount(reply("budget", 3), session("budget"), null), null);
+  assert.equal(frameFindCount(reply("budget", 3, false, EDITED), session("budget"), null), null);
+  // An empty query is still not awaiting anything, even with no live document.
+  assert.equal(frameFindCount(reply("budget", 3), session(""), null), 0);
 });

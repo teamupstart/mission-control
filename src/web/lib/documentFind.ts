@@ -254,3 +254,110 @@ export function hitLinesByBlock(hits: readonly DocumentHit[]): number[] {
   }
   return lines;
 }
+
+/** What a sandboxed frame reported, and the search state AND document it counted. */
+export interface FrameFindResult {
+  query: string;
+  caseSensitive: boolean;
+  count: number;
+  /**
+   * The nonce the counting document minted for ITSELF, naming which document this count is in.
+   *
+   * A count is a statement about one document as much as about one query. The preview's
+   * `srcDoc` is rebuilt whenever the previewed source changes, which reloads the document and
+   * destroys its highlights with it, so a count carried across that boundary describes a
+   * document that no longer exists.
+   *
+   * Neither the parent's `event.source` check nor a parent-minted token can tell those two
+   * documents apart, and both were tried:
+   *
+   * - `event.source` sees ONE WindowProxy across a `srcDoc` navigation, so a result queued by
+   *   the outgoing document passes it.
+   * - A token the parent sends down and the frame echoes is reachable by the outgoing document
+   *   too: the parent posts through that same WindowProxy as soon as the source changes, which
+   *   is before the replacement has necessarily loaded, so the document being replaced can
+   *   receive a token naming its successor and answer for it out of its own DOM.
+   *
+   * A nonce the document generated itself is the one thing its predecessor cannot produce.
+   */
+  documentNonce: string;
+}
+
+/**
+ * The count a frame-reported surface may DISPLAY right now: a number, or null for "not known
+ * yet".
+ *
+ * A surface this origin cannot read reports its own count, and a round trip separates the
+ * keystroke from the reply. Only three answers are honest in that window, and two of them are
+ * wrong:
+ *
+ * - **The previous query's count is wrong.** It was the first thing tried here, on the
+ *   reasoning that carrying the last agreed number beat flashing `No results` over a query
+ *   that matches. That reasoning ignored the frame: it applies the new query and repaints
+ *   before its reply is delivered, so changing a three-hit query to a no-hit one showed
+ *   `1 / 3` over a document with nothing highlighted. The count-to-highlight invariant is the
+ *   whole point of counting in the frame, and this broke it.
+ * - **Zero is wrong**, for the mirror reason. Zero is a claim about the document - the bar
+ *   renders it as `No results` - and the old highlights may still be painted when it is made.
+ * - **Null is the truth.** No reply for this query has arrived, so this origin does not know.
+ *   The bar shows no number rather than a false one, and cannot offer a step into a ring whose
+ *   size it does not know.
+ *
+ * Keyed on THREE things, because a count is only true of one search over one document:
+ *
+ * - the query;
+ * - the case flag, because `Aa` re-runs the search exactly as retyping does;
+ * - the document, because the `srcDoc` is rebuilt when the previewed source changes, and the
+ *   reload destroys the old document's highlights. That window is much larger than a round
+ *   trip - a parse, a style pass and four scripts - and it was originally left uncovered on the
+ *   reasoning that clearing bought nothing but a flicker. The flicker was the `No results`
+ *   this function no longer has to show; once "not known" is representable, clearing is free.
+ *   Identified by the counting document's OWN nonce - see `documentNonce` for why nothing the
+ *   parent can mint or check will do.
+ *
+ * `liveNonce` is null whenever the parent has no nonce it can vouch for as belonging to the
+ * document currently mounted - before the first ready handshake, and after the source changed
+ * until the replacement announces itself. Unknown, in other words, which is the honest answer
+ * for exactly the interval a reload occupies.
+ *
+ * All three windows are a frame or more, which is why the wrong answers are easy to talk
+ * yourself into and hard to see.
+ */
+export function frameFindCount(
+  result: FrameFindResult | null,
+  session: DocumentFindSession | null,
+  liveNonce: string | null,
+): number | null {
+  if (!session) return null;
+  // An empty query is not a search awaiting an answer; there is nothing to count.
+  if (session.query === "") return 0;
+  if (!result || liveNonce === null) return null;
+  const current = result.query === session.query
+    && result.caseSensitive === session.caseSensitive
+    && result.documentNonce === liveNonce;
+  return current ? result.count : null;
+}
+
+/**
+ * The ring index to hand a frame that is about to answer: the one on screen, or the one the
+ * reader stored.
+ *
+ * Two different questions wear the same name here, which is how the wrong one gets used. While
+ * the count is KNOWN, the clamped index is the truth - it is the hit the reader is looking at,
+ * and it cannot point past a ring that just shrank. While the count is NOT known - across the
+ * `srcDoc` reload that `frameFindCount` refuses to carry a count over - the clamped index is
+ * -1, because clamping against a ring of unknown size has no answer. Posting `max(-1, 0)` in
+ * that state sends 0, which silently moves a reader who was on the third match back to the
+ * first every time the document reloads under them.
+ *
+ * So the stored index is posted instead, and the clamping is left to the frame, which is the
+ * only party that knows its own count - the same division of labour the count itself follows.
+ */
+export function frameFindIndex(
+  session: DocumentFindSession | null,
+  clamped: number,
+  countKnown: boolean,
+): number {
+  if (!session) return 0;
+  return Math.max(countKnown ? clamped : session.index, 0);
+}

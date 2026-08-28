@@ -287,6 +287,134 @@ fifth script. The handshake travels with it: the find bridge's own readiness mes
 parent's reply carrying current state are part of the contract, and no consumer may substitute
 another script's ready signal for it.
 
+## Implementation record
+
+What was built as written, and the three places the repository argued for something else.
+
+**Followed as written.** One added script (`PREVIEW_FIND_SCRIPT`) and one added CSP hash, with
+the other three bodies and hashes byte-identical - pinned literally in
+`test/html-preview.test.ts`, because recomputing hashes from the emitted scripts proves the CSP
+matches them and only a literal can prove the scripts themselves did not move. No sandbox token,
+no new directive, no element inserted into the previewed document. `PREVIEW_FIND_READY_MESSAGE`
+is the find bridge's own and is posted as its last statement; the parent answers it with current
+state; the block-reveal fallback, its note and its source-derived count are retired together on
+`htmlInFrame`, and only on a readiness report that says the frame can highlight.
+
+**Deviation 1 - `missionBlock` is called, not restated.** The phase asked run breaks to use "the
+definition `missionBlock` in the comment bridge already uses". The find bridge calls
+`missionBlock(node)===node` rather than re-expressing the display rule, so the two bridges cannot
+drift on what one box of text is. The cross-script reference is order-independent: function
+declarations are hoisted per script at execution, and the call happens inside a message handler
+that runs long after all four scripts have. That keeps the phase's own exit criterion - injecting
+the find script in any position must not change the outcome.
+
+**Deviation 2 - the CAPABILITY survives a `srcDoc` reload; the COUNT does not.** The phase asked
+the fallback to return "again after a reload that has not yet re-announced", and this was first
+read as "drop everything", then rejected wholesale on the grounds that it fires on every
+debounced revision and flashes the count and the "by block" note in and out. **Half of that was
+wrong, and GitHub Inspector caught it on PR #827 (round 2).** The two facts pull apart:
+
+- *The count is about one document.* A reload destroys the old document's `CSS.highlights`, so a
+  count carried across it describes highlights that no longer exist - the same
+  count-to-highlight break as round 1, in a window the size of a parse, a style pass and four
+  scripts rather than a message round trip. `frameFindCount` is therefore keyed on the previewed
+  source as well as the query and the case flag, and reads null across a reload. The flicker
+  that argued against clearing was `No results`, which round 1's fix removed: once "not known"
+  is representable, clearing is free.
+- *The capability is about the browser.* Whether `CSS.highlights` exists does not change because
+  a document reloaded, so `htmlFindBridge` is dropped on document identity changes and when the
+  preview leaves the screen, not on every revision. Dropping it per revision would flap to the
+  block-reveal fallback - the daemon resolve, the outline and the note - for a document that is
+  about to highlight perfectly well.
+
+So the fallback returns on a reload in the only sense that matters: the bar stops claiming a
+number. `a query typed before the preview loaded highlights by itself, and survives an edit`
+covers the restore, and `a count does not survive the srcDoc reload that destroys the highlights
+it counted` in `test/document-find.test.ts` covers the interval.
+
+**Deviation 3 - a superseded reply is unknown, not the previous count and not zero.** The result
+message echoes the query it counted, as specified. What to show for the round trip after that
+took two attempts, and the first was wrong:
+
+- *Rejected, and shipped briefly:* keep the previous count. The reasoning was that carrying the
+  last agreed number beat flashing `No results` over a query that matches. It ignored the frame,
+  which applies the new query and repaints **before** its reply is delivered - so changing a
+  three-hit query to a no-hit one showed `1 / 3` over a document with nothing highlighted. That
+  is the count-to-highlight invariant this phase exists to establish, broken by the phase itself.
+  Found by GitHub Inspector on PR #827.
+- *Rejected:* zero. The bar renders zero as `No results`, which is a claim about the document,
+  and the old highlights may still be painted when it is made. Wrong in the mirror direction.
+- *Taken:* **null, meaning not known yet.** `frameFindCount` in `documentFind.ts` owns the rule
+  and is unit-tested against Inspector's exact scenario; `FindBar` accepts `count: number | null`
+  and renders null as no number at all, with stepping disabled, because it cannot offer a ring
+  whose size it does not know. Only a query or case-flag change opens that window - stepping
+  leaves both alone - so a reader pressing Enter never sees it.
+
+**Correction found in completion review - a hidden element is not terminal.** The gate list as
+written stops at `visibility: hidden`, and the first implementation stopped the WALK there too.
+`visibility` inherits, so a descendant may set `visibility: visible` and be genuinely on screen
+inside a hidden subtree - and a walk that never entered the hidden element cannot find it however
+carefully it asks about the element it did reach. This is round 4's defect arrived at from the
+other side: that round fixed a gate that counted invisible text, this one fixed a walk that
+missed visible text. The walk now descends carrying whether the current subtree is lit, a text
+node is eligible when the nearest element above it is lit, and run breaks are driven by a
+visibility transition (`lit!==shown`) as well as by a box - so entering a hidden subtree breaks
+the run and a re-asserting paragraph inside it is broken away on both sides. `display: none`
+stays terminal, because it removes the subtree from layout and nothing can put it back; so does
+`opacity: 0`, which `checkVisibility` reports for a descendant as well as for the element that
+set it. The `visibility: hidden` div in the counting fixture now carries two children - the
+hidden text that must still not be counted, and `#reasserted`, which must be - so one subtree
+proves both directions. Reverting the descent makes that spec report 2 where it must report 3.
+
+**Correction found in review round 4 - a result must describe itself.** Round 2's fix keyed the
+count to the document but let the PARENT decide, on arrival, which document a result was about.
+That is unsound for a reason `event.source` cannot cover: a `srcDoc` navigation keeps the same
+WindowProxy, so a find-result queued by the document being replaced still passes the source
+check, and stamping it with whatever source is current accepts the old count for the new document
+- whose highlights have never been drawn. The parent was asserting on the frame's behalf.
+
+**Correction found in review rounds 4 and 5 - only the document can name itself.** Round 2's fix
+keyed the count to the document but let the PARENT decide, on arrival, which document a result was
+about. Two successive schemes failed, and the second failure is the instructive one:
+
+1. *Parent stamps on receipt* (round 4's finding). A `srcDoc` navigation keeps the same
+   WindowProxy, so a find-result queued by the document being replaced still passes the
+   `event.source` check; stamping it with whatever source is current accepts the old count for
+   the new document, whose highlights have never been drawn.
+2. *Parent mints a token, frame echoes it* (round 5's finding). Also unsound, and for a sharper
+   reason: the parent posts through that same WindowProxy the moment the source changes, which is
+   before the replacement has necessarily loaded - so the OUTGOING document can receive a token
+   naming its successor and answer for it out of its own DOM. An echo is only as trustworthy as
+   the value's origin.
+3. *Taken:* **the frame mints a nonce per document and reports it.** A value a document generated
+   for itself is the one thing its predecessor cannot produce. It rides on the ready message and
+   on every result.
+
+The parent's own document counter is still needed, and pairing the two is the point: the nonce is
+the only identity the outgoing document cannot forge, and the counter is the only thing that knows
+a reload is PENDING. `liveFindNonce` is the nonce of the last document to announce itself **and
+only while the counter still matches**, so a count is attributed to a document only while this
+origin's view of what is mounted agrees with the document that introduced itself. Either fact
+alone is insufficient.
+
+So the wire carries no document identity downward at all, and every field of a result either
+echoes what the parent sent (query, case flag) or belongs to the frame (nonce). The find script's
+hash moved with this, which is expected - non-goal 1 protects the other three bridges, not this
+one.
+
+**Also worth naming.** In-frame hits carry no source line, because the frame never sees the
+file's bytes - so the Preview/Editor toggle can no longer carry the reader's place across for an
+HTML document and starts the new surface's ring at its first hit. Lining the frame's ordinals up
+against the source's would have been worse: they are ordinals over different sets, so the reader
+would land on a match they had not selected. The scroll of the current hit is
+`scrollIntoView({block:"nearest"})` on the hit's nearest element followed by a rect-based
+`scrollBy`, which handles a nested scroll container and then centres the word itself; both are
+instant rather than smooth, because a find step is not a reveal.
+
+Phase 1's `a closed find leaves the last HTML outline standing` test is deleted, as Phase 1 said
+it should be: in-frame find posts no target message, so no outline is set, and an empty query
+clears the highlight outright.
+
 ## Cross-phase audit record
 
 - Reconciled against Phase 1 as written: Phase 1 must let the bar's count come from a value

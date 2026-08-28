@@ -246,6 +246,12 @@ test("find-next and find-previous step the ring from Preview, where no editor ex
   // The current mark moved with the readout rather than the count drifting on its own.
   await expect(currentMark(dashboard)).toHaveCount(1);
   await expect(currentMark(dashboard)).toHaveText(/Reconnect/i);
+
+  // Photographed mid-ring rather than at rest: the current hit is the SECOND one here, so the
+  // frame shows the two weights apart - the solid current mark against the tinted others.
+  await dashboard.keyboard.press("F3");
+  await expect(readout(dashboard)).toHaveText("2 / 3");
+  await shoot(dashboard, "preview-stepped-current-match");
 });
 
 test("one find session crosses the Preview/Editor toggle, each surface counting what it shows", async ({
@@ -459,6 +465,20 @@ test("an HTML preview reveals the block holding the current match, and says so",
   await expect
     .poll(() => report.locator("body").evaluate(() => window.scrollY))
     .toBeGreaterThan(0);
+  /*
+   * And it is actually ON SCREEN.
+   *
+   * The two assertions above are both true the instant the reveal begins: the class is set
+   * before the scroll, and `scrollY > 0` holds from the first frame of a `behavior: "smooth"`
+   * animation. Neither says the reader can see the block, which is the whole claim - and a
+   * screenshot taken between them caught the top of the report instead of the reveal.
+   */
+  await expect
+    .poll(() => verdict.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= window.innerHeight ? "in view" : "off screen";
+    }), { message: "the revealed block never settled inside the frame's viewport" })
+    .toBe("in view");
   await shoot(dashboard, "html-block-reveal");
 
   /*

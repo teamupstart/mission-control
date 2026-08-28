@@ -49,7 +49,7 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
   expect(argv[argv.indexOf("--cwd") + 1]).toBe(daemon.home);
   const actualCommand = argv[argv.indexOf("--command") + 1] ?? "";
   const expectedCommand = shellCommand([
-    process.env.SHELL || "/bin/sh",
+    "/bin/sh",
     "-c",
     setupInstallerShell(["brew", "install", "--cask", "wezterm"]),
   ]);

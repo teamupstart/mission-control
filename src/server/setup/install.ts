@@ -182,7 +182,7 @@ export async function executeSetupInstall(
       launch = {
         name: prepared.title,
         cwd: prepared.cwd,
-        argv: [process.env.SHELL || "/bin/sh", "-c", setupInstallerShell(argv)],
+        argv: ["/bin/sh", "-c", setupInstallerShell(argv)],
       };
       break;
     }
@@ -197,7 +197,7 @@ export async function executeSetupInstall(
       launch = {
         name: `Install ${info.label}`,
         cwd: deps.homeDir,
-        argv: [process.env.SHELL || "/bin/sh", "-c", setupInstallerShell(remedy.argv)],
+        argv: ["/bin/sh", "-c", setupInstallerShell(remedy.argv)],
       };
       break;
   }

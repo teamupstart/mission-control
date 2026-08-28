@@ -229,7 +229,7 @@ test("a provider remedy delegates through server verification and preserves its 
   assert.equal(calls[0]?.cwd, "/verified");
   assert.equal(calls[0]?.name, "Verified installer");
   assert.deepEqual(calls[0]?.argv, [
-    process.env.SHELL || "/bin/sh",
+    "/bin/sh",
     "-c",
     setupInstallerShell(["/usr/bin/env", "PATH=/verified/bin", "/verified/bin/install"]),
   ]);
@@ -325,7 +325,7 @@ test("a command remedy launches the exact catalog argv in the hold-open wrapper 
     name: "Install WezTerm",
     cwd: home,
     argv: [
-      process.env.SHELL || "/bin/sh",
+      "/bin/sh",
       "-c",
       setupInstallerShell(["brew", "install", "--cask", "wezterm"]),
     ],

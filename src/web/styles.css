@@ -7270,6 +7270,35 @@ kbd {
   height: 15px;
   background: var(--border);
 }
+/* The same bar, anchored over the file reader instead of over the conversation log.
+   A positioning rule and nothing else - the bar's own styling above is shared, because a
+   second copy of it is how the two finds would start looking different. `.file-content`
+   already carries `position: relative` for the comment dock, so this needs no new
+   containing block. Slightly wider than the conversation's, to seat the HTML surface's
+   caveat without squeezing the query box. */
+.file-content > .find-bar {
+  top: 8px;
+  right: 14px;
+  width: 328px;
+}
+/* The caveat chip costs the query box its width, and a bar whose input clips the query
+   after eleven characters reads as broken rather than as informative. The bar grows for it
+   instead, still bounded by the pane. */
+.file-content > .find-bar.has-note {
+  width: 404px;
+}
+/* What the count does not mean. Only the HTML preview uses it today: its matches are
+   counted over source and located by block, and Phase 2's in-frame bridge retires the
+   note by passing nothing. */
+.find-note {
+  flex: none;
+  font: 500 10.5px/1 var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+  padding: 2px 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+}
 
 /* ---- the hit itself ----
    One hue in two weights: every hit is a tint that keeps the text legible at its own

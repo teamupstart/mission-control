@@ -7,7 +7,12 @@ import {
   type FileBuffer,
   type SessionFilesController,
 } from "../lib/sessionFiles.ts";
-import { FileEditor, type FileEditorComments } from "./FileEditor.tsx";
+import {
+  FileEditor,
+  editorFindChord,
+  type FileEditorComments,
+  type FileEditorFind,
+} from "./FileEditor.tsx";
 import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.tsx";
 import { FileCommentRail } from "./FileCommentRail.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
@@ -35,12 +40,26 @@ import {
 } from "../lib/api.ts";
 import { boundQuote, reanchor, sliceLines } from "@shared/file-comment-anchor.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
-import { Markdown, type MarkdownBlockRange } from "./Markdown.tsx";
+import {
+  Markdown,
+  type MarkdownBlockRange,
+  type MarkdownFindHit,
+  type MarkdownFindRequest,
+} from "./Markdown.tsx";
+import { FindBar } from "./FindBar.tsx";
+import {
+  documentHits,
+  hitLinesByBlock,
+  stepIndex,
+  type DocumentFindSession,
+  type DocumentHit,
+} from "../lib/documentFind.ts";
+import { FIND_KEY_ATTRIBUTE } from "../lib/rehypeFindMarks.ts";
 import { FILES_DIAGRAM_RENDERERS } from "./markdownDiagramRegistry.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
-import { isTypingTarget, useKeybindingHints } from "../lib/keybindings.ts";
+import { chordFromEvent, isTypingTarget, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 // The sandboxed HTML preview boundary is SHARED with Scouts and lives in one module, so
 // neither surface can quietly weaken the CSP or the sandbox for its own documents.
@@ -121,6 +140,41 @@ export function scrollActiveFileReader(
   if (!list) return false;
   scrollElement(list, direction, distance);
   return true;
+}
+
+/** A block the sandboxed preview has been asked to reveal, from either source. */
+export interface HtmlRevealTarget {
+  blockPath: HtmlBlockPathStep[];
+  nonce: number;
+}
+
+/**
+ * Which reveal the sandboxed HTML preview should be showing, and its identity.
+ *
+ * There are two sources - a comment jump ("take me to this thread") and find stepping its ring
+ * - and the frame can only show ONE outline, because `missionJump` removes the previous target
+ * as it sets the next. They used to post into the frame independently, from two effects, with
+ * no arbitration except a one-time replay when the iframe reloaded: whichever fired last won,
+ * and a live find reveal could silently displace a comment jump the reader had just asked for.
+ *
+ * The comment jump wins when both are live. It is an explicit navigation the reader performed,
+ * where find's reveal follows the ring and is re-sent by the next step anyway.
+ *
+ * The `key` is what makes the posting effect fire exactly when the answer CHANGES: re-posting
+ * an unchanged target would re-run the frame's smooth scroll under a reader who had scrolled
+ * away from it. The nonce is part of the key on purpose, so asking for the same block twice -
+ * a deep link followed again, or find stepping back onto it - is a new request rather than a
+ * no-op.
+ */
+export function htmlRevealChoice(
+  comment: HtmlRevealTarget | null,
+  find: HtmlRevealTarget | null,
+): { source: "comment" | "find"; target: HtmlRevealTarget; key: string } | null {
+  const source = comment ? "comment" : find ? "find" : null;
+  const target = comment ?? find;
+  if (!source || !target) return null;
+  const path = target.blockPath.map((step) => `${step.index}${step.tag}`).join("/");
+  return { source, target, key: `${source}:${target.nonce}:${path}` };
 }
 
 export function adjacentFilePath(
@@ -869,6 +923,347 @@ export function FileWorkspace({
   /** Whether the sandboxed preview should be treating a click as a comment right now. */
   const htmlCommenting = commentsActive && htmlShowing;
 
+  /*
+   * ---- find in this document ----
+   *
+   * The workspace owns the session and the chord, which is what makes find work in the
+   * extracted window and in the console and board details alike - `App.tsx` stands every
+   * session chord down while an overlay is open, and `FileWindow` is an overlay.
+   *
+   * The session holds the query, the case flag and the index, and DELIBERATELY no hits: each
+   * surface searches the string it renders. The Editor shows source, so its hits are offsets
+   * into `buffer.text`. Markdown preview shows rendered text, so its hits are the marks
+   * `rehypeFindMarks` actually produced and reported back. Those two counts can legitimately
+   * differ on the same file - `[label](matching-url)` is one occurrence in the source and
+   * none on screen - and each is honest about what its surface shows. A shared,
+   * source-derived count would have offered the reader a match Preview cannot highlight or
+   * step to, which is the one invariant this feature rests on.
+   *
+   * What survives the Preview/Editor toggle is the query and the case flag, plus the reader's
+   * place carried across BY SOURCE LINE - the same neighbourhood, not the same character,
+   * which is what these two surfaces can honestly promise each other.
+   */
+  const [find, setFind] = useState<DocumentFindSession | null>(null);
+  /** Bumped to put the caret back in the query box when the chord is pressed again. */
+  const [findFocus, setFindFocus] = useState(0);
+  /** Bumped only by deliberate find navigation. See `FileEditor`'s `scrollNonce`. */
+  const [findScrollNonce, setFindScrollNonce] = useState(0);
+  /** What the rehype plugin drew, in document order. Preview's whole model. */
+  const [renderedFindHits, setRenderedFindHits] = useState<readonly MarkdownFindHit[]>([]);
+  /**
+   * A source line the reader's place is being carried TO, across a surface change.
+   *
+   * Held rather than applied immediately, because the new surface's hits are not available in
+   * the same tick: Markdown preview's arrive from the plugin after it has rendered. Resolved
+   * on the first render that has hits to resolve against.
+   */
+  const [pendingFindLine, setPendingFindLine] = useState<number | null>(null);
+  /** Which string find is searching right now, or null when there is nothing to search. */
+  const findSurface: "markdown" | "html" | "source" | null =
+    buffer?.document.text == null || comparing
+      ? null
+      : markdownShowing
+        ? "markdown"
+        : htmlShowing
+          ? "html"
+          : sourceShowing
+            ? "source"
+            : null;
+  /**
+   * The source-side hits, for the Editor and for the HTML preview.
+   *
+   * The HTML preview searches `buffer.text` rather than `previewText` because `previewText`
+   * is the debounced, stylesheet-inlined rendering - not the document's own bytes - and the
+   * line a block is resolved from has to be a line of the file. `previewRevision` travels
+   * with the resolve for the same snapshot reason the comment path states.
+   */
+  const sourceFindHits = useMemo((): DocumentHit[] => {
+    if (!find || find.query === "" || findSurface === "markdown" || findSurface === null) {
+      return [];
+    }
+    return documentHits(
+      buffer?.text ?? "",
+      find.query,
+      { caseSensitive: find.caseSensitive },
+      "source",
+    );
+  }, [buffer?.text, find, findSurface]);
+  /**
+   * The HTML surface's ring, over the locations it can actually reach.
+   *
+   * See `hitLinesByBlock`. Two occurrences on one source line are indistinguishable to a
+   * resolver that is asked for a line, so offering them as two entries promised a step that
+   * could not happen - and could reveal the block belonging to the other one.
+   */
+  const htmlFindLines = useMemo(
+    (): number[] => (findSurface === "html" ? hitLinesByBlock(sourceFindHits) : []),
+    [findSurface, sourceFindHits],
+  );
+  const findCount = findSurface === "markdown"
+    ? renderedFindHits.length
+    : findSurface === "html"
+      ? htmlFindLines.length
+      : sourceFindHits.length;
+  /** Clamped here rather than on the way in, because hits move under a stored index. */
+  const findIndex = findCount === 0 ? -1 : Math.min(Math.max(find?.index ?? 0, 0), findCount - 1);
+  const findCurrentKey = findSurface === "markdown"
+    ? renderedFindHits[findIndex]?.key ?? null
+    : findSurface === "html"
+      // Namespaced like every other surface's key, and keyed on the line because the line is
+      // the whole of what this surface can address.
+      ? (htmlFindLines[findIndex] === undefined ? null : `block:${htmlFindLines[findIndex]}`)
+      : sourceFindHits[findIndex]?.key ?? null;
+  /**
+   * The source line of every hit on the active surface, in the same order.
+   *
+   * Nullable per hit: a rendered hit reports the range of the block it sits in, and the
+   * parser does not place every node. A missing line is not an excuse to guess one, so it is
+   * simply not a candidate for the toggle to land on.
+   */
+  const findHitLines = useMemo((): (number | null)[] =>
+    findSurface === "markdown"
+      ? renderedFindHits.map((hit) => hit.range?.startLine ?? null)
+      : findSurface === "html"
+        ? htmlFindLines
+        : sourceFindHits.map((hit) => hit.line),
+  [findSurface, htmlFindLines, renderedFindHits, sourceFindHits]);
+  // Read through refs by the callbacks below, refreshed during render for the reason every
+  // other ref in this file is: the very first press after a state change uses current values.
+  const findCountRef = useRef(findCount);
+  findCountRef.current = findCount;
+  const findIndexRef = useRef(findIndex);
+  findIndexRef.current = findIndex;
+  /**
+   * The last place the reader actually was, and WHICH SURFACE it was on.
+   *
+   * The surface is not bookkeeping, it is the fix for a real defect. This ref used to hold a
+   * bare line and be written on every render, and the render that switches surfaces already
+   * has the NEW surface's hits: `sourceFindHits` is a memo over `buffer.text`, so on the first
+   * Editor render `findHitLines` is already source lines and the old index still selects one
+   * of them. The write therefore overwrote the outgoing line with a source line at the old
+   * ordinal before the surface-change effect below could read it - and those disagree exactly
+   * when Markdown hides an occurrence, which is the case the whole per-surface model exists
+   * for. Selecting Preview's second visible hit after a link-destination match landed the
+   * Editor on that hidden destination.
+   *
+   * Writing only while the recorded surface is still the surface on screen is what preserves
+   * the outgoing value for one render, which is all the effect needs.
+   */
+  const findLineRef = useRef<{ surface: typeof findSurface; line: number | null }>({
+    surface: findSurface,
+    line: null,
+  });
+  const currentFindLine = findHitLines[findIndex] ?? null;
+  if (findLineRef.current.surface === findSurface && currentFindLine !== null) {
+    findLineRef.current = { surface: findSurface, line: currentFindLine };
+  }
+
+  /**
+   * The last query and case flag, surviving a CLOSE of the bar.
+   *
+   * Reopening find restores them - selected, so typing replaces rather than appends - which
+   * is what every browser's find does and what the transcript's bar already does through its
+   * own retained session. Held in a ref rather than in state because nothing renders it while
+   * find is closed. Reset with the session when another file is selected.
+   */
+  const lastFindRef = useRef<{ query: string; caseSensitive: boolean }>({
+    query: "",
+    caseSensitive: false,
+  });
+  const openFind = useCallback((): void => {
+    setFind((session) => session ?? { ...lastFindRef.current, index: 0 });
+    setFindFocus((nonce) => nonce + 1);
+  }, []);
+  const closeFind = useCallback((): void => {
+    setFind(null);
+    setPendingFindLine(null);
+    setRenderedFindHits([]);
+  }, []);
+  const stepFind = useCallback((direction: 1 | -1): void => {
+    setPendingFindLine(null);
+    setFind((session) => session
+      ? {
+        ...session,
+        index: Math.max(0, stepIndex(findCountRef.current, findIndexRef.current, direction)),
+      }
+      : session);
+    setFindScrollNonce((nonce) => nonce + 1);
+  }, []);
+  /** A new query or a flipped case flag starts the ring again, at the top. */
+  const reviseFind = useCallback((patch: Partial<DocumentFindSession>): void => {
+    setPendingFindLine(null);
+    setFind((session) => {
+      if (!session) return session;
+      const next = { ...session, ...patch, index: 0 };
+      lastFindRef.current = { query: next.query, caseSensitive: next.caseSensitive };
+      return next;
+    });
+    setFindScrollNonce((nonce) => nonce + 1);
+  }, []);
+  /**
+   * Stable, because `markdownPropsEqual` compares it by identity: a fresh closure each render
+   * would re-parse the whole document on every workspace render, which is exactly what the
+   * `Markdown` memo exists to prevent.
+   */
+  const reportRenderedFindHits = useCallback((hits: MarkdownFindHit[]): void => {
+    setRenderedFindHits(hits);
+  }, []);
+  const markdownFind: MarkdownFindRequest | undefined = find && findSurface === "markdown"
+    ? {
+      query: find.query,
+      caseSensitive: find.caseSensitive,
+      currentKey: findCurrentKey,
+      onHits: reportRenderedFindHits,
+    }
+    : undefined;
+  /**
+   * The Editor's find owner.
+   *
+   * Supplied whenever this workspace hosts the editor, open or closed, because the chord has
+   * to be answerable before the bar exists. `FileEditor` reads its PRESENCE as the signal to
+   * claim CodeMirror's panel-opening bindings, and the three other hosts of that component
+   * pass nothing and keep the panel they have today.
+   */
+  const answerEditorFindChord = useCallback((action: "open" | "next" | "previous"): void => {
+    if (action === "open") {
+      openFind();
+      return;
+    }
+    // Find-next and find-previous with nothing open is still a request to find: opening is
+    // the only answer that is not silence, and silence is what a claimed chord must never be.
+    if (findCountRef.current === 0 && findIndexRef.current < 0) {
+      openFind();
+      return;
+    }
+    stepFind(action === "next" ? 1 : -1);
+  }, [openFind, stepFind]);
+  const editorFind: FileEditorFind = {
+    hits: findSurface === "source" ? sourceFindHits : [],
+    currentIndex: findSurface === "source" ? findIndex : -1,
+    scrollNonce: findScrollNonce,
+    onChord: answerEditorFindChord,
+  };
+
+  /*
+   * The chord, claimed AHEAD of App's `findInConversation`.
+   *
+   * App's handler returns early on `e.defaultPrevented` and listens in the bubble phase, so a
+   * capture-phase listener here is what stops Cmd+F switching the detail to the Conversation
+   * tab - which is what it does today, because the Files tab mounts no transcript and the
+   * handler falls through to `requestConversationTab`.
+   *
+   * Three departures from the workspace's other chords, each earned:
+   * - it stays live while `extracted`, because those are bare letters and this carries a
+   *   modifier - and App stands every session chord down while the overlay is open, so
+   *   nothing else would answer;
+   * - it fires from inside a typing element, because the caret is in CodeMirror's
+   *   `contentEditable` whenever the reader is in the Editor, which is precisely when they
+   *   want find;
+   * - it accepts `ctrl+f` as well as the resolved binding. `chordFromEvent` does no platform
+   *   normalization, so the default `cmd+f` genuinely does not match Ctrl+F, and the ask
+   *   names both keys.
+   *
+   * It also claims FIND-NEXT and FIND-PREVIOUS, not only the open chord, and it has to: only
+   * `FileEditor` installs those, so with find open over a Markdown or HTML preview - where no
+   * CodeMirror exists - F3 and Mod-G fell through to the browser instead of stepping this
+   * document's ring, while the documentation said they step it. `editorFindChord` is the same
+   * predicate the editor uses, so the two owners cannot drift on which chord means what.
+   *
+   * Go-to-line is deliberately NOT claimed here. In the editor it is claimed and left inert
+   * because it would otherwise open a panel this surface no longer has; over a preview there
+   * is no panel to protect, and swallowing the chord would be over-reach.
+   */
+  const { bindings } = useKeybindings();
+  const findChord = bindings.findInConversation;
+  useEffect(() => {
+    if (findSurface === null) return;
+    function onKeyDown(event: KeyboardEvent): void {
+      const chord = chordFromEvent(event);
+      const bound = chord === findChord || chord === "cmd+f" || chord === "ctrl+f";
+      const claimed = editorFindChord(event);
+      const action = bound
+        ? "open"
+        : claimed === "next" || claimed === "previous"
+          ? claimed
+          : null;
+      if (action === null) return;
+      // The integrated tab stands down while the extracted window is up, exactly as the
+      // bare-letter chords above it do, so two mounted workspaces cannot both answer.
+      if (!extracted && isOverlayOpen?.() === true) return;
+      event.preventDefault();
+      // Stops App, and in the Editor it also stops `FileEditor`'s own handler - so a chord is
+      // answered once, by whichever owner sees it first, never twice.
+      event.stopImmediatePropagation();
+      if (action === "open") openFind();
+      else answerEditorFindChord(action);
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [answerEditorFindChord, extracted, findChord, findSurface, isOverlayOpen, openFind]);
+
+  /*
+   * Carry the reader's place across a surface change, by line.
+   *
+   * Recorded when the surface changes and spent when the new surface has hits, because the
+   * two do not happen in the same tick. Where no line was known - the parser placed no
+   * position for the block a rendered hit sat in - the query still survives and the ring
+   * starts at the first hit, rather than landing somewhere invented.
+   */
+  useEffect(() => {
+    // The ref carries the surface, so it IS the record of which one we were on - there is no
+    // second piece of state to keep in step with it.
+    const outgoing = findLineRef.current;
+    if (outgoing.surface === findSurface) return;
+    findLineRef.current = { surface: findSurface, line: null };
+    if (!find || find.query === "" || outgoing.surface === null || findSurface === null) return;
+    setPendingFindLine(outgoing.line);
+  }, [find, findSurface]);
+  useEffect(() => {
+    if (pendingFindLine === null) return;
+    // Nothing to resolve against yet. Preview's hits arrive one render after the plugin ran,
+    // and spending the request against an empty list would land on the first hit every time.
+    if (findCount === 0) return;
+    const at = findHitLines.findIndex((line) => line !== null && line >= pendingFindLine);
+    setPendingFindLine(null);
+    setFind((session) => session ? { ...session, index: at >= 0 ? at : 0 } : session);
+    setFindScrollNonce((nonce) => nonce + 1);
+  }, [findCount, findHitLines, pendingFindLine]);
+
+  /*
+   * A surface find cannot search closes it.
+   *
+   * Opening the conflict Compare panes, or landing on an image, leaves nothing to search. A bar
+   * that stayed would sit there reading "No results" over a document it was never searching -
+   * a count that is not wrong so much as meaningless.
+   */
+  useEffect(() => {
+    if (find && findSurface === null) closeFind();
+  }, [closeFind, find, findSurface]);
+
+  /*
+   * Another document starts a clean session.
+   *
+   * Its own effect rather than a line in the selection effect above, because that effect is
+   * declared before this session exists. The Preview/Editor toggle is the case that must NOT
+   * reset - see the find session's own comment.
+   */
+  useEffect(() => {
+    lastFindRef.current = { query: "", caseSensitive: false };
+    closeFind();
+  }, [closeFind, selectedPath, session.id]);
+
+  /* Put the current mark in view, in the surface that drew it. */
+  useEffect(() => {
+    if (findSurface !== "markdown" || findCurrentKey === null) return;
+    const reader = workspaceRef.current?.querySelector<HTMLElement>(".file-markdown-preview");
+    // The first fragment of the hit, which is the one a split hit's jump anchors to - all of
+    // its fragments carry the same key. `mark.find-hit` already reserves scroll margin so a
+    // jump never parks the hit under the floating bar.
+    reader
+      ?.querySelector(`[${FIND_KEY_ATTRIBUTE}="${findCurrentKey}"]`)
+      ?.scrollIntoView({ block: "center" });
+  }, [findCurrentKey, findSurface, previewText]);
+
   /* Reveal the indexed block in Markdown Preview, where source ranges are already in DOM. */
   useEffect(() => {
     if (!threadJump || !markdownShowing || !commentsActive) return;
@@ -948,14 +1343,90 @@ export function FileWorkspace({
   }, []);
   const commentingRef = useRef(htmlCommenting);
   commentingRef.current = htmlCommenting;
-  const htmlTargetRef = useRef(htmlTarget);
-  htmlTargetRef.current = htmlTarget;
   useEffect(() => {
     armFrame(htmlCommenting);
   }, [armFrame, htmlCommenting]);
+
+  /*
+   * An HTML match, revealed by BLOCK - through the two paths that already ship.
+   *
+   * The sandboxed preview is opaque to this origin, so find over an HTML document counts over
+   * the file's own source and the current hit's line is resolved to a rendered block by the
+   * daemon (`resolveHtmlBlockTarget`), then revealed with the same `HTML_PREVIEW_TARGET_MESSAGE`
+   * the comment jump uses. No new iframe script and no CSP change: character-accurate find
+   * inside the frame needs a hash-pinned bridge, which is its own scoped change.
+   *
+   * The bar says so, because the count is taken over source and can therefore include matches
+   * the rendered page does not show.
+   *
+   * A failed resolve is not reported. There is exactly one cause - the file moved under a
+   * render still on screen, which is the debounce window - and a reader stepping matches gets
+   * the count and the ring either way; raising the comment path's refusal notice for a
+   * keystroke would be louder than the thing that went wrong.
+   */
+  const htmlFindRequests = useRef(0);
+  /**
+   * STATE rather than a ref, because it is now an input to the one reveal decision below.
+   *
+   * As a ref it was written and read by two effects that each posted into the frame on their
+   * own, which is what let a find reveal displace a live comment jump - see `htmlRevealChoice`.
+   */
+  const [htmlFindTarget, setHtmlFindTarget] = useState<HtmlRevealTarget | null>(null);
+  const currentHtmlFindLine = findSurface === "html" ? htmlFindLines[findIndex] ?? null : null;
   useEffect(() => {
-    revealHtmlTarget(htmlTarget);
-  }, [htmlTarget, revealHtmlTarget]);
+    if (findSurface !== "html" || !previewPath || currentHtmlFindLine === null) {
+      // Find has nothing to reveal - closed, no matches, or another surface. Dropping the
+      // target hands the frame back to the comment jump if one is live.
+      setHtmlFindTarget(null);
+      return;
+    }
+    let live = true;
+    htmlFindRequests.current += 1;
+    const request = htmlFindRequests.current;
+    void resolveHtmlBlockTarget(session.id, {
+      path: previewPath,
+      startLine: currentHtmlFindLine,
+      endLine: currentHtmlFindLine,
+      revision: previewRevision,
+    }).then((result) => {
+      if (!live || request !== htmlFindRequests.current || !result.ok) return;
+      setHtmlFindTarget({ blockPath: result.blockPath, nonce: request });
+    });
+    return () => { live = false; };
+  }, [
+    currentHtmlFindLine,
+    findSurface,
+    previewPath,
+    previewRevision,
+    session.id,
+  ]);
+
+  /*
+   * ONE owner of what the frame is showing.
+   *
+   * Both sources feed `htmlRevealChoice` and this single effect posts its answer, so the last
+   * DECISION wins rather than the last effect to run. It fires only when the answer's key
+   * changes, because re-posting an unchanged target would re-run the frame's smooth scroll
+   * under a reader who had scrolled away from it.
+   *
+   * **What this cannot do is clear an outline**, and that limit is the sandbox's, not a
+   * shortcut. `missionJump` removes the previous target only as it sets a new one, and a path
+   * that walks nowhere resolves to `document.body` - so posting "nothing" would outline the
+   * whole page rather than clear it. Giving the frame a clear needs a new hash-pinned script
+   * and a CSP change, which is Phase 2's scoped edit to `htmlPreview.ts`. Until then: dropping
+   * find's target restores the comment jump's block when one is live, and where neither source
+   * has a target the last outline stays until the frame reloads.
+   */
+  const htmlReveal = htmlRevealChoice(htmlTarget, htmlFindTarget);
+  const htmlRevealKey = htmlReveal?.key ?? "";
+  const htmlRevealRef = useRef(htmlReveal);
+  htmlRevealRef.current = htmlReveal;
+  const postedRevealKey = useRef("");
+  useEffect(() => {
+    if (!htmlReveal || htmlRevealKey === postedRevealKey.current) return;
+    postedRevealKey.current = htmlRevealKey;
+    revealHtmlTarget(htmlReveal.target);
+  }, [htmlReveal, htmlRevealKey, revealHtmlTarget]);
   useEffect(() => {
     if (!previewPath) return;
     const onReady = (event: MessageEvent): void => {
@@ -965,7 +1436,18 @@ export function FileWorkspace({
       );
       if (!frame || event.source !== frame.contentWindow) return;
       armFrame(commentingRef.current);
-      revealHtmlTarget(htmlTargetRef.current);
+      /*
+       * A reloaded document has no outline at all, so the current decision is re-posted -
+       * through the same `htmlRevealChoice` the effect above uses, rather than a second rule
+       * that could disagree with it. The posted key is cleared first because this is the one
+       * case where an UNCHANGED target must be sent again.
+       */
+      postedRevealKey.current = "";
+      const reveal = htmlRevealRef.current;
+      if (reveal) {
+        postedRevealKey.current = reveal.key;
+        revealHtmlTarget(reveal.target);
+      }
     };
     window.addEventListener("message", onReady);
     return () => window.removeEventListener("message", onReady);
@@ -1482,6 +1964,21 @@ export function FileWorkspace({
 
         <div className={`file-reader-shell${showComments ? " has-comment-rail" : ""}`}>
           <div className={`file-content${commentOverlayShowing ? " is-commenting" : ""}`}>
+          {find && (
+            <FindBar
+              label="Find in this document"
+              note={findSurface === "html" ? "by block" : null}
+              query={find.query}
+              onQuery={(query) => reviseFind({ query })}
+              caseSensitive={find.caseSensitive}
+              onCaseSensitive={(caseSensitive) => reviseFind({ caseSensitive })}
+              count={findCount}
+              index={findIndex}
+              focusNonce={findFocus}
+              onStep={stepFind}
+              onClose={closeFind}
+            />
+          )}
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
           {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
@@ -1505,6 +2002,7 @@ export function FileWorkspace({
                 diagramRenderers={FILES_DIAGRAM_RENDERERS}
                 diagramDocumentKey={buffer.document.path}
                 blockAnchor={markdownBlockAnchor}
+                find={markdownFind}
               >
                 {previewText}
               </Markdown>
@@ -1524,6 +2022,7 @@ export function FileWorkspace({
               value={buffer.text}
               readOnly={!buffer.document.editable || buffer.saveState === "conflict"}
               comments={editorComments}
+              find={editorFind}
               scrollTo={scrollTo}
               onChange={(text) => controller.edit(session.id, buffer.document.path, text)}
               onBlur={() => controller.flush(session.id, buffer.document.path)}

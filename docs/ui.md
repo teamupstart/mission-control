@@ -643,6 +643,9 @@ available:
   <kbd>Tab</kbd> instead of walking controls rendered inside the file. <kbd>⇧</kbd><kbd>Tab</kbd>
   or <kbd>Esc</kbd> returns to the selected file, and <kbd>Tab</kbd> enters Preview again. The
   letter keys stand down while you are typing.
+  <kbd>Cmd/Ctrl+F</kbd> over a document searches THAT document rather than the conversation -
+  see [Find in a document](#find-in-a-document). It is the one Files chord that stays live in
+  the extracted window and from inside the editor, because it carries a modifier.
   <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
   the pane. **The board's drill-in reads the same**: opening a card morphs its column into
   this rail-plus-reader, and every key here behaves identically there.
@@ -887,6 +890,38 @@ the list or a deeply nested checkout can give the list more room. The Diff tab u
 divider between Changed files and the selected patch. Focus either divider and use the Left or
 Right arrow for a precise adjustment; hold Shift for a larger step. Double-click restores that
 viewer's default split.
+
+### Find in a document
+
+Press <kbd>⌘F</kbd> (or <kbd>Ctrl+F</kbd>) while a document is open in the Files workspace and a
+find bar appears over it. Type to see the match count, step with <kbd>Enter</kbd> and
+<kbd>Shift+Enter</kbd> - wrapping at both ends - toggle case with **Aa**, and close with
+<kbd>Esc</kbd>. Reopening keeps the last query, selected, so typing replaces it. The chord works
+in the integrated Files tab and in the extracted Files window, and it never switches the detail
+to Conversation: while a document is on screen, the workspace owns it.
+
+It is the same find in **Markdown preview** and in the **Editor**: one query and one case flag,
+surviving the Preview/Editor toggle, with your place carried across by source line. **The count
+is per surface**, because the two surfaces show different strings. A markdown document's rendered
+text has fewer occurrences than its source - a query matching only the destination of
+`[label](matching-url)` counts one in the Editor and none in Preview - and both numbers are
+correct for what their surface shows. A Preview claiming that match would be offering one it
+cannot highlight or step to.
+
+<kbd>F3</kbd> and <kbd>⌘G</kbd> mean find-next and find-previous, and their shifted pairs step
+backwards - on every surface, including a rendered preview that mounts no editor at all.
+
+In the Editor this find replaces CodeMirror's own search panel outright, so the app has exactly
+one find rather than a second one with different chrome and a different count.
+The Persona, Session action and Foreman profile editors are unaffected: they have no find session
+of their own, so they keep CodeMirror's panel.
+
+An **HTML preview** is a sandboxed document this app cannot read into, so its matches are found
+over the file's source and the block containing the current match is revealed and outlined -
+which is why the bar says **by block** there. That phrase is exact: the ring is over the blocks
+this app can reach, so two occurrences on one source line count once, because a reveal told only
+a line cannot tell them apart. The Editor, which shows the source itself, still counts both.
+Character-accurate find inside that frame is a later change.
 
 ### Comment on a line
 

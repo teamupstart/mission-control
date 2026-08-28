@@ -1,10 +1,17 @@
 import { createElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import type { PluggableList } from "unified";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
 import { rehypeWorkspacePaths, WORKSPACE_PATH_CLASS } from "../lib/rehypeWorkspacePaths.ts";
+import { blockRangeFromNode, type MarkdownBlockRange } from "../lib/markdownBlocks.ts";
+import {
+  rehypeFindMarks,
+  type MarkdownFindHit,
+  type MarkdownFindReport,
+} from "../lib/rehypeFindMarks.ts";
 import {
   diagramFenceFromPre,
   rehypeDiagramFences,
@@ -15,6 +22,15 @@ import { Tooltip } from "./Tooltip.tsx";
 import type { MarkdownDiagramRegistry } from "./markdownDiagramRegistry.tsx";
 
 export type WorkspaceLinkHandler = (href: string, probe?: boolean) => boolean | Promise<boolean>;
+
+/*
+ * Re-exported rather than moved away: `blockRangeFromNode` and its range are now shared
+ * with `rehypeFindMarks`, which cannot import this component, but every existing caller
+ * still names the renderer as the place the rule lives.
+ */
+export { blockRangeFromNode } from "../lib/markdownBlocks.ts";
+export type { MarkdownBlockRange } from "../lib/markdownBlocks.ts";
+export type { MarkdownFindHit } from "../lib/rehypeFindMarks.ts";
 
 const HIGHLIGHT_OPTIONS = { detect: false, ignoreMissing: true };
 
@@ -81,12 +97,6 @@ function WorkspaceAnchor({
   );
 }
 
-/** A block's range in the markdown SOURCE, 1-based and inclusive. */
-export interface MarkdownBlockRange {
-  startLine: number;
-  endLine: number;
-}
-
 /**
  * What a caller does when a reader points at a rendered block.
  *
@@ -115,29 +125,6 @@ export type MarkdownBlockAnchorHandler = (range: MarkdownBlockRange) => void;
 const BLOCK_ANCHOR_TAGS = [
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "table", "ul", "ol", "pre",
 ] as const;
-
-/** The hast node a custom component receives, narrowed to the one field this needs. */
-interface PositionedNode {
-  position?: { start?: { line?: number }; end?: { line?: number } };
-}
-
-/**
- * The source range a rendered block came from, or null when the parser did not record one.
- *
- * Verified rather than assumed: this repository's exact plugin chain (`remark-parse` ->
- * `remark-gfm` -> `remark-rehype` -> `rehype-highlight`) leaves `position.start.line` and
- * `position.end.line` on every top-level hast element, and `rehype-highlight` does not strip
- * them. A node without one still renders - it simply renders without a comment button, which
- * is the containment rule this file has kept since the Mermaid work.
- */
-export function blockRangeFromNode(node: unknown): MarkdownBlockRange | null {
-  const position = (node as PositionedNode | undefined)?.position;
-  const startLine = position?.start?.line;
-  const endLine = position?.end?.line;
-  if (typeof startLine !== "number" || typeof endLine !== "number") return null;
-  if (startLine < 1 || endLine < startLine) return null;
-  return { startLine, endLine };
-}
 
 /**
  * What the control's tooltip says: the ACTION and where it lands.
@@ -216,6 +203,32 @@ interface MarkdownProps {
   blockAnchor?: MarkdownBlockAnchorHandler;
   /** File identity for remounting async hosts when equal source comes from another file. */
   diagramDocumentKey?: string;
+  /**
+   * Opt-in: mark this document's find hits, and report what was marked.
+   *
+   * The third opt-in of `diagramRenderers`' shape, and again the Files preview is its only
+   * caller. Absent for everyone else, so their markup is byte-for-byte what it was.
+   *
+   * It reports back because Preview's rendered text is not its source, so the plugin is the
+   * only thing that knows what this surface can actually highlight - see `rehypeFindMarks`.
+   */
+  find?: MarkdownFindRequest;
+}
+
+/** What a caller asks find for, and where the answer goes. */
+export interface MarkdownFindRequest {
+  query: string;
+  caseSensitive: boolean;
+  /** The key of the hit drawn as current, or null. */
+  currentKey: string | null;
+  /**
+   * The logical hits the plugin drew, in document order, after every render that ran it.
+   *
+   * Compared by IDENTITY in `markdownPropsEqual`, so a caller has to keep it stable - a
+   * fresh closure each render would re-parse the document on every workspace render, which
+   * is precisely what this component's memo exists to prevent.
+   */
+  onHits: (hits: MarkdownFindHit[]) => void;
 }
 
 function MarkdownBody({
@@ -226,6 +239,7 @@ function MarkdownBody({
   diagramRenderers,
   diagramDocumentKey = "",
   blockAnchor,
+  find,
 }: MarkdownProps): React.JSX.Element {
   const paths = onLinkClick ? filePaths : null;
   // The handler reaches the rendered anchors through a ref, and that is load-bearing
@@ -251,6 +265,13 @@ function MarkdownBody({
   const blockHandler = useRef(blockAnchor);
   blockHandler.current = blockAnchor;
   const blockAnchored = Boolean(blockAnchor);
+  // Read out as fields, because that is how the comparator below compares them: the request
+  // object is rebuilt by its caller every render while these three move only when the reader
+  // types or steps.
+  const findQuery = find?.query ?? "";
+  const findCaseSensitive = find?.caseSensitive ?? false;
+  const findCurrentKey = find?.currentKey ?? null;
+  const findHits = find?.onHits;
   const components = useMemo(() => {
     const anchor = ({ node: _node, href, onClick: _onClick, ...props }: React.ComponentPropsWithoutRef<"a"> & {
       node?: unknown;
@@ -335,26 +356,70 @@ function MarkdownBody({
     }
     return map;
   }, [blockAnchored, diagramDocumentKey, diagramRenderers, linkable]);
+  /*
+   * The plugin list, built rather than nested.
+   *
+   * It was a two-deep conditional over `paths` and `diagramRenderers`; find is a third
+   * independent opt-in, and a fourth nesting level would have been eight literal arrays all
+   * saying the same thing. The ORDER is the contract: fences are tagged before highlighting
+   * so a diagram is still a diagram, and the find marks run LAST so they mark the text the
+   * other three finished producing.
+   */
+  const findReport = useRef<MarkdownFindReport>({ hits: [] });
+  const rehypePlugins = useMemo(() => {
+    const plugins: PluggableList = [];
+    if (diagramRenderers) {
+      plugins.push([
+        rehypeDiagramFences,
+        { tags: Object.keys(diagramRenderers), limit: MERMAID_MAX_DIAGRAMS },
+      ]);
+    }
+    plugins.push([rehypeHighlight, HIGHLIGHT_OPTIONS]);
+    if (paths) plugins.push([rehypeWorkspacePaths, { paths }]);
+    if (findQuery !== "") {
+      plugins.push([
+        rehypeFindMarks,
+        {
+          query: findQuery,
+          caseSensitive: findCaseSensitive,
+          currentKey: findCurrentKey,
+          report: findReport.current,
+        },
+      ]);
+    }
+    return plugins;
+  }, [diagramRenderers, findCaseSensitive, findCurrentKey, findQuery, paths]);
+
+  /*
+   * Hand back what the plugin drew, AFTER the commit.
+   *
+   * The plugin runs inside `ReactMarkdown`'s own render, which is a child of this one, so
+   * the sink is already filled by the time an effect runs - and calling the caller's setter
+   * from here is an ordinary post-commit update rather than a state change during another
+   * component's render, which is what a callback invoked from the plugin would have been.
+   *
+   * Guarded by the reported signature rather than by a dependency list: it has to run on
+   * every render that could have re-run the plugin, and a render that changed nothing must
+   * not report again and drive a loop.
+   */
+  const reported = useRef<string | null>(null);
+  useEffect(() => {
+    if (!findHits) {
+      reported.current = null;
+      return;
+    }
+    const hits = findQuery === "" ? [] : findReport.current.hits;
+    const signature = hits
+      .map((hit) => [hit.key, hit.range?.startLine ?? "", hit.range?.endLine ?? ""].join(":"))
+      .join(",");
+    if (reported.current === signature) return;
+    reported.current = signature;
+    findHits(hits);
+  });
   return (
     <ReactMarkdown
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-      rehypePlugins={paths
-        ? diagramRenderers
-          ? [
-              [rehypeDiagramFences, { tags: Object.keys(diagramRenderers), limit: MERMAID_MAX_DIAGRAMS }],
-              [rehypeHighlight, HIGHLIGHT_OPTIONS],
-              [rehypeWorkspacePaths, { paths }],
-            ]
-          : [
-              [rehypeHighlight, HIGHLIGHT_OPTIONS],
-              [rehypeWorkspacePaths, { paths }],
-            ]
-        : diagramRenderers
-          ? [
-              [rehypeDiagramFences, { tags: Object.keys(diagramRenderers), limit: MERMAID_MAX_DIAGRAMS }],
-              [rehypeHighlight, HIGHLIGHT_OPTIONS],
-            ]
-          : [[rehypeHighlight, HIGHLIGHT_OPTIONS]]}
+      rehypePlugins={rehypePlugins}
       urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
       components={components}
     >
@@ -392,7 +457,15 @@ export function markdownPropsEqual(before: MarkdownProps, after: MarkdownProps):
     // through without re-rendering would pin every block button to the previous closure -
     // and that closure carries the file, the revision and the draft controller. A prop
     // missing from here is not a slow render, it is a silently ignored prop.
-    before.blockAnchor === after.blockAnchor
+    before.blockAnchor === after.blockAnchor &&
+    // Field by field rather than by identity, for the reason stated in the body: the caller
+    // rebuilds this request every render. `onHits` IS compared by identity, exactly as
+    // `onLinkClick` is - a render skipped with a new callback would report this document's
+    // hits to a stale closure, and the closure carries the surface those hits belong to.
+    before.find?.query === after.find?.query &&
+    before.find?.caseSensitive === after.find?.caseSensitive &&
+    before.find?.currentKey === after.find?.currentKey &&
+    before.find?.onHits === after.find?.onHits
   );
 }
 

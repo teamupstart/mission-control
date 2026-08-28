@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { sessionWorkspaceRoot } from "@shared/session.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
@@ -70,16 +70,19 @@ function DiffViewerContent({
     };
   }, [session.id, commit, requestNonce]);
 
-  useEffect(() => {
-    if (requestNonce === undefined) return;
+  useLayoutEffect(() => {
+    // The shared detail body keeps DOM focus while Tab changes its selected tab. Give
+    // the diff reader ownership on mount too, not only when Shift+D supplies a nonce,
+    // so its arrows and Open in Files shortcut work through both entry paths.
     contentRef.current?.focus({ preventScroll: true });
   }, [requestNonce]);
 
   // Re-parse only when the patch changes, not on every render (selection change).
   const files = useMemo(() => (diff?.ok ? parsePatch(diff.patch) : []), [diff]);
 
-  // A fresh diff resets the selection to the first file.
-  useEffect(() => setSelected(0), [files]);
+  // A fresh diff resets the selection before the loaded list is painted. A passive
+  // reset can race the first arrow press and undo the file the operator just selected.
+  useLayoutEffect(() => setSelected(0), [files]);
 
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;

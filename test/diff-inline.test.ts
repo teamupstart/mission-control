@@ -39,7 +39,7 @@ test("Console and Board route diff opens to their shared detail tab", () => {
   assert.doesNotMatch(detail, /Open the diff viewer/);
 });
 
-test("explicit inline diff requests refetch and focus the reader", () => {
+test("inline diff requests refetch and every mounted reader takes keyboard focus", () => {
   const viewer = readFileSync(
     fileURLToPath(new URL("../src/web/components/DiffViewer.tsx", import.meta.url)),
     "utf8",
@@ -49,7 +49,9 @@ test("explicit inline diff requests refetch and focus the reader", () => {
     viewer,
     /setDiff\(null\);\s*setLoading\(true\);[\s\S]*?fetchSessionDiff\([\s\S]*?\[session\.id, commit, requestNonce\]/,
   );
+  assert.doesNotMatch(viewer, /if \(requestNonce === undefined\) return/);
   assert.match(viewer, /contentRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(viewer, /useLayoutEffect\(\(\) => setSelected\(0\), \[files\]\)/);
   assert.match(viewer, /onKeyDown=\{\(e\) => onViewerKey\(e\.nativeEvent\)/);
   assert.match(
     viewer,

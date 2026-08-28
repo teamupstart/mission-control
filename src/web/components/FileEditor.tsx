@@ -364,27 +364,54 @@ export function findDecorations(
   return Decoration.set(ranges, true);
 }
 
+/**
+ * Which claimed chord an event is, decided from the event itself.
+ *
+ * A `keydown` handler rather than a `keymap`, and that is a correctness fix rather than a
+ * style choice. A CodeMirror binding spells its shifted pair with a `shift` property, and
+ * that property resolves differently for a LETTER than for a named key: under Shift the
+ * `g` key reports `event.key` as `"G"`, which is a character carrying its own shift, so the
+ * lookup and the `shift` fallback do not agree the way they do for `F3`. The observable
+ * consequence was platform-split - Shift+⌘G stepped backwards on macOS while Shift+Ctrl+G
+ * stepped FORWARDS on Linux, which a CI shard caught and a local run never could.
+ *
+ * Deciding here from `shiftKey` directly is the same lesson the comment bridge already
+ * learned about lists: state the rule rather than depend on a resolution you did not write.
+ * `null` means "not ours", and the caller leaves the event alone.
+ */
+export function editorFindChord(event: KeyboardEvent): FileEditorFindAction | "inert" | null {
+  // ⌘ on macOS, Ctrl elsewhere - the same "Mod" CodeMirror's own bindings mean.
+  const mod = event.metaKey || event.ctrlKey;
+  const key = event.key;
+  if (key === "F3") return event.shiftKey ? "previous" : "next";
+  if (!mod) return null;
+  const letter = key.length === 1 ? key.toLowerCase() : key;
+  // Go-to-line: claimed and inert, because it belongs to a panel this surface no longer
+  // has and leaving it unclaimed would open that panel by the back door.
+  if (letter === "g" && event.altKey) return "inert";
+  if (letter === "g") return event.shiftKey ? "previous" : "next";
+  // Alt+⌘F is not find; only the bare modifier pair opens the bar.
+  if (letter === "f" && !event.altKey) return "open";
+  return null;
+}
+
 function findExtension(read: () => FileEditorFind | undefined): Extension {
-  /** Answer a claimed chord, and swallow it either way so `searchKeymap` never sees it. */
-  const claim = (action: FileEditorFindAction) => (): boolean => {
-    read()?.onChord(action);
-    return true;
-  };
   return [
     findModel,
     // `Prec.highest` is load-bearing: `basicSetup` is first in the extension array, so a
-    // plain `keymap.of` after it would lose to `searchKeymap` on every one of these.
+    // plain handler after it would lose to `searchKeymap` on every one of these. Returning
+    // true is what stops the event, so `searchKeymap` never sees any chord that can open
+    // its panel.
     Prec.highest(
-      keymap.of([
-        { key: "Mod-f", run: claim("open"), preventDefault: true },
-        // Repurposed, not deadened. `shift` is how a CodeMirror binding spells its shifted
-        // pair, so Shift+F3 and Shift+Mod+G step backwards through OUR ring.
-        { key: "F3", run: claim("next"), shift: claim("previous"), preventDefault: true },
-        { key: "Mod-g", run: claim("next"), shift: claim("previous"), preventDefault: true },
-        // Claimed and inert. Go-to-line belongs to a panel this surface no longer has, and
-        // leaving the chord unclaimed would open that panel by the back door.
-        { key: "Mod-Alt-g", run: () => true, preventDefault: true },
-      ]),
+      EditorView.domEventHandlers({
+        keydown: (event) => {
+          const chord = editorFindChord(event);
+          if (chord === null) return false;
+          event.preventDefault();
+          if (chord !== "inert") read()?.onChord(chord);
+          return true;
+        },
+      }),
     ),
     // `"doc"` as well as the field, so the clamp above is recomputed when the document
     // length changes under a model that has not caught up yet.

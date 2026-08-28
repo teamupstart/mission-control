@@ -288,8 +288,17 @@ test("no CodeMirror search panel can open from a Files document, by any of its b
   // Our bar is what answered instead.
   await expect(searchbox(dashboard)).toBeVisible();
 
-  // F3 and Mod-g are repurposed rather than deadened: find-next and find-previous step the
-  // shared ring, so they keep meaning what a reader expects.
+  /*
+   * F3 and Mod-g are repurposed rather than deadened: find-next and find-previous step the
+   * shared ring, so they keep meaning what a reader expects.
+   *
+   * `ControlOrMeta` is this platform's own modifier, so a macOS run exercises ⌘ and a Linux
+   * CI shard exercises Ctrl - which is how the original defect was caught, because
+   * Shift+⌘G stepped backwards while Shift+Ctrl+G stepped forwards. The rule that both
+   * modifiers and both key kinds agree is pinned without a browser in
+   * `test/file-editor-find.test.ts` (`editorFindChord`); this asserts it end to end on
+   * whichever platform is running.
+   */
   await searchbox(dashboard).fill("reconnect");
   await expect(readout(dashboard)).toHaveText("1 / 3");
   await editor.click();

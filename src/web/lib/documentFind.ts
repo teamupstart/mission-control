@@ -255,11 +255,20 @@ export function hitLinesByBlock(hits: readonly DocumentHit[]): number[] {
   return lines;
 }
 
-/** What a sandboxed frame reported, and the search state it counted. */
+/** What a sandboxed frame reported, and the search state AND document it counted. */
 export interface FrameFindResult {
   query: string;
   caseSensitive: boolean;
   count: number;
+  /**
+   * The previewed source this count was taken over.
+   *
+   * A count is a statement about one document as much as about one query. The preview's
+   * `srcDoc` is rebuilt whenever that source changes, which reloads the document and destroys
+   * its highlights with it, so a count carried across that boundary describes a document that
+   * no longer exists.
+   */
+  document: string;
 }
 
 /**
@@ -282,19 +291,30 @@ export interface FrameFindResult {
  *   The bar shows no number rather than a false one, and cannot offer a step into a ring whose
  *   size it does not know.
  *
- * The window is a frame or two, which is why the wrong answers are easy to talk yourself into
- * and hard to see. Keyed on the case flag as well as the query, because `Aa` re-runs the
- * search exactly as retyping does.
+ * Keyed on THREE things, because a count is only true of one search over one document:
+ *
+ * - the query;
+ * - the case flag, because `Aa` re-runs the search exactly as retyping does;
+ * - the previewed source, because the `srcDoc` is rebuilt when it changes, and the reload
+ *   destroys the old document's highlights. That window is much larger than a round trip - a
+ *   parse, a style pass and four scripts - and it was originally left uncovered on the
+ *   reasoning that clearing bought nothing but a flicker. The flicker was the `No results`
+ *   this function no longer has to show; once "not known" is representable, clearing is free.
+ *
+ * All three windows are a frame or more, which is why the wrong answers are easy to talk
+ * yourself into and hard to see.
  */
 export function frameFindCount(
   result: FrameFindResult | null,
   session: DocumentFindSession | null,
+  document: string,
 ): number | null {
   if (!session) return null;
   // An empty query is not a search awaiting an answer; there is nothing to count.
   if (session.query === "") return 0;
   if (!result) return null;
   const current = result.query === session.query
-    && result.caseSensitive === session.caseSensitive;
+    && result.caseSensitive === session.caseSensitive
+    && result.document === document;
   return current ? result.count : null;
 }

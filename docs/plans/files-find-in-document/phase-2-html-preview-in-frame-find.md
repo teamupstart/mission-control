@@ -308,15 +308,29 @@ declarations are hoisted per script at execution, and the call happens inside a 
 that runs long after all four scripts have. That keeps the phase's own exit criterion - injecting
 the find script in any position must not change the outcome.
 
-**Deviation 2 - readiness is not torn down by a `srcDoc` reload.** The phase asked the fallback
-to return "again after a reload that has not yet re-announced". Taken literally that fires on
-every debounced keystroke, because `previewText` rebuilds the `srcDoc`, and it flashes the count
-and the "by block" note in and out while the reader types. It also buys nothing: the reload
-re-runs the hash-pinned script, which re-announces within the same load, and the parent's reply
-restores the highlight - which is the handshake the phase added for exactly this. Readiness is
-therefore dropped on document IDENTITY changes and when the preview leaves the screen, not on
-every revision of the same document. The behaviour the criterion protects is covered by
-`a query typed before the preview loaded highlights by itself, and survives an edit`.
+**Deviation 2 - the CAPABILITY survives a `srcDoc` reload; the COUNT does not.** The phase asked
+the fallback to return "again after a reload that has not yet re-announced", and this was first
+read as "drop everything", then rejected wholesale on the grounds that it fires on every
+debounced revision and flashes the count and the "by block" note in and out. **Half of that was
+wrong, and GitHub Inspector caught it on PR #827 (round 2).** The two facts pull apart:
+
+- *The count is about one document.* A reload destroys the old document's `CSS.highlights`, so a
+  count carried across it describes highlights that no longer exist - the same
+  count-to-highlight break as round 1, in a window the size of a parse, a style pass and four
+  scripts rather than a message round trip. `frameFindCount` is therefore keyed on the previewed
+  source as well as the query and the case flag, and reads null across a reload. The flicker
+  that argued against clearing was `No results`, which round 1's fix removed: once "not known"
+  is representable, clearing is free.
+- *The capability is about the browser.* Whether `CSS.highlights` exists does not change because
+  a document reloaded, so `htmlFindBridge` is dropped on document identity changes and when the
+  preview leaves the screen, not on every revision. Dropping it per revision would flap to the
+  block-reveal fallback - the daemon resolve, the outline and the note - for a document that is
+  about to highlight perfectly well.
+
+So the fallback returns on a reload in the only sense that matters: the bar stops claiming a
+number. `a query typed before the preview loaded highlights by itself, and survives an edit`
+covers the restore, and `a count does not survive the srcDoc reload that destroys the highlights
+it counted` in `test/document-find.test.ts` covers the interval.
 
 **Deviation 3 - a superseded reply is unknown, not the previous count and not zero.** The result
 message echoes the query it counted, as specified. What to show for the round trip after that

@@ -260,22 +260,22 @@ test("htmlRevealChoice keys on the block AND the nonce, so a repeat jump is a ne
 const session = (query: string, caseSensitive = false, index = 0) => (
   { query, caseSensitive, index }
 );
+/** The previewed source a count was taken over. Two distinct documents, by content. */
+const DOC = "<p>the budget is bounded</p>";
+const EDITED = "<p>the budget is bounded</p><!-- edited -->";
+const reply = (query: string, count: number, caseSensitive = false, document = DOC) => (
+  { query, caseSensitive, count, document }
+);
 
-test("a frame's count for the query the bar is holding is the count", () => {
-  assert.equal(
-    frameFindCount({ query: "budget", caseSensitive: false, count: 3 }, session("budget")),
-    3,
-  );
+test("a frame's count for the query and document the bar is holding is the count", () => {
+  assert.equal(frameFindCount(reply("budget", 3), session("budget"), DOC), 3);
   // Zero from the frame is a real answer about the document, not an absent one.
-  assert.equal(
-    frameFindCount({ query: "nope", caseSensitive: false, count: 0 }, session("nope")),
-    0,
-  );
+  assert.equal(frameFindCount(reply("nope", 0), session("nope"), DOC), 0);
 });
 
 test("a previous query's count is never displayed once the query moves on", () => {
   /*
-   * The defect GitHub Inspector found on PR #827, pinned.
+   * The defect GitHub Inspector found on PR #827, round 1, pinned.
    *
    * The first implementation carried the last agreed count through the window, reasoning that
    * it beat flashing `No results` over a query that matches. It does not: the frame applies
@@ -283,31 +283,61 @@ test("a previous query's count is never displayed once the query moves on", () =
    * a no-hit one showed `1 / 3` over a document with nothing highlighted. Null is the answer,
    * and the bar renders it as no number rather than as `No results`.
    */
-  const stale = { query: "budget", caseSensitive: false, count: 3 };
-  assert.equal(frameFindCount(stale, session("zzz")), null);
+  const stale = reply("budget", 3);
+  assert.equal(frameFindCount(stale, session("zzz"), DOC), null);
   // Every intermediate state of typing is the same window, not just the final one.
   for (const typed of ["b", "bu", "bud", "budge"]) {
-    assert.equal(frameFindCount(stale, session(typed)), null, `stale count shown for ${typed}`);
+    assert.equal(
+      frameFindCount(stale, session(typed), DOC),
+      null,
+      `stale count shown for ${typed}`,
+    );
   }
 });
 
 test("flipping the case flag re-opens the window, because it re-runs the search", () => {
-  const found = { query: "Budget", caseSensitive: false, count: 3 };
-  assert.equal(frameFindCount(found, session("Budget", false)), 3);
+  const found = reply("Budget", 3, false);
+  assert.equal(frameFindCount(found, session("Budget", false), DOC), 3);
   // `Aa` changes the answer exactly as retyping does, so the old number is just as wrong.
-  assert.equal(frameFindCount(found, session("Budget", true)), null);
+  assert.equal(frameFindCount(found, session("Budget", true), DOC), null);
 });
 
-test("an empty query is counted, not awaited", () => {
+test("a count does not survive the srcDoc reload that destroys the highlights it counted", () => {
+  /*
+   * The defect GitHub Inspector found on PR #827, round 2, and the same mistake as round 1 in
+   * a much larger window.
+   *
+   * The preview's `srcDoc` is rebuilt whenever the previewed source changes, which reloads the
+   * document and destroys its `CSS.highlights`. The count was keyed to the query and the case
+   * flag but not to the document, so across a reload the bar kept the old number - and kept
+   * stepping enabled - over a frame with nothing highlighted at all. That window is a parse, a
+   * style pass and four scripts, not a message round trip.
+   *
+   * The original justification for leaving it was that clearing bought nothing but a flicker.
+   * The flicker was `No results`, which round 1's fix removed: with "not known" representable,
+   * clearing is free.
+   */
+  const counted = reply("budget", 3, false, DOC);
+  // Same query, same case flag, one edit later: the count describes a document that is gone.
+  assert.equal(frameFindCount(counted, session("budget"), EDITED), null);
+  // And it comes back by itself when the reloaded frame reports against the new source.
+  assert.equal(
+    frameFindCount(reply("budget", 3, false, EDITED), session("budget"), EDITED),
+    3,
+  );
+});
+
+test("an empty query is counted, not awaited, whatever the document is doing", () => {
   // Nothing was asked, so nothing is outstanding: zero rather than null, which keeps the bar
   // from sitting in a permanent "not known" state whenever find is open and empty.
-  assert.equal(frameFindCount(null, session("")), 0);
-  assert.equal(frameFindCount({ query: "x", caseSensitive: false, count: 2 }, session("")), 0);
+  assert.equal(frameFindCount(null, session(""), DOC), 0);
+  assert.equal(frameFindCount(reply("x", 2), session(""), DOC), 0);
+  assert.equal(frameFindCount(reply("x", 2), session(""), EDITED), 0);
 });
 
 test("no reply yet, and no session at all, are both unknown rather than zero", () => {
   // Before the frame has answered once - find opened over a preview still loading.
-  assert.equal(frameFindCount(null, session("budget")), null);
+  assert.equal(frameFindCount(null, session("budget"), DOC), null);
   // No find session: there is no query to have an answer about.
-  assert.equal(frameFindCount(null, null), null);
+  assert.equal(frameFindCount(null, null, DOC), null);
 });

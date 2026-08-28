@@ -53,6 +53,7 @@ import {
   stepIndex,
   frameFindCount,
   type DocumentFindSession,
+  type FrameFindResult,
   type DocumentHit,
 } from "../lib/documentFind.ts";
 import { FIND_KEY_ATTRIBUTE } from "../lib/rehypeFindMarks.ts";
@@ -991,8 +992,7 @@ export function FileWorkspace({
    * rather than shown: keeping the number we have beats replacing it with a fresher-looking
    * wrong one for a frame or two.
    */
-  const [htmlFindResult, setHtmlFindResult] =
-    useState<{ query: string; caseSensitive: boolean; count: number } | null>(null);
+  const [htmlFindResult, setHtmlFindResult] = useState<FrameFindResult | null>(null);
   /** Which string find is searching right now, or null when there is nothing to search. */
   const findSurface: "markdown" | "html" | "source" | null =
     buffer?.document.text == null || comparing
@@ -1052,7 +1052,9 @@ export function FileWorkspace({
    * Only a query or case-flag change opens that window; stepping the ring leaves both alone,
    * so the count never goes unknown under a reader pressing Enter.
    */
-  const htmlFrameCount = htmlInFrame ? frameFindCount(htmlFindResult, find) : 0;
+  const htmlFrameCount = htmlInFrame
+    ? frameFindCount(htmlFindResult, find, previewText)
+    : 0;
   /**
    * Null when the surface on screen cannot yet say how many matches it has.
    *
@@ -1592,6 +1594,15 @@ export function FileWorkspace({
   htmlFindPostRef.current = htmlFindPost;
   const findSessionRef = useRef(find);
   findSessionRef.current = find;
+  /**
+   * The source the mounted frame was built from, for stamping a reply with its document.
+   *
+   * A ref rather than a dependency because the message listeners are subscribed on the path:
+   * resubscribing on every debounced revision would tear them down mid-round-trip, which is
+   * the defect the block-click handler above already documents at length.
+   */
+  const previewTextRef = useRef(previewText);
+  previewTextRef.current = previewText;
   useEffect(() => {
     if (!previewPath) return;
     const onFindReady = (event: MessageEvent): void => {
@@ -1637,6 +1648,9 @@ export function FileWorkspace({
         query: session.query,
         caseSensitive: session.caseSensitive,
         count: data.count as number,
+        // The document this count is about. Read through a ref because this listener is
+        // subscribed on the path, not on every debounced revision of the source.
+        document: previewTextRef.current,
       });
     };
     window.addEventListener("message", onFindResult);

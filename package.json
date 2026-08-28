@@ -59,7 +59,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",
     "@codemirror/language-data": "^6.5.2",
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^1.19.17",
     "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.149.0",
@@ -100,7 +100,8 @@
   "overrides": {
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
-    }
+    },
+    "next": "^16.3.0"
   },
   "electronmon": {
     "patterns": [

@@ -4597,7 +4597,7 @@ body.is-pane-resizing {
    is selected as the flex item to clip behind its neighbours. */
 @container file-main (max-width: 560px) {
   .file-main > .file-toolbar {
-    gap: 5px;
+    gap: 4px;
     padding-inline: 6px;
   }
   .file-main > .file-toolbar .file-path {

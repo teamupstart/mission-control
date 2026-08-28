@@ -108,7 +108,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import type { SetupChecksView } from "@shared/setup-catalog.ts";
+import type { SetupChecksSnapshot, SetupRowId } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -151,6 +151,10 @@ import type {
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
+import type {
+  RepoIndexConfigPatch,
+  RepoIndexView,
+} from "@shared/repo-index.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -313,8 +317,8 @@ export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId)
  */
 export const fetchEnvironmentChecks = () =>
   fetchJson<EnvironmentChecksView>("/api/environment/checks");
-/** A fresh read-only machine setup snapshot. Called only while Settings > Setup is open. */
-export const fetchSetupChecks = () => fetchJson<SetupChecksView>("/api/setup/checks");
+/** One fresh machine setup snapshot, shared by the App banner and Settings > Setup. */
+export const fetchSetupChecks = () => fetchJson<SetupChecksSnapshot>("/api/setup/checks");
 /** Ask the daemon to resolve and open one catalog-owned remedy in a visible terminal. */
 export const openSetupInstaller = (body: SetupInstallerLaunchBody) =>
   post<SetupInstallerLaunchResult>("/api/setup/install", body);
@@ -362,6 +366,8 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/** Machine-local roots that feed every repository picker and name resolver. */
+export const fetchRepoIndex = () => fetchJson<RepoIndexView>("/api/repo-index");
 /**
  * The Task sources panel in one read: what is configured, how each is doing, and which
  * kinds this build offers. One route rather than a config/status pair, for the reason
@@ -1851,6 +1857,11 @@ export const api = {
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
 
+  // --- Repository discovery roots ---
+  setRepoIndex: (cfg: RepoIndexConfigPatch) =>
+    put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg),
+  rescanRepoIndex: () => post<ActionResult & RepoIndexView>(`/api/repo-index/rescan`),
+
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,
   registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
@@ -1876,6 +1887,10 @@ export const api = {
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
+
+  // --- First-run setup reminder ---
+  dismissSetupBanner: (snapshotToken: string, acknowledged: SetupRowId[]) =>
+    put(`/api/setup/checks`, { snapshotToken, acknowledged }),
 
   // --- Away mode ---
   setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),

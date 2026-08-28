@@ -7,7 +7,7 @@ import type { TourTargetId, TourTargetRegistry } from "./target-registry.ts";
  * and a server recipe are all forced to name the same tour. Adding a tour is one member here
  * plus one entry in each registry that keys off it - never a parallel list.
  */
-export type TourId = "see-work" | "library";
+export type TourId = "see-work" | "library" | "setup";
 
 export type TourSide = "top" | "bottom" | "left" | "right";
 

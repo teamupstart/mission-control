@@ -918,7 +918,7 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
     const supervisor = new SdkSupervisor(registry, {
       missionMcpDescriptor: async () => descriptor,
       verifyMissionMcpTools: async (tools, scoped) => {
-        assert.deepEqual(tools, ["adopt_pipeline_run"]);
+        assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
         callerCredential = scoped?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
         assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
         return { ok: true };

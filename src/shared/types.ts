@@ -467,6 +467,14 @@ export interface Session {
   nameSource: NameSource;
   state: SessionState;
   cwd: string | null;
+  /**
+   * Checkout root that Files and Diff inspect.
+   *
+   * Usually identical to `cwd`. A managed Pipeline host is the exception: its SDK process
+   * remains in the source checkout while Engineer authors in a provider-owned worktree.
+   * Optional for mixed-version wire compatibility; consumers fall back to `cwd`.
+   */
+  workspaceRoot?: string | null;
   gitBranch: string | null;
   /**
    * The root of the checkout `cwd` sits in, resolved through symlinks. Null when
@@ -2069,6 +2077,13 @@ export interface Task {
    * lifecycle. The daemon settles the task from the provider projection instead.
    */
   pipelineRun: PipelineRunLink | null;
+  /**
+   * Provider-owned authoring worktree reported by a managed Pipeline host.
+   *
+   * Kept separate from `worktreePath`: Mission Control owns cleanup for that field, while
+   * this path belongs to the Pipeline provider and is only a Files and Diff projection.
+   */
+  pipelineWorkspacePath?: string | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */

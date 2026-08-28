@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased Plan: Conductor Planning Pipeline Continuity</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--paper:#fff;--ink:#17202b;--muted:#5f6b78;--line:#dce3ec;--accent:#2359d1;--accent-soft:#eaf0ff;--feature:#0d7b68;--shadow:0 18px 48px rgba(21,35,58,.09)}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#edf3ff 0,#f6f8fb 360px);color:var(--ink);font:16px/1.58 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1120px;margin:0 auto;padding:42px 24px 80px}.page{background:var(--paper);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:clamp(24px,5vw,64px)}h1{font-size:clamp(2rem,5vw,3.7rem);line-height:1.02;letter-spacing:-.045em;margin:0 0 22px;max-width:900px}h2{font-size:1.65rem;line-height:1.2;margin:52px 0 14px;padding-top:12px;border-top:1px solid var(--line)}h3{font-size:1.18rem;margin:34px 0 10px}h4{font-size:1rem;margin:28px 0 8px}p{margin:0 0 15px}h2+p{font-size:1.05rem}.meta{display:inline-block;margin:0 10px 10px 0;padding:6px 10px;background:var(--accent-soft);border-radius:999px;color:#204b9b;font-size:.88rem}a{color:var(--accent);text-underline-offset:3px}code{font:0.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:color-mix(in srgb,var(--accent-soft) 65%,transparent);border:1px solid color-mix(in srgb,var(--line) 75%,transparent);border-radius:5px;padding:.1em .32em}pre{overflow:auto;background:#101827;color:#e8eef8;border-radius:12px;padding:18px;border:1px solid #2c3a50}pre code{background:none;border:0;padding:0;color:inherit}li{margin:7px 0}ul,ol{padding-left:1.45rem}.table-wrap,.diagram{overflow-x:auto;margin:20px 0 28px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--paper) 90%,var(--accent-soft))}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:color-mix(in srgb,var(--accent-soft) 70%,var(--paper))}tr:last-child td{border-bottom:0}.diagram{padding:12px}.diagram svg{display:block;min-width:900px;width:100%;height:auto}.node{fill:var(--paper);stroke:#8da1bd;stroke-width:1.5}.node.feature{stroke:var(--feature)}.node.accent{stroke:var(--accent)}.life{stroke:#c4ceda;stroke-dasharray:5 5}.arrow{stroke:#5b6b7e;stroke-width:1.7}.diagram text{fill:var(--ink);font:14px ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.diagram .phase-title{font-weight:700;font-size:16px}.diagram .muted,.diagram .arrow-label{fill:var(--muted);font-size:12px}@media(max-width:700px){main{padding:16px 10px 48px}.page{border-radius:14px;padding:24px 18px}h2{margin-top:38px}}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1018;--paper:#111927;--ink:#e8eef7;--muted:#a8b3c2;--line:#2c394b;--accent:#8fb1ff;--accent-soft:#1c2c4b;--feature:#68d4bf;--shadow:none}body{background:linear-gradient(180deg,#101b30 0,#0b1018 360px)}.meta{color:#bfd0ff}pre{background:#080d15}.node{fill:#131d2c}.table-wrap,.diagram{background:#101824}}
+</style>
+</head>
+<body>
+<main><article class="page"><h1 id="phased-plan-conductor-planning-pipeline-continuity">Phased Plan: Conductor Planning Pipeline Continuity</h1>
+<p class="meta"><strong>Source plan:</strong> <code>docs/plans/conductor-planning-pipeline-continuity/plan.md</code>  </p>
+<p class="meta"><strong>Status:</strong> Ready to schedule  </p>
+<p class="meta"><strong>Repository set:</strong> Mission Control plus <code>/Users/jordan.mance/workspace/upstart/ai-conductor</code>  </p>
+<p class="meta"><strong>Target fork for AI Conductor work:</strong> <code>mancej/ai-conductor</code></p>
+<h2 id="implementation-outcome">Implementation outcome</h2>
+<p>Deliver one visible Pipeline commission from task dispatch through interactive AI Conductor DECIDE, spec handoff and merge, then through the daemon-created BUILD and SHIP run. AI Conductor contributes only reusable Engineer lifecycle events and replay on its existing event spine. Mission Control and its visualizer plugin own the personal integration, persistence, session binding, and UI.</p>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<ul>
+<li>The operator explicitly selected phased planning and scheduling on 2026-08-27.</li>
+<li>AI Conductor changes land on the operator's fork, not in an upstream implementation PR.</li>
+<li>Both Engineer-run and DECIDE step lifecycle events are required.</li>
+<li>AI Conductor extension points must remain product-neutral and use the existing event spine.</li>
+<li>Mission Control-specific state and translation remain in Mission Control and its existing plugin.</li>
+<li>The Pipeline meter must render immediately at dispatch, advance live during DECIDE, show the spec-merge gate, and continue automatically in a later provider worker session.</li>
+<li>A Skill/tool return is not sufficient proof of step completion. Accepted output or deterministic artifact reconciliation is required.</li>
+</ul>
+<h2 id="repository-findings-that-shape-the-phases">Repository findings that shape the phases</h2>
+<ol>
+<li>AI Conductor currently dispatches <code>engineer</code> before normal plugin discovery and run lifecycle setup. Its visualizer interface is observer-only and cannot create events. <code>ai-conductor/src/conductor/src/index.ts:593-597</code>, <code>ai-conductor/src/conductor/src/types/plugin.ts:39-56</code></li>
+<li>AI Conductor already has the required reusable spine: <code>ConductorEventEmitter</code>, the closed <code>ConductorEvent</code> union, <code>EVENT_SINKS</code>, <code>EventPersister</code>, and visualizer lifecycle helpers. <code>ai-conductor/src/conductor/src/ui/events.ts</code>, <code>ai-conductor/src/conductor/src/types/events.ts</code>, <code>ai-conductor/src/conductor/src/engine/event-sinks.ts</code>, <code>ai-conductor/src/conductor/src/engine/event-persister.ts</code>, <code>ai-conductor/src/conductor/src/engine/visualizer-lifecycle.ts</code></li>
+<li>Deterministic Engineer commands already own worktree creation, land, handoff, and cleanup. These are the correct mechanical emission and reconciliation boundaries. <code>ai-conductor/src/conductor/src/engine/engineer-cli.ts:880-1156</code></li>
+<li>The existing AI Conductor authored ledger survives individual authoring worktrees, but stores only project/feature pairs. It is a nearby durability pattern, not a sufficient event replay contract. <code>ai-conductor/src/conductor/src/engine/engineer/authored-ledger.ts</code></li>
+<li>Mission Control's visualizer plugin already batches event delivery and retries without blocking the engine, but it resolves only implementation run identity and has a frozen per-event subscription list. <code>integrations/ai-conductor/mission-control/index.mjs</code>, <code>integrations/ai-conductor/mission-control/README.md</code></li>
+<li>Mission Control ingest currently accepts only events for provider runs already enumerated from worktrees. That intentionally rejects the pre-run Engineer lifecycle. <code>src/server/pipelines/ingest.ts</code>, <code>src/server/pipelines/types.ts</code></li>
+<li>Mission Control reserves <code>Task.pipelineRun</code> from raw intent before a final plan exists, while the Engineer SDK session intentionally has no <code>Session.pipeline</code>. <code>src/server/dispatcher.ts:856-966</code>, <code>src/server/pipelines/conductor/index.ts:349-409</code></li>
+<li>The Board phase meter requires a provider session/run join. It cannot render task-owned authoring progress. <code>src/web/components/layouts/SessionTile.tsx:277-283</code></li>
+<li>The provider reader currently normalizes worktrees even when <code>conduct-state.json</code> is absent, which is why an Engineer authoring directory can appear as a false all-pending run. <code>src/server/pipelines/conductor/index.ts:136-214</code></li>
+<li>The AI Conductor checkout is clean on <code>main</code>; <code>origin</code> is <code>mancej/ai-conductor</code> and <code>upstream</code> is <code>jstoup111/ai-conductor</code>. The Mission Control plan branch is separate and can attach that checkout as implementation scope or read-only context.</li>
+</ol>
+<h2 id="size-estimate">Size estimate</h2>
+<p>Estimated non-test implementation work across all phases: <strong>1,500-2,310 lines</strong>.</p>
+<p>Assumptions:</p>
+<ul>
+<li>450-700 lines in AI Conductor for event contracts, durable Engineer-run reduction/replay, lifecycle loading, CLI/hook integration, and handoff reconciliation.</li>
+<li>500-750 lines in Mission Control for schema, provider adapter, plugin envelope, ingest, reducer, and reconciliation.</li>
+<li>450-700 lines in Mission Control for dispatch activation, session/run binding, Board/Console/Runs UI, and strict false-run correction.</li>
+<li>100-160 lines of maintained product and integration documentation.</li>
+<li>Tests are excluded from the estimate and are expected to add roughly 1,000-1,500 lines.</li>
+</ul>
+<h2 id="why-three-phases">Why three phases</h2>
+<p>The total is well above 200 non-test lines and crosses two independently versioned repositories, a durable event contract, a SQLite migration, two delivery paths, session ownership, and visible browser behavior.</p>
+<ul>
+<li>Phase 1 must land alone because it creates a generic provider contract that is useful without Mission Control and safe for existing AI Conductor users. Combining it with Phase 2 would force one task to change two repositories even though the provider can remain fully operable without the consumer.</li>
+<li>Phase 2 isolates the high-risk compatibility foundation: schema migration, event validation, provider replay, plugin transport, and additive shared contracts. Combining it with Phase 3 would give one mid-tier executor a migration, ingest security boundary, polling/replay correctness, dispatch transaction, session correlation, and broad UI/E2E change in one PR. That is less reviewable and makes failures harder to localize.</li>
+<li>Phase 3 activates the user-visible contract only after its persistence and provider seams are merged. It remains a coherent vertical slice from dispatch through cards and Runs to the later worker.</li>
+</ul>
+<p>No phase is test-only, documentation-only, or cleanup-only. Every phase ends with an operable repository.</p>
+<h2 id="phase-graph">Phase graph</h2>
+<div class="diagram" role="img" aria-label="Three sequential implementation phases"><svg viewBox="0 0 1040 210" xmlns="http://www.w3.org/2000/svg"><defs><marker id="phase-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#5b6b7e"/></marker></defs><rect x="30" y="45" width="270" height="105" rx="16" class="node feature"/><text x="165" y="78" text-anchor="middle" class="phase-title">Phase 1</text><text x="165" y="105" text-anchor="middle">AI Conductor fork</text><text x="165" y="129" text-anchor="middle" class="muted">generic events + replay</text><line x1="300" y1="98" x2="380" y2="98" class="arrow" marker-end="url(#phase-arrow)"/><rect x="390" y="45" width="270" height="105" rx="16" class="node"/><text x="525" y="78" text-anchor="middle" class="phase-title">Phase 2</text><text x="525" y="105" text-anchor="middle">Mission Control</text><text x="525" y="129" text-anchor="middle" class="muted">commission + plugin foundation</text><line x1="660" y1="98" x2="740" y2="98" class="arrow" marker-end="url(#phase-arrow)"/><rect x="750" y="45" width="260" height="105" rx="16" class="node accent"/><text x="880" y="78" text-anchor="middle" class="phase-title">Phase 3</text><text x="880" y="105" text-anchor="middle">Mission Control</text><text x="880" y="129" text-anchor="middle" class="muted">cohesive lifecycle UX</text></svg></div>
+<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Primary repository</th><th>Attached context</th><th>Direct dependency</th><th>Merge outcome</th></tr></thead><tbody><tr><td><a href="phase-1-ai-conductor-engineer-events.md">Phase 1: Generic Engineer lifecycle stream</a></td><td><code>/Users/jordan.mance/workspace/upstart/ai-conductor</code></td><td>Mission Control, context-only</td><td>Planning session</td><td>Product-neutral events, replay, capability, and handoff identity on <code>mancej/ai-conductor</code></td></tr><tr><td><a href="phase-2-mission-control-commission-foundation.md">Phase 2: Commission and plugin foundation</a></td><td>Mission Control</td><td>AI Conductor, context-only</td><td>Phase 1</td><td>Durable commission storage, provider/replay adapter, and additive plugin ingest contract</td></tr><tr><td><a href="phase-3-mission-control-pipeline-continuity-ux.md">Phase 3: Cohesive Pipeline UX</a></td><td>Mission Control</td><td>AI Conductor, context-only</td><td>Phase 2</td><td>Immediate card meter, live DECIDE progress, merge gate, and automatic later-session continuation</td></tr></tbody></table></div>
+<h2 id="concurrency-and-merge-order">Concurrency and merge order</h2>
+<p>There is one execution group at each depth:</p>
+<ol>
+<li>Phase 1 only.</li>
+<li>Phase 2 after Phase 1 merges.</li>
+<li>Phase 3 after Phase 2 merges.</li>
+</ol>
+<p>No phases may run concurrently. Phase 2 consumes the exact event, capability, and replay contract from Phase 1. Phase 3 consumes the exact schema, reducer, and provider adapter from Phase 2.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<div class="table-wrap"><table><thead><tr><th>Contract</th><th>Owner</th><th>Consumers may rely on</th></tr></thead><tbody><tr><td><code>engineerLifecycleEventsV1</code> capability</td><td>Phase 1</td><td>It is advertised only when create, event persistence, replay, and handoff identity are complete.</td></tr><tr><td>Engineer event identity</td><td>Phase 1</td><td><code>schemaVersion</code>, <code>engineerRunId</code>, attempt key/ordinal, optional opaque correlation id, repository, run-local monotonic revision, and timestamp are stable.</td></tr><tr><td>Engineer retry lineage</td><td>Phase 1</td><td>Same-launch retries are idempotent by attempt key. A post-terminal retry creates an ordered successor run with an independent replay cursor and never reopens its predecessor.</td></tr><tr><td>Step completion meaning</td><td>Phase 1</td><td>Completion is accepted or reconciled, never inferred solely from tool return.</td></tr><tr><td>Spec handoff payload</td><td>Phase 1</td><td>Exact plan slug, branch, PR URL if present, and awaiting-merge meaning are available before worktree cleanup.</td></tr><tr><td>Commission persistence</td><td>Phase 2</td><td>One commission per task, ordered attempt records with independent provider revisions, bounded authoring ledger, and restart-safe projection.</td></tr><tr><td>Plugin envelope</td><td>Phase 2</td><td>Existing run envelopes remain valid; Engineer identity is additive and validated separately.</td></tr><tr><td>Reconciliation</td><td>Phase 2</td><td>Live push is latency; bounded provider replay restores correctness.</td></tr><tr><td>UI view model</td><td>Phase 3</td><td>Commission and provider run use one shared phase/status derivation without changing session composer authority.</td></tr></tbody></table></div>
+<h2 id="publication-and-task-scheduling-contract">Publication and task scheduling contract</h2>
+<ul>
+<li>The source plan, this index, both HTML renderings, and all phase files are committed and pushed on the current Mission Control planning branch before any implementation task is created.</li>
+<li>Every phase task depends on this planning session so it remains backlogged until the planning PR merges and the referenced paths exist on the default branch.</li>
+<li>Phase 1 targets <code>/Users/jordan.mance/workspace/upstart/ai-conductor</code> and attaches this Mission Control checkout as context-only.</li>
+<li>Phases 2 and 3 target Mission Control and attach <code>/Users/jordan.mance/workspace/upstart/ai-conductor</code> as context-only.</li>
+<li>Phase 2 depends directly on the Phase 1 task. Phase 3 depends directly on the Phase 2 task.</li>
+<li>Every implementation task opens a PR only in its primary repository. The context-only repository must not be changed.</li>
+</ul>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<ol>
+<li>Phase 1 proves generic event and replay correctness in AI Conductor, including existing Engineer, inline, daemon, and visualizer compatibility.</li>
+<li>Phase 2 proves Mission Control migration, ingest, plugin, reducer, and replay behavior without activating a partial UI.</li>
+<li>Phase 3 reproduces the original user-visible gap in the built browser, then proves immediate rendering, live DECIDE advancement, handoff, merge, later-worker attachment, restart recovery, and layout quality.</li>
+<li>The final cross-repository fixture pins the capability name, event family, identity and attempt-lineage fields, per-run revisions, handoff payload, and additive plugin envelope from both sides.</li>
+</ol>
+<h2 id="cross-phase-audit-record">Cross-phase audit record</h2>
+<ul>
+<li>2026-08-27, initial decomposition: moved all AI Conductor event authority into Phase 1 and all Mission Control semantics into Phases 2-3. No Mission Control field is required in core.</li>
+<li>2026-08-27, identity audit: the raw intent slug is not used as end-to-end identity. Commission id, Engineer run id, and final provider slug remain distinct and explicitly mapped.</li>
+<li>2026-08-27, recovery audit: live plugin push and durable replay are complementary. No phase treats the in-memory plugin buffer as durable truth.</li>
+<li>2026-08-27, activation audit: Phase 2 lands additive dormant infrastructure. Phase 3 is the only phase that replaces current dispatch/card behavior, preventing a partially supported UX from shipping between phases.</li>
+<li>2026-08-27, repository audit: Phase 1 changes only the fork. Phases 2-3 change only Mission Control. Every cross-repository attachment is marked context-only.</li>
+<li>2026-08-27, Inspector retry audit: the commission remains stable across authoring retries, but every retry after terminal state creates a new Engineer run attempt with its own idempotency key and replay cursor. Terminal runs are never reopened.</li>
+</ul></article></main>
+</body>
+</html>

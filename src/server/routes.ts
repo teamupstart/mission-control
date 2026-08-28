@@ -51,9 +51,11 @@ import {
   McpCreateTaskV2Schema,
   type McpCreateTaskV2,
   McpAdoptPipelineRunSchema,
+  McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
   McpProductIssueSubmitRequestSchema,
   ResolveFindingsSchema,
+  SetupBannerDismissRequestSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -206,7 +208,7 @@ import { recordInjection } from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket } from "@shared/session.ts";
+import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -328,13 +330,16 @@ import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import { setupChecksView } from "./setup/index.ts";
+import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
+import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import {
   DEFAULT_SETUP_INSTALL_CATALOG,
   executeSetupInstall,
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
+import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
+import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
   getInspectorConfig,
@@ -345,6 +350,12 @@ import {
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
 import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
+import {
+  RepoIndexConfigError,
+  repoIndexView,
+  setRepoIndexConfig,
+} from "./repo-index.ts";
+import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -403,6 +414,7 @@ import {
 import { driverClearFor, resetSession } from "./reset.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import {
+  invalidateReposCache,
   listRepos,
   resolveRepoPath,
   resolveRepoRoot,
@@ -975,6 +987,7 @@ export function buildApp(
   setupInstallDeps?: SetupInstallRouteDeps,
 ): Hono {
   const app = new Hono();
+  const setupSnapshots = createSetupSnapshotTracker(randomUUID);
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
   const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
@@ -2324,9 +2337,9 @@ export function buildApp(
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     try {
-      return c.json({ files: await listSessionFiles(session.cwd) });
+      return c.json({ files: await listSessionFiles(sessionWorkspaceRoot(session)!) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
@@ -2335,11 +2348,11 @@ export function buildApp(
   app.get("/api/sessions/:id/file", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     try {
-      return c.json(await readSessionFile(session.cwd, parsed.data.path));
+      return c.json(await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path));
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2358,12 +2371,12 @@ export function buildApp(
     async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, SaveSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
       const result = await saveSessionFile(
-        session.cwd,
+        sessionWorkspaceRoot(session)!,
         parsed.data.path,
         parsed.data.text,
         parsed.data.expectedRevision,
@@ -2394,12 +2407,12 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-anchor", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockAnchorSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(session.cwd, parsed.data.path);
+      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2435,12 +2448,12 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-target", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockTargetSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(session.cwd, parsed.data.path);
+      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
@@ -2672,11 +2685,11 @@ export function buildApp(
   app.post("/api/sessions/:id/file/open", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, OpenSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      const file = await resolveSessionFilePath(session.cwd, parsed.data.path);
+      const file = await resolveSessionFilePath(sessionWorkspaceRoot(session)!, parsed.data.path);
       const result = await openFile(parsed.data.target, file);
       const body = {
         ok: result.ok,
@@ -2974,6 +2987,33 @@ export function buildApp(
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
 
+  // The machine-local source of those workspace roots. The environment remains the
+  // launch-time authority; when present, the view says so and the saved list is read-only.
+  app.get("/api/repo-index", async (c) => c.json(await repoIndexView()));
+  app.put("/api/repo-index", async (c) => {
+    const override = repositoryIndexEnvironmentOverride();
+    if (override) {
+      return c.json({
+        error: `Repository index directories are read-only while ${override.variable} is set.`,
+      }, 409);
+    }
+    const parsed = await parseBody(c, RepoIndexConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      setRepoIndexConfig(parsed.data);
+      return c.json(await repoIndexView());
+    } catch (error) {
+      if (error instanceof RepoIndexConfigError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+  app.post("/api/repo-index/rescan", async (c) => {
+    invalidateReposCache();
+    return c.json(await repoIndexView());
+  });
+
   // Resolve a typed path to its canonical git repo root, so the Foreman allowlist
   // picker stores what the server actually gates on (a realpath'd top-level) and
   // rejects a non-repo path instead of letting a typo sit inertly on the list.
@@ -3261,7 +3301,7 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, StandardsRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const root = await repoRootOf(session.cwd);
+    const root = await repoRootOf(sessionWorkspaceRoot(session));
     return c.json(readStandards(root, parsed.data.paths));
   });
 
@@ -3438,9 +3478,9 @@ export function buildApp(
     // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
     // diffs from the merge-base and would answer with everything since that sha.
     const commit = c.req.query("commit");
-    if (commit) return c.json(await computeCommitDiff(session.cwd, commit));
+    if (commit) return c.json(await computeCommitDiff(sessionWorkspaceRoot(session), commit));
     const source = c.req.query("base") || undefined;
-    return c.json(await computeSessionDiff(session.cwd, source));
+    return c.json(await computeSessionDiff(sessionWorkspaceRoot(session), source));
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -3801,6 +3841,42 @@ export function buildApp(
         ? { kind: "managed", session }
         : { kind: "managed-launch", sessionId: caller.sessionId },
     );
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ task: result.task, replayed: result.replayed });
+  });
+
+  app.post("/mcp/pipelines/workspace", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportPipelineWorkspaceSchema);
+    if (!parsed.ok) return parsed.res;
+    const credential = c.req.header(PIPELINE_CALLER_CREDENTIAL_HEADER);
+    const caller = credential ? registry.managedPipelineCaller(credential) : null;
+    if (!caller) {
+      return c.json({ error: "the caller has no managed Pipeline launch capability" }, 403);
+    }
+    const task = registry.getTask(caller.taskId);
+    if (!task) return c.json({ error: "no matching Pipeline task" }, 404);
+    if (task.sessionId !== caller.sessionId) {
+      return c.json({ error: "the caller does not own this Pipeline task" }, 403);
+    }
+    const session = registry.getSession(caller.sessionId);
+    if (session?.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    if (session) {
+      if (
+        session.cwd !== caller.cwd ||
+        session.runtime !== "sdk" ||
+        session.pipeline !== null
+      ) {
+        return c.json({ error: "the caller does not match the managed Pipeline host" }, 403);
+      }
+    } else {
+      const launch = registry.managedPipelineLaunch(caller.sessionId);
+      if (!launch) return c.json({ error: "no matching active session" }, 404);
+      if (launch.taskId !== task.id || launch.cwd !== caller.cwd) {
+        return c.json({ error: "the caller does not match the pending managed Pipeline host" }, 403);
+      }
+    }
+    const result = tasks.reportPipelineWorkspace(task.id, parsed.data.path);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, replayed: result.replayed });
   });
@@ -6039,9 +6115,27 @@ export function buildApp(
   app.get("/api/environment/checks", async (c) =>
     c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
 
-  // Uncached and read-only. Re-checking reflects installs and sign-ins without restarting,
-  // while every remedy remains inert data for the browser to link or copy.
-  app.get("/api/setup/checks", async (c) => c.json(await setupChecksView(setupDeps)));
+  // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
+  // remedy remains inert data for the browser to link or copy. The one write during this read
+  // only retires acknowledgements for rows the fresh result proved repaired or removed.
+  app.get("/api/setup/checks", async (c) =>
+    c.json(setupSnapshots.issue(await setupChecksView(setupDeps ?? defaultSetupDeps()))));
+  // The same resource path as the read, so dismissal adds no second setup read or endpoint.
+  // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
+  // probes, and any install behavior remain completely outside this write.
+  app.put("/api/setup/checks", async (c) => {
+    const parsed = await parseBody(c, SetupBannerDismissRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!setupSnapshots.consume(parsed.data.snapshotToken, parsed.data.acknowledged)) {
+      return c.json({ error: "Setup checks changed. Re-check before dismissing." }, 409);
+    }
+    const deps = setupDeps ?? defaultSetupDeps();
+    deps.writeBannerDismissal(acknowledgeSetupRows(
+      deps.readBannerDismissal(),
+      parsed.data.acknowledged,
+    ));
+    return c.json({ ok: true });
+  });
 
   /**
    * Open one catalog-owned remedy in a visible terminal. The request carries identity and a

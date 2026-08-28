@@ -14,6 +14,7 @@ import { CONVERSATION_VIEW_OPTIONS } from "../src/web/lib/conversation-view.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
+import type { SetupChecksState } from "../src/web/useSetupChecks.ts";
 import type { SettingsStatus } from "../src/shared/types.ts";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { TourId } from "../src/web/tour/contracts.ts";
@@ -55,6 +56,13 @@ const LLM: LlmState = {
   update: async () => {},
   error: null,
 };
+const SETUP: SetupChecksState = {
+  view: null,
+  loading: false,
+  error: null,
+  refresh: async () => {},
+  dismissBanner: async () => null,
+};
 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard renders
 // it, so the panel only edits what it's handed.
@@ -78,6 +86,7 @@ function render(
       foreman: opts.foreman ?? FOREMAN,
       cost: COST,
       llm: LLM,
+      setup: SETUP,
       layout: "console",
       onLayoutChange: () => {},
       settingsStatus: opts.settingsStatus ?? null,

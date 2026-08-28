@@ -2733,6 +2733,10 @@ body {
   border-color: color-mix(in oklab, var(--idle) 38%, var(--border));
   background: color-mix(in oklab, var(--idle) 8%, var(--panel));
 }
+.app-banner-setup {
+  border-color: color-mix(in oklab, var(--attention) 42%, var(--border));
+  background: color-mix(in oklab, var(--attention) 9%, var(--panel));
+}
 .app-console > .app-banner,
 .app-board > .app-banner {
   margin: 0;
@@ -17967,6 +17971,190 @@ button.wf-carried.is-link:focus-visible {
   font-size: 12px;
   color: var(--attention);
 }
+
+/* ---- repository index directories ----
+   One removable row per root, with the filesystem reading kept beside the path. */
+.ri-panel .settings-section-head {
+  align-items: flex-start;
+  gap: 20px;
+  margin-top: 18px;
+}
+.ri-panel .settings-section-head .settings-hint {
+  max-width: 490px;
+  margin: -2px 0 0;
+  text-align: right;
+}
+.ri-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ri-row {
+  display: grid;
+  grid-template-columns: 22px minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.ri-row.is-muted {
+  background: color-mix(in oklab, var(--panel-2) 72%, transparent);
+}
+.ri-glyph {
+  color: var(--muted);
+  text-align: center;
+}
+.ri-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ri-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.ri-chip {
+  padding: 2px 7px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+.ri-chip-default {
+  color: var(--dim);
+}
+.ri-chip-ok {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 32%, var(--border));
+  background: color-mix(in oklab, var(--idle) 8%, var(--panel-2));
+}
+.ri-chip-missing {
+  color: var(--dim);
+}
+.ri-chip-not-a-directory,
+.ri-chip-unreadable,
+.ri-chip-unsafe {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 32%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+}
+.ri-remove {
+  padding: 4px 7px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.ri-remove:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg-2);
+}
+.ri-remove:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.ri-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ri-add .field-input {
+  flex: 1;
+  min-width: 0;
+}
+.ri-add-hint {
+  margin-top: 7px;
+}
+.ri-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.ri-count {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 11px;
+}
+.ri-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--panel-2) 65%, transparent);
+}
+.ri-empty strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+.ri-saved {
+  margin-top: 20px;
+}
+.ri-footnote {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 9px 11px;
+  color: var(--dim);
+  font-size: 11.5px;
+  line-height: 1.5;
+  border-left: 2px solid var(--border);
+}
+@media (max-width: 700px) {
+  .ri-panel .settings-section-head {
+    flex-direction: column;
+    gap: 5px;
+  }
+  .ri-panel .settings-section-head .settings-hint {
+    text-align: left;
+  }
+  .ri-row {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+  }
+  .ri-meta {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+  }
+  .ri-row > :last-child {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .ri-add {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ri-count {
+    width: 100%;
+    margin-left: 0;
+  }
+}
 .settings-hint {
   margin: 16px 0 0;
   font-size: 11.5px;
@@ -24997,46 +25185,74 @@ span.line-run-prov {
    One level above the run frames. Deliberately the SAME box as `.board-cluster` above, because
    the board already teaches that a frame means "these belong together" - what this adds is the
    repository's own colour, carried on ONE custom property (`--repo-c`, set inline from
-   `lib/repo-color.ts`) so the border, the head and the body are tinted from a single source and
-   cannot drift apart.
+   `lib/repo-color.ts`) so the two coloured edges and the head cannot drift apart.
 
    A run frame nests inside this one, which is the honest cost of the treatment: an engine run
-   belongs to exactly one repository, so a correlated column draws a box inside a box. */
+   belongs to exactly one repository, so a correlated column draws a box inside a box.
+
+   THE COLOUR IS TWO EDGES, NOT AN AREA. This frame used to tint its whole border at 42% and
+   wash its body at 6% and its head at 11%, and three translucent surfaces of one hue is enough
+   colour to read as a STATE - which is the one thing a repository must not read as, because
+   every state colour on this board (`--working`, `--idle`, `--attention`, `--held`) is spent on
+   what a session is DOING. So the body and the border go neutral, and the hue is spent on the
+   frame's top and leading edges: a 2px rule and a 3px spine, mixed at the SAME 78%, meeting at
+   the top-left corner. Identical colour is what makes the miter between a 2px edge and a 3px
+   one invisible, so the pair reads as one bracket around the group rather than as two marks
+   that happen to share a hue.
+
+   `flex: none` is load-bearing, not decoration. `.board-col-body` is a flex column, so a frame
+   that sets `overflow` to anything other than `visible` loses its automatic minimum size and is
+   free to be SHRUNK by the column - which clipped the last card of a group on a column holding
+   eight idle sessions. The previous frame got away without it only because it never set
+   `overflow`; this one clips its head's corners, so it has to say so. */
 .board-repo {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 7px;
-  padding: 0 0 8px;
-  border: 1px solid color-mix(in oklab, var(--repo-c) 42%, var(--border-soft));
-  border-radius: 13px;
-  background: color-mix(in oklab, var(--repo-c) 6%, transparent);
+  padding: 0 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-top: 2px solid color-mix(in oklab, var(--repo-c) 78%, transparent);
+  border-left: 3px solid color-mix(in oklab, var(--repo-c) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+}
+/* Both coloured edges together, so the bracket brightens as one thing. */
+.board-repo:hover {
+  border-top-color: color-mix(in oklab, var(--repo-c) 92%, transparent);
+  border-left-color: color-mix(in oklab, var(--repo-c) 92%, transparent);
 }
 /* The direct children only. A tile inside a NESTED `.board-cluster` is already inset by that
    frame's own `.board-cluster .tile` rule, and insetting it again here would step it twice. */
 .board-repo > .tile,
 .board-repo > .board-cluster {
-  margin: 0 8px;
+  margin: 0 7px;
   width: auto;
 }
-/* Borrows `.board-cluster-head`'s box and re-tints it, the way `.board-pipeline-head` already
+/* Borrows `.board-cluster-head`'s box and re-surfaces it, the way `.board-pipeline-head` already
    borrows it - so two frames in one column read as the same kind of structure rather than as
    two inventions.
 
    ONE line, unlike the head it borrows the box from, which is why the flex direction is
    overridden here. That head needs two because it carries a strategy, a stage word, progress
    dots and an attention badge; a repository carries a name and a count, and putting the count
-   on its own line spent a whole row of every column in the board on four characters. */
+   on its own line spent a whole row of every column in the board on four characters.
+
+   A solid `--panel` band with FLUSH corners: the frame clips them, so the head fills the box's
+   top edge instead of floating inside a 1px gutter, and it reads as a header band rather than
+   as a coloured pill. */
 .board-repo-head {
   flex-direction: row;
   align-items: center;
-  gap: 7px;
-  padding: 6px 9px;
-  border-bottom-color: color-mix(in oklab, var(--repo-c) 30%, var(--border-soft));
-  background: color-mix(in oklab, var(--repo-c) 11%, transparent);
-  border-radius: 12px 12px 0 0;
+  gap: 8px;
+  padding: 5px 9px;
+  border-bottom-color: var(--border-soft);
+  background: var(--panel);
+  border-radius: 0;
 }
 .board-repo-head:hover {
-  background: color-mix(in oklab, var(--repo-c) 18%, var(--panel));
+  background: var(--panel-2);
 }
 .board-repo-head .bch-title {
   flex: 0 1 auto;
@@ -25045,24 +25261,40 @@ span.line-run-prov {
 }
 /* Beside the title rather than under it, and it must not be squeezed: the title is the flexible
    cell and ellipsises first, because a shortened repository name is still recognisable while
-   "2 of…" is not a number. */
+   "2 of…" is not a number.
+   A TAG rather than loose text, because the head has no tint left to separate the count from
+   the name beside it. */
 .board-repo-head .bch-meta {
   flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--dim);
+  background: color-mix(in oklab, var(--bg) 55%, var(--panel-2));
   font-variant-numeric: tabular-nums;
 }
-/* Folded away. The head keeps the full radius and drops its rule, so a collapsed group reads as
-   one pill rather than as a frame with nothing in it. */
+/* Folded away. The head drops its rule, so a collapsed group reads as one bar rather than as a
+   frame with nothing in it. The frame keeps its radius and its bracket, which is what still says
+   a folded group is a group. */
 .board-repo.is-collapsed {
   padding-bottom: 0;
 }
 .board-repo.is-collapsed .board-repo-head {
   border-bottom: 0;
-  border-radius: 12px;
+}
+/* The board head does NOT draw the swatch: the frame's bracket is already the repository's
+   colour, and a 7px dot 9px away from a 3px rule of the same hue is the same fact twice, paid
+   for with the header's first cell. The RAIL head keeps it - see `.rail-repo-group` below -
+   because a rail row has no frame to carry an edge, so the dot is the only colour it has.
+   Hidden here rather than dropped from `RepoGroupHead`, so one component keeps rendering one
+   header for both surfaces. */
+.board-repo-head .brh-swatch {
+  display: none;
 }
 /* The saturated end of the repository's colour, and the only place it runs at full strength: a
-   7px dot can carry a hue the frame around it could not without competing with the card tones
-   inside it. Same size as `.board-swatch` in the column head above it, deliberately - they
-   answer the same kind of question one level apart. Shared with the rail group below. */
+   7px dot can carry a hue a surface could not without competing with the card tones beside it.
+   Same size as `.board-swatch` in the column head, deliberately - they answer the same kind of
+   question one level apart. */
 .brh-swatch {
   flex: none;
   width: 7px;
@@ -25070,13 +25302,24 @@ span.line-run-prov {
   border-radius: 50%;
   background: var(--repo-c);
 }
+/* A DRAWN caret, not the `⌄` text glyph this used to set. A glyph sits on its own font baseline,
+   so it never lines up with the row it is in and it was the one part of this header that looked
+   unfinished at any size. `currentcolor` and the class are kept, so the rotation rule below and
+   the rail's own copy of the control are unchanged. */
 .brh-chevron {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   margin-left: auto;
-  font-size: 12px;
-  line-height: 1;
   color: var(--dim);
   transition: transform 120ms ease;
+}
+.board-repo-head:hover .brh-chevron,
+.rail-repo-group:hover .brh-chevron {
+  color: var(--muted);
 }
 /* Driven off `aria-expanded` rather than off the frame's `.is-collapsed` class, so the glyph
    cannot point one way while the control announces the other - and so the rail group, which has

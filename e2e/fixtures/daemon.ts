@@ -46,7 +46,7 @@ export interface DaemonHandle {
   home: string;
   /** Where the fake agent binaries record the argv/env they were launched with. */
   recordDir: string;
-  /** The workspace root `MISSION_WORKSPACE_DIRS` points at. */
+  /** The seeded workspace root, normally selected by `MISSION_WORKSPACE_DIRS`. */
   workspace: string;
   /** Absolute path of the seeded git repository a dispatch can branch from. */
   repo: string;
@@ -100,6 +100,10 @@ export interface DaemonHandle {
   conductorCheckout: string | null;
   /** Make the initially missing fake engine resolve on the next real provider probe. */
   installFakeConductor(): void;
+  /** Make the opt-in, initially missing fake GitHub CLI resolve on the next Setup read. */
+  installFakeGh(): void;
+  /** Remove that fake GitHub CLI so a later Setup read observes a regression. */
+  removeFakeGh(): void;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -273,8 +277,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       ? seedConductorInstallerCheckout(seedRepo(workspace, "ai-conductor"))
       : null;
   const startsMissing = extraEnv.MC_E2E_CONDUCTOR_STARTS_MISSING === "1";
+  const useRepoIndexDefaults = extraEnv.MC_E2E_USE_REPO_INDEX_DEFAULTS === "1";
   const installRoot = join(home, "installed-conductor");
   const installBin = join(installRoot, "bin/conduct-ts");
+  const ghStartsMissing = extraEnv.MC_E2E_GH_STARTS_MISSING === "1";
+  const ghInstallBin = join(home, "installed-gh", "bin", "gh");
 
   const installFakeConductor = (): void => {
     if (!startsMissing) return;
@@ -284,7 +291,19 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     writeFileSync(join(installRoot, "VERSION"), `${FAKE_CONDUCTOR_VERSION}\n`);
   };
 
-  const isolatedEnv = {
+  const installFakeGh = (): void => {
+    if (!ghStartsMissing) return;
+    mkdirSync(dirname(ghInstallBin), { recursive: true });
+    copyFileSync(bins.gh, ghInstallBin);
+    chmodSync(ghInstallBin, 0o755);
+  };
+
+  const removeFakeGh = (): void => {
+    if (!ghStartsMissing) return;
+    rmSync(ghInstallBin, { force: true });
+  };
+
+  const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
@@ -327,7 +346,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
-    MISSION_GH_BIN: bins.gh,
+    MISSION_GH_BIN: ghStartsMissing ? ghInstallBin : bins.gh,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR
@@ -399,6 +418,15 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the `daemonEnv` fixture option rather than by editing this shared list.
     ...extraEnv,
   };
+
+  // One repository-settings spec must exercise the config-backed defaults. Scrub every
+  // supported spelling so an operator's shell cannot quietly keep the panel environment-owned.
+  if (useRepoIndexDefaults) {
+    for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+      delete isolatedEnv[`${prefix}_WORKSPACE_DIRS`];
+      delete isolatedEnv[`${prefix}_WORKSPACE_DIR`];
+    }
+  }
 
   let log = "";
   let exited: { code: number | null; signal: string | null } | null = null;
@@ -585,6 +613,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     conductor,
     conductorCheckout,
     installFakeConductor,
+    installFakeGh,
+    removeFakeGh,
     readLog: () => log,
     startForeman,
     crash,

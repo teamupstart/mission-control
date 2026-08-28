@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
 import { canMessage, messageBlockReason } from "../src/shared/pane.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 // Correlating a carded session to the pipeline run whose work it is doing.
 //
@@ -274,6 +274,46 @@ test("a session Mission Control launched itself is never correlated, wherever it
   const after = registry.getSession(sdk.id)!;
   assert.equal(after.pipeline, null, "and the re-stamp door leaves it null");
   assert.equal(canMessage(after), true, "so it is still a session you can talk to");
+});
+
+test("a managed Pipeline host follows its reported workspace and then the exact projected run", () => {
+  const registry = new Registry();
+  const host = registry.registerSdkSession({
+    id: "sdk:managed-workspace",
+    agent: "codex",
+    name: "managed workspace",
+    cwd: REPO,
+    agentSessionId: "managed-workspace",
+    gitBranch: null,
+    gitRoot: REPO,
+    repoRoot: REPO,
+  });
+  const authoring = `${REPO}/.worktrees/engineer-add-widgets`;
+  registry.upsertTask(mkTask({
+    id: "managed-workspace-task",
+    kind: "pipeline",
+    agent: "codex",
+    repoRoot: REPO,
+    status: "running",
+    sessionId: host.id,
+    pipelineRun: {
+      provider: "ai-conductor",
+      repoRoot: REPO,
+      slug: "add-widgets",
+    },
+    pipelineWorkspacePath: authoring,
+  }));
+
+  assert.equal(registry.getSession(host.id)?.cwd, REPO);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, authoring);
+  assert.equal(registry.getSession(host.id)?.pipeline, null);
+
+  registry.upsertPipelineRun(mkRun());
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, `${REPO}/.worktrees/add-widgets`);
+  assert.equal(registry.getSession(host.id)?.pipeline, null);
+
+  registry.removePipelineRun("ai-conductor", REPO, "add-widgets");
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, authoring);
 });
 
 test("an engine-driven session cannot be messaged, and says why", () => {

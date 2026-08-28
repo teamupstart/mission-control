@@ -1,24 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SetupChecksView } from "@shared/setup-catalog.ts";
-import { fetchSetupChecks } from "./lib/api.ts";
+import type { SetupChecksSnapshot } from "@shared/setup-catalog.ts";
+import { api, fetchSetupChecks } from "./lib/api.ts";
 
 export interface SetupChecksState {
-  view: SetupChecksView | null;
+  view: SetupChecksSnapshot | null;
   loading: boolean;
   error: string | null;
   refresh(): Promise<void>;
+  /** Persist the banner's current acknowledgement, returning a sentence on refusal. */
+  dismissBanner(): Promise<string | null>;
 }
 
 const INSPECTION_ERROR = "Mission Control could not inspect this machine's setup.";
 
 export interface SetupChecksRead {
-  view: SetupChecksView | null;
+  view: SetupChecksSnapshot | null;
   error: string | null;
 }
 
 /** Keep a rejected optional read inside the panel's ordinary error state. */
 export async function readSetupChecks(
-  fetcher: () => Promise<SetupChecksView | null> = fetchSetupChecks,
+  fetcher: () => Promise<SetupChecksSnapshot | null> = fetchSetupChecks,
 ): Promise<SetupChecksRead> {
   try {
     const view = await fetcher();
@@ -30,11 +32,13 @@ export async function readSetupChecks(
 
 /** Mount-time and operator-requested reads only. Machine setup has no polling side effects. */
 export function useSetupChecks(enabled: boolean): SetupChecksState {
-  const [view, setView] = useState<SetupChecksView | null>(null);
+  const [view, setView] = useState<SetupChecksSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
   const request = useRef(0);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   useEffect(() => {
     alive.current = true;
@@ -50,6 +54,18 @@ export function useSetupChecks(enabled: boolean): SetupChecksState {
     setView(next.view);
     setError(next.error);
   }, []);
+  const dismissBanner = useCallback(async (): Promise<string | null> => {
+    const current = viewRef.current;
+    if (!current) return "Machine setup has not finished loading.";
+    const result = await api.dismissSetupBanner(current.snapshotToken, current.banner.attentionRowIds);
+    if (!result.ok) return result.error ?? "The setup reminder could not be dismissed.";
+    if (alive.current) {
+      setView((latest) => latest === current
+        ? { ...current, banner: { ...current.banner, visible: false } }
+        : latest);
+    }
+    return null;
+  }, []);
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
-  return { view, loading, error, refresh };
+  return { view, loading, error, refresh, dismissBanner };
 }

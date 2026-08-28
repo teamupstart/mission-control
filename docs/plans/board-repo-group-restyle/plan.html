@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board: restyling the repository group</title>
+<style>
+  :root {
+    --page-bg: #ffffff;
+    --page-fg: #1a1d23;
+    --page-muted: #5b6472;
+    --page-dim: #78818f;
+    --page-border: #dfe3e9;
+    --page-soft: #f4f6f9;
+    --page-accent: #1f7a52;
+    --page-warn: #9a5b00;
+    --page-code: #f2f4f8;
+    /* Mission Control's own tokens. The app is dark-only (`color-scheme: dark`), so the
+       sketches below stay dark in either page theme - that is what they look like. */
+    --mc-bg: #0a0c0f;
+    --mc-bg2: #0e1116;
+    --mc-panel: #14181e;
+    --mc-border: #232a33;
+    --mc-soft: #1b2129;
+    --mc-muted: #939eae;
+    --mc-dim: #7c8798;
+    --mc-working: #4a9eff;
+    --repo: #ee6392;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0f1216;
+      --page-fg: #e4e8ee;
+      --page-muted: #9aa4b2;
+      --page-dim: #7f8896;
+      --page-border: #262d36;
+      --page-soft: #161b21;
+      --page-accent: #4ecf95;
+      --page-warn: #e0a34a;
+      --page-code: #161b21;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 0 20px 96px;
+    background: var(--page-bg); color: var(--page-fg);
+    font: 16px/1.65 var(--sans); overflow-wrap: break-word;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  header.doc { max-width: 900px; margin: 0 auto; padding: 48px 0 18px; border-bottom: 1px solid var(--page-border); }
+  header.doc h1 { margin: 0 0 8px; font-size: 34px; line-height: 1.15; letter-spacing: -0.02em; }
+  header.doc p { margin: 0; color: var(--page-muted); font-size: 15px; }
+  h2 { margin: 44px 0 12px; font-size: 23px; line-height: 1.25; letter-spacing: -0.01em; padding-bottom: 7px; border-bottom: 1px solid var(--page-border); }
+  h3 { margin: 28px 0 6px; font-size: 17px; line-height: 1.3; }
+  h3 .rec { margin-left: 8px; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--page-bg); background: var(--page-accent); vertical-align: 2px; }
+  p, li { font-size: 15.5px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 640; }
+  code { font-family: var(--mono); font-size: 0.855em; background: var(--page-code); border: 1px solid var(--page-border); border-radius: 5px; padding: 1px 5px; }
+  a { color: var(--page-accent); }
+  .lede { font-size: 16.5px; color: var(--page-muted); }
+  .open {
+    display: block; margin: 24px 0; padding: 15px 18px; border-radius: 11px;
+    border: 1px solid var(--page-border); border-left: 3px solid var(--page-accent);
+    background: var(--page-soft); text-decoration: none; color: inherit;
+  }
+  .open b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 4px; }
+  .open span { font-size: 15.5px; }
+  .open code { font-size: 14px; }
+  .figure { margin: 20px 0 26px; padding: 16px; border: 1px solid var(--mc-border); border-radius: 11px; background: var(--mc-bg); overflow-x: auto; }
+  .figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .figcap { margin: 10px 0 0; font-size: 13px; color: var(--page-dim); text-align: center; }
+  .note {
+    margin: 22px 0; padding: 13px 16px; border-radius: 9px;
+    border: 1px solid var(--page-border); border-left: 3px solid var(--page-warn);
+    background: var(--page-soft); font-size: 14.5px;
+  }
+  .note b { display: block; font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--page-dim); margin-bottom: 4px; }
+  .tablewrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--page-border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-border); vertical-align: top; }
+  th { background: var(--page-soft); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--page-dim); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <h1>Board: restyling the repository group</h1>
+  <p>Plan &middot; <code>docs/plans/board-repo-group-restyle/plan.md</code> &middot; eight proposals, I adopted</p>
+</header>
+
+<main>
+
+<p class="lede">The Board's repository grouping works. An operator can fold a repository away
+while they read the rest of a column, the count says how much of the repository is in this
+frame, and the grouping is on out of the box. None of that is in question here, and none of it
+changes.</p>
+
+<p>What is in question is how it is drawn. The frame is a tinted box with a tinted header band
+inside a column, holding cards that are themselves boxes with their own coloured spines, and the
+header's chevron is a text glyph sitting off the row's optical centre. Three nested boxes, two
+translucent washes of the repository's hue, and 16px of a 250px column spent on the frame's
+border and inset.</p>
+
+<a class="open" href="mockups.html">
+  <b>Where to look</b>
+  <span>Two sheets, both real - the shipping components and the shipping stylesheet, not a
+  drawing of a board. <code>mockups.html</code>, beside this file, puts nine board columns side
+  by side at their real width on fixture sessions - synthetic on purpose, since a
+  committed page carries no operator data. And
+  <code>.evidence/repo-group-mockups/index.html</code>, generated on the operator's machine,
+  draws all nine over <strong>their own live fleet</strong> - every header folds, every column
+  scrolls. That one is gitignored: a live board is operator data.</span>
+</a>
+<p>The live sheet is generated read-only - <code>GET /api/sessions</code>,
+<code>GET /api/tasks</code>, then <code>renderToStaticMarkup</code> of the real
+<code>BoardView</code>. Nothing is written back and the running app is never driven.</p>
+
+<div class="figure">
+<svg viewBox="0 0 490 498" width="490" height="498" role="img"
+     aria-label="Nine sketches of the repository group: the tinted frame this change replaced, a flush hairline label, a left spine, a quiet box with a coloured top edge, a full-bleed sticky strip, a section label, a chip, a merged list, and a quiet box with a spine.">
+  <defs>
+    <linearGradient id="rule" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#ee6392" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ee6392" stop-opacity="0.06"/>
+    </linearGradient>
+    <g id="card">
+      <rect width="1" height="34" fill="#4a9eff"/>
+      <rect x="1" width="133" height="34" rx="6" fill="#14181e" stroke="#232a33"/>
+      <rect x="11" y="9" width="74" height="5" rx="2.5" fill="#939eae"/>
+      <rect x="11" y="20" width="98" height="4" rx="2" fill="#4d5765"/>
+    </g>
+    <g id="pA">
+      <rect width="150" height="122" rx="11" fill="#ee6392" fill-opacity="0.06" stroke="#ee6392" stroke-opacity="0.42"/>
+      <path d="M1 12a11 11 0 0 1 11-11h126a11 11 0 0 1 11 11v10H1z" fill="#ee6392" fill-opacity="0.11"/>
+      <circle cx="14" cy="12" r="3.5" fill="#ee6392"/>
+      <rect x="24" y="9" width="52" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="82" y="10" width="20" height="4" rx="2" fill="#7c8798"/>
+      <text x="137" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#7c8798">&#8964;</text>
+      <g transform="translate(8,30)"><use href="#card"/></g>
+      <g transform="translate(8,72)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">A - before</text>
+    </g>
+    <g id="pB">
+      <circle cx="5" cy="12" r="3.5" fill="#ee6392"/>
+      <rect x="15" y="9" width="52" height="5" rx="2.5" fill="#c9d1dc"/>
+      <rect x="73" y="10" width="20" height="4" rx="2" fill="#7c8798"/>
+      <rect x="100" y="11.5" width="34" height="1" fill="url(#rule)"/>
+      <path d="M140 10.5l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(8,26)"><use href="#card"/></g>
+      <g transform="translate(8,68)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">B - flush rule</text>
+    </g>
+    <g id="pC">
+      <rect x="0" y="3" width="2" height="105" fill="#ee6392" fill-opacity="0.5"/>
+      <rect x="14" y="9" width="52" height="5" rx="2.5" fill="#c9d1dc"/>
+      <rect x="72" y="10" width="20" height="4" rx="2" fill="#7c8798"/>
+      <path d="M140 10.5l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(14,26)"><use href="#card"/></g>
+      <g transform="translate(14,68)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">C - spine</text>
+    </g>
+    <g id="pD">
+      <rect y="1" width="150" height="121" rx="11" fill="#0e1116" fill-opacity="0.6" stroke="#232a33"/>
+      <path d="M11 2h128a11 11 0 0 1 10 8" fill="none" stroke="#ee6392" stroke-opacity="0.72" stroke-width="2"/>
+      <path d="M11 2a11 11 0 0 0-10 8" fill="none" stroke="#ee6392" stroke-opacity="0.72" stroke-width="2"/>
+      <path d="M1 13h148v9H1z" fill="#14181e"/>
+      <circle cx="14" cy="14" r="3.5" fill="#ee6392"/>
+      <rect x="24" y="11" width="52" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="82" y="9.5" width="28" height="9" rx="4.5" fill="#0a0c0f" stroke="#232a33"/>
+      <rect x="87" y="12" width="18" height="4" rx="2" fill="#7c8798"/>
+      <path d="M139 11l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(8,30)"><use href="#card"/></g>
+      <g transform="translate(8,72)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">D - quiet box</text>
+    </g>
+    <g id="pE">
+      <rect x="-6" y="0" width="162" height="22" fill="#0e1116"/>
+      <rect x="-6" y="21" width="162" height="1.4" fill="#ee6392" fill-opacity="0.6"/>
+      <circle cx="9" cy="11" r="3.5" fill="#ee6392"/>
+      <rect x="19" y="8" width="52" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="77" y="9" width="20" height="4" rx="2" fill="#7c8798"/>
+      <path d="M140 9.5l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(8,30)"><use href="#card"/></g>
+      <g transform="translate(8,72)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">E - sticky strip</text>
+    </g>
+    <g id="pF">
+      <circle cx="5" cy="11" r="3" fill="#ee6392"/>
+      <rect x="14" y="9" width="46" height="4" rx="2" fill="#939eae"/>
+      <rect x="66" y="9.5" width="16" height="3.5" rx="1.75" fill="#7c8798"/>
+      <path d="M140 9l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="0" y="19" width="150" height="1" fill="#232a33"/>
+      <g transform="translate(8,28)"><use href="#card"/></g>
+      <g transform="translate(8,70)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">F - section label</text>
+    </g>
+    <g id="pG">
+      <rect x="8" y="4" width="100" height="18" rx="9" fill="#ee6392" fill-opacity="0.09" stroke="#ee6392" stroke-opacity="0.34"/>
+      <circle cx="18" cy="13" r="3.5" fill="#ee6392"/>
+      <rect x="27" y="10.5" width="42" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="73" y="11" width="16" height="4" rx="2" fill="#7c8798"/>
+      <path d="M95 11.5l2.8 2.8 2.8-2.8" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(8,28)"><use href="#card"/></g>
+      <g transform="translate(8,70)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">G - chip</text>
+    </g>
+    <g id="pH">
+      <rect width="150" height="122" rx="11" fill="#14181e" stroke="#232a33"/>
+      <path d="M1 12a11 11 0 0 1 11-11h126a11 11 0 0 1 11 11v10H1z" fill="#ee6392" fill-opacity="0.10"/>
+      <circle cx="14" cy="12" r="3.5" fill="#ee6392"/>
+      <rect x="24" y="9" width="52" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="82" y="10" width="20" height="4" rx="2" fill="#7c8798"/>
+      <path d="M137 10.5l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="1" y="22" width="2" height="46" fill="#4a9eff"/>
+      <rect x="14" y="34" width="74" height="5" rx="2.5" fill="#939eae"/>
+      <rect x="14" y="45" width="98" height="4" rx="2" fill="#4d5765"/>
+      <rect x="1" y="68" width="148" height="1" fill="#232a33"/>
+      <rect x="1" y="69" width="2" height="46" fill="#35c08a"/>
+      <rect x="14" y="81" width="68" height="5" rx="2.5" fill="#939eae"/>
+      <rect x="14" y="92" width="92" height="4" rx="2" fill="#4d5765"/>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">H - merged list</text>
+    </g>
+    <g id="pI">
+      <rect y="1" width="150" height="121" rx="11" fill="#0e1116" fill-opacity="0.6" stroke="#232a33"/>
+      <path d="M2.5 13a11 11 0 0 1 9.5-11h127a11 11 0 0 1 10 9" fill="none" stroke="#ee6392" stroke-opacity="0.78" stroke-width="2"/>
+      <rect x="1" y="12" width="3" height="103" rx="1.5" fill="#ee6392" fill-opacity="0.78"/>
+      <path d="M4 13h145v9H4z" fill="#14181e"/>
+      <rect x="14" y="11" width="52" height="5" rx="2.5" fill="#e7ebf1"/>
+      <rect x="72" y="9.5" width="28" height="9" rx="4.5" fill="#0a0c0f" stroke="#232a33"/>
+      <rect x="77" y="12" width="18" height="4" rx="2" fill="#7c8798"/>
+      <path d="M139 11l3.5 3.5 3.5-3.5" fill="none" stroke="#7c8798" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(9,30)"><use href="#card"/></g>
+      <g transform="translate(9,72)"><use href="#card"/></g>
+      <text x="75" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#939eae">I - box + spine</text>
+    </g>
+  </defs>
+  <use href="#pA" x="0" y="0"/>
+  <use href="#pB" x="170" y="0"/>
+  <use href="#pC" x="340" y="0"/>
+  <use href="#pD" x="0" y="170"/>
+  <use href="#pE" x="170" y="170"/>
+  <use href="#pF" x="340" y="170"/>
+  <use href="#pG" x="0" y="340"/>
+  <use href="#pH" x="170" y="340"/>
+  <use href="#pI" x="340" y="340"/>
+</svg>
+<p class="figcap">The nine treatments, reduced to their structure. The coloured edge on each
+card is the card's own tone spine, which is what a second vertical rule has to stay clear of.
+The real thing, on your own fleet, is in <code>mockups.html</code>.</p>
+</div>
+
+<h2>What does not change</h2>
+
+<p>Stated first, because the answer to "will this break the grouping" has to be "there is
+nothing here that could".</p>
+
+<ul>
+  <li><strong>The partition.</strong> <code>orderSessions</code> / <code>fleetRows</code>
+    (<code>src/web/lib/fleet-order.ts</code>) decide which sessions are in which frame.
+    Untouched.</li>
+  <li><strong>The counts and their prose.</strong> <code>repoGroupHeadline</code> still returns
+    <code>2 of 8</code> / <code>1 agent</code> and the same hover sentence.</li>
+  <li><strong>The disclosure.</strong> Still one button per frame, still
+    <code>aria-expanded</code>, still the <code>Collapse &lt;repo&gt; - &lt;path&gt; - …</code>
+    accessible name, still keyed per frame in <code>src/web/lib/repo-collapse.ts</code> so
+    folding a repository in one column leaves its sibling in another alone.</li>
+  <li><strong>The colour source.</strong> Still one inline <code>--repo-c</code> from
+    <code>lib/repo-color.ts</code>, still read only inside <code>.board-repo</code> /
+    <code>.rail-repo</code>, which is what <code>test/styles-tokens.test.ts</code> pins.</li>
+  <li><strong>The frame is still presentational.</strong> No drag handlers, so a backlog card
+    dragged over a card inside a frame behaves exactly as it does today.</li>
+  <li><strong>Arrow-key navigation</strong> over a folded frame, which
+    <code>e2e/specs/board-repo-groups.spec.ts</code> already covers.</li>
+</ul>
+
+<p>Every proposal also trades the <code>&#8964;</code> text glyph for a drawn caret, still
+rotated off <code>aria-expanded</code> so the control and the glyph cannot disagree.</p>
+
+<h2>The proposals</h2>
+
+<p>Letters match the columns in both sheets.</p>
+
+<h3>A - Current (the control)</h3>
+<ul>
+  <li>Three nested boxes, and the group's tint sits between the other two, so a card's tone
+    spine competes with it.</li>
+  <li>The hue is spent on area: 6% over the body plus 11% over the head. That is enough colour
+    to read as a state, which is the one thing a repository must not read as.</li>
+  <li>16px of the column goes to the frame's border and inset, on every group.</li>
+</ul>
+
+<h3>B - Flush rule<span class="rec">recommended</span></h3>
+<p>No box. The header becomes a label with a hairline that fades out towards the column edge,
+and the cards keep the column's full width.</p>
+<ul>
+  <li>Nothing nests. A card inside a group sits at the same width and indent as an ungrouped
+    card, so the group costs one 15px row and no horizontal space. Card titles that ellipsise
+    inside today's frame fit.</li>
+  <li>The colour becomes a line: the swatch, and the near end of the hairline.</li>
+  <li>Weakest containment of the set. Where a group <em>ends</em> is read from the next header
+    rather than from an edge, so it is the option least suited to a column of many small
+    groups.</li>
+</ul>
+
+<h3>C - Spine</h3>
+<p>One 2px rule down the left of the group carries the identity. No fill, no border box, 14px of
+gutter.</p>
+<ul>
+  <li>The group's extent stays visible without a box: the spine starts at the header and stops
+    at the last card, which is the fact the frame was drawing.</li>
+  <li>The colour lands on an edge, where a hue can run near full strength without reading as a
+    fill.</li>
+  <li>Two vertical rules 12px apart, the group's spine and the card's own tone spine. Kept at
+    48% so the saturated one stays the card's, but this is the honest weakness of the
+    option.</li>
+</ul>
+
+<h3>D - Quiet box</h3>
+<p>Today's containment without the wash: a neutral border, a solid <code>--panel</code> header
+band, the repository colour spent once on the frame's 2px top edge, and the count as a tag.</p>
+<ul>
+  <li>The smallest departure from what is on the board now. Scanning, containment and drag
+    targets are unchanged.</li>
+  <li>The colour goes on the top edge rather than the side, so it never reads as a second card
+    spine.</li>
+  <li>Still nests: 14px of column width per group, and a run cluster inside is still a box in a
+    box.</li>
+</ul>
+
+<h3>E - Sticky strip</h3>
+<p>A full-bleed strip pinned to the top of the scrolling column body, with the repository colour
+on its lower edge. Cards keep the full width.</p>
+<ul>
+  <li>The only proposal that answers "which repository is this card in" after the header has
+    scrolled past. Verified on the live sheet: with the idle column scrolled 300px, the header
+    still sits on the column body's own top edge.</li>
+  <li>Full-bleed to the column's edges is what makes it read as a section band rather than as a
+    floating pill.</li>
+  <li>Costs opacity: the strip has to hide the cards passing under it, so it is the one proposal
+    that puts a solid surface over the column background.</li>
+</ul>
+
+<h3>F - Section label</h3>
+<p>The register the settings pages already use: a small letter-spaced uppercase label over a
+full-width rule, no colour but the dot, cards at full width.</p>
+<ul>
+  <li>Not a new invention. A repository group reads like every other group of things in the
+    app.</li>
+  <li>The rule runs the column's width and sits under the label, which is what makes it a
+    section rather than a card with a title.</li>
+  <li>The name gives up monospace and mixed case, which is the one identity cue it costs: a
+    directory name in a sentence font is slightly less obviously a directory name.</li>
+</ul>
+
+<h3>G - Chip</h3>
+<p>The header shrinks to a pill the width of its own words. Nothing spans the column, so the
+group is announced rather than framed.</p>
+<ul>
+  <li>The cards are the only full-width thing in the column, so the column's background reads
+    through beside the header.</li>
+  <li>The tint comes back, but on about 90px instead of a whole frame - small enough to carry
+    the repository's hue without reading as a state.</li>
+  <li>Smallest hit target of the set: a pill, not a row. Still 24px tall, but it is the one
+    option where the control is not the column's width.</li>
+</ul>
+
+<h3>H - Merged list</h3>
+<p>The group stops being a box around boxes and becomes one surface: the cards lose their own
+borders and gaps and are separated by hairlines, keeping only their tone spine.</p>
+<ul>
+  <li>Removes the nesting by removing the inner box. Two thirds of what makes today's frame look
+    heavy is the card's own border repeating 8px inside the frame's, and this is the only
+    proposal that addresses that directly.</li>
+  <li>Densest of the set: the gaps between cards inside a group go to zero, so a four-card group
+    is about 30px shorter.</li>
+  <li>The only proposal that changes the card. A card inside a group stops looking like a card
+    outside one, which is a real cost - the board teaches that a tile is a tile.</li>
+</ul>
+
+<h3>I - Quiet box + spine</h3>
+<p>D and C together: the neutral border, the solid header band and the count tag, with the
+repository colour on <em>both</em> edges - D's 2px top rule and C's 3px spine, meeting at the
+frame's leading corner.</p>
+<ul>
+  <li><strong>Containment and identity, separately.</strong> The box is the group and the coloured
+    bracket is the repository, so neither has to be read off a tint - which is the one thing
+    today's frame asks a translucent wash to do twice.</li>
+  <li><strong>Both edges, one mix.</strong> The top and the spine are the same colour, so the
+    miter where a 2px edge meets a 3px one is invisible and the two read as one bracket rather
+    than as two marks that happen to share a hue.</li>
+  <li><strong>The swatch goes.</strong> A dot 9px from a 3px rule of the same hue is the same fact
+    twice, and it costs the header's first cell.</li>
+  <li>Two vertical rules again, about 10px apart - but unlike C there is a border and a background
+    between them, and the spine is held at 78% so the saturated one stays the card's. This is the
+    most colour of any proposal here.</li>
+  <li>Costs the same 14px of column width per group that D does.</li>
+</ul>
+
+<h2>What the live board already caught</h2>
+<p>Worth recording, because it is the reason the mockups were rebuilt on real data rather than
+on three fixture cards.</p>
+<p><code>.board-col-body</code> is a flex column, so a frame that sets <code>overflow</code> to
+anything other than <code>visible</code> loses its automatic minimum size and can be
+<strong>shrunk</strong> by the column. On a column with eight idle sessions in it, D and H
+clipped the last card of a group. Both now carry <code>flex: none</code> on the frame, and the
+current design gets away without it only because it never sets <code>overflow</code>. Whichever
+option ships carries that declaration.</p>
+
+<h2>Implementation</h2>
+
+<p>Small, and the same shape whichever letter wins.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>File</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>src/web/styles.css</code></td>
+      <td>Replace the <code>.board-repo</code> / <code>.board-repo-head</code> /
+        <code>.brh-*</code> block. The chosen variant block in the mockup sheet is written to
+        drop in with its <code>.v-*</code> scope removed. <code>--repo-c</code> stays the single
+        source of the tint.</td>
+    </tr>
+    <tr>
+      <td><code>src/web/components/session-bits.tsx</code></td>
+      <td><code>RepoGroupHead</code> trades the <code>⌄</code> text glyph for an inline SVG
+        caret (all four proposals), keeping the class so the existing
+        <code>[aria-expanded="false"] .brh-chevron</code> rotation still drives it off the
+        control's own state. B adds one <code>&lt;span class="brh-rule" aria-hidden&gt;</code>
+        between the count and the caret; C drops the swatch, since the spine is already the
+        colour.</td>
+    </tr>
+    <tr>
+      <td><code>src/web/styles.css</code> (rail)</td>
+      <td><code>.rail-repo-group</code> (Console layout) takes the same caret and the same
+        colour placement, so the Board's drill-in morph does not change what a repository looks
+        like on the way from column to rail.</td>
+    </tr>
+    <tr>
+      <td><code>e2e/specs/board-repo-groups.spec.ts</code></td>
+      <td>The existing case asserts the frame's <code>borderTopColor</code> is mixed from
+        <code>--repo-c</code>. That holds for D and has to be re-pointed at whichever element
+        carries the colour in the others (the swatch, the spine, the strip's edge, the chip's
+        border). A new case covers the chosen treatment's visible consequence: for B, E, F and G,
+        that a card inside a group is the same width as one outside it; for C, D, H and I, that the
+        frame draws its edge; for E, that the header is still in view after the column is
+        scrolled; for H, that a card inside a group is not clipped by its frame.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <b>Definition of done</b>
+  <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+  <code>npm run build</code> and <code>npm run test:e2e</code>, with the spec case above
+  covering the new behaviour. A UI change in this repository is not done without a Playwright
+  spec.
+</div>
+
+<h2>Risks</h2>
+<ul>
+  <li><strong>Reduced motion.</strong> The caret keeps the existing
+    <code>prefers-reduced-motion</code> rule that drops its transition.</li>
+  <li><strong>E and scroll containers.</strong> A sticky header inside a flex child needs the
+    frame to keep <code>overflow: visible</code>; the live sheet confirms it pins, and the spec
+    case above is what keeps it pinned.</li>
+  <li><strong>H and the tile contract.</strong> It is the one option that restyles a tile, and
+    only inside a frame. A tile's own hover, selection and drop states have to keep working with
+    no border of their own to draw on.</li>
+  <li><strong>Contrast.</strong> The new header text is
+    <code>color-mix(in oklab, var(--fg) 78%, var(--dim))</code> on the column background in B
+    and C, and <code>--muted</code> in F, both of which clear 4.5:1. D, E, G and H keep
+    <code>--fg</code>.</li>
+</ul>
+
+<h2>Decision: I, adopted</h2>
+<p><strong>I - quiet box + spine</strong> ships. The recommendation had been B; the operator chose
+the option that keeps the frame and spends the hue on its two edges, after comparing all nine on
+their own board. The alternatives are kept above rather than deleted, because what was rejected is
+the reason the adopted look is shaped the way it is - and <a href="mockups.html">mockups.html</a>
+still draws every one of them, with A frozen as the "before" panel now that the frame it described
+has been replaced.</p>
+<p>What landed:</p>
+<ul>
+  <li><code>.board-repo</code> goes neutral - a <code>--border-soft</code> border over a
+    <code>--bg-2</code> body at 60% - with the repository colour on a 2px top rule and a 3px
+    leading spine at the <strong>same</strong> 78% mix, so the miter where they meet is invisible
+    and the pair reads as one bracket. <code>flex: none</code>, because the frame now clips its
+    head's corners.</li>
+  <li><code>.board-repo-head</code> becomes a solid <code>--panel</code> band with flush corners
+    and the count as a tag.</li>
+  <li>The board hides the swatch (<code>.board-repo-head .brh-swatch</code>); the rail keeps it,
+    because a rail row has no frame to carry an edge.</li>
+  <li><code>RepoGroupHead</code> draws the caret as inline SVG through a new
+    <code>RepoGroupCaret</code>, keeping the <code>brh-chevron</code> class so the existing
+    rotation rule still drives it off the button's own state.</li>
+  <li>Covered by <code>test/repo-group-head-render.test.ts</code> for the markup, and four added
+    claims in <code>e2e/specs/board-repo-groups.spec.ts</code>: both edges mixed from
+    <code>--repo-c</code> at one strength, nothing else tinted by it, the board's hidden swatch
+    against the rail's drawn one, and a frame that refuses to be shrunk by its column.</li>
+</ul>
+
+</main>
+</body>
+</html>

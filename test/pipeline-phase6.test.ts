@@ -234,7 +234,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     supervisor,
     missionMcpDescriptor: async () => mcp,
     verifyMissionMcpTools: async (tools, descriptor) => {
-      assert.deepEqual(tools, ["adopt_pipeline_run"]);
+      assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
       callerCredential = descriptor?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
       assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       return { ok: true };
@@ -262,7 +262,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     agent: "codex",
     name: "Build the SDK path",
     cwd: "/repo/sdk",
-    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
+    prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
     acceptedGoalPrompt: "Build the SDK path\nwithout changing the daemon",
     // A pipeline task on this arm launches a directly streamable agent conversation, so it
     // presents its launch turn exactly as an ordinary embedded dispatch does: the host's
@@ -274,7 +274,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     // referenced so this stays a literal assertion: fingerprinting a recomposed copy of turn
     // one is the exact defect that would make every pipeline launch render in full.
     launchPresentation: {
-      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run.]",
+      prompt: "$engineer - run this skill now. Build the SDK path\nwithout changing the daemon\n\n[Mission Control launch context: the reserved Pipeline run is build-the-sdk-path-without-changing-the-daemon. If Engineer resumes a different existing run, call adopt_pipeline_run with that run's slug before continuing. No call is needed when Engineer creates the reserved run. After Engineer creates or enters its authoring worktree, call report_pipeline_workspace with that absolute path before editing files there.]",
       displayText: "Build the SDK path\nwithout changing the daemon",
     },
     model: null,
@@ -1248,6 +1248,40 @@ test("startup keeps a hostless SDK task when its exact provider run is active", 
   assert.equal(task?.status, "running");
   assert.equal(task?.sessionId, null);
   assert.deepEqual(task?.pipelineRun, link);
+});
+
+test("the first discovery sweep preserves a managed SDK host that is still launching", () => {
+  const registry = new Registry();
+  const sessionId = "sdk:pending-managed-launch";
+  new TaskManager(registry);
+  registry.upsertTask(
+    mkTask({
+      id: "pipeline-pending-managed-launch",
+      kind: "pipeline",
+      repoRoot: "/repo/pending-managed-launch",
+      status: "dispatching",
+      sessionId,
+      pipelineRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/pending-managed-launch",
+        slug: "pending-managed-launch",
+      },
+    }),
+  );
+  registry.beginManagedPipelineLaunch(
+    "pipeline-pending-managed-launch",
+    sessionId,
+    "/repo/pending-managed-launch",
+  );
+
+  // The process table is authoritative for sessions that existed before boot, but this
+  // SDK host has a reserved identity and has not reached supervisor registration yet.
+  registry.applyDiscovery([]);
+
+  const task = registry.getTask("pipeline-pending-managed-launch");
+  assert.equal(task?.status, "dispatching");
+  assert.equal(task?.sessionId, sessionId);
+  assert.equal(task?.error, null);
 });
 
 test("a legacy pipeline child binds its durable run and the processed projection settles the task", () => {

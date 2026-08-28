@@ -1,0 +1,429 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find in a document - plan</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1c1e21;
+    --muted: #5c6370;
+    --rule: #e3e6ea;
+    --card: #f7f8fa;
+    --accent: #2f6feb;
+    --warn-bg: #fff6e5;
+    --warn-fg: #7a4d00;
+    --warn-rule: #f0c26b;
+    --code-bg: #f2f3f5;
+    --box: #ffffff;
+    --box-rule: #c4cad3;
+    --arrow: #8b93a1;
+    --hot: #d1383d;
+    --good: #1f7a4d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e6e8ec;
+      --muted: #98a0ad;
+      --rule: #2a2e35;
+      --card: #1b1e24;
+      --accent: #6699ff;
+      --warn-bg: #2b2313;
+      --warn-fg: #e8c37a;
+      --warn-rule: #6b5420;
+      --code-bg: #21252b;
+      --box: #1b1e24;
+      --box-rule: #3a4049;
+      --arrow: #6b7280;
+      --hot: #f0787c;
+      --good: #56c98c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 3rem 1.25rem 6rem;
+    max-width: 52rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 1.5rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 1rem; letter-spacing: -0.01em;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .6rem; letter-spacing: -0.005em; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  blockquote {
+    margin: 0 0 2rem; padding: 1rem 1.25rem;
+    border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 6px 6px 0;
+    font-size: 1.05rem; color: var(--muted);
+  }
+  blockquote p { margin: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .855em; background: var(--code-bg);
+    padding: .12em .38em; border-radius: 4px;
+  }
+  .scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .verdict {
+    background: var(--warn-bg); border: 1px solid var(--warn-rule);
+    color: var(--warn-fg); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .verdict p { margin: 0; color: var(--warn-fg); }
+  ol.facts { padding-left: 1.2rem; }
+  ol.facts > li { margin-bottom: .85rem; }
+  .option {
+    border: 1px solid var(--rule); border-radius: 8px;
+    padding: 1.1rem 1.25rem; margin: 1.25rem 0; background: var(--card);
+  }
+  .option h3 { margin-top: 0; }
+  .option.pick { border-color: var(--good); }
+  .option.no { border-style: dashed; }
+  .option p:last-child { margin-bottom: 0; }
+  .rec, .not {
+    font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .07em;
+    text-transform: uppercase; padding: .16em .5em; border-radius: 999px;
+    vertical-align: middle; margin-left: .5rem;
+  }
+  .rec { color: var(--good); border: 1px solid var(--good); }
+  .not { color: var(--muted); border: 1px solid var(--box-rule); }
+  .cost { color: var(--muted); font-size: .92rem; }
+  figure { margin: 1.75rem 0; }
+  figcaption { color: var(--muted); font-size: .87rem; margin-top: .5rem; }
+  .diagram { width: 100%; height: auto; display: block; min-width: 33rem; }
+  .flow-label { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--fg); }
+  .flow-sub { font: 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+  .flow-edge { font: 9.5px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+  .flow-head { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .09em; fill: var(--muted); }
+  .flow-box { fill: var(--box); stroke: var(--box-rule); stroke-width: 1.2; }
+  .flow-hot { stroke: var(--hot); }
+  .flow-good { stroke: var(--good); }
+  .flow-arrow { stroke: var(--arrow); stroke-width: 1.3; fill: none; }
+  .flow-arrow-hot { stroke: var(--hot); stroke-width: 1.3; fill: none; }
+  .flow-dash { stroke-dasharray: 4 3; }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .87rem; }
+</style>
+
+<h1>Find in a document: Cmd+F / Ctrl+F in the Files workspace</h1>
+
+<blockquote>
+  <p>A person reading a document in the Files tab&rsquo;s <strong>Preview</strong> should be able
+  to press Cmd+F (Ctrl+F) and search that document, step between matches, and see the count -
+  the gesture every reader already has in their fingers. The same find must be the same find in
+  <strong>Editor</strong> mode, not a second one that looks and counts differently.</p>
+</blockquote>
+
+<h2>Decisions adopted</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Question</th><th>Decision</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Approach</td>
+      <td><strong>Option C</strong> - character-accurate find in Markdown preview and Editor now,
+      HTML preview jumps to the containing block through the endpoint that already exists, the
+      hashed in-frame bridge lands later as its own change</td>
+    </tr>
+    <tr>
+      <td>CodeMirror&rsquo;s built-in search panel</td>
+      <td><strong>Replaced</strong> by the shared find bar. Every panel-opening binding
+      <code>searchKeymap</code> carries is claimed, not just Mod-f, so the app has exactly one
+      find; find-next and find-previous step the shared ring</td>
+    </tr>
+    <tr>
+      <td>Chord registration</td>
+      <td><strong>Contextual claim.</strong> The Files workspace takes <code>cmd+f</code> while a
+      document is on screen; no new <code>ActionId</code>, no new Keyboard panel row</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What is on screen today</h2>
+
+<p>The Files workspace (<code>src/web/components/FileWorkspace.tsx</code>) renders one of five
+surfaces for the selected file, and the Preview/Editor toggle chooses between the first
+four:</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Surface</th><th>What it is</th><th>Searchable today</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>HTML preview</td><td>sandboxed <code>srcdoc</code> iframe, CSP pins three script hashes</td><td>no</td></tr>
+    <tr><td>Markdown preview</td><td><code>Markdown.tsx</code> (react-markdown + rehype plugins)</td><td>no</td></tr>
+    <tr><td>Image preview</td><td><code>&lt;img&gt;</code></td><td>nothing to search</td></tr>
+    <tr><td>Editor</td><td>CodeMirror 6 via <code>basicSetup</code></td><td>accidentally, see below</td></tr>
+    <tr><td>Compare (conflict)</td><td>two <code>&lt;pre&gt;</code> panes</td><td>no</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Three verified facts shape the work.</p>
+
+<ol class="facts">
+  <li><strong>Cmd+F in the Files tab currently pulls you out of the document.</strong>
+  <code>App.tsx</code>&rsquo;s global key handler binds <code>cmd+f</code> to
+  <code>findInConversation</code>. The detail tabs are conditionally mounted
+  (<code>tab === "conversation" &amp;&amp; &lt;TranscriptPanel /&gt;</code>), so while Files is
+  open no transcript is mounted, no find handle is registered, and the handler falls through to
+  <code>conversationReveal</code> &rarr; <code>requestConversationTab(sel.id)</code>. Pressing
+  Cmd+F while reading a plan in Preview therefore <strong>switches the detail away from Files to
+  Conversation</strong> and opens find there. This is the first thing the work has to fix.</li>
+
+  <li><strong>Edit mode already has a find, and it is not ours.</strong> <code>basicSetup</code>
+  from the <code>codemirror</code> package includes <code>@codemirror/search</code> (6.7.1 in
+  <code>package-lock.json</code>), whose <code>searchKeymap</code> binds Mod-f - and find-next,
+  find-previous and go-to-line besides, each of which can open that panel too.
+  <code>App.tsx</code> returns early on <code>isTypingTarget</code> before it reaches the
+  <code>findInConversation</code> branch, and CodeMirror&rsquo;s <code>.cm-content</code> is
+  <code>contentEditable</code>, so with the caret in the editor Cmd+F opens CodeMirror&rsquo;s own
+  panel: different chrome, different count, different behaviour from anything else in the app, and
+  invisible to the Preview surface beside it. That panel is being replaced rather than left in
+  place.</li>
+
+  <li><strong>The conversation already solved the model half of this.</strong>
+  <code>src/web/lib/find.ts</code> holds <code>buildMatcher</code>, <code>matchesIn</code>,
+  <code>hitsInWindow</code>, <code>stepIndex</code> and <code>splitForHighlight</code> - pure,
+  DOM-free, unit-tested (<code>test/conversation-find-model.test.ts</code>), and built on one
+  stated invariant: <strong>every counted match is a match a person can see and jump to.</strong>
+  The chrome (<code>ConversationFind.tsx</code>) and the highlight styling
+  (<code>mark.find-hit</code>, <code>mark.find-hit.is-current</code> in <code>styles.css</code>,
+  already element-scoped and reusable) exist too. Nothing here grows a second search model.</li>
+</ol>
+
+<figure>
+<svg class="diagram" viewBox="0 0 720 250" role="img" aria-labelledby="d1title">
+  <title id="d1title">Where the Cmd+F keystroke goes, before and after</title>
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <text class="flow-head" x="0" y="14">BEFORE</text>
+  <g color="var(--hot)">
+    <rect class="flow-box" x="0" y="26" width="150" height="34" rx="6"/>
+    <text class="flow-label" x="12" y="47">Cmd+F in Files</text>
+    <path class="flow-arrow-hot" d="M 150 43 L 196 43" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="200" y="26" width="180" height="34" rx="6"/>
+    <text class="flow-label" x="212" y="47">App global key handler</text>
+    <path class="flow-arrow-hot" d="M 380 43 L 426 43" marker-end="url(#a1)"/>
+    <rect class="flow-box flow-hot" x="430" y="20" width="285" height="46" rx="6"/>
+    <text class="flow-label" x="442" y="39">requestConversationTab</text>
+    <text class="flow-sub" x="442" y="55">Conversation opens, Files is left behind</text>
+  </g>
+  <line x1="0" y1="92" x2="720" y2="92" stroke="var(--rule)" stroke-width="1"/>
+  <text class="flow-head" x="0" y="120">AFTER</text>
+  <g color="var(--arrow)">
+    <rect class="flow-box" x="0" y="132" width="150" height="34" rx="6"/>
+    <text class="flow-label" x="12" y="153">Cmd+F in Files</text>
+    <path class="flow-arrow" d="M 150 149 L 196 149" marker-end="url(#a1)"/>
+    <rect class="flow-box flow-good" x="200" y="126" width="180" height="46" rx="6"/>
+    <text class="flow-label" x="212" y="145">FileWorkspace claims it</text>
+    <text class="flow-sub" x="212" y="161">find session, selected doc</text>
+    <path class="flow-arrow" d="M 380 149 L 426 149" marker-end="url(#a1)"/>
+    <rect class="flow-box flow-good" x="430" y="126" width="285" height="46" rx="6"/>
+    <text class="flow-label" x="442" y="145">Preview marks / Editor decorations</text>
+    <text class="flow-sub" x="442" y="161">one query, one count, both modes</text>
+    <rect class="flow-box" x="200" y="196" width="180" height="34" rx="6"/>
+    <text class="flow-label" x="212" y="217">App handler</text>
+    <path class="flow-arrow flow-dash" d="M 380 213 L 426 213" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="430" y="196" width="285" height="34" rx="6"/>
+    <text class="flow-label" x="442" y="217">Conversation find, unchanged</text>
+  </g>
+</svg>
+<figcaption>The keystroke stops leaving the document. The conversation&rsquo;s own find keeps the
+same chord everywhere else.</figcaption>
+</figure>
+
+<h2>What the work must deliver</h2>
+
+<ul>
+  <li>Cmd+F over a document searches <strong>that document</strong> and never navigates away from
+  Files.</li>
+  <li>One query and one case-sensitivity flag, surviving the Preview &harr; Editor toggle, so
+  switching modes keeps your search instead of restarting it. The <strong>count is per
+  surface</strong>, because the two surfaces show different strings: a markdown document&rsquo;s
+  rendered text has fewer occurrences than its source (a link destination in
+  <code>[label](matching-url)</code> renders to nothing), and a shared count would offer the
+  reader matches Preview cannot highlight or step to. Position crosses the toggle by source
+  line - the same neighbourhood, not the same character.</li>
+  <li>Enter / Shift+Enter step the ring and wrap, Escape closes, reopening keeps the last query.
+  The conversation&rsquo;s bar already behaves this way and is the reference.</li>
+  <li>Works in the extracted Files window (<code>FileWindow.tsx</code>). That window is an
+  <code>Overlay</code>, and <code>App.tsx</code> stands every session chord down while any overlay
+  is open, so the chord is owned by the workspace rather than by App.</li>
+  <li>A Playwright spec in <code>e2e/</code>, per the repository&rsquo;s UI rule.</li>
+</ul>
+
+<h2>The plan</h2>
+
+<div class="option">
+  <h3>1. Shared find core</h3>
+  <p>Split <code>find.ts</code>: the generic primitives move into a
+  <code>documentFind.ts</code>-style module with a <code>FindSession</code> (query, case flag,
+  index - and deliberately <strong>no hit list</strong>, because each surface searches the string
+  it renders and therefore has its own hits). <code>collectHits</code> and the conversation scopes
+  stay conversation-specific, so the transcript&rsquo;s behaviour does not change.</p>
+</div>
+
+<div class="option">
+  <h3>2. Shared chrome</h3>
+  <p>Extract the bar from <code>ConversationFind.tsx</code> into a reusable <code>FindBar</code>
+  (input, count, Aa toggle, prev/next, close) and keep <code>ConversationFindBar</code> as a thin
+  wrapper so the transcript&rsquo;s markup and its specs are untouched. Documents get the bar only,
+  no results rail: a rail is a conversation affordance (dozens of turns by several authors), and a
+  document reader wants the count and the ring. <code>.find-bar</code> is currently positioned
+  inside <code>.find-logwrap</code>, so the file content area needs its own anchor for the same
+  bar.</p>
+</div>
+
+<div class="option pick">
+  <h3>3. Markdown preview adapter<span class="rec">character-accurate</span></h3>
+  <p>A <code>rehypeFindMarks</code> rehype plugin beside the existing
+  <code>rehypeWorkspacePaths</code> and <code>rehypeDiagramFences</code>, splitting hast text nodes
+  into <code>&lt;mark class="find-hit" data-find-key&gt;</code> with the current hit carrying
+  <code>is-current</code>, then <code>scrollIntoView</code> on the current key. React keeps owning
+  the nodes, which is the reason <code>find.ts</code> returns data instead of walking the DOM.</p>
+  <p>It matches over <strong>rendered text</strong>, joined into runs within a block so a hit split
+  by inline markup (<code>foo**bar**</code> searched for <code>foobar</code>) is one hit, and broken
+  at every visible separation - a <code>br</code>, a nested block, a table cell edge. It is
+  therefore Preview&rsquo;s model as well as its renderer: it reports one record per logical hit,
+  with the source line range of the block it sits in, and the bar&rsquo;s count is that number.</p>
+</div>
+
+<div class="option pick">
+  <h3>4. Editor adapter<span class="rec">replaces CodeMirror&rsquo;s panel</span></h3>
+  <p>Compute matches over the buffer text and paint them with a CodeMirror decoration
+  <code>StateField</code> - the pattern <code>FileEditor.tsx</code> already uses for comment
+  markers. Claim every panel-opening binding <code>searchKeymap</code> carries, not just Mod-f -
+  its find-next and find-previous chords open the panel too when no query is set - so the app has
+  one find and one look. Find-next and find-previous are repurposed to step our ring rather than
+  deadened. Installed only where a caller supplies a find owner, so the three other
+  <code>FileEditor</code> hosts keep the behaviour they have today.</p>
+  <p>The Editor searches <strong>source</strong>, which is what it shows, so its count can
+  legitimately differ from Preview&rsquo;s on the same file: a link destination is one occurrence
+  here and none there. One matcher, applied per surface to the string that surface renders - never
+  one hit list shared by two surfaces showing different text.</p>
+</div>
+
+<div class="option">
+  <h3>5. HTML preview - block reveal now, character-accurate later</h3>
+  <p><strong>Phase 1</strong> reuses two paths that already ship: a hit&rsquo;s source line goes to
+  the daemon&rsquo;s <code>resolveHtmlBlockTarget</code>
+  (<code>/api/sessions/:id/html-block-target</code>), which returns a structural block path, and
+  <code>HTML_PREVIEW_TARGET_MESSAGE</code> makes the iframe scroll to that block and outline it.
+  <strong>No new iframe script and no CSP change.</strong> The bar says plainly that HTML matches
+  are located by block, because the count is taken over source text and can include matches the
+  rendered page does not show.</p>
+  <p><strong>Phase 2</strong>, as its own scoped change: a fourth hash-pinned bridge script that
+  highlights inside the frame, reports its own count, and forwards Cmd+F out of the frame - a
+  keystroke inside the iframe never reaches the parent today, since the keyboard bridge only
+  forwards Tab, Escape, u and d. That change edits <code>src/web/lib/htmlPreview.ts</code>, the CSP
+  hash allowlist, and <code>test/html-preview.test.ts</code>, which recomputes the hashes - a
+  controlled security boundary shared with Scouts, and the reason it is not rushed into phase 1.</p>
+</div>
+
+<div class="option">
+  <h3>6. Ownership and the chord</h3>
+  <p><code>FileWorkspace</code> owns the find session and claims <code>cmd+f</code> ahead of
+  App&rsquo;s <code>findInConversation</code>, which is what makes it work in the extracted window
+  and in the console and board details alike. No new <code>ActionId</code>: the ids key persisted
+  overrides in <code>app_config.ui.keybindings</code> and are append-only, and one chord meaning
+  &ldquo;find in what I am reading&rdquo; needs no second row in the Keyboard panel.</p>
+  <p>The editor adapter is reusable rather than automatic. The Persona, Session action and Foreman
+  profile editors all host <code>FileEditor</code>, so the same find can be given to them later -
+  but each needs a find owner of its own (a session and a bar), and until it has one it keeps
+  exactly the behaviour it has today. The Mod-f claim is therefore installed only where a caller
+  supplies that owner: a chord taken by a surface that cannot answer it is worse than an unstyled
+  panel, because it leaves those three editors with no find at all.</p>
+</div>
+
+<figure>
+<svg class="diagram" viewBox="0 0 720 210" role="img" aria-labelledby="d2title">
+  <title id="d2title">How a match reaches each surface under Option A, with Option C's HTML fallback dashed</title>
+  <g color="var(--arrow)">
+    <rect class="flow-box flow-good" x="0" y="76" width="170" height="50" rx="6"/>
+    <text class="flow-label" x="14" y="97">Find session</text>
+    <text class="flow-sub" x="14" y="113">query, case, index</text>
+
+    <path class="flow-arrow" d="M 170 92 C 210 92 210 30 246 30" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="250" y="10" width="235" height="42" rx="6"/>
+    <text class="flow-label" x="264" y="28">Markdown preview</text>
+    <text class="flow-sub" x="264" y="43">rehype marks, exact characters</text>
+
+    <path class="flow-arrow" d="M 170 101 L 246 101" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="250" y="80" width="235" height="42" rx="6"/>
+    <text class="flow-label" x="264" y="98">Editor (CodeMirror)</text>
+    <text class="flow-sub" x="264" y="113">decorations, exact characters</text>
+
+    <path class="flow-arrow flow-dash" d="M 170 110 C 210 110 210 172 246 172" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="250" y="152" width="150" height="42" rx="6"/>
+    <text class="flow-label" x="264" y="170">HTML preview</text>
+    <text class="flow-sub" x="264" y="185">sandboxed iframe</text>
+
+    <path class="flow-arrow flow-dash" d="M 400 173 L 446 173" marker-end="url(#a1)"/>
+    <rect class="flow-box" x="450" y="152" width="265" height="42" rx="6"/>
+    <text class="flow-label" x="464" y="170">Daemon: html-block-target</text>
+    <text class="flow-sub" x="464" y="185">block path &#8594; target message, scroll + outline</text>
+  </g>
+</svg>
+<figcaption>Solid: character-accurate, in the browser, no server call. Dashed: the block-level
+fallback for HTML, which is the one path that asks the daemon to resolve a source line into a
+rendered block.</figcaption>
+</figure>
+
+<h2>Alternatives considered</h2>
+
+<div class="option no">
+  <h3>Option A - everything at once<span class="not">sequencing only</span></h3>
+  <p>Same design, but the hashed iframe bridge and the CSP edit land in the first change. Rejected
+  as sequencing, not as design - phase 2 above is exactly this, taken on its own.</p>
+</div>
+
+<div class="option no">
+  <h3>Option B - source search with block reveal everywhere<span class="not">rejected</span></h3>
+  <p>About half the work and no sandbox edit, but Markdown and Editor would both lose
+  character-accurate highlighting, and a count taken over source includes matches that are not on
+  screen - a word inside <code>&lt;div class="report"&gt;</code>, a markdown link target, a
+  front-matter key - which breaks the invariant the conversation&rsquo;s find rests on. Kept only
+  where it is the honest best available, which is the opaque iframe.</p>
+</div>
+
+<div class="option no">
+  <h3>Option D - the platform&rsquo;s find<span class="not">rejected</span></h3>
+  <p><code>webContents.findInPage</code> in the Electron shell with native find in the browser
+  build. Cheapest, and it searches iframes for free. Rejected because it searches the whole
+  dashboard - file list, rails, toolbar - rather than the document; because CodeMirror only builds
+  DOM for its rendered viewport, so matches below the fold do not exist for native find, making
+  edit mode quietly wrong; and because nothing about it is assertable from a Playwright spec.</p>
+</div>
+
+<h2>Verification</h2>
+
+<ul>
+  <li><code>test/</code>: the find core over document text (counts, wrap, case, zero-length guard,
+  offsets), the rehype mark plugin&rsquo;s output shape via <code>renderToStaticMarkup</code>, and
+  the editor decoration ranges.</li>
+  <li><code>e2e/</code>: a new spec that opens Files on a markdown fixture, presses Cmd+F, types,
+  asserts the count, steps with Enter, asserts the current mark moved, switches to Editor and
+  asserts the same query and count survive, and asserts the Conversation tab did <strong>not</strong>
+  steal the keystroke.</li>
+  <li><code>test/html-preview.test.ts</code> recomputes the CSP script hashes; the phase 2 bridge
+  lands with that test green.</li>
+</ul>
+
+<footer>
+  Source of truth: <code>docs/plans/files-find-in-document/plan.md</code>. This page is a rendering
+  of it.
+</footer>

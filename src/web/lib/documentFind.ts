@@ -261,14 +261,21 @@ export interface FrameFindResult {
   caseSensitive: boolean;
   count: number;
   /**
-   * The previewed source this count was taken over.
+   * The document token the FRAME echoed back, identifying which document it counted.
    *
    * A count is a statement about one document as much as about one query. The preview's
-   * `srcDoc` is rebuilt whenever that source changes, which reloads the document and destroys
-   * its highlights with it, so a count carried across that boundary describes a document that
-   * no longer exists.
+   * `srcDoc` is rebuilt whenever the previewed source changes, which reloads the document and
+   * destroys its highlights with it, so a count carried across that boundary describes a
+   * document that no longer exists.
+   *
+   * Echoed by the frame rather than stamped by the parent on receipt, and the difference is a
+   * real defect rather than a style: a `srcDoc` navigation keeps the same WindowProxy, so a
+   * result queued by the outgoing document still passes the parent's `event.source` check. A
+   * parent that labelled it with whatever document is current would accept the old count for
+   * the new document - whose highlights do not exist yet - which is the very thing keying on
+   * the document was added to prevent.
    */
-  document: string;
+  documentToken: number;
 }
 
 /**
@@ -295,11 +302,12 @@ export interface FrameFindResult {
  *
  * - the query;
  * - the case flag, because `Aa` re-runs the search exactly as retyping does;
- * - the previewed source, because the `srcDoc` is rebuilt when it changes, and the reload
- *   destroys the old document's highlights. That window is much larger than a round trip - a
- *   parse, a style pass and four scripts - and it was originally left uncovered on the
+ * - the document, because the `srcDoc` is rebuilt when the previewed source changes, and the
+ *   reload destroys the old document's highlights. That window is much larger than a round
+ *   trip - a parse, a style pass and four scripts - and it was originally left uncovered on the
  *   reasoning that clearing bought nothing but a flicker. The flicker was the `No results`
  *   this function no longer has to show; once "not known" is representable, clearing is free.
+ *   The token is the frame's own echo, not a label the parent applied - see `documentToken`.
  *
  * All three windows are a frame or more, which is why the wrong answers are easy to talk
  * yourself into and hard to see.
@@ -307,7 +315,7 @@ export interface FrameFindResult {
 export function frameFindCount(
   result: FrameFindResult | null,
   session: DocumentFindSession | null,
-  document: string,
+  documentToken: number,
 ): number | null {
   if (!session) return null;
   // An empty query is not a search awaiting an answer; there is nothing to count.
@@ -315,7 +323,7 @@ export function frameFindCount(
   if (!result) return null;
   const current = result.query === session.query
     && result.caseSensitive === session.caseSensitive
-    && result.document === document;
+    && result.documentToken === documentToken;
   return current ? result.count : null;
 }
 

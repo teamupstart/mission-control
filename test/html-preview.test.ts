@@ -348,6 +348,13 @@ test("the find bridge matches over runs and breaks them at every visible separat
   assert.match(bridge, /range\.setStart\(part\.node/);
   assert.match(bridge, /range\.setEnd\(part\.node/);
   assert.match(bridge, /count=missionFindRanges\.length/);
+  /*
+   * And the result ECHOES the document token it was given, rather than leaving the parent to
+   * label it on arrival. A `srcDoc` navigation keeps the same WindowProxy, so a result queued
+   * by the outgoing document still passes the parent's `event.source` check - the echo is the
+   * only thing that tells the two documents apart.
+   */
+  assert.match(bridge, /token:event\.data\.token/);
   // The literal matcher is the same policy `documentFind.ts` applies, character for character.
   assert.ok(bridge.includes("replace(/[.*+?^${}()|[\\]\\\\]/g,\"\\\\$&\")"));
 });

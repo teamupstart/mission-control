@@ -261,11 +261,14 @@ test("htmlRevealChoice keys on the block AND the nonce, so a repeat jump is a ne
 const session = (query: string, caseSensitive = false, index = 0) => (
   { query, caseSensitive, index }
 );
-/** The previewed source a count was taken over. Two distinct documents, by content. */
-const DOC = "<p>the budget is bounded</p>";
-const EDITED = "<p>the budget is bounded</p><!-- edited -->";
-const reply = (query: string, count: number, caseSensitive = false, document = DOC) => (
-  { query, caseSensitive, count, document }
+/**
+ * The document token the frame echoed. Two distinct documents; `EDITED` is the same file after
+ * an edit rebuilt the `srcDoc`, so the frame that counted `DOC` no longer exists.
+ */
+const DOC = 7;
+const EDITED = 8;
+const reply = (query: string, count: number, caseSensitive = false, documentToken = DOC) => (
+  { query, caseSensitive, count, documentToken }
 );
 
 test("a frame's count for the query and document the bar is holding is the count", () => {
@@ -321,11 +324,31 @@ test("a count does not survive the srcDoc reload that destroys the highlights it
   const counted = reply("budget", 3, false, DOC);
   // Same query, same case flag, one edit later: the count describes a document that is gone.
   assert.equal(frameFindCount(counted, session("budget"), EDITED), null);
-  // And it comes back by itself when the reloaded frame reports against the new source.
+  // And it comes back by itself when the reloaded frame reports against the new document.
   assert.equal(
     frameFindCount(reply("budget", 3, false, EDITED), session("budget"), EDITED),
     3,
   );
+});
+
+test("a result queued by the document being replaced is refused, however it is timed", () => {
+  /*
+   * GitHub Inspector round 4 on PR #827, and the hole in round 2's own fix.
+   *
+   * A `srcDoc` navigation keeps the SAME WindowProxy, so `event.source === frame.contentWindow`
+   * still passes for a find-result the outgoing document queued before it was replaced. Round 2
+   * keyed the count to the document but let the PARENT stamp which document that was, on
+   * arrival - so a late result from the old frame was labelled with the new source and accepted
+   * for a document whose highlights had never been drawn. The frame echoes the token it was
+   * given instead, which makes the result describe itself.
+   */
+  const late = reply("budget", 3, false, DOC);
+  assert.equal(frameFindCount(late, session("budget"), EDITED), null);
+  // Two edits in quick succession: a result from any earlier document is equally refused.
+  assert.equal(frameFindCount(late, session("budget"), 9), null);
+  // A token the parent has moved PAST is refused as firmly as one it has not reached, so a
+  // reordered pair cannot resurrect an old count.
+  assert.equal(frameFindCount(reply("budget", 3, false, 9), session("budget"), EDITED), null);
 });
 
 test("an empty query is counted, not awaited, whatever the document is doing", () => {

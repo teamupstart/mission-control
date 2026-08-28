@@ -366,6 +366,21 @@ set it. The `visibility: hidden` div in the counting fixture now carries two chi
 hidden text that must still not be counted, and `#reasserted`, which must be - so one subtree
 proves both directions. Reverting the descent makes that spec report 2 where it must report 3.
 
+**Correction found in review round 4 - a result must describe itself.** Round 2's fix keyed the
+count to the document but let the PARENT decide, on arrival, which document a result was about.
+That is unsound for a reason `event.source` cannot cover: a `srcDoc` navigation keeps the same
+WindowProxy, so a find-result queued by the document being replaced still passes the source
+check, and stamping it with whatever source is current accepts the old count for the new document
+- whose highlights have never been drawn. The parent was asserting on the frame's behalf.
+
+The find message now carries a `token` naming the document, the frame echoes it back untouched,
+and `frameFindCount` compares that echo. Every field of the result is now an echo - query, case
+flag, token - which is the actual invariant: **a result describes the search and the document it
+counted, and the parent only ever checks whether that is still the one on screen.** The token is
+a counter rather than the source string because it crosses `postMessage` on every keystroke and
+only has to differ; nothing reads it. The find script's hash moved with it, which is expected -
+non-goal 1 protects the other three bridges, not this one.
+
 **Also worth naming.** In-frame hits carry no source line, because the frame never sees the
 file's bytes - so the Preview/Editor toggle can no longer carry the reader's place across for an
 HTML document and starts the new surface's ring at its first hit. Lining the frame's ordinals up

@@ -466,6 +466,27 @@ export function FileWorkspace({
    * revision would assert the text is still where it was without ever checking.
    */
   const previewRevision = prepared ? prepared.revision : (buffer?.document.revision ?? null);
+  /**
+   * A number naming the document currently in the frame, bumped whenever the source it is
+   * built from changes - which is exactly when `srcDoc` is rebuilt and the frame navigates.
+   *
+   * Sent down with every find message and echoed back untouched, so a result says which
+   * document it counted instead of the parent deciding on its arrival. That is not
+   * belt-and-braces: a `srcDoc` navigation keeps the same WindowProxy, so a result queued by
+   * the outgoing document passes the `event.source` check, and labelling it with the current
+   * source would accept the old count for the new document.
+   *
+   * A counter rather than the source string because it travels over `postMessage` on every
+   * keystroke, and a token only has to differ - it never has to be read.
+   */
+  const previewTokenRef = useRef({ text: previewText, token: 0 });
+  if (previewTokenRef.current.text !== previewText) {
+    previewTokenRef.current = {
+      text: previewText,
+      token: previewTokenRef.current.token + 1,
+    };
+  }
+  const previewToken = previewTokenRef.current.token;
   const imageSource = useMemo(() => {
     if (mode !== "preview" || buffer?.document.kind !== "image") return null;
     return buffer.document.image?.mediaType === "image/svg+xml" && buffer.document.text !== null
@@ -1054,7 +1075,7 @@ export function FileWorkspace({
    * so the count never goes unknown under a reader pressing Enter.
    */
   const htmlFrameCount = htmlInFrame
-    ? frameFindCount(htmlFindResult, find, previewText)
+    ? frameFindCount(htmlFindResult, find, previewToken)
     : 0;
   /**
    * Null when the surface on screen cannot yet say how many matches it has.
@@ -1572,12 +1593,18 @@ export function FileWorkspace({
         // while it is not, because clamping against a ring of unknown size posts 0 and moves
         // the reader.
         index: frameFindIndex(find, findIndex, findCountKnown),
+        token: previewToken,
       }
       : null),
-    [find, findCountKnown, findIndex, htmlShowing],
+    [find, findCountKnown, findIndex, htmlShowing, previewToken],
   );
   const postFindToFrame = useCallback(
-    (post: { query: string; caseSensitive: boolean; index: number } | null): void => {
+    (post: {
+      query: string;
+      caseSensitive: boolean;
+      index: number;
+      token: number;
+    } | null): void => {
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
@@ -1588,6 +1615,8 @@ export function FileWorkspace({
         query: post?.query ?? "",
         caseSensitive: post?.caseSensitive ?? false,
         index: post?.index ?? 0,
+        // A clear still names its document, so the frame's echo is meaningful either way.
+        token: post?.token ?? previewTokenRef.current.token,
       }, "*");
     },
     [],
@@ -1600,15 +1629,6 @@ export function FileWorkspace({
   htmlFindPostRef.current = htmlFindPost;
   const findSessionRef = useRef(find);
   findSessionRef.current = find;
-  /**
-   * The source the mounted frame was built from, for stamping a reply with its document.
-   *
-   * A ref rather than a dependency because the message listeners are subscribed on the path:
-   * resubscribing on every debounced revision would tear them down mid-round-trip, which is
-   * the defect the block-click handler above already documents at length.
-   */
-  const previewTextRef = useRef(previewText);
-  previewTextRef.current = previewText;
   useEffect(() => {
     if (!previewPath) return;
     const onFindReady = (event: MessageEvent): void => {
@@ -1634,13 +1654,14 @@ export function FileWorkspace({
         query?: unknown;
         caseSensitive?: unknown;
         count?: unknown;
+        token?: unknown;
       } | null;
       if (data?.type !== HTML_PREVIEW_FIND_RESULT_MESSAGE) return;
       const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
         ".file-content .html-preview",
       );
       if (!frame || event.source !== frame.contentWindow) return;
-      if (!Number.isInteger(data.count)) return;
+      if (!Number.isInteger(data.count) || !Number.isInteger(data.token)) return;
       const session = findSessionRef.current;
       // A reply about a search the reader has already left is refused rather than shown. The
       // reported index is NOT adopted: the parent owns the ring, and clamping a stored index
@@ -1654,9 +1675,11 @@ export function FileWorkspace({
         query: session.query,
         caseSensitive: session.caseSensitive,
         count: data.count as number,
-        // The document this count is about. Read through a ref because this listener is
-        // subscribed on the path, not on every debounced revision of the source.
-        document: previewTextRef.current,
+        // The frame's OWN echo of which document it counted, never `previewToken` read here.
+        // A result queued by the document being replaced still passes the source check above,
+        // so labelling it with whatever is current is how the old count gets accepted for the
+        // new document. `frameFindCount` compares this against the live token.
+        documentToken: data.token as number,
       });
     };
     window.addEventListener("message", onFindResult);

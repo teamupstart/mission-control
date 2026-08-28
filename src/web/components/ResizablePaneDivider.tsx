@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Tooltip } from "./Tooltip.tsx";
 
 interface DividerMetrics {
   width: number;
@@ -99,66 +100,67 @@ export function ResizablePaneDivider({
   }, []);
 
   return (
-    <div
-      ref={dividerRef}
-      className={`pane-divider${dragging ? " is-dragging" : ""}`}
-      role="separator"
-      aria-label={label}
-      aria-orientation="vertical"
-      aria-valuemin={metrics.min}
-      aria-valuemax={metrics.max}
-      aria-valuenow={metrics.width}
-      tabIndex={0}
-      title="Drag to resize. Use Left and Right arrows for precise adjustments. Double-click to reset."
-      onPointerDown={(event) => {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startWidth: leadingPaneRef.current?.getBoundingClientRect().width ?? metrics.width,
-        };
-        setDragging(true);
-        document.body.classList.add("is-pane-resizing");
-      }}
-      onPointerMove={(event) => {
-        if (drag.current?.pointerId !== event.pointerId) return;
-        applyWidth(drag.current.startWidth + event.clientX - drag.current.startX);
-      }}
-      onPointerUp={(event) => finishDrag(event.pointerId)}
-      onPointerCancel={(event) => finishDrag(event.pointerId)}
-      onLostPointerCapture={(event) => finishDrag(event.pointerId)}
-      onDoubleClick={() => {
-        containerRef.current?.style.removeProperty(widthProperty);
-        appliedWidth.current = null;
-        const leadingPane = leadingPaneRef.current;
-        const { min, max } = bounds();
-        if (leadingPane) {
-          requestAnimationFrame(() => setMetrics({
-            width: Math.round(leadingPane.getBoundingClientRect().width),
-            min: Math.round(min),
-            max: Math.round(max),
-          }));
-        }
-      }}
-      onKeyDown={(event) => {
-        const step = event.shiftKey ? 48 : 16;
-        const { min, max } = bounds();
-        const next = event.key === "ArrowLeft"
-          ? metrics.width - step
-          : event.key === "ArrowRight"
-            ? metrics.width + step
-            : event.key === "Home"
-              ? min
-              : event.key === "End"
-                ? max
-                : null;
-        if (next === null) return;
-        event.preventDefault();
-        event.stopPropagation();
-        applyWidth(next);
-      }}
-    />
+    <Tooltip label="Drag to resize. Use Left and Right arrows for precise adjustments. Double-click to reset.">
+      <div
+        ref={dividerRef}
+        className={`pane-divider${dragging ? " is-dragging" : ""}`}
+        role="separator"
+        aria-label={label}
+        aria-orientation="vertical"
+        aria-valuemin={metrics.min}
+        aria-valuemax={metrics.max}
+        aria-valuenow={metrics.width}
+        tabIndex={0}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startWidth: leadingPaneRef.current?.getBoundingClientRect().width ?? metrics.width,
+          };
+          setDragging(true);
+          document.body.classList.add("is-pane-resizing");
+        }}
+        onPointerMove={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          applyWidth(drag.current.startWidth + event.clientX - drag.current.startX);
+        }}
+        onPointerUp={(event) => finishDrag(event.pointerId)}
+        onPointerCancel={(event) => finishDrag(event.pointerId)}
+        onLostPointerCapture={(event) => finishDrag(event.pointerId)}
+        onDoubleClick={() => {
+          containerRef.current?.style.removeProperty(widthProperty);
+          appliedWidth.current = null;
+          const leadingPane = leadingPaneRef.current;
+          const { min, max } = bounds();
+          if (leadingPane) {
+            requestAnimationFrame(() => setMetrics({
+              width: Math.round(leadingPane.getBoundingClientRect().width),
+              min: Math.round(min),
+              max: Math.round(max),
+            }));
+          }
+        }}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 48 : 16;
+          const { min, max } = bounds();
+          const next = event.key === "ArrowLeft"
+            ? metrics.width - step
+            : event.key === "ArrowRight"
+              ? metrics.width + step
+              : event.key === "Home"
+                ? min
+                : event.key === "End"
+                  ? max
+                  : null;
+          if (next === null) return;
+          event.preventDefault();
+          event.stopPropagation();
+          applyWidth(next);
+        }}
+      />
+    </Tooltip>
   );
 }

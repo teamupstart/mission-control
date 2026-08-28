@@ -99,6 +99,15 @@ test("file lists can be dragged narrower to give Files and Diff more reading roo
   const filesMain = dashboard.locator(".file-main");
   const filesDivider = dashboard.getByRole("separator", { name: "Resize file list" });
   await expect(filesDivider).toBeVisible();
+  const dividerHelp = dashboard.locator(".tooltip");
+  await filesDivider.hover();
+  await expect(dividerHelp).toHaveText(
+    "Drag to resize. Use Left and Right arrows for precise adjustments. Double-click to reset.",
+  );
+  await dashboard.mouse.move(0, 0);
+  await expect(dividerHelp).toHaveCount(0);
+  await filesDivider.focus();
+  await expect(dividerHelp).toBeVisible();
   const filesBefore = { list: await width(dashboard.locator(".file-nav")), main: await width(filesMain) };
   await dragBy(dashboard, filesDivider, -96);
   const filesAfter = { list: await width(dashboard.locator(".file-nav")), main: await width(filesMain) };

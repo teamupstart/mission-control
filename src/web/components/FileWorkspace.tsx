@@ -7,7 +7,12 @@ import {
   type FileBuffer,
   type SessionFilesController,
 } from "../lib/sessionFiles.ts";
-import { FileEditor, type FileEditorComments, type FileEditorFind } from "./FileEditor.tsx";
+import {
+  FileEditor,
+  editorFindChord,
+  type FileEditorComments,
+  type FileEditorFind,
+} from "./FileEditor.tsx";
 import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.tsx";
 import { FileCommentRail } from "./FileCommentRail.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
@@ -44,6 +49,7 @@ import {
 import { FindBar } from "./FindBar.tsx";
 import {
   documentHits,
+  hitLinesByBlock,
   stepIndex,
   type DocumentFindSession,
   type DocumentHit,
@@ -947,12 +953,31 @@ export function FileWorkspace({
       "source",
     );
   }, [buffer?.text, find, findSurface]);
-  const findCount = findSurface === "markdown" ? renderedFindHits.length : sourceFindHits.length;
+  /**
+   * The HTML surface's ring, over the locations it can actually reach.
+   *
+   * See `hitLinesByBlock`. Two occurrences on one source line are indistinguishable to a
+   * resolver that is asked for a line, so offering them as two entries promised a step that
+   * could not happen - and could reveal the block belonging to the other one.
+   */
+  const htmlFindLines = useMemo(
+    (): number[] => (findSurface === "html" ? hitLinesByBlock(sourceFindHits) : []),
+    [findSurface, sourceFindHits],
+  );
+  const findCount = findSurface === "markdown"
+    ? renderedFindHits.length
+    : findSurface === "html"
+      ? htmlFindLines.length
+      : sourceFindHits.length;
   /** Clamped here rather than on the way in, because hits move under a stored index. */
   const findIndex = findCount === 0 ? -1 : Math.min(Math.max(find?.index ?? 0, 0), findCount - 1);
   const findCurrentKey = findSurface === "markdown"
     ? renderedFindHits[findIndex]?.key ?? null
-    : sourceFindHits[findIndex]?.key ?? null;
+    : findSurface === "html"
+      // Namespaced like every other surface's key, and keyed on the line because the line is
+      // the whole of what this surface can address.
+      ? (htmlFindLines[findIndex] === undefined ? null : `block:${htmlFindLines[findIndex]}`)
+      : sourceFindHits[findIndex]?.key ?? null;
   /**
    * The source line of every hit on the active surface, in the same order.
    *
@@ -963,18 +988,40 @@ export function FileWorkspace({
   const findHitLines = useMemo((): (number | null)[] =>
     findSurface === "markdown"
       ? renderedFindHits.map((hit) => hit.range?.startLine ?? null)
-      : sourceFindHits.map((hit) => hit.line),
-  [findSurface, renderedFindHits, sourceFindHits]);
+      : findSurface === "html"
+        ? htmlFindLines
+        : sourceFindHits.map((hit) => hit.line),
+  [findSurface, htmlFindLines, renderedFindHits, sourceFindHits]);
   // Read through refs by the callbacks below, refreshed during render for the reason every
   // other ref in this file is: the very first press after a state change uses current values.
   const findCountRef = useRef(findCount);
   findCountRef.current = findCount;
   const findIndexRef = useRef(findIndex);
   findIndexRef.current = findIndex;
-  /** The last place the reader actually was, which is what crosses the toggle. */
-  const findLineRef = useRef<number | null>(null);
+  /**
+   * The last place the reader actually was, and WHICH SURFACE it was on.
+   *
+   * The surface is not bookkeeping, it is the fix for a real defect. This ref used to hold a
+   * bare line and be written on every render, and the render that switches surfaces already
+   * has the NEW surface's hits: `sourceFindHits` is a memo over `buffer.text`, so on the first
+   * Editor render `findHitLines` is already source lines and the old index still selects one
+   * of them. The write therefore overwrote the outgoing line with a source line at the old
+   * ordinal before the surface-change effect below could read it - and those disagree exactly
+   * when Markdown hides an occurrence, which is the case the whole per-surface model exists
+   * for. Selecting Preview's second visible hit after a link-destination match landed the
+   * Editor on that hidden destination.
+   *
+   * Writing only while the recorded surface is still the surface on screen is what preserves
+   * the outgoing value for one render, which is all the effect needs.
+   */
+  const findLineRef = useRef<{ surface: typeof findSurface; line: number | null }>({
+    surface: findSurface,
+    line: null,
+  });
   const currentFindLine = findHitLines[findIndex] ?? null;
-  if (currentFindLine !== null) findLineRef.current = currentFindLine;
+  if (findLineRef.current.surface === findSurface && currentFindLine !== null) {
+    findLineRef.current = { surface: findSurface, line: currentFindLine };
+  }
 
   /**
    * The last query and case flag, surviving a CLOSE of the bar.
@@ -1080,6 +1127,16 @@ export function FileWorkspace({
    * - it accepts `ctrl+f` as well as the resolved binding. `chordFromEvent` does no platform
    *   normalization, so the default `cmd+f` genuinely does not match Ctrl+F, and the ask
    *   names both keys.
+   *
+   * It also claims FIND-NEXT and FIND-PREVIOUS, not only the open chord, and it has to: only
+   * `FileEditor` installs those, so with find open over a Markdown or HTML preview - where no
+   * CodeMirror exists - F3 and Mod-G fell through to the browser instead of stepping this
+   * document's ring, while the documentation said they step it. `editorFindChord` is the same
+   * predicate the editor uses, so the two owners cannot drift on which chord means what.
+   *
+   * Go-to-line is deliberately NOT claimed here. In the editor it is claimed and left inert
+   * because it would otherwise open a panel this surface no longer has; over a preview there
+   * is no panel to protect, and swallowing the chord would be over-reach.
    */
   const { bindings } = useKeybindings();
   const findChord = bindings.findInConversation;
@@ -1087,17 +1144,27 @@ export function FileWorkspace({
     if (findSurface === null) return;
     function onKeyDown(event: KeyboardEvent): void {
       const chord = chordFromEvent(event);
-      if (chord !== findChord && chord !== "cmd+f" && chord !== "ctrl+f") return;
+      const bound = chord === findChord || chord === "cmd+f" || chord === "ctrl+f";
+      const claimed = editorFindChord(event);
+      const action = bound
+        ? "open"
+        : claimed === "next" || claimed === "previous"
+          ? claimed
+          : null;
+      if (action === null) return;
       // The integrated tab stands down while the extracted window is up, exactly as the
       // bare-letter chords above it do, so two mounted workspaces cannot both answer.
       if (!extracted && isOverlayOpen?.() === true) return;
       event.preventDefault();
+      // Stops App, and in the Editor it also stops `FileEditor`'s own handler - so a chord is
+      // answered once, by whichever owner sees it first, never twice.
       event.stopImmediatePropagation();
-      openFind();
+      if (action === "open") openFind();
+      else answerEditorFindChord(action);
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [extracted, findChord, findSurface, isOverlayOpen, openFind]);
+  }, [answerEditorFindChord, extracted, findChord, findSurface, isOverlayOpen, openFind]);
 
   /*
    * Carry the reader's place across a surface change, by line.
@@ -1107,13 +1174,14 @@ export function FileWorkspace({
    * position for the block a rendered hit sat in - the query still survives and the ring
    * starts at the first hit, rather than landing somewhere invented.
    */
-  const findSurfaceRef = useRef(findSurface);
   useEffect(() => {
-    const previous = findSurfaceRef.current;
-    if (previous === findSurface) return;
-    findSurfaceRef.current = findSurface;
-    if (!find || find.query === "" || previous === null || findSurface === null) return;
-    setPendingFindLine(findLineRef.current);
+    // The ref carries the surface, so it IS the record of which one we were on - there is no
+    // second piece of state to keep in step with it.
+    const outgoing = findLineRef.current;
+    if (outgoing.surface === findSurface) return;
+    findLineRef.current = { surface: findSurface, line: null };
+    if (!find || find.query === "" || outgoing.surface === null || findSurface === null) return;
+    setPendingFindLine(outgoing.line);
   }, [find, findSurface]);
   useEffect(() => {
     if (pendingFindLine === null) return;
@@ -1268,7 +1336,7 @@ export function FileWorkspace({
    */
   const htmlFindRequests = useRef(0);
   const htmlFindTargetRef = useRef<{ blockPath: HtmlBlockPathStep[]; nonce: number } | null>(null);
-  const currentHtmlFindLine = findSurface === "html" ? sourceFindHits[findIndex]?.line ?? null : null;
+  const currentHtmlFindLine = findSurface === "html" ? htmlFindLines[findIndex] ?? null : null;
   useEffect(() => {
     if (findSurface !== "html" || !previewPath || currentHtmlFindLine === null) {
       htmlFindTargetRef.current = null;

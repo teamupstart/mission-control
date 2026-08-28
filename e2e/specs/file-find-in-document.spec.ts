@@ -38,6 +38,11 @@ const TASK = "read the reconnect plan in the files tab";
  * 3  paragraph         "reconnect"        - rendered and in source
  * 5  paragraph         "reconnect"        - rendered and in source
  * 7  link DESTINATION  "onlyhere"         - in source only; it renders to nothing
+ * 9  link DESTINATION  "hidden"           - in source only, and BEFORE the visible one
+ * 11 paragraph         "hidden"           - the only one Preview can reach
+ *
+ * Lines 9 and 11 are the pair that catches the toggle taking the wrong hit: Preview has one
+ * `hidden` and the Editor has two, so a toggle that reused the ordinal would land on line 9.
  */
 const PLAN_MD = `# Reconnect notes
 
@@ -46,6 +51,10 @@ The reconnect budget is bounded.
 The reconnect loop retries.
 
 See [the audit](docs/onlyhere-audit.md) for details.
+
+See [the notes](docs/hidden-notes.md) too.
+
+The hidden paragraph is the one Preview can reach.
 `;
 
 const REPORT_HTML = `<!doctype html>
@@ -57,6 +66,7 @@ const REPORT_HTML = `<!doctype html>
   <section style="height: 100vh">
     <h2>Reconnect details</h2>
     <p id="verdict">The reconnect budget is bounded.</p>
+    <p>paired alpha</p><p>paired beta</p>
   </section>
 </body></html>
 `;
@@ -204,6 +214,40 @@ test("Cmd+F searches the document rather than opening the conversation", async (
   await expect(marks(dashboard)).toHaveCount(3);
 });
 
+test("find-next and find-previous step the ring from Preview, where no editor exists", async ({
+  dashboard,
+  daemon,
+}) => {
+  /*
+   * Only `FileEditor` claims F3 and Mod-G, so with find open over a rendered document - which
+   * mounts no CodeMirror at all - those keys fell through to the browser while the docs said
+   * they step this document's ring. The workspace listener claims them too now, and Preview is
+   * the surface that proves it: there is nothing else here that could have answered.
+   */
+  await openFilesTab(dashboard, daemon);
+  await openPlan(dashboard);
+  await dashboard.keyboard.press("Meta+f");
+  await searchbox(dashboard).fill("reconnect");
+  await expect(readout(dashboard)).toHaveText("1 / 3");
+  await expect(marks(dashboard)).toHaveCount(3);
+  // No editor on this surface, so no CodeMirror handler can be the thing that responds.
+  await expect(dashboard.locator(".file-content .cm-content")).toHaveCount(0);
+
+  // Away from the query box, so the bar's own Enter handler is not what steps the ring.
+  await dashboard.locator(".file-markdown-preview").click({ position: { x: 5, y: 5 } });
+  await dashboard.keyboard.press("F3");
+  await expect(readout(dashboard)).toHaveText("2 / 3");
+  await dashboard.keyboard.press("ControlOrMeta+g");
+  await expect(readout(dashboard)).toHaveText("3 / 3");
+  await dashboard.keyboard.press("Shift+F3");
+  await expect(readout(dashboard)).toHaveText("2 / 3");
+  await dashboard.keyboard.press("Shift+ControlOrMeta+g");
+  await expect(readout(dashboard)).toHaveText("1 / 3");
+  // The current mark moved with the readout rather than the count drifting on its own.
+  await expect(currentMark(dashboard)).toHaveCount(1);
+  await expect(currentMark(dashboard)).toHaveText(/Reconnect/i);
+});
+
 test("one find session crosses the Preview/Editor toggle, each surface counting what it shows", async ({
   dashboard,
   daemon,
@@ -240,6 +284,25 @@ test("one find session crosses the Preview/Editor toggle, each surface counting 
   await modes.getByRole("button", { name: "Preview" }).click();
   await expect(marks(dashboard)).toHaveCount(3);
   await expect(readout(dashboard)).toHaveText("2 / 3");
+
+  /*
+   * The toggle lands on the hit the reader had SELECTED, not on the source hit that happens
+   * to share its ordinal.
+   *
+   * `hidden` occurs once in a link destination on line 7 - invisible in Preview - and once in
+   * the prose on line 9. Preview therefore shows one hit (line 9) while the Editor has two
+   * (lines 7 and 9). Selecting Preview's only hit and switching must land on line 9's, which
+   * is Editor hit 2 of 2; landing on 1 of 2 would be the hidden destination, chosen because it
+   * carried the old ordinal.
+   */
+  await searchbox(dashboard).fill("hidden");
+  await expect(marks(dashboard)).toHaveCount(1);
+  await expect(readout(dashboard)).toHaveText("1 / 1");
+  await modes.getByRole("button", { name: "Editor" }).click();
+  await expect(decorations(dashboard)).toHaveCount(2);
+  await expect(readout(dashboard)).toHaveText("2 / 2");
+  await modes.getByRole("button", { name: "Preview" }).click();
+  await expect(readout(dashboard)).toHaveText("1 / 1");
 
   /*
    * The two surfaces do NOT agree on a count, and must not: `onlyhere` occurs once in the
@@ -397,4 +460,26 @@ test("an HTML preview reveals the block holding the current match, and says so",
     .poll(() => report.locator("body").evaluate(() => window.scrollY))
     .toBeGreaterThan(0);
   await shoot(dashboard, "html-block-reveal");
+
+  /*
+   * Two occurrences on ONE source line, in two different blocks, are one ring entry.
+   *
+   * This surface is told a LINE, so both would produce byte-identical resolve requests and the
+   * same answer: offering two entries promised a step that cannot happen, and the reveal could
+   * land on the block belonging to the other occurrence. The ring is therefore over the
+   * locations this surface can actually reach, which is what "by block" means. Phase 2's
+   * in-frame bridge reports character positions and retires both the grouping and the note.
+   */
+  await searchbox(dashboard).fill("paired");
+  await expect(readout(dashboard)).toHaveText("1 / 1");
+  // Stepping cannot stall on an entry it could not distinguish, because there is only one.
+  await dashboard.keyboard.press("Enter");
+  await expect(readout(dashboard)).toHaveText("1 / 1");
+  // The Editor, which shows source, still counts both occurrences - each surface counts what
+  // it shows, and here that difference is the honest one.
+  await dashboard.getByRole("group", { name: "File view mode" })
+    .getByRole("button", { name: "Editor" })
+    .click();
+  await expect(decorations(dashboard)).toHaveCount(2);
+  await expect(readout(dashboard)).toHaveText("1 / 2");
 });

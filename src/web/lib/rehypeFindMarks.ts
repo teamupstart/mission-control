@@ -239,104 +239,88 @@ function collect(
     }
   };
 
+  /*
+   * ONE run builder, shared by every depth of the walk.
+   *
+   * It was two mutually recursive walkers, and that was wrong in a way worth recording: the
+   * inline one accumulated its pieces into a list it RETURNED, and reported a separator it
+   * had crossed through a `broke` flag the caller acted on afterwards - so text before and
+   * after a nested separator arrived in the caller's run together and was matched as one
+   * string. `[foo![image](x)bar](url)` matched `foobar` across a visible image.
+   *
+   * A separator now flushes the run where it is found, at whatever depth that is, because
+   * the run being built is one piece of shared state rather than a value being passed back
+   * up. There is no `broke` flag to forget to act on.
+   */
+  let pieces: RunPiece[] = [];
+  /** Where the next piece's text starts in the joined run. */
+  let at = 0;
   /**
-   * Read one element's children as a sequence of runs.
+   * The block the CURRENT run belongs to - the nearest placed ancestor when its first piece
+   * was added. A run never spans blocks, because a block boundary flushes it.
+   */
+  let runBlock: MarkdownBlockRange | null = null;
+
+  const flushRun = (): void => {
+    flush(pieces, runBlock);
+    pieces = [];
+    at = 0;
+    runBlock = null;
+  };
+
+  const addText = (node: HastText, siblings: HastNode[], index: number, block: MarkdownBlockRange | null): void => {
+    // Text that occupies no space is not a piece, and must not become one: an empty node
+    // between two words would otherwise take the run's block for itself.
+    if (node.value === "") return;
+    if (pieces.length === 0) runBlock = block;
+    pieces.push({ node, siblings, index, at });
+    at += node.value.length;
+  };
+
+  /**
+   * Read one element's children.
    *
    * `block` is the nearest ancestor the parser placed, which is what every hit inside this
    * subtree reports as its source range.
    */
-  const walk = (node: HastNode, block: MarkdownBlockRange | null): void => {
+  const scan = (node: HastNode, block: MarkdownBlockRange | null): void => {
     const children = (node as { children?: HastNode[] }).children;
     if (!Array.isArray(children)) return;
-    let pieces: RunPiece[] = [];
-    let at = 0;
-    const breakRun = (): void => {
-      flush(pieces, block);
-      pieces = [];
-      at = 0;
-    };
     for (let index = 0; index < children.length; index += 1) {
       const child = children[index]!;
       if (isText(child)) {
-        if (child.value !== "") {
-          pieces.push({ node: child, siblings: children, index, at });
-          at += child.value.length;
-        }
+        addText(child, children, index, block);
         continue;
       }
       if (!isElement(child)) {
         // A comment or a raw node: no text, no space, nothing to notice.
         continue;
       }
+      // Not rendered text at all, and occupying no space: neither marks nor breaks a run.
       if (INVISIBLE_TAGS.has(child.tagName)) continue;
       if (child.tagName === "br" || child.tagName === "img" || isHiddenDiagramFence(child)) {
         // Excluded, and it still occupies space, so text either side of it is not one word.
-        breakRun();
+        // Flushed HERE rather than reported upwards, which is the fix described above.
+        flushRun();
         continue;
       }
       if (PHRASING_TAGS.has(child.tagName)) {
-        // Inline: its text joins the run being built, at the position it renders in.
-        const inline = (child as HastElement).children ?? [];
-        const nested = collectInline(inline, at, block);
-        pieces.push(...nested.pieces);
-        at += nested.length;
-        if (nested.broke) breakRun();
+        // Inline: its text joins the run being built, at the position it renders in. No
+        // flush, which is the whole point - `foo**bar**` is one word to the reader.
+        scan(child, block);
         continue;
       }
-      // A nested block, a list item, a table cell: a visible separation in both directions.
-      breakRun();
-      walk(child, blockRangeFromNode(child) ?? block);
+      // A nested block, a list item, a table cell - or a block inside phrasing content,
+      // which a browser repairs by splitting the inline element. A visible separation in
+      // both directions, so the run breaks before it and again after it.
+      flushRun();
+      scan(child, blockRangeFromNode(child) ?? block);
+      flushRun();
     }
-    breakRun();
   };
 
-  /**
-   * The same reading, one level down inside an inline element.
-   *
-   * Its text nodes belong to the run their ANCESTOR is building, and they keep their own
-   * parent array so a splice lands where the node actually lives. A visible separation
-   * inside an inline element (an `img` in a link, a nested block browsers would repair)
-   * still breaks the run, reported back through `broke`.
-   */
-  const collectInline = (
-    children: HastNode[],
-    start: number,
-    block: MarkdownBlockRange | null,
-  ): { pieces: RunPiece[]; length: number; broke: boolean } => {
-    const pieces: RunPiece[] = [];
-    let at = start;
-    let broke = false;
-    for (let index = 0; index < children.length; index += 1) {
-      const child = children[index]!;
-      if (isText(child)) {
-        if (child.value !== "") {
-          pieces.push({ node: child, siblings: children, index, at });
-          at += child.value.length;
-        }
-        continue;
-      }
-      if (!isElement(child)) continue;
-      if (INVISIBLE_TAGS.has(child.tagName)) continue;
-      if (child.tagName === "br" || child.tagName === "img" || isHiddenDiagramFence(child)) {
-        broke = true;
-        continue;
-      }
-      if (PHRASING_TAGS.has(child.tagName)) {
-        const nested = collectInline(child.children ?? [], at, block);
-        pieces.push(...nested.pieces);
-        at += nested.length;
-        if (nested.broke) broke = true;
-        continue;
-      }
-      // A block inside phrasing content is invalid markup a browser would repair by
-      // splitting the inline element, so the reader sees a separation here too.
-      broke = true;
-      walk(child, blockRangeFromNode(child) ?? block);
-    }
-    return { pieces, length: at - start, broke };
-  };
-
-  walk(tree, blockRangeFromNode(tree));
+  scan(tree, blockRangeFromNode(tree));
+  flushRun();
 }
 
 /**

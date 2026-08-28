@@ -908,16 +908,20 @@ text has fewer occurrences than its source - a query matching only the destinati
 correct for what their surface shows. A Preview claiming that match would be offering one it
 cannot highlight or step to.
 
+<kbd>F3</kbd> and <kbd>⌘G</kbd> mean find-next and find-previous, and their shifted pairs step
+backwards - on every surface, including a rendered preview that mounts no editor at all.
+
 In the Editor this find replaces CodeMirror's own search panel outright, so the app has exactly
 one find rather than a second one with different chrome and a different count.
-<kbd>F3</kbd> and <kbd>⌘G</kbd> keep meaning find-next and find-previous, stepping the same ring.
 The Persona, Session action and Foreman profile editors are unaffected: they have no find session
 of their own, so they keep CodeMirror's panel.
 
-An **HTML preview** is a sandboxed document this app cannot read into, so its matches are counted
+An **HTML preview** is a sandboxed document this app cannot read into, so its matches are found
 over the file's source and the block containing the current match is revealed and outlined -
-which is why the bar says **by block** there. Character-accurate find inside that frame is a
-later change.
+which is why the bar says **by block** there. That phrase is exact: the ring is over the blocks
+this app can reach, so two occurrences on one source line count once, because a reveal told only
+a line cannot tell them apart. The Editor, which shows the source itself, still counts both.
+Character-accurate find inside that frame is a later change.
 
 ### Comment on a line
 

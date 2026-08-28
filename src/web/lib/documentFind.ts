@@ -229,3 +229,28 @@ export function documentHits(
   }
   return out;
 }
+
+/**
+ * Collapse hits that share a source line into one ring entry, in document order.
+ *
+ * For a surface that can only locate a match BY BLOCK - today the sandboxed HTML preview,
+ * which this origin cannot read into - two occurrences on the same source line are two
+ * things nothing can tell apart: the resolver is asked for a line, so both requests are
+ * byte-identical and both answers are the same block. Offering them as two ring entries
+ * promised the reader a step that could not happen, and could reveal the block of the other
+ * occurrence, which is worse than coarse - it is wrong.
+ *
+ * So that surface's ring is over the LOCATIONS it can actually reach. The bar says "by
+ * block" for exactly this reason. Phase 2's in-frame bridge reports its own character
+ * positions and retires both the grouping and the note.
+ *
+ * Hits must arrive in document order, which `documentHits` guarantees, so a neighbour check
+ * is enough and no set is needed.
+ */
+export function hitLinesByBlock(hits: readonly DocumentHit[]): number[] {
+  const lines: number[] = [];
+  for (const hit of hits) {
+    if (lines[lines.length - 1] !== hit.line) lines.push(hit.line);
+  }
+  return lines;
+}

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   documentHits,
   hitLine,
+  hitLinesByBlock,
   hitsInWindow,
   stepIndex,
 } from "../src/web/lib/documentFind.ts";
@@ -116,4 +117,38 @@ test("hitsInWindow clips a straddling hit into both halves under one key", () =>
   assert.deepEqual(right, [{ key, start: 0, end: 6, line: 1 }]);
   // A hit wholly on the far side is dropped, not clipped to nothing.
   assert.deepEqual(hitsInWindow(hits, 12, 14), []);
+});
+
+test("hitLinesByBlock offers one ring entry per reachable location", () => {
+  /*
+   * The HTML preview can only be told a LINE, so two occurrences on one line are two things
+   * nothing can tell apart: both resolve requests are byte-identical and both answers name the
+   * same block. Offering them as two ring entries promised a step that could not happen, and
+   * could reveal the block belonging to the other occurrence.
+   */
+  const source = [
+    "<p>reconnect</p><p>reconnect again</p>",  // line 1: two blocks, two matches
+    "<p>nothing here</p>",                     // line 2
+    "<p>reconnect</p>",                        // line 3
+  ].join("\n");
+  const hits = documentHits(source, "reconnect", { caseSensitive: false }, "source");
+  assert.equal(hits.length, 3, "three occurrences in the source");
+  assert.deepEqual(hits.map((hit) => hit.line), [1, 1, 3]);
+  // ...but only two places the reveal can distinguish.
+  assert.deepEqual(hitLinesByBlock(hits), [1, 3]);
+});
+
+test("hitLinesByBlock keeps document order and revisits a line that recurs", () => {
+  const of = (...lines: number[]) => lines.map((line, at) => ({
+    key: `source:${at}`,
+    start: at,
+    end: at + 1,
+    line,
+  }));
+  assert.deepEqual(hitLinesByBlock(of(4, 4, 4)), [4]);
+  assert.deepEqual(hitLinesByBlock(of(1, 2, 3)), [1, 2, 3]);
+  // Not a set: a line the walk returns to after leaving it is a second location to visit,
+  // which cannot arise from `documentHits` but must not silently collapse if it ever does.
+  assert.deepEqual(hitLinesByBlock(of(1, 2, 1)), [1, 2, 1]);
+  assert.deepEqual(hitLinesByBlock([]), []);
 });

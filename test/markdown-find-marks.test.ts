@@ -122,6 +122,22 @@ test("a run never joins across a visible separation", () => {
   assert.deepEqual(draw("foo*bar*\n", "foobar").keys, ["rendered:1"]);
 });
 
+test("a visible separator INSIDE an inline element still breaks the run", () => {
+  /*
+   * The regression this pins. Run building was two mutually recursive walkers, and the inline
+   * one reported a separator it had crossed through a flag the caller acted on only after
+   * taking all of its pieces - so text either side of a nested separator arrived in one run.
+   * An image inside a link is the case: the reader sees `foo`, a picture, then `bar`, and
+   * `foobar` is not a word on that screen.
+   */
+  assert.deepEqual(draw("A [foo![shot](s.png)bar](docs/x.md) link.\n", "foobar").keys, []);
+  // The halves are still each findable, so the run broke rather than the text being dropped.
+  assert.deepEqual(draw("A [foo![shot](s.png)bar](docs/x.md) link.\n", "foo").keys, ["rendered:1"]);
+  assert.deepEqual(draw("A [foo![shot](s.png)bar](docs/x.md) link.\n", "bar").keys, ["rendered:1"]);
+  // A hard break nested inside emphasis is the same rule one level down.
+  assert.deepEqual(draw("*foo\\\nbar*\n", "foobar").keys, []);
+});
+
 test("a query that only occurs where nothing renders draws nothing", () => {
   const cases: [string, string, string][] = [
     ["a link destination", "See [the audit](docs/matching-url.md).\n", "matching-url"],
@@ -249,6 +265,30 @@ test("the run joins inline elements and breaks at a br, an img and a nested bloc
     ]);
     assert.deepEqual(report(broken, "foobar"), [], `joined across ${JSON.stringify(separator)}`);
   }
+});
+
+test("a nested separator flushes the run at the depth it is found", () => {
+  // The same rule over hand-built hast, at two depths, so the report agrees with the marks.
+  const nested = element("root", [
+    placed("p", [
+      element("a", [
+        text("foo"),
+        element("img", [], { properties: { src: "s.png" } }),
+        text("bar"),
+      ]),
+    ], 1),
+  ]);
+  assert.deepEqual(report(nested, "foobar"), [], "joined across a nested img");
+  assert.equal(report(nested, "foo").length, 1);
+  assert.equal(report(nested, "bar").length, 1);
+
+  // Two levels down, and across a `br` rather than an image.
+  const deeper = element("root", [
+    placed("p", [
+      element("em", [element("strong", [text("foo"), element("br", []), text("bar")])]),
+    ], 1),
+  ]);
+  assert.deepEqual(report(deeper, "foobar"), [], "joined across a doubly nested br");
 });
 
 test("a node occupying no space neither marks nor breaks the run", () => {

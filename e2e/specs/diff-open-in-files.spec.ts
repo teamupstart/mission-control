@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -20,6 +20,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  */
 
 const TASK = "open a changed file in the files tab";
+const EVIDENCE = join(process.cwd(), "e2e", ".artifacts", "diff-keyboard");
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -109,12 +110,33 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
     .click();
 
   const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
-  await tabs.getByRole("tab", { name: /Diff$/ }).click();
-  await expect(dashboard.getByRole("region", { name: "Session diff" })).toBeVisible();
+  // Enter the reader from the selected session, then walk Conversation -> Work queue
+  // -> Workflows -> Diff. This is the path that used to leave focus on the shared
+  // detail body instead of giving the newly selected diff its keyboard controls.
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await expect(tabs.getByRole("tab", { name: /Diff$/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const diffReader = dashboard.getByRole("region", { name: "Session diff" });
+  await expect(diffReader).toBeVisible();
+  await expect(diffReader).toBeFocused();
 
-  // Read the second file, not the one the diff opens on.
+  // Read the second file by default arrow navigation, not by clicking the list.
   const changed = dashboard.getByRole("navigation", { name: "Changed files" });
-  await changed.getByRole("button", { name: /beta\.html/ }).click();
+  await expect(changed.locator('[aria-current="true"]')).toContainText("alpha.txt");
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(changed.locator('[aria-current="true"]')).toContainText("beta.html");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.getByLabel("Diff pane").screenshot({
+      path: join(EVIDENCE, "diff-keyboard-selection.png"),
+      animations: "disabled",
+    });
+  }
 
   const jump = dashboard.getByRole("button", { name: "Open in Files" });
   await expect(jump).toBeVisible();

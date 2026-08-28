@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { basicSetup } from "codemirror";
-import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
+import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import type { ChangeSet, Extension } from "@codemirror/state";
 import {
   Decoration,
@@ -276,12 +276,130 @@ function commentExtension(
   ];
 }
 
+// ---- find in this document ----
+//
+// The Editor's half of the Files workspace's find. It follows the comment model's rule
+// above without exception: **the workspace owns the model, a `StateEffect` carries it, and
+// every decoration is recomputed from it.** Nothing is mapped through a document change,
+// because three of this component's four update paths destroy mapped decorations outright.
+//
+// It also takes CodeMirror's find away, and that is the point rather than a side effect.
+// `basicSetup` carries `@codemirror/search`, whose panel has different chrome, a different
+// count and no idea the Preview beside it exists. Every binding of that keymap which can
+// OPEN the panel is claimed at the highest precedence - not only Mod-f, because its
+// find-next and find-previous commands open the panel too when no query is set, and
+// go-to-line opens one of its own. Find-next and find-previous are repurposed to step the
+// shared ring rather than deadened, so F3 and Mod-g keep meaning what a reader expects.
+//
+// **All of it is installed only when a caller supplies a find owner.** `FileEditor` has
+// four hosts and three of them - the Persona, Session action and Foreman profile editors -
+// have no find session. Claiming the chord there would suppress CodeMirror's panel and
+// answer with nothing, leaving those three with no find at all where they have a working
+// one today. A chord is only taken by a surface that can answer it.
+
+/** One match, as offsets into the buffer text this editor was handed. */
+export interface FileEditorFindHit {
+  start: number;
+  end: number;
+}
+
+/** What a claimed chord asks the owner to do. */
+export type FileEditorFindAction = "open" | "next" | "previous";
+
+export interface FileEditorFind {
+  /** In document order. Empty while find is closed, which is the ordinary state. */
+  hits: readonly FileEditorFindHit[];
+  /** Index into `hits`, or -1. */
+  currentIndex: number;
+  /**
+   * Bumped when the current hit should be brought into view.
+   *
+   * A nonce for `scrollTo`'s reason, and the same discipline: hits are recomputed on every
+   * keystroke in the file, so scrolling whenever the model moved would yank a reader who
+   * is typing back to the match. Only deliberate find navigation bumps this.
+   */
+  scrollNonce: number;
+  onChord: (action: FileEditorFindAction) => void;
+}
+
+const setFindModel = StateEffect.define<FileEditorFind | null>();
+
+const findModel = StateField.define<FileEditorFind | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setFindModel)) return effect.value;
+    }
+    return value;
+  },
+});
+
+/**
+ * The hits, painted.
+ *
+ * CodeMirror's OWN class names, so the theme rules this component already carries
+ * (`.cm-searchMatch`, `.cm-searchMatch.cm-searchMatch-selected`) keep applying and the
+ * replacement looks like the thing it replaced. Exported so the ranges are assertable
+ * without a browser.
+ *
+ * Clamped to `docLength`, because a document change and the model that follows it are two
+ * dispatches: for the moment between them the offsets describe text that has already
+ * moved, and a range past the end of the document is an exception rather than a stale
+ * highlight.
+ */
+export function findDecorations(
+  find: FileEditorFind | null,
+  docLength: number,
+): DecorationSet {
+  if (!find || find.hits.length === 0) return Decoration.none;
+  const hit = Decoration.mark({ class: "cm-searchMatch" });
+  const current = Decoration.mark({ class: "cm-searchMatch cm-searchMatch-selected" });
+  const ranges = [];
+  for (const [at, { start, end }] of find.hits.entries()) {
+    const from = Math.max(0, Math.min(start, docLength));
+    const to = Math.max(0, Math.min(end, docLength));
+    if (from >= to) continue;
+    ranges.push((at === find.currentIndex ? current : hit).range(from, to));
+  }
+  return Decoration.set(ranges, true);
+}
+
+function findExtension(read: () => FileEditorFind | undefined): Extension {
+  /** Answer a claimed chord, and swallow it either way so `searchKeymap` never sees it. */
+  const claim = (action: FileEditorFindAction) => (): boolean => {
+    read()?.onChord(action);
+    return true;
+  };
+  return [
+    findModel,
+    // `Prec.highest` is load-bearing: `basicSetup` is first in the extension array, so a
+    // plain `keymap.of` after it would lose to `searchKeymap` on every one of these.
+    Prec.highest(
+      keymap.of([
+        { key: "Mod-f", run: claim("open"), preventDefault: true },
+        // Repurposed, not deadened. `shift` is how a CodeMirror binding spells its shifted
+        // pair, so Shift+F3 and Shift+Mod+G step backwards through OUR ring.
+        { key: "F3", run: claim("next"), shift: claim("previous"), preventDefault: true },
+        { key: "Mod-g", run: claim("next"), shift: claim("previous"), preventDefault: true },
+        // Claimed and inert. Go-to-line belongs to a panel this surface no longer has, and
+        // leaving the chord unclaimed would open that panel by the back door.
+        { key: "Mod-Alt-g", run: () => true, preventDefault: true },
+      ]),
+    ),
+    // `"doc"` as well as the field, so the clamp above is recomputed when the document
+    // length changes under a model that has not caught up yet.
+    EditorView.decorations.compute([findModel, "doc"], (state): DecorationSet =>
+      findDecorations(state.field(findModel, false) ?? null, state.doc.length)),
+  ];
+}
+
 export function FileEditor({
   path,
   value,
   readOnly,
   lineSeparator,
   comments,
+  find,
   scrollTo = null,
   onChange,
   onBlur,
@@ -293,6 +411,15 @@ export function FileEditor({
   lineSeparator?: "\n" | "\r\n" | "\r";
   /** Line-comment markers and the open panel. Absent when nothing has comments to draw. */
   comments?: FileEditorComments;
+  /**
+   * A find owner: the matches to paint, and where a claimed chord goes.
+   *
+   * ABSENT is the signal, exactly as `comments` and `Markdown`'s `blockAnchor` are. Without
+   * it this editor keeps `searchKeymap` whole, panel and all - see the block comment above
+   * `FileEditorFind`. Its presence must not change over one mount: it is read by the mount
+   * effect, which is keyed on it for that reason.
+   */
+  find?: FileEditorFind;
   /**
    * Bring a 1-based source line into view, once per request.
    *
@@ -315,9 +442,14 @@ export function FileEditor({
   const changeRef = useRef(onChange);
   const blurRef = useRef(onBlur);
   const commentsRef = useRef(comments);
+  const findRef = useRef(find);
   changeRef.current = onChange;
   blurRef.current = onBlur;
   commentsRef.current = comments;
+  // Refreshed during render for `commentsRef`'s reason: the keymap reaches the owner through
+  // it, so the very first chord after a state change already calls the current closure.
+  findRef.current = find;
+  const findOwned = find !== undefined;
 
   /**
    * The panel's portal target, created once and never by React.
@@ -358,6 +490,7 @@ export function FileEditor({
         extensions: [
           basicSetup,
           commentExtension(() => commentsRef.current, () => panelHost.current),
+          findOwned ? findExtension(() => findRef.current) : [],
           keymap.of([indentWithTab]),
           syntaxHighlighting(missionHighlight),
           language.of([]),
@@ -401,6 +534,12 @@ export function FileEditor({
     if (commentsRef.current) {
       editor.dispatch({ effects: setCommentModel.of(commentsRef.current) });
     }
+    // Seeded for the same reason: a rebuilt view starts with an empty model, and a path or
+    // read-only change moves neither the query nor its hits, so the next model change may
+    // never come.
+    if (findRef.current) {
+      editor.dispatch({ effects: setFindModel.of(findRef.current) });
+    }
     let alive = true;
     const description = LanguageDescription.matchFilename(languages, path);
     if (description) {
@@ -413,7 +552,7 @@ export function FileEditor({
       editor.destroy();
       view.current = null;
     };
-  }, [lineSeparator, path, readOnly]);
+  }, [findOwned, lineSeparator, path, readOnly]);
 
   useEffect(() => {
     const editor = view.current;
@@ -427,6 +566,40 @@ export function FileEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: setCommentModel.of(commentsRef.current ?? null) });
   }, [commentKey]);
+
+  /**
+   * What the editor has to be told about find again - `commentKey`'s shape, for its reason.
+   *
+   * The offsets and the current index are the whole of what the extension reads out of the
+   * model; `onChord` is reached through `findRef`, which is always current. Depending on the
+   * object itself would dispatch into CodeMirror on every render of the workspace above.
+   */
+  const findKey = find
+    ? `${find.currentIndex}|${find.hits.map((hit) => `${hit.start}:${hit.end}`).join(",")}`
+    : "";
+  useEffect(() => {
+    view.current?.dispatch({ effects: setFindModel.of(findRef.current ?? null) });
+  }, [findKey]);
+
+  /*
+   * Bring the current match into view, once per request.
+   *
+   * Through the find model's own nonce rather than `scrollTo`: that prop belongs to the two
+   * things that ask for a LINE - a deep link and the comment walkthrough - and find knows the
+   * character, which is a better answer for a long line and one `scrollTo` cannot carry.
+   * The nonce discipline is identical, and it is what stops a reader who is typing in a file
+   * with find open from being dragged back to the match on every keystroke.
+   */
+  const scrolledFindNonce = useRef<number | null>(null);
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor || !find || find.scrollNonce === scrolledFindNonce.current) return;
+    const hit = find.hits[find.currentIndex];
+    if (!hit) return;
+    scrolledFindNonce.current = find.scrollNonce;
+    const at = Math.max(0, Math.min(hit.start, editor.state.doc.length));
+    editor.dispatch({ effects: EditorView.scrollIntoView(at, { y: "center" }) });
+  }, [find]);
 
   /*
    * Deep-linking's last mile. `workspaceFileTarget` has always parsed `path:line`, and the

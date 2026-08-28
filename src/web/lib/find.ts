@@ -1,5 +1,6 @@
 import type { ToolCall, TranscriptMessage, TurnOrigin } from "@shared/types.ts";
 import type { ConversationRow } from "./episodes.ts";
+import { buildMatcher, matchesIn, type FindOptions } from "./documentFind.ts";
 import { toolChip, toolLineTarget } from "./tools.ts";
 
 /**
@@ -17,9 +18,21 @@ import { toolChip, toolLineTarget } from "./tools.ts";
  * pin "the count equals the number of highlights" as a fact rather than a hope.
  */
 
-export interface FindOptions {
-  caseSensitive: boolean;
-}
+/*
+ * The generic half of this model now lives in `documentFind.ts`, because the Files
+ * workspace searches documents with the same matcher and the same ring. It is re-exported
+ * from here so the transcript's imports - and this module's own unit test - keep naming
+ * one place for "the find model", while the pieces that know what a conversation is stay
+ * below.
+ */
+export type { FindOptions, FindSegment } from "./documentFind.ts";
+export {
+  buildMatcher,
+  hitsInWindow,
+  matchesIn,
+  splitForHighlight,
+  stepIndex,
+} from "./documentFind.ts";
 
 /**
  * Who said the thing that matched. The rail filters on this.
@@ -106,40 +119,6 @@ export function turnWho(m: TranscriptMessage, agentLabel: string): string {
   return author === "operator" ? "you" : ORIGIN_LABEL[author];
 }
 
-/**
- * Compile a query.
- *
- * Literal, not a regular expression: this is a reading aid reached with the same
- * chord as the browser's find, and a user typing `foo(bar)` means those seven
- * characters. Returns null for an empty query so callers have one "nothing to
- * search for" answer rather than an empty-match regex that loops forever.
- */
-export function buildMatcher(query: string, opts: FindOptions): RegExp | null {
-  const q = query;
-  if (!q) return null;
-  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(escaped, opts.caseSensitive ? "g" : "gi");
-}
-
-/** Every occurrence in one string. Shared by the highlighter and the collector, so a
- *  highlighted span and a counted hit can never come from different rules. */
-export function matchesIn(text: string, re: RegExp): { start: number; end: number }[] {
-  const out: { start: number; end: number }[] = [];
-  if (!text) return out;
-  re.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    // A zero-length match cannot advance lastIndex on its own; without this the
-    // loop never terminates.
-    if (m[0] === "") {
-      re.lastIndex += 1;
-      continue;
-    }
-    out.push({ start: m.index, end: m.index + m[0].length });
-  }
-  return out;
-}
-
 function snippet(text: string, start: number, end: number): Pick<FindHit, "pre" | "hit" | "post"> {
   const a = Math.max(0, start - SNIPPET_PAD);
   const b = Math.min(text.length, end + SNIPPET_PAD);
@@ -173,31 +152,6 @@ export function toolLineText(t: ToolCall): string {
   const chip = toolChip(t);
   const target = toolLineTarget(t);
   return target ? `${chip.name} ${target}` : chip.name;
-}
-
-/**
- * Narrow hits to the window `[from, to)` of the text they were collected over, in that
- * window's own coordinates.
- *
- * A hit straddling an edge is CLIPPED, not dropped. A tool chip is searched as one
- * string - "read prompt.ts" - but rendered as two spans, and a query spanning the space
- * between them ("read prompt") belongs to both. Dropping such a hit left the rail able
- * to navigate to a match that nothing on screen marked, which breaks the rule the whole
- * count rests on: every counted match is a visible one.
- *
- * Both halves keep the original hit's `key`, so the pair still reads as the one match it
- * is - the jump anchor resolves to the first of them.
- */
-export function hitsInWindow(hits: FindHit[], from: number, to: number): FindHit[] {
-  const out: FindHit[] = [];
-  for (const h of hits) {
-    const start = Math.max(h.start, from);
-    const end = Math.min(h.end, to);
-    // Not merely empty - a hit entirely on the far side of the window lands here too.
-    if (start >= end) continue;
-    out.push({ ...h, start: start - from, end: end - from });
-  }
-  return out;
 }
 
 /**
@@ -300,44 +254,4 @@ export function collectHits(
 /** The hits a scope selects. `all` is the identity, not a special case at the call site. */
 export function hitsInScope(hits: FindHit[], scope: FindScope): FindHit[] {
   return scope === "all" ? hits : hits.filter((h) => h.scope === scope);
-}
-
-/**
- * Step through a ring of hits, wrapping at both ends the way a browser's find does.
- * Returns the new index; -1 when there is nothing to step through.
- */
-export function stepIndex(length: number, current: number, direction: 1 | -1): number {
-  if (length <= 0) return -1;
-  const next = current + direction;
-  return ((next % length) + length) % length;
-}
-
-/** One piece of a string split around its matches, for rendering. */
-export interface FindSegment {
-  text: string;
-  /** Absolute start offset in the source string, so a segment can be matched back to a hit. */
-  start: number;
-  isMatch: boolean;
-}
-
-/**
- * Split a string into rendered segments around its matches.
- *
- * The whole point of returning data rather than mutating the DOM: React owns these
- * nodes. The design exploration highlighted by walking text nodes and injecting
- * `<mark>` elements, which is fine for a static page and wrong here - a streamed
- * turn arriving re-renders the turn and destroys injected marks, and mutating
- * React-owned children can trip the reconciler outright.
- */
-export function splitForHighlight(text: string, ranges: { start: number; end: number }[]): FindSegment[] {
-  if (!ranges.length) return text ? [{ text, start: 0, isMatch: false }] : [];
-  const out: FindSegment[] = [];
-  let last = 0;
-  for (const r of ranges) {
-    if (r.start > last) out.push({ text: text.slice(last, r.start), start: last, isMatch: false });
-    out.push({ text: text.slice(r.start, r.end), start: r.start, isMatch: true });
-    last = r.end;
-  }
-  if (last < text.length) out.push({ text: text.slice(last), start: last, isMatch: false });
-  return out;
 }

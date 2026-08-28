@@ -331,6 +331,56 @@ Phase 2 may rely on, and must not change:
 - The `HTML_PREVIEW_TARGET_MESSAGE` block-reveal path, which stays as the fallback whenever
   the frame has not reported itself ready.
 
+## Implementation record
+
+What was built, where it departed from the route above, and why. The outcome, the scope, the
+non-goals and the exit criteria were all met as written; these are mechanism choices made
+against the checkout.
+
+- **`blockRangeFromNode` moved to `src/web/lib/markdownBlocks.ts`.** `rehypeFindMarks` needs the
+  block range rule and cannot import the component that runs it. `Markdown.tsx` re-exports both
+  the function and the type, so every existing caller and
+  `test/markdown-block-anchors.test.ts` are untouched.
+- **The plugin reports through a mutable sink, not a callback it invokes.** A rehype plugin runs
+  inside `ReactMarkdown`'s own render, so calling the workspace's setter from there would be a
+  state update during another component's render. `Markdown` fills the sink during render and
+  forwards it in an effect, guarded by the reported signature so an unchanged render reports
+  nothing and cannot drive a loop.
+- **The Editor scrolls the current hit through the find model's own nonce, not `scrollTo`.** The
+  nonce discipline is the one step 5 asked for, and the reason it is a second nonce rather than
+  the same prop is precision: `scrollTo` carries a LINE, because its two callers - a deep link
+  and the comment walkthrough - only know a line, while find knows the character offset. Sharing
+  the prop would have thrown that away and put the two request sources in each other's way.
+- **The HTML reveal keeps its own target ref rather than sharing `htmlTarget` state.** The comment
+  jump's effect sets `htmlTarget` to null whenever no thread jump is live, and its dependencies
+  move on any thread change, so a find reveal written into that state would have been cleared by
+  an unrelated comment arriving. It reuses `revealHtmlTarget`, the request-nonce guard and the
+  ready-replay path; the comment target still wins when both are live.
+- **A failed HTML block resolve is not reported to the reader.** It has one cause - the file moved
+  under a render still on screen, which is the 180 ms debounce window - and the count and the ring
+  are unaffected. Raising the comment path's refusal notice on a keystroke would have been louder
+  than the thing that went wrong.
+- **The chord is its own capture-phase listener**, beside the workspace's bare-letter one rather
+  than inside it. That listener stands down when `extracted`, on `isTypingTarget` and on three
+  key-specific guards, and find inverts all three (finding 9) - threading the inversions through
+  one handler would have made both harder to read than two.
+- **`hitsInWindow` became generic** over `{ start, end }` so the document surfaces can use the
+  clipping contract the transcript relies on. `find.ts` re-exports it and the conversation's
+  callers still resolve it at `FindHit`.
+- **A rendered Mermaid fence is skipped, and an over-limit one is searched.** Not named in the
+  route, and it follows the same rule: the `pre` override replaces a diagram fence with a rendered
+  diagram, so a mark inside its source is a counted match with nothing on screen. An over-limit
+  fence renders as ordinary source and is searched like any code block.
+- **Reopening find restores the last query** from a ref that survives the close and is cleared when
+  another file is selected. The route says reopening keeps the last query; the session itself is
+  dropped on close, so the memory had to live beside it.
+- **The unit test for the plugin's report drives the plugin directly** over hand-built hast, while
+  what is DRAWN is asserted through the real component and this repository's real plugin chain.
+  `renderToStaticMarkup` runs no effects, so the report cannot be observed through the component -
+  and the hand-built tree is also the only way to state the case a parser will not produce on
+  demand: a node it recorded no position for. Every reported hit draws at least one fragment
+  carrying its key, so the distinct keys in the markup are the reported count.
+
 ## Cross-phase audit record
 
 - Written first; nothing earlier to reconcile.

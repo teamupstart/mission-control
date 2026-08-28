@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { FindHit, FindScope } from "../lib/find.ts";
+import { FindBar } from "./FindBar.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -60,96 +61,21 @@ export function ConversationFindBar({
   onStep: (direction: 1 | -1) => void;
   onClose: () => void;
 }): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // Focus on open. Selecting the existing text means reopening find and typing
-  // replaces the last query rather than appending to it, which is what every
-  // browser's find does.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    el.select();
-  }, []);
-
-  const count =
-    query === ""
-      ? ""
-      : hits.length === 0
-        ? "No results"
-        : `${index + 1} / ${hits.length}`;
-
+  // A wrapper over the shared bar, kept so the transcript's call site, its accessible name
+  // and its existing specs are untouched by the extraction. The count is passed as a value
+  // because the bar has none of its own - see `FindBar`.
   return (
-      <div className="find-bar">
-        <span className="find-glass" aria-hidden>
-          ⌕
-        </span>
-        <input
-          ref={inputRef}
-          className="find-input"
-          type="text"
-          role="searchbox"
-          aria-label="Find in conversation"
-          placeholder="Find in conversation"
-          spellCheck={false}
-          value={query}
-          onChange={(e) => onQuery(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              onStep(e.shiftKey ? -1 : 1);
-            } else if (e.key === "Escape") {
-              // Ours, and it stops here: App's Escape peels a layer off the grid, and
-              // a find bar closing is already that layer. Without this, one press
-              // closes find AND collapses the card behind it.
-              e.preventDefault();
-              e.stopPropagation();
-              onClose();
-            }
-          }}
-        />
-        <span className={`find-count${hits.length === 0 && query !== "" ? " none" : ""}`} role="status">
-          {count}
-        </span>
-        <Tooltip label={caseSensitive ? "Matching case" : "Ignoring case"}>
-          <button
-            type="button"
-            className={`find-btn find-toggle${caseSensitive ? " on" : ""}`}
-            aria-pressed={caseSensitive}
-            onClick={() => onCaseSensitive(!caseSensitive)}
-          >
-            Aa
-          </button>
-        </Tooltip>
-        <span className="find-sep" />
-        <Tooltip label="Previous match (Shift+Enter)">
-          <button
-            type="button"
-            className="find-btn"
-            disabled={hits.length === 0}
-            aria-label="Previous match"
-            onClick={() => onStep(-1)}
-          >
-            ‹
-          </button>
-        </Tooltip>
-        <Tooltip label="Next match (Enter)">
-          <button
-            type="button"
-            className="find-btn"
-            disabled={hits.length === 0}
-            aria-label="Next match"
-            onClick={() => onStep(1)}
-          >
-            ›
-          </button>
-        </Tooltip>
-        <Tooltip label="Close find (Esc)">
-          <button type="button" className="find-btn" aria-label="Close find" onClick={onClose}>
-            ✕
-          </button>
-        </Tooltip>
-      </div>
+    <FindBar
+      label="Find in conversation"
+      query={query}
+      onQuery={onQuery}
+      caseSensitive={caseSensitive}
+      onCaseSensitive={onCaseSensitive}
+      count={hits.length}
+      index={index}
+      onStep={onStep}
+      onClose={onClose}
+    />
   );
 }
 

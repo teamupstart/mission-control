@@ -7,7 +7,7 @@ import type { ForemanState } from "../src/web/useForeman.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
-import { LLM_RUNNER_ENV_VAR, LLM_RUNNER_IDS } from "../src/shared/llm.ts";
+import { LLM_RUNNER_IDS } from "../src/shared/llm.ts";
 import { guardProviderModel, MODEL_CATALOG } from "../src/shared/model.ts";
 import { modelSurvivesProviderChange } from "../src/web/components/SettingsMatrix.tsx";
 import { HarnessesConfigSchema } from "../src/shared/protocol.ts";
@@ -180,8 +180,8 @@ test("every blurb is still PRINTED, once per row, not left to a tooltip", () => 
 });
 
 test("every background job gets its own PROVIDER control, named for the job", () => {
-  // The whole point of the phase: five jobs, five providers. A single app-wide picker with
-  // five model boxes under it renders almost identically and is the state being left behind.
+  // The whole point of the phase: five jobs, five providers. A default selector with five
+  // model boxes under it renders almost identically and does not customize any one job.
   const html = decoded(render());
   for (const job of LLM_JOB_IDS) {
     assert.ok(
@@ -221,10 +221,10 @@ test("a job pinned to its own provider shows that provider selected, and its nei
   }
 });
 
-test("a per-job provider this build cannot resolve is named as dropped, like the app-wide one", () => {
+test("a per-job provider this build cannot resolve is named as dropped", () => {
   // The row inherits rather than dropping to the shipped default, and says which id it could
   // not read - otherwise the inherited provider reads back as this row's own choice, which is
-  // exactly the failure the picker above already refuses to make.
+  // exactly the failure the row's own status line refuses to make.
   const html = decoded(render({
     config: { ...CONFIG, runners: { goal: "ollama" } },
     status: status({
@@ -241,7 +241,7 @@ test("an overridden row's Inherit option names the APP-WIDE provider, not its ow
   // The one thing selecting Inherit will not do is keep this row on Codex, so labelling the
   // option "Inherit - Codex" is a control that describes the opposite of what it does. The
   // difference is only visible on a row that HAS an override, which is why the fixture sets
-  // one and leaves the app-wide picker alone.
+  // one and leaves the app-wide default alone.
   const html = decoded(render({
     config: { ...CONFIG, runners: { goal: "codex" } },
     status: status({
@@ -315,31 +315,14 @@ test("a config override renders in the box and explains nothing further", () => 
   assert.match(html, /value="claude-sonnet-5"/);
 });
 
-test("the provider picker offers what the DAEMON says it has, with the live one checked", () => {
+test("Task kinds lead the page and there is no app-wide provider selector", () => {
   const html = render();
-  const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
-    i.includes('name="llm-runner"'),
+  assert.ok(
+    html.indexOf('data-anchor="models/task-kinds"') < html.indexOf('data-anchor="models/jobs"'),
+    "Task kinds should be the first configurable group",
   );
-  assert.equal(radios.length, 2, "one row per provider the build has");
-  assert.ok(radios[0]!.includes("checked"), "the resolved provider is the checked one");
-  assert.ok(html.includes("Claude Code"));
-  assert.ok(html.includes("Codex"));
-});
-
-test("a provider pinned by the environment is shown pinned, not silently overridden", () => {
-  // A control that loses to the environment without saying so is worse than a disabled one:
-  // the click appears to work, the poll puts it back, and nothing explains why.
-  const html = render({ status: status({ runner: { id: "claude", source: "env", unknown: null } }) });
-  assert.ok(html.includes(LLM_RUNNER_ENV_VAR));
-  const radios = (html.match(/<input[^>]*name="llm-runner"[^>]*>/g) ?? []);
-  assert.ok(radios.every((r) => r.includes("disabled")), "an env-pinned picker must not invite a click");
-});
-
-test("a stored provider this build cannot resolve is named as dropped", () => {
-  const html = render({
-    status: status({ runner: { id: "claude", source: "default", unknown: "ollama" } }),
-  });
-  assert.match(decoded(html), /"ollama" is not a provider this build has/);
+  assert.doesNotMatch(html, /name="llm-runner"/);
+  assert.doesNotMatch(html, /data-anchor="models\/provider"/);
 });
 
 test("with no answer from the daemon, the panel says so rather than showing defaults as fact", () => {

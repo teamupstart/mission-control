@@ -144,9 +144,10 @@ function decoded(html: string): string {
 
 test("all three groups of app-owned model calls are on one page", () => {
   const html = render({ foreman: { config: null } });
-  for (const anchor of ["models/provider", "models/jobs", "models/foreman", "models/inspector"]) {
+  for (const anchor of ["models/jobs", "models/foreman", "models/inspector"]) {
     assert.match(html, new RegExp(`data-anchor="${anchor.replace("/", "\\/")}"`), `${anchor}`);
   }
+  assert.doesNotMatch(html, /data-anchor="models\/provider"/);
 });
 
 test("every Foreman role gets a provider and a model control, named for the role", () => {
@@ -193,7 +194,7 @@ test("the Inspector's one review row is here, under its own heading", () => {
 
 test("a Foreman role's Inherit names FOREMAN's provider, not the app-wide one", () => {
   // The rung that is easy to get wrong, and the one this phase adds. A role inherits from
-  // Foreman's All roles value; only that value inherits from the app-wide picker.
+  // Foreman's All roles value; only that value inherits from the app-wide provider default.
   const html = render({
     llm: { status: llmStatus({ runner: { id: "claude", source: "config", unknown: null } }) },
     foreman: {

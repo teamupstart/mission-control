@@ -185,7 +185,7 @@ in force came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's envi
 shipped default. Leave it empty to accept whichever of the other two applies.
 
 **An unset provider now inherits.** It used to resolve to a literal `claude`, which made this the
-one subsystem in the app that ignored the app-wide picker and
+one subsystem in the app that ignored the app-wide provider default and
 [`MISSION_LLM_RUNNER`](configuration.md): an operator who had pinned everything to one provider got
 a Claude review anyway, with nothing on screen saying so. If you were relying on that, name
 `claude` here explicitly - the choice matters, because

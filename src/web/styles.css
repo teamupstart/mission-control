@@ -4437,7 +4437,10 @@ body {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(180px, 25%) minmax(0, 1fr);
+  grid-template-columns:
+    var(--file-list-width, max(180px, 25%))
+    9px
+    minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg-2);
 }
@@ -4446,8 +4449,44 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
   background: var(--panel);
+}
+
+/* Shared draggable boundary between a file list and the surface used to read that file.
+   The hit target is nine pixels, while the resting rule stays one pixel. Focus, hover and
+   drag strengthen the rule without shifting either pane. */
+.pane-divider {
+  position: relative;
+  z-index: 2;
+  min-width: 9px;
+  min-height: 0;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+  background: transparent;
+}
+.pane-divider::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.pane-divider:hover::before,
+.pane-divider:focus-visible::before {
+  width: 2px;
+  background: var(--working);
+}
+.pane-divider.is-dragging::before {
+  width: 3px;
+  background: var(--working);
+}
+body.is-pane-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .file-nav-tools {
   display: flex;
@@ -5370,7 +5409,12 @@ body {
 }
 
 @media (max-width: 760px) {
-  .file-workspace { grid-template-columns: minmax(130px, 34%) minmax(0, 1fr); }
+  .file-workspace {
+    grid-template-columns:
+      var(--file-list-width, max(130px, 34%))
+      9px
+      minmax(0, 1fr);
+  }
   .file-window { inset: 0 !important; width: auto !important; height: auto !important; min-width: 0; min-height: 0; border-radius: 0; }
   .file-language,
   .file-size { display: none; }
@@ -10695,10 +10739,9 @@ select:not([multiple]) option:focus-visible {
 /* ---- diff viewer: left file list ---- */
 .diff-filelist {
   flex: none;
-  width: 264px;
+  width: var(--diff-file-list-width, 264px);
   overflow-y: auto;
   padding: 8px;
-  border-right: 1px solid var(--border-soft);
   background: var(--bg-2);
   display: flex;
   flex-direction: column;
@@ -19155,20 +19198,9 @@ button.wf-carried.is-link:focus-visible {
   opacity: 0.5;
 }
 
-/* ---- Models settings category (which provider does the app's own offline work) ----
-   Deliberately thin: the panel reuses `.settings-radios` for its provider radio group and
-   `.foreman-model*` for its fields, because both are the shared widget's markup and a third
-   class vocabulary would be three selectors to keep in step for one control. Only what is
-   genuinely this panel's lands here. */
-/* Separated from the intro prose the way `.foreman-models` is from the fieldset above it -
-   `.settings-radios` carries only the 10px a group under a heading needs. */
-.llm-runners {
-  margin-top: 18px;
-}
-/* In a field row the source line follows a blurb, so 4px is enough; here it follows a radio
-   and reads as jammed against it. Sized to sit with the row rather than under the legend. */
-.llm-runners .foreman-model-source {
-  margin-top: 7px;
+/* ---- Models settings category ---- */
+.settings-section > .task-kind-defaults:first-child {
+  margin-top: 0;
 }
 /* Sits under the fields, so it needs the gap the field rows do not carry themselves. */
 .llm-elsewhere {
@@ -22369,21 +22401,23 @@ button.sc-row:focus-visible {
 }
 
 /* The promoted urgent readout: the amber stages' sentences, and nothing on a calm fleet.
-   Right-aligned, away from the six segments, so it reads as a remark about the strip
-   rather than as a seventh stage - but the `auto` margin that does that lives on the
-   CARET after it, not here, so that a calm fleet with no readout still pins the caret to
-   the edge. `min-width: 0` with the ellipsis on the items is what holds the band's height
-   against a long workflow name. */
+   It fills the unclaimed space between the six segments and the caret, then centers its
+   contents in that space. This makes it read as a remark about the whole strip rather than
+   as a seventh stage attached to Shipped. The caret's `auto` margin still pins a calm fleet
+   to the edge; when this flex item exists, it consumes the free space first. `min-width: 0`
+   with the ellipsis on the items is what holds the band's height against a long workflow
+   name. */
 .ls-urgent {
-  flex: 0 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   align-items: baseline;
+  justify-content: center;
   /* Wide enough that two stages never read as one list. The daemon separates CLAUSES with
      ` · `, so anything at that scale here would be ambiguous with the sentences it sits
      between - this gap is the delimiter, and it has to be bigger than the one inside. */
   gap: 16px;
-  padding-left: 14px;
+  padding-inline: 14px;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--attention);
@@ -22418,12 +22452,9 @@ button.sc-row:focus-visible {
 .ls-fold {
   flex: none;
   align-self: center;
-  /* On the CARET, not on the readout beside it, and that is the whole placement rule for
-     the right end of the row. The caret is the last item either way, so one `auto` here
-     right-aligns the pair when there is a readout AND pins the caret to the edge when
-     there is not - a calm fleet used to leave it floating mid-row beside Shipped with the
-     rest of the band empty. Two `auto`s would have split the free space between them and
-     stranded the readout in the middle. */
+  /* On the CARET, not on the readout beside it. The caret is the last item either way, so
+     this pins it to the edge when there is no urgent readout. When a readout exists, its
+     flexible width consumes the open space and leaves this margin at zero. */
   margin-left: auto;
   padding: 4px 8px;
   font-family: var(--mono);

@@ -121,9 +121,8 @@ export function useInspector(): InspectorState {
   /**
    * Re-read config and status now, without writing anything.
    *
-   * The Inspector's resolved provider and model now follow the app-wide picker when it has
-   * chosen nothing of its own, and that picker lives in another blob behind another hook - so
-   * moving it changes this row with no Inspector write to hang a re-read on.
+   * The Inspector's resolved provider and model follow the app-wide default when it has chosen
+   * nothing of its own. Re-read both projections together so they cannot drift across polls.
    */
   const reread = useCallback(async (): Promise<void> => {
     const at = (writes.current += 1);

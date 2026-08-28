@@ -1363,6 +1363,7 @@ export function FileWorkspace({
         leadingPaneRef={fileNavRef}
         label="Resize file list"
         widthProperty="--file-list-width"
+        minLeadingWidthProperty="--file-list-min-width"
       />
 
       <div className="file-main">

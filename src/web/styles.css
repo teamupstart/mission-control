@@ -4433,12 +4433,13 @@ body {
   display: flex;
 }
 .file-workspace {
+  --file-list-min-width: 180px;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-columns:
-    var(--file-list-width, max(180px, 25%))
+    var(--file-list-width, max(var(--file-list-min-width), 25%))
     9px
     minmax(0, 1fr);
   overflow: hidden;
@@ -5410,8 +5411,9 @@ body.is-pane-resizing {
 
 @media (max-width: 760px) {
   .file-workspace {
+    --file-list-min-width: 130px;
     grid-template-columns:
-      var(--file-list-width, max(130px, 34%))
+      var(--file-list-width, max(var(--file-list-min-width), 34%))
       9px
       minmax(0, 1fr);
   }

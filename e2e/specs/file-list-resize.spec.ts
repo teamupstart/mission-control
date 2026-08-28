@@ -113,6 +113,33 @@ test("file lists can be dragged narrower to give Files and Diff more reading roo
   await filesDivider.dblclick();
   await expect.poll(() => width(dashboard.locator(".file-nav"))).toBeCloseTo(filesBefore.list, 0);
 
+  // The desktop Files layout has always kept 180px for its list. The drag affordance may
+  // relax that only when the whole split cannot fit both panes, not merely because the
+  // pointer travelled farther left on a wide surface.
+  await dragBy(dashboard, filesDivider, -400);
+  expect(Math.round(await width(dashboard.locator(".file-nav")))).toBe(180);
+  await filesDivider.dblclick();
+
+  // At the responsive boundary the active normal minimum is 130px. The Console rail is gone
+  // by this width, so there is room for both pane floors and the drag must stop at 130px.
+  await dashboard.setViewportSize({ width: 760, height: 900 });
+  await dragBy(dashboard, filesDivider, -400);
+  expect(Math.round(await width(dashboard.locator(".file-nav")))).toBe(130);
+  await filesDivider.dblclick();
+
+  // Only when the whole split cannot fit 130px + the divider + the reader's 320px floor may
+  // the list yield farther, and it yields exactly enough to preserve the reader floor.
+  await dashboard.setViewportSize({ width: 440, height: 900 });
+  const workspace = dashboard.locator(".file-workspace");
+  const constrainedMax = Math.round(
+    await width(workspace) - await width(filesDivider) - 320,
+  );
+  expect(constrainedMax).toBeLessThan(130);
+  await dragBy(dashboard, filesDivider, -400);
+  expect(Math.round(await width(dashboard.locator(".file-nav")))).toBe(constrainedMax);
+  await filesDivider.dblclick();
+  await dashboard.setViewportSize({ width: 1512, height: 900 });
+
   await tabs.getByRole("tab", { name: /Diff$/ }).click();
   const diff = dashboard.getByRole("region", { name: "Session diff" });
   await expect(diff).toBeVisible();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 interface DividerMetrics {
   width: number;
+  min: number;
   max: number;
 }
 
@@ -18,6 +19,7 @@ export function ResizablePaneDivider({
   label,
   widthProperty,
   minLeadingWidth = 140,
+  minLeadingWidthProperty,
   minTrailingWidth = 320,
 }: {
   containerRef: React.RefObject<HTMLElement | null>;
@@ -25,6 +27,8 @@ export function ResizablePaneDivider({
   label: string;
   widthProperty: `--${string}`;
   minLeadingWidth?: number;
+  /** A responsive CSS length on the container that overrides the numeric fallback. */
+  minLeadingWidthProperty?: `--${string}`;
   minTrailingWidth?: number;
 }): React.JSX.Element {
   const dividerRef = useRef<HTMLDivElement>(null);
@@ -33,15 +37,25 @@ export function ResizablePaneDivider({
   const [dragging, setDragging] = useState(false);
   const [metrics, setMetrics] = useState<DividerMetrics>({
     width: minLeadingWidth,
+    min: minLeadingWidth,
     max: minLeadingWidth,
   });
+
+  const normalMinimum = useCallback((): number => {
+    const container = containerRef.current;
+    if (!container || !minLeadingWidthProperty) return minLeadingWidth;
+    const responsive = Number.parseFloat(
+      getComputedStyle(container).getPropertyValue(minLeadingWidthProperty),
+    );
+    return Number.isFinite(responsive) ? responsive : minLeadingWidth;
+  }, [containerRef, minLeadingWidth, minLeadingWidthProperty]);
 
   const bounds = useCallback((): { min: number; max: number } => {
     const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 0;
     const dividerWidth = dividerRef.current?.getBoundingClientRect().width ?? 0;
     const max = Math.max(0, containerWidth - minTrailingWidth - dividerWidth);
-    return { min: Math.min(minLeadingWidth, max), max };
-  }, [containerRef, minLeadingWidth, minTrailingWidth]);
+    return { min: Math.min(normalMinimum(), max), max };
+  }, [containerRef, minTrailingWidth, normalMinimum]);
 
   const applyWidth = useCallback((requested: number): void => {
     const container = containerRef.current;
@@ -50,7 +64,7 @@ export function ResizablePaneDivider({
     const width = Math.round(Math.min(max, Math.max(min, requested)));
     container.style.setProperty(widthProperty, `${width}px`);
     appliedWidth.current = width;
-    setMetrics({ width, max: Math.round(max) });
+    setMetrics({ width, min: Math.round(min), max: Math.round(max) });
   }, [bounds, containerRef, widthProperty]);
 
   useEffect(() => {
@@ -62,9 +76,10 @@ export function ResizablePaneDivider({
         applyWidth(appliedWidth.current);
         return;
       }
-      const { max } = bounds();
+      const { min, max } = bounds();
       setMetrics({
         width: Math.round(leadingPane.getBoundingClientRect().width),
+        min: Math.round(min),
         max: Math.round(max),
       });
     };
@@ -90,7 +105,7 @@ export function ResizablePaneDivider({
       role="separator"
       aria-label={label}
       aria-orientation="vertical"
-      aria-valuemin={Math.min(minLeadingWidth, metrics.max)}
+      aria-valuemin={metrics.min}
       aria-valuemax={metrics.max}
       aria-valuenow={metrics.width}
       tabIndex={0}
@@ -118,10 +133,11 @@ export function ResizablePaneDivider({
         containerRef.current?.style.removeProperty(widthProperty);
         appliedWidth.current = null;
         const leadingPane = leadingPaneRef.current;
-        const { max } = bounds();
+        const { min, max } = bounds();
         if (leadingPane) {
           requestAnimationFrame(() => setMetrics({
             width: Math.round(leadingPane.getBoundingClientRect().width),
+            min: Math.round(min),
             max: Math.round(max),
           }));
         }

@@ -165,13 +165,15 @@ keeps a single release pull request current on the default branch. Merging that 
 the release: the tag and the GitHub Release follow from the next run. Never hand-edit
 `CHANGELOG.md`.
 
-The action authenticates with the `RELEASE_PLEASE_TOKEN` Actions secret, which contains a personal
-access token scoped to this repository with contents, issues, and pull-request write access. The
+The action authenticates with a short-lived installation token minted for the
+`mission-control-release` GitHub App on every run. `RELEASE_PLEASE_APP_CLIENT_ID` is a repository
+Actions variable and `RELEASE_PLEASE_APP_PRIVATE_KEY` is a repository Actions secret. The App is
+installed only on this repository with contents, issues, and pull-request write access. The
 organization policy prevents the default `GITHUB_TOKEN` from opening pull requests, so replacing
-the configured token with the default token makes the Release workflow fail on every push to
+the configured App token with the default token makes the Release workflow fail on every push to
 `main`. The first release was pinned to `v1.0.0` through the package's `release-as` setting. That
-one-time pin was removed once `v1.0.0` published, so releases now resume normal version
-calculation from the conventional-commit history. Leaving it in place is not a cosmetic oversight:
+one-time pin was removed once `v1.0.0` published, so releases now resume normal version calculation
+from the conventional-commit history. Leaving it in place is not a cosmetic oversight:
 `release-as` forces the same version on every subsequent run, so with the manifest already at
 `1.0.0` release-please proposes `1.0.0` again and no later release can be cut at all.
 
@@ -195,11 +197,11 @@ Filtering after asking for "the latest" cannot recover: once a prerelease has be
 is no route back to the newest stable release, and every stable install silently stops updating
 with nothing logged anywhere.
 
-Tags created by the release workflow are pushed with the configured personal access token, so they
-start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and package
-versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate release build
-check; the dmg is not attached to the GitHub Release. The package job can also be run manually
-through `workflow_dispatch`.
+Tags created by the release workflow are pushed with the short-lived App installation token, so
+they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
+package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
+release build check; the dmg is not attached to the GitHub Release. The package job can also be run
+manually through `workflow_dispatch`.
 
 Proving that the whole journey works - clone, install, be offered a real update, accept it, and
 come back on the new version, plus a failed update that leaves the previous app running - is a

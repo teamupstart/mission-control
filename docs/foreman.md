@@ -412,7 +412,7 @@ own provider **and** its own model. Both live on
 **[Settings → Models](models.md#foremans-four-roles)**, with every other call this app makes on
 your account - Foreman's own panel keeps a pointer to them and nothing else. Run Review and Verify
 on one account and the two cheap calls on another, or leave a row on *Inherit* and let it follow
-the **All roles** row above it, which in turn follows the app-wide picker when it is unset. An
+the **All roles** row above it, which in turn follows the app-wide provider default when it is unset. An
 environment variable set in the daemon's shell is not silently dropped anywhere on that ladder.
 
 The separate **Launches** tab did not move and does not control any of those calls. It chooses the

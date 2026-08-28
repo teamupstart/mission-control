@@ -885,6 +885,12 @@ remains inert: its document renders immediately, then a bounded set of checkout-
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
+The boundary beside the Files list is draggable, so a long document can take space back from
+the list or a deeply nested checkout can give the list more room. The Diff tab uses the same
+divider between Changed files and the selected patch. Focus either divider and use the Left or
+Right arrow for a precise adjustment; hold Shift for a larger step. Double-click restores that
+viewer's default split.
+
 ### Find in a document
 
 Press <kbd>⌘F</kbd> (or <kbd>Ctrl+F</kbd>) while a document is open in the Files workspace and a

@@ -63,12 +63,9 @@ export interface ForemanState {
   /**
    * Re-read config and status now, without writing anything.
    *
-   * For the one case a write to THIS blob cannot cover: Foreman's resolved providers and
-   * models are derived from the app-wide picker as well, and that lives in another blob with
-   * another hook. Moving the app-wide radio therefore changes every Foreman row that is still
-   * inheriting, with no Foreman write to hang a re-read on - and the rows would go on naming
-   * the old provider until the next poll, on the one page whose claim is that it says what
-   * each call will actually spawn.
+   * Foreman's resolved providers and models also depend on the app-wide default, which lives
+   * in another blob. Re-read both projections together so the displayed inheritance stays
+   * current after an external configuration change.
    */
   refresh: () => Promise<void>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */

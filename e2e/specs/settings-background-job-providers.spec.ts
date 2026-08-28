@@ -6,9 +6,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
- * Settings → Models: a provider per background job, and the end of the blanket clear.
+ * Settings → Models: a provider per background job.
  *
- * Two claims, and only a browser can make either of them.
+ * One claim, and only a browser can make it.
  *
  * FIRST, the five jobs each have a provider of their own. The markup layer can see five
  * selects; what it cannot see is whether picking Codex in one row travels through
@@ -17,12 +17,6 @@ import { expect, test } from "../fixtures/test.ts";
  * of thing that renders identically when it is wrong - a replacing write leaves the four
  * neighbours looking untouched in the DOM the panel optimistically drew, and only a reload
  * against the daemon's own state says otherwise. So this reloads.
- *
- * SECOND, changing the app-wide radio no longer wipes the model boxes. That was one line in
- * a click handler; its removal is not visible in any component's markup, because the
- * behaviour being asserted is the ABSENCE of a write. The only way to see it is to pin a
- * model, move the radio, and read the box back off a fresh load.
- *
  * NO AGENT IS DISPATCHED. This is the settings page against a daemon - no binary runs and no
  * model tokens are spent. Every control is reached by role and accessible name; there is no
  * `data-testid` in the panel to reach for.
@@ -61,7 +55,7 @@ async function openModels(page: Page, baseURL: string): Promise<void> {
   await expect(page.getByRole("combobox", { name: "Goal provider" })).toBeEnabled();
 }
 
-test("each background job picks its own provider, and the app-wide radio clears nothing", async ({
+test("each background job picks its own provider", async ({
   dashboard,
   daemon,
 }) => {
@@ -97,33 +91,6 @@ test("each background job picks its own provider, and the app-wide radio clears 
     .getByRole("option", { name: /Haiku/ }).first()).toBeAttached();
   await shoot(dashboard, "02-goal-on-codex");
 
-  // A model pinned on a row that is following the app-wide provider.
-  await dashboard
-    .getByRole("combobox", { name: "Away digest model" })
-    .selectOption("claude-sonnet-5");
-  await openModels(dashboard, daemon.baseURL);
-  await expect(dashboard.getByRole("combobox", { name: "Away digest model" })).toHaveValue(
-    "claude-sonnet-5",
-  );
-
-  // Move the app-wide radio. Before this change every model box was wiped on this click.
-  await dashboard.getByRole("radio", { name: "Codex" }).check();
-  await openModels(dashboard, daemon.baseURL);
-  await expect(dashboard.getByRole("radio", { name: "Codex" })).toBeChecked();
-  await expect(
-    dashboard.getByRole("combobox", { name: "Away digest model" }),
-    "the app-wide radio wiped a pinned model - the behaviour this phase removed",
-  ).toHaveValue("claude-sonnet-5");
-  // Pinning a model pinned its provider, so the pinned row keeps running on Claude while the
-  // rows still on Inherit follow the radio to Codex.
-  await expect(dashboard.getByRole("combobox", { name: "Away digest provider" })).toHaveValue(
-    "claude",
-  );
-  await expect(dashboard.getByRole("combobox", { name: "Task title provider" })).toHaveValue("");
-  await expect(
-    dashboard.getByRole("combobox", { name: "Task title model" }).getByRole("option").first(),
-  ).toHaveText(/Default - gpt-5\.6-luna/);
-  await shoot(dashboard, "03-pinned-model-survives-app-wide-change");
 });
 
 test("a row's own provider change resets only that row's stranded model, and says so", async ({
@@ -168,14 +135,13 @@ test("pinning a model records the provider it belongs to, in the same write", as
   daemon,
 }) => {
   // "Pinning a model pins its provider" has to be true of the STORED config, not only of what
-  // the app-wide radio happens to do next. Recording the provider lazily - when that radio
-  // moves - left the rule false along a path that writes no config at all: MISSION_LLM_RUNNER
+  // the app-wide default happens to do next. Recording the provider lazily when that default
+  // moves left the rule false along a path that writes no config at all: MISSION_LLM_RUNNER
   // changing between daemon restarts moves the effective provider silently, so a row with a
   // model and an empty provider inherits the new one and the resolver guard drops the model.
   // Asserted against `/api/llm/config`, because the defect is an omitted key in the write and
   // the rendered row looks identical either way.
   await openModels(dashboard, daemon.baseURL);
-  await expect(dashboard.getByRole("radio", { name: "Claude Code" })).toBeChecked();
   await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("");
 
   await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("claude-sonnet-5");
@@ -247,8 +213,7 @@ test("choosing Inherit judges the model against the app-wide provider, not the o
   // writes a pair it already knows is wrong is not made right by something else catching it.
   await openModels(dashboard, daemon.baseURL);
 
-  // App-wide stays Claude throughout. One row goes to Codex and pins a Codex model.
-  await expect(dashboard.getByRole("radio", { name: "Claude Code" })).toBeChecked();
+  // The app-wide default stays Claude throughout. One row goes to Codex and pins a Codex model.
   await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
   await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("gpt-5.6-sol");
   await openModels(dashboard, daemon.baseURL);

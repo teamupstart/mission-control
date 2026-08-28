@@ -11,6 +11,7 @@ import {
 import { chordFromEvent, useKeybindings } from "../lib/keybindings.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { ResizablePaneDivider } from "./ResizablePaneDivider.tsx";
 
 /**
  * Console and Board give a session's diff a real tab, reusing one reader without a
@@ -54,6 +55,8 @@ function DiffViewerContent({
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const fileListRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -163,7 +166,7 @@ function DiffViewerContent({
         </div>
       </header>
 
-      <div className="diff-body">
+      <div className="diff-body" ref={bodyRef}>
         {loading && <p className="diff-empty">Loading diff…</p>}
         {!loading && diff && !diff.ok && (
           <p className="diff-empty">Couldn't load a diff: {diff.error ?? "unknown error"}.</p>
@@ -179,7 +182,7 @@ function DiffViewerContent({
         )}
         {!loading && diff?.ok && files.length > 0 && (
           <>
-            <nav className="diff-filelist" aria-label="Changed files">
+            <nav ref={fileListRef} className="diff-filelist" aria-label="Changed files">
               {files.map((f, i) => (
                 <FileItem
                   key={`${f.path}-${i}`}
@@ -195,6 +198,12 @@ function DiffViewerContent({
                 </p>
               )}
             </nav>
+            <ResizablePaneDivider
+              containerRef={bodyRef}
+              leadingPaneRef={fileListRef}
+              label="Resize changed files list"
+              widthProperty="--diff-file-list-width"
+            />
             <div className="diff-detail" ref={detailRef}>
               {active && activeTarget && (
                 <FileDiff

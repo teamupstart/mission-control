@@ -70,6 +70,7 @@ import {
   inlinePreviewStyles,
 } from "../lib/htmlPreview.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { ResizablePaneDivider } from "./ResizablePaneDivider.tsx";
 
 function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   const labels: Record<FileBuffer["saveState"], string> = {
@@ -203,6 +204,7 @@ export function FileWorkspace({
   ref?: React.Ref<FileWorkspaceHandle>;
 }): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
+  const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
   const [manualPath, setManualPath] = useState("");
@@ -1656,7 +1658,7 @@ export function FileWorkspace({
 
   return (
     <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
-      <aside className="file-nav">
+      <aside ref={fileNavRef} className="file-nav">
         <div className="file-nav-tools">
           <input
             className="file-filter"
@@ -1698,6 +1700,14 @@ export function FileWorkspace({
           <input value={manualPath} onChange={(event) => setManualPath(event.currentTarget.value)} placeholder="Open relative path…" aria-label="Open a relative path" />
         </form>
       </aside>
+
+      <ResizablePaneDivider
+        containerRef={workspaceRef}
+        leadingPaneRef={fileNavRef}
+        label="Resize file list"
+        widthProperty="--file-list-width"
+        minLeadingWidthProperty="--file-list-min-width"
+      />
 
       <div className="file-main">
         <header className="file-toolbar">

@@ -1,6 +1,10 @@
 # Models (the app's own model work, and what each task kind dispatches on)
 
-Mission Control does a good deal of model work of its own - naming an untitled
+The page starts with **[Task kinds](#task-kinds)**, where you say which harness, model and effort
+a dispatched task of each kind runs on. These are the controls people most often customize: what
+does my plan launch with, and should a scout use something different from a ship?
+
+Mission Control also does a good deal of model work of its own - naming an untitled
 [dispatch](dispatch-and-backlog.md#dispatch-an-agent), reconciling prompts with the [Goal](sessions.md#goal) on a card, narrating the
 [away digest](attention-and-alerts.md#away-mode), compacting Workflow evidence, evaluating Ensemble submissions, judging a
 stuck session, and reviewing a pull request. None of it is the agent in a card, and none of it
@@ -13,11 +17,9 @@ the [background jobs](#the-background-jobs), [Foreman's four roles](#foremans-fo
 app spending on its own work, and on whose account?* A [Persona's](workflows.md) model and an
 Ensemble judge's are the deliberate exception, for the reason [below](#what-is-not-here).
 
-The page has a second half, about exactly the opposite thing: **[Task kinds](#task-kinds)**, where
-you say which harness, model and effort a dispatched task of each kind runs on. The two groups sit
-on one page because the question a person arrives with is "which model runs my planning" - being
-told that the app's own titling calls live here while a `plan` task's model lives somewhere else
-answers a question nobody asked. Everything above that section is about the app's own calls only.
+The two groups sit on one page because the question a person arrives with is "which model runs my
+planning" - being told that the app's own titling calls live here while a `plan` task's model lives
+somewhere else answers a question nobody asked. Task kinds lead; the app-owned calls follow.
 
 Two separate choices, deliberately.
 
@@ -32,17 +34,14 @@ path - each bills through whatever its own CLI is logged in as. It is entirely
 independent of which harness a card runs, which is the point - you can review a Codex session with
 Claude, or run the cheap jobs on the account that has quota left.
 
-The radio at the top of the panel is the **app-wide** provider, and every job below it starts on
-*Inherit*. Any job can leave that and choose for itself, so naming a task can run on Claude while
-compacting Workflow context runs on Codex. A job's own choice wins; when it has none, the app-wide
-radio decides, and when that is unset too the ladder falls through to
-[`MISSION_LLM_RUNNER`](configuration.md) and then the shipped default.
-
-**Picking a provider clears nothing.** Changing the app-wide radio re-resolves only the rows still
-on *Inherit* - a row that has chosen a model keeps it, because pinning a model pins its provider.
+Every app-owned row starts on *Inherit*. Any job can leave that and choose for itself, so naming a
+task can run on Claude while compacting Workflow context runs on Codex. A job's own choice wins;
+when it has none, the app-wide provider resolution falls through to
+[`MISSION_LLM_RUNNER`](configuration.md) and then the shipped default. There is no separate
+app-wide selector on this page because it would not customize any particular row.
 
 That is literal, not a figure of speech: choosing a model on an *Inherit* row **records the
-provider it belongs to** in the same write, so the row stops following the app-wide picker from
+provider it belongs to** in the same write, so the row stops following the app-wide default from
 that moment. Recording it then rather than inferring it later is what makes the rule hold even
 when the effective provider moves with no configuration write at all - which is exactly what
 `MISSION_LLM_RUNNER` changing between daemon restarts does. Clearing a model back to *Inherit*
@@ -50,8 +49,7 @@ records nothing, and a provider you set yourself is never rewritten by a model c
 
 The other half of the rule is what a row's own Provider select does: because it is a statement
 about exactly that row, changing it sends that row's model back to *Inherit* unless the new
-provider offers the same id, and the row says what it reset. (Before this, the app-wide radio wiped
-every model box on every change, which is what stopped a `claude` id from being handed to `codex`.)
+provider offers the same id, and the row says what it reset.
 
 Whatever route a provider and a model arrive by - a saved config, an environment variable, an
 upgrade, a hand-edited blob - a job never spawns on a pair its provider cannot honour. A model id
@@ -100,7 +98,7 @@ one account while the cheap pair runs on another.
 Foreman's grid leads with an **All roles** row. That is Foreman's group-level provider, and it is
 what *Inherit* means on the four rows beneath it - one more rung than a background job has:
 
-    a role's own provider  →  Foreman's All roles  →  the app-wide radio  →  MISSION_LLM_RUNNER  →  shipped default
+    a role's own provider  →  Foreman's All roles  →  app-wide default  →  MISSION_LLM_RUNNER  →  shipped default
 
 Everything else is the same rule, deliberately: pinning a model pins its provider, changing a
 row's own provider sends that row's model back to *Inherit* unless the new provider offers the same
@@ -119,11 +117,11 @@ carried somewhere it has never run.
 
 That last sentence describes a **fix**, not only a rule. Before this, Foreman's panel cleared all
 four model boxes whenever its provider select moved, which kept the pair valid as long as Foreman
-had a provider of its own - but an unset one inherited the app-wide value, and the app-wide radio
-is on a different page where Foreman's clearing never fired. An installation with role models
+had a provider of its own - but an unset one inherited the app-wide value, and changes to that
+value did not pass through Foreman's clearing path. An installation with role models
 saved and no Foreman provider set was therefore stranded on a mismatched pair by an app-wide
 change. It is not stranded now: saving a model on a role **records the provider it belongs to in
-the same write**, so the pair the operator chose is still the pair in force after the radio moves,
+the same write**, so the pair the operator chose is still the pair in force after the default moves,
 and the role's own provider is what the row goes on showing. A model no catalog claims - a custom
 or newly released id - records the provider it was chosen under instead, which is the same answer
 from the only evidence there is.
@@ -139,7 +137,7 @@ too, as a one-row grid with the same vocabulary. Whether it posts anything is Dr
 which stays under **Settings → GitHub Inspector** with the rest of its posture.
 
 **Leaving its provider unset now means what it says.** It used to resolve to a literal `claude`,
-which made the Inspector the one subsystem in the app that ignored the app-wide radio and
+which made the Inspector the one subsystem in the app that ignored the app-wide default and
 [`MISSION_LLM_RUNNER`](configuration.md) - an operator who had pinned everything to one provider
 got a Claude review anyway, with nothing on screen saying so. An unset Inspector provider now
 follows the same ladder as everything else on the page. **If you were relying on that fallback,

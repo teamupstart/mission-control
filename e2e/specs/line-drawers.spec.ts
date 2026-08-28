@@ -853,6 +853,29 @@ test("runs that stopped for one reason fold into one bar, and the strip stops ca
   await expect(stage(dashboard, "Review")).toHaveAttribute("aria-label", /3 stalled/);
   await expect(stage(dashboard, "Review")).not.toHaveAttribute("aria-label", /waiting on you/);
 
+  // The condensed strip promotes the attention sentence into a single readout. It belongs
+  // in the middle of the open space between the six stage controls and the fold caret, not
+  // glued to either edge. Bounding boxes pin the layout the same way a person sees it.
+  const line = dashboard.getByRole("navigation", { name: "The Line" });
+  await line.getByRole("button", { name: "Condense the Line" }).click();
+  await expect(line).toHaveClass(/is-condensed/);
+  const urgent = line.locator(".ls-urgent");
+  await expect(urgent).toBeVisible();
+  await expect(urgent).toContainText("3 stalled");
+  const centerOffset = await line.evaluate((element) => {
+    const stages = element.querySelectorAll<HTMLElement>(".line-stage");
+    const lastStage = stages.item(stages.length - 1).getBoundingClientRect();
+    const readout = element.querySelector<HTMLElement>(".ls-urgent-item")!.getBoundingClientRect();
+    const fold = element.querySelector<HTMLElement>(".ls-fold")!.getBoundingClientRect();
+    const openSpaceCenter = (lastStage.right + fold.left) / 2;
+    return Math.abs(readout.left + readout.width / 2 - openSpaceCenter);
+  });
+  expect(centerOffset, "the minimized attention readout drifted within the bar's open space")
+    .toBeLessThanOrEqual(1);
+  await shoot(dashboard, "condensed-urgent-centered");
+  await line.getByRole("button", { name: "Expand the Line" }).click();
+  await expect(line).not.toHaveClass(/is-condensed/);
+
   // ---- every member is still reachable ----
   // The drawer's standing promise is that the cap is on the panel and never on the list. A
   // fold that HID thirty runs would break it; the caret is what keeps it.

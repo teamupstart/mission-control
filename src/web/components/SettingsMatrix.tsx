@@ -142,9 +142,8 @@ function SettingsMatrixRowCells({
 /**
  * The provider half of a slot: inherit, or one of the providers this build has.
  *
- * A `<select>` rather than the app-wide radio group, because a radio group per row would be
- * ten controls where the page already has one set, and because "Inherit" is a real option
- * here in a way it is not at the top - the app-wide picker cannot inherit from anything.
+ * A `<select>` rather than a radio group, because every row can inherit the app-wide provider
+ * default and needs a compact control inside the matrix.
  */
 export function ProviderSelect({
   id,
@@ -208,8 +207,8 @@ export function ProviderSelect({
         onChange={(event) => onCommit(knownRunner(event.target.value) ?? "")}
       >
         {/* Named with what it resolves to, the same honesty `ModelField`'s "Default - x" row
-            keeps: an option reading only "Inherit" makes an operator open the app-wide picker
-            to find out what this row is actually running on. */}
+            keeps: an option reading only "Inherit" makes an operator hunt for the app-wide
+            default to find out what this row is actually running on. */}
         <option value="">Inherit - {inheritedLabel}</option>
         {providers.map((provider) => (
           <option key={provider.id} value={provider.id}>
@@ -323,7 +322,7 @@ export function modelSlotRow({
         <ProviderSelect
           id={`${key}-provider`}
           name={`${name} provider`}
-          tooltip={`Which provider runs ${name.toLowerCase()}. Inherit follows the app-wide picker.`}
+          tooltip={`Which provider runs ${name.toLowerCase()}. Inherit follows the app-wide provider default.`}
           value={runnerValue}
           inherited={inheritedRunner}
           providers={providers}
@@ -363,7 +362,7 @@ export function modelSlotRow({
             // Pinning a model PINS ITS PROVIDER, and this is the moment of pinning - so the
             // provider is recorded here rather than inferred later. Leaving `runners[job]`
             // empty made the rule true only along the path that writes config: `setLlmConfig`
-            // materialises the outgoing provider when the app-wide radio moves, but
+            // materialises the outgoing provider when the app-wide default moves, but
             // `MISSION_LLM_RUNNER` changing between daemon restarts moves the effective
             // provider with NO write at all, so the pin never materialised and a saved Claude
             // model silently inherited Codex and was replaced by the resolver guard.
@@ -388,8 +387,8 @@ export function modelSlotRow({
           {reset && <span className="settings-matrix-reset">{reset}</span>}
           {/* An override this build cannot resolve, said out loud. Replaced silently, the
               inherited provider reads as this row's own choice - the same failure the
-              app-wide picker's `unknown` line exists to prevent, and the reason a per-job
-              override reports it too rather than only the setting above it. */}
+              app-wide default's `unknown` state exists to prevent, and the reason a per-job
+              override reports it too rather than relying on another control. */}
           {unreadableProvider && (
             <span className="settings-matrix-reset">
               {`"${unreadableProvider}" is not a provider this build has, so this row is inheriting instead.`}

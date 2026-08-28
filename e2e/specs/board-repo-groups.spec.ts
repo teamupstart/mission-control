@@ -19,6 +19,15 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * in the same frame and a spec asserting "the cards are grouped" would pass over a board that
  * had simply drawn one box round everything.
  *
+ * The first case also carries the frame's LOOK, because the look is the part of this feature that
+ * has already been redrawn once and only a browser can see whether a stylesheet rule reached the
+ * element. Four claims there: the repository's colour reaches the frame's top AND leading edges at
+ * the same mix (one bracket, not two marks); it reaches nothing else, so the body and the head
+ * band stay neutral and a repository cannot be read as a session state; the board hides the
+ * swatch the rail needs, which is a decision about surfaces rather than a component that stopped
+ * rendering it; and the frame refuses to be shrunk by its column, which is what keeps an
+ * `overflow: hidden` frame from clipping the last card of a group.
+ *
  * The last two cases cover surfaces the Board cases cannot reach. One walks the ARROW KEYS over a
  * folded frame: collapse is a view's state while navigation walks the ordering, and the cursor
  * used to step into rows nobody could see. The other covers the CONSOLE RAIL, which is a second
@@ -160,13 +169,70 @@ test("the Board groups cards by repository out of the box, and a heading folds i
       `${name}'s frame carries a palette colour`,
     ).toMatch(/^#[0-9a-f]{6}$/i);
   }
-  const before = await firstFrame.evaluate((el) => getComputedStyle(el).borderTopColor);
-  const after = await firstFrame.evaluate((el) => {
-    (el as HTMLElement).style.setProperty("--repo-c", "#ff00ff");
-    return getComputedStyle(el).borderTopColor;
-  });
-  expect(after, "the frame's border is mixed from --repo-c").not.toBe(before);
+  // What the frame paints, in ONE read, so every claim below compares against the same pristine
+  // baseline. Reading a "this surface is not tinted" value AFTER the property has already been
+  // overridden compares two reads taken under the same colour, which passes on a frame that is
+  // still washed by it - so the baseline is taken before anything is set, and exactly one
+  // override is applied afterwards.
+  const paint = async (
+    override: string | null,
+  ): Promise<{ top: string; left: string; body: string; head: string }> =>
+    firstFrame.evaluate((el, colour) => {
+      if (colour !== null) (el as HTMLElement).style.setProperty("--repo-c", colour);
+      const frame = getComputedStyle(el);
+      const head = getComputedStyle(el.querySelector(".board-repo-head")!);
+      return {
+        top: frame.borderTopColor,
+        left: frame.borderLeftColor,
+        body: frame.backgroundColor,
+        head: head.backgroundColor,
+      };
+    }, override);
+
+  const asDrawn = await paint(null);
+  // Magenta, which is in no palette entry, so a surface that moves cannot have moved by chance.
+  const overridden = await paint("#ff00ff");
   await firstFrame.evaluate((el) => (el as HTMLElement).style.removeProperty("--repo-c"));
+
+  // BOTH coloured edges, because the frame's whole identity treatment is the bracket its top and
+  // leading edges make - and an assertion on one of them passes over a restyle that dropped the
+  // other, which is the exact regression this pair exists to catch.
+  expect(overridden.top, "the frame's top edge is mixed from --repo-c").not.toBe(asDrawn.top);
+  expect(overridden.left, "the frame's leading edge is mixed from --repo-c").not.toBe(
+    asDrawn.left,
+  );
+  // The same mix on both, which is what makes the miter where a 2px edge meets a 3px one
+  // invisible. Two edges of one hue at two strengths read as two marks, not as one bracket.
+  expect(asDrawn.left, "both coloured edges are the same mix of --repo-c").toBe(asDrawn.top);
+
+  // And the hue is spent on those edges ONLY. The frame used to wash its body at 6% and tint its
+  // head band at 11% from the same property, which is what made a repository read like a session
+  // state; both are neutral now, so a different colour must move neither.
+  expect(overridden.body, "the frame's body is not tinted from --repo-c").toBe(asDrawn.body);
+  expect(overridden.head, "the head band is not tinted from --repo-c").toBe(asDrawn.head);
+
+  // The board head does not draw the swatch - the frame's own edges are already the colour. The
+  // element is still rendered, because the rail needs it (see the Console case below); what is
+  // asserted here is that a person looking at the board does not see the colour twice.
+  await expect(firstHead.locator(".brh-swatch")).toBeHidden();
+
+  // The caret is drawn rather than set as the `⌄` character, and it points down while open.
+  const caret = firstHead.locator("svg.brh-chevron");
+  await expect(caret).toBeVisible();
+  await expect(firstHead).not.toContainText("⌄");
+
+  // The frame clips its corners, so it must not be allowed to clip its CARDS. `.board-col-body`
+  // is a flex column: an `overflow: hidden` child loses its automatic minimum size and can be
+  // shrunk to fit, which cut the last card off a group on a column holding eight sessions.
+  // `flex-shrink: 0` is the guarantee, and nothing inside overflowing is the consequence.
+  expect(
+    await firstFrame.evaluate((el) => getComputedStyle(el).flexShrink),
+    "the frame refuses to be shrunk by its column",
+  ).toBe("0");
+  expect(
+    await firstFrame.evaluate((el) => el.scrollHeight - el.clientHeight),
+    "nothing inside the frame is clipped by it",
+  ).toBeLessThanOrEqual(1);
 
   // Fold. The heading stays - it is how you get the group back - and its cards go.
   await firstHead.click();
@@ -294,6 +360,17 @@ test("the Console rail groups its rows by repository, and a heading folds them",
 
   // The head says which repository and how much of it, in the rail's own register.
   await expect(ownFrame.locator(".reg-stage")).toHaveText("2 agents");
+
+  // The rail's dot is DRAWN, unlike the board's. A rail row has no frame to carry a coloured
+  // edge, so the swatch is the only colour a repository gets here - and the board hiding it
+  // (see the Board case above) is a stylesheet decision about surfaces, not a component that
+  // stopped rendering it.
+  const railSwatch = ownFrame.locator(".rail-repo-group .brh-swatch");
+  await expect(railSwatch).toBeVisible();
+  expect(
+    await railSwatch.evaluate((el) => getComputedStyle(el).backgroundColor),
+    "the rail's swatch is painted from --repo-c",
+  ).toMatch(/^rgb\(/);
 
   // Folding takes its rows away and leaves the other frame alone.
   await dashboard.getByRole("button", { name: new RegExp(`Collapse ${own}\\b`) }).click();

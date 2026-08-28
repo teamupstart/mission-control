@@ -537,6 +537,13 @@ export function repoGroupHeadline(
  * board. `expanded` and `onToggle` are the caller's, because the state is per FRAME rather than
  * per repository: folding a repository in the idle column must not fold away the sibling
  * waiting for you in "needs you".
+ *
+ * ONE markup for both surfaces, including the swatch - which the BOARD does not draw. The
+ * board's frame carries the repository's colour on its own top and leading edges
+ * (`.board-repo` in `styles.css`), so a dot beside the name there is the same fact twice; a
+ * rail row has no frame to put an edge on, so the dot is the only colour it has. That is a
+ * difference in what the two surfaces LOOK like, not in what this header IS, so it is settled
+ * with one `display: none` in the stylesheet rather than with a branch here.
  */
 export function RepoGroupHead({
   repoRoot,
@@ -574,9 +581,7 @@ export function RepoGroupHead({
           <span className="brh-swatch" aria-hidden />
           <span className="reg-title">{title}</span>
           <span className="reg-stage">{count}</span>
-          <span className="brh-chevron" aria-hidden>
-            ⌄
-          </span>
+          <RepoGroupCaret />
         </button>
       </Tooltip>
     );
@@ -592,11 +597,39 @@ export function RepoGroupHead({
         <span className="brh-swatch" aria-hidden />
         <span className="bch-title">{title}</span>
         <span className="bch-meta">{count}</span>
-        <span className="brh-chevron" aria-hidden>
-          ⌄
-        </span>
+        <RepoGroupCaret />
       </button>
     </Tooltip>
+  );
+}
+
+/**
+ * The disclosure caret, drawn rather than set.
+ *
+ * It was the `⌄` character, which sits on its own font baseline and therefore never lines up
+ * with the one-line row it is in - the only part of this header that looked unfinished at every
+ * size. Two sizes of the same problem, since the rail draws the same control.
+ *
+ * Keeps the `brh-chevron` class and takes its colour from `currentcolor`, so the rotation stays
+ * where it already was: a single stylesheet rule hung off `[aria-expanded="false"]`, which is the
+ * button's own state. A caret that pointed one way while the control announced the other is
+ * exactly what driving it off a wrapper class would allow.
+ *
+ * `aria-hidden`, because the accessible name and `aria-expanded` on the button already say both
+ * what this is and which way it points.
+ */
+function RepoGroupCaret(): React.JSX.Element {
+  return (
+    <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
+      <path
+        d="M2.8 4.4 6 7.8l3.2-3.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

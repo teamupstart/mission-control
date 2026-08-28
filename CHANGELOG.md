@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.2.0](https://github.com/teamupstart/mission-control/compare/v1.1.0...v1.2.0) (2026-08-28)
+
+
+### Features
+
+* **board:** restyle the repository group as a quiet box with a coloured bracket ([#821](https://github.com/teamupstart/mission-control/issues/821)) ([bc13e2a](https://github.com/teamupstart/mission-control/commit/bc13e2ae8384205d7ddeda3a4972fa16c15f2d25))
+* **files:** find in a document with Cmd+F, in Preview and in the Editor ([#824](https://github.com/teamupstart/mission-control/issues/824)) ([4eeab1e](https://github.com/teamupstart/mission-control/commit/4eeab1eee4abb4a4fcc0f7af7cd0479ccaf37bca))
+* **files:** find inside the HTML preview, marking only what a reader can see ([#827](https://github.com/teamupstart/mission-control/issues/827)) ([df1758e](https://github.com/teamupstart/mission-control/commit/df1758ed2f1bc8873dac68edcc7ef55ad33839c0))
+* **instructions:** repository standing instructions, store and delivery ([#751](https://github.com/teamupstart/mission-control/issues/751)) ([c76b18b](https://github.com/teamupstart/mission-control/commit/c76b18bd899a4c898bab80dc2b90ecd4afcacf42))
+* **instructions:** Standing instructions settings panel ([#761](https://github.com/teamupstart/mission-control/issues/761)) ([9679213](https://github.com/teamupstart/mission-control/commit/9679213f37d532d3757cba709b78b2153e725677))
+* **line:** fold the pipeline strip to one row, condensed by default ([#809](https://github.com/teamupstart/mission-control/issues/809)) ([655f71e](https://github.com/teamupstart/mission-control/commit/655f71e165ea025f23e72d2d5f9ac01f5eacdaae))
+* **pipelines:** support refused steps and plan gaps ([#811](https://github.com/teamupstart/mission-control/issues/811)) ([844c810](https://github.com/teamupstart/mission-control/commit/844c810645854366762c7ac9eb65ffcc52dc9e2e))
+
+
+### Bug Fixes
+
+* bump 25 vulnerable dependencies [@hono/node-server, nanoid, next, postcss, sharp] ([#826](https://github.com/teamupstart/mission-control/issues/826)) ([eb4e43e](https://github.com/teamupstart/mission-control/commit/eb4e43e10dc8227ba9dac50fa8fb18d8f29c419a))
+* **diff:** focus keyboard navigation after tabbing ([#822](https://github.com/teamupstart/mission-control/issues/822)) ([36cc4c2](https://github.com/teamupstart/mission-control/commit/36cc4c212c79783eb93f2ee04461dc224fec18b7))
+* **files:** let the comment composer take keystrokes in a dev build ([#797](https://github.com/teamupstart/mission-control/issues/797)) ([84ac0f5](https://github.com/teamupstart/mission-control/commit/84ac0f593aa8836ff312c0be1fc6420404817fb8))
+* make every review prompt dismissible ([#781](https://github.com/teamupstart/mission-control/issues/781)) ([340b571](https://github.com/teamupstart/mission-control/commit/340b571c159f4e60ef025dfa7829948950d4b0da))
+* **scouts:** bound and collapse the archived prompt ledger ([#794](https://github.com/teamupstart/mission-control/issues/794)) ([844dde5](https://github.com/teamupstart/mission-control/commit/844dde5cf768a99d545e6773300621fd54768841))
+* track Pipeline authoring worktrees ([#819](https://github.com/teamupstart/mission-control/issues/819)) ([b607f0d](https://github.com/teamupstart/mission-control/commit/b607f0d41f0be807f8f6e93657ab2d81798b70ee))
+* **updater:** migrate canonical repository URL ([#793](https://github.com/teamupstart/mission-control/issues/793)) ([b9c1481](https://github.com/teamupstart/mission-control/commit/b9c14813bbf8b7cbdd34138251880989a0a63785))
+* **workflows:** accept agent evidence from a manually bound conversation ([#804](https://github.com/teamupstart/mission-control/issues/804)) ([b4a5fbc](https://github.com/teamupstart/mission-control/commit/b4a5fbc4a3e8a555e9bfc8005a4994e9fc516d70))
+
+
+### Performance Improvements
+
+* **test:** default local suite to six workers ([#742](https://github.com/teamupstart/mission-control/issues/742)) ([7cc52bd](https://github.com/teamupstart/mission-control/commit/7cc52bdef0cc516879a7907790bfd28d67880647))
+
 ## [1.1.0](https://github.com/mancej-cyc/ai-harness/compare/v1.0.1...v1.1.0) (2026-08-22)
 
 

@@ -18,6 +18,8 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
+  refreshPath?(): Promise<void>;
   environment: EnvironmentDeps;
   agentBin(agent: AgentType): string;
   installedBackend(id: TerminalBackendId): Promise<string | null>;

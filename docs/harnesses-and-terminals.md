@@ -10,6 +10,13 @@ It uses the same harness and terminal binary resolvers as launch, so an environm
 cannot make the launcher and setup report disagree. The panel only links to or copies remedies;
 it never installs or executes them.
 
+Bare agent commands are first resolved on the daemon's current `PATH`. If that snapshot misses,
+Mission Control refreshes `PATH` asynchronously from the user's login shell and retries. Concurrent
+misses share one read, and repeated misses use a short negative-cache window instead of repeatedly
+sourcing shell startup files. Each explicit Setup inspection forces one fresh shared snapshot, so a
+CLI installed or moved by a version manager becomes available to both Setup and dispatch without a
+daemon restart.
+
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's
 [harness registry](../src/server/harness/index.ts) adds process, filesystem, transcript,

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { loginShellPath } from "./path-env.ts";
+import { loginShellPath } from "../server/util/path-env.ts";
 
 /** Resolve a system Node binary that remains available while Electron replaces itself. */
 export function findSystemNode(): string | null {

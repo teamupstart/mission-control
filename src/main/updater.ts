@@ -24,7 +24,7 @@ import {
   type UpdateApplyOutcome,
   type UpdateSnapshot,
 } from "../shared/update.ts";
-import { loginShellPath } from "./path-env.ts";
+import { loginShellPath } from "../server/util/path-env.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { findSystemNode } from "./system-node.ts";
 

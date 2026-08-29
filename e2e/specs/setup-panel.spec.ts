@@ -69,3 +69,30 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     console.log("CAPTURED e2e/.artifacts/guided-setup/setup-panel.png");
   }
 });
+
+test.describe("login-shell binaries", () => {
+  test.use({
+    daemonEnv: {
+      MC_E2E_CONDUCTOR_STARTS_MISSING: "1",
+      MC_E2E_PI_LOGIN_SHELL_ONLY: "1",
+    },
+  });
+
+  test("Setup recognizes Pi installed by a login-shell version manager", async ({ page, daemon }) => {
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+    const pi = page.locator('[data-anchor="setup/dependency-pi-cli"]');
+    await expect(pi).toContainText("Pi");
+    await expect(pi).toContainText("Ready");
+    await expect(pi).toContainText("login-bin/pi");
+    await expect(pi.getByText("Missing", { exact: true })).not.toBeVisible();
+
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidence = artifactsDir("pi-login-shell-setup");
+      mkdirSync(evidence, { recursive: true });
+      await page.screenshot({ path: `${evidence}/pi-ready.png`, fullPage: true });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/pi-login-shell-setup/pi-ready.png");
+    }
+  });
+});

@@ -30,7 +30,7 @@ import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts"
 import { resolveBin } from "../terminal/bin.ts";
 import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
-import { resolveBinPath, run } from "../util/exec.ts";
+import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupSkillsRead } from "./types.ts";
@@ -160,6 +160,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     agentBin: resolveAgentBin,
     installedBackend: async (id) => {
       const spec = MULTIPLEXER_IDS.includes(id as never)
@@ -193,6 +194,7 @@ export function defaultSetupDeps(): SetupDeps {
 
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
+  await deps.refreshPath?.();
   const [statuses, targets, environment] = await Promise.all([
     Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),

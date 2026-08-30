@@ -1009,6 +1009,16 @@ export class Dispatcher {
         }
         const reservedRun = reserved;
         if (!reservedRun) throw new Error("the provider did not return an Engineer run");
+        const mismatchedIdentity = [
+          reservedRun.correlationId !== commission.correlationId ? "correlationId" : null,
+          reservedRun.repoRoot !== task.repoRoot ? "repoRoot" : null,
+          reservedRun.attemptKey !== attempt.launchKey ? "attemptKey" : null,
+        ].filter((field): field is string => field !== null);
+        if (mismatchedIdentity.length > 0) {
+          throw new Error(
+            `provider Engineer run identity does not match the commission: ${mismatchedIdentity.join(", ")}`,
+          );
+        }
         commission = bindPipelineCommissionAttempt({
           commissionId: commission.id,
           attempt: attempt.attempt,

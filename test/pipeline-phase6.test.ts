@@ -1009,6 +1009,78 @@ test("successful cancellation during provider reservation prevents host launch",
   );
 });
 
+test("commissioned dispatch rejects a provider reservation with mismatched identity", async (t) => {
+  const registry = new Registry();
+  const supervisor = fakeSupervisor(registry);
+  let mismatch: {
+    field: "correlationId" | "repoRoot" | "attemptKey";
+    value: string;
+  } = { field: "correlationId", value: "foreign-correlation" };
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async (input) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: `engineer-mismatched-${mismatch.field}`,
+        correlationId:
+          mismatch.field === "correlationId" ? mismatch.value : input.correlationId,
+        attemptKey: mismatch.field === "attemptKey" ? mismatch.value : input.attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot: mismatch.field === "repoRoot" ? mismatch.value : input.repoRoot,
+        idea: input.idea,
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("a mismatched provider reservation is not owned locally"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    pipelineLaunch: async (repoRoot) => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  for (const candidate of [
+    { field: "correlationId", value: "foreign-correlation" },
+    { field: "repoRoot", value: "/repo/foreign" },
+    { field: "attemptKey", value: "foreign-attempt" },
+  ] as const) {
+    mismatch = candidate;
+    const taskId = `pipeline-mismatched-${candidate.field}`;
+    registry.upsertTask(mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot: `/repo/mismatched-${candidate.field}`,
+      intent: `Reject a mismatched ${candidate.field}`,
+    }));
+
+    await dispatcher.dispatch(taskId);
+
+    assert.equal(registry.getTask(taskId)?.status, "failed");
+    assert.match(registry.getTask(taskId)?.error ?? "", new RegExp(candidate.field));
+    assert.equal(
+      registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId,
+      null,
+    );
+  }
+  assert.equal(supervisor.starts.length, 0);
+});
+
 test("provider reservation is cancelled when managed host setup fails", async (t) => {
   const taskId = "pipeline-reserved-host-failure";
   const repoRoot = "/repo/reserved-host-failure";

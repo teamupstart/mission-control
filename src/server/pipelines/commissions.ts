@@ -219,7 +219,13 @@ export function cancelPipelineCommission(input: {
   return next;
 }
 
-/** Retain the provider identity and reason when terminal cancellation could not stop it. */
+/**
+ * Retain the provider identity and reason when cancellation could not stop it.
+ *
+ * A dispatch-time host failure records this while the commission is still active so the
+ * task continues to own the provider run and Cancel can retry it. A task cancellation that
+ * already won locally keeps its terminal attempt reason instead.
+ */
 export function recordPipelineCommissionCancellationFailure(input: {
   commissionId: PipelineCommissionId;
   engineerRunId: string;
@@ -228,19 +234,17 @@ export function recordPipelineCommissionCancellationFailure(input: {
 }): PipelineCommission {
   const held = getPipelineCommission(input.commissionId);
   if (!held) throw new Error(`unknown pipeline commission ${input.commissionId}`);
-  if (held.lifecycle !== "cancelled") {
-    throw new Error("only a cancelled pipeline commission can retain a cancellation failure");
+  if (held.lifecycle !== "created" && held.lifecycle !== "cancelled") {
+    throw new Error("only an active reservation or cancelled commission can retain a cancellation failure");
   }
   const active = held.attempts.find((attempt) => attempt.attempt === held.activeAttempt);
   if (!active || active.engineerRunId !== input.engineerRunId) {
     throw new Error("the cancellation failure does not match the active Engineer run");
   }
   const now = input.now ?? Date.now();
-  const attempt: PipelineCommissionAttempt = {
-    ...active,
-    terminalReason: input.reason,
-    updatedAt: now,
-  };
+  const attempt: PipelineCommissionAttempt = held.lifecycle === "cancelled"
+    ? { ...active, terminalReason: input.reason, updatedAt: now }
+    : { ...active, updatedAt: now };
   const next: PipelineCommission = {
     ...held,
     attempts: held.attempts.map((entry) =>

@@ -1334,6 +1334,119 @@ test("provider reservation is cancelled when managed host setup fails", async (t
   assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
 });
 
+test("failed host cleanup keeps the provider reservation owned until cancellation retries", async (t) => {
+  const taskId = "pipeline-reserved-host-cleanup-failure";
+  const repoRoot = "/repo/reserved-host-cleanup-failure";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Retain reservation after host cleanup failure",
+  }));
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-reserved-host-cleanup-failure",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Retain reservation after host cleanup failure",
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      if (cancelledRunIds.length === 1) {
+        return { ok: false, error: "provider unavailable", outcomeUnknown: true };
+      }
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: registry.pipelineCommissionForTask(taskId)!.correlationId,
+          attemptKey: registry.pipelineCommissionForTask(taskId)!.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Retain reservation after host cleanup failure",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = {
+    start: async () => {
+      throw new Error("SDK host refused after reservation");
+    },
+    taskLiveness: () => false,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  const retainedTask = registry.getTask(taskId)!;
+  const retainedCommission = registry.pipelineCommissionForTask(taskId)!;
+  assert.equal(retainedTask.status, "running");
+  assert.match(retainedTask.error ?? "", /SDK host refused after reservation/);
+  assert.match(retainedTask.error ?? "", /provider unavailable/);
+  assert.equal(retainedCommission.lifecycle, "created");
+  assert.equal(retainedCommission.attempts[0]?.state, "reserved");
+  assert.equal(
+    retainedCommission.attempts[0]?.engineerRunId,
+    "engineer-reserved-host-cleanup-failure",
+  );
+  assert.match(retainedCommission.error ?? "", /provider unavailable/);
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-host-cleanup-failure"]);
+  assert.deepEqual(await tasks.reschedule(taskId), {
+    ok: false,
+    error: "task is running, only a cancelled or failed task can be rescheduled",
+  });
+
+  assert.deepEqual(await tasks.cancel(taskId), { ok: true });
+  assert.deepEqual(cancelledRunIds, [
+    "engineer-reserved-host-cleanup-failure",
+    "engineer-reserved-host-cleanup-failure",
+  ]);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+});
+
 test("a commission persistence race does not strand local task cancellation", async (t) => {
   const taskId = "pipeline-cancel-commission-race";
   const repoRoot = "/repo/cancel-commission-race";

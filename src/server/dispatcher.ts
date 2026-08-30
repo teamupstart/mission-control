@@ -1245,19 +1245,6 @@ export class Dispatcher {
         const failedCommissionId = engineerCommissionId;
         const failedLifecycle = engineerLifecycle;
         const originalMessage = error instanceof Error ? error.message : String(error);
-        try {
-          const cancelled = cancelPipelineCommission({
-            commissionId: failedCommissionId,
-            reason: `Engineer host setup failed: ${originalMessage}`,
-          });
-          this.registry.upsertPipelineCommission(cancelled);
-        } catch (commissionError) {
-          console.error(
-            `[pipelines] could not make failed host reservation ${failedRunId} terminal: ${
-              commissionError instanceof Error ? commissionError.message : String(commissionError)
-            }`,
-          );
-        }
         const retainFailure = (reason: string): void => {
           try {
             const failed = recordPipelineCommissionCancellationFailure({
@@ -1274,23 +1261,56 @@ export class Dispatcher {
             );
           }
         };
+        let cleanupFailure: string | null = null;
         try {
           const stopped = await failedLifecycle.cancel({
             engineerRunId: failedRunId,
             reason: `Mission Control Engineer host setup failed: ${originalMessage}`,
           });
           if (!stopped.ok) {
-            retainFailure(stopped.error);
-            console.error(
-              `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${stopped.error}`,
-            );
+            cleanupFailure = stopped.error;
           }
         } catch (cancelError) {
-          const message = cancelError instanceof Error ? cancelError.message : String(cancelError);
-          retainFailure(message);
+          cleanupFailure = cancelError instanceof Error ? cancelError.message : String(cancelError);
+        }
+        if (cleanupFailure) {
+          retainFailure(cleanupFailure);
           console.error(
-            `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${message}`,
+            `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${cleanupFailure}`,
           );
+          // The provider run is still live or its outcome is unknown. Keep both records
+          // active and bound to that exact run so reschedule cannot mint a successor and
+          // the ordinary Cancel action can retry the provider stop.
+          this.patch(taskId, {
+            status: "running",
+            error:
+              `${originalMessage} - provider Engineer run ${failedRunId} remains owned ` +
+              `because cleanup failed: ${cleanupFailure}; Cancel to retry cleanup`,
+          });
+          return;
+        }
+        try {
+          const cancelled = cancelPipelineCommission({
+            commissionId: failedCommissionId,
+            reason: `Engineer host setup failed: ${originalMessage}`,
+          });
+          this.registry.upsertPipelineCommission(cancelled);
+        } catch (commissionError) {
+          const message = commissionError instanceof Error
+            ? commissionError.message
+            : String(commissionError);
+          console.error(
+            `[pipelines] could not make stopped host reservation ${failedRunId} terminal: ${message}`,
+          );
+          // The provider stop succeeded, but until its local boundary is durable the task
+          // remains the recovery owner and cannot be rescheduled into a duplicate attempt.
+          this.patch(taskId, {
+            status: "running",
+            error:
+              `${originalMessage} - provider Engineer run ${failedRunId} stopped, but ` +
+              `Mission Control could not record cleanup: ${message}; Cancel to retry cleanup`,
+          });
+          return;
         }
       }
       throw error;

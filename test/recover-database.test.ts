@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   APP_BUNDLE_ID,
+  durableWriteJson,
   parseArgs,
   readRecoveryLedger,
   runDatabaseRecovery,
 } from "../scripts/recover-database.mjs";
+import type { DurableWriteOperations } from "../scripts/recover-database.mjs";
 
 function database(path: string, marker: string): void {
   const db = new DatabaseSync(path);
@@ -114,6 +116,46 @@ test("the command accepts one candidate or one explicit rollback id", () => {
     recoveryId: "recovery-1",
   });
   assert.match(String(parseArgs([]).problem), /Usage/);
+});
+
+test("ledger publication fsyncs the containing directory after the atomic rename", () => {
+  const target = "/state/database-recovery/ledger.json";
+  const directory = dirname(target);
+  const events: string[] = [];
+  let temporary = "";
+  const operations = {
+    mkdir: (path) => events.push(`mkdir:${path}`),
+    write: (path) => {
+      temporary = path;
+      events.push(`write:${path}`);
+    },
+    open: (path) => {
+      events.push(`open:${path}`);
+      return path === directory ? 22 : 11;
+    },
+    fsync: (fd) => events.push(`fsync:${fd}`),
+    close: (fd) => events.push(`close:${fd}`),
+    rename: (from, to) => {
+      assert.equal(from, temporary);
+      events.push(`rename:${to}`);
+    },
+    remove: (path) => events.push(`remove:${path}`),
+  } satisfies DurableWriteOperations;
+
+  durableWriteJson(target, { schema: 1, attempts: [] }, operations);
+
+  assert.match(temporary, /^\/state\/database-recovery\/ledger\.json\..+\.tmp$/);
+  assert.deepEqual(events, [
+    `mkdir:${directory}`,
+    `write:${temporary}`,
+    `open:${temporary}`,
+    "fsync:11",
+    "close:11",
+    `rename:${target}`,
+    `open:${directory}`,
+    "fsync:22",
+    "close:22",
+  ]);
 });
 
 test("a valid candidate stops by exact bundle id, restores, launches once, and reports dynamic health", async (t) => {

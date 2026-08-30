@@ -97,21 +97,38 @@ export function readRecoveryLedger(home) {
   return value;
 }
 
-function durableWriteJson(path, value) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+const durableWriteOperations = {
+  mkdir: mkdirSync,
+  write: writeFileSync,
+  open: openSync,
+  fsync: fsyncSync,
+  close: closeSync,
+  rename: renameSync,
+  remove: rmSync,
+};
+
+export function durableWriteJson(path, value, operations = durableWriteOperations) {
+  const directory = dirname(path);
+  operations.mkdir(directory, { recursive: true, mode: 0o700 });
   const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
   try {
-    writeFileSync(temp, bytes, { mode: 0o600 });
-    const fd = openSync(temp, "r");
+    operations.write(temp, bytes, { mode: 0o600 });
+    const fd = operations.open(temp, "r");
     try {
-      fsyncSync(fd);
+      operations.fsync(fd);
     } finally {
-      closeSync(fd);
+      operations.close(fd);
     }
-    renameSync(temp, path);
+    operations.rename(temp, path);
+    const directoryFd = operations.open(directory, "r");
+    try {
+      operations.fsync(directoryFd);
+    } finally {
+      operations.close(directoryFd);
+    }
   } catch (error) {
-    rmSync(temp, { force: true });
+    operations.remove(temp, { force: true });
     throw error;
   }
 }

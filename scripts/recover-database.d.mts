@@ -25,6 +25,16 @@ export type RecoveryLedger = {
   attempts: RecoveryAttempt[];
 };
 
+export type DurableWriteOperations = {
+  mkdir(path: string, options: { recursive: true; mode: number }): unknown;
+  write(path: string, data: string, options: { mode: number }): unknown;
+  open(path: string, flags: "r"): number;
+  fsync(fd: number): unknown;
+  close(fd: number): unknown;
+  rename(from: string, to: string): unknown;
+  remove(path: string, options: { force: true }): unknown;
+};
+
 export type RecoveryOperations = {
   verifyApp(home: string, bundleId: string): unknown;
   appIsRunning(): boolean | Promise<boolean>;
@@ -62,6 +72,11 @@ export function parseArgs(argv: string[]): {
   problem: string | null;
 };
 export function readRecoveryLedger(home: string): RecoveryLedger;
+export function durableWriteJson(
+  path: string,
+  value: unknown,
+  operations?: DurableWriteOperations,
+): void;
 export function prepareCandidate(candidatePath: string, home: string): {
   digest: string;
   stagedDatabase: string;

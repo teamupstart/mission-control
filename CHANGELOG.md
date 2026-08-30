@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/teamupstart/mission-control/compare/v1.3.0...v1.3.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* make app auto-upgrades privilege-safe ([#843](https://github.com/teamupstart/mission-control/issues/843)) ([11e7fd8](https://github.com/teamupstart/mission-control/commit/11e7fd8c54852a043a46f8c443dc8c0d4a0dabea))
+
 ## [1.3.0](https://github.com/teamupstart/mission-control/compare/v1.2.0...v1.3.0) (2026-08-30)
 
 

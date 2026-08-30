@@ -23,6 +23,8 @@ import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type {
+  PipelineCommission,
+  PipelineCommissionId,
   PipelineLaunchRuntime,
   PipelineProviderId,
   PipelineRun,
@@ -2077,6 +2079,8 @@ export interface Task {
    * lifecycle. The daemon settles the task from the provider projection instead.
    */
   pipelineRun: PipelineRunLink | null;
+  /** Stable Mission Control-owned lifecycle identity. Null until Phase 3 activates it. */
+  pipelineCommissionId?: PipelineCommissionId | null;
   /**
    * Provider-owned authoring worktree reported by a managed Pipeline host.
    *
@@ -2241,6 +2245,8 @@ export interface TaskSummary {
   outcomeUrl: string | null;
   /** The provider run this task owns, separate from process-owned `Session.pipeline`. */
   pipelineRun: PipelineRunLink | null;
+  /** The durable authoring-to-shipment lifecycle this task owns, when commissioned. */
+  pipelineCommissionId?: PipelineCommissionId | null;
   /**
    * Schedule provenance, carried through to the session card. Same three fields as
    * `Task`, and null together for the same reasons.
@@ -2929,6 +2935,11 @@ export type ServerEvent =
        */
       pipelineRuns: PipelineRun[];
       /**
+       * Active Pipeline commissions only. Bounded by active task retention, with historical
+       * events kept out of the wire in the capped commission ledger.
+       */
+      pipelineCommissions?: PipelineCommission[];
+      /**
        * Every line-comment thread the daemon holds for a session it still knows about.
        *
        * BOUNDED BY LIVE SESSIONS, not by history. A thread belongs to exactly one session
@@ -3046,6 +3057,8 @@ export type ServerEvent =
    * tick for a fleet where nothing is happening.
    */
   | { type: "pipeline_upsert"; run: PipelineRun }
+  | { type: "pipeline_commission_upsert"; commission: PipelineCommission }
+  | { type: "pipeline_commission_remove"; id: PipelineCommissionId }
   /**
    * A run left the projection: its worktree is gone, or its repository's consent was
    * withdrawn. Keyed rather than carrying the run, because there is nothing left to carry.

@@ -4,8 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
-import type { PipelineRun } from "../src/shared/pipeline.ts";
-import { PIPELINE_STEPS, pipelineRunKeyOf } from "../src/shared/pipeline.ts";
+import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
+import {
+  ENGINEER_STEP_NAMES,
+  PIPELINE_STEPS,
+  pipelineCommissionKey,
+  pipelineRunKeyOf,
+} from "../src/shared/pipeline.ts";
 
 // What is at stake: the pipeline projection is SSE state, not a second polling subsystem. A
 // reconnect snapshot and the incremental stream have to converge on the same set, and the
@@ -49,12 +54,106 @@ function run(over: Partial<PipelineRun> = {}): PipelineRun {
   };
 }
 
+function commission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "task-1",
+    provider: "ai-conductor",
+    repoRoot: "/repo/demo",
+    correlationId: "correlation-1",
+    lifecycle: "authoring",
+    attempts: [
+      {
+        attempt: 1,
+        launchKey: "launch-1",
+        engineerRunId: "engineer-1",
+        previousEngineerRunId: null,
+        providerRevision: 12,
+        state: "authoring",
+        terminalReason: null,
+        updatedAt: 1_700_000_000_000,
+      },
+    ],
+    activeAttempt: 1,
+    steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "pending" })),
+    currentStep: "architecture_review",
+    tier: "M",
+    track: "product",
+    project: "mission-control",
+    authoringWorktree: "/repo/demo/.worktrees/spec",
+    handoff: null,
+    linkedRun: null,
+    error: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...over,
+  };
+}
+
 test("an untouched fleet carries an empty collection, not an absent one", () => {
   // The shipped state, and the one every existing surface has to keep behaving under: an
   // array the browser holds and never renders. An absent field would make a build without
   // this feature and a fleet with nothing enabled indistinguishable on the wire.
   db.exec("DELETE FROM pipeline_runs");
-  assert.deepEqual(new Registry().snapshot().pipelineRuns, []);
+  const snapshot = new Registry().snapshot();
+  assert.deepEqual(snapshot.pipelineRuns, []);
+  assert.deepEqual(snapshot.pipelineCommissions, []);
+});
+
+test("commission snapshot, upsert and remove converge and support server-owned joins", () => {
+  const registry = new Registry();
+  const events: ServerEvent[] = [];
+  const unsubscribe = registry.subscribe((event) => events.push(event));
+  registry.upsertPipelineCommission(commission());
+  registry.upsertPipelineCommission(commission({ lifecycle: "awaiting_spec_merge" }));
+  unsubscribe();
+
+  const opening = registry.snapshot().pipelineCommissions;
+  assert.equal(registry.pipelineCommission("commission-1")?.taskId, "task-1");
+  assert.equal(registry.pipelineCommissionForTask("task-1")?.id, "commission-1");
+  assert.equal(registry.pipelineCommissionForRun(run()), null);
+  assert.deepEqual(events.map((event) => event.type), [
+    "pipeline_commission_upsert",
+    "pipeline_commission_upsert",
+  ]);
+
+  const reduced = new Map(opening.map((entry) => [pipelineCommissionKey(entry.id), entry]));
+  const removeEvents: ServerEvent[] = [];
+  const stop = registry.subscribe((event) => removeEvents.push(event));
+  registry.removePipelineCommission("commission-1");
+  registry.removePipelineCommission("commission-1");
+  stop();
+  for (const event of removeEvents) {
+    if (event.type === "pipeline_commission_remove") {
+      reduced.delete(pipelineCommissionKey(event.id));
+    }
+  }
+  assert.deepEqual(removeEvents.map((event) => event.type), ["pipeline_commission_remove"]);
+  assert.deepEqual([...reduced.values()], registry.snapshot().pipelineCommissions);
+});
+
+test("one commission projection stays bounded on the reconnect snapshot", () => {
+  const registry = new Registry();
+  registry.upsertPipelineCommission(
+    commission({
+      error: "x".repeat(400),
+      handoff: {
+        planSlug: "2026-08-28-a-realistic-feature-plan-stem",
+        branch: "spec/2026-08-28-a-realistic-feature-plan-stem",
+        prUrl: "https://github.com/acme/a-fairly-long-repository-name/pull/1234",
+        outcome: "pr_opened",
+      },
+      linkedRun: {
+        provider: "ai-conductor",
+        repoRoot: "/repo/demo",
+        slug: "2026-08-28-a-realistic-feature-plan-stem",
+      },
+    }),
+  );
+  const bytes = new TextEncoder().encode(
+    JSON.stringify(registry.snapshot().pipelineCommissions),
+  ).byteLength;
+  assert.ok(bytes < 4_096, `one commission is ${bytes} bytes on the reconnect snapshot`);
 });
 
 test("snapshot, upsert and remove converge on one catalog, keyed not sequenced", () => {
@@ -126,6 +225,8 @@ test("the browser handles both frames, keys them by the engine's identity, and p
   );
   assert.match(source, /case "pipeline_upsert":/);
   assert.match(source, /case "pipeline_remove":/);
+  assert.match(source, /case "pipeline_commission_upsert":/);
+  assert.match(source, /case "pipeline_commission_remove":/);
   // Keyed through the SHARED helper rather than an inline template, so the browser and the
   // daemon cannot come to disagree about what identifies a run.
   assert.match(source, /setPipelineRuns\(\(prev\) => new Map\(prev\)\.set\(pipelineRunKeyOf\(msg\.run\), msg\.run\)\)/);
@@ -197,4 +298,6 @@ test("pipeline frames are deliberately not Line inputs", () => {
   assert.ok(block.length > 0, "LINE_INPUT_EVENTS should still be a literal Set");
   assert.equal(/"pipeline_upsert"/.test(block), false);
   assert.equal(/"pipeline_remove"/.test(block), false);
+  assert.equal(/"pipeline_commission_upsert"/.test(block), false);
+  assert.equal(/"pipeline_commission_remove"/.test(block), false);
 });

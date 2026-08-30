@@ -3550,7 +3550,8 @@ export function buildApp(
     // characters costs up to three times what `String.length` reports, and non-ASCII is
     // ordinary here (step names, branch names, commit subjects all reach this stream).
     if (Buffer.byteLength(body, "utf8") > MAX_INGEST_BYTES) return tooLarge();
-    const { counts, touched } = ingestConductorEvents(body);
+    const { counts, touched, commissions } = ingestConductorEvents(body);
+    for (const commission of commissions) registry.upsertPipelineCommission(commission);
     // Then fold the repositories it named, a tick early. See `schedulePipelineRefresh`.
     if (touched.length > 0) schedulePipelineRefresh(registry, touched);
     return c.json(counts);

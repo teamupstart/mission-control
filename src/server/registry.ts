@@ -49,8 +49,12 @@ import type { MissionSchedule } from "@shared/schedules.ts";
 import {
   pipelineRunKey,
   pipelineRunKeyOf,
+  pipelineCommissionKey,
+  type PipelineCommission,
+  type PipelineCommissionId,
   type PipelineProviderId,
   type PipelineRun,
+  type PipelineRunLink,
   type SessionPipelineLink,
 } from "@shared/pipeline.ts";
 import type {
@@ -707,6 +711,8 @@ export class Registry extends EventEmitter {
    * anywhere - it is empty and stays empty.
    */
   private pipelineRuns = new Map<string, PipelineRun>();
+  /** Active task-owned lifecycle projections, loaded from SQLite before serving traffic. */
+  private pipelineCommissions = new Map<string, PipelineCommission>();
   /**
    * Live line-comment threads, keyed by id.
    *
@@ -994,6 +1000,7 @@ export class Registry extends EventEmitter {
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
     pipelineRuns: PipelineRun[];
+    pipelineCommissions: PipelineCommission[];
     fileCommentThreads: FileCommentThread[];
     fileCommentReviews: FileCommentReview[];
     fleetCost: FleetCost | null;
@@ -1018,6 +1025,8 @@ export class Registry extends EventEmitter {
       // first pass is already right rather than blank for one tick. Empty on every fleet
       // that has enabled no pipeline repository.
       pipelineRuns: [...this.pipelineRuns.values()],
+      // Bounded by active task retention. Event bodies remain in the capped SQLite ledger.
+      pipelineCommissions: [...this.pipelineCommissions.values()],
       // Seeded from SQLite at boot for `pipelineRuns`' reason: a dashboard reconnecting
       // after a restart must be handed the queue it was looking at, not a blank gutter
       // until something happens to move a thread.
@@ -1758,6 +1767,46 @@ export class Registry extends EventEmitter {
 
   listPipelineRuns(): PipelineRun[] {
     return [...this.pipelineRuns.values()];
+  }
+
+  listPipelineCommissions(): PipelineCommission[] {
+    return [...this.pipelineCommissions.values()];
+  }
+
+  pipelineCommission(id: PipelineCommissionId): PipelineCommission | null {
+    return this.pipelineCommissions.get(pipelineCommissionKey(id)) ?? null;
+  }
+
+  pipelineCommissionForTask(taskId: string): PipelineCommission | null {
+    return [...this.pipelineCommissions.values()].find(
+      (commission) => commission.taskId === taskId,
+    ) ?? null;
+  }
+
+  pipelineCommissionForRun(run: PipelineRunLink): PipelineCommission | null {
+    const key = pipelineRunKeyOf(run);
+    return [...this.pipelineCommissions.values()].find(
+      (commission) => commission.linkedRun && pipelineRunKeyOf(commission.linkedRun) === key,
+    ) ?? null;
+  }
+
+  initializePipelineCommissions(commissions: readonly PipelineCommission[]): void {
+    this.pipelineCommissions = new Map(
+      commissions.map((commission) => [pipelineCommissionKey(commission.id), commission]),
+    );
+  }
+
+  upsertPipelineCommission(commission: PipelineCommission): void {
+    const key = pipelineCommissionKey(commission.id);
+    const previous = this.pipelineCommissions.get(key);
+    this.pipelineCommissions.set(key, commission);
+    if (previous && JSON.stringify(previous) === JSON.stringify(commission)) return;
+    this.emitEvent({ type: "pipeline_commission_upsert", commission });
+  }
+
+  removePipelineCommission(id: PipelineCommissionId): void {
+    if (!this.pipelineCommissions.delete(pipelineCommissionKey(id))) return;
+    this.emitEvent({ type: "pipeline_commission_remove", id });
   }
 
   /**
@@ -6128,6 +6177,7 @@ export class Registry extends EventEmitter {
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,
           pipelineRun: t.pipelineRun,
+          pipelineCommissionId: t.pipelineCommissionId ?? null,
           scheduleId: t.scheduleId,
           scheduleOccurrenceId: t.scheduleOccurrenceId,
           scheduledFor: t.scheduledFor,

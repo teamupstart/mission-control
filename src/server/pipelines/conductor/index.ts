@@ -21,6 +21,7 @@ import type {
 import { conductorConsoleArgv, runConductorControl } from "./control.ts";
 import { normalizeConductorRun } from "./normalize.ts";
 import { conductorBin, probeConductor } from "./probe.ts";
+import { CONDUCTOR_ENGINEER_LIFECYCLE } from "./engineer.ts";
 import { registerConductorRepo } from "./register.ts";
 import {
   conductorInstallerCandidates,
@@ -392,6 +393,7 @@ async function conductorTask(
 
 export const CONDUCTOR_PROVIDER: PipelineProvider = {
   provider: "ai-conductor",
+  engineerLifecycle: CONDUCTOR_ENGINEER_LIFECYCLE,
   binForPresence: conductorBin,
   probe: probeConductor,
   registerRepo: registerConductorRepo,

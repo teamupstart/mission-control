@@ -11,6 +11,7 @@ import {
   type PipelineAction,
   type PipelineActionResult,
   type PipelineConsole,
+  type PipelineCommission,
   type PipelineInstallerCandidate,
   type PipelineInstallerCandidatesResult,
   type PipelineProbe,
@@ -32,11 +33,14 @@ import {
   deletePipelineRunRow,
   deletePipelineRunsForRepo,
   loadPipelineRuns,
+  loadPipelineCommissions,
+  getPipelineCommission,
   pipelineEventCursors,
   pipelineEventSlugs,
   pipelineStoredRepos,
   recordPipelineUsage,
   upsertPipelineRunRow,
+  upsertPipelineCommissionAttempt,
 } from "../db.ts";
 import { unref } from "../util/timers.ts";
 import { getPipelinesConfig } from "./config.ts";
@@ -48,6 +52,7 @@ import {
   type PipelineIngestTouch,
 } from "./ingest.ts";
 import { PIPELINE_PROVIDERS } from "./providers.ts";
+import { applyEngineerEvent } from "./commissions.ts";
 import type {
   PipelineConsoleTarget,
   PipelineControlTarget,
@@ -713,6 +718,9 @@ export async function pipelineInstallerLaunch(
  */
 export interface PipelineProjectionSink {
   initializePipelineRuns(runs: readonly PipelineRun[]): void;
+  initializePipelineCommissions(commissions: readonly PipelineCommission[]): void;
+  listPipelineCommissions(): PipelineCommission[];
+  upsertPipelineCommission(commission: PipelineCommission): void;
   upsertPipelineRun(run: PipelineRun): void;
   removePipelineRun(provider: PipelineProviderId, repoRoot: string, slug: string): void;
   /**
@@ -767,6 +775,7 @@ export function restorePipelineProjection(sink: PipelineProjectionSink): void {
     }
   }
   sink.initializePipelineRuns(rows.map((row) => row.run));
+  sink.initializePipelineCommissions(loadPipelineCommissions());
 }
 
 /**
@@ -1202,6 +1211,83 @@ export function reconcilePipelineConsent(sink: PipelineProjectionSink): void {
   for (const key of stale) statuses.delete(key);
 }
 
+function replayError(
+  sink: PipelineProjectionSink,
+  commission: PipelineCommission,
+  detail: string | null,
+): void {
+  // Replay crosses an await boundary. A live push may have advanced the durable cursor while
+  // the provider command was running, so errors must decorate the latest projection rather
+  // than write the caller's stale snapshot back over it.
+  const held = getPipelineCommission(commission.id) ?? commission;
+  const attempt = held.attempts.find(
+    (entry) => entry.attempt === held.activeAttempt,
+  );
+  if (!attempt) return;
+  const priorIsReplay = held.error?.startsWith("Engineer replay: ") ?? false;
+  if (detail !== null && held.error !== null && !priorIsReplay) return;
+  const error = detail === null ? (priorIsReplay ? null : held.error) : `Engineer replay: ${detail.slice(0, 400)}`;
+  if (error === held.error) return;
+  const next = { ...held, error, updatedAt: Date.now() };
+  upsertPipelineCommissionAttempt(next, attempt);
+  sink.upsertPipelineCommission(next);
+}
+
+/** Reconcile one exact active Engineer run through the provider's sanctioned replay command. */
+export async function refreshPipelineCommission(
+  sink: PipelineProjectionSink,
+  commission: PipelineCommission,
+): Promise<void> {
+  if (["cancelled", "settled"].includes(commission.lifecycle)) return;
+  const attempt = commission.attempts.find(
+    (entry) => entry.attempt === commission.activeAttempt,
+  );
+  if (!attempt?.engineerRunId || ["cancelled", "failed", "settled"].includes(attempt.state)) {
+    return;
+  }
+  const consented = activePipelineRepos(getPipelinesConfig()).some(
+    (repo) => repo.provider === commission.provider && repo.repoRoot === commission.repoRoot,
+  );
+  if (!consented) return;
+  const lifecycle = PIPELINE_PROVIDERS[commission.provider].engineerLifecycle;
+  if (!lifecycle) {
+    replayError(sink, commission, "provider does not expose Engineer lifecycle replay");
+    return;
+  }
+  const capability = await lifecycle.capability();
+  if (!capability.ok || !capability.value.supported) {
+    replayError(
+      sink,
+      commission,
+      capability.ok ? "provider does not advertise engineerLifecycleEventsV1" : capability.error,
+    );
+    return;
+  }
+  const replay = await lifecycle.replay({
+    engineerRunId: attempt.engineerRunId,
+    afterRevision: attempt.providerRevision,
+  });
+  if (!replay.ok) {
+    replayError(sink, commission, replay.error);
+    return;
+  }
+  let latest = commission;
+  for (const event of replay.value) {
+    const applied = applyEngineerEvent(event);
+    if (applied.outcome === "stored" && applied.commission) {
+      latest = applied.commission;
+      sink.upsertPipelineCommission(applied.commission);
+      continue;
+    }
+    // A live push can win while replay is in flight. Its duplicate or stale event is already
+    // represented durably, so continue to later revisions rather than restarting the pass.
+    if (applied.outcome === "duplicate" || applied.outcome === "stale") continue;
+    replayError(sink, latest, `refused ${event.type} (${applied.outcome})`);
+    return;
+  }
+  replayError(sink, latest, null);
+}
+
 /**
  * Keep the projection current.
  *
@@ -1239,6 +1325,18 @@ export function startPipelineWatcher(sink: PipelineProjectionSink): () => void {
           } catch (err) {
             console.error(`[pipelines] ${repo.provider} ${repo.repoRoot} pass failed:`, err);
           }
+        }
+      }
+      for (const commission of sink.listPipelineCommissions()) {
+        if (stopped) break;
+        try {
+          await refreshPipelineCommission(sink, commission);
+        } catch (err) {
+          replayError(
+            sink,
+            commission,
+            err instanceof Error ? err.message : String(err),
+          );
         }
       }
     } catch (err) {

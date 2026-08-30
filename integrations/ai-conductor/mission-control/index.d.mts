@@ -14,7 +14,8 @@ export interface MissionControlRun {
 }
 
 /**
- * The event kinds this build subscribes to, frozen at ai-conductor 0.104.0 (`1631544a`).
+ * The implementation-run event kinds this build subscribes to are frozen at ai-conductor
+ * 0.104.0 (`1631544a`); the additive Engineer kinds are frozen at Phase 1 (`8685e121`).
  *
  * Enumerated because conductor's event bus has no wildcard subscription.
  */
@@ -32,6 +33,21 @@ export declare function resolveRun(
   cwd: string,
   event?: Record<string, unknown> | null,
 ): MissionControlRun | null;
+
+export interface MissionControlEngineerEnvelope {
+  repo: string;
+  seq: number;
+  event: Record<string, unknown>;
+  engineerRunId: string;
+  correlationId: string | null;
+  engineerAttempt: number;
+  attemptKey: string;
+}
+
+/** Additive Engineer identity that never invents an implementation slug or worktree. */
+export declare function engineerEnvelope(
+  event?: Record<string, unknown> | null,
+): MissionControlEngineerEnvelope | null;
 
 /** How a caller may override what the plugin would otherwise resolve for itself. */
 export interface MissionControlVisualizerOptions {

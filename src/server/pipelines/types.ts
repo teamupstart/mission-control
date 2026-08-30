@@ -1,4 +1,7 @@
 import type {
+  EngineerLifecycleEvent,
+  UnknownEngineerLifecycleEvent,
+  PipelineCommissionAttemptState,
   PipelineAction,
   PipelineActionResult,
   PipelineConsole,
@@ -126,6 +129,47 @@ export interface PipelineReadOptions {
   shouldTail?: (slug: string) => boolean;
 }
 
+export interface PipelineEngineerRunSnapshot {
+  schemaVersion: 1;
+  capability: "engineerLifecycleEventsV1";
+  engineerRunId: string;
+  correlationId: string | null;
+  attemptKey: string;
+  attempt: number;
+  previousEngineerRunId: string | null;
+  repoRoot: string;
+  idea: string;
+  eventRevision: number;
+  state: Exclude<PipelineCommissionAttemptState, "reserved">;
+}
+
+export type PipelineEngineerResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; outcomeUnknown: boolean };
+
+/** Optional provider-sanctioned Engineer lifecycle surface. Dispatch remains inactive in Phase 2. */
+export interface PipelineEngineerLifecycle {
+  capability(): Promise<PipelineEngineerResult<{ supported: boolean }>>;
+  create(input: {
+    repoRoot: string;
+    idea: string;
+    correlationId: string;
+    attemptKey: string;
+  }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>>;
+  inspectCorrelation(input: {
+    repoRoot: string;
+    correlationId: string;
+  }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot[]>>;
+  replay(input: {
+    engineerRunId: string;
+    afterRevision: number;
+  }): Promise<PipelineEngineerResult<Array<EngineerLifecycleEvent | UnknownEngineerLifecycleEvent>>>;
+  cancel(input: {
+    engineerRunId: string;
+    reason: string;
+  }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>>;
+}
+
 /**
  * What a pipeline provider must be able to do.
  *
@@ -136,6 +180,8 @@ export interface PipelineReadOptions {
  */
 export interface PipelineProvider {
   provider: PipelineProviderId;
+  /** Generic authoring lifecycle, when the provider advertises the complete v1 contract. */
+  engineerLifecycle?: PipelineEngineerLifecycle;
   /**
    * The command whose mere PRESENCE on `PATH` means this engine is installed, after the
    * operator's env override.

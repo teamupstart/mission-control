@@ -6,6 +6,7 @@ import {
   pipelineRunKey,
   type PipelineIngestState,
   type PipelineProviderId,
+  type PipelineCommission,
 } from "@shared/pipeline.ts";
 import {
   ConductorIngestEnvelopeSchema,
@@ -16,6 +17,12 @@ import { envVar } from "../config.ts";
 import { appendPipelineEvents, type PipelineEventInput } from "../db.ts";
 import { getPipelinesConfig } from "./config.ts";
 import { PIPELINE_PROVIDERS } from "./providers.ts";
+import {
+  applyEngineerEvent,
+  applyUnsupportedEngineerEvent,
+  engineerEnvelopeMatchesEvent,
+  parseEngineerEvent,
+} from "./commissions.ts";
 
 // Pushed pipeline events: the ingest half of observation.
 //
@@ -40,10 +47,10 @@ import { PIPELINE_PROVIDERS } from "./providers.ts";
 //    arrives twice, out of order, or in a shape this build has never seen costs a row and
 //    changes no number. That is what lets the envelope be tolerant enough to survive a
 //    conductor release nobody here has read.
-//  - **It ships dormant.** ai-conductor does not start registered visualizer plugins yet
-//    (the companion phase in that repository wires it), so on every machine today this
-//    module's state is "never seen" and the tail carries observation exactly as it did
-//    before. Nothing about the tail's correctness is conditional on that changing.
+//  - **Engineer projection ships dormant.** The provider now starts registered visualizer
+//    plugins, but Mission Control does not create commission rows from Pipeline dispatch in
+//    this phase. Existing implementation events keep their file-backed projection contract,
+//    and nothing about the tail's correctness is conditional on plugin delivery.
 
 /**
  * How long after a push a worktree still counts as live.
@@ -145,6 +152,8 @@ export interface PipelineIngestTouch {
 export interface PipelineIngestResult {
   counts: ConductorIngestOutcome;
   touched: PipelineIngestTouch[];
+  /** Whole durable projections changed by Engineer lines in this batch, deduplicated by id. */
+  commissions: PipelineCommission[];
 }
 
 /**
@@ -186,6 +195,10 @@ let warnedMalformed = 0;
 
 /** How many bounded warnings this process will print about malformed ingest. */
 const MAX_MALFORMED_WARNINGS = 3;
+
+/** Unexpected storage failures are isolated per line, but remain visible in bounded logs. */
+let warnedEngineerFailures = 0;
+const MAX_ENGINEER_FAILURE_WARNINGS = 3;
 
 /**
  * Take one NDJSON batch, store what is new, and say which runs moved.
@@ -232,6 +245,7 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
     string,
     { touch: PipelineIngestTouch; events: PipelineEventInput[] }
   >();
+  const commissions = new Map<string, PipelineCommission>();
 
   const lines = body.split("\n");
   for (const line of lines) {
@@ -261,6 +275,79 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
     const match = consented.get(resolved(envelope.data.repo));
     if (!match) {
       counts.unconsented += 1;
+      continue;
+    }
+    const rawType = envelope.data.event.type;
+    const engineerScoped =
+      typeof rawType === "string" && rawType.startsWith("engineer_");
+    if (engineerScoped) {
+      const parsedEvent = parseEngineerEvent(envelope.data.event);
+      const rawEngineer = envelope.data.event as Record<string, unknown>;
+      const unsupportedSchema =
+        !parsedEvent.ok &&
+        Number.isInteger(rawEngineer.schemaVersion) &&
+        rawEngineer.schemaVersion !== 1;
+      if (
+        envelope.data.engineerRunId === undefined ||
+        envelope.data.correlationId === undefined ||
+        envelope.data.engineerAttempt === undefined ||
+        envelope.data.attemptKey === undefined ||
+        (!parsedEvent.ok && !unsupportedSchema)
+      ) {
+        counts.malformed += 1;
+        continue;
+      }
+      const identity = parsedEvent.ok ? parsedEvent.event : rawEngineer;
+      if (
+        typeof identity.repoRoot !== "string" ||
+        typeof identity.engineerRunId !== "string" ||
+        !(typeof identity.correlationId === "string" || identity.correlationId === null) ||
+        !Number.isInteger(identity.attempt) ||
+        typeof identity.attemptKey !== "string" ||
+        !engineerEnvelopeMatchesEvent(envelope.data, {
+          repoRoot: identity.repoRoot,
+          engineerRunId: identity.engineerRunId,
+          correlationId: identity.correlationId,
+          attempt: Number(identity.attempt),
+          attemptKey: identity.attemptKey,
+        })
+      ) {
+        counts.malformed += 1;
+        continue;
+      }
+      let applied: ReturnType<typeof applyEngineerEvent>;
+      try {
+        applied = parsedEvent.ok
+          ? applyEngineerEvent(parsedEvent.event, now)
+          : applyUnsupportedEngineerEvent(rawEngineer, now);
+      } catch (err) {
+        counts.malformed += 1;
+        if (warnedEngineerFailures < MAX_ENGINEER_FAILURE_WARNINGS) {
+          warnedEngineerFailures += 1;
+          const detail = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[pipelines] Engineer ingest item failed internally: ${detail.slice(0, 400)}` +
+              (warnedEngineerFailures === MAX_ENGINEER_FAILURE_WARNINGS
+                ? " (further warnings suppressed)"
+                : ""),
+          );
+        }
+        continue;
+      }
+      if (applied.outcome === "stored" && applied.commission) {
+        counts.stored += 1;
+        commissions.set(applied.commission.id, applied.commission);
+        lastIngestAtRepo.set(pipelineRepoKey(match.provider, match.repoRoot), now);
+      } else if (applied.outcome === "duplicate") {
+        counts.duplicate += 1;
+        lastIngestAtRepo.set(pipelineRepoKey(match.provider, match.repoRoot), now);
+      } else {
+        counts.malformed += 1;
+      }
+      continue;
+    }
+    if (!envelope.data.slug || !envelope.data.worktree) {
+      counts.malformed += 1;
       continue;
     }
     // Counted as malformed rather than given a state of its own. The envelope is well
@@ -317,11 +404,15 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
   if (counts.malformed > 0 && warnedMalformed < MAX_MALFORMED_WARNINGS) {
     warnedMalformed += 1;
     console.warn(
-      `[pipelines] dropped ${counts.malformed} malformed ingest line(s); the file tail still` +
-        ` covers those events` +
+      `[pipelines] dropped ${counts.malformed} malformed ingest line(s); inspect the response` +
+        ` counts and provider replay health` +
         (warnedMalformed === MAX_MALFORMED_WARNINGS ? " (further warnings suppressed)" : ""),
     );
   }
 
-  return { counts, touched: [...byRun.values()].map((group) => group.touch) };
+  return {
+    counts,
+    touched: [...byRun.values()].map((group) => group.touch),
+    commissions: [...commissions.values()],
+  };
 }

@@ -51,6 +51,11 @@ export type RecoveryOperations = {
   verifyApp(home: string, bundleId: string): string | Promise<string>;
   appIsRunning(appPath: string, bundleId: string): boolean | Promise<boolean>;
   quitApp(appPath: string, bundleId: string): unknown | Promise<unknown>;
+  daemonBelongsToApp(
+    daemonPid: number,
+    appPath: string,
+    bundleId: string,
+  ): boolean | Promise<boolean>;
   identifyDaemon(home: string): DaemonHealth | null | Promise<DaemonHealth | null>;
   signalDaemon(pid: number): unknown;
   tryAcquireLock(home: string): { release(): void } | null;
@@ -109,6 +114,11 @@ export function prepareCandidate(candidatePath: string, home: string): {
   cleanup(): void;
 };
 export function identifyLiveDaemon(home: string): Promise<DaemonHealth | null>;
+export function processDescendsFrom(
+  descendantPid: number,
+  ancestorPid: number,
+  parentPidFor?: (pid: number) => number | null,
+): boolean;
 export function recoveryStateLockAddonPath(moduleUrl?: string): string;
 export function realRecoveryOperations(): RecoveryOperations;
 export function runDatabaseRecovery(

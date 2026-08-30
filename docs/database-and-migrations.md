@@ -17,6 +17,12 @@ The practical implication is that a schema change is not just a new-table change
 also open safely against an operator's existing database. Keep the migration beside the
 schema and create dependent indexes only after the columns exist.
 
+## Full-database recovery points
+
+Mission Control creates verified recovery points for normal operation and schema upgrades. See
+[Backup and restore](sqlite-database.html#backup) in the database field guide for the authoritative
+backup, retention, validation, failure-handling, and offline-restore procedure.
+
 ## Recovering the product database
 
 Use the supported recovery command from a current Mission Control checkout. Pass the absolute
@@ -29,9 +35,9 @@ npm run recover:database -- /absolute/path/to/backup/harness.db
 The command requires the managed-install receipt and verifies that its app bundle has the exact
 identifier `com.mission-control.app`. It stages and validates a copy with SQLite `quick_check` and
 `foreign_key_check` before disturbing the app. It then discovers the current daemon from fresh
-`daemon.lock` metadata plus `/api/health`, quits and relaunches the app by bundle identifier, and
-signals only a PID that both sources currently identify. It does not inspect or infer a launchd
-configuration.
+`daemon.lock` metadata plus `/api/health`, proves that daemon is a descendant of the exact
+receipt-verified app process, and signals only that freshly re-identified PID after asking the app
+to quit. It does not inspect or infer a launchd configuration.
 
 Recovery waits for the daemon to close SQLite and release the kernel-held state lock, then holds
 that same lock while it snapshots and replaces the database. This is the only supported offline
@@ -42,10 +48,10 @@ released for the relaunched app. A bounded ledger under
 `$MISSION_HOME/database-recovery/` prevents the same successfully applied candidate from being
 applied twice, permits a byte-identical retry after a failed attempt rolled back, and keeps rollback
 material for the five most recent recoveries. The command attempts one app launch and reports the
-dynamically observed daemon PID, port, and version only after health succeeds. A failed install or
-relaunch restores the prior files without launching a second time. A later rollback-retention or
-ledger-cleanup failure is reported as a warning and never reverts a database whose health was
-already confirmed.
+dynamically observed daemon PID, port, and version only after health succeeds. A failed install
+restores the prior files, relaunches the app once, and confirms health. A failed relaunch restores
+the prior files without launching a second time. A later rollback-retention or ledger-cleanup
+failure is reported as a warning and never reverts a database whose health was already confirmed.
 
 To deliberately restore the retained pre-recovery snapshot, use the recovery id printed by the
 first command. Rollback goes through the same validation, stop proof, one-launch, and health path.

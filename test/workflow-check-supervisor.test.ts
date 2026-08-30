@@ -249,14 +249,14 @@ test("the identity survives the gate release - the regression an exec-ing shim w
  * not what the cases below mean to exercise.
  *
  * Which branch a case takes is therefore decided by how long `node` takes to start. That is a
- * few hundred milliseconds idle and more than five seconds on a machine running the whole
- * suite, so a short budget here is not a test of the supervisor at all - it is a test of the
- * load average. Both 300ms and 3s have failed this way under full-suite contention: the gate had
- * not opened, so the command never wrote its synchronization file. Ten seconds is one heavily
- * loaded `node` start plus room, because every case below needs the command to reach its
- * timeout WITH the gate open.
+ * few hundred milliseconds idle and several seconds on a machine running the whole suite, so
+ * a short budget here is not a test of the supervisor at all - it is a test of the load
+ * average. Both 300ms and 3s have failed this way under full-suite contention, and a concurrent
+ * full-suite run measured native Node fixture startup at nearly five seconds. Fifteen seconds
+ * stays well above that observed floor while remaining bounded. Every case below needs the
+ * command to reach its timeout WITH the gate open.
  */
-const COMMAND_TIMEOUT_MS = 10_000;
+const COMMAND_TIMEOUT_MS = 15_000;
 
 test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", async () => {
   const dir = workspace();
@@ -340,7 +340,7 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   // pid file landed at ~145ms with a node grandchild and ~84ms with this one, the residual
   // being the supervisor's own shim, which is the thing under test and cannot be avoided. So
   // shell removes the ~60ms that was avoidable, and the budget carries the rest. Full-suite
-  // contention has stretched a 3s budget past breaking, so this case shares the same 10s
+  // contention has stretched a 3s budget past breaking, so this case shares the same
   // supervisor-start floor as the other timeout cases above. Otherwise it tests scheduler
   // load instead of the SIGTERM-to-SIGKILL escalation it exists to prove.
   writeFileSync(

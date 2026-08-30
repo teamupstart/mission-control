@@ -397,29 +397,61 @@ const exactProductAppScript = `on run argv
         if (bundle identifier of candidate) is expectedBundleId then
           set candidatePath to POSIX path of (application file of candidate as alias)
           if candidatePath is expectedPath or candidatePath is expectedPathWithSlash then
+            set candidatePid to unix id of candidate
             if requestedAction is "quit" then tell candidate to quit
-            return true
+            return candidatePid
           end if
         end if
       end try
     end repeat
   end tell
-  return false
+  return 0
 end run`;
 
 function exactProductApp(action, appPath, bundleId) {
-  return run("/usr/bin/osascript", ["-e", exactProductAppScript, action, appPath, bundleId])
-    .toLowerCase() === "true";
+  const pid = Number(
+    run("/usr/bin/osascript", ["-e", exactProductAppScript, action, appPath, bundleId]),
+  );
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function appIsRunning(appPath, bundleId) {
-  return exactProductApp("running", appPath, bundleId);
+  return exactProductApp("running", appPath, bundleId) !== null;
 }
 
 function quitProductApp(appPath, bundleId) {
-  if (!exactProductApp("quit", appPath, bundleId)) {
+  if (exactProductApp("quit", appPath, bundleId) === null) {
     throw new Error("the receipt-verified product app stopped before the quit request");
   }
+}
+
+function systemParentPid(pid) {
+  const output = run("/bin/ps", ["-o", "ppid=", "-p", String(pid)]);
+  const parentPid = Number(output.trim());
+  return Number.isInteger(parentPid) && parentPid > 0 ? parentPid : null;
+}
+
+export function processDescendsFrom(
+  descendantPid,
+  ancestorPid,
+  parentPidFor = systemParentPid,
+) {
+  let currentPid = descendantPid;
+  const seen = new Set();
+  while (currentPid > 1 && !seen.has(currentPid)) {
+    if (currentPid === ancestorPid) return true;
+    seen.add(currentPid);
+    const parentPid = parentPidFor(currentPid);
+    if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
+    currentPid = parentPid;
+  }
+  return false;
+}
+
+function daemonBelongsToProductApp(daemonPid, appPath, bundleId) {
+  const appPid = exactProductApp("running", appPath, bundleId);
+  if (appPid === null) return false;
+  return processDescendsFrom(daemonPid, appPid);
 }
 
 function launchProductApp(appPath) {
@@ -450,6 +482,7 @@ export function realRecoveryOperations() {
     verifyApp: verifyProductApp,
     appIsRunning,
     quitApp: quitProductApp,
+    daemonBelongsToApp: daemonBelongsToProductApp,
     identifyDaemon: identifyLiveDaemon,
     signalDaemon: (pid) => {
       try {
@@ -510,14 +543,32 @@ async function acquireRecoveryLock(home, ops, timeoutMs = RECOVERY_LOCK_TIMEOUT_
   throw new Error("another database recovery did not finish before the bounded timeout");
 }
 
-async function stopAndAcquire(home, ops, verifiedAppPath, timeoutMs = STOP_TIMEOUT_MS) {
+async function stopAndAcquire(
+  home,
+  ops,
+  verifiedAppPath,
+  timeoutMs = STOP_TIMEOUT_MS,
+  onAppStopped = () => {},
+) {
   // A daemon sharing this state home is not proof that it belongs to the managed product app.
   // Only a concurrently running, receipt-verified app authorizes this flow to signal a daemon.
   const initialDaemon = await ops.identifyDaemon(home);
+  let authorizedDaemon = null;
   let quitRequested = false;
   if (await ops.appIsRunning(verifiedAppPath, APP_BUNDLE_ID)) {
+    if (
+      initialDaemon &&
+      !(await ops.daemonBelongsToApp(initialDaemon.pid, verifiedAppPath, APP_BUNDLE_ID))
+    ) {
+      throw new Error(
+        "the live daemon does not belong to the receipt-verified product app; " +
+          "refusing to quit the app or signal an unproven process",
+      );
+    }
+    authorizedDaemon = initialDaemon;
     await ops.quitApp(verifiedAppPath, APP_BUNDLE_ID);
     quitRequested = true;
+    onAppStopped();
   } else if (initialDaemon) {
     throw new Error(
       "a live daemon owns this state home but the receipt-verified product app is not running; " +
@@ -538,6 +589,17 @@ async function stopAndAcquire(home, ops, verifiedAppPath, timeoutMs = STOP_TIMEO
     if (daemon && !quitRequested) {
       throw new Error(
         "a live daemon owns this state home but the receipt-verified product app was not stopped by recovery; " +
+          "refusing to signal an unproven process",
+      );
+    }
+    if (
+      daemon &&
+      (!authorizedDaemon ||
+        daemon.pid !== authorizedDaemon.pid ||
+        daemon.port !== authorizedDaemon.port)
+    ) {
+      throw new Error(
+        "daemon ownership changed after the receipt-verified product app was stopped; " +
           "refusing to signal an unproven process",
       );
     }
@@ -699,7 +761,15 @@ export async function runDatabaseRecovery(
       );
     }
 
-    lock = await stopAndAcquire(home, recoveryOps, verifiedAppPath, stopTimeoutMs);
+    lock = await stopAndAcquire(
+      home,
+      recoveryOps,
+      verifiedAppPath,
+      stopTimeoutMs,
+      () => {
+        appStoppedByRecovery = true;
+      },
+    );
     appStoppedByRecovery = lock.quitRequested;
     // Candidate preparation and the fast duplicate check intentionally happen before stopping
     // the app. Another recovery can win while this invocation waits for daemon.lock, so reserve
@@ -823,21 +893,25 @@ export async function runDatabaseRecovery(
       warnings,
     };
   } catch (error) {
+    let reportedError = error;
     if (attempt && databaseMayHaveChanged) {
       try {
         if (lock) {
           // already stopped
         } else {
-          lock = await stopAndAcquire(home, recoveryOps, verifiedAppPath, stopTimeoutMs);
+          lock = await stopAndAcquire(
+            home,
+            recoveryOps,
+            verifiedAppPath,
+            stopTimeoutMs,
+            () => {
+              appStoppedByRecovery = true;
+            },
+          );
         }
         const rollbackDatabase = join(attempt.rollbackDirectory, DATABASE_FILE);
         restoreRollbackSnapshot(home, rollbackDatabase, attempt.databaseMode);
         databaseMayHaveChanged = false;
-        await updateAttempt(home, recoveryOps, attempt.id, {
-          status: "rolled_back",
-          finishedAt: recoveryOps.now(),
-          message: `automatic rollback after failure: ${error?.message ?? error}`,
-        });
       } catch (rollbackError) {
         try {
           await updateAttempt(home, recoveryOps, attempt.id, {
@@ -858,8 +932,20 @@ export async function runDatabaseRecovery(
           `database recovery failed and rollback also failed; preserved material is at ${attempt.rollbackDirectory}`,
         );
       }
+      try {
+        await updateAttempt(home, recoveryOps, attempt.id, {
+          status: "rolled_back",
+          finishedAt: recoveryOps.now(),
+          message: `automatic rollback after failure: ${error?.message ?? error}`,
+        });
+      } catch (ledgerError) {
+        reportedError = new AggregateError(
+          [error, ledgerError],
+          `${error?.message ?? error}; the previous database was restored, but the recovery ledger could not record the rollback`,
+        );
+      }
     }
-    if (!installationStarted && appStoppedByRecovery && !launched) {
+    if (appStoppedByRecovery && !launched) {
       lock?.release();
       lock = null;
       launched = true;
@@ -873,18 +959,23 @@ export async function runDatabaseRecovery(
         }
       } catch (relaunchError) {
         throw new AggregateError(
-          [error, relaunchError],
-          "database recovery failed before installation and Mission Control could not be restored to a healthy running state",
+          [reportedError, relaunchError],
+          installationStarted
+            ? "database recovery failed, the previous database was restored, and Mission Control could not be restored to a healthy running state"
+            : "database recovery failed before installation and Mission Control could not be restored to a healthy running state",
         );
       }
+      const databaseOutcome = installationStarted
+        ? "The previous database was restored"
+        : "No database files were changed";
       throw new Error(
-        `${error?.message ?? error}. No database files were changed; Mission Control was ` +
+        `${reportedError?.message ?? reportedError}. ${databaseOutcome}; Mission Control was ` +
           `relaunched exactly once and is healthy on dynamically discovered PID ${health.pid}, ` +
           `port ${health.port}, version ${health.version}`,
       );
     }
     const launchNote = launched ? " The app was launched exactly once and was not launched again after rollback." : "";
-    throw new Error(`${error?.message ?? error}.${launchNote}`);
+    throw new Error(`${reportedError?.message ?? reportedError}.${launchNote}`);
   } finally {
     lock?.release();
     recoveryLock?.release();

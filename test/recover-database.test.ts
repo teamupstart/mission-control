@@ -10,6 +10,7 @@ import {
   durableReplaceSqliteSet,
   durableWriteJson,
   parseArgs,
+  processDescendsFrom,
   readRecoveryLedger,
   recoveryStateLockAddonPath,
   runDatabaseRecovery,
@@ -57,6 +58,7 @@ function operations(
     healthAmbiguousOnce?: boolean;
     appRunning?: boolean;
     daemonRunning?: boolean;
+    daemonOwnedByApp?: boolean;
     runningAppPath?: string;
   } = {},
 ) {
@@ -93,6 +95,10 @@ function operations(
       }
       if (!daemonRunning || options.healthFails) return null;
       return { pid: 4242, port: 7317, version: "test" };
+    },
+    daemonBelongsToApp: async (daemonPid: number, _appPath: string, _bundleId: string) => {
+      actions.push(`prove-owner:${daemonPid}`);
+      return options.daemonOwnedByApp ?? true;
     },
     signalDaemon: (pid: number) => actions.push(`signal:${pid}`),
     tryAcquireLock: () => {
@@ -282,6 +288,20 @@ test("the recovery addon path is anchored to the script rather than the caller's
   );
 });
 
+test("daemon ownership proof follows a bounded live parent chain", () => {
+  const parents = new Map([
+    [4242, 3131],
+    [3131, 2020],
+    [9090, 8080],
+    [8080, 9090],
+  ]);
+  const parentPidFor = (pid: number) => parents.get(pid) ?? 1;
+
+  assert.equal(processDescendsFrom(4242, 2020, parentPidFor), true);
+  assert.equal(processDescendsFrom(4242, 9999, parentPidFor), false);
+  assert.equal(processDescendsFrom(9090, 2020, parentPidFor), false);
+});
+
 test("a valid candidate stops by exact bundle id, restores, launches once, and reports dynamic health", async (t) => {
   const f = fixture(t);
   const fake = operations();
@@ -332,6 +352,25 @@ test("a daemon is never signaled unless the receipt-verified product app owned t
   assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
 });
 
+test("a running verified app does not authorize signaling a daemon it does not own", async (t) => {
+  const f = fixture(t);
+  const fake = operations({ appRunning: true, daemonRunning: true, daemonOwnedByApp: false });
+
+  await assert.rejects(
+    runDatabaseRecovery(
+      { kind: "restore", candidatePath: f.candidate },
+      { home: f.home, ops: fake.ops },
+    ),
+    /daemon does not belong to the receipt-verified product app/,
+  );
+
+  assert.equal(marker(f.live), "original");
+  assert.deepEqual(readRecoveryLedger(f.home).attempts, []);
+  assert.equal(fake.actions.some((action) => action.startsWith("quit:")), false);
+  assert.equal(fake.actions.some((action) => action.startsWith("signal:")), false);
+  assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
+});
+
 test("interrupted stop times out before any database file is moved", async (t) => {
   const f = fixture(t);
   const fake = operations({ stopBlocked: true });
@@ -341,13 +380,13 @@ test("interrupted stop times out before any database file is moved", async (t) =
       { kind: "restore", candidatePath: f.candidate },
       { home: f.home, ops: fake.ops, stopTimeoutMs: 8 },
     ),
-    /did not release daemon\.lock/,
+    /did not release daemon\.lock.*No database files were changed.*relaunched exactly once.*healthy/,
   );
 
   assert.equal(marker(f.live), "original");
   assert.deepEqual(readRecoveryLedger(f.home).attempts, []);
   assert.equal(fake.actions.filter((action) => action === "signal:4242").length, 1);
-  assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
 test("an invalid candidate is rejected before stopping the app or daemon", async (t) => {
@@ -430,14 +469,14 @@ test("installed-state publication failure rolls back without relying on ledger s
         },
       },
     ),
-    /injected installed-state publication failure/,
+    /injected installed-state publication failure.*restored.*relaunched exactly once.*healthy/,
   );
 
   assert.equal(marker(f.live), "original");
   const [attempt] = readRecoveryLedger(f.home).attempts;
   assert.equal(attempt?.status, "rolled_back");
   assert.match(String(attempt?.message), /automatic rollback/);
-  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 0);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
 test("post-health bookkeeping failure warns without reverting the applied database", async (t) => {
@@ -494,7 +533,7 @@ test("an identical candidate retries after an injected install failure was rolle
     readRecoveryLedger(f.home).attempts.map((attempt) => attempt.status),
     ["rolled_back", "applied"],
   );
-  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 2);
 });
 
 test("repeat invocation is a no-op and never reapplies or relaunches", async (t) => {

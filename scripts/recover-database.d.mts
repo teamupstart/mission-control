@@ -43,6 +43,7 @@ export type RecoveryOperations = {
   signalDaemon(pid: number): unknown;
   tryAcquireLock(home: string): { release(): void } | null;
   tryAcquireLedgerLock(home: string): { release(): void } | null;
+  tryAcquireRecoveryLock(home: string): { release(): void } | null;
   sleep(ms: number): Promise<unknown>;
   launchApp(bundleId: string): unknown;
   now(): string;
@@ -66,6 +67,7 @@ export const HEALTH_TIMEOUT_MS: number;
 export const MAX_RECOVERY_ATTEMPTS: number;
 export const MAX_ROLLBACK_DIRECTORIES: number;
 export const LEDGER_LOCK_TIMEOUT_MS: number;
+export const RECOVERY_LOCK_TIMEOUT_MS: number;
 
 export function parseArgs(argv: string[]): {
   args: RecoveryRequest | null;
@@ -84,6 +86,7 @@ export function prepareCandidate(candidatePath: string, home: string): {
   cleanup(): void;
 };
 export function identifyLiveDaemon(home: string): Promise<DaemonHealth | null>;
+export function recoveryStateLockAddonPath(moduleUrl?: string): string;
 export function realRecoveryOperations(): RecoveryOperations;
 export function runDatabaseRecovery(
   request: RecoveryRequest,

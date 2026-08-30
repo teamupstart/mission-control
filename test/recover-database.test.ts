@@ -9,6 +9,7 @@ import {
   durableWriteJson,
   parseArgs,
   readRecoveryLedger,
+  recoveryStateLockAddonPath,
   runDatabaseRecovery,
 } from "../scripts/recover-database.mjs";
 import type { DurableWriteOperations } from "../scripts/recover-database.mjs";
@@ -44,13 +45,21 @@ function fixture(t: test.TestContext) {
 }
 
 function operations(
-  options: { stopBlocked?: boolean; launchFails?: boolean; healthFails?: boolean } = {},
+  options: {
+    stopBlocked?: boolean;
+    launchFails?: boolean;
+    healthFails?: boolean;
+    healthAmbiguousOnce?: boolean;
+  } = {},
 ) {
   const actions: string[] = [];
   let appRunning = true;
   let daemonRunning = true;
   let recoveryLockHeld = false;
   let ledgerLockHeld = false;
+  let recoveryOperationLockHeld = false;
+  let launched = false;
+  let healthAmbiguous = options.healthAmbiguousOnce ?? false;
   let now = 0;
   const ops = {
     verifyApp: (_home: string, bundleId: string) => actions.push(`verify:${bundleId}`),
@@ -62,6 +71,13 @@ function operations(
     },
     identifyDaemon: async () => {
       actions.push("identify");
+      if (launched && healthAmbiguous) {
+        healthAmbiguous = false;
+        actions.push("identify-ambiguous");
+        throw Object.assign(new Error("injected daemon identity mismatch"), {
+          code: "EDAEMONIDENTITY",
+        });
+      }
       if (!daemonRunning || options.healthFails) return null;
       return { pid: 4242, port: 7317, version: "test" };
     },
@@ -92,12 +108,27 @@ function operations(
         },
       };
     },
+    tryAcquireRecoveryLock: () => {
+      actions.push("recovery-acquire");
+      if (recoveryOperationLockHeld) {
+        actions.push("recovery-acquire-blocked");
+        return null;
+      }
+      recoveryOperationLockHeld = true;
+      return {
+        release: () => {
+          recoveryOperationLockHeld = false;
+          actions.push("recovery-release");
+        },
+      };
+    },
     sleep: async () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
     },
     launchApp: (bundleId: string) => {
       actions.push(`launch:${bundleId}`);
       if (options.launchFails) throw new Error("injected relaunch failure");
+      launched = true;
       appRunning = true;
       daemonRunning = !options.healthFails;
     },
@@ -156,6 +187,13 @@ test("ledger publication fsyncs the containing directory after the atomic rename
     "fsync:22",
     "close:22",
   ]);
+});
+
+test("the recovery addon path is anchored to the script rather than the caller's cwd", () => {
+  assert.equal(
+    recoveryStateLockAddonPath("file:///checkout/scripts/recover-database.mjs"),
+    "/checkout/dist/native/state-lock.node",
+  );
 });
 
 test("a valid candidate stops by exact bundle id, restores, launches once, and reports dynamic health", async (t) => {
@@ -324,15 +362,75 @@ test("concurrent identical invocations serialize to one install and one relaunch
 
   assert.ok(applied, "one invocation must win the serialized install");
   assert.ok(duplicate, "the concurrent loser must observe the winner under the lock");
-  const firstRelease = fake.actions.indexOf("release");
-  assert.ok(firstRelease > 0);
   assert.ok(
-    fake.actions.slice(0, firstRelease).filter((action) => action === "acquire").length >= 2,
-    "both invocations must clear the fast check and contend for the same lock",
+    fake.actions.includes("recovery-acquire-blocked"),
+    "the second invocation must wait without touching the app",
   );
   assert.equal(duplicate.recoveryId, applied.recoveryId);
   assert.equal(readRecoveryLedger(f.home).attempts.length, 1);
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
+  assert.equal(marker(f.live), "candidate");
+});
+
+test("a serialized duplicate relaunches once when it had to stop the healthy app", async (t) => {
+  const f = fixture(t);
+  const fake = operations();
+  const originalAppIsRunning = fake.ops.appIsRunning;
+  let appChecks = 0;
+  let announceApplied!: () => void;
+  let finishFirst!: () => void;
+  const applied = new Promise<void>((resolve) => {
+    announceApplied = resolve;
+  });
+  const finishGate = new Promise<void>((resolve) => {
+    finishFirst = resolve;
+  });
+  fake.ops.appIsRunning = async () => {
+    appChecks += 1;
+    if (appChecks === 2) await applied;
+    return originalAppIsRunning();
+  };
+  const request = { kind: "restore", candidatePath: f.candidate } as const;
+
+  const first = runDatabaseRecovery(request, {
+    home: f.home,
+    ops: fake.ops,
+    pruneRollbacks: async () => {
+      announceApplied();
+      await finishGate;
+    },
+  });
+  const legacyOps = {
+    ...fake.ops,
+    tryAcquireRecoveryLock: () => ({ release: () => undefined }),
+  };
+  const second = runDatabaseRecovery(request, { home: f.home, ops: legacyOps });
+  const duplicate = await second;
+  finishFirst();
+  const winner = await first;
+
+  assert.equal(winner.kind, "applied");
+  assert.equal(duplicate.kind, "already-applied");
+  assert.deepEqual(duplicate.health, { pid: 4242, port: 7317, version: "test" });
+  assert.match(duplicate.message, /app was relaunched once and is healthy/);
+  assert.equal(fake.actions.filter((action) => action.startsWith("quit:")).length, 2);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 2);
+  assert.equal(readRecoveryLedger(f.home).attempts.length, 1);
+  assert.equal(marker(f.live), "candidate");
+});
+
+test("relaunch health retries one transient daemon identity mismatch", async (t) => {
+  const f = fixture(t);
+  const fake = operations({ healthAmbiguousOnce: true });
+
+  const result = await runDatabaseRecovery(
+    { kind: "restore", candidatePath: f.candidate },
+    { home: f.home, ops: fake.ops },
+  );
+
+  assert.equal(result.kind, "applied");
+  assert.equal(fake.actions.filter((action) => action === "identify-ambiguous").length, 1);
+  assert.equal(readRecoveryLedger(f.home).attempts[0]?.status, "applied");
   assert.equal(marker(f.live), "candidate");
 });
 
@@ -365,7 +463,13 @@ test("different recoveries cannot lose an applied transition after daemon lock r
 
   const recoveryB = runDatabaseRecovery(
     { kind: "restore", candidatePath: candidateB },
-    { home: f.home, ops: fake.ops },
+    {
+      home: f.home,
+      ops: {
+        ...fake.ops,
+        tryAcquireRecoveryLock: () => ({ release: () => undefined }),
+      },
+    },
   );
   const deadline = Date.now() + 1_000;
   while (!fake.actions.includes("ledger-acquire-blocked") && Date.now() < deadline) {
@@ -433,4 +537,6 @@ test("candidate validation rejects foreign-key corruption before stop", async (t
     /foreign-key violation/,
   );
   assert.equal(readFileSync(f.live).length > 0, true);
+  assert.equal(fake.actions.some((action) => action.startsWith("quit:")), false);
+  assert.equal(fake.actions.includes("acquire"), false);
 });

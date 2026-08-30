@@ -35,9 +35,10 @@ configuration.
 
 Recovery waits for the daemon to close SQLite and release the kernel-held state lock, then holds
 that same lock while it snapshots and replaces the database. This is the only supported offline
-exception to the daemon-only writer boundary. A separate kernel-held ledger lock serializes every
-ledger mutation, including health and retention bookkeeping after the daemon lock is released for
-the relaunched app. A bounded ledger under
+exception to the daemon-only writer boundary. A bounded operation lock serializes complete
+recovery invocations through relaunch health, while a separate kernel-held ledger lock serializes
+every ledger mutation, including health and retention bookkeeping after the daemon lock is
+released for the relaunched app. A bounded ledger under
 `$MISSION_HOME/database-recovery/` prevents the same successfully applied candidate from being
 applied twice, permits a byte-identical retry after a failed attempt rolled back, and keeps rollback
 material for the five most recent recoveries. The command attempts one app launch and reports the

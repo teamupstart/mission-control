@@ -35,9 +35,11 @@ export const HEALTH_TIMEOUT_MS = 20_000;
 export const MAX_RECOVERY_ATTEMPTS = 100;
 export const MAX_ROLLBACK_DIRECTORIES = 5;
 export const LEDGER_LOCK_TIMEOUT_MS = 15_000;
+export const RECOVERY_LOCK_TIMEOUT_MS = 60_000;
 
 const SIDECAR_SUFFIXES = ["", "-wal", "-shm"];
 const RECOVERY_LEDGER_LOCK = "ledger.lock";
+const RECOVERY_OPERATION_LOCK = "recovery.lock";
 
 const usage = `Usage:
   npm run recover:database -- /absolute/path/to/harness.db
@@ -257,16 +259,23 @@ export async function identifyLiveDaemon(home) {
   const health = await probeHealth(owner.port);
   if (!health) return null;
   if (health.pid !== owner.pid) {
-    throw new Error(
-      `daemon identity is ambiguous: lock PID ${owner.pid} does not match health PID ${health.pid}`,
+    throw Object.assign(
+      new Error(
+        `daemon identity is ambiguous: lock PID ${owner.pid} does not match health PID ${health.pid}`,
+      ),
+      { code: "EDAEMONIDENTITY" },
     );
   }
   return health;
 }
 
+export function recoveryStateLockAddonPath(moduleUrl = import.meta.url) {
+  return resolve(dirname(fileURLToPath(moduleUrl)), "..", "dist", "native", "state-lock.node");
+}
+
 function loadStateLockBinding() {
   const require = createRequire(import.meta.url);
-  const addon = require(resolve("dist/native/state-lock.node"));
+  const addon = require(recoveryStateLockAddonPath());
   if (typeof addon?.acquire !== "function" || typeof addon?.release !== "function") {
     throw new Error("native state lock addon does not export acquire and release");
   }
@@ -351,6 +360,11 @@ export function realRecoveryOperations() {
         join(recoveryRoot(home), RECOVERY_LEDGER_LOCK),
         "database-recovery-ledger",
       ),
+    tryAcquireRecoveryLock: (home) =>
+      tryAcquireNativeLock(
+        join(recoveryRoot(home), RECOVERY_OPERATION_LOCK),
+        "database-recovery-operation",
+      ),
     sleep: delay,
     launchApp: launchProductApp,
     now: () => new Date().toISOString(),
@@ -378,16 +392,35 @@ async function withLedgerLock(
   throw new Error("recovery ledger lock was not released before the bounded timeout");
 }
 
+async function acquireRecoveryLock(home, ops, timeoutMs = RECOVERY_LOCK_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const lock = ops.tryAcquireRecoveryLock(home);
+    if (lock) return lock;
+    await ops.sleep(25);
+  }
+  throw new Error("another database recovery did not finish before the bounded timeout");
+}
+
 async function stopAndAcquire(home, ops, timeoutMs = STOP_TIMEOUT_MS) {
   // Observe the current daemon before asking either owner to stop. This is deliberately
   // discarded: every later signal is based on another fresh lock-plus-health observation.
   await ops.identifyDaemon(home);
-  if (await ops.appIsRunning()) await ops.quitApp(APP_BUNDLE_ID);
+  let quitRequested = false;
+  if (await ops.appIsRunning()) {
+    await ops.quitApp(APP_BUNDLE_ID);
+    quitRequested = true;
+  }
   const signaled = new Set();
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const lock = ops.tryAcquireLock(home);
-    if (lock) return lock;
+    if (lock) {
+      return {
+        release: () => lock.release(),
+        quitRequested,
+      };
+    }
     const daemon = await ops.identifyDaemon(home);
     if (daemon && !signaled.has(daemon.pid)) {
       // The identity came from a fresh lock read and a fresh health response immediately
@@ -449,8 +482,12 @@ function restoreRollbackSnapshot(home, rollbackDatabase, databaseMode = 0o600) {
 async function waitForHealthy(home, ops, timeoutMs = HEALTH_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const daemon = await ops.identifyDaemon(home);
-    if (daemon) return daemon;
+    try {
+      const daemon = await ops.identifyDaemon(home);
+      if (daemon) return daemon;
+    } catch (error) {
+      if (error?.code !== "EDAEMONIDENTITY") throw error;
+    }
     await ops.sleep(150);
   }
   return null;
@@ -481,13 +518,19 @@ function candidateForRollback(home, recoveryId) {
   return { candidatePath, rollbackOf: recoveryId };
 }
 
-function alreadyAppliedResult(attempt) {
+function alreadyAppliedResult(attempt, health = null) {
+  const processMessage = health
+    ? `the app was relaunched once and is healthy on dynamically discovered PID ${health.pid}, ` +
+      `port ${health.port}, version ${health.version}`
+    : "the app was not relaunched";
   return {
     ok: true,
     kind: "already-applied",
-    message: `candidate was already handled by recovery ${attempt.id}; no database files were changed and the app was not relaunched`,
+    message:
+      `candidate was already handled by recovery ${attempt.id}; no database files were changed and ` +
+      processMessage,
     recoveryId: attempt.id,
-    health: null,
+    health,
     warnings: [],
   };
 }
@@ -531,11 +574,16 @@ export async function runDatabaseRecovery(
   const rollback = request.kind === "rollback" ? candidateForRollback(home, request.recoveryId) : null;
   const candidatePath = rollback?.candidatePath ?? request.candidatePath;
   const prepared = prepareCandidate(candidatePath, home);
+  let recoveryLock = null;
   let lock = null;
   let attempt = null;
   let rollbackSnapshot = null;
   let launched = false;
   try {
+    // Serialize the complete recovery lifecycle, including the health-confirmation interval in
+    // which daemon.lock must be free for the relaunched app. Ledger writes retain their narrower
+    // lock because they are also safe against older or external recovery processes.
+    recoveryLock = await acquireRecoveryLock(home, recoveryOps);
     const ledger = readRecoveryLedger(home);
     const duplicate = appliedAttemptForDigest(ledger, prepared.digest);
     if (duplicate) return alreadyAppliedResult(duplicate);
@@ -584,7 +632,20 @@ export async function runDatabaseRecovery(
       writeRecoveryLedger(home, currentLedger);
       return null;
     });
-    if (serializedDuplicate) return alreadyAppliedResult(serializedDuplicate);
+    if (serializedDuplicate) {
+      const relaunchRequired = lock.quitRequested;
+      lock.release();
+      lock = null;
+      if (!relaunchRequired) return alreadyAppliedResult(serializedDuplicate);
+
+      launched = true;
+      recoveryOps.launchApp(APP_BUNDLE_ID);
+      const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
+      if (!health) {
+        throw new Error("Mission Control relaunched but its daemon did not become healthy");
+      }
+      return alreadyAppliedResult(serializedDuplicate, health);
+    }
 
     try {
       installDatabase(home, prepared.stagedDatabase);
@@ -704,6 +765,7 @@ export async function runDatabaseRecovery(
     throw new Error(`${error?.message ?? error}.${launchNote}`);
   } finally {
     lock?.release();
+    recoveryLock?.release();
     prepared.cleanup();
   }
 }

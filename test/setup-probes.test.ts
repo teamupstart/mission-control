@@ -64,6 +64,22 @@ test("every dependency probe can report satisfied evidence", async () => {
   }
 });
 
+test("one fresh PATH snapshot precedes the concurrent Setup probes", async () => {
+  let refreshes = 0;
+  let refreshed = false;
+  await setupChecksView(deps({
+    refreshPath: async () => {
+      refreshes += 1;
+      refreshed = true;
+    },
+    resolveBinPath: async (bin) => {
+      assert.equal(refreshed, true, bin);
+      return bin.startsWith("/tools/") ? bin : null;
+    },
+  }));
+  assert.equal(refreshes, 1);
+});
+
 test("missing, needs-setup, and unknown stay distinct", async () => {
   assert.deepEqual(
     await SETUP_PROBES["claude-cli"](deps({ resolveBinPath: async () => null })),

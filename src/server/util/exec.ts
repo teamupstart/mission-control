@@ -1,6 +1,16 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { refreshLoginShellPath } from "./path-env.ts";
+
+/** Refresh the daemon's process PATH through the shared, cooldown-bounded shell probe. */
+export async function refreshProcessPathFromLoginShell(
+  options: { force?: boolean } = {},
+): Promise<string> {
+  const path = await refreshLoginShellPath(options);
+  process.env.PATH = path;
+  return path;
+}
 
 /**
  * Whether a BARE command name resolves on PATH - answered from the filesystem, never by
@@ -24,6 +34,7 @@ export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boole
 
 /**
  * Where a bare command name resolves to, asked of the system's own resolver (`which`).
+ * If the daemon's inherited PATH misses, refresh it from the user's login shell and retry.
  *
  * The third member of the family above, and it must NOT be merged into `onPath`. They
  * answer the same question at different prices and with different authority:
@@ -44,9 +55,18 @@ export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boole
  */
 export async function resolveBinPath(bin: string): Promise<string | null> {
   if (bin.includes("/")) return existsSync(bin) ? bin : null;
-  const r = await run("which", [bin]);
-  const p = r.stdout.trim().split("\n")[0];
-  return r.code === 0 && p ? p : null;
+  const resolve = async (): Promise<string | null> => {
+    const r = await run("which", [bin]);
+    const p = r.stdout.trim().split("\n")[0];
+    return r.code === 0 && p ? p : null;
+  };
+  const inherited = await resolve();
+  if (inherited) return inherited;
+
+  // Concurrent misses share one asynchronous shell read. Later misses reuse that result for
+  // a cooldown, so a genuinely absent optional command cannot source rc files without bound.
+  await refreshProcessPathFromLoginShell();
+  return resolve();
 }
 
 /**

@@ -16,7 +16,7 @@ import type { UtilityProcess } from "electron";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
-import { loginShellPath } from "./path-env.ts";
+import { loginShellPath } from "../server/util/path-env.ts";
 import { serveProductIssueConsent } from "./product-issue-consent.ts";
 
 export interface DaemonController {

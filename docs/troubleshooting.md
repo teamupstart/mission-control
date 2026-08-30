@@ -11,9 +11,17 @@ background daemon that you want to replace, run `make down`, then start the serv
 again. Use `make logs` when the daemon did not bind so you can see its startup error.
 
 Do not casually start a second daemon on another port. The default port bind is also
-the mutual-exclusion boundary for autonomous features such as skill reloads; a daemon
-on a different port can still discover and write to the same local sessions. See
+not the state ownership boundary; a daemon with an isolated home and a different port can
+still discover and write to the same local sessions. See
 [Configuration](configuration.md) and [Skills and settings](skills-and-settings.md#the-daemon-is-no-longer-strictly-reactive).
+
+## The daemon says the state home is already owned
+
+Mission Control locks `$MISSION_HOME/daemon.lock` before it opens SQLite. The startup error
+names the owning daemon's PID and API port. Stop that daemon if this start is meant to replace
+it, or set `MISSION_HOME` to a genuinely independent state directory if both daemons are
+intentional. Do not delete `daemon.lock`: the file is durable metadata, while the kernel-held
+lock is the ownership authority and is released automatically after a crash.
 
 ## A Claude session stays grey, or its status looks stale
 

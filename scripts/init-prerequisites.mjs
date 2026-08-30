@@ -50,8 +50,8 @@ export function ghPrerequisiteMessage({ installed, authenticated }) {
 /**
  * The Xcode command line tools prerequisite, asked before anything long-running starts.
  *
- * Both `npm run build` and `npm run package` compile `native/keep-awake` with node-gyp
- * (`scripts/build-keep-awake-native.mjs`), and node-gyp cannot run without a toolchain. Without
+ * Both `npm run build` and `npm run package` compile the state-lock and Keep Awake addons
+ * with node-gyp (`scripts/build-native.mjs`), and node-gyp cannot run without a toolchain. Without
  * this check that fails at the very end of a clone, a `npm ci`, and a full Electron package -
  * and it fails as node-gyp's own `gyp: No Xcode or CLT version detected!` buried in inherited
  * output, under the installer's generic "`npm run package` failed".

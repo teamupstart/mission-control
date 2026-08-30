@@ -80,9 +80,10 @@ if (nodeProblem) fail(nodeProblem);
 ok(`Node.js ${process.versions.node}`);
 
 // 2. Toolchain prerequisite ---------------------------------------------------
-// The build below compiles native/keep-awake with node-gyp, and this script's `run()` only
-// warns on failure. So without the tools the build warns past node-gyp, `dist/native` is never
-// written, and the daemon refuses to start later on an artifact that was never produced.
+// The build below compiles the state ownership and Keep Awake addons with node-gyp, and this
+// script's `run()` only warns on failure. So without the tools the build warns past node-gyp,
+// `dist/native` is never written, and the daemon refuses to start later on an artifact that
+// was never produced.
 // Not asked when `--skip-build` means no native build is going to happen at all.
 if (!skipBuild) {
   heading("Xcode command line tools prerequisite");

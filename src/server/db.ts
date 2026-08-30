@@ -126,7 +126,7 @@ import {
  * backlog, running intent, and recent outcomes), current work-cycle projections, and the
  * session event log.
  */
-let db: DatabaseSync;
+let db: DatabaseSync | undefined;
 
 /**
  * What `test/setup-state.mjs` recorded about this machine BEFORE any test module ran.
@@ -560,13 +560,12 @@ export function openDb(): DatabaseSync {
   // below, and `DatabaseSync` is fully synchronous, so two statements cannot interleave.
   // There is nobody to wait for, and a timeout would buy nothing.
   //
-  // What ENFORCES that is only the port bind, and it is weaker than it looks - worth knowing
-  // before trusting the paragraph above. `openDb` runs at module load, so a second daemon
-  // opens this file and runs `migrate` before `serve` discovers the port is taken; there is
-  // no listen-error handler, no lockfile, and `PORT` and the state dir are independent
-  // settings, so `MISSION_PORT=7318` against the same `MISSION_HOME` is two live writers and
-  // no error at all. Every transaction here is `BEGIN IMMEDIATE`, which takes the write lock
-  // up front and, with no timeout, fails on the spot instead of retrying.
+  // The daemon entry acquires the state-directory ownership lock before reaching this call,
+  // so the one-writer contract does not depend on the API port. A second daemon pointed at
+  // this home exits before SQLite is opened, even if it names a different port. Every
+  // transaction here is still `BEGIN IMMEDIATE`, which takes the write lock up front and,
+  // with no timeout, fails on the spot instead of retrying if a non-daemon process violates
+  // that boundary.
   //
   // A timeout would turn those into a wait, which is why it reads as the missing line. It is
   // deliberately not added: it would make a second writer look supported when the answer is
@@ -2972,6 +2971,13 @@ export function openDb(): DatabaseSync {
   db.exec(outstandingFileCommentIndexSql());
   migrate(db);
   return db;
+}
+
+/** Close the daemon's singleton connection before releasing state-directory ownership. */
+export function closeDb(): void {
+  if (!db) return;
+  db.close();
+  db = undefined;
 }
 
 /**

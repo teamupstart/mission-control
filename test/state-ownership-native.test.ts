@@ -49,10 +49,16 @@ test("the Darwin build removes inherited provenance from the copied addon", () =
 
 test("an already-clean Darwin addon is success, but another xattr failure is fatal", () => {
   const missing = (() => {
-    throw Object.assign(new Error("No such xattr"), { status: 1 });
+    throw Object.assign(new Error("No such xattr"), {
+      status: 1,
+      stderr: "xattr: /dist/state-lock.node: No such xattr: com.apple.provenance\n",
+    });
   }) as typeof import("node:child_process").execFileSync;
   const denied = (() => {
-    throw Object.assign(new Error("permission denied"), { status: 2 });
+    throw Object.assign(new Error("permission denied"), {
+      status: 1,
+      stderr: "xattr: /dist/state-lock.node: Permission denied\n",
+    });
   }) as typeof import("node:child_process").execFileSync;
 
   assert.equal(clearDarwinProvenance("/dist/state-lock.node", "darwin", missing), false);

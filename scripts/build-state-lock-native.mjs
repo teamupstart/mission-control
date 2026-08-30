@@ -32,10 +32,16 @@ export function clearDarwinProvenance(
 ) {
   if (platform !== "darwin") return false;
   try {
-    execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], { stdio: "ignore" });
+    execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], {
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     return true;
   } catch (error) {
-    if (error?.status === 1) return false;
+    const stderr = String(error?.stderr ?? "");
+    if (error?.status === 1 && stderr.includes("No such xattr: com.apple.provenance")) {
+      return false;
+    }
     throw error;
   }
 }

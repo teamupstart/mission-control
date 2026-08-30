@@ -412,6 +412,29 @@ export interface WorkCycleSummary {
   updatedAt: number;
 }
 
+/**
+ * A persisted SDK session whose driver has not been adopted by this daemon yet.
+ *
+ * This is deliberately smaller than `Session`. It carries only durable display facts that
+ * exist before a driver launches, so it cannot accidentally satisfy messaging, selection,
+ * workflow, notification, or automation predicates. The reconnect collection is bounded by
+ * the readable live rows loaded from `sdk_sessions` once at daemon startup.
+ */
+export interface RestoringSession {
+  /** The exact durable id the real Registry session will reuse after adoption. */
+  id: string;
+  /** Null when a newer build wrote an agent this build cannot interpret. */
+  agent: AgentType | null;
+  /** Existing restored-name precedence: operator rename, task title, then cwd leaf. */
+  name: string;
+  cwd: string;
+  /** Durable task repository context, or null when no retained task can supply it. */
+  repoRoot: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  createdAt: number;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -2894,6 +2917,11 @@ export type ServerEvent =
   | {
       type: "snapshot";
       sessions: Session[];
+      /**
+       * Driverless startup views only, bounded by readable live `sdk_sessions` rows.
+       * These are presentation records, not members of the live session collection.
+       */
+      restoringSessions: RestoringSession[];
       reviews: ReviewItem[];
       tasks: Task[];
       personas: PersonaView[];
@@ -3016,6 +3044,8 @@ export type ServerEvent =
     }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
+  | { type: "restoring_session_upsert"; session: RestoringSession }
+  | { type: "restoring_session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
   | { type: "review_remove"; id: string }
   | { type: "task_upsert"; task: Task }

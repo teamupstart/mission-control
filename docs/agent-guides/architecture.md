@@ -34,10 +34,19 @@ The Registry owns the session map. Terminal discovery and `SdkSupervisor` are it
 
 Startup order matters:
 
-1. Restore resumable SDK sessions.
-2. Register or evict every restored session.
-3. Start terminal discovery.
-4. Reconcile task, workflow, and review bindings after the first completed observation.
+1. Acquire the resolved state-home lock, then open and migrate the database.
+2. Read resumable SDK rows once and publish a bounded, inert restoring-session projection.
+3. Bind HTTP and serve the built dashboard. Health means the authenticated daemon is reachable,
+   not that every persisted SDK driver is ready.
+4. Restore the prepared SDK rows serially in the background.
+5. Register or evict every restored session through the existing Registry lifecycle, replacing
+   each projection by the same stable id.
+6. Start terminal discovery only after the owned SDK restore promise settles.
+7. Reconcile task, workflow, and review bindings after the first completed observation.
+
+Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,
+Sitrep, notification, selection, action, workflow, Foreman, or automation path. The supervisor owns
+their transient lifetime, while `Registry.sessions` remains the sole real-session collection.
 
 Discovery's unseen-session loop applies only to `runtime === "terminal"`. A missing terminal process says nothing about an SDK session.
 

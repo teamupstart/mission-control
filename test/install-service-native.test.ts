@@ -216,6 +216,9 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
+    // Native build startup competes with other process-heavy files in the full suite. Keep
+    // polling because this assertion is about signal forwarding after the build starts, not
+    // scheduler latency before the fixture child gets its first turn.
     const deadline = Date.now() + NATIVE_PROCESS_READY_TIMEOUT_MS;
     let recorded = "";
     while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {

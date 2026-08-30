@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AGENT_TYPES, type KeepAwakeStatus, type Session, type Task } from "@shared/types.ts";
+import {
+  AGENT_TYPES,
+  type KeepAwakeStatus,
+  type RestoringSession,
+  type Session,
+  type Task,
+} from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import {
   backlogTasks,
@@ -297,6 +303,7 @@ export function App(): React.JSX.Element {
   const desktopUpdates = useDesktopUpdates();
   const {
     sessions,
+    restoringSessions,
     reviews,
     tasks,
     personas,
@@ -1722,6 +1729,17 @@ export function App(): React.JSX.Element {
   }, [sessions, filter, heldIds, groupByRepo]);
   const visible = fleet.sessions;
 
+  // Restoring rows are Board-only, but while they are visible there they obey the same
+  // nav-bar filter contract as real session cards: title, displayed state, and agent. Keep
+  // this derivation in App beside `visible`, so the layout remains an arranger rather than
+  // growing a second opinion about what the operator asked to see.
+  const visibleRestoringSessions = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return q
+      ? restoringSessions.filter((session) => matchesRestoringFilter(session, q))
+      : restoringSessions;
+  }, [restoringSessions, filter]);
+
   // The same filter over the board's Backlog column. A backlog item is a card the
   // operator is looking at, so the one filter box has to narrow it too - it used to
   // read straight off the unfiltered task list, which left "ghostty" showing all
@@ -2082,10 +2100,21 @@ export function App(): React.JSX.Element {
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Only the board renders tasks, so
   // only the board survives an empty session list - see the render gate below.
-  const layoutHasContent = visible.length > 0 || (layout === "board" && visibleBacklog.length > 0);
+  const layoutHasContent =
+    visible.length > 0 ||
+    (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
+  const filterableSessionCount =
+    sessions.length + (layout === "board" ? restoringSessions.length : 0);
+  const filterableSessionNoun =
+    layout === "board"
+      ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
+      : filterableSessionCount === 1
+        ? "session"
+        : "sessions";
 
   const viewProps: SessionViewProps = {
     sessions: visible,
+    restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
     backlogPlan: foreman.backlogPlan,
@@ -3640,7 +3669,9 @@ export function App(): React.JSX.Element {
             detected", telling the operator to go start one by hand in the seconds after they
             asked for exactly that. Same rule the filter's empty state below already follows:
             never report nothing while the something is on screen. */}
-        {sessions.length === 0 && dispatchingTasks.length === 0 && (
+        {sessions.length === 0 &&
+          (layout !== "board" || restoringSessions.length === 0) &&
+          dispatchingTasks.length === 0 && (
           hasSnapshot ? (
             <div className="empty">
               <p className="empty-title">No agent sessions detected</p>
@@ -3677,18 +3708,18 @@ export function App(): React.JSX.Element {
         {/* Only when the layout drew nothing - on the board a filter that matched only
             backlog items has already rendered them, and telling the operator nothing
             matched while the match is on screen is the bug this replaced. */}
-        {sessions.length > 0 && !layoutHasContent && (
+        {filterableSessionCount > 0 && !layoutHasContent && (
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
-              No {layout === "board" ? "session or backlog task" : "session"} matches that title or
-              status.{" "}
+              No {layout === "board" ? "session row or backlog task" : "session"} matches that title
+              or status.{" "}
               <Tooltip label="Clear the filter">
                 <button className="link-btn" onClick={() => setFilter("")}>
                   Clear the filter
                 </button>
               </Tooltip>{" "}
-              to see all {sessions.length} sessions.
+              to see all {filterableSessionCount} {filterableSessionNoun}.
             </p>
           </div>
         )}
@@ -3894,6 +3925,12 @@ export function App(): React.JSX.Element {
  */
 function matchesFilter(s: Session, q: string): boolean {
   const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
+  return haystack.includes(q);
+}
+
+/** The restoring-row counterpart of `matchesFilter`, with its only truthful state label. */
+function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
+  const haystack = `${session.name} restoring ${session.agent ?? ""}`.toLowerCase();
   return haystack.includes(q);
 }
 

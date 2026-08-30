@@ -5,6 +5,7 @@ import type {
   FleetCost,
   KeepAwakeStatus,
   ReviewItem,
+  RestoringSession,
   ServerEvent,
   Session,
   SettingsStatus,
@@ -48,6 +49,8 @@ const warnedUnknownEventTypes = new Set<string>();
 
 export interface MissionState {
   sessions: Session[];
+  /** Inert startup rows only; real sessions with the same stable id always suppress them. */
+  restoringSessions: RestoringSession[];
   reviews: ReviewItem[];
   tasks: Task[];
   personas: PersonaView[];
@@ -192,6 +195,9 @@ export interface MissionState {
  */
 export function useEventStream(): MissionState {
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
+  const [restoringSessions, setRestoringSessions] = useState<Map<string, RestoringSession>>(
+    new Map(),
+  );
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
@@ -277,6 +283,9 @@ export function useEventStream(): MissionState {
       switch (msg.type) {
         case "snapshot":
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
+          setRestoringSessions(
+            new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),
+          );
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
@@ -367,6 +376,16 @@ export function useEventStream(): MissionState {
           dropSessionView(msg.id);
           dropInterrupting(msg.id);
           setSessions((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
+        case "restoring_session_upsert":
+          setRestoringSessions((prev) => new Map(prev).set(msg.session.id, msg.session));
+          break;
+        case "restoring_session_remove":
+          setRestoringSessions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);
             return next;
@@ -592,6 +611,12 @@ export function useEventStream(): MissionState {
   // Memoizing on the Map reference restores the isolation: an array's identity now changes
   // only when the Map it is drawn from does.
   const sessionsList = useMemo(() => [...sessions.values()], [sessions]);
+  // The real Registry session is authority during the intentional upsert-then-remove handoff.
+  // Suppressing by stable id here makes even a React render between those two frames one card.
+  const restoringSessionsList = useMemo(
+    () => [...restoringSessions.values()].filter((session) => !sessions.has(session.id)),
+    [restoringSessions, sessions],
+  );
   const reviewsList = useMemo(() => [...reviews.values()], [reviews]);
   const tasksList = useMemo(() => [...tasks.values()], [tasks]);
   const personasList = useMemo(() => [...personas.values()], [personas]);
@@ -624,6 +649,7 @@ export function useEventStream(): MissionState {
 
   return {
     sessions: sessionsList,
+    restoringSessions: restoringSessionsList,
     reviews: reviewsList,
     tasks: tasksList,
     personas: personasList,

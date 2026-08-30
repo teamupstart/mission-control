@@ -33,6 +33,7 @@ import {
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { useTourTargetRef } from "../../tour/target-context.tsx";
+import { RestoringSessionsColumn } from "../RestoringSessionsColumn.tsx";
 
 /**
  * Whether a cluster frame is one an operator has to do something about.
@@ -294,6 +295,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         scheduleNameById={props.scheduleNameById}
         backlogTrust={props.backlogTrust}
         onManageTrust={props.onManageForemanTrust}
+      />
+
+      <RestoringSessionsColumn
+        sessions={props.restoringSessions ?? []}
+        groupByRepo={groupByRepo}
       />
 
       {groups

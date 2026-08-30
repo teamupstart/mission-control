@@ -214,7 +214,9 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    const deadline = Date.now() + 3_000;
+    // Native build startup competes with other subprocess-heavy files in the full suite.
+    // Keep polling rather than treating a loaded host as proof that the build never started.
+    const deadline = Date.now() + 10_000;
     let recorded = "";
     while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {
       await delay(20);

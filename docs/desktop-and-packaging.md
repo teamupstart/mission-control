@@ -1,18 +1,19 @@
 # Desktop shell and packaging
 
 Mission Control can run as a local daemon during development or as a macOS Electron app.
-The [Electron main process](../src/main/index.ts) starts the daemon and embeds the dashboard;
+The [Electron main process](../src/main/index.ts) starts the daemon and Foreman worker, then embeds the dashboard;
 the [preload entrypoint](../src/preload/index.ts) keeps the renderer boundary explicit.
 
-The build creates separate bundles for the web dashboard, daemon, Electron main and preload
-processes, MCP server, and hook bridges. The commands are defined in
+The build creates separate bundles for the web dashboard, daemon, Foreman worker, Electron main
+and preload processes, MCP server, and hook bridges. The commands are defined in
 [`package.json`](../package.json). [`electron-builder.yml`](../electron-builder.yml) packages
 the built files and a small set of source assets that external tools read at runtime.
 
 The package intentionally leaves `asar` disabled. Hook and MCP satellite scripts are launched
 by an external Node process, and skills are read through filesystem links, so both require
-plain files on disk. The Electron shell starts the daemon; it does not become a second state
-owner.
+plain files on disk. The Electron shell supervises the daemon and the HTTP-only Foreman worker;
+it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
+an independently started worker safe as a standby.
 
 ## Managed install and the receipt
 

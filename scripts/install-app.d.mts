@@ -19,6 +19,12 @@ export interface BundleOps {
   exists(path: string): boolean;
 }
 
+export interface CloneReplaceOps {
+  move(from: string, to: string): void;
+  remove(path: string): void;
+  exists(path: string): boolean;
+}
+
 export type TargetRefSource = "flag" | "release" | "default-branch";
 
 export const APP_BUNDLE_NAME: string;
@@ -41,6 +47,14 @@ export function existingCloneCommands(input: {
   problem: string | null;
   commands: Array<[command: string, args: string[]]>;
 };
+export function firstUnwritableCloneDirectory(root: string): string | null;
+export function rebuildUpdaterOwnedClone(input: {
+  clone: string;
+  remoteUrl: string;
+  pid: number | string;
+  run: CommandRunner;
+  ops: CloneReplaceOps;
+}): { problem: string | null; preserved: string | null };
 export function originMismatchMessage(originSlug: string): string;
 export function resolveInstallRepo(input: {
   originSlug: string | null;
@@ -56,12 +70,14 @@ export function newestStableRelease(input: {
 export function stagingPaths(input: { appsDir: string; pid: number | string }): {
   staged: string;
   previous: string;
+  failed: string;
 };
 export function swapAppBundle(input: {
   packagedApp: string;
   appPath: string;
   appsDir: string;
   pid: number | string;
+  keepPrevious?: boolean;
   ops: BundleOps;
 }): string | null;
 export function resolveTargetRef(input: {

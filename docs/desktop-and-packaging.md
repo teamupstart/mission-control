@@ -42,6 +42,18 @@ forced checkout in that one location and nowhere else. The clone is a full check
 `node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
 deleting it costs the next install a fresh clone and nothing else.
 
+Run `make install` as the signed-in account, never with `sudo`. Checkout, dependency installation,
+packaging, and the receipt all stay unprivileged. If `/Applications` is not writable, macOS asks
+for administrator authorization only when the complete, verified bundle is ready for its atomic
+swap. The detached updater uses the same narrow prompt for installation and rollback.
+
+The clone is also self-repairing after a historical privileged install. If `sudo make install`
+left nested directories that the signed-in account cannot rewrite, the installer first creates a
+complete fresh clone, atomically moves the unusable clone aside, and continues from the fresh one.
+It removes the old clone when permissions allow. Otherwise it prints the preserved sibling path
+for one-time administrator cleanup instead of letting `git checkout` fail halfway through an
+automatic update. The broad privileged command is the legacy failure mode, not the remediation.
+
 Two trust rules hold on the install path, not only in the updater:
 
 - The clone is pinned to the canonical repository, exported once as `CANONICAL_REPO` from
@@ -107,7 +119,9 @@ copied to a hidden sibling of the destination first; only then is the existing a
 and the new one renamed into place, both renames within one directory and therefore atomic. A
 failed copy leaves the installed app untouched, and a failed final rename puts the previous app
 back. A user whose disk filled mid-install ends up with the app they already had, not with
-none.
+none. On an account that cannot write `/Applications`, this transaction is the only command run
+with administrator authorization. The updater source clone and state files remain owned by the
+signed-in account.
 
 ## Updates from the installed app
 

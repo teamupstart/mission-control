@@ -15,6 +15,7 @@ export interface ApplyOperations {
   nowIso(): string;
   waitForParent(pid: number): Promise<void>;
   install(node: string, script: string, tag: string, appsDir: string): void;
+  restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   launch(appPath: string): void;
   log(line: string): void;
 }
@@ -27,6 +28,7 @@ export function parseArgs(argv: string[]): {
   problem: string | null;
 };
 export function sanitizeDiagnostic(value: unknown): string;
+export function installFailureSummary(output: unknown): string;
 export function writeOutcome(path: string, outcome: Record<string, unknown>): void;
 export function realApplyOperations(
   logPath: string,

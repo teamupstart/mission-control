@@ -44,8 +44,10 @@ files:
   # from the repository under review, never from the install.
   - personas/FOREMAN.md
   # Copied to a temp directory before it outlives and replaces the app bundle.
-  # Keep this as an unbundled plain file with asar disabled.
+  # Keep these as unbundled plain files with asar disabled. The bundle-swap module is the
+  # detached helper's only sibling and owns the narrowly scoped macOS authorization prompt.
   - scripts/apply-update.mjs
+  - scripts/app-bundle-swap.mjs
   - package.json
   - "!node_modules/**/*"
 

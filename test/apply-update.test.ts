@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   INSTALL_TIMEOUT_MS,
+  installFailureSummary,
   parseArgs,
   realApplyOperations,
   RETAINED_FAILURE_DIR_NAME,
@@ -53,6 +54,11 @@ function operations(
     install: (node: string, script: string, tag: string, appsDir: string) => {
       actions.push(`install:${node}:${script}:${tag}:${appsDir}`);
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
+    },
+    restoreApp: (backupApp: string, appPath: string, pid: number) => {
+      const failed = `${appPath.slice(0, appPath.lastIndexOf("/") + 1)}.Mission Control.app.failed-update`;
+      actions.push(`restore:${backupApp}->${appPath}:failed=${failed}:pid=${pid}`);
+      return failed;
     },
     launch: (path: string) => {
       actions.push(`launch:${path}`);
@@ -140,7 +146,9 @@ test("a deliberate build failure restores both app and receipt before relaunchin
   const result = await runApplyUpdate(args(state), f.ops);
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
   const launchIndex = f.actions.indexOf("launch:/Applications/Mission Control.app");
-  const appRestoreIndex = f.actions.findIndex((action) => action.includes("rollback-") && action.endsWith("->/Applications/Mission Control.app"));
+  const appRestoreIndex = f.actions.findIndex((action) =>
+    action.startsWith("restore:") && action.includes("->/Applications/Mission Control.app:"),
+  );
   const receiptRestoreIndex = f.actions.findIndex((action) => action.endsWith(`->${join(state, "install-receipt.json")}`));
 
   assert.equal(result.ok, false);
@@ -199,12 +207,38 @@ test("helper diagnostics redact absolute paths including file URLs", () => {
   assert.match(diagnostic, /<path>/);
 });
 
+test("a failed install surfaces the decisive child-process tail", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "mission-apply-detail-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const failing = join(root, "failing.mjs");
+  await writeFile(
+    failing,
+    "process.stderr.write(\"error: unable to unlink old 'src/server/setup/index.ts': Permission denied\\n\"); process.exit(1);\n",
+  );
+  const logPath = join(root, "update.log");
+  const ops = realApplyOperations(logPath, 5_000);
+
+  assert.equal(
+    installFailureSummary("heading\n\u001b[31merror: permission denied\u001b[0m\n"),
+    "heading | error: permission denied",
+  );
+  assert.throws(
+    () => ops.install(process.execPath, failing, "v1.2.4", "/Applications"),
+    /exited 1: error: unable to unlink old 'src\/server\/setup\/index\.ts': Permission denied/,
+  );
+  assert.match(await readFile(logPath, "utf8"), /unable to unlink old/);
+});
+
 test("the copied helper recognizes an aliased direct-execution path", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-apply-alias-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const realHelper = join(root, "apply-update.mjs");
   const aliasHelper = join(root, "helper-alias.mjs");
   await writeFile(realHelper, await readFile(join(process.cwd(), "scripts", "apply-update.mjs")));
+  await writeFile(
+    join(root, "app-bundle-swap.mjs"),
+    await readFile(join(process.cwd(), "scripts", "app-bundle-swap.mjs")),
+  );
   await symlink(realHelper, aliasHelper);
 
   const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
@@ -259,10 +293,11 @@ test("a failed update leaves the previous app and the broken one behind to inspe
   const retainIndex = f.actions.indexOf(`copy:${f.tempDirectory}->${retained}`);
   const removeIndex = f.actions.lastIndexOf(`remove:${f.tempDirectory}`);
   assert.ok(retainIndex >= 0 && retainIndex < removeIndex);
-  // And the bundle that failed is filed rather than deleted.
+  // The failed bundle is retained at the fixed privileged sibling path. The next bundle
+  // transaction replaces that one path, so failures cannot accumulate hidden app copies.
   assert.ok(
-    f.actions.some(
-      (action) => action.includes("failed-") && action.endsWith(`->${join(retained, "failed-app.bundle")}`),
+    f.actions.some((action) =>
+      action.includes("failed=/Applications/.Mission Control.app.failed-update"),
     ),
   );
 });
@@ -287,7 +322,7 @@ test("a failure before there is any backup still clears the last attempt's evide
   assert.ok(clearIndex < f.actions.indexOf("wait:42"));
   // Nothing was backed up, so nothing is retained in its place and nothing was rolled back.
   assert.ok(!f.actions.some((action) => action.endsWith(`->${join(state, RETAINED_FAILURE_DIR_NAME)}`)));
-  assert.ok(!f.actions.some((action) => action.includes("rollback-")));
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
 });
 
 test("a successful update clears what the last failed one retained", async (t) => {
@@ -307,8 +342,8 @@ test("a successful update clears what the last failed one retained", async (t) =
 
 test("when there is nowhere durable to retain it, the backup is kept rather than destroyed", async (t) => {
   // The regression this pins: retention used to be best-effort in a way that made a failed copy
-  // WORSE than no retention at all. `keepFailedAs` went null, restoreBundle deleted the broken
-  // bundle, and the unconditional `finally` then removed the temp directory holding the only
+  // WORSE than no retention at all. The rollback deleted the broken bundle, and the
+  // unconditional `finally` then removed the temp directory holding the only
   // backup - so the exact operator whose state directory was too broken to hold a second copy
   // lost the first one too.
   const state = await mkdtemp(join(tmpdir(), "mission-apply-retain-fails-"));
@@ -318,27 +353,19 @@ test("when there is nowhere durable to retain it, the backup is kept rather than
 
   const result = await runApplyUpdate(args(state), f.ops);
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
-  const failedBundle = f.actions
-    .find((action) => action.endsWith(`->/Applications/.Mission Control.app.failed-${process.pid}`))
-    ?.split("->")[1];
+  const restore = f.actions.find((action) => action.startsWith("restore:"));
 
   // The rollback itself still succeeded and the working app still came back.
   assert.equal(result.ok, false);
   assert.equal(outcome.result, "failure");
   assert.ok(
-    f.actions.some(
-      (action) => action.includes("rollback-") && action.endsWith("->/Applications/Mission Control.app"),
-    ),
+    restore?.includes("->/Applications/Mission Control.app:") ?? false,
   );
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
 
   // And nothing was thrown away. The temp directory holding previous-app.bundle survives the
   // `finally`, and the broken bundle stays where it is instead of being deleted.
   assert.ok(!f.actions.includes(`remove:${f.tempDirectory}`));
-  assert.ok(failedBundle);
-  assert.equal(
-    f.actions.filter((action) => action === `remove:${failedBundle}`).length,
-    1, // the pre-clean at the top of restoreBundle, and no second removal after it
-  );
+  assert.ok(restore?.includes("failed=/Applications/.Mission Control.app.failed-update"));
   assert.ok(f.actions.some((action) => action.startsWith("log:durable retention was unavailable")));
 });

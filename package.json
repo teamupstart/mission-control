@@ -31,6 +31,7 @@
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
     "smoke": "node scripts/smoke-bundles.mjs",
     "verify:keep-awake-native": "node scripts/probe-keep-awake-native.mjs",
+    "verify:database-backup": "tsx scripts/verify-database-backup.ts",
     "demo": "node scripts/demo/launch.mjs",
     "docs:screenshots": "node scripts/docs-screenshots.mjs",
     "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",

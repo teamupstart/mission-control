@@ -295,6 +295,249 @@ export interface PipelineRunLink {
   slug: string;
 }
 
+// ---- Pipeline commissions -------------------------------------------------------------
+
+/**
+ * Mission Control's durable identity for one idea-to-shipment lifecycle.
+ *
+ * Opaque by contract. It is deliberately not derived from a task title, provider slug,
+ * worktree, branch, or session id, because each of those can change while the commission
+ * remains the same.
+ */
+export type PipelineCommissionId = string;
+
+/** The generic Engineer lifecycle capability merged in ai-conductor at `8685e121`. */
+export const ENGINEER_LIFECYCLE_CAPABILITY = "engineerLifecycleEventsV1" as const;
+export const ENGINEER_LIFECYCLE_SCHEMA_VERSION = 1 as const;
+
+/** Durable Engineer event limits, enforced before any event reaches SQLite. */
+export const ENGINEER_EVENT_LIMITS = {
+  maxBytes: 64 * 1024,
+  identityChars: 512,
+  pathChars: 4096,
+  textChars: 8192,
+  urlChars: 4096,
+  typeChars: 256,
+  artifactPaths: 100,
+} as const;
+
+/** Recent attempts carried in snapshots; the durable attempt table keeps the full audit. */
+export const MAX_PIPELINE_COMMISSION_ATTEMPTS = 20;
+
+/** Frozen copy of the provider's DECIDE vocabulary, in its canonical order. */
+export const ENGINEER_STEP_NAMES = [
+  "bootstrap",
+  "memory",
+  "assess",
+  "explore",
+  "complexity",
+  "prd",
+  "architecture_diagram",
+  "architecture_review",
+  "stories",
+  "conflict_check",
+  "plan",
+  "coherence_check",
+] as const;
+export type EngineerStepName = (typeof ENGINEER_STEP_NAMES)[number];
+
+/** Every Engineer event the pinned provider contract emits. Append only. */
+export const ENGINEER_EVENT_TYPES = [
+  "engineer_run_created",
+  "engineer_run_started",
+  "engineer_routing_selected",
+  "engineer_worktree_created",
+  "engineer_step_started",
+  "engineer_step_completed",
+  "engineer_step_failed",
+  "engineer_step_retried",
+  "engineer_step_skipped",
+  "engineer_land_reconciled",
+  "engineer_land_refused",
+  "engineer_spec_handoff",
+  "engineer_run_cancelled",
+  "engineer_run_failed",
+  "engineer_run_settled",
+] as const;
+export type EngineerEventType = (typeof ENGINEER_EVENT_TYPES)[number];
+
+export const ENGINEER_STEP_COMPLETION_EVIDENCE = [
+  "accepted_result",
+  "artifact_validation",
+  "land_reconciliation",
+] as const;
+export type EngineerStepCompletionEvidence =
+  (typeof ENGINEER_STEP_COMPLETION_EVIDENCE)[number];
+
+/** Identity carried by every event and owned by the external provider. */
+export interface EngineerEventBase {
+  schemaVersion: 1;
+  engineerRunId: string;
+  correlationId: string | null;
+  attemptKey: string;
+  attempt: number;
+  previousEngineerRunId: string | null;
+  repoRoot: string;
+  revision: number;
+  ts: string;
+}
+
+/** Exact v1 event union copied from the merged provider contract. */
+export type EngineerLifecycleEvent = EngineerEventBase & (
+  | { type: "engineer_run_created"; idea: string }
+  | { type: "engineer_run_started" }
+  | { type: "engineer_routing_selected"; project: string }
+  | {
+      type: "engineer_worktree_created";
+      worktreePath: string;
+      branch: string;
+      planSlug: string;
+    }
+  | {
+      type: "engineer_step_started";
+      step: EngineerStepName;
+      stepAttempt: number;
+      provider?: string;
+      model?: string;
+    }
+  | {
+      type: "engineer_step_completed";
+      step: EngineerStepName;
+      stepAttempt: number;
+      completion: EngineerStepCompletionEvidence;
+      artifactPaths?: string[];
+    }
+  | {
+      type: "engineer_step_failed";
+      step: EngineerStepName;
+      stepAttempt: number;
+      error: string;
+    }
+  | {
+      type: "engineer_step_retried";
+      step: EngineerStepName;
+      stepAttempt: number;
+      reason: string;
+    }
+  | {
+      type: "engineer_step_skipped";
+      step: EngineerStepName;
+      stepAttempt: number;
+      reason: string;
+    }
+  | {
+      type: "engineer_land_reconciled";
+      planSlug: string;
+      track: PipelineTrack;
+      tier: PipelineTier;
+      completed: EngineerStepName[];
+      skipped: EngineerStepName[];
+    }
+  | { type: "engineer_land_refused"; reason: string }
+  | {
+      type: "engineer_spec_handoff";
+      planSlug: string;
+      branch: string;
+      prUrl: string | null;
+      outcome: "pr_opened" | "local_commit";
+      state: "awaiting_spec_merge";
+    }
+  | { type: "engineer_run_cancelled"; reason: string }
+  | { type: "engineer_run_failed"; error: string }
+  | { type: "engineer_run_settled"; outcome: "awaiting_spec_merge" }
+);
+
+/**
+ * Minimal shape retained for a future Engineer event kind. Unknown kinds are evidence, not
+ * state transitions, so they still need the complete v1 identity and revision contract.
+ */
+export type UnknownEngineerLifecycleEvent = EngineerEventBase & {
+  type: string;
+  [key: string]: unknown;
+};
+
+/** Structurally valid event identity from a schema newer than this build understands. */
+export type UnsupportedEngineerLifecycleEvent = Omit<EngineerEventBase, "schemaVersion"> & {
+  schemaVersion: number;
+  type: string;
+  [key: string]: unknown;
+};
+
+export const PIPELINE_COMMISSION_LIFECYCLES = [
+  "created",
+  "authoring",
+  "awaiting_spec_merge",
+  "cancelled",
+  "failed",
+  "settled",
+  "unsupported",
+] as const;
+export type PipelineCommissionLifecycle =
+  (typeof PIPELINE_COMMISSION_LIFECYCLES)[number];
+
+export const PIPELINE_COMMISSION_ATTEMPT_STATES = [
+  "reserved",
+  "created",
+  "authoring",
+  "awaiting_spec_merge",
+  "cancelled",
+  "failed",
+  "settled",
+] as const;
+export type PipelineCommissionAttemptState =
+  (typeof PIPELINE_COMMISSION_ATTEMPT_STATES)[number];
+
+/** One immutable Engineer attempt in a commission's ordered history. */
+export interface PipelineCommissionAttempt {
+  attempt: number;
+  launchKey: string;
+  engineerRunId: string | null;
+  previousEngineerRunId: string | null;
+  providerRevision: number;
+  state: PipelineCommissionAttemptState;
+  terminalReason: string | null;
+  updatedAt: number;
+}
+
+/** Provider-owned spec handoff identity, available before the authoring worktree is removed. */
+export interface PipelineCommissionHandoff {
+  planSlug: string;
+  branch: string;
+  prUrl: string | null;
+  outcome: "pr_opened" | "local_commit";
+}
+
+/**
+ * Durable, bounded whole-object projection sent in snapshots and incremental SSE frames.
+ * Event bodies and artifact paths stay in the bounded SQLite ledger and never ride this wire.
+ */
+export interface PipelineCommission {
+  id: PipelineCommissionId;
+  taskId: string;
+  provider: PipelineProviderId;
+  repoRoot: string;
+  correlationId: string;
+  lifecycle: PipelineCommissionLifecycle;
+  attempts: PipelineCommissionAttempt[];
+  activeAttempt: number | null;
+  steps: PipelineStep[];
+  currentStep: string | null;
+  tier: PipelineTier | null;
+  track: PipelineTrack | null;
+  project: string | null;
+  authoringWorktree: string | null;
+  handoff: PipelineCommissionHandoff | null;
+  linkedRun: PipelineRunLink | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Stable in-memory key for a commission. Kept as a helper for symmetry with run keys. */
+export function pipelineCommissionKey(id: PipelineCommissionId): string {
+  return id;
+}
+
 /** Unforgeable bearer capability issued only to one managed Pipeline host's MCP child. */
 export const PIPELINE_CALLER_CREDENTIAL_ENV = "MISSION_PIPELINE_CALLER_CREDENTIAL";
 /** HTTP header carrying `PIPELINE_CALLER_CREDENTIAL_ENV` back to the daemon. */

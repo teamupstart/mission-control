@@ -46,6 +46,12 @@ Mission Control still observes Conductor's files independently. Installing the p
 when the daemon learns about a transition and preserves events Conductor does not persist; it
 does not change which files own run state.
 
+The generic Engineer lifecycle is different from an implementation run. Its event already
+carries a versioned Engineer run id, correlation id, attempt identity, repository, and
+run-local revision. The plugin forwards that identity directly and never invents a worktree
+or implementation slug. Mission Control persists an independent per-attempt cursor and uses
+`conduct-ts engineer run-replay` as the durable backstop for a missed push.
+
 ## What it is for
 
 Conductor persists 76 of its 104 event kinds to each worktree's `.pipeline/events.jsonl`.
@@ -56,6 +62,10 @@ The other 28 are the point. `build_review_reduced_coverage_accepted`, `gate_verd
 `halt_cleared`, `pipeline_closeout`, `protected_artifact_reseal` and the rest of the
 unpersisted set have no `events.jsonl` record. For those, this plugin is the only Mission
 Control event record there is.
+
+The 15 versioned `engineer_*` kinds are also forwarded. Unlike the older unpersisted
+implementation kinds, they have a sanctioned durable replay journal in ai-conductor. Live
+delivery buys latency for them; replay after the stored run-local revision owns correctness.
 
 ## What it will not do
 
@@ -150,9 +160,22 @@ One NDJSON line per event, posted to `POST /ingest/conductor` with `x-harness-to
 { "repo": "/w/demo", "worktree": "/w/demo/.worktrees/a-feature", "slug": "a-feature", "seq": 12, "event": { "type": "step_completed", "step": "build" } }
 ```
 
-`event` is the engine's record, verbatim. Mission Control stores it opaquely and reads two
-fields it may not carry (`type`, `ts`), so a kind newer than either side is carried rather
-than refused. `seq` is this plugin's own per-run counter - Mission Control keeps it as
+An Engineer event uses the additive identity envelope and deliberately has no implementation
+worktree or slug:
+
+```json
+{ "repo": "/w/demo", "seq": 4, "engineerRunId": "run-123", "correlationId": "commission-123", "engineerAttempt": 1, "attemptKey": "launch-123", "event": { "schemaVersion": 1, "type": "engineer_step_started", "engineerRunId": "run-123", "correlationId": "commission-123", "attemptKey": "launch-123", "attempt": 1, "previousEngineerRunId": null, "repoRoot": "/w/demo", "revision": 4, "ts": "2026-08-28T12:00:00.000Z", "step": "plan", "stepAttempt": 1 } }
+```
+
+Mission Control accepts that line only for an already bound, active commission attempt in a
+repository the operator consented to observe. The envelope and event identities must agree.
+Unknown v1 kinds advance the replay cursor as opaque evidence without changing projection
+state. An unsupported schema preserves the last good projection and records an actionable
+compatibility error.
+
+For an implementation envelope, `event` is the engine's record, verbatim. Mission Control
+stores it opaquely and reads two fields it may not carry (`type`, `ts`), so a kind newer than
+either side is carried rather than refused. `seq` is this plugin's own per-run counter - Mission Control keeps it as
 evidence and assigns its own ordinal, because the file tail's coordinate is a byte offset and
 the two spaces are unrelated.
 
@@ -164,7 +187,8 @@ daemon serving it.
 
 Re-copy the directory after a conductor upgrade. `harness_version` in `plugin.yml` pins the
 tested range and conductor refuses an out-of-range plugin loudly rather than starting one
-that half-works. The current list is pinned to ai-conductor 0.104.0 (`1631544a`) and checked
+that half-works. The implementation-run list is pinned to ai-conductor 0.104.0 (`1631544a`),
+and the additive Engineer contract is pinned to Phase 1 at `8685e121`. Both are checked
 exhaustively by Mission Control's contract suite. New event kinds are not forwarded until
 this build's list is regenerated. For a kind conductor persists, the file tail picks it up on
 its backfill sweep meanwhile, which is a delay and not a loss; for a new kind it does *not*

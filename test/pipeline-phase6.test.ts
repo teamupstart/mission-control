@@ -1081,6 +1081,85 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
   assert.equal(supervisor.starts.length, 0);
 });
 
+test("commissioned requests sharing derived task identity reserve separate provider runs", async (t) => {
+  const repoRoot = "/repo/shared-derived-identity";
+  const registry = new Registry();
+  for (const taskId of ["pipeline-shared-identity-one", "pipeline-shared-identity-two"]) {
+    registry.upsertTask(mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot,
+      intent: "Build the same named plan",
+    }));
+  }
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async (input) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: `engineer-${input.correlationId}`,
+        correlationId: input.correlationId,
+        attemptKey: input.attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot: input.repoRoot,
+        idea: input.idea,
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("successful distinct reservations remain active"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch("pipeline-shared-identity-one");
+  await dispatcher.dispatch("pipeline-shared-identity-two");
+
+  const commissions = [
+    registry.pipelineCommissionForTask("pipeline-shared-identity-one"),
+    registry.pipelineCommissionForTask("pipeline-shared-identity-two"),
+  ];
+  assert.deepEqual(
+    [
+      registry.getTask("pipeline-shared-identity-one")?.status,
+      registry.getTask("pipeline-shared-identity-two")?.status,
+    ],
+    ["running", "running"],
+  );
+  assert.equal(supervisor.starts.length, 2);
+  assert.notEqual(commissions[0]?.id, commissions[1]?.id);
+  assert.notEqual(
+    commissions[0]?.attempts[0]?.engineerRunId,
+    commissions[1]?.attempts[0]?.engineerRunId,
+  );
+});
+
 test("provider reservation is cancelled when managed host setup fails", async (t) => {
   const taskId = "pipeline-reserved-host-failure";
   const repoRoot = "/repo/reserved-host-failure";

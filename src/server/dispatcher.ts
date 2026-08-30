@@ -912,44 +912,6 @@ export class Dispatcher {
       if (!lifecycle) {
         throw new Error("the pipeline provider lost Engineer lifecycle support before launch");
       }
-      const intendedRun = provider.taskIdentity(task.intent, task.repoRoot);
-      if ("refused" in intendedRun) throw new Error(intendedRun.refused);
-      const intendedRunKey = pipelineRunKeyOf(intendedRun);
-      // The first dispatch persists its commission before yielding to provider creation.
-      // That synchronous durable claim lets a concurrent dispatch see one owner here instead
-      // of minting a second correlation ID for the same provider-owned run identity.
-      const owner = this.registry.listTasks().find((candidate) => {
-        if (
-          candidate.id === taskId ||
-          candidate.kind !== "pipeline" ||
-          (candidate.status !== "running" && candidate.status !== "dispatching")
-        ) {
-          return false;
-        }
-        if (
-          candidate.pipelineRun &&
-          pipelineRunKeyOf(candidate.pipelineRun) === intendedRunKey
-        ) {
-          return true;
-        }
-        if (!candidate.pipelineCommissionId) return false;
-        const candidateCommission = this.registry.pipelineCommission(
-          candidate.pipelineCommissionId,
-        );
-        if (!candidateCommission || candidateCommission.provider !== launch.provider) {
-          return false;
-        }
-        const candidateRun = provider.taskIdentity(candidate.intent, candidate.repoRoot);
-        return (
-          !("refused" in candidateRun) &&
-          pipelineRunKeyOf(candidateRun) === intendedRunKey
-        );
-      });
-      if (owner) {
-        throw new Error(
-          `pipeline run "${intendedRun.slug}" is already owned by active task ${owner.id}`,
-        );
-      }
       let commission = task.pipelineCommissionId
         ? this.registry.pipelineCommission(task.pipelineCommissionId)
         : null;

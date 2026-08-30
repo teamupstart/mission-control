@@ -7,8 +7,8 @@
  * So it is exercised here, against a stub emitter shaped exactly like
  * `ConductorEventEmitter` - which is a small enough contract (`on`, `off`, per-type, no
  * wildcard) to reproduce honestly. What that proves is the half that is ours: the batching,
- * the addressing, and the failure posture. What it cannot prove is that conductor calls
- * `start()` at all, which is true today by design - the plugin ships dormant.
+ * the addressing, and the failure posture. Provider-side tests own whether conductor starts
+ * the plugin; this suite owns what the plugin does after that contract is invoked.
  *
  * The claims:
  *
@@ -27,6 +27,7 @@ import test from "node:test";
 import {
   FORWARDED_EVENT_TYPES,
   createMissionControlVisualizer,
+  engineerEnvelope,
   resolveRun,
 } from "../integrations/ai-conductor/mission-control/index.mjs";
 
@@ -41,7 +42,7 @@ const WORKTREE = "/w/demo/.worktrees/a-feature";
  * is not published as a runtime value, so this pinned contract is the only local tripwire
  * for a supported kind disappearing from the live delivery path.
  */
-const AI_CONDUCTOR_0_104_0_EVENT_TYPES = [
+const AI_CONDUCTOR_8685E121_EVENT_TYPES = [
   "acceptance_red",
   "attribution_divergence",
   "auto_heal",
@@ -78,6 +79,21 @@ const AI_CONDUCTOR_0_104_0_EVENT_TYPES = [
   "credentials_park_progress",
   "dashboard_refresh",
   "deprecated_step",
+  "engineer_land_reconciled",
+  "engineer_land_refused",
+  "engineer_routing_selected",
+  "engineer_run_cancelled",
+  "engineer_run_created",
+  "engineer_run_failed",
+  "engineer_run_settled",
+  "engineer_run_started",
+  "engineer_spec_handoff",
+  "engineer_step_completed",
+  "engineer_step_failed",
+  "engineer_step_retried",
+  "engineer_step_skipped",
+  "engineer_step_started",
+  "engineer_worktree_created",
   "feature_complete",
   "feature_usage_total",
   "finish_publication_blocked",
@@ -195,11 +211,11 @@ function recordingFetch(reply: { ok: boolean; status: number } = { ok: true, sta
   return { calls, fetchImpl };
 }
 
-test("it subscribes to the complete ai-conductor 0.104.0 event union", () => {
+test("it subscribes to the complete ai-conductor event union pinned at 8685e121", () => {
   const bus = stubBus();
   const plugin = createMissionControlVisualizer({ worktree: WORKTREE, token: "t" });
   plugin.start(bus);
-  assert.deepEqual(FORWARDED_EVENT_TYPES, AI_CONDUCTOR_0_104_0_EVENT_TYPES);
+  assert.deepEqual(FORWARDED_EVENT_TYPES, AI_CONDUCTOR_8685E121_EVENT_TYPES);
   assert.equal(bus.subscribed(), FORWARDED_EVENT_TYPES.length);
   // The kinds conductor does NOT persist are the ones only this path can deliver, so their
   // absence from the list would make the plugin pointless for exactly the events it exists
@@ -215,6 +231,41 @@ test("it subscribes to the complete ai-conductor 0.104.0 event union", () => {
   ] as const) {
     assert.ok(FORWARDED_EVENT_TYPES.includes(unpersisted), `${unpersisted} must be forwarded`);
   }
+});
+
+test("Engineer events use additive identity without inventing an implementation run", async () => {
+  const event = {
+    type: "engineer_run_created",
+    schemaVersion: 1,
+    engineerRunId: "run-1",
+    correlationId: "commission-1",
+    attemptKey: "launch-1",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot: REPO,
+    revision: 1,
+    ts: "2026-08-28T12:00:00.000Z",
+    idea: "Add widgets",
+  };
+  assert.deepEqual(engineerEnvelope(event), {
+    repo: REPO,
+    seq: 1,
+    event,
+    engineerRunId: "run-1",
+    correlationId: "commission-1",
+    engineerAttempt: 1,
+    attemptKey: "launch-1",
+  });
+
+  const { calls, fetchImpl } = recordingFetch();
+  const bus = stubBus();
+  const plugin = createMissionControlVisualizer({ token: "t", fetchImpl });
+  plugin.start(bus);
+  assert.deepEqual(bus.emit(event), [undefined]);
+  await plugin.stop();
+  assert.deepEqual(calls[0]?.lines, [engineerEnvelope(event)]);
+  assert.equal("slug" in (calls[0]?.lines[0] ?? {}), false);
+  assert.equal("worktree" in (calls[0]?.lines[0] ?? {}), false);
 });
 
 test("handlers are synchronous, so the engine's bus never waits on this plugin", () => {

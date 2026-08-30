@@ -152,7 +152,9 @@ const failingRunner: LlmRunner = {
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 5_000) assert.fail(message);
+    // A repair round launches subprocess-backed checks while other test files do the same.
+    // Preserve the bounded wait without making ordinary full-suite contention a failure.
+    if (Date.now() - started > 10_000) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

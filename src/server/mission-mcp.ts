@@ -15,7 +15,8 @@ import {
   PRODUCT_ISSUE_CLIENT_ENV,
   type ProductIssueClient,
 } from "@shared/product-issues.ts";
-import { PORT, STATE_DIR, mcpServerPath } from "./config.ts";
+import { STATE_DIR, mcpServerPath } from "./config.ts";
+import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
@@ -203,7 +204,10 @@ export function missionMcpProductIssueClient(
  * `mcpServerPath()` is the one resolver, and it lives in `config.ts` for the packaged-build
  * reason documented there; do not re-derive the path here.
  */
-export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | null> {
+export async function missionMcpDescriptor(
+  cwd?: string,
+  stateHome?: string,
+): Promise<MissionMcpDescriptor | null> {
   const server = mcpServerPath();
   if (!existsSync(server)) return null;
   const runtime = await resolveRuntime();
@@ -212,15 +216,11 @@ export async function missionMcpDescriptor(): Promise<MissionMcpDescriptor | nul
     command: runtime.command,
     args: [server],
     // Codex treats an explicit `mcp_servers.<name>.env` table as the MCP process's whole
-    // routing environment. An empty table therefore drops a non-default daemon's port and
-    // state home, making the tool authenticate to the default daemon and fail its cwd join
-    // with "no matching session". Publish the canonical effective coordinates explicitly;
-    // this is also what lets an isolated demo/test daemon keep its reviews inside its own
-    // state instead of leaking them to the operator daemon.
+    // routing environment. Publish the loopback port and bearer explicitly, but point normal
+    // state resolution at a disposable home. The MCP child can reach the daemon without
+    // learning or opening the directory that contains its database.
     env: {
-      ...runtime.env,
-      MISSION_HOME: STATE_DIR,
-      MISSION_PORT: String(PORT),
+      ...agentSubprocessEnv(runtime.env, { loopbackAccess: true, cwd, stateHome }),
       [PRODUCT_ISSUE_CLIENT_ENV]: missionMcpProductIssueClient(process.versions.electron),
     },
   };
@@ -692,32 +692,37 @@ export async function verifyMissionMcpTools(
   // declares no Mission tools is the status quo this must not touch, so it never spawns
   // anything and never fails a launch that would have worked.
   if (required.length === 0) return { ok: true };
+  const ownsDescriptor = launched == null;
   const descriptor = launched ?? (await missionMcpDescriptor());
-  if (!descriptor) {
-    return {
-      ok: false,
-      reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
-    };
-  }
-  const published = await publishedTools(descriptor);
-  if (!published.ok) {
+  try {
+    if (!descriptor) {
+      return {
+        ok: false,
+        reason: `Mission Control's MCP server is not built at ${mcpServerPath()} - run: npm run build`,
+      };
+    }
+    const published = await publishedTools(descriptor);
+    if (!published.ok) {
+      return {
+        ok: false,
+        reason:
+          `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
+          `${published.reason}. Rebuild it with: npm run build`,
+      };
+    }
+    const missing = required.filter((tool) => !published.tools.has(tool));
+    if (missing.length === 0) return { ok: true };
     return {
       ok: false,
       reason:
-        `Mission Control's MCP server at ${descriptor.args[0]} could not be interrogated: ` +
-        `${published.reason}. Rebuild it with: npm run build`,
+        `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
+        `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +
+        `The built bundle is stale - it is only rebuilt by \`npm run build\`, which a git pull does ` +
+        `not do. Run: npm run build`,
     };
+  } finally {
+    if (ownsDescriptor) cleanupAgentSubprocessEnv(descriptor?.env);
   }
-  const missing = required.filter((tool) => !published.tools.has(tool));
-  if (missing.length === 0) return { ok: true };
-  return {
-    ok: false,
-    reason:
-      `Mission Control's MCP server at ${descriptor.args[0]} does not publish ` +
-      `${missing.join(", ")} (it publishes ${[...published.tools].sort().join(", ") || "nothing"}). ` +
-      `The built bundle is stale - it is only rebuilt by \`npm run build\`, which a git pull does ` +
-      `not do. Run: npm run build`,
-  };
 }
 
 /**
@@ -750,18 +755,23 @@ export async function verifyMissionMcpToolsForRunningSession(
   launched?: MissionMcpDescriptor | null,
 ): Promise<MissionMcpToolCheck> {
   if (required.length === 0) return { ok: true };
+  const ownsDescriptor = launched == null;
   const descriptor = launched ?? (await missionMcpDescriptor());
-  const written = descriptor ? bundleWrittenAt(descriptor.args[0] ?? "") : null;
-  if (descriptor && written !== null && startedAt !== null && written > startedAt) {
-    return {
-      ok: false,
-      reason:
-        `Mission Control's MCP server at ${descriptor.args[0]} was rebuilt after this agent ` +
-        `started, so the agent is still running the previous build and this cannot establish ` +
-        `which tools it actually has. Restart the session so it picks up the current bundle`,
-    };
+  try {
+    const written = descriptor ? bundleWrittenAt(descriptor.args[0] ?? "") : null;
+    if (descriptor && written !== null && startedAt !== null && written > startedAt) {
+      return {
+        ok: false,
+        reason:
+          `Mission Control's MCP server at ${descriptor.args[0]} was rebuilt after this agent ` +
+          `started, so the agent is still running the previous build and this cannot establish ` +
+          `which tools it actually has. Restart the session so it picks up the current bundle`,
+      };
+    }
+    return await verifyMissionMcpTools(required, descriptor);
+  } finally {
+    if (ownsDescriptor) cleanupAgentSubprocessEnv(descriptor?.env);
   }
-  return await verifyMissionMcpTools(required, descriptor);
 }
 
 /**

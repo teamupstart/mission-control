@@ -11,7 +11,11 @@ import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
-import { ownElectronDaemonStart, type DaemonStartOwnership } from "./daemon-policy.ts";
+import {
+  ownElectronBackgroundStart,
+  type BackgroundStartOwnership,
+} from "./daemon-policy.ts";
+import { startForeman, type ForemanController } from "./foreman.ts";
 import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
@@ -36,12 +40,13 @@ if (!gotLock) app.quit();
 const appRoot = app.getAppPath();
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
+  foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
   webDir: join(appRoot, "dist", "web"),
   preload: join(appRoot, "dist", "preload", "index.cjs"),
   trayIcon: join(appRoot, "build", "trayTemplate.png"),
 };
 
-let daemonStart: DaemonStartOwnership<DaemonController> | null = null;
+let backgroundStart: BackgroundStartOwnership<DaemonController, ForemanController> | null = null;
 let updater: UpdateController | null = null;
 let stopUpdateSubscription: (() => void) | null = null;
 
@@ -167,7 +172,7 @@ app.on("before-quit", () => {
   stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
-  daemonStart?.stop();
+  backgroundStart?.stop();
 });
 
 app.whenReady().then(async () => {
@@ -178,14 +183,22 @@ app.whenReady().then(async () => {
     cb(permission === "notifications");
   });
 
-  daemonStart = ownElectronDaemonStart(process.env.MISSION_DEV_SERVER_URL, () =>
-    startDaemon({
-      serverEntry: paths.serverEntry,
-      webDir: paths.webDir,
-      // Log alongside the daemon's own state (honors MISSION_HOME), matching where
-      // it keeps its db + token.
-      logPath: join(stateDir(), "daemon.log"),
-    }),
+  backgroundStart = ownElectronBackgroundStart(
+    process.env.MISSION_DEV_SERVER_URL,
+    () =>
+      startDaemon({
+        serverEntry: paths.serverEntry,
+        webDir: paths.webDir,
+        // Logs live beside the daemon's own state (honors MISSION_HOME), matching where
+        // it keeps its db + token.
+        logPath: join(stateDir(), "daemon.log"),
+      }),
+    async () =>
+      startForeman({
+        workerEntry: paths.foremanEntry,
+        cwd: appRoot,
+        logPath: join(stateDir(), "foreman.log"),
+      }),
   );
 
   // Install the native update path before awaiting daemon health. A broken daemon must not
@@ -227,6 +240,6 @@ app.whenReady().then(async () => {
 
   // The window retries while the daemon starts. In development, `dev:server` owns the daemon
   // and its hot-reload lifecycle, so this resolves to null.
-  const daemon = await daemonStart.ready;
-  if (daemon) await waitForHealthy(15000);
+  const background = await backgroundStart.ready;
+  if (background) await waitForHealthy(15000);
 });

@@ -9,7 +9,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
-import { openDb } from "./db.ts";
+import { closeDb, openDb } from "./db.ts";
+import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
 import { observeInjections } from "./injections.ts";
@@ -95,6 +96,11 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 
+// Before SQLite is opened or migrations can run. The ownership file lives beside the
+// database, so API ports are irrelevant and two independent state homes remain independent.
+// Its native handle holds an OS lock for this process lifetime; crashes release that lock in
+// the kernel while leaving the metadata available to explain who owned the previous run.
+const stateOwnership = acquireStateOwnership();
 const database = openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
@@ -657,7 +663,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   console.log(`[mission-control] listening on ${where}`);
 });
 
+let shutdownStarted = false;
 async function shutdown(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
@@ -714,7 +723,14 @@ async function shutdown(): Promise<void> {
   // orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
   await stopModelCatalogs;
-  server.close();
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  // No subsystem or request can reach SQLite now. Close it before dropping ownership so a
+  // replacement daemon cannot acquire the state home while this process still has an open
+  // connection. A crash skips these lines but still closes both descriptors in the kernel.
+  closeDb();
+  stateOwnership.release();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());

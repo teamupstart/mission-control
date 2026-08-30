@@ -20,7 +20,12 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import { pipelineRunKey, pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
+import {
+  pipelineRunKey,
+  pipelineRunKeyOf,
+  type PipelineCommission,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
@@ -83,6 +88,8 @@ export interface MissionState {
    * dashboard with no conductor installed carries this array and never renders it.
    */
   pipelineRuns: PipelineRun[];
+  /** Dormant until Phase 3 activates dispatch, but restart-safe and SSE-only now. */
+  pipelineCommissions: PipelineCommission[];
   /**
    * Every line-comment thread the daemon holds for a session it still knows about, each
    * carrying its own messages so a thread renders from ONE frame.
@@ -202,6 +209,9 @@ export function useEventStream(): MissionState {
   // is rebuildable from the engine's files and an id of ours is the one field a rebuild
   // could not reproduce.
   const [pipelineRuns, setPipelineRuns] = useState<Map<string, PipelineRun>>(new Map());
+  const [pipelineCommissions, setPipelineCommissions] = useState<Map<string, PipelineCommission>>(
+    new Map(),
+  );
   const [fileCommentThreads, setFileCommentThreads] = useState<Map<string, FileCommentThread>>(
     new Map(),
   );
@@ -289,6 +299,9 @@ export function useEventStream(): MissionState {
           // no such field, and `undefined` must read as "none" rather than crash the arm.
           setPipelineRuns(
             new Map((msg.pipelineRuns ?? []).map((run) => [pipelineRunKeyOf(run), run])),
+          );
+          setPipelineCommissions(
+            new Map((msg.pipelineCommissions ?? []).map((commission) => [commission.id, commission])),
           );
           // Replaced wholesale for the same reason, with this collection's own edge: a
           // session removed while a tab was disconnected takes its threads with it, and a
@@ -469,6 +482,18 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "pipeline_commission_upsert":
+          setPipelineCommissions((prev) =>
+            new Map(prev).set(msg.commission.id, msg.commission),
+          );
+          break;
+        case "pipeline_commission_remove":
+          setPipelineCommissions((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         // The whole thread, replaced: it is read as one picture of one conversation on one
         // line, so a merge could draw a marker whose state and whose replies came from two
         // different instants.
@@ -584,6 +609,10 @@ export function useEventStream(): MissionState {
   const ensembleSummariesList = useMemo(() => [...ensembles.values()], [ensembles]);
   const schedulesList = useMemo(() => [...schedules.values()], [schedules]);
   const pipelineRunsList = useMemo(() => [...pipelineRuns.values()], [pipelineRuns]);
+  const pipelineCommissionsList = useMemo(
+    () => [...pipelineCommissions.values()],
+    [pipelineCommissions],
+  );
   const fileCommentThreadsList = useMemo(
     () => [...fileCommentThreads.values()],
     [fileCommentThreads],
@@ -606,6 +635,7 @@ export function useEventStream(): MissionState {
     ensembleSummaries: ensembleSummariesList,
     schedules: schedulesList,
     pipelineRuns: pipelineRunsList,
+    pipelineCommissions: pipelineCommissionsList,
     fileCommentThreads: fileCommentThreadsList,
     fileCommentReviews: fileCommentReviewsList,
     fleetCost,

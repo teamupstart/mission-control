@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
 
@@ -69,13 +70,17 @@ test("the scrubber keeps a build's environment and drops the daemon's", () => {
   for (const c of CASES) env[c.name] = c.value ?? `value-of-${c.name}`;
   const scrubbed = scrubCheckEnv(env, TOKEN);
 
-  for (const c of CASES) {
+  for (const c of CASES.filter((candidate) => candidate.name !== "MISSION_HOME")) {
     assert.equal(
       Object.hasOwn(scrubbed, c.name),
       c.kept,
       `${c.name} should be ${c.kept ? "kept" : "dropped"}: ${c.why}`,
     );
   }
+  assert.ok(existsSync(scrubbed.MISSION_HOME!), "normal state resolution gets a real disposable home");
+  assert.notEqual(scrubbed.MISSION_HOME, env.MISSION_HOME);
+  assert.equal(scrubbed.FLEET_HOME, undefined);
+  assert.equal(scrubbed.HARNESS_HOME, undefined);
 });
 
 test("the daemon's token is dropped by VALUE, whatever the variable is called", () => {
@@ -90,7 +95,7 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
     },
     TOKEN,
   );
-  assert.deepEqual(Object.keys(scrubbed), ["KEPT"]);
+  assert.deepEqual(Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"), ["KEPT"]);
 });
 
 test("a SHORT token is scrubbed too - there is no length exception", () => {
@@ -101,18 +106,22 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
     { PATH: "/usr/bin", INNOCENT: "short-token", QUOTING: "Bearer short-token" },
     "short-token",
   );
-  assert.deepEqual(scrubbed, { PATH: "/usr/bin" });
+  assert.deepEqual({ ...scrubbed, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
 
   // Down to a single character, which is where the collateral is worst and the ordering is
   // most deliberate: dropping a variable beats disclosing a credential.
-  assert.deepEqual(scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a"), { PATH: "/usr/bin" });
+  const single = scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a");
+  assert.deepEqual({ ...single, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
 });
 
 test("a whitespace-only token scrubs nothing, like an unminted one", () => {
   // It trims to empty, so it takes the empty-string path rather than matching every value that
   // happens to contain a space.
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
-  assert.deepEqual(scrubbed, { PATH: "/usr/bin", SPACED: "a b" });
+  assert.deepEqual(
+    { ...scrubbed, MISSION_HOME: undefined },
+    { PATH: "/usr/bin", SPACED: "a b", MISSION_HOME: undefined },
+  );
 });
 
 test("an unminted token scrubs no values, rather than every value", () => {
@@ -120,7 +129,10 @@ test("an unminted token scrubs no values, rather than every value", () => {
   // every value would contain the empty string and the command would run with no environment
   // at all - a build failing for a reason nobody could diagnose.
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me" }, "");
-  assert.deepEqual(scrubbed, { PATH: "/usr/bin", HOME: "/home/me" });
+  assert.deepEqual(
+    { ...scrubbed, MISSION_HOME: undefined },
+    { PATH: "/usr/bin", HOME: "/home/me", MISSION_HOME: undefined },
+  );
 });
 
 test("the input environment is never mutated", () => {
@@ -132,7 +144,7 @@ test("the input environment is never mutated", () => {
 
 test("an undefined value is dropped rather than passed through as undefined", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", EMPTY: undefined }, TOKEN);
-  assert.deepEqual(scrubbed, { PATH: "/usr/bin" });
+  assert.deepEqual({ ...scrubbed, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
 });
 
 test("credentialShapedName is the name rule on its own", () => {

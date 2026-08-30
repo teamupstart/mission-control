@@ -38,6 +38,11 @@ import {
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
+import {
+  cleanupDisposableAgentStateHome,
+  createDisposableAgentStateHome,
+  isolatedAgentArgv,
+} from "./agent-subprocess-env.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
@@ -48,6 +53,7 @@ import {
   missionMcpDescriptorForPipelineTask,
   newPipelineCallerCredential,
   verifyMissionMcpTools,
+  type MissionMcpDescriptor,
   type MissionMcpRequirement,
 } from "./mission-mcp.ts";
 import { isPlanTask } from "./plans/prompt.ts";
@@ -255,6 +261,7 @@ export class Dispatcher {
     // retries. Earlier refusals describe a task or launch configuration that must change,
     // while anything after this phase may have crossed into an agent runtime.
     let backlogRecoveryEligible = false;
+    let pendingAgentStateHome: string | null = null;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
       status: "dispatching",
@@ -540,6 +547,8 @@ export class Dispatcher {
         );
         return;
       }
+      const stateHome = createDisposableAgentStateHome();
+      pendingAgentStateHome = stateHome;
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
       // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
       // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
@@ -558,7 +567,12 @@ export class Dispatcher {
       // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
       // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
       const codexLaunch = task.agent === "codex"
-        ? await prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch, missionMcp)
+        ? await prepareCodexLaunch(
+            getHarnessesConfig().autoModeOnDispatch,
+            missionMcp,
+            wt.path,
+            stateHome,
+          )
         : { args: [] as string[], instrumented: true, missionMcp: false };
       // Pi is the one harness with no file channel: Claude and Codex load the worktree's
       // root doc themselves, and the committed `.agents/memory` reference line rides in
@@ -581,7 +595,7 @@ export class Dispatcher {
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
-      const askChannel = await askChannelContribution(task.agent, missionMcp);
+      const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
       // ONE `--append-system-prompt`, carrying every contributor to it. The flag is
       // single-valued and repeating it is last-wins with no warning, so a second flag beside
       // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
@@ -687,7 +701,12 @@ export class Dispatcher {
           wt.path,
           agentBin,
           agentArgs,
+          stateHome,
         );
+        // The terminal cleanup wrapper now owns this home until its agent command exits.
+        // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
+        if (this.deps.spawn) cleanupDisposableAgentStateHome(stateHome);
+        pendingAgentStateHome = null;
       } catch (err) {
         // Nothing was launched, so the marker describes a turn that will never be written.
         this.registry.discardLaunchTurn(piMarker);
@@ -787,6 +806,8 @@ export class Dispatcher {
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
     } catch (err) {
+      cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
+      pendingAgentStateHome = null;
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
       // A cancel/complete that settled the task in flight owns its terminal state
@@ -906,23 +927,34 @@ export class Dispatcher {
       }
       const sessionId = newSdkSessionId();
       const callerCredential = newPipelineCallerCredential();
-      const mcp = missionMcpDescriptorForPipelineTask(
-        await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(),
-        callerCredential,
-      );
-      if (!mcp) {
-        throw new Error(
-          "managed Pipeline dispatch requires Mission Control's MCP server - rebuild with: npm run build",
+      const stateHome = createDisposableAgentStateHome();
+      let mcp: MissionMcpDescriptor;
+      try {
+        const descriptor = missionMcpDescriptorForPipelineTask(
+          await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
+            launch.cwd,
+            stateHome,
+          ),
+          callerCredential,
         );
-      }
-      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run", "report_pipeline_workspace"],
-        mcp,
-      );
-      if (!published.ok) {
-        throw new Error(
-          `managed Pipeline dispatch requires its Pipeline reporting tools, but ${published.reason}`,
+        if (!descriptor) {
+          throw new Error(
+            "managed Pipeline dispatch requires Mission Control's MCP server - rebuild with: npm run build",
+          );
+        }
+        const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+          ["adopt_pipeline_run", "report_pipeline_workspace"],
+          descriptor,
         );
+        if (!published.ok) {
+          throw new Error(
+            `managed Pipeline dispatch requires its Pipeline reporting tools, but ${published.reason}`,
+          );
+        }
+        mcp = descriptor;
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
       }
       // Held in its own binding for the same reason `piText` is: turn one now has a second
       // reader, and the launch marker has to fingerprint the exact string the driver was
@@ -1070,7 +1102,13 @@ export class Dispatcher {
       // they asked for.
       throw new Error("this build has no session supervisor, so it cannot dispatch embedded");
     }
-    const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+    const stateHome = createDisposableAgentStateHome();
+    let supervisorOwnsStateHome = false;
+    try {
+    const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
+      wt.path,
+      stateHome,
+    );
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.
@@ -1127,6 +1165,7 @@ export class Dispatcher {
       gitRoot: wt.path,
       repoRoot: task.repoRoot,
     });
+    supervisorOwnsStateHome = true;
     if (await this.abortIfSettled(taskId)) {
       // A cancel landed while the driver was starting. `abortIfSettled` tore down the
       // worktree; the session it would have worked in has to go with it.
@@ -1152,6 +1191,9 @@ export class Dispatcher {
     // - returning with no log and no trace of what went wrong. It cannot throw: the seam
     // logs and swallows, which turns exactly that invisible loss into a visible one.
     freezeScoutPromptBoundary(this.registry, task, session.id, "launch");
+    } finally {
+      if (!supervisorOwnsStateHome) cleanupDisposableAgentStateHome(stateHome);
+    }
   }
 
   /**
@@ -2217,18 +2259,28 @@ export async function spawnUniquely(
   cwd: string,
   agentBin: string,
   agentArgs: readonly string[] = [],
+  stateHome?: string,
 ): Promise<string> {
-  const argv = [agentBin, ...agentArgs];
+  const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
+  const argv = isolatedAgentArgv(
+    [agentBin, ...agentArgs],
+    { cwd, stateHome: effectiveStateHome },
+  );
   const held = await heldHomeNames();
   const unique = `${baseName}-${shortId}`;
   const name = held === null || held.has(baseName) ? unique : baseName;
 
-  const first = await launchHome({ name, cwd, argv, sidePane: true });
-  if (first.ok) return name;
-  if (name === unique) throw new Error(first.error);
-  const retry = await launchHome({ name: unique, cwd, argv, sidePane: true });
-  if (retry.ok) return unique;
-  throw new Error(retry.error);
+  try {
+    const first = await launchHome({ name, cwd, argv, sidePane: true });
+    if (first.ok) return name;
+    if (name === unique) throw new Error(first.error);
+    const retry = await launchHome({ name: unique, cwd, argv, sidePane: true });
+    if (retry.ok) return unique;
+    throw new Error(retry.error);
+  } catch (error) {
+    cleanupDisposableAgentStateHome(effectiveStateHome);
+    throw error;
+  }
 }
 
 async function currentBranch(dir: string): Promise<string | null> {

@@ -170,8 +170,7 @@ typed into a pane only downstream of a route call - which meant downstream of a 
 The only unprompted typing in the system was quarantined in [Foreman](foreman.md#foreman-auto-responder),
 a separate, leased, opt-in worker process. The skills reload loop
 (`src/server/skills/reload.ts`) ends that invariant: it runs *in* the daemon, holds no
-lease (the port bind is the mutex - two daemons can't both hold `:7317`), and types on
-its own schedule.
+lease (the state-home ownership lock is the daemon mutex), and types on its own schedule.
 
 The gate that makes it safe is not paperwork. `injectPrompt` presses Enter
 unconditionally, and a Claude dialog is a **select list, not a text prompt**: pasted
@@ -190,13 +189,13 @@ backlog rows: no pane is read, no keystroke is sent, nothing is provisioned. Tha
 the test is "does it type?" rather than "is it autonomous?". The moment a source can type,
 this whole argument has to be redone for it.
 
-The mutual exclusion is the **port bind**, and it holds for the default port: a second
-`npm start` can't take `:7317`, so there's exactly one reload loop. It does *not* hold
-for `MISSION_PORT=<other>`. A daemon on a spare port is a second, fully autonomous writer
-aimed at the same real panes - discovery finds the same sessions whatever port you serve
-on, and an isolated `MISSION_HOME` makes it *worse*, because its ack table is empty and it
-believes every session is owed a reload. If you're testing against a spare port, know
-that its reload loop is live from the moment it boots.
+The mutual exclusion boundary is the **state home**, not the port. A second daemon cannot
+open the same home even with `MISSION_PORT=<other>`; it exits before SQLite is touched. A daemon
+with a genuinely isolated `MISSION_HOME` may run on a spare port, but it is still a second,
+fully autonomous writer aimed at the same real panes unless discovery is disabled or the
+surrounding environment is isolated too. Its ack table is empty, so it believes every discovered
+session is owed a reload. If you're testing with an isolated home, know that its reload loop is
+live from the moment it boots.
 
 ## Settings
 

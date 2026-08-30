@@ -143,7 +143,7 @@ test("identity is persisted BEFORE branch code runs", async () => {
   const outcome = await runSupervisedCheck(
     {
       attemptId: "attempt-order",
-      command: ["sh", "-c", 'touch "$1"; echo done', "sh", marker],
+      command: ["sh", "-c", 'printf "%s" "$MISSION_HOME" > "$1"; echo done', "sh", marker],
       leasePath: dir,
       workingSubpath: "",
     },
@@ -154,6 +154,11 @@ test("identity is persisted BEFORE branch code runs", async () => {
   assert.equal(records.length, 1);
   assert.deepEqual(markerWhenRecorded, [false], "branch code had already run when identity was persisted");
   assert.equal(existsSync(marker), true, "and the branch command did run afterwards");
+  assert.equal(
+    existsSync(readFileSync(marker, "utf8")),
+    false,
+    "the supervisor releases the check's disposable state home after process teardown",
+  );
   assert.equal(outcome.emptiness, "empty");
   assert.deepEqual(cleared, ["attempt-order"], "a proven-empty group releases its identity");
 });
@@ -244,13 +249,12 @@ test("the identity survives the gate release - the regression an exec-ing shim w
  * not what the cases below mean to exercise.
  *
  * Which branch a case takes is therefore decided by how long `node` takes to start. That is a
- * few hundred milliseconds idle and several times that on a machine running the whole suite,
- * so a sub-second budget here is not a test of the supervisor at all - it is a test of the
- * load average. This is what a 300ms timeout did: green locally and on a quiet CI runner, and
- * an unexplained `emptiness: "empty"` in a check worktree running 9000 tests beside several
- * agents. A concurrent full-suite run has measured native Node fixture startup at nearly five
- * seconds, so this stays well above that observed floor while remaining bounded. Every case
- * below needs the command to reach its timeout WITH the gate open.
+ * few hundred milliseconds idle and several seconds on a machine running the whole suite, so
+ * a short budget here is not a test of the supervisor at all - it is a test of the load
+ * average. Both 300ms and 3s have failed this way under full-suite contention, and a concurrent
+ * full-suite run measured native Node fixture startup at nearly five seconds. Fifteen seconds
+ * stays well above that observed floor while remaining bounded. Every case below needs the
+ * command to reach its timeout WITH the gate open.
  */
 const COMMAND_TIMEOUT_MS = 15_000;
 
@@ -272,6 +276,10 @@ test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", as
     { registry, daemonToken: "" },
   );
 
+  assert.ok(
+    existsSync(pidFile),
+    "the grandchild never recorded its pid, so group teardown was not exercised",
+  );
   const grandchild = Number(readFileSync(pidFile, "utf8").trim());
   assert.ok(grandchild > 1, "the branch command recorded its own background child");
   assert.equal(outcome.result.kind, "infrastructure");
@@ -332,7 +340,7 @@ test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   // pid file landed at ~145ms with a node grandchild and ~84ms with this one, the residual
   // being the supervisor's own shim, which is the thing under test and cannot be avoided. So
   // shell removes the ~60ms that was avoidable, and the budget carries the rest. Full-suite
-  // contention has stretched a 1.2s budget past breaking, so this case shares the same
+  // contention has stretched a 3s budget past breaking, so this case shares the same
   // supervisor-start floor as the other timeout cases above. Otherwise it tests scheduler
   // load instead of the SIGTERM-to-SIGKILL escalation it exists to prove.
   writeFileSync(

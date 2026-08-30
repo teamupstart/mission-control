@@ -6,10 +6,10 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 
 | Surface | Entry point | Ownership |
 |---|---|---|
-| Daemon | `src/server/index.ts` | Loopback HTTP server on port 7317 and the only SQLite writer |
+| Daemon | `src/server/index.ts` | State-home owner, loopback HTTP server, and the only SQLite writer |
 | Web dashboard | `src/web/main.tsx` | React UI over HTTP plus one Server-Sent Events connection |
 | Shared contracts | `src/shared/` | Wire types, schemas, and browser-safe shared logic |
-| Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon |
+| Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon; supervises the packaged Foreman worker |
 | MCP server | `src/mcp/server.ts` | Stdio child that reaches the daemon over HTTP |
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
@@ -19,6 +19,14 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
 
 The live browser channel is SSE only. Do not add browser polling.
+
+Before opening SQLite or running migrations, the daemon takes an OS lock on
+`$MISSION_HOME/daemon.lock`. The lock is scoped to the resolved state directory, not the API
+port. A second daemon pointed at the same home exits with the current owner's PID and port,
+while daemons using independent homes may run concurrently. The kernel releases ownership on
+process exit, including crashes; orderly shutdown closes SQLite before releasing it. The lock
+file and its metadata remain at the same path across restarts and upgrades and are not a state
+or database migration.
 
 ## Session ownership
 

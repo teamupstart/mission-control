@@ -1,7 +1,10 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { scoutSubmissionCredentialPath } from "@shared/harness-runtime.mjs";
+import {
+  isolatedScoutSubmissionCredentialPath,
+  scoutSubmissionCredentialPath,
+} from "@shared/harness-runtime.mjs";
 import { STATE_DIR } from "../config.ts";
 
 /**
@@ -78,14 +81,18 @@ function encode(authority: ScoutSubmissionAuthority): string {
 export function provisionScoutSubmissionCredential(taskId: string, cwd: string): string {
   const canonical = resolve(cwd);
   const token = encode({ taskId, cwd: canonical });
-  const file = scoutSubmissionCredentialPath(canonical);
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  try {
-    writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
-    renameSync(tmp, file);
-  } finally {
-    rmSync(tmp, { force: true });
+  for (const file of [
+    scoutSubmissionCredentialPath(canonical),
+    isolatedScoutSubmissionCredentialPath(canonical),
+  ]) {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
+      renameSync(tmp, file);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   }
   return token;
 }

@@ -160,6 +160,7 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
 function launchOpts(over: Record<string, unknown> = {}) {
   return {
     cwd: "/wt/one",
+    stateHome: "/tmp/mission-sdk-state",
     prompt: "do the thing",
     model: null,
     effort: null,

@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough, Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 
@@ -106,7 +106,10 @@ function model(over: Record<string, unknown> = {}): Record<string, unknown> {
   };
 }
 
-function depsFor(child: FakeChild): Partial<PiModelCatalogDeps> {
+function depsFor(
+  child: FakeChild,
+  onStateHome?: (stateHome: string) => void,
+): Partial<PiModelCatalogDeps> {
   return {
     requestId: () => "probe-id",
     spawn: (executable, args, options) => {
@@ -125,6 +128,10 @@ function depsFor(child: FakeChild): Partial<PiModelCatalogDeps> {
         "--no-approve",
       ]);
       assert.equal(options.shell, false);
+      assert.notEqual(options.env.MISSION_HOME, process.env.HARNESS_HOME);
+      assert.equal(options.env.FLEET_HOME, undefined);
+      assert.equal(options.env.HARNESS_HOME, undefined);
+      onStateHome?.(options.env.MISSION_HOME!);
       assert.equal(isAbsolute(options.cwd), true);
       const checkoutRelative = relative(process.cwd(), options.cwd);
       assert.ok(
@@ -151,8 +158,11 @@ test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe co
   })}\n`;
   const bytes = `${prelude}${line}`;
   const child = new FakeChild([bytes.slice(0, 17), bytes.slice(17, 93), bytes.slice(93)]);
+  let stateHome = "";
 
-  const result = await discoverPiModels("/fake/pi", depsFor(child));
+  const result = await discoverPiModels("/fake/pi", depsFor(child, (value) => {
+    stateHome = value;
+  }));
 
   assert.deepEqual(result, {
     ok: true,
@@ -188,6 +198,7 @@ test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe co
   assert.equal("headers" in result.choices[0]!, false);
   assert.equal("cost" in result.choices[0]!, false);
   assert.equal("baseUrl" in result.choices[0]!, false);
+  assert.equal(existsSync(stateHome), false, "the completed probe releases its state home");
 });
 
 test("Pi discovery preserves first-seen order, deduplicates full ids, and drops unsafe rows", async () => {
@@ -310,13 +321,14 @@ test("Pi discovery maps framing, RPC, availability, and process failures to boun
   await t.test("actual child spawn error", async () => {
     const result = await discoverPiModels(join(home, "missing-pi-binary"), {
       requestId: () => "probe-id",
-      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 1_000, closeGraceMs: 10 },
+      // Real child scheduling can exceed one second while the six-file suite is saturated.
+      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 5_000, closeGraceMs: 10 },
     });
     assert.deepEqual(result, { ok: false, problem: "process_failed" });
   });
 
   await t.test("actual child non-zero close after stdout EOF", async () => {
-    const result = await discoverPiModels("/usr/bin/false", {
+    const result = await discoverPiModels(process.execPath, {
       requestId: () => "probe-id",
       bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 15_000, closeGraceMs: 10 },
     });

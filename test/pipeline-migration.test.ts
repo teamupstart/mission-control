@@ -11,10 +11,9 @@
  * and nowhere in a fresh-checkout suite.
  *
  * The second half is the direction nobody usually tests: a database written by THIS build
- * must still open in a build without the phases that come after it. `pipeline_runs` is the
- * only table this phase adds, and it holds no foreign key to anything - so this is checkable
- * by asserting what the schema does NOT reference, which is what keeps a later phase's
- * `pipeline_events` from being quietly depended on here.
+ * must still open in a build without the phases that come after it. The Pipeline tables hold
+ * no foreign key to a future phase - so this is checkable by asserting what the schema does
+ * NOT reference, which keeps a later phase from being quietly depended on here.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -100,7 +99,9 @@ function seedPreFeatureDb(): void {
 
 seedPreFeatureDb();
 
-const { openDb, loadPipelineRuns, pipelineStoredRepos } = await import("../src/server/db.ts");
+const { loadPipelineCommissions, openDb, loadPipelineRuns, pipelineStoredRepos } = await import(
+  "../src/server/db.ts"
+);
 const { getPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 
 test("a database from before this feature opens, and keeps its settings", () => {
@@ -167,6 +168,30 @@ test("the upgraded schema has the key the projection is addressed by", () => {
   const identity = columns.find((c) => c.name === "events_identity");
   assert.ok(identity, "the upgrade must add events_identity to an existing pipeline_runs");
   assert.equal(identity.notnull, 1);
+});
+
+test("a pre-feature database gains the empty durable commission family", () => {
+  const db = openDb();
+  const tables = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name LIKE 'pipeline_commission%'
+        ORDER BY name`,
+    )
+    .all() as unknown as Array<{ name: string }>;
+  assert.deepEqual(
+    tables.map((row) => row.name),
+    [
+      "pipeline_commission_attempts",
+      "pipeline_commission_events",
+      "pipeline_commissions",
+    ],
+  );
+  const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as unknown as Array<{
+    name: string;
+  }>;
+  assert.ok(taskColumns.some((column) => column.name === "pipeline_commission_id"));
+  assert.deepEqual(loadPipelineCommissions(), []);
 });
 
 test("this phase's schema depends on no table a later phase owns", () => {

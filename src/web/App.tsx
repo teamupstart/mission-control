@@ -3641,22 +3641,37 @@ export function App(): React.JSX.Element {
             asked for exactly that. Same rule the filter's empty state below already follows:
             never report nothing while the something is on screen. */}
         {sessions.length === 0 && dispatchingTasks.length === 0 && (
-          <div className="empty">
-            <p className="empty-title">No agent sessions detected</p>
-            {/* Names the harnesses off the union, not by hand: an operator running an
-                agent this build can discover but this sentence never mentioned would
-                read it as "that one isn't supported" and stop looking. */}
-            <p className="empty-sub">
-              Start a {agentList(AGENT_TYPES)} session in a terminal pane and it will appear
-              here.
-            </p>
-            {/* The stream can be reconnecting behind this screen, which looks identical to
-                "nothing is running" - so the way out of a stale view is printed here rather
-                than left for the operator to guess. */}
-            <p className="empty-sub empty-hint">
-              Already running one? Press <kbd>⌘R</kbd> or <kbd>Ctrl+R</kbd> to refresh.
-            </p>
-          </div>
+          hasSnapshot ? (
+            <div className="empty">
+              <p className="empty-title">No agent sessions detected</p>
+              {/* Names the harnesses off the union, not by hand: an operator running an
+                  agent this build can discover but this sentence never mentioned would
+                  read it as "that one isn't supported" and stop looking. */}
+              <p className="empty-sub">
+                Start a {agentList(AGENT_TYPES)} session in a terminal pane and it will appear
+                here.
+              </p>
+              {/* The stream can be reconnecting behind this screen, which looks identical to
+                  "nothing is running" - so the way out of a stale view is printed here rather
+                  than left for the operator to guess. */}
+              <p className="empty-sub empty-hint">
+                Already running one? Press <kbd>⌘R</kbd> or <kbd>Ctrl+R</kbd> to refresh.
+              </p>
+            </div>
+          ) : (
+            // Before the first snapshot lands, "No agent sessions detected" is not a fact -
+            // it is a guess dressed as one, and on a cold daemon or a slow disk it can sit on
+            // screen long enough to read as the fleet genuinely having nothing, or as the app
+            // having failed to start, rather than as data still arriving. `workflowCommandFact`
+            // already draws this exact line for the Library shelves ("Not configured" vs
+            // "waiting for the daemon"); this is the same distinction for the page that reads
+            // it first.
+            <div className="empty" role="status" aria-label="Loading sessions">
+              <span className="empty-spinner" aria-hidden="true" />
+              <p className="empty-title">Waiting for the daemon…</p>
+              <p className="empty-sub">The fleet's session list has not arrived yet.</p>
+            </div>
+          )
         )}
 
         {/* Only when the layout drew nothing - on the board a filter that matched only

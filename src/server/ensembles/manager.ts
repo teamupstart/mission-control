@@ -35,6 +35,7 @@ import { agentBinPresent } from "../dispatcher.ts";
 import { resolveDispatchEffort } from "../harnesses.ts";
 import { harnessFor } from "../harness/index.ts";
 import { missionMcpDescriptor } from "../mission-mcp.ts";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import { run } from "../util/exec.ts";
 import {
@@ -291,7 +292,11 @@ export class EnsembleManager {
     this.now = options.now ?? (() => Date.now());
     this.adapters = options.adapters ?? ARTIFACT_ADAPTERS;
     this.hasAgentBin = options.agentBinPresent ?? agentBinPresent;
-    this.hasMissionMcp = options.missionMcpAvailable ?? (async () => (await missionMcpDescriptor()) !== null);
+    this.hasMissionMcp = options.missionMcpAvailable ?? (async () => {
+      const descriptor = await missionMcpDescriptor();
+      cleanupAgentSubprocessEnv(descriptor?.env);
+      return descriptor !== null;
+    });
     // The engine exists only when a Task gateway was wired in. It calls back into `publish` after
     // every step, so the two are constructed together with the manager holding the reference.
     this.engine = options.tasks

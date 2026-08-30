@@ -1,6 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -266,6 +266,24 @@ test("start persists a row, registers the card, and records the binding", async 
       START.prompt,
       "an untagged automated send does not replace the human Goal",
     );
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an embedded session releases its disposable state home when its driver ends", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    await supervisor.start(START);
+    const stateHome = fake.calls[0]?.stateHome;
+    assert.ok(stateHome);
+    assert.equal(existsSync(stateHome), true);
+
+    handle.end();
+    await waitFor(() => !existsSync(stateHome));
   } finally {
     fake.restore();
   }

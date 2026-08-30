@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BASE_URL, readToken, stateDir } from "../src/shared/harness-runtime.mjs";
+import { BASE_URL, readClientToken, stateDir } from "../src/shared/harness-runtime.mjs";
 // The payload -> wire-shape normalization, in its own module so it can be tested without
 // importing this script (which renders and exits at import time). See statusline-body.mjs.
 import { toBody } from "./statusline-body.mjs";
@@ -60,7 +60,7 @@ async function post(body) {
   try {
     await fetch(`${BASE_URL}/statusline`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": readToken() },
+      headers: { "content-type": "application/json", "x-harness-token": readClientToken() },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });

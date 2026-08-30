@@ -89,7 +89,8 @@ test("the descriptor points at the ONE resolved server path with an absolute run
     "browser",
     "the Node daemon tells its external MCP child which dashboard client launched it",
   );
-  assert.equal(d.env.MISSION_HOME, join(home, "state"));
+  assert.notEqual(d.env.MISSION_HOME, join(home, "state"));
+  assert.ok(statSync(d.env.MISSION_HOME!).isDirectory(), "the MCP child receives a disposable state home");
   assert.equal(d.env.MISSION_PORT, "7317");
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
@@ -637,7 +638,9 @@ test("Codex combines auto-mode flags, MCP registration, hooks and the trust bypa
 
     const cfg = overrides(prepared.args);
     assert.equal(cfg.length, 3 + CODEX_HOOK_EVENTS.length, "three MCP keys plus one per hook event");
-    assert.deepEqual(cfg.slice(0, 3), overrides(codexMissionMcpArgs((await missionMcpDescriptor())!)));
+    assert.match(cfg[0]!, /^mcp_servers\.mission-control\.command=/);
+    assert.match(cfg[1]!, /^mcp_servers\.mission-control\.args=/);
+    assert.match(cfg[2]!, /^mcp_servers\.mission-control\.env=.*MISSION_HOME/);
     for (const [i, event] of CODEX_HOOK_EVENTS.entries()) {
       assert.match(cfg[3 + i]!, new RegExp(`^hooks\\.${event}=`));
     }

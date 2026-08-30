@@ -150,6 +150,7 @@ async function smokeDaemon() {
           return;
         }
         console.log(`[smoke] daemon bundle boots and serves /api/health (version ${body.version})`);
+        await smokeForeman(home);
         return;
       }
       await new Promise((r) => setTimeout(r, POLL_MS));
@@ -157,6 +158,56 @@ async function smokeDaemon() {
   } finally {
     await reap(child);
     await rm(home, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Boot the exact Foreman artifact the packaged Electron app supervises and prove it acquires
+ * the daemon lease. A source-level worker test cannot catch a missing build entry or a main
+ * process pointing at an artifact the package never produced.
+ *
+ * The smoke database is empty and backlog autopilot is off, so this starts no agent and spends
+ * no model tokens. It only exercises the worker's load, HTTP, and lease boundaries.
+ */
+async function smokeForeman(home) {
+  const child = spawn(process.execPath, ["dist/server/foreman-worker.mjs"], {
+    env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(PORT) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (data) => (output += data));
+  child.stderr.on("data", (data) => (output += data));
+  let exited = null;
+  child.on("exit", (code, signal) => (exited = { code, signal }));
+
+  try {
+    const deadline = Date.now() + BOOT_TIMEOUT_MS;
+    for (;;) {
+      if (exited) {
+        fail(
+          `the Foreman bundle exited (code ${exited.code}, signal ${exited.signal}) ` +
+            "instead of acquiring its lease",
+        );
+        console.error(output.trimEnd());
+        return;
+      }
+      if (Date.now() > deadline) {
+        fail(`the Foreman bundle did not acquire its lease within ${BOOT_TIMEOUT_MS}ms`);
+        console.error(output.trimEnd());
+        return;
+      }
+      const res = await fetch(`http://127.0.0.1:${PORT}/api/foreman/status`).catch(() => null);
+      if (res?.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (body.running === true) {
+          console.log("[smoke] Foreman bundle boots and acquires the daemon lease");
+          return;
+        }
+      }
+      await new Promise((resolvePoll) => setTimeout(resolvePoll, POLL_MS));
+    }
+  } finally {
+    await reap(child);
   }
 }
 
@@ -187,6 +238,26 @@ async function smokeNativeKeepAwake() {
     return;
   }
   console.log("[smoke] native Keep Awake addon loads without creating an assertion");
+}
+
+/**
+ * Pin the packaged main process to the Foreman artifact. Booting the worker proves the bundle;
+ * this check proves Electron actually names it, which is the seam that left the installed app
+ * healthy while its scheduler never existed.
+ */
+async function smokeDesktopBackgroundPaths() {
+  const mainPath = resolve("dist/main/index.cjs");
+  const foremanPath = resolve("dist/server/foreman-worker.mjs");
+  if (!existsSync(mainPath) || !existsSync(foremanPath)) {
+    fail("the desktop build is missing its main process or Foreman worker bundle");
+    return;
+  }
+  const main = await readFile(mainPath, "utf8");
+  if (!main.includes("foreman-worker.mjs") || !main.includes("mission-control-foreman")) {
+    fail("the Electron main bundle does not supervise the built Foreman worker");
+    return;
+  }
+  console.log("[smoke] Electron main bundle supervises the built Foreman worker");
 }
 
 /**
@@ -495,6 +566,7 @@ async function smokeMermaidRenderer() {
 }
 
 await smokeNativeKeepAwake();
+await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();

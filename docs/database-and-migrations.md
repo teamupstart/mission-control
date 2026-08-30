@@ -7,8 +7,11 @@ then reconciles durable records against that observed state.
 
 [`src/server/db.ts`](../src/server/db.ts) is both the schema and the upgrade path. It opens
 the database, creates base tables, and applies additive migrations for existing installs.
-The daemon composition root calls `openDb()` before it starts services, making the daemon
-the only SQLite writer. Other processes, including Foreman and MCP, use loopback HTTP.
+The daemon composition root acquires `$MISSION_HOME/daemon.lock` before calling `openDb()` or
+running any migration. That process-lifetime OS lock, rather than the API port, makes the daemon
+the only SQLite writer for a state home. If ownership is unavailable, startup reports the
+current owner's PID and port and exits without opening the database. Other processes, including
+Foreman and MCP, use loopback HTTP.
 
 The practical implication is that a schema change is not just a new-table change: it must
 also open safely against an operator's existing database. Keep the migration beside the
@@ -51,6 +54,15 @@ from the engine's files - which is what keeps a duplicate row a diagnostic wart 
 wrong figure, and what settles every convergence question in favour of an extra row over a
 dropped event. Its key is in
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers).
+
+The `pipeline_commissions`, `pipeline_commission_attempts`, and
+`pipeline_commission_events` tables are durable state of a different kind. They preserve one
+Mission Control-owned task commission across ordered provider Engineer attempts, keep one
+run-local replay cursor per attempt, and retain a bounded opaque authoring ledger. The attempt
+table keeps the full audit, while commission JSON and SSE projections carry only the 20 most
+recent attempts. Their projection can be reconciled through the provider's sanctioned replay
+command, but it is not rebuildable from implementation worktrees and must not be treated as a
+disposable cache.
 
 `archive_capture_jobs` sits beside them and is a different kind of table again: local
 coordination for archives this daemon is still WRITING, one row per archive a task work episode

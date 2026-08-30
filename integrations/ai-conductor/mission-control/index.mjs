@@ -108,7 +108,8 @@ const SHUTDOWN_MS = 2_000;
 const SHUTDOWN_RETRY_MS = 50;
 
 /**
- * The event kinds this build forwards, frozen at ai-conductor 0.104.0 (`1631544a`).
+ * The implementation-run event kinds this build forwards are frozen at ai-conductor
+ * 0.104.0 (`1631544a`); the additive Engineer kinds are frozen at Phase 1 (`8685e121`).
  *
  * Enumerated because conductor's bus has no wildcard: `.on()` takes one type. So this list
  * is what a copy of this directory knows about, for ever, and a conductor release that adds
@@ -158,6 +159,21 @@ export const FORWARDED_EVENT_TYPES = Object.freeze([
   "credentials_park_progress",
   "dashboard_refresh",
   "deprecated_step",
+  "engineer_land_reconciled",
+  "engineer_land_refused",
+  "engineer_routing_selected",
+  "engineer_run_cancelled",
+  "engineer_run_created",
+  "engineer_run_failed",
+  "engineer_run_settled",
+  "engineer_run_started",
+  "engineer_spec_handoff",
+  "engineer_step_completed",
+  "engineer_step_failed",
+  "engineer_step_retried",
+  "engineer_step_skipped",
+  "engineer_step_started",
+  "engineer_worktree_created",
   "feature_complete",
   "feature_usage_total",
   "finish_publication_blocked",
@@ -295,6 +311,39 @@ export function resolveRun(env, cwd, event) {
     return { repo, worktree: join(repo, WORKTREES_DIR, slug), slug };
   }
   return null;
+}
+
+/**
+ * Additive envelope for provider-owned Engineer identity. It deliberately carries no fake
+ * implementation slug or worktree: the Engineer journal precedes both, and Mission Control
+ * resolves it through the bound commission attempt instead.
+ */
+export function engineerEnvelope(event) {
+  if (!event || typeof event !== "object" || !String(event.type ?? "").startsWith("engineer_")) {
+    return null;
+  }
+  if (
+    event.schemaVersion !== 1 ||
+    typeof event.engineerRunId !== "string" ||
+    !(typeof event.correlationId === "string" || event.correlationId === null) ||
+    typeof event.attemptKey !== "string" ||
+    !Number.isInteger(event.attempt) ||
+    event.attempt < 1 ||
+    typeof event.repoRoot !== "string" ||
+    !Number.isInteger(event.revision) ||
+    event.revision < 1
+  ) {
+    return null;
+  }
+  return {
+    repo: event.repoRoot,
+    seq: event.revision,
+    event,
+    engineerRunId: event.engineerRunId,
+    correlationId: event.correlationId,
+    engineerAttempt: event.attempt,
+    attemptKey: event.attemptKey,
+  };
 }
 
 /** The feature a slug-carrying event names, or null. Three spellings, all conductor's. */
@@ -479,6 +528,24 @@ export function createMissionControlVisualizer(options = {}) {
   };
 
   const enqueue = (event) => {
+    if (String(event?.type ?? "").startsWith("engineer_")) {
+      const envelope = engineerEnvelope(event);
+      if (!envelope) {
+        warnOnce("identity", "refused an Engineer event with incomplete lifecycle identity");
+        return;
+      }
+      buffer.push(envelope);
+      if (buffer.length > MAX_BUFFER) {
+        dropped += buffer.length - MAX_BUFFER;
+        buffer = buffer.slice(-MAX_BUFFER);
+        warnOnce(
+          "buffer",
+          `dropped ${dropped} buffered event(s) - is the Mission Control daemon running at ${url}?`,
+        );
+      }
+      schedule();
+      return;
+    }
     const run = pinned ?? resolveRun(env, cwd, event);
     if (!run) {
       warnOnce(

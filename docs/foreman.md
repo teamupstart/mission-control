@@ -105,15 +105,16 @@ taking a body.
 Each session is reviewed in a **fresh headless model call**, using Claude's Agent SDK transport
 by default, so context never bleeds between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
 it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
-process nothing starts for you. So on a fresh install Foreman types nothing, sends nothing and
-runs nothing - it *drafts* answers onto the session detail until you trust it. `enabled` flipped on
+process the packaged app supervises. So on a fresh install Foreman types nothing, sends nothing
+and runs nothing - it *drafts* answers onto the session detail until you trust it. `enabled` flipped on
 because it is a prerequisite gate rather than an action: while it shipped off, a **Foreman
 Complete** workflow binding could not be created at all, which left
 [the repair loop](workflows.md#the-repair-loop-end-to-end) unreachable on a fresh install no matter what
 you configured in Workflow settings. If you have ever switched Foreman off in Settings, that
 answer is persisted and survives - the new default only reaches installs that never answered.
 
-Start the worker - a plain agent in a terminal that talks to the daemon over localhost - with:
+The packaged desktop app starts and supervises the worker automatically. In a source-only
+development stack, start that plain HTTP-only process with:
 
 ```sh
 npm run foreman
@@ -332,8 +333,8 @@ relationship or reconciliation state, and Foreman's rationale. This is the inspe
 for what Foreman currently believes the session is trying to finish; the rows below it remain
 the decision history.
 
-Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
-process acquires no **lease** and idles as a standby, taking over automatically if the
+Only one worker drives the sessions at a time. A manually started worker beside the packaged
+app is safe: the second process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
 

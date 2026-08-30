@@ -99,7 +99,7 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
   mkdirSync(serverDir, { recursive: true });
   copyFileSync(serviceEntry, copiedEntry);
   writeFileSync(
-    join(scripts, "build-keep-awake-native.mjs"),
+    join(scripts, "build-native.mjs"),
     `import { appendFileSync } from "node:fs";\n` +
       `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "build", pid: process.pid }) + "\\n");\n`,
   );
@@ -179,7 +179,7 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
   mkdirSync(serverDir, { recursive: true });
   copyFileSync(serviceEntry, copiedEntry);
   writeFileSync(
-    join(scripts, "build-keep-awake-native.mjs"),
+    join(scripts, "build-native.mjs"),
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
       `const signal = process.env.SERVICE_TEST_SIGNAL;\n` +

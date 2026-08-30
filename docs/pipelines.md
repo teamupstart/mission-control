@@ -606,6 +606,33 @@ already holding - and the plugin flushes every 250ms, so "read the ledger of wha
 just pushed" is "read it several times a second", which is a *faster* cadence than the tick
 this was meant to relax, on precisely the runs it was relaxed for.
 
+### Durable Engineer commission foundation
+
+Mission Control also understands ai-conductor's versioned
+`engineerLifecycleEventsV1` contract. This is dormant infrastructure in the current phase:
+Pipeline dispatch still follows the existing implementation-run path, and no Board, Console,
+Runs, session-grouping, or task-chip behavior reads the new projection yet.
+
+A commission is Mission Control-owned durable task state. It retains one opaque commission
+id, one correlation id, ordered Engineer attempts, an independent provider revision cursor
+per attempt, the current DECIDE step projection, and an optional exact implementation run
+link supplied by the provider's spec handoff. The older `pipeline_runs` and `pipeline_events`
+tables remain the provider-owned implementation projection and ledger. They are not replaced
+or repurposed.
+
+Every Engineer push is reduced through the same server-owned reducer used by reconciliation.
+On the normal five-second Pipeline cadence, active bound attempts call the provider's
+sanctioned `run-replay` command strictly after their stored cursor. A live push racing that
+replay is either the durable write or an idempotent duplicate. Temporary provider failures
+retain the last good steps and attach a bounded error. A retry appends a successor attempt
+with a new cursor and never reopens the terminal predecessor.
+
+Commission projections are bounded whole objects on the existing connect snapshot and SSE
+stream. They carry only the 20 most recent attempts; `pipeline_commission_attempts` retains
+the complete durable audit without making reconnect payloads grow forever. The browser holds
+the projection for forward compatibility but does not render it in this phase. There is no
+polling path and no second browser channel.
+
 ### The route
 
 `POST /ingest/conductor`, in the same token-guarded ingest family as `/hooks/:event` and
@@ -618,8 +645,22 @@ somebody else's event loop, appending a line per event and flushing what it has:
 { "repo": "/w/demo", "worktree": "/w/demo/.worktrees/a-feature", "slug": "a-feature", "seq": 12, "event": { "type": "step_completed", "step": "build" } }
 ```
 
-`event` is stored verbatim and read for two fields it may not carry (`type`, `ts`). Nothing
-validates its shape: conductor's event union is TypeScript-only, unversioned and 104 kinds
+Versioned Engineer events use an additive envelope with `engineerRunId`, `correlationId`,
+`engineerAttempt`, and `attemptKey`, while omitting the not-yet-created implementation
+worktree and slug. They are accepted only for a known active bound commission whose stored
+provider, canonical repository, correlation, attempt, launch key, and Engineer run id all
+match. Their run-local revision is monotonic and idempotent. A malformed or cross-boundary
+line costs only that item in the batch.
+
+Engineer event fields have explicit identity, path, URL, narrative, and collection limits,
+and the complete UTF-8 JSON event is capped at 64 KiB before either live ingest or replay can
+persist it. An oversized event is counted as `malformed`, dropped without moving the durable
+cursor, and reported through a bounded warning so an unattended producer cannot grow either
+the ledger or daemon logs without limit.
+
+An implementation `event` is stored verbatim and read for two fields it may not carry
+(`type`, `ts`). Nothing validates that older shape: conductor's implementation event union
+is TypeScript-only, unversioned and 104 kinds
 members long, so a schema here would be a second copy of a contract with no first copy, and
 its first effect would be to refuse the events of a conductor release newer than this build.
 A record naming no `type` is stored under the kind `unknown`.

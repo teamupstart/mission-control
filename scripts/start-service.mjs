@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-// launchd entry for the source-owned daemon. Build the one native runtime artifact
-// before any source import can advertise Keep Awake support, then load the daemon into
-// this process so launchd owns and signals its exact PID.
+// launchd entry for the source-owned daemon. Build the native runtime artifacts before
+// any source import can acquire state ownership or advertise Keep Awake support, then load
+// the daemon into this process so launchd owns and signals its exact PID.
 
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { register } from "tsx/esm/api";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const nativeBuild = join(repo, "scripts", "build-keep-awake-native.mjs");
+const nativeBuild = join(repo, "scripts", "build-native.mjs");
 const server = join(repo, "src", "server", "index.ts");
 const terminationSignals = ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
 
@@ -51,7 +51,7 @@ try {
 if (requestedSignal) process.exit(0);
 if (buildResult.signal || buildResult.code !== 0) {
   throw new Error(
-    `Keep Awake native build failed (${buildResult.signal ?? `exit ${buildResult.code}`})`,
+    `Native runtime build failed (${buildResult.signal ?? `exit ${buildResult.code}`})`,
   );
 }
 

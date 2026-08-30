@@ -152,7 +152,11 @@ function runsAsking(...prompts: string[]): number {
 }
 
 /** Poll until `fn` is true, or fail. Beats a fixed sleep: the loop is async by nature. */
-async function until(fn: () => boolean, what: string, ms = 4000): Promise<void> {
+async function until(
+  fn: () => boolean,
+  what: string,
+  ms = FLOOR_MS + RUN_TIMEOUT_MS,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (fn()) return;

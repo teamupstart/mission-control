@@ -89,6 +89,9 @@ import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
+import { cancelPipelineCommission } from "./pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import { refreshPipelineCommission } from "./pipelines/index.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -3309,6 +3312,41 @@ export class TaskManager {
 
   /** `cancel`'s body, once the cleanup reservation is held. */
   private async cancelReserved(id: string, t: Task): Promise<Ok> {
+    const commission = this.registry.pipelineCommissionForTask(id);
+    // Once Engineer handed off a specification, cancelling the Task applies to the later
+    // implementation run. The authoring commission is successful history at that point, so
+    // rewriting it to `cancelled` would make every projection claim Engineer failed to finish.
+    const authoringCommission =
+      commission &&
+      commission.handoff === null &&
+      commission.linkedRun === null &&
+      !["awaiting_spec_merge", "cancelled", "settled"].includes(commission.lifecycle)
+        ? commission
+        : null;
+    if (authoringCommission) {
+      const active = authoringCommission.attempts.find(
+        (attempt) => attempt.attempt === authoringCommission.activeAttempt,
+      );
+      if (active?.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
+        const lifecycle = PIPELINE_PROVIDERS[authoringCommission.provider].engineerLifecycle;
+        if (!lifecycle) {
+          return { ok: false, error: "the Pipeline provider cannot cancel its active Engineer run" };
+        }
+        const stopped = await lifecycle.cancel({
+          engineerRunId: active.engineerRunId,
+          reason: "Pipeline task cancelled in Mission Control",
+        });
+        if (!stopped.ok) {
+          return { ok: false, error: `could not cancel the provider Engineer run: ${stopped.error}` };
+        }
+        await refreshPipelineCommission(this.registry, authoringCommission);
+      }
+      const cancelled = cancelPipelineCommission({
+        commissionId: authoringCommission.id,
+        reason: "Pipeline task cancelled in Mission Control",
+      });
+      this.registry.upsertPipelineCommission(cancelled);
+    }
     // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
     // writing after capture published an immutable partial but before teardown deletes the
     // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the
@@ -3820,6 +3858,12 @@ export class TaskManager {
       return {
         ok: false,
         error: `task is ${t.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    if (t.kind === "pipeline" && t.status === "cancelled" && t.pipelineCommissionId) {
+      return {
+        ok: false,
+        error: "a cancelled Pipeline commission is terminal; create a new Pipeline task",
       };
     }
     this.reschedulingTasks.add(id);

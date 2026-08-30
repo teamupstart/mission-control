@@ -409,6 +409,10 @@ registry.onSessionsObserved(() => {
 // this has nothing to restore until its first embedded dispatch. Awaited rather than
 // fire-and-forget for the ordering itself, and best-effort because a daemon that refused to
 // start over one unresumable session would be worse than one running without it.
+// Restore provider commissions first. A retained Engineer may rotate its native conversation
+// identity while resuming; that rotation must resolve against the exact handoff commission
+// before generic work-episode ownership decides whether the task was abandoned.
+restorePipelineProjection(registry);
 try {
   await sdkSessions.restore();
 } catch (err) {
@@ -487,7 +491,6 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // and so a repository whose consent was withdrawn while the daemon was down never comes
 // back as a frame about a repository nobody enabled. Inert on the shipped configuration:
 // with no repository consented to, the restore prunes nothing and each tick is one KV read.
-restorePipelineProjection(registry);
 const stopPipelines = startPipelineWatcher(registry);
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -

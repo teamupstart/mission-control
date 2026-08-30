@@ -65,6 +65,13 @@ import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import { preparePiLaunch } from "./harness/pi/launch.ts";
 import { pipelineTaskLaunch } from "./pipelines/index.ts";
+import {
+  appendPipelineCommissionAttempt,
+  bindPipelineCommissionAttempt,
+  createPipelineCommission,
+} from "./pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import type { PipelineEngineerRunSnapshot } from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
@@ -868,25 +875,95 @@ export class Dispatcher {
       task.intent,
     );
     if (!launch.ok) throw new Error(launch.error);
+    let engineerRunId: string | null = null;
 
-    const runKey = pipelineRunKeyOf(launch.pipelineRun);
-    const owner = this.registry.listTasks().find(
-      (candidate) =>
-        candidate.id !== taskId &&
-        candidate.kind === "pipeline" &&
-        (candidate.status === "running" || candidate.status === "dispatching") &&
-        candidate.pipelineRun !== null &&
-        pipelineRunKeyOf(candidate.pipelineRun) === runKey,
-    );
-    if (owner) {
-      throw new Error(
-        `pipeline run "${launch.pipelineRun.slug}" is already owned by active task ${owner.id}`,
+    if ("provider" in launch) {
+      const lifecycle = PIPELINE_PROVIDERS[launch.provider].engineerLifecycle;
+      if (!lifecycle) {
+        throw new Error("the pipeline provider lost Engineer lifecycle support before launch");
+      }
+      let commission = task.pipelineCommissionId
+        ? this.registry.pipelineCommission(task.pipelineCommissionId)
+        : null;
+      if (task.pipelineCommissionId && !commission) {
+        throw new Error("the task names a Pipeline commission that could not be restored");
+      }
+      if (!commission) {
+        commission = createPipelineCommission({
+          taskId,
+          provider: launch.provider,
+          repoRoot: task.repoRoot,
+        });
+        this.patch(taskId, { pipelineCommissionId: commission.id, pipelineRun: null });
+        this.registry.upsertPipelineCommission(commission);
+      } else {
+        const active = commission.attempts.find(
+          (attempt) => attempt.attempt === commission!.activeAttempt,
+        );
+        if (active && ["failed", "cancelled"].includes(active.state)) {
+          commission = appendPipelineCommissionAttempt({ commissionId: commission.id });
+          this.registry.upsertPipelineCommission(commission);
+        } else if (active?.state === "settled" || commission.lifecycle === "awaiting_spec_merge") {
+          throw new Error("the Pipeline specification is already awaiting merge and cannot restart Engineer");
+        }
+      }
+
+      const attempt = commission.attempts.find(
+        (candidate) => candidate.attempt === commission!.activeAttempt,
       );
+      if (!attempt) throw new Error("the Pipeline commission has no active Engineer attempt");
+      let reserved: PipelineEngineerRunSnapshot | null = null;
+      const created = await lifecycle.create({
+        repoRoot: task.repoRoot,
+        idea: task.intent,
+        correlationId: commission.correlationId,
+        attemptKey: attempt.launchKey,
+      });
+      if (created.ok) {
+        reserved = created.value;
+      } else {
+        // Creation is idempotent. Inspecting the exact correlation closes the response-lost
+        // case without minting another run or another launch key.
+        const inspected = await lifecycle.inspectCorrelation({
+          repoRoot: task.repoRoot,
+          correlationId: commission.correlationId,
+        });
+        reserved = inspected.ok
+          ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
+          : null;
+        if (!reserved) {
+          throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
+        }
+      }
+      const reservedRun = reserved;
+      if (!reservedRun) throw new Error("the provider did not return an Engineer run");
+      commission = bindPipelineCommissionAttempt({
+        commissionId: commission.id,
+        attempt: attempt.attempt,
+        engineerRunId: reservedRun.engineerRunId,
+        providerAttempt: reservedRun.attempt,
+        attemptKey: reservedRun.attemptKey,
+        previousEngineerRunId: reservedRun.previousEngineerRunId,
+      });
+      engineerRunId = reservedRun.engineerRunId;
+      this.registry.upsertPipelineCommission(commission);
+    } else {
+      const runKey = pipelineRunKeyOf(launch.pipelineRun);
+      const owner = this.registry.listTasks().find(
+        (candidate) =>
+          candidate.id !== taskId &&
+          candidate.kind === "pipeline" &&
+          (candidate.status === "running" || candidate.status === "dispatching") &&
+          candidate.pipelineRun !== null &&
+          pipelineRunKeyOf(candidate.pipelineRun) === runKey,
+      );
+      if (owner) {
+        throw new Error(
+          `pipeline run "${launch.pipelineRun.slug}" is already owned by active task ${owner.id}`,
+        );
+      }
+      this.patch(taskId, { pipelineRun: launch.pipelineRun });
     }
-
-    // This write is the ownership boundary. It is synchronous and durable, so another
-    // dispatch sees the claim before this one yields to either host launcher.
-    this.patch(taskId, { pipelineRun: launch.pipelineRun });
 
     if (launch.launchRuntime === "agent-sdk") {
       if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
@@ -916,7 +993,9 @@ export class Dispatcher {
         );
       }
       const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run", "report_pipeline_workspace"],
+        "provider" in launch
+          ? ["report_pipeline_workspace"]
+          : ["adopt_pipeline_run", "report_pipeline_workspace"],
         mcp,
       );
       if (!published.ok) {
@@ -927,13 +1006,18 @@ export class Dispatcher {
       // Held in its own binding for the same reason `piText` is: turn one now has a second
       // reader, and the launch marker has to fingerprint the exact string the driver was
       // given. Recomposing it at the second site is how the two answers drift apart.
-      const engineerPrompt =
-        `${engineerCommand} ${task.intent}\n\n` +
-        `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
-        `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
-        `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
-        `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
-        `with that absolute path before editing files there.]`;
+      const engineerPrompt = "provider" in launch
+        ? `${engineerCommand} ${task.intent}\n\n` +
+          `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
+          `Pass that exact id as --engineer-run-id when creating the authoring worktree. ` +
+          `After Engineer creates or enters that worktree, call report_pipeline_workspace with ` +
+          `its absolute path before editing files there.]`
+        : `${engineerCommand} ${task.intent}\n\n` +
+          `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
+          `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
+          `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
+          `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
+          `with that absolute path before editing files there.]`;
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });
@@ -1011,12 +1095,13 @@ export class Dispatcher {
 
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);
-    const [command, ...args] = launch.argv;
+    const terminalLaunch = launch;
+    const [command, ...args] = terminalLaunch.argv;
     if (!command) throw new Error("the pipeline provider returned no launch command");
     const homeName = await (this.deps.spawn ?? spawnUniquely)(
       label,
       shortId,
-      launch.cwd,
+      terminalLaunch.cwd,
       command,
       args,
     );

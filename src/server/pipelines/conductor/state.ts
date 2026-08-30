@@ -520,9 +520,9 @@ export interface WorktreesReading {
  * stable order, and capped so a repository with a runaway `.worktrees/` cannot make one
  * pass unbounded.
  *
- * A directory with no `.pipeline/` is skipped: the engine cuts spec-authoring worktrees
- * (`engineer-<slug>`) and autoresolve worktrees (`resolve-<slug>`) in the same place, and
- * neither is a pipeline run.
+ * A directory with no execution manifest is skipped. Engineer authoring worktrees may carry
+ * `.pipeline/` for lifecycle markers and verification artifacts, but only
+ * `conduct-state.json` establishes that the implementation daemon owns a run there.
  *
  * NULL AND EMPTY ARE DIFFERENT ANSWERS, and this is the one reader where the difference is
  * expensive. An empty list means the engine is driving nothing here, and the caller's
@@ -554,7 +554,7 @@ export function readWorktrees(
   for (const entry of entries) {
     if (entry.startsWith(".")) continue;
     const path = join(base, entry);
-    if (!exists(join(path, ".pipeline"))) continue;
+    if (!exists(join(path, ".pipeline", "conduct-state.json"))) continue;
     // Counted only against entries that ARE pipelines, and only after one has been cut.
     // Testing the cap before the `.pipeline` filter would blame the engine's own
     // spec-authoring and autoresolve worktrees for a truncation they are not part of.

@@ -3,6 +3,7 @@ import {
   PIPELINE_KICKBACK_TARGETS,
   PIPELINE_PHASES,
   PIPELINE_RUN_GROUPS,
+  PIPELINE_STEPS,
   pipelineRepoKey,
   pipelineStepInfo,
   sortByPipelineStep,
@@ -12,6 +13,7 @@ import {
   type PipelineProviderId,
   type PipelineRepoStatus,
   type PipelineRun,
+  type PipelineCommission,
   type PipelineRunGroup,
   type PipelineStep,
   type PipelineStepState,
@@ -606,6 +608,73 @@ export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | n
     total: sequential.length,
     extras: { unknown: strip.unknown, outOfBand: strip.outOfBand },
   };
+}
+
+/** One shared run-shaped view for Board, Console, and Runs commission progress. */
+export function pipelineRunForCommission(
+  commission: PipelineCommission,
+  linkedRun: PipelineRun | null = null,
+): PipelineRun {
+  if (linkedRun) return linkedRun;
+  const engineer = new Map(commission.steps.map((step) => [step.name, step.state]));
+  const steps = PIPELINE_STEPS[commission.provider].map((step) => ({
+    name: step.name,
+    state:
+      engineer.get(step.name) ??
+      (step.name === "worktree" && (commission.authoringWorktree || commission.handoff)
+        ? "done"
+        : "pending"),
+  }));
+  return {
+    provider: commission.provider,
+    repoRoot: commission.repoRoot,
+    slug: commission.handoff?.planSlug ?? `commission-${commission.id.slice(0, 8)}`,
+    worktree: commission.authoringWorktree,
+    tier: commission.tier,
+    track: commission.track,
+    steps,
+    lastStep: commission.currentStep,
+    halt:
+      commission.lifecycle === "failed" && commission.error
+        ? { class: "unclassified", reason: commission.error }
+        : null,
+    group:
+      commission.lifecycle === "failed"
+        ? "halted"
+        : commission.lifecycle === "awaiting_spec_merge"
+          ? "waiting"
+          : commission.currentStep
+            ? "building"
+            : "eligible",
+    prUrl: commission.handoff?.prUrl ?? null,
+    costTokens: null,
+    updatedAt: commission.updatedAt,
+  };
+}
+
+/** Lifecycle copy shared by every commission projection. */
+export function pipelineCommissionLine(
+  commission: PipelineCommission,
+  linkedRun: PipelineRun | null = null,
+): string {
+  if (linkedRun) return pipelineEyebrow(linkedRun);
+  const attempt = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt);
+  if (commission.lifecycle === "cancelled") return "Engineer cancelled";
+  if (commission.lifecycle === "failed") return "Engineer failed";
+  if (commission.lifecycle === "unsupported") return "Engineer unsupported";
+  if (commission.lifecycle === "awaiting_spec_merge" || commission.handoff) {
+    return "Awaiting spec merge";
+  }
+  if ((commission.activeAttempt ?? 1) > 1 && (attempt?.providerRevision ?? 0) <= 1) {
+    return `Retrying Engineer (attempt ${commission.activeAttempt})`;
+  }
+  if ((attempt?.providerRevision ?? 0) <= 1 && commission.currentStep === null) {
+    return "Starting Engineer";
+  }
+  if (commission.currentStep) {
+    return pipelineStepInfo(commission.provider, commission.currentStep)?.label ?? commission.currentStep;
+  }
+  return "Engineer authoring";
 }
 
 /** The rail row's second line: what it is doing, or why it stopped. */

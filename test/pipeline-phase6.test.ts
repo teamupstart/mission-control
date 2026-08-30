@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ENGINEER_STEP_NAMES,
   PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_HALT_CLASSES,
   type PipelineActionResult,
+  type PipelineCommission,
   type PipelineRun,
 } from "../src/shared/pipeline.ts";
 import {
@@ -22,6 +24,7 @@ import type { RecordEpisode } from "../src/shared/protocol.ts";
 import { Registry } from "../src/server/registry.ts";
 import { Dispatcher } from "../src/server/dispatcher.ts";
 import { TaskManager } from "../src/server/tasks.ts";
+import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
 import { getTask as getDurableTask } from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -811,6 +814,72 @@ test("managed Pipeline cancellation clears a preallocated session when SDK start
   });
 });
 
+test("cancelling implementation preserves the successful Engineer commission", async () => {
+  const taskId = "pipeline-post-handoff-cancel";
+  const repoRoot = "/repo/post-handoff-cancel";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    pipelineCommissionId: "commission-post-handoff",
+    pipelineRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "post-handoff-cancel",
+    },
+  }));
+  const commission: PipelineCommission = {
+    id: "commission-post-handoff",
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    correlationId: "correlation-post-handoff",
+    lifecycle: "awaiting_spec_merge",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-post-handoff",
+      engineerRunId: "engineer-post-handoff",
+      previousEngineerRunId: null,
+      providerRevision: 3,
+      state: "settled",
+      terminalReason: "awaiting_spec_merge",
+      updatedAt: 1_000,
+    }],
+    activeAttempt: 1,
+    steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "done" })),
+    currentStep: null,
+    tier: "M",
+    track: "technical",
+    project: "mission-control",
+    authoringWorktree: `${repoRoot}/.worktrees/spec`,
+    handoff: {
+      planSlug: "post-handoff-cancel",
+      branch: "plan/post-handoff-cancel",
+      prUrl: "https://github.com/example/repo/pull/42",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "post-handoff-cancel",
+    },
+    error: null,
+    createdAt: 500,
+    updatedAt: 1_000,
+  };
+  registry.upsertPipelineCommission(commission);
+
+  const cancellation = await new TaskManager(registry).cancel(taskId);
+
+  assert.equal(cancellation.ok, true);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  const preserved = registry.pipelineCommission(commission.id);
+  assert.deepEqual(preserved, commission);
+  assert.equal(pipelineCommissionLine(preserved!), "Awaiting spec merge");
+});
+
 test("cancellation during SDK start stops the newly created Engineer host", async () => {
   const registry = new Registry();
   registry.upsertTask(
@@ -879,7 +948,7 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
   assert.equal(registry.getTask("pipeline-sdk-cancel")?.sessionId, null);
 });
 
-test("an unreadable provider key space refuses before the terminal host starts", async (t) => {
+test("an unreadable provider capability refuses before the terminal host starts", async (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-unreadable-"));
   writeFileSync(join(repoRoot, ".worktrees"), "not a directory");
   t.after(() => {
@@ -902,6 +971,10 @@ test("an unreadable provider key space refuses before the terminal host starts",
   );
   let spawned = false;
   const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: false,
+      error: "could not verify Engineer lifecycle support: provider output was unreadable",
+    }),
     spawn: async () => {
       spawned = true;
       return "unreachable";
@@ -912,11 +985,14 @@ test("an unreadable provider key space refuses before the terminal host starts",
 
   assert.equal(spawned, false);
   assert.equal(registry.getTask("pipeline-unreadable")?.status, "failed");
-  assert.match(registry.getTask("pipeline-unreadable")?.error ?? "", /could not read current pipeline runs/);
+  assert.match(
+    registry.getTask("pipeline-unreadable")?.error ?? "",
+    /could not verify Engineer lifecycle support/,
+  );
   assert.equal(registry.getTask("pipeline-unreadable")?.pipelineRun, null);
 });
 
-test("an existing provider worktree refuses the same run before terminal spawn", async (t) => {
+test("an authoring worktree cannot bypass the Engineer capability gate", async (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-collision-"));
   const slug = "existing-provider-worktree";
   mkdirSync(join(repoRoot, ".worktrees", slug, ".pipeline"), { recursive: true });
@@ -940,6 +1016,10 @@ test("an existing provider worktree refuses the same run before terminal spawn",
   );
   let spawned = false;
   const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: false,
+      error: "the pipeline provider does not advertise engineerLifecycleEventsV1; upgrade it before dispatch",
+    }),
     spawn: async () => {
       spawned = true;
       return "unreachable";
@@ -952,7 +1032,7 @@ test("an existing provider worktree refuses the same run before terminal spawn",
   assert.equal(registry.getTask("pipeline-provider-collision")?.status, "failed");
   assert.match(
     registry.getTask("pipeline-provider-collision")?.error ?? "",
-    /pipeline run "existing-provider-worktree" already exists/,
+    /does not advertise engineerLifecycleEventsV1/,
   );
   assert.equal(registry.getTask("pipeline-provider-collision")?.pipelineRun, null);
 });

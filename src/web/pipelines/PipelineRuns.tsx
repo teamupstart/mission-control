@@ -7,6 +7,7 @@ import {
   type PipelineAction,
   type PipelineConsole,
   type PipelineRun,
+  type PipelineCommission,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
@@ -21,7 +22,9 @@ import {
   pipelineLeadRun,
   pipelineRail,
   pipelineRunLine,
+  pipelineCommissionLine,
 } from "./pipeline-run-model.ts";
+import { PipelinePhaseMeter } from "./PipelinePhaseMeter.tsx";
 import { usePipelineRepos } from "./usePipelineRepos.ts";
 import { usePipelineRunDetail } from "./usePipelineRunDetail.ts";
 
@@ -39,11 +42,17 @@ import { usePipelineRunDetail } from "./usePipelineRunDetail.ts";
  */
 export function PipelineRuns({
   runs,
+  commissions,
+  selectedCommissionId,
+  onSelectCommission,
   selected,
   onSelect,
   onOpenSettings,
 }: {
   runs: PipelineRun[];
+  commissions: PipelineCommission[];
+  selectedCommissionId: string | null;
+  onSelectCommission: (commissionId: string) => void;
   /** The run the address bar names, or null for the bare tab. */
   selected: PipelineRunAddress | null;
   onSelect: (run: PipelineRun) => void;
@@ -61,6 +70,9 @@ export function PipelineRuns({
   // the common case (one run in flight) a page with an empty reader beside a rail of one.
   const fallback = pipelineLeadRun(sections);
   const run = addressed ?? (selected === null ? fallback : null);
+  const commission =
+    commissions.find((entry) => entry.id === selectedCommissionId) ??
+    (selected === null && !run ? commissions[0] ?? null : null);
   const detail = usePipelineRunDetail(
     run?.provider ?? null,
     run?.repoRoot ?? null,
@@ -110,6 +122,38 @@ export function PipelineRuns({
   return (
     <section className="pipelines">
       <aside className="pipelines-rail">
+        {commissions.length > 0 && (
+          <div className="pipelines-repo">
+            <header className="pipelines-repo-head">
+              <strong>Planning</strong>
+              <small>{commissions.length} commissioned</small>
+            </header>
+            {commissions.map((entry) => {
+              const linked = entry.linkedRun
+                ? (runs.find((candidate) => pipelineRunKeyOf(candidate) === pipelineRunKeyOf(entry.linkedRun!)) ?? null)
+                : null;
+              return (
+                <Tooltip
+                  key={entry.id}
+                  label={`Open ${entry.handoff?.planSlug ?? `commission ${entry.id.slice(0, 8)}`}`}
+                >
+                  <button
+                    type="button"
+                    className={`pipelines-row${entry.id === commission?.id ? " active" : ""}`}
+                    aria-current={entry.id === commission?.id}
+                    onClick={() => onSelectCommission(entry.id)}
+                  >
+                    <span className="pipelines-row-head">
+                      <strong>{entry.handoff?.planSlug ?? `Commission ${entry.id.slice(0, 8)}`}</strong>
+                      {entry.tier && <span className="pipelines-row-tier">{entry.tier}</span>}
+                    </span>
+                    <span className="pipelines-row-line">{pipelineCommissionLine(entry, linked)}</span>
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+        )}
         {repos === null && <p className="pipelines-note">Reading the engine's repositories…</p>}
         {sections.map((section) => (
           <div className="pipelines-repo" key={section.key}>
@@ -185,7 +229,54 @@ export function PipelineRuns({
         ))}
       </aside>
       <div className="pipelines-reader">
-        {run ? (
+        {commission ? (
+          <section className="pipeline-run" aria-label="Pipeline commission detail">
+            <header className="pipeline-run-head">
+              <div>
+                <span className="workflow-eyebrow">Pipeline commission</span>
+                <h2>{commission.handoff?.planSlug ?? "Engineer planning"}</h2>
+                <p>{pipelineCommissionLine(commission)}</p>
+              </div>
+            </header>
+            <PipelinePhaseMeter run={null} commission={commission} />
+            <section className="pipelines-section" aria-label="Engineer attempts">
+              <h4>Engineer attempts</h4>
+              <div className="pipelines-attempt-row">
+                {commission.attempts.map((attempt) => (
+                  <article
+                    className={`pipelines-attempt${attempt.attempt === commission.activeAttempt ? " is-current" : ""}`}
+                    aria-current={attempt.attempt === commission.activeAttempt ? "true" : undefined}
+                    key={attempt.attempt}
+                  >
+                    <span className="pipelines-attempt-name">Attempt {attempt.attempt}</span>
+                    <span className="pipelines-attempt-line">{attempt.state}</span>
+                    <small>{attempt.engineerRunId ?? "run reservation pending"}</small>
+                  </article>
+                ))}
+              </div>
+            </section>
+            {commission.handoff && (
+              <section className="pipelines-section" aria-label="Specification handoff">
+                <h4>Specification handoff</h4>
+                <p>Branch <code>{commission.handoff.branch}</code></p>
+                {commission.handoff.prUrl ? (
+                  <Tooltip label="Open specification pull request">
+                    <a href={commission.handoff.prUrl} target="_blank" rel="noreferrer">Open specification pull request</a>
+                  </Tooltip>
+                ) : (
+                  <p>Local specification commit - no pull request URL was reported.</p>
+                )}
+              </section>
+            )}
+            {commission.linkedRun && (
+              <section className="pipelines-section" aria-label="Implementation run">
+                <h4>Implementation run</h4>
+                <p>{commission.linkedRun.slug}</p>
+              </section>
+            )}
+            {commission.error && <p className="pipelines-repo-error" role="alert">{commission.error}</p>}
+          </section>
+        ) : run ? (
           <PipelineRunView
             run={run}
             detail={detail}

@@ -217,10 +217,18 @@ export function pipelineObservedRepoKeys(): string[] {
  */
 export async function pipelineTaskLaunch(
   repoRoot: string,
-  intent: string,
+  _intent: string,
 ): Promise<
   | {
       ok: true;
+      commissioned: true;
+      provider: PipelineProviderId;
+      launchRuntime: "agent-sdk";
+      cwd: string;
+    }
+  | {
+      ok: true;
+      commissioned?: false;
       launchRuntime: "terminal";
       argv: string[];
       cwd: string;
@@ -228,6 +236,7 @@ export async function pipelineTaskLaunch(
     }
   | {
       ok: true;
+      commissioned?: false;
       launchRuntime: "agent-sdk";
       cwd: string;
       pipelineRun: PipelineRunLink;
@@ -248,35 +257,37 @@ export async function pipelineTaskLaunch(
   }
   const repo = matches[0]!;
   const provider = PIPELINE_PROVIDERS[repo.provider];
-  const identity = provider.taskIdentity(intent, repoRoot);
-  if ("refused" in identity) return { ok: false, error: identity.refused };
-
-  // Fail closed before resolving or launching the provider binary. Null means the provider
-  // could not read its key space, not that the repository has no active runs.
-  const known = provider.knownRunSlugs(repoRoot);
-  if (known === null) {
-    return { ok: false, error: "could not read current pipeline runs for this repository" };
-  }
-  if (known.has(identity.slug)) {
+  const lifecycle = provider.engineerLifecycle;
+  if (!lifecycle) {
     return {
       ok: false,
-      error: `pipeline run "${identity.slug}" already exists in this repository`,
+      error: "the pipeline provider does not expose Engineer lifecycle support; upgrade it before dispatch",
     };
   }
-
-  if (config.launchRuntime === "agent-sdk") {
+  const capability = await lifecycle.capability();
+  if (!capability.ok) {
+    return { ok: false, error: `could not verify Engineer lifecycle support: ${capability.error}` };
+  }
+  if (!capability.value.supported) {
     return {
-      ok: true,
-      launchRuntime: config.launchRuntime,
-      cwd: repoRoot,
-      pipelineRun: identity,
+      ok: false,
+      error: "the pipeline provider does not advertise engineerLifecycleEventsV1; upgrade it before dispatch",
     };
   }
-
-  const launch = await provider.taskArgv(intent, repoRoot);
-  return "refused" in launch
-    ? { ok: false, error: launch.refused }
-    : { ok: true, launchRuntime: config.launchRuntime, ...launch, pipelineRun: identity };
+  if (config.launchRuntime === "terminal") {
+    return {
+      ok: false,
+      error:
+        "this provider version cannot deliver a reserved Engineer run through Terminal; use Managed Agent SDK",
+    };
+  }
+  return {
+    ok: true,
+    commissioned: true,
+    provider: repo.provider,
+    launchRuntime: "agent-sdk",
+    cwd: repoRoot,
+  };
 }
 
 /**

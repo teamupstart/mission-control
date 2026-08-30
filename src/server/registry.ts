@@ -1794,12 +1794,25 @@ export class Registry extends EventEmitter {
     this.pipelineCommissions = new Map(
       commissions.map((commission) => [pipelineCommissionKey(commission.id), commission]),
     );
+    // SDK sessions may already have been restored before the pipeline projection. Rebuild
+    // their task summaries now so a reconnect does not lose the commission join until some
+    // unrelated session mutation happens to emit another frame.
+    for (const session of this.sessions.values()) this.resyncSessionTask(session.id);
   }
 
   upsertPipelineCommission(commission: PipelineCommission): void {
     const key = pipelineCommissionKey(commission.id);
     const previous = this.pipelineCommissions.get(key);
     this.pipelineCommissions.set(key, commission);
+    if (commission.linkedRun) {
+      const task = this.tasks.get(commission.taskId);
+      if (
+        task &&
+        (!task.pipelineRun || pipelineRunKeyOf(task.pipelineRun) !== pipelineRunKeyOf(commission.linkedRun))
+      ) {
+        this.upsertTask({ ...task, pipelineRun: commission.linkedRun, updatedAt: Date.now() });
+      }
+    }
     if (previous && JSON.stringify(previous) === JSON.stringify(commission)) return;
     this.emitEvent({ type: "pipeline_commission_upsert", commission });
   }
@@ -2060,7 +2073,9 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       workCycle: undefined,
       pendingReviews: this.countPending(d.syntheticId),
-      task: this.taskSummaryFor(d.syntheticId, d.cwd),
+      // Resolved below after `pipeline` is known. A first-seen provider worker is not in
+      // `this.sessions` yet, so resolving here cannot follow its commission-to-task join.
+      task: null,
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
       // Re-resolved from the ledger just below, once cwd/prUrl are settled.
       inspector: prev?.inspector ?? null,
@@ -2187,8 +2202,8 @@ export class Registry extends EventEmitter {
           }
         : { kind: "none" },
     );
-    base.task = this.taskSummaryFor(base.id, base.cwd);
     base.pipeline = this.pipelineLinkFor(base.cwd);
+    base.task = this.taskSummaryFor(base.id, base.cwd, base.pipeline);
     return base;
   }
 
@@ -3303,9 +3318,18 @@ export class Registry extends EventEmitter {
     dependencyRebind: "none" | "all" | "session-prless" = "none",
   ): SessionWorkEpisode | null {
     const previous = sessionWorkEpisodeFor(sessionId);
+    // Once Engineer handed off an exact provider run, the task belongs to the commission,
+    // not to one Agent SDK conversation identity. The retained Engineer stays interactive,
+    // so a restart or clear can legitimately rotate its native id without cancelling the
+    // task that the later provider worker must join. Explicit task cancellation updates the
+    // commission first and therefore does not enter this exception.
+    const retainedPipelineTask = invalidateOwnership
+      ? this.retainedPipelineTaskForEpisodeRotation(sessionId)
+      : null;
+    const shouldInvalidateOwnership = invalidateOwnership && retainedPipelineTask === null;
     if (!agentSessionId) {
       let invalidatedTaskIds: string[] = [];
-      if (invalidateOwnership) {
+      if (shouldInvalidateOwnership) {
         invalidatedTaskIds = deleteSessionWorkEpisodeWithOwnership(sessionId, startedAt);
       } else {
         deleteSessionWorkEpisode(sessionId);
@@ -3343,12 +3367,32 @@ export class Registry extends EventEmitter {
     const invalidatedTaskIds = replaceSessionWorkEpisodeWithDependencies(
       episode,
       rebinds.map(this.taskDependencyRewrite),
-      invalidateOwnership ? sessionId : null,
+      shouldInvalidateOwnership ? sessionId : null,
     );
+    if (retainedPipelineTask) {
+      this.bindTaskToWorkEpisode(retainedPipelineTask.id, sessionId, episode, startedAt);
+    }
     this.prObservations.delete(sessionId);
     this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, sessionId, startedAt);
     if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
+  }
+
+  /** The commissioned task whose exact handoff survives its retained host rotating identity. */
+  private retainedPipelineTaskForEpisodeRotation(sessionId: string): Task | null {
+    const taskId = dbTaskIdForSession(sessionId);
+    const task = taskId ? this.tasks.get(taskId) : null;
+    if (
+      !task ||
+      task.kind !== "pipeline" ||
+      (task.status !== "running" && task.status !== "dispatching") ||
+      !task.pipelineCommissionId ||
+      !task.pipelineRun
+    ) {
+      return null;
+    }
+    const commission = this.pipelineCommission(task.pipelineCommissionId);
+    return commission?.linkedRun && commission.lifecycle !== "cancelled" ? task : null;
   }
 
   private cleanupDependencyProvenance(): void {
@@ -3769,6 +3813,7 @@ export class Registry extends EventEmitter {
     now: number,
   ): SessionWorkEpisode | null {
     if (!episode.awaitingAgentRebind) return episode;
+    const retainedPipelineTask = this.retainedPipelineTaskForEpisodeRotation(episode.sessionId);
     const next = {
       ...episode,
       agentSessionId,
@@ -3785,7 +3830,7 @@ export class Registry extends EventEmitter {
         agentSessionId,
         now,
         rebinds.map(this.taskDependencyRewrite),
-        episode.sessionId,
+        retainedPipelineTask ? null : episode.sessionId,
       );
       if (!result.rebound) {
         return null;
@@ -3795,7 +3840,15 @@ export class Registry extends EventEmitter {
       invalidatedTaskIds = replaceSessionWorkEpisodeWithDependencies(
         next,
         rebinds.map(this.taskDependencyRewrite),
+        retainedPipelineTask ? null : episode.sessionId,
+      );
+    }
+    if (retainedPipelineTask) {
+      this.bindTaskToWorkEpisode(
+        retainedPipelineTask.id,
         episode.sessionId,
+        next,
+        now,
       );
     }
     this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId, now);
@@ -6166,8 +6219,12 @@ export class Registry extends EventEmitter {
   }
 
   /** The active task a session is executing, as a compact card summary. */
-  private taskSummaryFor(sessionId: string, cwd: string | null): TaskSummary | null {
-    const t = this.activeTaskFor(sessionId, cwd);
+  private taskSummaryFor(
+    sessionId: string,
+    cwd: string | null,
+    sessionPipeline: SessionPipelineLink | null = this.sessions.get(sessionId)?.pipeline ?? null,
+  ): TaskSummary | null {
+    const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
     return t
       ? {
           id: t.id,
@@ -6220,7 +6277,11 @@ export class Registry extends EventEmitter {
    * another file, and a reader whose correctness rests on that silently is one a second
    * in-memory writer would break with nothing failing.
    */
-  private activeTaskFor(sessionId: string, cwd: string | null): Task | undefined {
+  private activeTaskFor(
+    sessionId: string,
+    cwd: string | null,
+    sessionPipeline: SessionPipelineLink | null = this.sessions.get(sessionId)?.pipeline ?? null,
+  ): Task | undefined {
     let bound: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.sessionId !== sessionId) continue;
@@ -6229,6 +6290,17 @@ export class Registry extends EventEmitter {
       if (!bound || t.updatedAt > bound.updatedAt) bound = t;
     }
     if (bound) return bound;
+    if (sessionPipeline) {
+      const commission = this.pipelineCommissionForRun(sessionPipeline);
+      const commissionedTask = commission ? this.tasks.get(commission.taskId) : undefined;
+      if (
+        commissionedTask &&
+        commissionedTask.status !== "backlog" &&
+        commissionedTask.status !== "cancelled"
+      ) {
+        return commissionedTask;
+      }
+    }
     const pipelineTask = this.taskResourceOwnerForSession(
       sessionId,
       undefined,
@@ -6268,7 +6340,10 @@ export class Registry extends EventEmitter {
     const run = link
       ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug))
       : null;
-    return run?.worktree ?? task.pipelineWorkspacePath ?? cwd;
+    const commission = task.pipelineCommissionId
+      ? this.pipelineCommission(task.pipelineCommissionId)
+      : null;
+    return run?.worktree ?? commission?.authoringWorktree ?? task.pipelineWorkspacePath ?? cwd;
   }
 
   /**

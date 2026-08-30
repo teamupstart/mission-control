@@ -21,7 +21,11 @@ import {
   RepoGroupHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
-import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
+import {
+  ensembleSummaryFor,
+  pipelineCommissionForSession,
+  type SessionViewProps,
+} from "./types.ts";
 
 /**
  * Split-pane master/detail: a dense rail of every session, one always-open detail
@@ -80,6 +84,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       pipelineRunObserved={Boolean(
         s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
       )}
+      pipelineCommission={pipelineCommissionForSession(props, s)}
+      onOpenPipelineCommission={props.onOpenPipelineCommission}
     />
   );
 

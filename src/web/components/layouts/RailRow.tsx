@@ -13,11 +13,13 @@ import {
   EnsembleRailMark,
   runtimeRailMark,
   TaskPipelineRunRailMark,
+  PipelineCommissionRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineRunLink } from "@shared/pipeline.ts";
+import type { PipelineCommission, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -42,6 +44,8 @@ export function RailRow({
   ensembleSummary = null,
   onOpenPipelineRun,
   pipelineRunObserved = false,
+  pipelineCommission = null,
+  onOpenPipelineCommission,
 }: {
   session: Session;
   selected: boolean;
@@ -60,6 +64,8 @@ export function RailRow({
   ensembleSummary?: EnsembleSummary | null;
   onOpenPipelineRun?: (link: PipelineRunLink) => void;
   pipelineRunObserved?: boolean;
+  pipelineCommission?: PipelineCommission | null;
+  onOpenPipelineCommission?: (commissionId: string) => void;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -162,11 +168,20 @@ export function RailRow({
               }
             />
             <TaskPipelineRunRailMark
-              link={session.task?.pipelineRun ?? null}
+              link={pipelineCommission ? null : (session.task?.pipelineRun ?? null)}
               observed={pipelineRunObserved}
               onOpen={
                 session.task?.pipelineRun
                   ? () => onOpenPipelineRun?.(session.task!.pipelineRun!)
+                  : undefined
+              }
+            />
+            <PipelineCommissionRailMark
+              commission={pipelineCommission}
+              line={pipelineCommission ? pipelineCommissionLine(pipelineCommission) : ""}
+              onOpen={
+                pipelineCommission
+                  ? () => onOpenPipelineCommission?.(pipelineCommission.id)
                   : undefined
               }
             />

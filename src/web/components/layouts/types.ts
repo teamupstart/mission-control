@@ -12,7 +12,12 @@ import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
+import {
+  pipelineRunKeyOf,
+  type PipelineCommission,
+  type PipelineRun,
+  type PipelineRunLink,
+} from "@shared/pipeline.ts";
 import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
@@ -235,6 +240,8 @@ export interface SessionViewProps {
    * the session.
    */
   onOpenPipelineRun?: (link: PipelineRunLink) => void;
+  /** Open the durable planning commission before or after implementation exists. */
+  onOpenPipelineCommission?: (commissionId: string) => void;
   /**
    * The live pipeline runs by `pipelineRunKey`, for the facts about the RUN rather than the
    * session: the cluster header's group word and current step.
@@ -245,6 +252,8 @@ export interface SessionViewProps {
    * which is the slug.
    */
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>;
+  /** Durable authoring-to-shipment lifecycles keyed by commission id. */
+  pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>;
 }
 
 /** The run summary behind this session's member link, when both are on hand. */
@@ -254,4 +263,28 @@ export function ensembleSummaryFor(
 ): EnsembleSummary | null {
   const runId = s.task?.ensemble?.runId;
   return (runId ? p.ensembleSummaryByRun?.get(runId) : null) ?? null;
+}
+
+/** Resolve the durable commission through either task projection or exact provider run. */
+export function pipelineCommissionForSession(
+  p: Pick<SessionViewProps, "pipelineCommissionById">,
+  s: Session,
+): PipelineCommission | null {
+  const commissions = p.pipelineCommissionById;
+  if (!commissions) return null;
+  const byId = s.task?.pipelineCommissionId
+    ? commissions.get(s.task.pipelineCommissionId)
+    : null;
+  if (byId) return byId;
+  for (const commission of commissions.values()) {
+    if (s.task?.id === commission.taskId) return commission;
+    if (
+      s.pipeline &&
+      commission.linkedRun &&
+      pipelineRunKeyOf(s.pipeline) === pipelineRunKeyOf(commission.linkedRun)
+    ) {
+      return commission;
+    }
+  }
+  return null;
 }

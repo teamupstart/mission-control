@@ -182,6 +182,43 @@ export function appendPipelineCommissionAttempt(input: {
   return next;
 }
 
+/** Make task-level cancellation terminal without reopening or rewriting provider history. */
+export function cancelPipelineCommission(input: {
+  commissionId: PipelineCommissionId;
+  reason: string;
+  now?: number;
+}): PipelineCommission {
+  const held = getPipelineCommission(input.commissionId);
+  if (!held) throw new Error(`unknown pipeline commission ${input.commissionId}`);
+  if (held.lifecycle === "cancelled") return held;
+  if (held.lifecycle === "settled") {
+    throw new Error("a settled pipeline commission cannot be cancelled");
+  }
+  const now = input.now ?? Date.now();
+  const active = held.attempts.find((attempt) => attempt.attempt === held.activeAttempt);
+  if (!active) throw new Error("the Pipeline commission has no active Engineer attempt");
+  const attempt: PipelineCommissionAttempt = TERMINAL_ATTEMPT_STATES.has(active.state)
+    ? active
+    : {
+        ...active,
+        state: "cancelled",
+        terminalReason: input.reason,
+        updatedAt: now,
+      };
+  const next: PipelineCommission = {
+    ...held,
+    lifecycle: "cancelled",
+    attempts: held.attempts.map((entry) =>
+      entry.attempt === attempt.attempt ? attempt : entry,
+    ),
+    currentStep: null,
+    error: input.reason,
+    updatedAt: now,
+  };
+  upsertPipelineCommissionAttempt(next, attempt);
+  return next;
+}
+
 export type ParsedEngineerEvent =
   | { ok: true; known: true; event: EngineerLifecycleEvent }
   | { ok: true; known: false; event: UnknownEngineerLifecycleEvent }

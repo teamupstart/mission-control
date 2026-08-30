@@ -147,6 +147,9 @@ export function appendPipelineCommissionAttempt(input: {
     throw new Error("a terminal pipeline commission cannot be retried");
   }
   const current = held.attempts.find((attempt) => attempt.attempt === held.activeAttempt);
+  if (current?.state === "settled") {
+    throw new Error("a settled pipeline commission cannot be retried");
+  }
   if (!current || !TERMINAL_ATTEMPT_STATES.has(current.state)) {
     throw new Error("the active Engineer attempt is not terminal");
   }

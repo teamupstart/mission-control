@@ -376,6 +376,23 @@ test("terminal attempts are immutable and retry appends a successor cursor", () 
   assert.equal(rebound.attempts[1]?.previousEngineerRunId, "run-task-1");
 });
 
+test("a settled commission cannot append another attempt", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(
+    applyEngineerEvent(
+      event("engineer_run_settled", 2, { outcome: "awaiting_spec_merge" }),
+    ).outcome,
+    "stored",
+  );
+  assert.equal(getPipelineCommission("commission-task-1")?.attempts[0]?.state, "settled");
+  assert.throws(
+    () => appendPipelineCommissionAttempt({ commissionId: "commission-task-1" }),
+    /settled pipeline commission/,
+  );
+});
+
 test("commission snapshots bound attempt history while SQLite retains the full audit", () => {
   reset();
   commission();

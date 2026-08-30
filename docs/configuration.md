@@ -225,8 +225,8 @@ make session           # ask the running daemon for a durable manual worktree le
 make session ARGS="--return <lease-id>" # return a clean manual lease by durable ID
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
-npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
-npm run build          # build web + MCP bundle
+npm run foreman        # Source-development Foreman worker; the packaged app starts its own
+npm run build          # build web, daemon, Foreman, Electron, MCP, and satellite bundles
 npm test               # full test suite, including real Electron GUI geometry checks
 npm run test:workflow-evidence # focused evidence transport and Test Evidence audit checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)

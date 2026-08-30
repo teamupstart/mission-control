@@ -11,13 +11,10 @@
 // port. We only supervise/stop a daemon we started. Development does not call
 // this supervisor; `dev:server` owns that daemon lifecycle.
 
-import { utilityProcess } from "electron";
-import type { UtilityProcess } from "electron";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { loginShellPath } from "../server/util/path-env.ts";
 import { serveProductIssueConsent } from "./product-issue-consent.ts";
+import { superviseUtilityProcess } from "./utility-supervisor.ts";
 
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
@@ -74,46 +71,22 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     return { adopted: true, stop: () => {} };
   }
 
-  mkdirSync(dirname(opts.logPath), { recursive: true });
-
-  let child: UtilityProcess | null = null;
-  let stopped = false;
-  let restarts = 0;
-
-  const spawn = (): void => {
-    const log = createWriteStream(opts.logPath, { flags: "a" });
-    child = utilityProcess.fork(opts.serverEntry, [], {
-      serviceName: "mission-control-daemon",
-      stdio: "pipe",
-      env: {
-        ...process.env,
-        PATH: loginShellPath(),
-        MISSION_WEB_DIR: opts.webDir,
-      },
-    });
+  const controller = superviseUtilityProcess({
+    entry: opts.serverEntry,
+    serviceName: "mission-control-daemon",
+    logPath: opts.logPath,
+    env: {
+      ...process.env,
+      PATH: loginShellPath(),
+      MISSION_WEB_DIR: opts.webDir,
+    },
     // Publishing a public issue is confirmed HERE, not in the daemon and not in the page:
     // the daemon asks down this port and only a click on the dialog this installs can answer
     // yes. See ./product-issue-consent.ts for why it cannot be an HTTP question.
-    serveProductIssueConsent(child);
-    child.stdout?.on("data", (d: Buffer) => log.write(d));
-    child.stderr?.on("data", (d: Buffer) => log.write(d));
-    child.on("exit", () => {
-      log.end();
-      if (stopped) return;
-      restarts += 1;
-      const delay = Math.min(500 * restarts, 5000);
-      setTimeout(() => {
-        if (!stopped) spawn();
-      }, delay);
-    });
-  };
-
-  spawn();
+    onSpawn: serveProductIssueConsent,
+  });
   return {
     adopted: false,
-    stop: () => {
-      stopped = true;
-      child?.kill();
-    },
+    stop: () => controller.stop(),
   };
 }

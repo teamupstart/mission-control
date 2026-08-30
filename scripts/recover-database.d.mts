@@ -35,6 +35,17 @@ export type DurableWriteOperations = {
   remove(path: string, options: { force: true }): unknown;
 };
 
+export type DurableDatabaseOperations = {
+  copy(from: string, to: string): unknown;
+  chmod(path: string, mode: number): unknown;
+  exists(path: string): boolean;
+  open(path: string, flags: "r"): number;
+  fsync(fd: number): unknown;
+  close(fd: number): unknown;
+  rename(from: string, to: string): unknown;
+  remove(path: string, options: { force: true }): unknown;
+};
+
 export type RecoveryOperations = {
   verifyApp(home: string, bundleId: string): string | Promise<string>;
   appIsRunning(appPath: string, bundleId: string): boolean | Promise<boolean>;
@@ -79,6 +90,12 @@ export function durableWriteJson(
   value: unknown,
   operations?: DurableWriteOperations,
 ): void;
+export function durableReplaceSqliteSet(
+  sourceDatabase: string,
+  liveDatabase: string,
+  databaseMode?: number,
+  operations?: DurableDatabaseOperations,
+): void;
 export function prepareCandidate(candidatePath: string, home: string): {
   digest: string;
   stagedDatabase: string;
@@ -97,6 +114,7 @@ export function runDatabaseRecovery(
     healthTimeoutMs?: number;
     installDatabase?: (home: string, stagedDatabase: string) => void;
     pruneRollbacks?: (home: string, keepId: string) => void | Promise<void>;
+    beforePreparedLedgerWrite?: (() => void | Promise<void>) | null;
     beforeInstalledLedgerWrite?: (() => void | Promise<void>) | null;
     beforeAppliedLedgerWrite?: (() => void | Promise<void>) | null;
   },

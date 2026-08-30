@@ -6,13 +6,17 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   APP_BUNDLE_ID,
+  durableReplaceSqliteSet,
   durableWriteJson,
   parseArgs,
   readRecoveryLedger,
   recoveryStateLockAddonPath,
   runDatabaseRecovery,
 } from "../scripts/recover-database.mjs";
-import type { DurableWriteOperations } from "../scripts/recover-database.mjs";
+import type {
+  DurableDatabaseOperations,
+  DurableWriteOperations,
+} from "../scripts/recover-database.mjs";
 
 function database(path: string, marker: string): void {
   const db = new DatabaseSync(path);
@@ -197,6 +201,44 @@ test("ledger publication fsyncs the containing directory after the atomic rename
   ]);
 });
 
+test("database replacement fsyncs files before durably publishing the SQLite set", () => {
+  const source = "/rollback/harness.db";
+  const live = "/state/harness.db";
+  const directory = dirname(live);
+  const events: string[] = [];
+  let temporary = "";
+  let nextFd = 10;
+  const descriptors = new Map<number, string>();
+  const operations = {
+    copy: (from, to) => {
+      if (from === source) temporary = to;
+      events.push(`copy:${from}:${to}`);
+    },
+    chmod: (path, mode) => events.push(`chmod:${path}:${mode.toString(8)}`),
+    exists: (path) => path === `${source}-wal`,
+    open: (path) => {
+      const fd = nextFd++;
+      descriptors.set(fd, path);
+      events.push(`open:${path}`);
+      return fd;
+    },
+    fsync: (fd) => events.push(`fsync:${descriptors.get(fd)}`),
+    close: (fd) => events.push(`close:${descriptors.get(fd)}`),
+    rename: (from, to) => events.push(`rename:${from}:${to}`),
+    remove: (path) => events.push(`remove:${path}`),
+  } satisfies DurableDatabaseOperations;
+
+  durableReplaceSqliteSet(source, live, 0o640, operations);
+
+  assert.match(temporary, /^\/state\/\.harness\.db\.replacement-.+$/);
+  assert.ok(events.indexOf(`fsync:${temporary}`) < events.indexOf(`rename:${temporary}:${live}`));
+  assert.ok(events.indexOf(`remove:${live}-wal`) < events.indexOf(`rename:${temporary}:${live}`));
+  assert.ok(events.indexOf(`remove:${live}-shm`) < events.indexOf(`rename:${temporary}:${live}`));
+  assert.ok(events.indexOf(`fsync:${live}-wal`) < events.indexOf(`fsync:${directory}`));
+  assert.equal(events.at(-2), `fsync:${directory}`);
+  assert.equal(events.at(-1), `close:${directory}`);
+});
+
 test("the recovery addon path is anchored to the script rather than the caller's cwd", () => {
   assert.equal(
     recoveryStateLockAddonPath("file:///checkout/scripts/recover-database.mjs"),
@@ -288,6 +330,30 @@ test("an invalid candidate is rejected before stopping the app or daemon", async
   assert.equal(marker(f.live), "original");
   assert.equal(fake.actions.some((action) => action.startsWith("quit:")), false);
   assert.equal(fake.actions.includes("acquire"), false);
+});
+
+test("a prepared-ledger failure relaunches the stopped healthy app without changing the database", async (t) => {
+  const f = fixture(t);
+  const fake = operations();
+
+  await assert.rejects(
+    runDatabaseRecovery(
+      { kind: "restore", candidatePath: f.candidate },
+      {
+        home: f.home,
+        ops: fake.ops,
+        beforePreparedLedgerWrite: () => {
+          throw new Error("injected prepared-ledger publication failure");
+        },
+      },
+    ),
+    /injected prepared-ledger publication failure.*No database files were changed.*healthy/,
+  );
+
+  assert.equal(marker(f.live), "original");
+  assert.deepEqual(readRecoveryLedger(f.home).attempts, []);
+  assert.equal(fake.actions.filter((action) => action.startsWith("quit:")).length, 1);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
 test("relaunch failure restores the preserved rollback material without a second launch", async (t) => {

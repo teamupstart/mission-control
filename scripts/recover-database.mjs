@@ -109,6 +109,17 @@ const durableWriteOperations = {
   remove: rmSync,
 };
 
+const durableDatabaseOperations = {
+  copy: copyFileSync,
+  chmod: chmodSync,
+  exists: existsSync,
+  open: openSync,
+  fsync: fsyncSync,
+  close: closeSync,
+  rename: renameSync,
+  remove: rmSync,
+};
+
 export function durableWriteJson(path, value, operations = durableWriteOperations) {
   const directory = dirname(path);
   operations.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -158,6 +169,53 @@ function copySqliteSet(fromDatabase, toDatabase) {
     if (!existsSync(from)) continue;
     copyFileSync(from, to);
     chmodSync(to, 0o600);
+  }
+}
+
+function fsyncPath(path, operations) {
+  const fd = operations.open(path, "r");
+  try {
+    operations.fsync(fd);
+  } finally {
+    operations.close(fd);
+  }
+}
+
+/** Publish a complete SQLite file set and its directory entry durably while the daemon is stopped. */
+export function durableReplaceSqliteSet(
+  sourceDatabase,
+  liveDatabase,
+  databaseMode = 0o600,
+  operations = durableDatabaseOperations,
+) {
+  const directory = dirname(liveDatabase);
+  const temp = join(
+    directory,
+    `.${basename(liveDatabase)}.replacement-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    operations.copy(sourceDatabase, temp);
+    operations.chmod(temp, databaseMode);
+    fsyncPath(temp, operations);
+
+    for (const suffix of SIDECAR_SUFFIXES.slice(1)) {
+      operations.remove(`${liveDatabase}${suffix}`, { force: true });
+    }
+    operations.rename(temp, liveDatabase);
+
+    for (const suffix of SIDECAR_SUFFIXES.slice(1)) {
+      const source = `${sourceDatabase}${suffix}`;
+      if (!operations.exists(source)) continue;
+      const target = `${liveDatabase}${suffix}`;
+      operations.copy(source, target);
+      operations.chmod(target, 0o600);
+      fsyncPath(target, operations);
+    }
+
+    fsyncPath(directory, operations);
+  } catch (error) {
+    operations.remove(temp, { force: true });
+    throw error;
   }
 }
 
@@ -485,38 +543,14 @@ function createRollbackSnapshot(home, attemptId) {
 
 function installPreparedDatabase(home, stagedDatabase) {
   const live = join(home, DATABASE_FILE);
-  const temp = join(home, `.${DATABASE_FILE}.recovery-${process.pid}-${randomUUID()}`);
   const mode = existsSync(live) ? statSync(live).mode & 0o777 : 0o600;
-  try {
-    copyFileSync(stagedDatabase, temp);
-    chmodSync(temp, mode);
-    for (const suffix of SIDECAR_SUFFIXES.slice(1)) rmSync(`${live}${suffix}`, { force: true });
-    renameSync(temp, live);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
+  durableReplaceSqliteSet(stagedDatabase, live, mode);
 }
 
 function restoreRollbackSnapshot(home, rollbackDatabase, databaseMode = 0o600) {
   if (!existsSync(rollbackDatabase)) throw new Error("rollback database is missing");
   const live = join(home, DATABASE_FILE);
-  const temp = join(home, `.${DATABASE_FILE}.rollback-${process.pid}-${randomUUID()}`);
-  try {
-    copyFileSync(rollbackDatabase, temp);
-    chmodSync(temp, databaseMode);
-    for (const suffix of SIDECAR_SUFFIXES.slice(1)) rmSync(`${live}${suffix}`, { force: true });
-    renameSync(temp, live);
-    for (const suffix of SIDECAR_SUFFIXES.slice(1)) {
-      const source = `${rollbackDatabase}${suffix}`;
-      if (!existsSync(source)) continue;
-      copyFileSync(source, `${live}${suffix}`);
-      chmodSync(`${live}${suffix}`, 0o600);
-    }
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
+  durableReplaceSqliteSet(rollbackDatabase, live, databaseMode);
 }
 
 async function waitForHealthy(home, ops, timeoutMs = HEALTH_TIMEOUT_MS) {
@@ -603,6 +637,7 @@ export async function runDatabaseRecovery(
     healthTimeoutMs = HEALTH_TIMEOUT_MS,
     installDatabase = installPreparedDatabase,
     pruneRollbacks = null,
+    beforePreparedLedgerWrite = null,
     beforeInstalledLedgerWrite = null,
     beforeAppliedLedgerWrite = null,
   } = {},
@@ -625,6 +660,8 @@ export async function runDatabaseRecovery(
   let attempt = null;
   let rollbackSnapshot = null;
   let databaseMayHaveChanged = false;
+  let installationStarted = false;
+  let appStoppedByRecovery = false;
   let launched = false;
   try {
     // Serialize the complete recovery lifecycle, including the health-confirmation interval in
@@ -642,12 +679,13 @@ export async function runDatabaseRecovery(
     }
 
     lock = await stopAndAcquire(home, recoveryOps, verifiedAppPath, stopTimeoutMs);
+    appStoppedByRecovery = lock.quitRequested;
     // Candidate preparation and the fast duplicate check intentionally happen before stopping
     // the app. Another recovery can win while this invocation waits for daemon.lock, so reserve
     // the attempt under the separate ledger lock before any database file moves. That lock also
     // serializes post-health writes after daemon.lock has been released for the relaunched app.
     const id = `${recoveryOps.now().replace(/[:.]/g, "-")}-${prepared.digest.slice(0, 12)}`;
-    const serializedDuplicate = await withLedgerLock(home, recoveryOps, () => {
+    const serializedDuplicate = await withLedgerLock(home, recoveryOps, async () => {
       const currentLedger = readRecoveryLedger(home);
       if (rollback) assertRollbackSourceAvailable(currentLedger, rollback.rollbackOf);
       const duplicateUnderLock = rollback
@@ -682,6 +720,7 @@ export async function runDatabaseRecovery(
         message: null,
       };
       currentLedger.attempts.push(attempt);
+      if (beforePreparedLedgerWrite) await beforePreparedLedgerWrite();
       writeRecoveryLedger(home, currentLedger);
       return null;
     });
@@ -692,6 +731,7 @@ export async function runDatabaseRecovery(
       if (!relaunchRequired) return alreadyAppliedResult(serializedDuplicate);
 
       launched = true;
+      appStoppedByRecovery = false;
       recoveryOps.launchApp(verifiedAppPath, APP_BUNDLE_ID);
       const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
       if (!health) {
@@ -702,6 +742,7 @@ export async function runDatabaseRecovery(
 
     // Installation can partially change the SQLite set before throwing. Keep an in-memory
     // boundary so rollback does not depend on publishing the subsequent ledger transition.
+    installationStarted = true;
     databaseMayHaveChanged = true;
     installDatabase(home, prepared.stagedDatabase);
     await updateAttempt(
@@ -715,6 +756,7 @@ export async function runDatabaseRecovery(
     lock.release();
     lock = null;
     launched = true;
+    appStoppedByRecovery = false;
     recoveryOps.launchApp(verifiedAppPath, APP_BUNDLE_ID);
     const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
     if (!health) throw new Error("Mission Control relaunched but its daemon did not become healthy");
@@ -760,12 +802,7 @@ export async function runDatabaseRecovery(
       warnings,
     };
   } catch (error) {
-    if (
-      attempt &&
-      (databaseMayHaveChanged ||
-        readRecoveryLedger(home).attempts.find((entry) => entry.id === attempt.id)?.status ===
-          "installed")
-    ) {
+    if (attempt && databaseMayHaveChanged) {
       try {
         if (lock) {
           // already stopped
@@ -800,6 +837,30 @@ export async function runDatabaseRecovery(
           `database recovery failed and rollback also failed; preserved material is at ${attempt.rollbackDirectory}`,
         );
       }
+    }
+    if (!installationStarted && appStoppedByRecovery && !launched) {
+      lock?.release();
+      lock = null;
+      launched = true;
+      appStoppedByRecovery = false;
+      let health;
+      try {
+        recoveryOps.launchApp(verifiedAppPath, APP_BUNDLE_ID);
+        health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
+        if (!health) {
+          throw new Error("Mission Control did not become healthy after the guarded relaunch");
+        }
+      } catch (relaunchError) {
+        throw new AggregateError(
+          [error, relaunchError],
+          "database recovery failed before installation and Mission Control could not be restored to a healthy running state",
+        );
+      }
+      throw new Error(
+        `${error?.message ?? error}. No database files were changed; Mission Control was ` +
+          `relaunched exactly once and is healthy on dynamically discovered PID ${health.pid}, ` +
+          `port ${health.port}, version ${health.version}`,
+      );
     }
     const launchNote = launched ? " The app was launched exactly once and was not launched again after rollback." : "";
     throw new Error(`${error?.message ?? error}.${launchNote}`);

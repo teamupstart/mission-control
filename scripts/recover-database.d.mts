@@ -97,6 +97,7 @@ export function runDatabaseRecovery(
     healthTimeoutMs?: number;
     installDatabase?: (home: string, stagedDatabase: string) => void;
     pruneRollbacks?: (home: string, keepId: string) => void | Promise<void>;
+    beforeInstalledLedgerWrite?: (() => void | Promise<void>) | null;
     beforeAppliedLedgerWrite?: (() => void | Promise<void>) | null;
   },
 ): Promise<RecoveryResult>;

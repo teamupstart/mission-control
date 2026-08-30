@@ -313,6 +313,31 @@ test("relaunch failure restores the preserved rollback material without a second
   );
 });
 
+test("installed-state publication failure rolls back without relying on ledger status", async (t) => {
+  const f = fixture(t);
+  const fake = operations();
+
+  await assert.rejects(
+    runDatabaseRecovery(
+      { kind: "restore", candidatePath: f.candidate },
+      {
+        home: f.home,
+        ops: fake.ops,
+        beforeInstalledLedgerWrite: () => {
+          throw new Error("injected installed-state publication failure");
+        },
+      },
+    ),
+    /injected installed-state publication failure/,
+  );
+
+  assert.equal(marker(f.live), "original");
+  const [attempt] = readRecoveryLedger(f.home).attempts;
+  assert.equal(attempt?.status, "rolled_back");
+  assert.match(String(attempt?.message), /automatic rollback/);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 0);
+});
+
 test("post-health bookkeeping failure warns without reverting the applied database", async (t) => {
   const f = fixture(t);
   const fake = operations();

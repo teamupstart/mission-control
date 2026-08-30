@@ -603,6 +603,7 @@ export async function runDatabaseRecovery(
     healthTimeoutMs = HEALTH_TIMEOUT_MS,
     installDatabase = installPreparedDatabase,
     pruneRollbacks = null,
+    beforeInstalledLedgerWrite = null,
     beforeAppliedLedgerWrite = null,
   } = {},
 ) {
@@ -623,6 +624,7 @@ export async function runDatabaseRecovery(
   let lock = null;
   let attempt = null;
   let rollbackSnapshot = null;
+  let databaseMayHaveChanged = false;
   let launched = false;
   try {
     // Serialize the complete recovery lifecycle, including the health-confirmation interval in
@@ -698,32 +700,17 @@ export async function runDatabaseRecovery(
       return alreadyAppliedResult(serializedDuplicate, health);
     }
 
-    try {
-      installDatabase(home, prepared.stagedDatabase);
-      await updateAttempt(home, recoveryOps, id, { status: "installed" });
-    } catch (error) {
-      try {
-        restoreRollbackSnapshot(home, rollbackSnapshot.database, rollbackSnapshot.databaseMode);
-      } catch (rollbackError) {
-        await updateAttempt(home, recoveryOps, id, {
-          status: "rollback_failed",
-          finishedAt: recoveryOps.now(),
-          message:
-            `install failed: ${error?.message ?? error}; rollback failed: ` +
-            `${rollbackError?.message ?? rollbackError}`,
-        });
-        throw new AggregateError(
-          [error, rollbackError],
-          `database install failed and rollback also failed; preserved material is at ${rollbackSnapshot.directory}`,
-        );
-      }
-      await updateAttempt(home, recoveryOps, id, {
-        status: "rolled_back",
-        finishedAt: recoveryOps.now(),
-        message: `install failed: ${error?.message ?? error}`,
-      });
-      throw error;
-    }
+    // Installation can partially change the SQLite set before throwing. Keep an in-memory
+    // boundary so rollback does not depend on publishing the subsequent ledger transition.
+    databaseMayHaveChanged = true;
+    installDatabase(home, prepared.stagedDatabase);
+    await updateAttempt(
+      home,
+      recoveryOps,
+      id,
+      { status: "installed" },
+      beforeInstalledLedgerWrite,
+    );
 
     lock.release();
     lock = null;
@@ -775,8 +762,9 @@ export async function runDatabaseRecovery(
   } catch (error) {
     if (
       attempt &&
-      readRecoveryLedger(home).attempts.find((entry) => entry.id === attempt.id)?.status ===
-        "installed"
+      (databaseMayHaveChanged ||
+        readRecoveryLedger(home).attempts.find((entry) => entry.id === attempt.id)?.status ===
+          "installed")
     ) {
       try {
         if (lock) {
@@ -786,6 +774,7 @@ export async function runDatabaseRecovery(
         }
         const rollbackDatabase = join(attempt.rollbackDirectory, DATABASE_FILE);
         restoreRollbackSnapshot(home, rollbackDatabase, attempt.databaseMode);
+        databaseMayHaveChanged = false;
         await updateAttempt(home, recoveryOps, attempt.id, {
           status: "rolled_back",
           finishedAt: recoveryOps.now(),

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   APP_BUNDLE_ID,
+  durableCopySqliteSet,
   durableReplaceSqliteSet,
   durableWriteJson,
   parseArgs,
@@ -210,6 +211,7 @@ test("database replacement fsyncs files before durably publishing the SQLite set
   let nextFd = 10;
   const descriptors = new Map<number, string>();
   const operations = {
+    mkdir: (path) => events.push(`mkdir:${path}`),
     copy: (from, to) => {
       if (from === source) temporary = to;
       events.push(`copy:${from}:${to}`);
@@ -237,6 +239,40 @@ test("database replacement fsyncs files before durably publishing the SQLite set
   assert.ok(events.indexOf(`fsync:${live}-wal`) < events.indexOf(`fsync:${directory}`));
   assert.equal(events.at(-2), `fsync:${directory}`);
   assert.equal(events.at(-1), `close:${directory}`);
+});
+
+test("rollback snapshots fsync every copied file and both snapshot directory levels", () => {
+  const source = "/state/harness.db";
+  const target = "/state/database-recovery/recovery-1/rollback/harness.db";
+  const directory = dirname(target);
+  const parent = dirname(directory);
+  const events: string[] = [];
+  let nextFd = 30;
+  const descriptors = new Map<number, string>();
+  const operations = {
+    mkdir: (path) => events.push(`mkdir:${path}`),
+    copy: (from, to) => events.push(`copy:${from}:${to}`),
+    chmod: (path, mode) => events.push(`chmod:${path}:${mode.toString(8)}`),
+    exists: (path) => path === source || path === `${source}-wal`,
+    open: (path) => {
+      const fd = nextFd++;
+      descriptors.set(fd, path);
+      events.push(`open:${path}`);
+      return fd;
+    },
+    fsync: (fd) => events.push(`fsync:${descriptors.get(fd)}`),
+    close: (fd) => events.push(`close:${descriptors.get(fd)}`),
+    rename: (from, to) => events.push(`rename:${from}:${to}`),
+    remove: (path) => events.push(`remove:${path}`),
+  } satisfies DurableDatabaseOperations;
+
+  durableCopySqliteSet(source, target, operations);
+
+  assert.ok(events.indexOf(`fsync:${target}`) < events.indexOf(`fsync:${directory}`));
+  assert.ok(events.indexOf(`fsync:${target}-wal`) < events.indexOf(`fsync:${directory}`));
+  assert.ok(events.indexOf(`fsync:${directory}`) < events.indexOf(`fsync:${parent}`));
+  assert.equal(events.at(-2), `fsync:${parent}`);
+  assert.equal(events.at(-1), `close:${parent}`);
 });
 
 test("the recovery addon path is anchored to the script rather than the caller's cwd", () => {

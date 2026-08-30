@@ -110,6 +110,7 @@ const durableWriteOperations = {
 };
 
 const durableDatabaseOperations = {
+  mkdir: mkdirSync,
   copy: copyFileSync,
   chmod: chmodSync,
   exists: existsSync,
@@ -179,6 +180,26 @@ function fsyncPath(path, operations) {
   } finally {
     operations.close(fd);
   }
+}
+
+/** Copy and fsync a SQLite set before any durable metadata can reference the snapshot. */
+export function durableCopySqliteSet(
+  sourceDatabase,
+  targetDatabase,
+  operations = durableDatabaseOperations,
+) {
+  const directory = dirname(targetDatabase);
+  operations.mkdir(directory, { recursive: true, mode: 0o700 });
+  for (const suffix of SIDECAR_SUFFIXES) {
+    const source = `${sourceDatabase}${suffix}`;
+    if (!operations.exists(source)) continue;
+    const target = `${targetDatabase}${suffix}`;
+    operations.copy(source, target);
+    operations.chmod(target, 0o600);
+    fsyncPath(target, operations);
+  }
+  fsyncPath(directory, operations);
+  fsyncPath(dirname(directory), operations);
 }
 
 /** Publish a complete SQLite file set and its directory entry durably while the daemon is stopped. */
@@ -537,7 +558,7 @@ function createRollbackSnapshot(home, attemptId) {
   const directory = join(recoveryRoot(home), attemptId, "rollback");
   const target = join(directory, DATABASE_FILE);
   const databaseMode = statSync(live).mode & 0o777;
-  copySqliteSet(live, target);
+  durableCopySqliteSet(live, target);
   return { directory, database: target, databaseMode };
 }
 

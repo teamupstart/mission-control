@@ -36,6 +36,7 @@ export type DurableWriteOperations = {
 };
 
 export type DurableDatabaseOperations = {
+  mkdir(path: string, options: { recursive: true; mode: number }): unknown;
   copy(from: string, to: string): unknown;
   chmod(path: string, mode: number): unknown;
   exists(path: string): boolean;
@@ -94,6 +95,11 @@ export function durableReplaceSqliteSet(
   sourceDatabase: string,
   liveDatabase: string,
   databaseMode?: number,
+  operations?: DurableDatabaseOperations,
+): void;
+export function durableCopySqliteSet(
+  sourceDatabase: string,
+  targetDatabase: string,
   operations?: DurableDatabaseOperations,
 ): void;
 export function prepareCandidate(candidatePath: string, home: string): {

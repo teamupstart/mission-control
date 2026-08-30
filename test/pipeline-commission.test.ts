@@ -14,8 +14,10 @@ const {
   countPipelineCommissionEvents,
   deletePipelineCommissionRow,
   getPipelineCommission,
+  loadActiveTasks,
   loadPipelineCommissions,
   openDb,
+  upsertTask,
 } = await import("../src/server/db.ts");
 const {
   appendPipelineCommissionAttempt,
@@ -136,6 +138,29 @@ test("migration creates one durable commission per task and preserves exact task
       }),
     /repository does not match/,
   );
+});
+
+test("task upserts preserve a commission binding when the in-memory shape predates it", () => {
+  reset();
+  task("task-1");
+  const stale = loadActiveTasks()[0]!;
+  delete stale.pipelineCommissionId;
+  createPipelineCommission({
+    taskId: stale.id,
+    provider: "ai-conductor",
+    repoRoot: repo,
+    id: "commission-task-1",
+    correlationId: "correlation-task-1",
+    launchKey: "launch-task-1",
+  });
+
+  upsertTask({ ...stale, title: "Updated from stale task" });
+
+  const row = db.prepare(`SELECT pipeline_commission_id, title FROM tasks WHERE id = ?`).get(
+    stale.id,
+  ) as { pipeline_commission_id: string | null; title: string };
+  assert.equal(row.pipeline_commission_id, "commission-task-1");
+  assert.equal(row.title, "Updated from stale task");
 });
 
 test("commission retirement removes its bounded authoring history and task binding", () => {

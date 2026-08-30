@@ -5293,7 +5293,10 @@ export function upsertTask(t: Task): string[] {
          source_url=excluded.source_url,
          repo_root=excluded.repo_root,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
-         pipeline_commission_id=excluded.pipeline_commission_id,
+         pipeline_commission_id=CASE
+           WHEN ? THEN excluded.pipeline_commission_id
+           ELSE tasks.pipeline_commission_id
+         END,
          pipeline_workspace_path=excluded.pipeline_workspace_path,
          worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
@@ -5326,6 +5329,7 @@ export function upsertTask(t: Task): string[] {
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
+      t.pipelineCommissionId !== undefined ? 1 : 0,
     );
     // The secondary repos are REPLACED, in this same transaction, because `Task` carries
     // the whole collection: a caller that dropped an entry expects the row to go, and a

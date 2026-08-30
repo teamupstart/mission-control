@@ -852,14 +852,20 @@ export async function runDatabaseRecovery(
     const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
     if (!health) throw new Error("Mission Control relaunched but its daemon did not become healthy");
 
-    await updateAttempt(
-      home,
-      recoveryOps,
-      id,
-      { status: "applied", finishedAt: recoveryOps.now() },
-      beforeAppliedLedgerWrite,
-    );
     const warnings = [];
+    try {
+      await updateAttempt(
+        home,
+        recoveryOps,
+        id,
+        { status: "applied", finishedAt: recoveryOps.now() },
+        beforeAppliedLedgerWrite,
+      );
+    } catch (error) {
+      warnings.push(
+        `database is healthy but recovery could not be marked applied: ${error?.message ?? error}`,
+      );
+    }
     if (rollback?.rollbackOf) {
       try {
         await updateAttempt(home, recoveryOps, rollback.rollbackOf, {

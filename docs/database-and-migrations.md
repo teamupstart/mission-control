@@ -52,6 +52,8 @@ dynamically observed daemon PID, port, and version only after health succeeds. A
 restores the prior files, relaunches the app once, and confirms health. A failed relaunch restores
 the prior files without launching a second time. A later rollback-retention or ledger-cleanup
 failure is reported as a warning and never reverts a database whose health was already confirmed.
+The same non-reverting warning policy applies when the final applied-state ledger write fails after
+health confirmation; the ledger stays fail-closed at `installed` instead of stopping a healthy app.
 
 To deliberately restore the retained pre-recovery snapshot, use the recovery id printed by the
 first command. Rollback goes through the same validation, stop proof, one-launch, and health path.

@@ -506,6 +506,32 @@ test("post-health bookkeeping failure warns without reverting the applied databa
   assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
 });
 
+test("applied-ledger publication failure warns without reverting or stopping the healthy app", async (t) => {
+  const f = fixture(t);
+  const fake = operations();
+
+  const result = await runDatabaseRecovery(
+    { kind: "restore", candidatePath: f.candidate },
+    {
+      home: f.home,
+      ops: fake.ops,
+      beforeAppliedLedgerWrite: () => {
+        throw new Error("injected applied-state publication failure");
+      },
+    },
+  );
+
+  assert.equal(result.kind, "applied");
+  assert.deepEqual(result.health, { pid: 4242, port: 7317, version: "test" });
+  assert.deepEqual(result.warnings, [
+    "database is healthy but recovery could not be marked applied: injected applied-state publication failure",
+  ]);
+  assert.equal(marker(f.live), "candidate");
+  assert.equal(readRecoveryLedger(f.home).attempts[0]?.status, "installed");
+  assert.equal(fake.actions.filter((action) => action.startsWith("quit:")).length, 1);
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 1);
+});
+
 test("an identical candidate retries after an injected install failure was rolled back", async (t) => {
   const f = fixture(t);
   const fake = operations();

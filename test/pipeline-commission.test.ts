@@ -204,7 +204,13 @@ test("Engineer event field and total byte limits fail closed before persistence"
   assert.equal(countPipelineCommissionEvents("commission-task-1"), 0);
   assert.equal(getPipelineCommission("commission-task-1")?.attempts[0]?.providerRevision, 0);
 
-  const envelope = (engineerEvent: Record<string, unknown>) => ({
+  const envelope = (engineerEvent: {
+    revision: number;
+    engineerRunId: string;
+    correlationId: string | null;
+    attempt: number;
+    attemptKey: string;
+  }) => ({
     repo,
     seq: engineerEvent.revision,
     event: engineerEvent,

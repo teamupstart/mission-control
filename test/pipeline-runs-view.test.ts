@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  ENGINEER_STEP_NAMES,
   PIPELINE_RUN_GROUPS,
   PIPELINE_STEPS,
   pipelineRunKeyOf,
+  type PipelineCommission,
   type PipelineGateVerdict,
   type PipelineRepoStatus,
   type PipelineRun,
@@ -25,6 +27,7 @@ import {
   pipelineVerdictStatus,
 } from "../src/web/pipelines/pipeline-run-model.ts";
 import { PipelineRunView } from "../src/web/pipelines/PipelineRunView.tsx";
+import { PipelineRuns } from "../src/web/pipelines/PipelineRuns.tsx";
 import { fetchPipelineRepos, fetchPipelineRunDetail } from "../src/web/lib/api.ts";
 
 // What is at stake: the Pipelines detail is a picture of a run somebody is about to act on,
@@ -89,6 +92,72 @@ function repo(over: Partial<PipelineRepoStatus> = {}): PipelineRepoStatus {
     ...over,
   };
 }
+
+function commission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "task-1",
+    provider: "ai-conductor",
+    repoRoot: "/repo/demo",
+    correlationId: "correlation-1",
+    lifecycle: "awaiting_spec_merge",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-1",
+      engineerRunId: "engineer-1",
+      previousEngineerRunId: null,
+      providerRevision: 3,
+      state: "settled",
+      terminalReason: "awaiting_spec_merge",
+      updatedAt: 1_700_000_000_000,
+    }],
+    activeAttempt: 1,
+    steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "done" })),
+    currentStep: null,
+    tier: "M",
+    track: "product",
+    project: "mission-control",
+    authoringWorktree: "/repo/demo/.worktrees/spec",
+    handoff: {
+      planSlug: "add-widgets",
+      branch: "plan/add-widgets",
+      prUrl: "https://github.com/example/repo/pull/42",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: "ai-conductor",
+      repoRoot: "/repo/demo",
+      slug: "add-widgets",
+    },
+    error: null,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...over,
+  };
+}
+
+test("a commission reader continues its meter from the observed implementation run", () => {
+  const implementation = run({
+    steps: [
+      { name: "worktree", state: "done" },
+      { name: "build", state: "in_progress" },
+      { name: "finish", state: "pending" },
+    ],
+    lastStep: "build",
+  });
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [implementation],
+    commissions: [commission()],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  assert.match(html, /class="tpm-now workflow-running">BUILD · Build · step 2 of 3</);
+  assert.doesNotMatch(html, />Awaiting spec merge</);
+});
 
 // ---- the rail ---------------------------------------------------------------------------
 

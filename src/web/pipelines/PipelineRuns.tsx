@@ -73,6 +73,13 @@ export function PipelineRuns({
   const commission =
     commissions.find((entry) => entry.id === selectedCommissionId) ??
     (selected === null && !run ? commissions[0] ?? null : null);
+  const linkedCommissionRun = commission?.linkedRun ?? null;
+  const commissionRun =
+    linkedCommissionRun
+      ? (runs.find(
+          (candidate) => pipelineRunKeyOf(candidate) === pipelineRunKeyOf(linkedCommissionRun),
+        ) ?? null)
+      : null;
   const detail = usePipelineRunDetail(
     run?.provider ?? null,
     run?.repoRoot ?? null,
@@ -235,10 +242,10 @@ export function PipelineRuns({
               <div>
                 <span className="workflow-eyebrow">Pipeline commission</span>
                 <h2>{commission.handoff?.planSlug ?? "Engineer planning"}</h2>
-                <p>{pipelineCommissionLine(commission)}</p>
+                <p>{pipelineCommissionLine(commission, commissionRun)}</p>
               </div>
             </header>
-            <PipelinePhaseMeter run={null} commission={commission} />
+            <PipelinePhaseMeter run={commissionRun} commission={commission} />
             <section className="pipelines-section" aria-label="Engineer attempts">
               <h4>Engineer attempts</h4>
               <div className="pipelines-attempt-row">

@@ -222,7 +222,11 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await expect(
     dashboard.getByRole("button", { name: /visible-pipeline-continuity/i }).last(),
   ).toBeVisible();
-  await expect(dashboard.getByText("Build", { exact: true }).first()).toBeVisible();
+  const commissionReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
+  await expect(commissionReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 2 of 2");
+  await expect(
+    commissionReader.getByText("Awaiting spec merge", { exact: true }),
+  ).toHaveCount(0);
   await dashboard.screenshot({ path: join(evidenceDir, "runs-continuation.png") });
 
   const resumedTask = (

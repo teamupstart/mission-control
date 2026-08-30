@@ -3365,6 +3365,22 @@ export class TaskManager {
         );
       }
     }
+    if (commission && (commission.handoff !== null || commission.linkedRun !== null)) {
+      // A successful Engineer commission is immutable history, so the task is the terminal
+      // cancellation boundary after handoff. Publish that boundary before stopping the SDK
+      // host or capturing archives: either await can observe a native identity rotation, and
+      // a still-running task would otherwise be rebound to the new episode while cancellation
+      // already owns its resources. A teardown failure keeps those resources on this cancelled
+      // row and remains retryable through Cancel.
+      const current = this.registry.getTask(id) ?? t;
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...current,
+        status: "cancelled",
+        completedAt: now,
+        updatedAt: now,
+      });
+    }
     // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
     // writing after capture published an immutable partial but before teardown deletes the
     // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the

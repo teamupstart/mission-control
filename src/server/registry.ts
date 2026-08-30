@@ -3345,8 +3345,9 @@ export class Registry extends EventEmitter {
     // Once Engineer handed off an exact provider run, the task belongs to the commission,
     // not to one Agent SDK conversation identity. The retained Engineer stays interactive,
     // so a restart or clear can legitimately rotate its native id without cancelling the
-    // task that the later provider worker must join. Explicit task cancellation updates the
-    // commission first and therefore does not enter this exception.
+    // task that the later provider worker must join. Explicit post-handoff cancellation marks
+    // the task terminal before any cleanup await and therefore does not enter this exception;
+    // the successful Engineer commission itself remains immutable history.
     const retainedPipelineTask = invalidateOwnership
       ? this.retainedPipelineTaskForEpisodeRotation(sessionId)
       : null;

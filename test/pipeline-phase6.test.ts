@@ -1001,12 +1001,24 @@ test("a commission persistence race does not strand local task cancellation", as
 test("cancelling implementation preserves the successful Engineer commission", async () => {
   const taskId = "pipeline-post-handoff-cancel";
   const repoRoot = "/repo/post-handoff-cancel";
+  const sessionId = `sdk:${taskId}`;
   const registry = new Registry();
+  registry.registerSdkSession({
+    id: sessionId,
+    agent: "claude",
+    name: taskId,
+    cwd: repoRoot,
+    agentSessionId: "engineer-before-cancel",
+    gitBranch: "plan/post-handoff-cancel",
+    gitRoot: repoRoot,
+    repoRoot,
+  });
   registry.upsertTask(mkTask({
     id: taskId,
     kind: "pipeline",
     repoRoot,
     status: "running",
+    sessionId,
     pipelineCommissionId: "commission-post-handoff",
     pipelineRun: {
       provider: "ai-conductor",
@@ -1054,8 +1066,39 @@ test("cancelling implementation preserves the successful Engineer commission", a
     updatedAt: 1_000,
   };
   registry.upsertPipelineCommission(commission);
+  registry.bindTaskToWorkEpisode(taskId, sessionId);
 
-  const cancellation = await new TaskManager(registry).cancel(taskId);
+  let markStopStarted!: () => void;
+  let releaseStop!: () => void;
+  const stopStarted = new Promise<void>((resolve) => {
+    markStopStarted = resolve;
+  });
+  const stopped = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  const supervisor = {
+    handleFor: () => ({}),
+    taskLiveness: () => null,
+    stop: async () => {
+      markStopStarted();
+      await stopped;
+    },
+  } as unknown as SdkSupervisor;
+
+  const cancelling = new TaskManager(registry, undefined, supervisor).cancel(taskId);
+  await stopStarted;
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  registry.applyDriverEvent(sessionId, {
+    kind: "bound",
+    agentSessionId: "engineer-after-cancel",
+    transcriptPath: null,
+    modelId: "claude-opus-4",
+    pid: null,
+  });
+  assert.equal(registry.workEpisodeForTask(taskId), null);
+  releaseStop();
+
+  const cancellation = await cancelling;
 
   assert.equal(cancellation.ok, true);
   assert.equal(registry.getTask(taskId)?.status, "cancelled");

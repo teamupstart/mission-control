@@ -919,6 +919,94 @@ test("cancellation during provider reservation stops the returned run before hos
   assert.match(providerErrors.join("\n"), /provider unavailable/);
 });
 
+test("provider reservation is cancelled when managed host setup fails", async (t) => {
+  const taskId = "pipeline-reserved-host-failure";
+  const repoRoot = "/repo/reserved-host-failure";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel reservation after host failure",
+  }));
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-reserved-host-failure",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Cancel reservation after host failure",
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: registry.pipelineCommissionForTask(taskId)!.correlationId,
+          attemptKey: registry.pipelineCommissionForTask(taskId)!.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Cancel reservation after host failure",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = {
+    start: async () => {
+      throw new Error("SDK host refused after reservation");
+    },
+    taskLiveness: () => false,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-host-failure"]);
+  assert.equal(registry.getTask(taskId)?.status, "failed");
+  assert.equal(registry.getTask(taskId)?.error, "SDK host refused after reservation");
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+});
+
 test("a commission persistence race does not strand local task cancellation", async (t) => {
   const taskId = "pipeline-cancel-commission-race";
   const repoRoot = "/repo/cancel-commission-race";

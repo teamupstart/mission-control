@@ -185,6 +185,18 @@ test("a first-seen provider worker resolves its commissioned task through the ex
   assert.equal(session.task?.id, task.id);
   assert.equal(session.task?.pipelineCommissionId, commission.id);
   assert.deepEqual(session.task?.pipelineRun, commission.linkedRun);
+
+  registry.upsertTask({
+    ...registry.getTask(task.id)!,
+    status: "done",
+    outcome: "shipped",
+    updatedAt: 2_000,
+  });
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "later-worker" }),
+    mkDiscovered({ syntheticId: "worker-after-completion", pid: 2, tty: "ttys2" }),
+  ]);
+  assert.equal(registry.getSession("worker-after-completion")?.task, null);
 });
 
 test("the stamp carries the repository root, because two repos can hold one slug", () => {

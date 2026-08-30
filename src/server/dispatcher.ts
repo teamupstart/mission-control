@@ -74,11 +74,15 @@ import { pipelineTaskLaunch } from "./pipelines/index.ts";
 import {
   appendPipelineCommissionAttempt,
   bindPipelineCommissionAttempt,
+  cancelPipelineCommission,
   createPipelineCommission,
   recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
-import type { PipelineEngineerRunSnapshot } from "./pipelines/types.ts";
+import type {
+  PipelineEngineerLifecycle,
+  PipelineEngineerRunSnapshot,
+} from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
@@ -892,14 +896,17 @@ export class Dispatcher {
     if (task.workflowId !== null) {
       throw new Error("a pipeline task cannot hand off to an after-work Workflow");
     }
-    const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
-      task.repoRoot,
-      task.intent,
-    );
-    if (!launch.ok) throw new Error(launch.error);
     let engineerRunId: string | null = null;
+    let engineerCommissionId: string | null = null;
+    let engineerLifecycle: PipelineEngineerLifecycle | null = null;
+    try {
+      const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
+        task.repoRoot,
+        task.intent,
+      );
+      if (!launch.ok) throw new Error(launch.error);
 
-    if ("provider" in launch) {
+      if ("provider" in launch) {
       const lifecycle = PIPELINE_PROVIDERS[launch.provider].engineerLifecycle;
       if (!lifecycle) {
         throw new Error("the pipeline provider lost Engineer lifecycle support before launch");
@@ -1036,6 +1043,8 @@ export class Dispatcher {
         previousEngineerRunId: reservedRun.previousEngineerRunId,
       });
       engineerRunId = reservedRun.engineerRunId;
+      engineerCommissionId = commissionId;
+      engineerLifecycle = lifecycle;
       this.registry.upsertPipelineCommission(commission);
     } else {
       const runKey = pipelineRunKeyOf(launch.pipelineRun);
@@ -1212,7 +1221,63 @@ export class Dispatcher {
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
     // later in the engine's worktree; their correlation remains a compatibility backstop
     // for tasks created before provider identity was known at launch.
-    this.patch(taskId, { status: "running", sessionId: null });
+      this.patch(taskId, { status: "running", sessionId: null });
+    } catch (error) {
+      if (engineerRunId && engineerCommissionId && engineerLifecycle) {
+        const failedRunId = engineerRunId;
+        const failedCommissionId = engineerCommissionId;
+        const failedLifecycle = engineerLifecycle;
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        try {
+          const cancelled = cancelPipelineCommission({
+            commissionId: failedCommissionId,
+            reason: `Engineer host setup failed: ${originalMessage}`,
+          });
+          this.registry.upsertPipelineCommission(cancelled);
+        } catch (commissionError) {
+          console.error(
+            `[pipelines] could not make failed host reservation ${failedRunId} terminal: ${
+              commissionError instanceof Error ? commissionError.message : String(commissionError)
+            }`,
+          );
+        }
+        const retainFailure = (reason: string): void => {
+          try {
+            const failed = recordPipelineCommissionCancellationFailure({
+              commissionId: failedCommissionId,
+              engineerRunId: failedRunId,
+              reason,
+            });
+            this.registry.upsertPipelineCommission(failed);
+          } catch (commissionError) {
+            console.error(
+              `[pipelines] could not retain failed host cleanup for Engineer run ${failedRunId}: ${
+                commissionError instanceof Error ? commissionError.message : String(commissionError)
+              }`,
+            );
+          }
+        };
+        try {
+          const stopped = await failedLifecycle.cancel({
+            engineerRunId: failedRunId,
+            reason: `Mission Control Engineer host setup failed: ${originalMessage}`,
+          });
+          if (!stopped.ok) {
+            retainFailure(stopped.error);
+            console.error(
+              `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${stopped.error}`,
+            );
+          }
+        } catch (cancelError) {
+          const message = cancelError instanceof Error ? cancelError.message : String(cancelError);
+          retainFailure(message);
+          console.error(
+            `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${message}`,
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   /**

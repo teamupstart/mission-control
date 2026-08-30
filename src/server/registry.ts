@@ -6320,8 +6320,7 @@ export class Registry extends EventEmitter {
       const commissionedTask = commission ? this.tasks.get(commission.taskId) : undefined;
       if (
         commissionedTask &&
-        commissionedTask.status !== "backlog" &&
-        commissionedTask.status !== "cancelled"
+        (commissionedTask.status === "running" || commissionedTask.status === "dispatching")
       ) {
         return commissionedTask;
       }

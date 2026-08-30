@@ -39,9 +39,26 @@
 // static module graph before execution; a later dynamic import would break that safety property.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  APP_BUNDLE_NAME,
+  DEFAULT_APPS_DIR,
+  replaceAppBundle,
+  stagingPaths,
+  swapAppBundle,
+} from "./app-bundle-swap.mjs";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
 import {
   CANONICAL_REPO,
@@ -56,11 +73,7 @@ import {
   xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
-/** The bundle name `electron-builder.yml` produces, and the one installed. */
-export const APP_BUNDLE_NAME = "Mission Control.app";
-
-/** Where a Mac keeps its applications. Overridable only to verify an install safely. */
-export const DEFAULT_APPS_DIR = "/Applications";
+export { APP_BUNDLE_NAME, DEFAULT_APPS_DIR, stagingPaths, swapAppBundle };
 
 /** The updater-owned clone, inside the existing state directory. */
 export const SOURCE_CLONE_DIR_NAME = "app-src";
@@ -176,6 +189,105 @@ export function existingCloneCommands({ url, repo, clone }) {
   }
   commands.push(["git", ["-C", clone, "fetch", "--tags", "--prune", "origin"]]);
   return { problem: null, commands };
+}
+
+/**
+ * The first directory in the updater-owned clone that this account cannot rewrite.
+ *
+ * Git replaces a tracked file by unlinking it from its parent directory. A prior `sudo make
+ * install` can therefore leave an apparently readable clone whose root is owned by the person
+ * but whose nested directories are owned by root. `git fetch` still works, then checkout dies at
+ * the first file under one of those directories. Files themselves do not need to be writable -
+ * Git object files are intentionally read-only, and a file in a writable directory can be
+ * replaced safely - so this checks directories only.
+ */
+export function firstUnwritableCloneDirectory(root) {
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    try {
+      accessSync(directory, fsConstants.W_OK | fsConstants.X_OK);
+    } catch {
+      return directory;
+    }
+    let entries;
+    try {
+      entries = readdirSync(directory);
+    } catch {
+      return directory;
+    }
+    for (const entry of entries) {
+      const path = join(directory, entry);
+      try {
+        if (lstatSync(path).isDirectory()) pending.push(path);
+      } catch {
+        return directory;
+      }
+    }
+  }
+  return null;
+}
+
+function commandFailure(result) {
+  return String(result.stderr || result.stdout || `exit ${result.status ?? 1}`).trim();
+}
+
+/**
+ * Replace the disposable updater clone without depending on permissions inside the old one.
+ *
+ * The fresh clone is complete before either rename. The old directory is renamed rather than
+ * recursively removed first, because its unwritable descendants are the reason recovery is
+ * running. If those descendants also prevent cleanup, the preserved path is returned for a
+ * one-time manual cleanup instead of failing an otherwise healthy update.
+ */
+export function rebuildUpdaterOwnedClone({ clone, remoteUrl, pid, run, ops }) {
+  const staged = `${clone}.incoming-${pid}`;
+  const previous = `${clone}.unusable-${pid}`;
+  try {
+    ops.remove(staged);
+    if (ops.exists(previous)) {
+      return { problem: `the recovery path ${previous} already exists`, preserved: null };
+    }
+  } catch (error) {
+    return {
+      problem: `could not prepare a fresh updater clone: ${error instanceof Error ? error.message : String(error)}`,
+      preserved: null,
+    };
+  }
+
+  const cloned = run("git", ["clone", remoteUrl, staged]);
+  if (cloned.status !== 0) {
+    try { ops.remove(staged); } catch {}
+    return { problem: `could not clone a fresh updater source: ${commandFailure(cloned)}`, preserved: null };
+  }
+
+  try {
+    ops.move(clone, previous);
+  } catch (error) {
+    try { ops.remove(staged); } catch {}
+    return {
+      problem: `could not move the unusable updater clone aside: ${error instanceof Error ? error.message : String(error)}`,
+      preserved: null,
+    };
+  }
+
+  try {
+    ops.move(staged, clone);
+  } catch (error) {
+    try { ops.move(previous, clone); } catch {}
+    try { ops.remove(staged); } catch {}
+    return {
+      problem: `could not put the fresh updater clone in place: ${error instanceof Error ? error.message : String(error)}`,
+      preserved: null,
+    };
+  }
+
+  try {
+    ops.remove(previous);
+    return { problem: null, preserved: null };
+  } catch {
+    return { problem: null, preserved: previous };
+  }
 }
 
 export function originMismatchMessage(originSlug) {
@@ -297,73 +409,6 @@ export function appsDirProblem({ appsDir, exists, isDirectory }) {
  * one filesystem - which is what makes them atomic and instant rather than a second full copy
  * that could half-succeed.
  */
-export function stagingPaths({ appsDir, pid }) {
-  return {
-    staged: join(appsDir, `.${APP_BUNDLE_NAME}.incoming-${pid}`),
-    previous: join(appsDir, `.${APP_BUNDLE_NAME}.previous-${pid}`),
-  };
-}
-
-/**
- * Put the newly built bundle in place, keeping the existing app until the copy has succeeded.
- * Returns a problem string, or `null` when the app is installed.
- *
- * Copy first, THEN swap. Removing the installed app before copying leaves a user with no app at
- * all when the copy fails - a full disk or an I/O error - which is a worse outcome than the
- * failed upgrade they actually had. So the new bundle is copied to a hidden sibling first; only
- * once that whole copy is on disk is the existing app renamed aside and the new one renamed into
- * place. If that final rename fails, the previous app is renamed back.
- *
- * Filesystem operations are injected so every one of those failure paths is a test rather than a
- * full-disk rehearsal.
- */
-export function swapAppBundle({ packagedApp, appPath, appsDir, pid, ops }) {
-  const { staged, previous } = stagingPaths({ appsDir, pid });
-  const why = (err) => (err instanceof Error ? err.message : String(err));
-
-  ops.remove(staged); // a killed earlier run can leave one behind
-  try {
-    ops.copy(packagedApp, staged);
-  } catch (err) {
-    ops.remove(staged);
-    return `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`;
-  }
-
-  const hadPrevious = ops.exists(appPath);
-  if (hadPrevious) {
-    try {
-      ops.move(appPath, previous);
-    } catch (err) {
-      ops.remove(staged);
-      return `could not move the existing app aside: ${why(err)}. ${appPath} is unchanged.`;
-    }
-  }
-
-  try {
-    ops.move(staged, appPath);
-  } catch (err) {
-    let restored = false;
-    if (hadPrevious) {
-      try {
-        ops.move(previous, appPath);
-        restored = true;
-      } catch {
-        // Fall through: the message below has to say the app is at `previous`, because it is.
-      }
-    }
-    ops.remove(staged);
-    const state = hadPrevious
-      ? restored
-        ? "The previous app was restored."
-        : `The previous app is at ${previous} - move it back by hand.`
-      : "Nothing was installed.";
-    return `could not put the new app in place at ${appPath}: ${why(err)}. ${state}`;
-  }
-
-  if (hadPrevious) ops.remove(previous);
-  return null;
-}
-
 export function packagedVersionProblem({ packagedVersion, sourceVersion }) {
   if (!packagedVersion) {
     return "could not read CFBundleShortVersionString from the packaged app's Info.plist";
@@ -412,6 +457,7 @@ function heading(title) {
 }
 const ok = (m) => console.log(`   \x1b[32m✓\x1b[0m ${m}`);
 const doing = (m) => console.log(`   \x1b[36m→\x1b[0m ${m}`);
+const warning = (m) => console.log(`   \x1b[33m!\x1b[0m ${m}`);
 
 function fail(message) {
   console.error(`\n\x1b[31m✗\x1b[0m ${message}`);
@@ -503,8 +549,33 @@ function installApp(options) {
     if (clonePlan.problem) {
       fail(`${clone} is not a clone of ${repo}: ${clonePlan.problem}. Move or remove it yourself, then rerun; this script will not delete it.`);
     }
-    ok(`clone present at ${clone}`);
-    for (const [command, args] of clonePlan.commands) run(command, args);
+    const unwritable = firstUnwritableCloneDirectory(clone);
+    if (unwritable) {
+      doing(`${clone} contains a directory this account cannot update; rebuilding the updater-owned clone`);
+      if (dryRun) {
+        doing(`[dry-run] would replace ${clone} with a fresh clone from ${remoteUrl}`);
+      } else {
+        const rebuilt = rebuildUpdaterOwnedClone({
+          clone,
+          remoteUrl,
+          pid: process.pid,
+          run: capture,
+          ops: {
+            exists: existsSync,
+            move: renameSync,
+            remove: (path) => rmSync(path, { recursive: true, force: true }),
+          },
+        });
+        if (rebuilt.problem) fail(rebuilt.problem);
+        ok(`fresh updater-owned clone at ${clone}`);
+        if (rebuilt.preserved) {
+          warning(`the old privileged clone remains at ${rebuilt.preserved}; remove it later with an administrator account`);
+        }
+      }
+    } else {
+      ok(`clone present at ${clone}`);
+      for (const [command, args] of clonePlan.commands) run(command, args);
+    }
   } else {
     doing(`cloning ${remoteUrl} into ${clone}`);
     run("git", ["clone", remoteUrl, clone]);
@@ -579,22 +650,14 @@ function installApp(options) {
   if (dryRun) {
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
-    const swapProblem = swapAppBundle({
-      packagedApp,
+    const swap = replaceAppBundle({
+      sourceBundle: packagedApp,
       appPath,
       appsDir: options.appsDir,
       pid: process.pid,
-      ops: {
-        // `cp -R` rather than `fs.cpSync`, matching the `install-app` recipe this replaces: the
-        // bundle carries framework symlinks, and this is the copy known to preserve them.
-        copy: (from, to) => execFileSync("cp", ["-R", from, to], { stdio: "inherit" }),
-        move: (from, to) => renameSync(from, to),
-        remove: (path) => rmSync(path, { recursive: true, force: true }),
-        exists: (path) => existsSync(path),
-      },
     });
-    if (swapProblem) fail(swapProblem);
-    ok(`installed ${appPath}`);
+    if (swap.problem) fail(swap.problem);
+    ok(`installed ${appPath}${swap.elevated ? " with administrator authorization" : ""}`);
   }
 
   // 9. Receipt ---------------------------------------------------------------------------

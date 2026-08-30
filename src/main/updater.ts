@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
@@ -318,11 +318,17 @@ export function createRotatingUpdateLogger(path: string): (line: string) => void
   };
 }
 
+export function detachedUpdateHelperSources(helperSource: string): string[] {
+  return [helperSource, join(dirname(helperSource), "app-bundle-swap.mjs")];
+}
+
 export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "mission-control-update-"));
   try {
     const helper = join(directory, basename(args.helperSource));
-    copyFileSync(args.helperSource, helper);
+    for (const source of detachedUpdateHelperSources(args.helperSource)) {
+      copyFileSync(source, join(directory, basename(source)));
+    }
     const logFd = openSync(args.logPath, "a", 0o600);
     try {
       await new Promise<void>((resolve, reject) => {

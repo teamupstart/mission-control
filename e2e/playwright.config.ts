@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 
 /**
  * Browser-level end-to-end tests, run separately from `npm test`.
@@ -9,10 +10,12 @@ import { defineConfig, devices } from "@playwright/test";
  * `node:test` file, and the same line is drawn here.
  */
 export default defineConfig({
-  testDir: "./specs",
+  // Keep these anchored to this file so the same config is safe when it is re-exported by
+  // the repository-root entrypoint used by bare `playwright test` commands.
+  testDir: fileURLToPath(new URL("./specs", import.meta.url)),
   // One user-scoped host lease is acquired before Playwright starts workers. Linked
   // worktrees therefore queue full or focused runs instead of multiplying this cap.
-  globalSetup: "./global-setup.ts",
+  globalSetup: fileURLToPath(new URL("./global-setup.ts", import.meta.url)),
   // Each spec boots its own daemon on a per-worker port, so files are safe to parallelise;
   // the cost is one daemon process per worker, which is why this is not unbounded.
   fullyParallel: true,

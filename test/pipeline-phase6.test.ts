@@ -1009,6 +1009,92 @@ test("successful cancellation during provider reservation prevents host launch",
   );
 });
 
+test("cancellation after reservation settlement prevents managed host launch", async (t) => {
+  const taskId = "pipeline-cancel-after-reservation";
+  const repoRoot = "/repo/cancel-after-reservation";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel before the managed host launches",
+  }));
+  let reservedRun!: PipelineEngineerRunSnapshot;
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => {
+      reservedRun = {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-cancel-after-reservation",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Cancel before the managed host launches",
+        eventRevision: 1,
+        state: "created",
+      };
+      return { ok: true, value: reservedRun };
+    },
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return { ok: true, value: { ...reservedRun, eventRevision: 2, state: "cancelled" } };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  let markDescriptorStarted!: () => void;
+  let releaseDescriptor!: () => void;
+  const descriptorStarted = new Promise<void>((resolve) => {
+    markDescriptorStarted = resolve;
+  });
+  const descriptorReleased = new Promise<void>((resolve) => {
+    releaseDescriptor = resolve;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => {
+      markDescriptorStarted();
+      await descriptorReleased;
+      return {
+        serverName: "mission-control",
+        command: "/usr/bin/node",
+        args: ["/dist/mcp/server.mjs"],
+        env: {},
+      };
+    },
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await descriptorStarted;
+  const cancellation = await tasks.cancel(taskId);
+  releaseDescriptor();
+  await dispatching;
+
+  assert.deepEqual(cancellation, { ok: true });
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.deepEqual(cancelledRunIds, ["engineer-cancel-after-reservation"]);
+  assert.equal(supervisor.starts.length, 0);
+});
+
 test("commissioned dispatch rejects a provider reservation with mismatched identity", async (t) => {
   const registry = new Registry();
   const supervisor = fakeSupervisor(registry);

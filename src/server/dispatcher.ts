@@ -1051,7 +1051,6 @@ export class Dispatcher {
         if (!reservationBound) {
           this.registry.settlePipelineEngineerReservation(taskId, false);
         }
-        this.registry.endPipelineEngineerReservation(taskId);
       }
     } else {
       const runKey = pipelineRunKeyOf(launch.pipelineRun);
@@ -1135,6 +1134,17 @@ export class Dispatcher {
           `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
           `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
           `with that absolute path before editing files there.]`;
+      if ("provider" in launch) {
+        while (true) {
+          const cancellation = this.registry.claimPipelineEngineerHostLaunch(taskId);
+          if (!cancellation) break;
+          await cancellation;
+          if (await this.abortIfSettled(taskId)) {
+            cleanupDisposableAgentStateHome(stateHome);
+            return;
+          }
+        }
+      }
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });
@@ -1284,6 +1294,8 @@ export class Dispatcher {
         }
       }
       throw error;
+    } finally {
+      this.registry.endPipelineEngineerReservation(taskId);
     }
   }
 

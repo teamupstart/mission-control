@@ -1213,6 +1213,12 @@ export class Registry extends EventEmitter {
   requestPipelineEngineerReservationCancellation(taskId: string): Promise<boolean> | null {
     const boundary = this.pipelineEngineerReservations.get(taskId);
     if (!boundary) return null;
+    if (boundary.cancellationSettled) {
+      boundary.cancellationSettled = false;
+      boundary.cancellation = new Promise<void>((resolve) => {
+        boundary.settleCancellation = resolve;
+      });
+    }
     boundary.cancelRequested = true;
     return boundary.reservation;
   }
@@ -1231,11 +1237,20 @@ export class Registry extends EventEmitter {
     return this.pipelineEngineerReservations.get(taskId)?.cancellation ?? null;
   }
 
-  finishPipelineEngineerReservationCancellation(taskId: string): void {
+  finishPipelineEngineerReservationCancellation(taskId: string, cancelled: boolean): void {
     const boundary = this.pipelineEngineerReservations.get(taskId);
     if (!boundary || boundary.cancellationSettled) return;
+    if (!cancelled) boundary.cancelRequested = false;
     boundary.cancellationSettled = true;
     boundary.settleCancellation();
+  }
+
+  claimPipelineEngineerHostLaunch(taskId: string): Promise<void> | null {
+    const boundary = this.pipelineEngineerReservations.get(taskId);
+    if (!boundary) return null;
+    if (boundary.cancelRequested) return boundary.cancellation;
+    this.pipelineEngineerReservations.delete(taskId);
+    return null;
   }
 
   endPipelineEngineerReservation(taskId: string): void {

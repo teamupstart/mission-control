@@ -3309,11 +3309,23 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    return this.withCleanupReservation<Ok>(
-      id,
-      { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
-      () => this.cancelReserved(id, t),
-    );
+    const engineerReservation = t.kind === "pipeline"
+      ? this.registry.requestPipelineEngineerReservationCancellation(id)
+      : null;
+    try {
+      return await this.withCleanupReservation<Ok>(
+        id,
+        { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+        () => this.cancelReserved(id, t),
+      );
+    } finally {
+      if (engineerReservation) {
+        this.registry.finishPipelineEngineerReservationCancellation(
+          id,
+          this.registry.getTask(id)?.status === "cancelled",
+        );
+      }
+    }
   }
 
   /** `cancel`'s body, once the cleanup reservation is held. */
@@ -3342,17 +3354,13 @@ export class TaskManager {
             error: "the provider Engineer run reservation is still in progress - try cancellation again",
           };
         }
-        try {
-          if (!(await reservation)) {
-            return {
-              ok: false,
-              error: "the provider Engineer run reservation did not produce a cancellable run",
-            };
-          }
-          return await this.cancelReserved(id, this.registry.getTask(id) ?? t);
-        } finally {
-          this.registry.finishPipelineEngineerReservationCancellation(id);
+        if (!(await reservation)) {
+          return {
+            ok: false,
+            error: "the provider Engineer run reservation did not produce a cancellable run",
+          };
         }
+        return await this.cancelReserved(id, this.registry.getTask(id) ?? t);
       }
       if (active?.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
         const lifecycle = PIPELINE_PROVIDERS[authoringCommission.provider].engineerLifecycle;

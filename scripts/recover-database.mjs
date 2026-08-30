@@ -1,0 +1,713 @@
+#!/usr/bin/env node
+
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  closeSync,
+  fsyncSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { readReceipt } from "../src/shared/install-receipt.mjs";
+import { stateDir } from "../src/shared/harness-runtime.mjs";
+
+export const APP_BUNDLE_ID = "com.mission-control.app";
+export const DATABASE_FILE = "harness.db";
+export const RECOVERY_DIRECTORY = "database-recovery";
+export const RECOVERY_LEDGER = "ledger.json";
+export const STOP_TIMEOUT_MS = 15_000;
+export const HEALTH_TIMEOUT_MS = 20_000;
+export const MAX_RECOVERY_ATTEMPTS = 100;
+export const MAX_ROLLBACK_DIRECTORIES = 5;
+export const LEDGER_LOCK_TIMEOUT_MS = 15_000;
+
+const SIDECAR_SUFFIXES = ["", "-wal", "-shm"];
+const RECOVERY_LEDGER_LOCK = "ledger.lock";
+
+const usage = `Usage:
+  npm run recover:database -- /absolute/path/to/harness.db
+  npm run recover:database -- --rollback <recovery-id>
+
+The command validates a staged copy before stopping Mission Control. Set MISSION_HOME only
+when recovering a non-default state home.`;
+
+export function parseArgs(argv) {
+  if (argv.length === 1 && argv[0] !== "--help" && argv[0] !== "-h") {
+    return { args: { kind: "restore", candidatePath: argv[0] }, problem: null };
+  }
+  if (argv.length === 2 && argv[0] === "--rollback" && argv[1]) {
+    return { args: { kind: "rollback", recoveryId: argv[1] }, problem: null };
+  }
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    return { args: null, problem: usage };
+  }
+  return { args: null, problem: `invalid recovery arguments\n\n${usage}` };
+}
+
+function recoveryRoot(home) {
+  return join(home, RECOVERY_DIRECTORY);
+}
+
+function ledgerPath(home) {
+  return join(recoveryRoot(home), RECOVERY_LEDGER);
+}
+
+function emptyLedger() {
+  return { schema: 1, attempts: [] };
+}
+
+export function readRecoveryLedger(home) {
+  const path = ledgerPath(home);
+  if (!existsSync(path)) return emptyLedger();
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`recovery ledger is unreadable: ${error?.message ?? error}`);
+  }
+  if (
+    value?.schema !== 1 ||
+    !Array.isArray(value.attempts) ||
+    value.attempts.some(
+      (attempt) =>
+        !attempt ||
+        typeof attempt !== "object" ||
+        typeof attempt.id !== "string" ||
+        typeof attempt.digest !== "string" ||
+        typeof attempt.status !== "string",
+    )
+  ) {
+    throw new Error("recovery ledger has an unsupported or invalid shape");
+  }
+  return value;
+}
+
+function durableWriteJson(path, value) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  try {
+    writeFileSync(temp, bytes, { mode: 0o600 });
+    const fd = openSync(temp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+function writeRecoveryLedger(home, ledger) {
+  durableWriteJson(ledgerPath(home), ledger);
+}
+
+async function updateAttempt(home, ops, id, patch, afterRead = null) {
+  return withLedgerLock(home, ops, async () => {
+    const ledger = readRecoveryLedger(home);
+    const attempt = ledger.attempts.find((entry) => entry.id === id);
+    if (!attempt) throw new Error(`recovery attempt ${id} is missing from the ledger`);
+    if (afterRead) await afterRead();
+    Object.assign(attempt, patch);
+    writeRecoveryLedger(home, ledger);
+  });
+}
+
+function copySqliteSet(fromDatabase, toDatabase) {
+  mkdirSync(dirname(toDatabase), { recursive: true, mode: 0o700 });
+  for (const suffix of SIDECAR_SUFFIXES) {
+    const from = `${fromDatabase}${suffix}`;
+    const to = `${toDatabase}${suffix}`;
+    if (!existsSync(from)) continue;
+    copyFileSync(from, to);
+    chmodSync(to, 0o600);
+  }
+}
+
+function sqliteRows(db, pragma) {
+  return db.prepare(pragma).all();
+}
+
+/** Stage, fully read, check, and consolidate a candidate without mutating its source files. */
+export function prepareCandidate(candidatePath, home) {
+  if (!isAbsolute(candidatePath)) throw new Error("candidate database path must be absolute");
+  if (!existsSync(candidatePath) || !statSync(candidatePath).isFile()) {
+    throw new Error(`candidate database does not exist as a file: ${candidatePath}`);
+  }
+  const liveDatabase = join(home, DATABASE_FILE);
+  if (existsSync(liveDatabase) && realpathSync(candidatePath) === realpathSync(liveDatabase)) {
+    throw new Error("candidate database must not be the live Mission Control database");
+  }
+
+  const stagingDirectory = join(
+    tmpdir(),
+    `mission-control-recovery-${process.pid}-${randomUUID()}`,
+  );
+  const stagedDatabase = join(stagingDirectory, DATABASE_FILE);
+  mkdirSync(stagingDirectory, { recursive: true, mode: 0o700 });
+  try {
+    copySqliteSet(candidatePath, stagedDatabase);
+    const db = new DatabaseSync(stagedDatabase);
+    try {
+      const quickCheck = sqliteRows(db, "PRAGMA quick_check");
+      if (
+        quickCheck.length !== 1 ||
+        !Object.values(quickCheck[0] ?? {}).some((value) => value === "ok")
+      ) {
+        throw new Error("candidate failed PRAGMA quick_check");
+      }
+      const foreignKeys = sqliteRows(db, "PRAGMA foreign_key_check");
+      if (foreignKeys.length !== 0) {
+        throw new Error(`candidate has ${foreignKeys.length} foreign-key violation(s)`);
+      }
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      db.exec("PRAGMA journal_mode = DELETE");
+    } finally {
+      db.close();
+    }
+    rmSync(`${stagedDatabase}-wal`, { force: true });
+    rmSync(`${stagedDatabase}-shm`, { force: true });
+    const digest = createHash("sha256").update(readFileSync(stagedDatabase)).digest("hex");
+    return {
+      digest,
+      stagedDatabase,
+      stagingDirectory,
+      cleanup: () => rmSync(stagingDirectory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function readOwner(home) {
+  try {
+    const value = JSON.parse(readFileSync(join(home, "daemon.lock"), "utf8"));
+    if (!Number.isInteger(value?.pid) || value.pid <= 0) return null;
+    if (!Number.isInteger(value?.port) || value.port <= 0 || value.port > 65_535) return null;
+    return { pid: value.pid, port: value.port };
+  } catch {
+    return null;
+  }
+}
+
+async function probeHealth(port, timeoutMs = 700) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const value = await response.json();
+    if (
+      value?.service !== "mission-control" ||
+      !Number.isInteger(value.pid) ||
+      value.pid <= 0
+    ) {
+      return null;
+    }
+    return { pid: value.pid, port, version: typeof value.version === "string" ? value.version : "unknown" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A daemon identity is usable only when fresh lock metadata and fresh health agree. */
+export async function identifyLiveDaemon(home) {
+  const owner = readOwner(home);
+  if (!owner) return null;
+  const health = await probeHealth(owner.port);
+  if (!health) return null;
+  if (health.pid !== owner.pid) {
+    throw new Error(
+      `daemon identity is ambiguous: lock PID ${owner.pid} does not match health PID ${health.pid}`,
+    );
+  }
+  return health;
+}
+
+function loadStateLockBinding() {
+  const require = createRequire(import.meta.url);
+  const addon = require(resolve("dist/native/state-lock.node"));
+  if (typeof addon?.acquire !== "function" || typeof addon?.release !== "function") {
+    throw new Error("native state lock addon does not export acquire and release");
+  }
+  return addon;
+}
+
+function run(bin, args) {
+  const result = spawnSync(bin, args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    throw new Error(`${basename(bin)} exited ${result.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return String(result.stdout ?? "").trim();
+}
+
+function verifyProductApp(home) {
+  const receipt = readReceipt(join(home, "install-receipt.json"));
+  if (!receipt) {
+    throw new Error("a valid managed-install receipt is required to recover the product app");
+  }
+  const info = join(receipt.appPath, "Contents", "Info.plist");
+  const actual = run("/usr/libexec/PlistBuddy", ["-c", "Print:CFBundleIdentifier", info]);
+  if (actual !== APP_BUNDLE_ID) {
+    throw new Error(`installed app bundle identifier is ${actual || "missing"}, expected ${APP_BUNDLE_ID}`);
+  }
+  return receipt.appPath;
+}
+
+function appIsRunning() {
+  const script = `tell application "System Events" to return (bundle identifier of application processes) contains "${APP_BUNDLE_ID}"`;
+  return run("/usr/bin/osascript", ["-e", script]).toLowerCase() === "true";
+}
+
+function quitProductApp() {
+  run("/usr/bin/osascript", ["-e", `tell application id "${APP_BUNDLE_ID}" to quit`]);
+}
+
+function launchProductApp() {
+  run("/usr/bin/open", ["-b", APP_BUNDLE_ID]);
+}
+
+export function realRecoveryOperations() {
+  const binding = loadStateLockBinding();
+  const tryAcquireNativeLock = (path, purpose) => {
+    try {
+      const handle = binding.acquire(
+        path,
+        `${JSON.stringify({
+          version: 1,
+          pid: process.pid,
+          port: 0,
+          startedAt: new Date().toISOString(),
+          purpose,
+        })}\n`,
+      );
+      return { release: () => binding.release(handle) };
+    } catch (error) {
+      if (error?.code === "ELOCKED") return null;
+      throw error;
+    }
+  };
+  return {
+    verifyApp: verifyProductApp,
+    appIsRunning,
+    quitApp: quitProductApp,
+    identifyDaemon: identifyLiveDaemon,
+    signalDaemon: (pid) => {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        // The fresh health response and the signal are still separate syscalls. If the exact
+        // process exits in that gap, the stop already succeeded; every other signal error is a
+        // refusal because no substitute PID is ever inferred.
+        if (error?.code !== "ESRCH") throw error;
+      }
+    },
+    tryAcquireLock: (home) =>
+      tryAcquireNativeLock(join(home, "daemon.lock"), "database-recovery"),
+    tryAcquireLedgerLock: (home) =>
+      tryAcquireNativeLock(
+        join(recoveryRoot(home), RECOVERY_LEDGER_LOCK),
+        "database-recovery-ledger",
+      ),
+    sleep: delay,
+    launchApp: launchProductApp,
+    now: () => new Date().toISOString(),
+  };
+}
+
+async function withLedgerLock(
+  home,
+  ops,
+  mutate,
+  timeoutMs = LEDGER_LOCK_TIMEOUT_MS,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const lock = ops.tryAcquireLedgerLock(home);
+    if (lock) {
+      try {
+        return await mutate();
+      } finally {
+        lock.release();
+      }
+    }
+    await ops.sleep(25);
+  }
+  throw new Error("recovery ledger lock was not released before the bounded timeout");
+}
+
+async function stopAndAcquire(home, ops, timeoutMs = STOP_TIMEOUT_MS) {
+  // Observe the current daemon before asking either owner to stop. This is deliberately
+  // discarded: every later signal is based on another fresh lock-plus-health observation.
+  await ops.identifyDaemon(home);
+  if (await ops.appIsRunning()) await ops.quitApp(APP_BUNDLE_ID);
+  const signaled = new Set();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const lock = ops.tryAcquireLock(home);
+    if (lock) return lock;
+    const daemon = await ops.identifyDaemon(home);
+    if (daemon && !signaled.has(daemon.pid)) {
+      // The identity came from a fresh lock read and a fresh health response immediately
+      // above. Never retain it between loop iterations or signal the same numeric PID twice.
+      ops.signalDaemon(daemon.pid);
+      signaled.add(daemon.pid);
+    }
+    await ops.sleep(100);
+  }
+  throw new Error("Mission Control did not release daemon.lock before the bounded stop timeout");
+}
+
+function createRollbackSnapshot(home, attemptId) {
+  const live = join(home, DATABASE_FILE);
+  if (!existsSync(live)) throw new Error(`live database is missing: ${live}`);
+  const directory = join(recoveryRoot(home), attemptId, "rollback");
+  const target = join(directory, DATABASE_FILE);
+  const databaseMode = statSync(live).mode & 0o777;
+  copySqliteSet(live, target);
+  return { directory, database: target, databaseMode };
+}
+
+function installPreparedDatabase(home, stagedDatabase) {
+  const live = join(home, DATABASE_FILE);
+  const temp = join(home, `.${DATABASE_FILE}.recovery-${process.pid}-${randomUUID()}`);
+  const mode = existsSync(live) ? statSync(live).mode & 0o777 : 0o600;
+  try {
+    copyFileSync(stagedDatabase, temp);
+    chmodSync(temp, mode);
+    for (const suffix of SIDECAR_SUFFIXES.slice(1)) rmSync(`${live}${suffix}`, { force: true });
+    renameSync(temp, live);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+function restoreRollbackSnapshot(home, rollbackDatabase, databaseMode = 0o600) {
+  if (!existsSync(rollbackDatabase)) throw new Error("rollback database is missing");
+  const live = join(home, DATABASE_FILE);
+  const temp = join(home, `.${DATABASE_FILE}.rollback-${process.pid}-${randomUUID()}`);
+  try {
+    copyFileSync(rollbackDatabase, temp);
+    chmodSync(temp, databaseMode);
+    for (const suffix of SIDECAR_SUFFIXES.slice(1)) rmSync(`${live}${suffix}`, { force: true });
+    renameSync(temp, live);
+    for (const suffix of SIDECAR_SUFFIXES.slice(1)) {
+      const source = `${rollbackDatabase}${suffix}`;
+      if (!existsSync(source)) continue;
+      copyFileSync(source, `${live}${suffix}`);
+      chmodSync(`${live}${suffix}`, 0o600);
+    }
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+async function waitForHealthy(home, ops, timeoutMs = HEALTH_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const daemon = await ops.identifyDaemon(home);
+    if (daemon) return daemon;
+    await ops.sleep(150);
+  }
+  return null;
+}
+
+async function pruneRollbackDirectories(home, keepId, ops) {
+  return withLedgerLock(home, ops, () => {
+    const ledger = readRecoveryLedger(home);
+    const retained = ledger.attempts
+      .filter((attempt) => attempt.rollbackDirectory && existsSync(attempt.rollbackDirectory))
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    for (const attempt of retained.slice(MAX_ROLLBACK_DIRECTORIES)) {
+      if (attempt.id === keepId) continue;
+      rmSync(join(recoveryRoot(home), attempt.id), { recursive: true, force: true });
+      attempt.rollbackDirectory = null;
+    }
+    writeRecoveryLedger(home, ledger);
+  });
+}
+
+function candidateForRollback(home, recoveryId) {
+  const ledger = readRecoveryLedger(home);
+  const attempt = ledger.attempts.find((entry) => entry.id === recoveryId);
+  if (!attempt) throw new Error(`unknown recovery id: ${recoveryId}`);
+  if (attempt.status === "rolled_back") throw new Error(`recovery ${recoveryId} is already rolled back`);
+  const candidatePath = join(recoveryRoot(home), recoveryId, "rollback", DATABASE_FILE);
+  if (!existsSync(candidatePath)) throw new Error(`rollback material for ${recoveryId} is no longer retained`);
+  return { candidatePath, rollbackOf: recoveryId };
+}
+
+function alreadyAppliedResult(attempt) {
+  return {
+    ok: true,
+    kind: "already-applied",
+    message: `candidate was already handled by recovery ${attempt.id}; no database files were changed and the app was not relaunched`,
+    recoveryId: attempt.id,
+    health: null,
+    warnings: [],
+  };
+}
+
+function appliedAttemptForDigest(ledger, digest) {
+  return ledger.attempts.find(
+    (attempt) => attempt.digest === digest && attempt.status === "applied",
+  );
+}
+
+function unfinishedAttemptForDigest(ledger, digest) {
+  return ledger.attempts.find(
+    (attempt) =>
+      attempt.digest === digest && ["prepared", "installed"].includes(attempt.status),
+  );
+}
+
+/** Bounded, idempotent recovery orchestration. Filesystem effects stay behind the daemon lock. */
+export async function runDatabaseRecovery(
+  request,
+  {
+    home = stateDir(),
+    ops = null,
+    stopTimeoutMs = STOP_TIMEOUT_MS,
+    healthTimeoutMs = HEALTH_TIMEOUT_MS,
+    installDatabase = installPreparedDatabase,
+    pruneRollbacks = null,
+    beforeAppliedLedgerWrite = null,
+  } = {},
+) {
+  if (process.platform !== "darwin" && ops === null) {
+    throw new Error("product-app database recovery is supported only on macOS");
+  }
+  const recoveryOps = ops ?? realRecoveryOperations();
+  const prune =
+    pruneRollbacks ?? ((targetHome, keepId) =>
+      pruneRollbackDirectories(targetHome, keepId, recoveryOps));
+  mkdirSync(recoveryRoot(home), { recursive: true, mode: 0o700 });
+  recoveryOps.verifyApp(home, APP_BUNDLE_ID);
+
+  const rollback = request.kind === "rollback" ? candidateForRollback(home, request.recoveryId) : null;
+  const candidatePath = rollback?.candidatePath ?? request.candidatePath;
+  const prepared = prepareCandidate(candidatePath, home);
+  let lock = null;
+  let attempt = null;
+  let rollbackSnapshot = null;
+  let launched = false;
+  try {
+    const ledger = readRecoveryLedger(home);
+    const duplicate = appliedAttemptForDigest(ledger, prepared.digest);
+    if (duplicate) return alreadyAppliedResult(duplicate);
+    if (ledger.attempts.length >= MAX_RECOVERY_ATTEMPTS) {
+      throw new Error(
+        `recovery ledger reached its ${MAX_RECOVERY_ATTEMPTS}-attempt safety bound and refuses another restore`,
+      );
+    }
+
+    lock = await stopAndAcquire(home, recoveryOps, stopTimeoutMs);
+    // Candidate preparation and the fast duplicate check intentionally happen before stopping
+    // the app. Another recovery can win while this invocation waits for daemon.lock, so reserve
+    // the attempt under the separate ledger lock before any database file moves. That lock also
+    // serializes post-health writes after daemon.lock has been released for the relaunched app.
+    const id = `${recoveryOps.now().replace(/[:.]/g, "-")}-${prepared.digest.slice(0, 12)}`;
+    const serializedDuplicate = await withLedgerLock(home, recoveryOps, () => {
+      const currentLedger = readRecoveryLedger(home);
+      const duplicateUnderLock = appliedAttemptForDigest(currentLedger, prepared.digest);
+      if (duplicateUnderLock) return duplicateUnderLock;
+      const unfinishedDuplicate = unfinishedAttemptForDigest(currentLedger, prepared.digest);
+      if (unfinishedDuplicate) {
+        throw new Error(
+          `recovery ${unfinishedDuplicate.id} for this candidate is unfinished (${unfinishedDuplicate.status}); ` +
+            "refusing to apply the same restore concurrently",
+        );
+      }
+      if (currentLedger.attempts.length >= MAX_RECOVERY_ATTEMPTS) {
+        throw new Error(
+          `recovery ledger reached its ${MAX_RECOVERY_ATTEMPTS}-attempt safety bound and refuses another restore`,
+        );
+      }
+
+      rollbackSnapshot = createRollbackSnapshot(home, id);
+      attempt = {
+        id,
+        digest: prepared.digest,
+        status: "prepared",
+        startedAt: recoveryOps.now(),
+        finishedAt: null,
+        rollbackDirectory: rollbackSnapshot.directory,
+        databaseMode: rollbackSnapshot.databaseMode,
+        rollbackOf: rollback?.rollbackOf ?? null,
+        message: null,
+      };
+      currentLedger.attempts.push(attempt);
+      writeRecoveryLedger(home, currentLedger);
+      return null;
+    });
+    if (serializedDuplicate) return alreadyAppliedResult(serializedDuplicate);
+
+    try {
+      installDatabase(home, prepared.stagedDatabase);
+      await updateAttempt(home, recoveryOps, id, { status: "installed" });
+    } catch (error) {
+      try {
+        restoreRollbackSnapshot(home, rollbackSnapshot.database, rollbackSnapshot.databaseMode);
+      } catch (rollbackError) {
+        await updateAttempt(home, recoveryOps, id, {
+          status: "rollback_failed",
+          finishedAt: recoveryOps.now(),
+          message:
+            `install failed: ${error?.message ?? error}; rollback failed: ` +
+            `${rollbackError?.message ?? rollbackError}`,
+        });
+        throw new AggregateError(
+          [error, rollbackError],
+          `database install failed and rollback also failed; preserved material is at ${rollbackSnapshot.directory}`,
+        );
+      }
+      await updateAttempt(home, recoveryOps, id, {
+        status: "rolled_back",
+        finishedAt: recoveryOps.now(),
+        message: `install failed: ${error?.message ?? error}`,
+      });
+      throw error;
+    }
+
+    lock.release();
+    lock = null;
+    launched = true;
+    recoveryOps.launchApp(APP_BUNDLE_ID);
+    const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
+    if (!health) throw new Error("Mission Control relaunched but its daemon did not become healthy");
+
+    await updateAttempt(
+      home,
+      recoveryOps,
+      id,
+      { status: "applied", finishedAt: recoveryOps.now() },
+      beforeAppliedLedgerWrite,
+    );
+    const warnings = [];
+    if (rollback?.rollbackOf) {
+      try {
+        await updateAttempt(home, recoveryOps, rollback.rollbackOf, {
+          status: "rolled_back",
+          finishedAt: recoveryOps.now(),
+          message: `rolled back by recovery ${id}`,
+        });
+      } catch (error) {
+        warnings.push(
+          `could not mark recovery ${rollback.rollbackOf} as rolled back: ${error?.message ?? error}`,
+        );
+      }
+    }
+    try {
+      await prune(home, id);
+    } catch (error) {
+      warnings.push(`could not prune retained rollback material: ${error?.message ?? error}`);
+    }
+    const healthyMessage =
+      `database recovery ${id} is healthy on dynamically discovered PID ${health.pid}, ` +
+      `port ${health.port}, version ${health.version}`;
+    return {
+      ok: true,
+      kind: rollback ? "rolled-back" : "applied",
+      message:
+        warnings.length === 0
+          ? healthyMessage
+          : `${healthyMessage}. Warning: ${warnings.join("; ")}`,
+      recoveryId: id,
+      health,
+      warnings,
+    };
+  } catch (error) {
+    if (
+      attempt &&
+      readRecoveryLedger(home).attempts.find((entry) => entry.id === attempt.id)?.status ===
+        "installed"
+    ) {
+      try {
+        if (lock) {
+          // already stopped
+        } else {
+          lock = await stopAndAcquire(home, recoveryOps, stopTimeoutMs);
+        }
+        const rollbackDatabase = join(attempt.rollbackDirectory, DATABASE_FILE);
+        restoreRollbackSnapshot(home, rollbackDatabase, attempt.databaseMode);
+        await updateAttempt(home, recoveryOps, attempt.id, {
+          status: "rolled_back",
+          finishedAt: recoveryOps.now(),
+          message: `automatic rollback after failure: ${error?.message ?? error}`,
+        });
+      } catch (rollbackError) {
+        try {
+          await updateAttempt(home, recoveryOps, attempt.id, {
+            status: "rollback_failed",
+            finishedAt: recoveryOps.now(),
+            message:
+              `automatic rollback failed after ${error?.message ?? error}: ` +
+              `${rollbackError?.message ?? rollbackError}`,
+          });
+        } catch (ledgerError) {
+          throw new AggregateError(
+            [error, rollbackError, ledgerError],
+            `database recovery failed, rollback failed, and the ledger could not record that failure; preserved material is at ${attempt.rollbackDirectory}`,
+          );
+        }
+        throw new AggregateError(
+          [error, rollbackError],
+          `database recovery failed and rollback also failed; preserved material is at ${attempt.rollbackDirectory}`,
+        );
+      }
+    }
+    const launchNote = launched ? " The app was launched exactly once and was not launched again after rollback." : "";
+    throw new Error(`${error?.message ?? error}.${launchNote}`);
+  } finally {
+    lock?.release();
+    prepared.cleanup();
+  }
+}
+
+async function main(argv) {
+  const parsed = parseArgs(argv);
+  if (!parsed.args) {
+    console.error(parsed.problem);
+    return parsed.problem === usage ? 0 : 1;
+  }
+  try {
+    const result = await runDatabaseRecovery(parsed.args);
+    console.log(result.message);
+    return 0;
+  } catch (error) {
+    console.error(`Database recovery failed: ${error?.message ?? error}`);
+    return 1;
+  }
+}
+
+const invoked = process.argv[1] ? resolve(process.argv[1]) : "";
+if (invoked === fileURLToPath(import.meta.url)) {
+  process.exitCode = await main(process.argv.slice(2));
+}

@@ -16,6 +16,30 @@ export function stateLockBuildTarget(platform, arch) {
   return { platform, arch };
 }
 
+/**
+ * Remove download provenance inherited by a freshly copied local addon on macOS.
+ *
+ * The linker gives the bundle a valid ad-hoc signature, but a worktree can itself carry
+ * `com.apple.provenance`. `copyFile` preserves that attribute on this host, and macOS then kills
+ * Node while it loads the state-lock addon. A missing attribute is xattr status 1 and is already
+ * the desired state. Other failures stay fatal because shipping an addon the daemon cannot load
+ * would make both ordinary startup and database recovery fail without a JavaScript diagnostic.
+ */
+export function clearDarwinProvenance(
+  path,
+  platform = processPlatform,
+  execute = execFileSync,
+) {
+  if (platform !== "darwin") return false;
+  try {
+    execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], { stdio: "ignore" });
+    return true;
+  } catch (error) {
+    if (error?.status === 1) return false;
+    throw error;
+  }
+}
+
 export async function buildStateLockNative() {
   const target = stateLockBuildTarget(processPlatform, processArch);
   const sourceDir = resolve("native/state-lock");
@@ -31,6 +55,7 @@ export async function buildStateLockNative() {
   );
   await mkdir(outputDir, { recursive: true });
   await copyFile(built, output);
+  clearDarwinProvenance(output);
   console.log(`[state-lock-native] built ${target.platform} ${target.arch} ${output}`);
 }
 

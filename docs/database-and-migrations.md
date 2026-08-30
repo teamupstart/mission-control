@@ -17,6 +17,46 @@ The practical implication is that a schema change is not just a new-table change
 also open safely against an operator's existing database. Keep the migration beside the
 schema and create dependent indexes only after the columns exist.
 
+## Recovering the product database
+
+Use the supported recovery command from a current Mission Control checkout. Pass the absolute
+path to the candidate's `harness.db`; adjacent `-wal` and `-shm` files are included when present.
+
+```sh
+npm run recover:database -- /absolute/path/to/backup/harness.db
+```
+
+The command requires the managed-install receipt and verifies that its app bundle has the exact
+identifier `com.mission-control.app`. It stages and validates a copy with SQLite `quick_check` and
+`foreign_key_check` before disturbing the app. It then discovers the current daemon from fresh
+`daemon.lock` metadata plus `/api/health`, quits and relaunches the app by bundle identifier, and
+signals only a PID that both sources currently identify. It does not inspect or infer a launchd
+configuration.
+
+Recovery waits for the daemon to close SQLite and release the kernel-held state lock, then holds
+that same lock while it snapshots and replaces the database. This is the only supported offline
+exception to the daemon-only writer boundary. A separate kernel-held ledger lock serializes every
+ledger mutation, including health and retention bookkeeping after the daemon lock is released for
+the relaunched app. A bounded ledger under
+`$MISSION_HOME/database-recovery/` prevents the same successfully applied candidate from being
+applied twice, permits a byte-identical retry after a failed attempt rolled back, and keeps rollback
+material for the five most recent recoveries. The command attempts one app launch and reports the
+dynamically observed daemon PID, port, and version only after health succeeds. A failed install or
+relaunch restores the prior files without launching a second time. A later rollback-retention or
+ledger-cleanup failure is reported as a warning and never reverts a database whose health was
+already confirmed.
+
+To deliberately restore the retained pre-recovery snapshot, use the recovery id printed by the
+first command. Rollback goes through the same validation, stop proof, one-launch, and health path.
+
+```sh
+npm run recover:database -- --rollback <recovery-id>
+```
+
+The ledger fails closed at 100 attempts instead of discarding idempotency history, so both retained
+material and supported recovery volume have explicit bounds. The flow runs as the current user and
+neither installs a privileged helper nor changes database ownership.
+
 This page is an orientation aid. The authoritative requirements for database changes,
 append-only identifiers, and ledgers are [Database changes](agent-guides/change-contracts.md#database-changes),
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers), and

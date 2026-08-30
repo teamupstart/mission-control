@@ -22,7 +22,7 @@ FOREMAN_MATCH := src/server/foreman/worker.ts
 NPM_STAMP := node_modules/.install-stamp
 
 .DEFAULT_GOAL := help
-.PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons demo demo-fresh test lint check smoke hooks setup
+.PHONY: help init install session claude dev desktop start server web up down restart stop-all status logs db recover-db build app install-app icons demo demo-fresh test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -100,6 +100,9 @@ logs: ## Tail the background daemon log
 
 db: ## Open the Mission Control SQLite database in a read-only shell
 	node scripts/db-shell.mjs
+
+recover-db: ## Restore a validated database into the managed macOS app (ARGS="/absolute/path/harness.db")
+	npm run recover:database -- $(ARGS)
 
 build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build

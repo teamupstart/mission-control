@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { stateLockBuildTarget } from "../scripts/build-state-lock-native.mjs";
+import {
+  clearDarwinProvenance,
+  stateLockBuildTarget,
+} from "../scripts/build-state-lock-native.mjs";
 import {
   nativeStateLockAddonPath,
   validateNativeStateLockBinding,
@@ -25,6 +28,38 @@ test("the state ownership addon builds for the shipped daemon platforms", () => 
 test("unsupported state ownership addon targets fail at build time", () => {
   assert.throws(() => stateLockBuildTarget("win32", "x64"), /does not support win32 x64/);
   assert.throws(() => stateLockBuildTarget("darwin", "riscv64"), /does not support darwin riscv64/);
+});
+
+test("the Darwin build removes inherited provenance from the copied addon", () => {
+  const calls: Array<{ bin: string; args: string[] }> = [];
+  const execute = ((bin: string, args: string[]) => {
+    calls.push({ bin, args });
+  }) as typeof import("node:child_process").execFileSync;
+
+  assert.equal(clearDarwinProvenance("/dist/state-lock.node", "darwin", execute), true);
+  assert.deepEqual(calls, [
+    {
+      bin: "/usr/bin/xattr",
+      args: ["-d", "com.apple.provenance", "/dist/state-lock.node"],
+    },
+  ]);
+  assert.equal(clearDarwinProvenance("/dist/state-lock.node", "linux", execute), false);
+  assert.equal(calls.length, 1);
+});
+
+test("an already-clean Darwin addon is success, but another xattr failure is fatal", () => {
+  const missing = (() => {
+    throw Object.assign(new Error("No such xattr"), { status: 1 });
+  }) as typeof import("node:child_process").execFileSync;
+  const denied = (() => {
+    throw Object.assign(new Error("permission denied"), { status: 2 });
+  }) as typeof import("node:child_process").execFileSync;
+
+  assert.equal(clearDarwinProvenance("/dist/state-lock.node", "darwin", missing), false);
+  assert.throws(
+    () => clearDarwinProvenance("/dist/state-lock.node", "darwin", denied),
+    /permission denied/,
+  );
 });
 
 test("the native state lock resolves identically from source and bundle locations", () => {

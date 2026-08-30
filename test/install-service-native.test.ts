@@ -200,8 +200,9 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
       `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "daemon", pid: process.pid }) + "\\n");\n`,
   );
 
+  let child: ReturnType<typeof spawn> | null = null;
   try {
-    const child = spawn(process.execPath, [copiedEntry], {
+    child = spawn(process.execPath, [copiedEntry], {
       cwd: root,
       env: {
         ...process.env,
@@ -214,7 +215,11 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    const deadline = Date.now() + 3_000;
+    // This path starts two Node processes before the fixture can append its readiness event.
+    // A focused run on the same CI-shaped host measured startup above seven seconds,
+    // so three seconds turned the assertion into a scheduler-load check. This deadline only
+    // bounds readiness; the signal-forwarding assertions below remain event-driven.
+    const deadline = Date.now() + 15_000;
     let recorded = "";
     while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {
       await delay(20);
@@ -238,6 +243,9 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
     assert.equal(events[1]!.signal, testedSignal);
   } finally {
+    // A failed readiness assertion must not leave the service fixture holding the test runner's
+    // pipes open. The successful path has already exited and this is a no-op there.
+    if (child?.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true });
   }
 }

@@ -249,14 +249,13 @@ test("the identity survives the gate release - the regression an exec-ing shim w
  * not what the cases below mean to exercise.
  *
  * Which branch a case takes is therefore decided by how long `node` takes to start. That is a
- * few hundred milliseconds idle and several times that on a machine running the whole suite,
- * so a sub-second budget here is not a test of the supervisor at all - it is a test of the
- * load average. This is what a 300ms timeout did: green locally and on a quiet CI runner, and
- * an unexplained `emptiness: "empty"` in a check worktree running 9000 tests beside several
- * agents. Sized as one loaded `node` start plus room, because every case below needs the
- * command to reach its timeout WITH the gate open.
+ * few hundred milliseconds idle and more than five seconds on a machine running the whole
+ * suite, so a short budget here is not a test of the supervisor at all - it is a test of the
+ * load average. This is what the old 3s timeout did: green locally and an unexplained
+ * `emptiness: "empty"` in a loaded check worktree. Sized as one loaded `node` start plus room,
+ * because every case below needs the command to reach its timeout WITH the gate open.
  */
-const COMMAND_TIMEOUT_MS = 3_000;
+const COMMAND_TIMEOUT_MS = 10_000;
 
 test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", async () => {
   const dir = workspace();
@@ -320,8 +319,8 @@ test("a command that EXITS leaving a background process still has its group torn
 
 /**
  * One name each, because these two numbers are also the floor the elapsed-time assertion
- * checks. Spelled twice, they drift, and a `700 + 400` that no longer matches the run is a
- * green test asserting nothing.
+ * checks. Spelled twice, they drift, and a timeout plus grace that no longer matches the run
+ * is a green test asserting nothing.
  */
 const STUBBORN_TIMEOUT_MS = COMMAND_TIMEOUT_MS;
 const STUBBORN_GRACE_MS = 400;

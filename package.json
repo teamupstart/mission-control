@@ -51,6 +51,8 @@
     "session-actions": "tsx scripts/builtin-session-actions.ts",
     "tours": "tsx scripts/tour-content.ts",
     "session": "node scripts/new-session.mjs",
+    "prerecover:database": "node scripts/build-state-lock-native.mjs",
+    "recover:database": "node scripts/recover-database.mjs",
     "worktree-setup": "node scripts/worktree-setup.mjs",
     "setup": "npm install && npm run build && npm run install-hooks",
     "install-hooks": "tsx hooks/install.mjs",

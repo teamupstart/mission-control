@@ -84,7 +84,7 @@ async function enablePipelines(
   });
 }
 
-test("concurrent duplicate Pipeline dispatches reserve only one Engineer run", async ({
+test("concurrent same-intent Pipeline dispatches reserve independent Engineer runs", async ({
   daemon,
 }) => {
   await enablePipelines(daemon);
@@ -114,21 +114,48 @@ test("concurrent duplicate Pipeline dispatches reserve only one Engineer run", a
       ).filter((task) => task.intent === intent);
       return {
         statuses: tasks.map((task) => task.status).sort(),
-        activeCommissionCount: tasks.filter(
-          (task) => task.status === "running" && task.pipelineCommissionId !== null,
-        ).length,
-        duplicateError: tasks.find((task) => task.status === "failed")?.error ?? null,
+        activeCommissionIds: tasks
+          .filter((task) => task.status === "running")
+          .flatMap((task) => task.pipelineCommissionId ?? []),
+        errors: tasks.flatMap((task) => task.error ?? []),
         engineerRuns: existsSync(join(daemon.home, "conductor-engineer-state.json"))
-          ? readConductorEngineerRuns(daemon.home).length
-          : 0,
+          ? readConductorEngineerRuns(daemon.home).map((run) => ({
+              engineerRunId: run.engineerRunId,
+              correlationId: run.correlationId,
+              attemptKey: run.attemptKey,
+            }))
+          : [],
       };
     })
-    .toEqual({
-      statuses: ["failed", "running"],
-      activeCommissionCount: 1,
-      duplicateError: expect.stringMatching(/already owned by active task/),
-      engineerRuns: 1,
+    .toMatchObject({
+      statuses: ["running", "running"],
+      errors: [],
+      activeCommissionIds: [expect.any(String), expect.any(String)],
+      engineerRuns: [
+        {
+          engineerRunId: expect.any(String),
+          correlationId: expect.any(String),
+          attemptKey: expect.any(String),
+        },
+        {
+          engineerRunId: expect.any(String),
+          correlationId: expect.any(String),
+          attemptKey: expect.any(String),
+        },
+      ],
     });
+
+  const tasks = (
+    await request<Array<{
+      intent: string;
+      pipelineCommissionId: string | null;
+    }>>(daemon, "/api/tasks")
+  ).filter((task) => task.intent === intent);
+  const runs = readConductorEngineerRuns(daemon.home);
+  expect(new Set(tasks.map((task) => task.pipelineCommissionId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.engineerRunId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.correlationId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.attemptKey)).size).toBe(2);
 });
 
 const TERMINAL_COMMISSION_REFUSAL =

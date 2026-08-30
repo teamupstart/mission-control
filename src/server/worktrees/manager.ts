@@ -809,8 +809,13 @@ export class WorktreeManager {
       ) {
         return { outcome: "alreadyReleased" };
       }
+      // Quarantine blocks reuse, not exact owner-authorized disposal. Destroy first asks
+      // the domain owner to release its lease, and every path, marker, registration,
+      // process, and Git check below is repeated before the reset intent is persisted.
+      // Refusing solely because a prior observation was uncertain made an exact
+      // quarantined lease impossible to destroy through the only UI that offers it.
       if (
-        slot.state !== "leased" ||
+        (slot.state !== "leased" && slot.state !== "quarantined") ||
         slot.activeLeaseId !== lease.leaseId ||
         slot.activeOwnerKind !== lease.owner.kind ||
         slot.activeOwnerKey !== lease.owner.key ||

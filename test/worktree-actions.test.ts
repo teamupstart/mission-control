@@ -41,6 +41,39 @@ const operations = new WorktreeOperationsService(manager, {
 
 after(() => db.exec("DELETE FROM task_repos; DELETE FROM tasks; DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
 
+test("inventory skips recursive disk walks and a preview measures only its fixed target", async () => {
+  const { clone } = mkOriginAndClone("mission-worktree-lazy-size-");
+  const acquired = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: gitIn(clone, "rev-parse", "HEAD"),
+    owner: { kind: "manual", key: "manual-lazy-size" },
+  });
+  assert.equal(acquired.outcome, "acquired");
+  if (acquired.outcome !== "acquired") return;
+  const reads: string[] = [];
+  const measured = new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async (path) => {
+      reads.push(path);
+      return 2048;
+    },
+  });
+
+  const inventory = await measured.inventory();
+  assert.deepEqual(reads, [], "listing must not recursively walk every checkout");
+  const listed = inventory.repositories.flatMap((repo) => repo.slots)
+    .find((slot) => slot.id === acquired.lease.slotId);
+  assert.equal(listed?.diskBytes, null);
+
+  const preview = await measured.preview({ action: "return", slotId: acquired.lease.slotId });
+  assert.deepEqual(reads, [acquired.lease.path]);
+  assert.equal(preview.affected.find((item) => item.id === acquired.lease.slotId)?.diskBytes, 2048);
+});
+
 test("preview tokens bind exact state, require acknowledgements, and are single use", async () => {
   const { clone } = mkOriginAndClone("mission-worktree-action-");
   const acquired = await manager.acquire({
@@ -100,6 +133,64 @@ test("safe prune removes only a fixed clean, merged, unreferenced candidate", as
   assert.equal(preview.affected.some((target) => target.id === acquired.lease.slotId), true);
   await operations.execute(preview.token, []);
   assert.equal(manager.store.slot(acquired.lease.slotId), null);
+});
+
+test("bulk prune preview measures only safe candidates and measures them concurrently", async () => {
+  const { clone } = mkOriginAndClone("mission-worktree-prune-size-");
+  const head = gitIn(clone, "rev-parse", "HEAD");
+  const first = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: head,
+    owner: { kind: "manual", key: "prune-size-1" },
+  });
+  const second = await manager.acquire({
+    repositoryPath: clone,
+    baseSha: head,
+    owner: { kind: "manual", key: "prune-size-2" },
+  });
+  assert.equal(first.outcome, "acquired");
+  assert.equal(second.outcome, "acquired");
+  if (first.outcome !== "acquired" || second.outcome !== "acquired") return;
+  assert.equal((await manager.release(first.lease, { ownerAuthorized: true, requireClean: true })).outcome, "released");
+  assert.equal((await manager.release(second.lease, { ownerAuthorized: true, requireClean: true })).outcome, "released");
+
+  const reads: string[] = [];
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => { releaseReads = resolve; });
+  let reportFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { reportFirstStarted = resolve; });
+  let reportBothStarted!: () => void;
+  const bothStarted = new Promise<void>((resolve) => { reportBothStarted = resolve; });
+  const measured = new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async (path) => {
+      reads.push(path);
+      if (reads.length === 1) reportFirstStarted();
+      if (reads.length === 2) reportBothStarted();
+      await readsReleased;
+      return 4096;
+    },
+  });
+
+  const pendingPreview = measured.preview({ action: "prune", poolId: first.lease.poolId, mode: "safe" });
+  await firstStarted;
+  const startedInParallel = await Promise.race([
+    bothStarted.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+  ]);
+  releaseReads();
+  assert.equal(startedInParallel, true, "all fixed candidate size reads should start before any one finishes");
+  const preview = await pendingPreview;
+  assert.deepEqual(new Set(reads), new Set([first.lease.path, second.lease.path]));
+  assert.deepEqual(new Set(preview.affected.map((target) => target.id)), new Set([
+    first.lease.slotId,
+    second.lease.slotId,
+  ]));
+  assert.equal(preview.affected.every((target) => target.diskBytes === 4096), true);
 });
 
 test("pool Destroy binds a fixed slot set and emits one completed-action invalidation", async () => {

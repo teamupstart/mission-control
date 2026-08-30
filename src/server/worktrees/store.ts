@@ -320,7 +320,7 @@ export class WorktreeStore {
         `UPDATE worktree_slots SET
            state = 'returning', version = version + 1, requested_head_sha = ?,
            last_error = NULL, updated_at = ?
-         WHERE id = ? AND state = 'leased' AND version = ?`,
+         WHERE id = ? AND state IN ('leased', 'quarantined') AND version = ?`,
       )
       .run(targetSha, now, slotId, version);
     return Number(changed.changes) === 1 ? this.slot(slotId) : null;

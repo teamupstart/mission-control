@@ -566,6 +566,33 @@ test("conditional release is idempotent and stale identity cannot release a re-l
   assert.deepEqual(await m.release(second), { outcome: "released" });
 });
 
+test("an exact active lease can be released after a transient observation quarantines it", async () => {
+  const { clone, sha } = repository("mission-native-quarantined-release-");
+  const m = manager();
+  const held = lease(await acquire(m, clone, sha, "task-quarantined"));
+  const quarantined = m.store.quarantine(
+    held.slotId,
+    "slot process occupancy is unknown",
+    "cwd listing failed: exit 1",
+    Date.now(),
+    held.slotVersion,
+  );
+  assert.equal(quarantined?.state, "quarantined");
+
+  const current = m.lookupLease({
+    leaseId: held.leaseId,
+    path: held.path,
+    owner: held.owner,
+  });
+  assert.equal(current.state, "active");
+  if (current.state !== "active") return;
+  assert.deepEqual(
+    await m.release(current.lease, { ownerAuthorized: true }),
+    { outcome: "released" },
+  );
+  assert.equal(m.store.slot(held.slotId)?.state, "available");
+});
+
 test("reset removes nonignored work while preserving ignored warm caches", async () => {
   const { origin, clone } = mkOriginAndClone("mission-native-reset-");
   writeFileSync(join(origin, ".gitignore"), "node_modules/\n");

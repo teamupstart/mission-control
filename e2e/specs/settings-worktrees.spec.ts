@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 const EVIDENCE = artifactsDir("settings-worktrees");
 
@@ -244,6 +245,52 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   // takes six to eight seconds here - so the implicit five-second window was asserting that
   // git is fast rather than that the preview closes. `EXECUTES_MS` is the honest one.
   await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
+});
+
+test("Destroy reclaims an exactly owned lease that a transient observation quarantined", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "quarantined destroy" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+
+  // This is the state from the field failure: an exact active lease remains in the row,
+  // but a transient process observation moved the slot to quarantine. The Settings panel
+  // deliberately offers Destroy for that state, so Execute must be able to finish it.
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'slot process occupancy is unknown',
+              last_error = 'cwd listing failed: exit 1'
+        WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("quarantined", { exact: true })).toBeVisible();
+  await expect(slot.getByText("size unknown", { exact: true })).toBeVisible();
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await shoot(dashboard, "08-quarantined-destroy-preview");
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible();
+  await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
 /**

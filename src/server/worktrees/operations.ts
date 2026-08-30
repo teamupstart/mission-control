@@ -232,14 +232,9 @@ export class WorktreeOperationsService {
     }
     const repositories: WorktreeRepositoryView[] = [];
     for (const pool of native.slice(0, WORKTREE_INVENTORY_LIMITS.repositories)) {
-      const slotDisk = await Promise.all(
-        pool.slots
-          .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
-          .map((entry) => this.deps.diskBytes(entry.slot.path)),
-      );
       const slots = pool.slots
         .slice(0, WORKTREE_INVENTORY_LIMITS.slotsPerRepository)
-        .map((entry, index) => {
+        .map((entry) => {
           const owner = ownerView(entry, this.deps.tasks);
           const processes = entry.occupancy.status === "known"
             ? { state: "known" as const, count: entry.occupancy.occupants.length, reason: null }
@@ -269,7 +264,11 @@ export class WorktreeOperationsService {
                 : "unmerged" as const,
             dirty: entry.dirty,
             processes,
-            diskBytes: slotDisk[index] ?? null,
+            // Recursive size walks are intentionally absent from inventory. Large warm
+            // dependency caches made one settings read launch a `du` over every slot,
+            // saturating disk and holding the page for seconds. A destructive preview
+            // measures only the fixed paths it is about to show.
+            diskBytes: null,
             quarantineReason: compact(entry.slot.quarantineReason),
             diagnostic: compact(entry.slot.lastError),
             actions,
@@ -294,9 +293,7 @@ export class WorktreeOperationsService {
           setupArgv: pool.policy.setupArgv ? [...pool.policy.setupArgv] : null,
         },
         counts,
-        diskBytes: slots.every((slot) => slot.diskBytes !== null)
-          ? slots.reduce((sum, slot) => sum + (slot.diskBytes ?? 0), 0)
-          : null,
+        diskBytes: null,
         lastReconciledAt: pool.pool.lastReconciledAt,
         reconciliationError: compact(pool.pool.reconciliationError),
         status: !pool.identityValid || !pool.markerValid
@@ -554,8 +551,6 @@ export class WorktreeOperationsService {
     consequences: string[],
   ): Promise<void> {
     const { pool, slot } = target;
-    const view = observed.inventory.repositories
-      .find((repo) => repo.id === pool.pool.id)?.slots.find((entry) => entry.id === slot.slot.id);
     const owner = ownerView(slot, this.deps.tasks);
     affected.push({
       provider: "mission",
@@ -574,7 +569,7 @@ export class WorktreeOperationsService {
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
       }),
-      diskBytes: view?.diskBytes ?? null,
+      diskBytes: await this.deps.diskBytes(slot.slot.path),
     });
     if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
     else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
@@ -707,17 +702,20 @@ export class WorktreeOperationsService {
         .filter((candidate) => candidate.poolId === request.poolId)
         .filter((candidate) => request.mode === "safe" || candidate.rightSize)
         .filter((candidate) => candidate.safe);
-      for (const candidate of candidates) {
-        const view = observed.inventory.repositories
-          .find((repo) => repo.id === request.poolId)?.slots.find((slot) => slot.id === candidate.slotId);
+      // Measure only the fixed safe set, but measure that bounded set concurrently. A bulk
+      // prune should not turn N independent filesystem reads into N serial waits.
+      const candidateDiskBytes = await Promise.all(
+        candidates.map((candidate) => this.deps.diskBytes(candidate.path)),
+      );
+      for (const [index, candidate] of candidates.entries()) {
         affected.push({
           provider: "mission",
           id: candidate.slotId,
           path: candidate.path,
           owner: null,
           version: candidate.slotVersion,
-          safetyRevision: digest({ candidate, view }),
-          diskBytes: view?.diskBytes ?? null,
+          safetyRevision: digest(candidate),
+          diskBytes: candidateDiskBytes[index] ?? null,
         });
       }
       if (candidates.length === 0) blockers.push("No clean, merged, process-free, unreferenced slots are safe to prune.");

@@ -94,13 +94,15 @@ import {
 } from "./product-issues.ts";
 import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
+import { DatabaseBackupService } from "./database-backups/service.ts";
+import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 
 // Before SQLite is opened or migrations can run. The ownership file lives beside the
 // database, so API ports are irrelevant and two independent state homes remain independent.
 // Its native handle holds an OS lock for this process lifetime; crashes release that lock in
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
-openDb();
+const database = openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
 // config edit reaches the next call in both processes.
@@ -324,6 +326,10 @@ workflows.start();
 // It starts only after the port is won, so the daemon remains the sole durable writer.
 const settingsBackups = new SettingsBackupService(personas.store, { registry });
 let stopSettingsBackups = () => {};
+// Full recovery points are separate from logical Settings snapshots. They capture the whole
+// SQLite database through SQLite itself and are never restored by the running daemon.
+const databaseBackups = new DatabaseBackupService(database);
+let stopDatabaseBackups = async () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -591,6 +597,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -664,6 +671,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();

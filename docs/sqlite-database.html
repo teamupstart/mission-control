@@ -801,17 +801,17 @@ ORDER BY type DESC, name;</code></pre>
 
         <section id="backup">
           <p class="eyebrow">Recovery boundaries</p>
-          <h2>Back up a stopped database</h2>
-          <p>For an offline backup, stop Mission Control and copy <code>harness.db</code> together with <code>harness.db-wal</code> and <code>harness.db-shm</code> when present. Keeping the WAL sidecars matters because committed pages may not yet have been checkpointed into the main file.</p>
-          <pre><code><span class="comment"># 1. Stop development processes</span>
-make stop-all
-
-<span class="comment"># 2. Copy all SQLite files from the resolved state directory</span>
-<span class="comment">#    Default: ~/.mission-control/</span>
-
-<span class="comment"># 3. Restore only while the daemon is stopped</span>
-<span class="comment">#    Use the same or a newer Mission Control build.</span></code></pre>
-          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats. If the daemon is packaged or installed as a login service, stop that owner too before replacing files.</p>
+          <h2>Use verified SQLite recovery points</h2>
+          <p>The daemon writes hourly full-database snapshots under <code>$MISSION_HOME/backups/database/</code> with SQLite's online backup API and keeps the newest 24. The first scheduled capture waits for the hourly interval instead of competing with daemon startup. Before startup changes an existing database schema, it writes and verifies a separate <code>VACUUM INTO</code> recovery point and keeps the newest 10. Both mechanisms include committed WAL pages, run <code>PRAGMA integrity_check</code>, and publish only a verified private file.</p>
+          <pre><code><span class="comment"># Validate integrity and current-build forward migration in a disposable copy</span>
+npm run verify:database-backup -- \
+  ~/.mission-control/backups/database/&lt;snapshot&gt;.sqlite3</code></pre>
+          <p>The validation command never promotes a backup or replaces live state. A recurring capture failure is logged and retried later. A failed pre-migration capture stops startup before schema writes, and a later migration failure reports the recovery point without restoring it automatically.</p>
+          <div class="callout danger">
+            <strong>Never copy only an open <code>harness.db</code>.</strong>
+            <p>Committed pages may still live in <code>harness.db-wal</code>. An actual restore is an offline operator action: stop every daemon using that state directory, preserve the current database and sidecars, use the same or a newer build, and promote only a candidate that passed validation.</p>
+          </div>
+          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats.</p>
         </section>
 
         <section id="sources">

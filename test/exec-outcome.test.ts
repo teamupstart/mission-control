@@ -67,7 +67,10 @@ test("a command we time out on is an unknown outcome", () => {
 // definite "this response cannot be made smaller by asking again".
 test("an overflow is named as itself, and is not an unknown outcome", () => {
   const spew = "process.stdout.write('x'.repeat(200000))";
-  return run(process.execPath, ["-e", spew], { maxBuffer: 1024 }).then((res) => {
+  return run(process.execPath, ["-e", spew], {
+    maxBuffer: 1024,
+    timeoutMs: 15_000,
+  }).then((res) => {
     assert.equal(res.overflowed, true);
     assert.equal(res.outcomeUnknown, false, "an overflow is a fact about the response");
     assert.match(res.stderr, /maxBuffer/i, "and it has to be legible to a caller");

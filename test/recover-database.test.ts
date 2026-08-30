@@ -52,6 +52,7 @@ function operations(
     healthAmbiguousOnce?: boolean;
     appRunning?: boolean;
     daemonRunning?: boolean;
+    runningAppPath?: string;
   } = {},
 ) {
   const actions: string[] = [];
@@ -69,9 +70,10 @@ function operations(
       actions.push(`verify:${bundleId}:${verifiedAppPath}`);
       return verifiedAppPath;
     },
-    appIsRunning: async () => appRunning,
-    quitApp: async (bundleId: string) => {
-      actions.push(`quit:${bundleId}`);
+    appIsRunning: async (appPath: string, _bundleId: string) =>
+      appRunning && (options.runningAppPath ?? verifiedAppPath) === appPath,
+    quitApp: async (appPath: string, bundleId: string) => {
+      actions.push(`quit:${bundleId}:${appPath}`);
       appRunning = false;
       if (!options.stopBlocked) daemonRunning = false;
     },
@@ -222,7 +224,7 @@ test("a valid candidate stops by exact bundle id, restores, launches once, and r
     1,
   );
   assert.ok(fake.actions.includes(`verify:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`));
-  assert.ok(fake.actions.includes(`quit:${APP_BUNDLE_ID}`));
+  assert.ok(fake.actions.includes(`quit:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`));
   assert.ok(
     fake.actions.indexOf("acquire") <
       fake.actions.indexOf(`launch:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`),
@@ -231,7 +233,11 @@ test("a valid candidate stops by exact bundle id, restores, launches once, and r
 
 test("a daemon is never signaled unless the receipt-verified product app owned the stop", async (t) => {
   const f = fixture(t);
-  const fake = operations({ appRunning: false, daemonRunning: true });
+  const fake = operations({
+    appRunning: true,
+    daemonRunning: true,
+    runningAppPath: "/Applications/Impostor.app",
+  });
 
   await assert.rejects(
     runDatabaseRecovery(
@@ -418,10 +424,10 @@ test("a serialized duplicate relaunches once when it had to stop the healthy app
   const finishGate = new Promise<void>((resolve) => {
     finishFirst = resolve;
   });
-  fake.ops.appIsRunning = async () => {
+  fake.ops.appIsRunning = async (appPath: string, bundleId: string) => {
     appChecks += 1;
     if (appChecks === 2) await applied;
-    return originalAppIsRunning();
+    return originalAppIsRunning(appPath, bundleId);
   };
   const request = { kind: "restore", candidatePath: f.candidate } as const;
 

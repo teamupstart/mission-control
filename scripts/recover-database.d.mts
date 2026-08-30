@@ -37,8 +37,8 @@ export type DurableWriteOperations = {
 
 export type RecoveryOperations = {
   verifyApp(home: string, bundleId: string): string | Promise<string>;
-  appIsRunning(): boolean | Promise<boolean>;
-  quitApp(bundleId: string): unknown | Promise<unknown>;
+  appIsRunning(appPath: string, bundleId: string): boolean | Promise<boolean>;
+  quitApp(appPath: string, bundleId: string): unknown | Promise<unknown>;
   identifyDaemon(home: string): DaemonHealth | null | Promise<DaemonHealth | null>;
   signalDaemon(pid: number): unknown;
   tryAcquireLock(home: string): { release(): void } | null;

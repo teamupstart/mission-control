@@ -34,26 +34,27 @@ test("the Darwin build removes inherited provenance from the copied addon", () =
   const calls: Array<{ bin: string; args: string[] }> = [];
   const execute = ((bin: string, args: string[]) => {
     calls.push({ bin, args });
+    return args.length === 1 ? "com.apple.provenance\n" : "";
   }) as typeof import("node:child_process").execFileSync;
 
   assert.equal(clearDarwinProvenance("/dist/state-lock.node", "darwin", execute), true);
   assert.deepEqual(calls, [
     {
       bin: "/usr/bin/xattr",
+      args: ["/dist/state-lock.node"],
+    },
+    {
+      bin: "/usr/bin/xattr",
       args: ["-d", "com.apple.provenance", "/dist/state-lock.node"],
     },
   ]);
   assert.equal(clearDarwinProvenance("/dist/state-lock.node", "linux", execute), false);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("an already-clean Darwin addon is success, but another xattr failure is fatal", () => {
-  const missing = (() => {
-    throw Object.assign(new Error("No such xattr"), {
-      status: 1,
-      stderr: "xattr: /dist/state-lock.node: No such xattr: com.apple.provenance\n",
-    });
-  }) as typeof import("node:child_process").execFileSync;
+  const missing = ((_bin: string, _args: string[]) =>
+    "com.apple.FinderInfo\n") as unknown as typeof import("node:child_process").execFileSync;
   const denied = (() => {
     throw Object.assign(new Error("permission denied"), {
       status: 1,
@@ -65,6 +66,15 @@ test("an already-clean Darwin addon is success, but another xattr failure is fat
   assert.throws(
     () => clearDarwinProvenance("/dist/state-lock.node", "darwin", denied),
     /permission denied/,
+  );
+
+  const deleteDenied = ((_bin: string, args: string[]) => {
+    if (args.length === 1) return "com.apple.provenance\n";
+    throw Object.assign(new Error("read-only filesystem"), { status: 1 });
+  }) as typeof import("node:child_process").execFileSync;
+  assert.throws(
+    () => clearDarwinProvenance("/dist/state-lock.node", "darwin", deleteDenied),
+    /read-only filesystem/,
   );
 });
 

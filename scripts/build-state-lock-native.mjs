@@ -21,9 +21,10 @@ export function stateLockBuildTarget(platform, arch) {
  *
  * The linker gives the bundle a valid ad-hoc signature, but a worktree can itself carry
  * `com.apple.provenance`. `copyFile` preserves that attribute on this host, and macOS then kills
- * Node while it loads the state-lock addon. A missing attribute is xattr status 1 and is already
- * the desired state. Other failures stay fatal because shipping an addon the daemon cannot load
- * would make both ordinary startup and database recovery fail without a JavaScript diagnostic.
+ * Node while it loads the state-lock addon. Listing first distinguishes an already-clean file
+ * without interpreting platform-specific error text. Every listing or deletion failure stays
+ * fatal because shipping an addon the daemon cannot load would make both ordinary startup and
+ * database recovery fail without a JavaScript diagnostic.
  */
 export function clearDarwinProvenance(
   path,
@@ -31,19 +32,18 @@ export function clearDarwinProvenance(
   execute = execFileSync,
 ) {
   if (platform !== "darwin") return false;
-  try {
-    execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], {
+  const attributes = String(
+    execute("/usr/bin/xattr", [path], {
       encoding: "utf8",
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    return true;
-  } catch (error) {
-    const stderr = String(error?.stderr ?? "");
-    if (error?.status === 1 && stderr.includes("No such xattr: com.apple.provenance")) {
-      return false;
-    }
-    throw error;
-  }
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+  if (!attributes.split(/\r?\n/).includes("com.apple.provenance")) return false;
+  execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], {
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  return true;
 }
 
 export async function buildStateLockNative() {

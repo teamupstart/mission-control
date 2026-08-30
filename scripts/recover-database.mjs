@@ -306,13 +306,41 @@ function verifyProductApp(home) {
   return appPath;
 }
 
-function appIsRunning() {
-  const script = `tell application "System Events" to return (bundle identifier of application processes) contains "${APP_BUNDLE_ID}"`;
-  return run("/usr/bin/osascript", ["-e", script]).toLowerCase() === "true";
+const exactProductAppScript = `on run argv
+  set requestedAction to item 1 of argv
+  set expectedPath to item 2 of argv
+  set expectedBundleId to item 3 of argv
+  set expectedPathWithSlash to expectedPath
+  if expectedPath does not end with "/" then set expectedPathWithSlash to expectedPath & "/"
+  tell application "System Events"
+    repeat with candidate in application processes
+      try
+        if (bundle identifier of candidate) is expectedBundleId then
+          set candidatePath to POSIX path of (application file of candidate as alias)
+          if candidatePath is expectedPath or candidatePath is expectedPathWithSlash then
+            if requestedAction is "quit" then tell candidate to quit
+            return true
+          end if
+        end if
+      end try
+    end repeat
+  end tell
+  return false
+end run`;
+
+function exactProductApp(action, appPath, bundleId) {
+  return run("/usr/bin/osascript", ["-e", exactProductAppScript, action, appPath, bundleId])
+    .toLowerCase() === "true";
 }
 
-function quitProductApp() {
-  run("/usr/bin/osascript", ["-e", `tell application id "${APP_BUNDLE_ID}" to quit`]);
+function appIsRunning(appPath, bundleId) {
+  return exactProductApp("running", appPath, bundleId);
+}
+
+function quitProductApp(appPath, bundleId) {
+  if (!exactProductApp("quit", appPath, bundleId)) {
+    throw new Error("the receipt-verified product app stopped before the quit request");
+  }
 }
 
 function launchProductApp(appPath) {
@@ -403,13 +431,13 @@ async function acquireRecoveryLock(home, ops, timeoutMs = RECOVERY_LOCK_TIMEOUT_
   throw new Error("another database recovery did not finish before the bounded timeout");
 }
 
-async function stopAndAcquire(home, ops, timeoutMs = STOP_TIMEOUT_MS) {
+async function stopAndAcquire(home, ops, verifiedAppPath, timeoutMs = STOP_TIMEOUT_MS) {
   // A daemon sharing this state home is not proof that it belongs to the managed product app.
   // Only a concurrently running, receipt-verified app authorizes this flow to signal a daemon.
   const initialDaemon = await ops.identifyDaemon(home);
   let quitRequested = false;
-  if (await ops.appIsRunning()) {
-    await ops.quitApp(APP_BUNDLE_ID);
+  if (await ops.appIsRunning(verifiedAppPath, APP_BUNDLE_ID)) {
+    await ops.quitApp(verifiedAppPath, APP_BUNDLE_ID);
     quitRequested = true;
   } else if (initialDaemon) {
     throw new Error(
@@ -611,7 +639,7 @@ export async function runDatabaseRecovery(
       );
     }
 
-    lock = await stopAndAcquire(home, recoveryOps, stopTimeoutMs);
+    lock = await stopAndAcquire(home, recoveryOps, verifiedAppPath, stopTimeoutMs);
     // Candidate preparation and the fast duplicate check intentionally happen before stopping
     // the app. Another recovery can win while this invocation waits for daemon.lock, so reserve
     // the attempt under the separate ledger lock before any database file moves. That lock also
@@ -754,7 +782,7 @@ export async function runDatabaseRecovery(
         if (lock) {
           // already stopped
         } else {
-          lock = await stopAndAcquire(home, recoveryOps, stopTimeoutMs);
+          lock = await stopAndAcquire(home, recoveryOps, verifiedAppPath, stopTimeoutMs);
         }
         const rollbackDatabase = join(attempt.rollbackDirectory, DATABASE_FILE);
         restoreRollbackSnapshot(home, rollbackDatabase, attempt.databaseMode);

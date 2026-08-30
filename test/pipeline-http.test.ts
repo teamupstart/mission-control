@@ -554,8 +554,10 @@ async function withEngine<T>(body: () => Promise<T>): Promise<T> {
   try {
     return await body();
   } finally {
-    process.env.MISSION_CONDUCTOR_BIN = had;
-    process.env.AI_CONDUCTOR_REGISTRY = hadRegistry;
+    if (had === undefined) delete process.env.MISSION_CONDUCTOR_BIN;
+    else process.env.MISSION_CONDUCTOR_BIN = had;
+    if (hadRegistry === undefined) delete process.env.AI_CONDUCTOR_REGISTRY;
+    else process.env.AI_CONDUCTOR_REGISTRY = hadRegistry;
   }
 }
 

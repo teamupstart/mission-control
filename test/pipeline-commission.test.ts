@@ -522,6 +522,32 @@ test("an unsupported Engineer schema preserves the last good projection and reco
   assert.equal(held.steps.length, 12, "the last good step projection is retained");
 });
 
+test("replay routes a future Engineer schema through the unsupported reducer", async () => {
+  reset();
+  const held = commission();
+  const future = { ...event("engineer_run_started", 1), schemaVersion: 2 };
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [future] }),
+    cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+  };
+  try {
+    const registry = new Registry();
+    registry.initializePipelineCommissions([held]);
+    await refreshPipelineCommission(registry, held);
+    const reconciled = getPipelineCommission(held.id);
+    assert.equal(reconciled?.lifecycle, "unsupported");
+    assert.equal(reconciled?.attempts[0]?.providerRevision, 1);
+    assert.match(reconciled?.error ?? "", /schema version 2/);
+    assert.equal(countPipelineCommissionEvents(held.id), 1);
+  } finally {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  }
+});
+
 test("the authoring ledger stays bounded per commission", () => {
   reset();
   commission();

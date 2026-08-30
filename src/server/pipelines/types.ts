@@ -1,5 +1,6 @@
 import type {
   EngineerLifecycleEvent,
+  UnsupportedEngineerLifecycleEvent,
   UnknownEngineerLifecycleEvent,
   PipelineCommissionAttemptState,
   PipelineAction,
@@ -163,7 +164,13 @@ export interface PipelineEngineerLifecycle {
   replay(input: {
     engineerRunId: string;
     afterRevision: number;
-  }): Promise<PipelineEngineerResult<Array<EngineerLifecycleEvent | UnknownEngineerLifecycleEvent>>>;
+  }): Promise<
+    PipelineEngineerResult<
+      Array<
+        EngineerLifecycleEvent | UnknownEngineerLifecycleEvent | UnsupportedEngineerLifecycleEvent
+      >
+    >
+  >;
   cancel(input: {
     engineerRunId: string;
     reason: string;

@@ -12,10 +12,12 @@ import {
   type PipelineCommissionId,
   type PipelineProviderId,
   type PipelineStep,
+  type UnsupportedEngineerLifecycleEvent,
   type UnknownEngineerLifecycleEvent,
 } from "@shared/pipeline.ts";
 import {
   EngineerLifecycleEventSchema,
+  UnsupportedEngineerLifecycleEventSchema,
   UnknownEngineerLifecycleEventSchema,
 } from "@shared/protocol.ts";
 
@@ -181,6 +183,10 @@ export type ParsedEngineerEvent =
   | { ok: true; known: false; event: UnknownEngineerLifecycleEvent }
   | { ok: false; code: "malformed" | "oversized"; error: string };
 
+export type ParsedUnsupportedEngineerEvent =
+  | { ok: true; event: UnsupportedEngineerLifecycleEvent }
+  | { ok: false; code: "malformed" | "oversized"; error: string };
+
 function engineerEventByteLength(value: unknown): number | null {
   try {
     const encoded = JSON.stringify(value);
@@ -205,13 +211,33 @@ export function parseEngineerEvent(value: unknown): ParsedEngineerEvent {
     };
   }
   const base = UnknownEngineerLifecycleEventSchema.safeParse(value);
-  if (!base.success) return { ok: false, code: "malformed", error: "invalid Engineer event identity" };
+  if (!base.success) {
+    return { ok: false, code: "malformed", error: "invalid Engineer event identity" };
+  }
   if (!KNOWN_ENGINEER_EVENTS.has(base.data.type)) {
     return { ok: true, known: false, event: base.data as UnknownEngineerLifecycleEvent };
   }
   const known = EngineerLifecycleEventSchema.safeParse(value);
-  if (!known.success) return { ok: false, code: "malformed", error: "malformed known Engineer event" };
+  if (!known.success) {
+    return { ok: false, code: "malformed", error: "malformed known Engineer event" };
+  }
   return { ok: true, known: true, event: known.data as EngineerLifecycleEvent };
+}
+
+/** Validate the bounded identity needed to retain a future schema as opaque evidence. */
+export function parseUnsupportedEngineerEvent(value: unknown): ParsedUnsupportedEngineerEvent {
+  if (engineerEventIsOversized(value)) {
+    return {
+      ok: false,
+      code: "oversized",
+      error: `Engineer event exceeds ${ENGINEER_EVENT_LIMITS.maxBytes} bytes`,
+    };
+  }
+  const parsed = UnsupportedEngineerLifecycleEventSchema.safeParse(value);
+  if (!parsed.success) {
+    return { ok: false, code: "malformed", error: "invalid unsupported Engineer event" };
+  }
+  return { ok: true, event: parsed.data as UnsupportedEngineerLifecycleEvent };
 }
 
 function setStep(steps: readonly PipelineStep[], name: string, state: PipelineStep["state"]): PipelineStep[] {
@@ -428,39 +454,9 @@ export function applyUnsupportedEngineerEvent(
   value: unknown,
   observedAt = Date.now(),
 ): EngineerEventApplyResult {
-  if (engineerEventIsOversized(value)) {
-    return { outcome: "oversized", commission: null };
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { outcome: "malformed", commission: null };
-  }
-  const event = value as Record<string, unknown>;
-  if (
-    !Number.isInteger(event.schemaVersion) ||
-    Number(event.schemaVersion) < 1 ||
-    event.schemaVersion === 1 ||
-    typeof event.type !== "string" ||
-    event.type.length > ENGINEER_EVENT_LIMITS.typeChars ||
-    typeof event.engineerRunId !== "string" ||
-    event.engineerRunId.length > ENGINEER_EVENT_LIMITS.identityChars ||
-    !(typeof event.correlationId === "string" || event.correlationId === null) ||
-    (typeof event.correlationId === "string" && event.correlationId.length > ENGINEER_EVENT_LIMITS.identityChars) ||
-    typeof event.attemptKey !== "string" ||
-    event.attemptKey.length > ENGINEER_EVENT_LIMITS.identityChars ||
-    !Number.isInteger(event.attempt) ||
-    Number(event.attempt) < 1 ||
-    !(typeof event.previousEngineerRunId === "string" || event.previousEngineerRunId === null) ||
-    (typeof event.previousEngineerRunId === "string" && event.previousEngineerRunId.length > ENGINEER_EVENT_LIMITS.identityChars) ||
-    !Number.isInteger(event.revision) ||
-    Number(event.revision) < 1 ||
-    typeof event.repoRoot !== "string" ||
-    event.repoRoot.length > ENGINEER_EVENT_LIMITS.pathChars ||
-    typeof event.ts !== "string" ||
-    event.ts.length > ENGINEER_EVENT_LIMITS.identityChars ||
-    !Number.isFinite(Date.parse(event.ts))
-  ) {
-    return { outcome: "malformed", commission: null };
-  }
+  const parsed = parseUnsupportedEngineerEvent(value);
+  if (!parsed.ok) return { outcome: parsed.code, commission: null };
+  const event = parsed.event;
   const held = pipelineCommissionForEngineerRun(event.engineerRunId);
   if (!held) return { outcome: "unknown_commission", commission: null };
   const attemptNumber = Number(event.attempt);

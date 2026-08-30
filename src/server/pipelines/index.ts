@@ -52,7 +52,7 @@ import {
   type PipelineIngestTouch,
 } from "./ingest.ts";
 import { PIPELINE_PROVIDERS } from "./providers.ts";
-import { applyEngineerEvent } from "./commissions.ts";
+import { applyEngineerEvent, applyUnsupportedEngineerEvent } from "./commissions.ts";
 import type {
   PipelineConsoleTarget,
   PipelineControlTarget,
@@ -1273,7 +1273,10 @@ export async function refreshPipelineCommission(
   }
   let latest = commission;
   for (const event of replay.value) {
-    const applied = applyEngineerEvent(event);
+    const applied =
+      event.schemaVersion === 1
+        ? applyEngineerEvent(event)
+        : applyUnsupportedEngineerEvent(event);
     if (applied.outcome === "stored" && applied.commission) {
       latest = applied.commission;
       sink.upsertPipelineCommission(applied.commission);

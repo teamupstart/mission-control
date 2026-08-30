@@ -3483,6 +3483,16 @@ export const UnknownEngineerLifecycleEventSchema = EngineerEventBaseSchema.exten
   type: z.string().min(1).max(ENGINEER_EVENT_LIMITS.typeChars),
 }).passthrough();
 
+/** Bounded identity parser for an Engineer schema version this build does not understand. */
+export const UnsupportedEngineerLifecycleEventSchema = EngineerEventBaseSchema.omit({
+  schemaVersion: true,
+})
+  .extend({
+    schemaVersion: z.number().int().positive().refine((version) => version !== 1),
+    type: z.string().min(1).max(ENGINEER_EVENT_LIMITS.typeChars),
+  })
+  .passthrough();
+
 /**
  * What one ingest batch did, as the route answers it.
  *

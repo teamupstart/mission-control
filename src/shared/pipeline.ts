@@ -453,6 +453,13 @@ export type UnknownEngineerLifecycleEvent = EngineerEventBase & {
   [key: string]: unknown;
 };
 
+/** Structurally valid event identity from a schema newer than this build understands. */
+export type UnsupportedEngineerLifecycleEvent = Omit<EngineerEventBase, "schemaVersion"> & {
+  schemaVersion: number;
+  type: string;
+  [key: string]: unknown;
+};
+
 export const PIPELINE_COMMISSION_LIFECYCLES = [
   "created",
   "authoring",

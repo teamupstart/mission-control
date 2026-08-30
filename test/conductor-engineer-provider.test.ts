@@ -45,7 +45,7 @@ else {
   else if (command === "run-inspect") console.log(JSON.stringify({schemaVersion:1, capability:"engineerLifecycleEventsV1", repoRoot, correlationId, runs:[base]}));
   else if (command === "run-replay") {
     const afterRevision = Number(flag("--after-revision"));
-    const event = {schemaVersion:1, engineerRunId:runId, correlationId, attemptKey, attempt:1, previousEngineerRunId:null, repoRoot, revision:1, ts:"2026-08-28T12:00:00.000Z", type:"engineer_run_created", idea:"Add widgets"};
+    const event = {schemaVersion: mode === "future-schema" ? 2 : 1, engineerRunId:runId, correlationId, attemptKey, attempt:1, previousEngineerRunId:null, repoRoot, revision:1, ts:"2026-08-28T12:00:00.000Z", type:"engineer_run_created", idea:"Add widgets"};
     console.log(JSON.stringify({schemaVersion:1, engineerRunId:runId, afterRevision, events: afterRevision < 1 ? [event] : []}));
   } else process.exitCode = 2;
 }
@@ -101,6 +101,19 @@ test("malformed output is refused even when the command exits successfully", asy
   if (!answer.ok) {
     assert.equal(answer.outcomeUnknown, false);
     assert.match(answer.error, /expected JSON/);
+  }
+});
+
+test("replay retains a structurally valid future-schema event for the shared reducer", async () => {
+  process.env.FAKE_CONDUCTOR_MODE = "future-schema";
+  const replay = await CONDUCTOR_ENGINEER_LIFECYCLE.replay({
+    engineerRunId: "run-1",
+    afterRevision: 0,
+  });
+  assert.equal(replay.ok, true);
+  if (replay.ok) {
+    assert.equal(replay.value[0]?.schemaVersion, 2);
+    assert.equal(replay.value[0]?.revision, 1);
   }
 });
 

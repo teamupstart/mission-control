@@ -1,6 +1,7 @@
 import {
   ENGINEER_LIFECYCLE_CAPABILITY,
   type EngineerLifecycleEvent,
+  type UnsupportedEngineerLifecycleEvent,
   type UnknownEngineerLifecycleEvent,
 } from "@shared/pipeline.ts";
 
@@ -10,7 +11,7 @@ import type {
   PipelineEngineerResult,
   PipelineEngineerRunSnapshot,
 } from "../types.ts";
-import { parseEngineerEvent } from "../commissions.ts";
+import { parseEngineerEvent, parseUnsupportedEngineerEvent } from "../commissions.ts";
 import { conductorBin } from "./probe.ts";
 
 const CAPABILITY_TIMEOUT_MS = 5000;
@@ -215,7 +216,11 @@ async function replay(input: {
   engineerRunId: string;
   afterRevision: number;
 }): Promise<
-  PipelineEngineerResult<Array<EngineerLifecycleEvent | UnknownEngineerLifecycleEvent>>
+  PipelineEngineerResult<
+    Array<
+      EngineerLifecycleEvent | UnknownEngineerLifecycleEvent | UnsupportedEngineerLifecycleEvent
+    >
+  >
 > {
   const answer = await execute([
     "engineer",
@@ -236,19 +241,30 @@ async function replay(input: {
   ) {
     return failure(answer.value.result, "provider returned malformed Engineer replay JSON");
   }
-  const events: Array<EngineerLifecycleEvent | UnknownEngineerLifecycleEvent> = [];
+  const events: Array<
+    EngineerLifecycleEvent | UnknownEngineerLifecycleEvent | UnsupportedEngineerLifecycleEvent
+  > = [];
   let revision = input.afterRevision;
   for (const value of row.events) {
     const parsed = parseEngineerEvent(value);
-    if (
-      !parsed.ok ||
-      parsed.event.engineerRunId !== input.engineerRunId ||
-      parsed.event.revision !== revision + 1
-    ) {
+    let event:
+      | EngineerLifecycleEvent
+      | UnknownEngineerLifecycleEvent
+      | UnsupportedEngineerLifecycleEvent;
+    if (parsed.ok) {
+      event = parsed.event;
+    } else {
+      const unsupported = parseUnsupportedEngineerEvent(value);
+      if (!unsupported.ok) {
+        return failure(answer.value.result, "provider replay contained a malformed Engineer event");
+      }
+      event = unsupported.event;
+    }
+    if (event.engineerRunId !== input.engineerRunId || event.revision !== revision + 1) {
       return failure(answer.value.result, "provider replay contained a malformed Engineer event");
     }
-    events.push(parsed.event);
-    revision = parsed.event.revision;
+    events.push(event);
+    revision = event.revision;
   }
   return { ok: true, value: events };
 }

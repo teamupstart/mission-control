@@ -177,7 +177,9 @@ test("Engineer host migrates the legacy SDK value and persists an explicit Termi
   expect((await selectTerminal).ok()).toBe(true);
   await page.reload();
   await expect(terminal).toBeChecked();
-  await expect(page.getByText(/Claude-only compatibility host/)).toBeVisible();
+  await expect(
+    page.getByText(/retained for legacy uncommissioned work; new commissioned dispatches require Managed Agent SDK/),
+  ).toBeVisible();
 
   const selectSdk = page.waitForResponse(
     (response) =>

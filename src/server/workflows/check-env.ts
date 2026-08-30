@@ -1,3 +1,5 @@
+import { agentSubprocessEnv, STATE_HOME_ENV_NAMES } from "../agent-subprocess-env.ts";
+
 // The environment a Workflow check command inherits, minus the things that would let a
 // branch-authored build reach back into the daemon.
 //
@@ -8,16 +10,9 @@
 // outside what any function in this repository can prevent; saying so plainly is more useful
 // than implying a boundary that is not here.
 //
-// ## What it explicitly does NOT do: hide where the daemon keeps its state
-//
-// The token file lives under the state directory, which defaults to a folder in the invoking
-// user's home. A check runs as that user, so it can read it - and no amount of environment
-// editing changes that. Measured rather than assumed, because it is the obvious thing to reach
-// for: deleting `HOME` from the child's environment still leaves `os.homedir()` resolving the
-// real home through `getpwuid`, and substituting a decoy `HOME` is defeated by
-// `os.userInfo().homedir`, which ignores `$HOME` altogether. In both cases the token remains
-// readable. Meanwhile `HOME` is load-bearing for npm, cargo, git and ssh, so dropping it buys
-// nothing and breaks nearly every real build.
+// Normal Mission Control state resolution is redirected into a fresh disposable home. `HOME`
+// itself remains load-bearing for npm, cargo, git and ssh, so it is preserved. This is still not
+// a filesystem sandbox: branch code runs as the operator and can address a path it already knows.
 //
 // The **allowlist** is the boundary here, not this function. A repository has to be authorised
 // before any of its commands run at all.
@@ -53,8 +48,6 @@
  * None of them is credential-SHAPED, which is exactly why they need naming: a name-shape
  * rule alone would keep every one of them.
  */
-const STATE_DIR_ALIASES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
-
 /**
  * Name segments that mean "this is a credential".
  *
@@ -141,7 +134,7 @@ export function scrubCheckEnv(
   const out: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
-    if ((STATE_DIR_ALIASES as readonly string[]).includes(name)) continue;
+    if ((STATE_HOME_ENV_NAMES as readonly string[]).includes(name)) continue;
     if (credentialShapedName(name)) continue;
     // The VALUE rule, which is the only one that removes the daemon's own token by identity
     // rather than by hoping whoever exported it chose a credential-shaped name. `includes`
@@ -151,5 +144,5 @@ export function scrubCheckEnv(
     if (scrubValues && value.includes(secret)) continue;
     out[name] = value;
   }
-  return out;
+  return agentSubprocessEnv(out);
 }

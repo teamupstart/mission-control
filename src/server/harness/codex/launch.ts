@@ -67,9 +67,11 @@ export function codexHookOverride(
 export async function prepareCodexLaunch(
   auto: boolean,
   require: MissionMcpRequirement | null = null,
+  cwd?: string,
+  stateHome?: string,
 ): Promise<CodexLaunchPreparation> {
   const safe = auto ? ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"] : [];
-  const descriptor = require ? await missionMcpDescriptor() : null;
+  const descriptor = require ? await missionMcpDescriptor(cwd, stateHome) : null;
   const mcp = descriptor ? codexMissionMcpArgs(descriptor) : [];
   const bridge = codexHookPath();
   if (!existsSync(bridge)) {

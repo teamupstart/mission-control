@@ -9,6 +9,10 @@ import {
 } from "@shared/protocol.ts";
 import { modelLabel, type HarnessModelChoice, type HarnessModelInputMode } from "@shared/model.ts";
 import type { ModelCatalogDiscoveryResult } from "../types.ts";
+import {
+  agentSubprocessEnv,
+  cleanupAgentSubprocessEnv,
+} from "../../agent-subprocess-env.ts";
 
 /** Exact isolation flags for the prompt-free, no-session Pi catalog probe. */
 export const PI_MODEL_CATALOG_ARGS = [
@@ -61,6 +65,7 @@ export interface PiCatalogChild {
 
 export interface PiCatalogSpawnOptions {
   cwd: string;
+  env: NodeJS.ProcessEnv;
   shell: false;
   stdio: ["pipe", "pipe", "pipe"];
 }
@@ -233,14 +238,17 @@ export async function discoverPiModels(
 
   if (deps.signal?.aborted) return failure("process_failed");
 
+  const env = agentSubprocessEnv(process.env, { loopbackAccess: true });
   let child: PiCatalogChild;
   try {
     child = spawn(executable, PI_MODEL_CATALOG_ARGS, {
       cwd: tmpdir(),
+      env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     });
   } catch {
+    cleanupAgentSubprocessEnv(env);
     return failure("process_failed");
   }
 
@@ -291,6 +299,7 @@ export async function discoverPiModels(
       clearTimers();
       removeAbortListener();
       closeInput();
+      cleanupAgentSubprocessEnv(env);
       resolve(pendingResult);
     };
 

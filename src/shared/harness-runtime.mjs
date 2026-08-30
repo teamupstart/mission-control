@@ -14,7 +14,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -117,6 +117,12 @@ export function tokenPath() {
   return join(stateDir(), "token");
 }
 
+/** Direct loopback credential for a child that must not learn the daemon's state path. */
+export const MISSION_API_TOKEN_ENV = "MISSION_API_TOKEN";
+
+/** Restrictive token file supplied to an isolated child without putting the bearer in argv. */
+export const MISSION_API_TOKEN_FILE_ENV = "MISSION_API_TOKEN_FILE";
+
 /** Read the daemon auth token, or "" when it isn't present yet. */
 export function readToken() {
   try {
@@ -124,6 +130,21 @@ export function readToken() {
   } catch {
     return "";
   }
+}
+
+/** Read a client credential supplied directly to an isolated child, then the normal file. */
+export function readClientToken() {
+  const supplied = process.env[MISSION_API_TOKEN_ENV]?.trim();
+  if (supplied) return supplied;
+  const suppliedFile = process.env[MISSION_API_TOKEN_FILE_ENV]?.trim();
+  if (suppliedFile) {
+    try {
+      return readFileSync(suppliedFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  return readToken();
 }
 
 /**
@@ -149,6 +170,12 @@ export function ensureToken() {
 /** The scoped bearer the Mission MCP bridge adds only to scout submission requests. */
 export const SCOUT_SUBMISSION_CREDENTIAL_HEADER = "x-mission-scout-credential";
 
+/** Direct scout capability for an isolated MCP child. */
+export const SCOUT_SUBMISSION_CREDENTIAL_ENV = "MISSION_SCOUT_SUBMISSION_CREDENTIAL";
+
+/** Rotatable scout capability file for an isolated MCP child. */
+export const SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV = "MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE";
+
 /** Daemon-issued identity that binds a launch-scoped MCP process to its SDK session. */
 export const MISSION_SESSION_ID_ENV = "MISSION_SESSION_ID";
 
@@ -163,8 +190,30 @@ export function scoutSubmissionCredentialPath(cwd) {
   return join(stateDir(), "scout-submission-credentials", key);
 }
 
+/**
+ * State-independent capability path handed to isolated MCP children.
+ *
+ * A running MCP child can outlive several task assignments. The daemon replaces this file
+ * at each assignment so the child reads the current credential without learning the
+ * operator's state directory or inheriting any of its home overrides.
+ */
+export function isolatedScoutSubmissionCredentialPath(cwd) {
+  const key = createHash("sha256").update(resolve(cwd)).digest("hex");
+  return join(tmpdir(), "mission-control-agent-capabilities", key);
+}
+
 /** Read this checkout's daemon-issued credential, or "" when none was provisioned. */
 export function readScoutSubmissionCredential(cwd) {
+  const supplied = process.env[SCOUT_SUBMISSION_CREDENTIAL_ENV]?.trim();
+  if (supplied) return supplied;
+  const suppliedFile = process.env[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV]?.trim();
+  if (suppliedFile) {
+    try {
+      return readFileSync(suppliedFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
   try {
     return readFileSync(scoutSubmissionCredentialPath(cwd), "utf8").trim();
   } catch {

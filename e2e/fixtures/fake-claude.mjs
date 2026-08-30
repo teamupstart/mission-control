@@ -138,8 +138,8 @@ const FAILED_REVIEW = "E2E_FAIL_ENSEMBLE_REVIEW";
  *
  * Each review call is its own process, so the count cannot live in memory. It lives in a file
  * keyed by the nonce the spec puts in the marker, which is also what keeps parallel workers from
- * sharing a counter. Written under the daemon's own MISSION_HOME when there is one, so a spec's
- * state dies with the home it belongs to.
+ * sharing a counter. Written under the fixture record directory, never under the agent's
+ * disposable Mission Control state home, so separate review invocations share it.
  */
 const FAIL_THEN_HOLD_REVIEW = "E2E_FAIL_THEN_HOLD_ENSEMBLE_REVIEW";
 
@@ -156,7 +156,7 @@ function isEnsembleReviewPrompt(prompt) {
 function failThenHoldCount(prompt) {
   const nonce = new RegExp(`${FAIL_THEN_HOLD_REVIEW}:([A-Za-z0-9-]+)`).exec(prompt)?.[1];
   if (!nonce) return null;
-  const root = process.env.MISSION_HOME ?? process.env.HARNESS_HOME ?? homedir();
+  const root = process.env.MC_E2E_RECORD_DIR ?? homedir();
   const file = join(root, `.e2e-fail-then-hold-${createHash("sha256").update(nonce).digest("hex").slice(0, 16)}`);
   let seen = 0;
   try {
@@ -209,6 +209,11 @@ const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
+  const resolvedMissionState =
+    process.env.MISSION_HOME ?? process.env.FLEET_HOME ?? process.env.HARNESS_HOME ?? homedir();
+  const stateProbe = join(resolvedMissionState, `.agent-state-resolution-${process.pid}.json`);
+  mkdirSync(resolvedMissionState, { recursive: true });
+  writeFileSync(stateProbe, JSON.stringify({ cwd: process.cwd() }));
   mkdirSync(join(recordDir, "claude"), { recursive: true });
   const stamp = `${Date.now()}-${process.pid}`;
   writeFileSync(
@@ -223,6 +228,13 @@ if (recordDir) {
         weztermPane: process.env.WEZTERM_PANE ?? null,
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
+        missionHome: process.env.MISSION_HOME ?? null,
+        fleetHome: process.env.FLEET_HOME ?? null,
+        harnessHome: process.env.HARNESS_HOME ?? null,
+        resolvedMissionState,
+        stateProbe,
+        hasMissionApiToken: Boolean(process.env.MISSION_API_TOKEN),
+        missionApiTokenFile: process.env.MISSION_API_TOKEN_FILE ?? null,
       },
       null,
       2,
@@ -686,6 +698,16 @@ function scoutReportHtml(valid) {
 }
 
 function daemonToken() {
+  const direct = process.env.MISSION_API_TOKEN;
+  if (direct) return direct;
+  const suppliedFile = process.env.MISSION_API_TOKEN_FILE;
+  if (suppliedFile) {
+    try {
+      return readFileSync(suppliedFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
   const home = process.env.MISSION_HOME ?? process.env.HARNESS_HOME;
   try {
     return readFileSync(join(home, "token"), "utf8").trim();
@@ -696,6 +718,16 @@ function daemonToken() {
 
 /** The opaque credential the daemon provisioned for this exact scout checkout. */
 function scoutCredential() {
+  const direct = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
+  if (direct) return direct;
+  const isolatedFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
+  if (isolatedFile) {
+    try {
+      return readFileSync(isolatedFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
   const home = process.env.MISSION_HOME ?? process.env.HARNESS_HOME;
   try {
     const checkout = resolve(process.cwd());

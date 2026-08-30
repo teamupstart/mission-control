@@ -17,8 +17,8 @@ import {
   MISSION_SESSION_ID_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
   captureTerminalEnv,
+  readClientToken,
   readScoutSubmissionCredential,
-  readToken,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 import {
@@ -58,7 +58,7 @@ async function http(
   const headers: Record<string, string> = {
     ...extraHeaders,
     "content-type": "application/json",
-    "x-harness-token": readToken(),
+    "x-harness-token": readClientToken(),
   };
   if (scoutCredential) {
     const credential = readScoutSubmissionCredential(process.cwd());

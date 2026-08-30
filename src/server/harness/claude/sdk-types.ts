@@ -238,7 +238,7 @@ export interface ClaudeSdkDeps {
   /** The absolute `claude` path to pin the subprocess to. Rejects when it cannot be found. */
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
-  env(): Record<string, string | undefined>;
+  env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */
@@ -251,5 +251,5 @@ export interface ClaudeSdkOneShotDeps {
     options: ClaudeSdkOneShotQueryOptions;
   }): Promise<ClaudeSdkOneShotQuery>;
   executable(): Promise<string>;
-  env(): Record<string, string | undefined>;
+  env(cwd?: string): Record<string, string | undefined>;
 }

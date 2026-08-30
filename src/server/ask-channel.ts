@@ -189,11 +189,13 @@ const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null };
 export async function askChannelContribution(
   agent: AgentType,
   require: MissionMcpRequirement | null = null,
+  cwd?: string,
+  stateHome?: string,
 ): Promise<AskChannelContribution> {
   if (agent !== "claude") return { ...ASK_CHANNEL_OFF };
 
   try {
-    const descriptor = await missionMcpDescriptor();
+    const descriptor = await missionMcpDescriptor(cwd, stateHome);
     if (!descriptor) {
       console.warn(
         `[mission-control] MCP server bundle not found at ${mcpServerPath()} - dispatched sessions will ` +
@@ -253,8 +255,10 @@ export function systemPromptAppendArgs(parts: readonly (string | null)[]): strin
 export async function askChannelArgs(
   agent: AgentType,
   require: MissionMcpRequirement | null = null,
+  cwd?: string,
+  stateHome?: string,
 ): Promise<string[]> {
-  const contribution = await askChannelContribution(agent, require);
+  const contribution = await askChannelContribution(agent, require, cwd, stateHome);
   return [...contribution.args, ...systemPromptAppendArgs([contribution.redirect])];
 }
 

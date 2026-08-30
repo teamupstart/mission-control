@@ -1116,7 +1116,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         options: {
           cwd: opts.cwd,
           pathToClaudeCodeExecutable: await deps.executable(),
-          env: deps.env(),
+          env: deps.env(opts.cwd, opts.stateHome),
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
           ...(permissionMode ? { permissionMode } : {}),

@@ -201,7 +201,10 @@ test("Launch runtime renders SDK as the default and Terminal as an explicit stor
   );
   const terminalRadio = (terminal.match(/<input[^>]*name="conductor-launch-runtime"[^>]*value="terminal"[^>]*>/) ?? [])[0] ?? "";
   assert.match(terminalRadio, /checked/);
-  assert.match(terminal, /Terminal - the explicit Claude-only compatibility host/);
+  assert.match(
+    terminal,
+    /Terminal - retained for legacy uncommissioned work; new commissioned dispatches require Managed Agent SDK/,
+  );
 });
 
 test("pipeline dispatch renders the selected host contract without offering a fallback", () => {
@@ -218,9 +221,10 @@ test("pipeline dispatch renders the selected host contract without offering a fa
   const terminal = renderToStaticMarkup(
     createElement(PipelineDispatchConstraint, { runtime: "terminal" }),
   );
-  assert.match(terminal, /conduct-ts engineer --idea in a real terminal with live stdin/);
-  assert.match(terminal, /inherited Claude nesting marker/);
-  assert.match(terminal, /provider projection owns task completion/);
+  assert.match(terminal, /legacy uncommissioned work/);
+  assert.match(terminal, /cannot deliver a reserved Engineer run through Terminal/);
+  assert.match(terminal, /new Pipeline dispatches refuse before spawn/);
+  assert.match(terminal, /use Managed Agent SDK/);
 });
 
 test("pipeline kind transitions keep only agents the effective host can launch", () => {

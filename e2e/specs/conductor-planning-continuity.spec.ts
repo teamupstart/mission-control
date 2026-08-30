@@ -219,11 +219,31 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
     steps: { worktree: "done", build: "in_progress" },
     lastStep: "build",
   });
+  await expect
+    .poll(
+      async () => {
+        const view = (await (await request(daemon, "/api/pipelines/config")).json()) as {
+          status: Array<{ runs: number }>;
+        };
+        return view.status.reduce((total, repo) => total + repo.runs, 0);
+      },
+      {
+        message: "the implementation run should be projected before its commission is read",
+        timeout: 15_000,
+      },
+    )
+    .toBe(1);
+  const pipelineRail = dashboard.locator("aside.pipelines-rail");
   await expect(
-    dashboard.getByRole("button", { name: /visible-pipeline-continuity/i }).last(),
-  ).toBeVisible();
+    pipelineRail.getByRole("button", { name: /visible-pipeline-continuity/i }),
+  ).toHaveCount(2);
+  await pipelineRail
+    .locator(".pipelines-repo")
+    .filter({ hasText: "Planning" })
+    .getByRole("button", { name: /visible-pipeline-continuity/i })
+    .click();
   const commissionReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
-  await expect(commissionReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 2 of 2");
+  await expect(commissionReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 13 of 22");
   await expect(
     commissionReader.getByText("Awaiting spec merge", { exact: true }),
   ).toHaveCount(0);

@@ -297,12 +297,13 @@ function verifyProductApp(home) {
   if (!receipt) {
     throw new Error("a valid managed-install receipt is required to recover the product app");
   }
-  const info = join(receipt.appPath, "Contents", "Info.plist");
+  const appPath = realpathSync(receipt.appPath);
+  const info = join(appPath, "Contents", "Info.plist");
   const actual = run("/usr/libexec/PlistBuddy", ["-c", "Print:CFBundleIdentifier", info]);
   if (actual !== APP_BUNDLE_ID) {
     throw new Error(`installed app bundle identifier is ${actual || "missing"}, expected ${APP_BUNDLE_ID}`);
   }
-  return receipt.appPath;
+  return appPath;
 }
 
 function appIsRunning() {
@@ -314,8 +315,8 @@ function quitProductApp() {
   run("/usr/bin/osascript", ["-e", `tell application id "${APP_BUNDLE_ID}" to quit`]);
 }
 
-function launchProductApp() {
-  run("/usr/bin/open", ["-b", APP_BUNDLE_ID]);
+function launchProductApp(appPath) {
+  run("/usr/bin/open", [appPath]);
 }
 
 export function realRecoveryOperations() {
@@ -403,13 +404,18 @@ async function acquireRecoveryLock(home, ops, timeoutMs = RECOVERY_LOCK_TIMEOUT_
 }
 
 async function stopAndAcquire(home, ops, timeoutMs = STOP_TIMEOUT_MS) {
-  // Observe the current daemon before asking either owner to stop. This is deliberately
-  // discarded: every later signal is based on another fresh lock-plus-health observation.
-  await ops.identifyDaemon(home);
+  // A daemon sharing this state home is not proof that it belongs to the managed product app.
+  // Only a concurrently running, receipt-verified app authorizes this flow to signal a daemon.
+  const initialDaemon = await ops.identifyDaemon(home);
   let quitRequested = false;
   if (await ops.appIsRunning()) {
     await ops.quitApp(APP_BUNDLE_ID);
     quitRequested = true;
+  } else if (initialDaemon) {
+    throw new Error(
+      "a live daemon owns this state home but the receipt-verified product app is not running; " +
+        "refusing to signal an unproven process",
+    );
   }
   const signaled = new Set();
   const deadline = Date.now() + timeoutMs;
@@ -422,6 +428,12 @@ async function stopAndAcquire(home, ops, timeoutMs = STOP_TIMEOUT_MS) {
       };
     }
     const daemon = await ops.identifyDaemon(home);
+    if (daemon && !quitRequested) {
+      throw new Error(
+        "a live daemon owns this state home but the receipt-verified product app was not stopped by recovery; " +
+          "refusing to signal an unproven process",
+      );
+    }
     if (daemon && !signaled.has(daemon.pid)) {
       // The identity came from a fresh lock read and a fresh health response immediately
       // above. Never retain it between loop iterations or signal the same numeric PID twice.
@@ -510,12 +522,17 @@ async function pruneRollbackDirectories(home, keepId, ops) {
 
 function candidateForRollback(home, recoveryId) {
   const ledger = readRecoveryLedger(home);
-  const attempt = ledger.attempts.find((entry) => entry.id === recoveryId);
-  if (!attempt) throw new Error(`unknown recovery id: ${recoveryId}`);
-  if (attempt.status === "rolled_back") throw new Error(`recovery ${recoveryId} is already rolled back`);
+  assertRollbackSourceAvailable(ledger, recoveryId);
   const candidatePath = join(recoveryRoot(home), recoveryId, "rollback", DATABASE_FILE);
   if (!existsSync(candidatePath)) throw new Error(`rollback material for ${recoveryId} is no longer retained`);
   return { candidatePath, rollbackOf: recoveryId };
+}
+
+function assertRollbackSourceAvailable(ledger, recoveryId) {
+  const attempt = ledger.attempts.find((entry) => entry.id === recoveryId);
+  if (!attempt) throw new Error(`unknown recovery id: ${recoveryId}`);
+  if (attempt.status === "rolled_back") throw new Error(`recovery ${recoveryId} is already rolled back`);
+  return attempt;
 }
 
 function alreadyAppliedResult(attempt, health = null) {
@@ -569,7 +586,7 @@ export async function runDatabaseRecovery(
     pruneRollbacks ?? ((targetHome, keepId) =>
       pruneRollbackDirectories(targetHome, keepId, recoveryOps));
   mkdirSync(recoveryRoot(home), { recursive: true, mode: 0o700 });
-  recoveryOps.verifyApp(home, APP_BUNDLE_ID);
+  const verifiedAppPath = await recoveryOps.verifyApp(home, APP_BUNDLE_ID);
 
   const rollback = request.kind === "rollback" ? candidateForRollback(home, request.recoveryId) : null;
   const candidatePath = rollback?.candidatePath ?? request.candidatePath;
@@ -585,7 +602,8 @@ export async function runDatabaseRecovery(
     // lock because they are also safe against older or external recovery processes.
     recoveryLock = await acquireRecoveryLock(home, recoveryOps);
     const ledger = readRecoveryLedger(home);
-    const duplicate = appliedAttemptForDigest(ledger, prepared.digest);
+    if (rollback) assertRollbackSourceAvailable(ledger, rollback.rollbackOf);
+    const duplicate = rollback ? null : appliedAttemptForDigest(ledger, prepared.digest);
     if (duplicate) return alreadyAppliedResult(duplicate);
     if (ledger.attempts.length >= MAX_RECOVERY_ATTEMPTS) {
       throw new Error(
@@ -601,9 +619,14 @@ export async function runDatabaseRecovery(
     const id = `${recoveryOps.now().replace(/[:.]/g, "-")}-${prepared.digest.slice(0, 12)}`;
     const serializedDuplicate = await withLedgerLock(home, recoveryOps, () => {
       const currentLedger = readRecoveryLedger(home);
-      const duplicateUnderLock = appliedAttemptForDigest(currentLedger, prepared.digest);
+      if (rollback) assertRollbackSourceAvailable(currentLedger, rollback.rollbackOf);
+      const duplicateUnderLock = rollback
+        ? null
+        : appliedAttemptForDigest(currentLedger, prepared.digest);
       if (duplicateUnderLock) return duplicateUnderLock;
-      const unfinishedDuplicate = unfinishedAttemptForDigest(currentLedger, prepared.digest);
+      const unfinishedDuplicate = rollback
+        ? null
+        : unfinishedAttemptForDigest(currentLedger, prepared.digest);
       if (unfinishedDuplicate) {
         throw new Error(
           `recovery ${unfinishedDuplicate.id} for this candidate is unfinished (${unfinishedDuplicate.status}); ` +
@@ -639,7 +662,7 @@ export async function runDatabaseRecovery(
       if (!relaunchRequired) return alreadyAppliedResult(serializedDuplicate);
 
       launched = true;
-      recoveryOps.launchApp(APP_BUNDLE_ID);
+      recoveryOps.launchApp(verifiedAppPath, APP_BUNDLE_ID);
       const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
       if (!health) {
         throw new Error("Mission Control relaunched but its daemon did not become healthy");
@@ -677,7 +700,7 @@ export async function runDatabaseRecovery(
     lock.release();
     lock = null;
     launched = true;
-    recoveryOps.launchApp(APP_BUNDLE_ID);
+    recoveryOps.launchApp(verifiedAppPath, APP_BUNDLE_ID);
     const health = await waitForHealthy(home, recoveryOps, healthTimeoutMs);
     if (!health) throw new Error("Mission Control relaunched but its daemon did not become healthy");
 

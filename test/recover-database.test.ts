@@ -50,11 +50,14 @@ function operations(
     launchFails?: boolean;
     healthFails?: boolean;
     healthAmbiguousOnce?: boolean;
+    appRunning?: boolean;
+    daemonRunning?: boolean;
   } = {},
 ) {
   const actions: string[] = [];
-  let appRunning = true;
-  let daemonRunning = true;
+  const verifiedAppPath = "/Applications/Mission Control.app";
+  let appRunning = options.appRunning ?? true;
+  let daemonRunning = options.daemonRunning ?? true;
   let recoveryLockHeld = false;
   let ledgerLockHeld = false;
   let recoveryOperationLockHeld = false;
@@ -62,7 +65,10 @@ function operations(
   let healthAmbiguous = options.healthAmbiguousOnce ?? false;
   let now = 0;
   const ops = {
-    verifyApp: (_home: string, bundleId: string) => actions.push(`verify:${bundleId}`),
+    verifyApp: (_home: string, bundleId: string) => {
+      actions.push(`verify:${bundleId}:${verifiedAppPath}`);
+      return verifiedAppPath;
+    },
     appIsRunning: async () => appRunning,
     quitApp: async (bundleId: string) => {
       actions.push(`quit:${bundleId}`);
@@ -125,8 +131,8 @@ function operations(
     sleep: async () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
     },
-    launchApp: (bundleId: string) => {
-      actions.push(`launch:${bundleId}`);
+    launchApp: (appPath: string, bundleId: string) => {
+      actions.push(`launch:${bundleId}:${appPath}`);
       if (options.launchFails) throw new Error("injected relaunch failure");
       launched = true;
       appRunning = true;
@@ -134,7 +140,7 @@ function operations(
     },
     now: () => `2026-08-30T12:00:${String(now++).padStart(2, "0")}.000Z`,
   };
-  return { ops, actions };
+  return { ops, actions, verifiedAppPath };
 }
 
 test("the command accepts one candidate or one explicit rollback id", () => {
@@ -209,10 +215,37 @@ test("a valid candidate stops by exact bundle id, restores, launches once, and r
   assert.equal(marker(f.live), "candidate");
   assert.deepEqual(result.health, { pid: 4242, port: 7317, version: "test" });
   assert.match(result.message, /PID 4242, port 7317, version test/);
-  assert.equal(fake.actions.filter((action) => action === `launch:${APP_BUNDLE_ID}`).length, 1);
-  assert.ok(fake.actions.includes(`verify:${APP_BUNDLE_ID}`));
+  assert.equal(
+    fake.actions.filter(
+      (action) => action === `launch:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`,
+    ).length,
+    1,
+  );
+  assert.ok(fake.actions.includes(`verify:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`));
   assert.ok(fake.actions.includes(`quit:${APP_BUNDLE_ID}`));
-  assert.ok(fake.actions.indexOf("acquire") < fake.actions.indexOf(`launch:${APP_BUNDLE_ID}`));
+  assert.ok(
+    fake.actions.indexOf("acquire") <
+      fake.actions.indexOf(`launch:${APP_BUNDLE_ID}:${fake.verifiedAppPath}`),
+  );
+});
+
+test("a daemon is never signaled unless the receipt-verified product app owned the stop", async (t) => {
+  const f = fixture(t);
+  const fake = operations({ appRunning: false, daemonRunning: true });
+
+  await assert.rejects(
+    runDatabaseRecovery(
+      { kind: "restore", candidatePath: f.candidate },
+      { home: f.home, ops: fake.ops },
+    ),
+    /refusing to signal an unproven process/,
+  );
+
+  assert.equal(marker(f.live), "original");
+  assert.deepEqual(readRecoveryLedger(f.home).attempts, []);
+  assert.equal(fake.actions.some((action) => action.startsWith("signal:")), false);
+  assert.equal(fake.actions.some((action) => action.startsWith("quit:")), false);
+  assert.equal(fake.actions.some((action) => action.startsWith("launch:")), false);
 });
 
 test("interrupted stop times out before any database file is moved", async (t) => {
@@ -515,6 +548,37 @@ test("an explicit rollback uses preserved material through the same guarded flow
   );
   assert.equal(originalAttempt?.status, "rolled_back");
   assert.match(String(originalAttempt?.message), /rolled back by recovery/);
+});
+
+test("explicit rollback is scoped to its recovery id rather than historical content digest", async (t) => {
+  const f = fixture(t);
+  const originalCandidate = join(f.root, "original.db");
+  const latestCandidate = join(f.root, "latest.db");
+  database(originalCandidate, "original");
+  database(latestCandidate, "latest");
+  const fake = operations();
+
+  const first = await runDatabaseRecovery(
+    { kind: "restore", candidatePath: f.candidate },
+    { home: f.home, ops: fake.ops },
+  );
+  await runDatabaseRecovery(
+    { kind: "restore", candidatePath: originalCandidate },
+    { home: f.home, ops: fake.ops },
+  );
+  await runDatabaseRecovery(
+    { kind: "restore", candidatePath: latestCandidate },
+    { home: f.home, ops: fake.ops },
+  );
+
+  const rollback = await runDatabaseRecovery(
+    { kind: "rollback", recoveryId: first.recoveryId },
+    { home: f.home, ops: fake.ops },
+  );
+
+  assert.equal(rollback.kind, "rolled-back");
+  assert.equal(marker(f.live), "original");
+  assert.equal(fake.actions.filter((action) => action.startsWith("launch:")).length, 4);
 });
 
 test("candidate validation rejects foreign-key corruption before stop", async (t) => {

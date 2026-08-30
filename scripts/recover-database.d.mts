@@ -36,7 +36,7 @@ export type DurableWriteOperations = {
 };
 
 export type RecoveryOperations = {
-  verifyApp(home: string, bundleId: string): unknown;
+  verifyApp(home: string, bundleId: string): string | Promise<string>;
   appIsRunning(): boolean | Promise<boolean>;
   quitApp(bundleId: string): unknown | Promise<unknown>;
   identifyDaemon(home: string): DaemonHealth | null | Promise<DaemonHealth | null>;
@@ -45,7 +45,7 @@ export type RecoveryOperations = {
   tryAcquireLedgerLock(home: string): { release(): void } | null;
   tryAcquireRecoveryLock(home: string): { release(): void } | null;
   sleep(ms: number): Promise<unknown>;
-  launchApp(bundleId: string): unknown;
+  launchApp(appPath: string, bundleId: string): unknown;
   now(): string;
 };
 

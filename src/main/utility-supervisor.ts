@@ -1,8 +1,14 @@
 import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { forkAndInitializeUtilityProcess } from "./utility-process-start.ts";
+import {
+  attachUtilityProcessOutput,
+  openPrivateUtilityLog,
+  utilityProcessStdio,
+} from "./utility-log.ts";
+import {
+  forkAndInitializeUtilityProcess,
+  UtilityProcessInitializationError,
+} from "./utility-process-start.ts";
 
 export interface UtilityProcessController {
   stop(): void;
@@ -15,6 +21,8 @@ export interface UtilityProcessOptions {
   env: NodeJS.ProcessEnv;
   cwd?: string;
   onSpawn?: (child: UtilityProcess) => void;
+  captureChildOutput?: boolean;
+  includeFailureDetails?: boolean;
 }
 
 /**
@@ -25,8 +33,6 @@ export interface UtilityProcessOptions {
  * packaging fix in one process from silently leaving the other with different crash behavior.
  */
 export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityProcessController {
-  mkdirSync(dirname(opts.logPath), { recursive: true });
-
   let child: UtilityProcess | null = null;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -43,36 +49,44 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
     restartTimer = null;
     if (stopped) return;
 
-    const log = createWriteStream(opts.logPath, { flags: "a" });
+    const log = openPrivateUtilityLog(opts.logPath);
     try {
       child = forkAndInitializeUtilityProcess(
         () =>
           utilityProcess.fork(opts.entry, [], {
             serviceName: opts.serviceName,
-            stdio: "pipe",
+            stdio: utilityProcessStdio(opts.captureChildOutput),
             env: opts.env,
             cwd: opts.cwd,
           }),
-        opts.onSpawn,
+        (spawned) => {
+          child = spawned;
+          attachUtilityProcessOutput(spawned, log, opts.captureChildOutput);
+          spawned.once("exit", (code) => {
+            child = null;
+            log.end(
+              stopped
+                ? `[mission-control] ${opts.serviceName} stopped\n`
+                : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,
+            );
+            scheduleRestart();
+          });
+          opts.onSpawn?.(spawned);
+        },
       );
     } catch (err) {
+      if (err instanceof UtilityProcessInitializationError) {
+        if (child === err.child) {
+          log.write(`[mission-control] ${opts.serviceName} initialization failed; stopping\n`);
+        }
+        return;
+      }
       child = null;
-      log.end(`[mission-control] ${opts.serviceName} failed to start: ${String(err)}\n`);
+      const details = opts.includeFailureDetails === false ? "" : `: ${String(err)}`;
+      log.end(`[mission-control] ${opts.serviceName} failed to start${details}\n`);
       scheduleRestart();
       return;
     }
-
-    child.stdout?.on("data", (data: Buffer) => log.write(data));
-    child.stderr?.on("data", (data: Buffer) => log.write(data));
-    child.once("exit", (code) => {
-      child = null;
-      log.end(
-        stopped
-          ? `[mission-control] ${opts.serviceName} stopped\n`
-          : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,
-      );
-      scheduleRestart();
-    });
   };
 
   spawn();

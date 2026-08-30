@@ -22,9 +22,12 @@ test("the app menu and tray expose the same native update command seam", () => {
     index,
     /win\?\.isVisible\(\) \? dialog\.showMessageBox\(win, options\) : dialog\.showMessageBox\(options\)/,
   );
+  const updaterStart = index.indexOf("updater = new UpdateController");
+  const backgroundReady = index.indexOf("const background = await backgroundStart.ready");
+  assert.notEqual(updaterStart, -1, "the native updater must be constructed");
+  assert.notEqual(backgroundReady, -1, "background startup must expose its readiness boundary");
   assert.ok(
-    index.indexOf("updater = new UpdateController") <
-      index.indexOf("const background = await backgroundStart.ready"),
+    updaterStart < backgroundReady,
     "native update commands must remain available even when daemon startup fails",
   );
   assert.match(index, /before-quit[\s\S]*backgroundStart\?\.stop\(\)/);

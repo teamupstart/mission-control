@@ -9,7 +9,7 @@ export interface StartForemanOptions {
   workerEntry: string;
   /** Stable working directory for agent subprocess discovery. */
   cwd: string;
-  /** Where to append the worker's stdout and stderr. */
+  /** Where to append supervisor lifecycle events. */
   logPath: string;
 }
 
@@ -26,6 +26,8 @@ export function startForeman(opts: StartForemanOptions): ForemanController {
     serviceName: "mission-control-foreman",
     logPath: opts.logPath,
     cwd: opts.cwd,
+    captureChildOutput: false,
+    includeFailureDetails: false,
     env: {
       ...process.env,
       PATH: loginShellPath(),

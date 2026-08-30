@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { forkAndInitializeUtilityProcess } from "../src/main/utility-process-start.ts";
+import {
+  forkAndInitializeUtilityProcess,
+  UtilityProcessInitializationError,
+} from "../src/main/utility-process-start.ts";
 
 test("a failed post-fork hook kills the child before the supervisor may retry", () => {
   const failure = new Error("post-fork setup failed");
@@ -20,7 +23,12 @@ test("a failed post-fork hook kills the child before the supervisor may retry", 
           throw failure;
         },
       ),
-    (err) => err === failure,
+    (err) => {
+      assert.ok(err instanceof UtilityProcessInitializationError);
+      assert.equal(err.child, child);
+      assert.equal(err.cause, failure);
+      return true;
+    },
   );
   assert.equal(kills, 1, "the forked process must not survive its failed initialization");
 });

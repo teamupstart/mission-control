@@ -2,6 +2,16 @@ export interface KillableUtilityProcess {
   kill(): boolean;
 }
 
+export class UtilityProcessInitializationError<T extends KillableUtilityProcess> extends Error {
+  readonly child: T;
+
+  constructor(child: T, cause: unknown) {
+    super("utility process initialization failed", { cause });
+    this.name = "UtilityProcessInitializationError";
+    this.child = child;
+  }
+}
+
 /**
  * Fork a utility process and finish its synchronous initialization as one owned operation.
  *
@@ -23,6 +33,6 @@ export function forkAndInitializeUtilityProcess<T extends KillableUtilityProcess
       // Preserve the initialization failure that caused teardown. The supervisor logs it and
       // retries; a second exception here must not bypass that recovery path.
     }
-    throw err;
+    throw new UtilityProcessInitializationError(child, err);
   }
 }

@@ -45,6 +45,7 @@ mkdirSync(repo, { recursive: true });
 
 function reset(): void {
   db.exec(`
+    DROP TRIGGER IF EXISTS fail_pipeline_commission_claim;
     DROP TRIGGER IF EXISTS fail_pipeline_commission_event;
     DELETE FROM pipeline_commission_events;
     DELETE FROM pipeline_commission_attempts;
@@ -140,6 +141,42 @@ test("migration creates one durable commission per task and preserves exact task
       }),
     /repository does not match/,
   );
+});
+
+test("the initial commission and task claim roll back as one transaction", () => {
+  reset();
+  task("task-1");
+  db.exec(`
+    CREATE TRIGGER fail_pipeline_commission_claim
+    BEFORE UPDATE OF pipeline_commission_id ON tasks
+    WHEN NEW.pipeline_commission_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(FAIL, 'forced task claim failure');
+    END;
+  `);
+
+  assert.throws(
+    () =>
+      createPipelineCommission({
+        taskId: "task-1",
+        provider: "ai-conductor",
+        repoRoot: repo,
+        id: "commission-task-1",
+        correlationId: "correlation-task-1",
+        launchKey: "launch-task-1",
+      }),
+    /forced task claim failure/,
+  );
+
+  assert.equal(loadPipelineCommissions().length, 0);
+  const attempts = db.prepare(
+    `SELECT COUNT(*) AS count FROM pipeline_commission_attempts`,
+  ).get() as { count: number };
+  const claimed = db.prepare(
+    `SELECT pipeline_commission_id FROM tasks WHERE id = 'task-1'`,
+  ).get() as { pipeline_commission_id: string | null };
+  assert.equal(attempts.count, 0);
+  assert.equal(claimed.pipeline_commission_id, null);
 });
 
 test("task upserts preserve a commission binding when the in-memory shape predates it", () => {

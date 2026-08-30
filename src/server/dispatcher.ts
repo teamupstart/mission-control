@@ -75,6 +75,7 @@ import {
   appendPipelineCommissionAttempt,
   bindPipelineCommissionAttempt,
   createPipelineCommission,
+  recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
 import type { PipelineEngineerRunSnapshot } from "./pipelines/types.ts";
@@ -933,6 +934,7 @@ export class Dispatcher {
         (candidate) => candidate.attempt === commission!.activeAttempt,
       );
       if (!attempt) throw new Error("the Pipeline commission has no active Engineer attempt");
+      const commissionId = commission.id;
       let reserved: PipelineEngineerRunSnapshot | null = null;
       const created = await lifecycle.create({
         repoRoot: task.repoRoot,
@@ -968,21 +970,58 @@ export class Dispatcher {
         // continuation owns the newly returned identity and must stop it before any Mission
         // Control host starts. The task and commission stay terminal even if the provider
         // refuses the stop: starting a host after either terminal write would resurrect work.
+        // Even a terminal commission must retain the provider identity before cleanup. If
+        // the stop is refused, that durable identity is the only actionable handle an
+        // operator or a later recovery pass has for the external run.
+        try {
+          const bound = bindPipelineCommissionAttempt({
+            commissionId,
+            attempt: attempt.attempt,
+            engineerRunId: reservedRun.engineerRunId,
+            providerAttempt: reservedRun.attempt,
+            attemptKey: reservedRun.attemptKey,
+            previousEngineerRunId: reservedRun.previousEngineerRunId,
+          });
+          this.registry.upsertPipelineCommission(bound);
+        } catch (error) {
+          console.error(
+            `[pipelines] could not retain cancelled Engineer run ${reservedRun.engineerRunId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        const retainCancellationFailure = (reason: string): void => {
+          try {
+            const failed = recordPipelineCommissionCancellationFailure({
+              commissionId,
+              engineerRunId: reservedRun.engineerRunId,
+              reason,
+            });
+            this.registry.upsertPipelineCommission(failed);
+          } catch (error) {
+            console.error(
+              `[pipelines] could not retain cancellation failure for Engineer run ${reservedRun.engineerRunId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        };
         try {
           const stopped = await lifecycle.cancel({
             engineerRunId: reservedRun.engineerRunId,
             reason: "Pipeline task settled in Mission Control before Engineer host launch",
           });
           if (!stopped.ok) {
+            retainCancellationFailure(stopped.error);
             console.error(
               `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${stopped.error}`,
             );
           }
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          retainCancellationFailure(message);
           console.error(
-            `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${message}`,
           );
         }
         await this.abortIfSettled(taskId);

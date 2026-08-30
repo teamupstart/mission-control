@@ -911,7 +911,11 @@ test("cancellation during provider reservation stops the returned run before hos
   assert.equal(starts, 0);
   assert.deepEqual(cancelledRunIds, ["engineer-reserved-after-cancel"]);
   assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
-  assert.equal(registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId, null);
+  assert.equal(
+    registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId,
+    "engineer-reserved-after-cancel",
+  );
+  assert.match(registry.pipelineCommissionForTask(taskId)?.error ?? "", /provider unavailable/);
   assert.match(providerErrors.join("\n"), /provider unavailable/);
 });
 

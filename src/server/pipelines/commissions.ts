@@ -219,6 +219,40 @@ export function cancelPipelineCommission(input: {
   return next;
 }
 
+/** Retain the provider identity and reason when terminal cancellation could not stop it. */
+export function recordPipelineCommissionCancellationFailure(input: {
+  commissionId: PipelineCommissionId;
+  engineerRunId: string;
+  reason: string;
+  now?: number;
+}): PipelineCommission {
+  const held = getPipelineCommission(input.commissionId);
+  if (!held) throw new Error(`unknown pipeline commission ${input.commissionId}`);
+  if (held.lifecycle !== "cancelled") {
+    throw new Error("only a cancelled pipeline commission can retain a cancellation failure");
+  }
+  const active = held.attempts.find((attempt) => attempt.attempt === held.activeAttempt);
+  if (!active || active.engineerRunId !== input.engineerRunId) {
+    throw new Error("the cancellation failure does not match the active Engineer run");
+  }
+  const now = input.now ?? Date.now();
+  const attempt: PipelineCommissionAttempt = {
+    ...active,
+    terminalReason: input.reason,
+    updatedAt: now,
+  };
+  const next: PipelineCommission = {
+    ...held,
+    attempts: held.attempts.map((entry) =>
+      entry.attempt === attempt.attempt ? attempt : entry,
+    ),
+    error: input.reason,
+    updatedAt: now,
+  };
+  upsertPipelineCommissionAttempt(next, attempt);
+  return next;
+}
+
 export type ParsedEngineerEvent =
   | { ok: true; known: true; event: EngineerLifecycleEvent }
   | { ok: true; known: false; event: UnknownEngineerLifecycleEvent }

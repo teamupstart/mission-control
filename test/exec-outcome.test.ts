@@ -24,7 +24,12 @@ test("a command that runs and fails is a refusal, not an unknown", () => {
 });
 
 test("a command that succeeds is not an unknown either", () => {
-  return run(process.execPath, ["-e", "process.stdout.write('ok')"]).then((res) => {
+  // The full suite runs six process-heavy files at once. This case proves the successful
+  // outcome classification, not the shared four-second discovery budget, so give the child
+  // enough time to be scheduled under that documented contention.
+  return run(process.execPath, ["-e", "process.stdout.write('ok')"], {
+    timeoutMs: 10_000,
+  }).then((res) => {
     assert.equal(res.code, 0);
     assert.equal(res.stdout, "ok");
     assert.equal(res.outcomeUnknown, false);

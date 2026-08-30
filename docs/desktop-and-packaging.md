@@ -14,6 +14,19 @@ by an external Node process, and skills are read through filesystem links, so bo
 plain files on disk. The Electron shell starts the daemon; it does not become a second state
 owner.
 
+## Startup while SDK sessions restore
+
+The packaged window loads the ordinary daemon-served dashboard as soon as the daemon owns its
+resolved state home, has opened the database, and has bound HTTP. Persisted SDK conversations may
+still be restoring serially at that point. The Board renders each readable live persisted row as a
+provisional **Restoring** card, then replaces it with the real Registry session under the same
+stable id when the driver is adopted.
+
+Those provisional cards are display-only. They cannot be selected, messaged, dragged, assigned,
+bound to a workflow, or counted as live work. `/api/health` likewise reports that the daemon and
+authenticated API are reachable, not that all SDK drivers are ready. Terminal discovery and the
+first startup reconciliation remain gated behind completion of the full SDK restore pass.
+
 ## Managed install and the receipt
 
 `make install` ([`scripts/install-app.mjs`](../scripts/install-app.mjs)) is the user install

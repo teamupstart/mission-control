@@ -815,6 +815,106 @@ test("an exit evicts the card through the ordinary sequence", async (t) => {
   }
 });
 
+test("restore preparation publishes only readable live rows with stable display identity", () => {
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "task-prepared",
+    title: "Current durable task title",
+    repoRoot: "/repo/main",
+    worktreePath: "/repo/main/.worktrees/task-prepared",
+    sessionId: "sdk:prepared-live",
+    status: "running",
+  }));
+  upsertSdkSession({
+    id: "sdk:prepared-live",
+    agent: "claude",
+    agentSessionId: "agent-prepared-live",
+    cwd: "/repo/main/.worktrees/task-prepared",
+    taskId: "task-prepared",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "suspended",
+    turnInProgress: false,
+  }, 100);
+  upsertSdkSession({
+    id: "sdk:prepared-exited",
+    agent: "claude",
+    agentSessionId: "agent-prepared-exited",
+    cwd: "/repo/main",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "exited",
+    turnInProgress: false,
+  }, 200);
+  openDb().prepare(
+    `INSERT INTO sdk_sessions (
+       id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
+       status, turn_in_progress, display_name, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?)`,
+  ).run("sdk:prepared-future", "claude", "agent-future", "/repo/future", "paused-v2", 300, 300);
+
+  const supervisor = new SdkSupervisor(registry);
+  assert.equal(supervisor.prepareRestore(), 1);
+  assert.equal(supervisor.prepareRestore(), 1, "preparation is idempotent and does not republish");
+  assert.deepEqual(registry.snapshot().restoringSessions, [{
+    id: "sdk:prepared-live",
+    agent: "claude",
+    name: "Current durable task title",
+    cwd: "/repo/main/.worktrees/task-prepared",
+    repoRoot: "/repo/main",
+    taskId: "task-prepared",
+    taskTitle: "Current durable task title",
+    createdAt: 100,
+  }]);
+});
+
+test("shutdown joins an in-flight restore and never launches the next prepared row", async () => {
+  for (const [id, createdAt] of [["sdk:shutdown-one", 100], ["sdk:shutdown-two", 200]] as const) {
+    upsertSdkSession({
+      id,
+      agent: "claude",
+      agentSessionId: `agent-${id}`,
+      cwd: `/wt/${id}`,
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    }, createdAt);
+  }
+  const handle = fakeHandle();
+  let releaseLaunch: ((value: Handle) => void) | null = null;
+  const launchHeld = new Promise<Handle>((resolve) => {
+    releaseLaunch = resolve;
+  });
+  const fake = withFakeDriver(() => launchHeld);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    assert.equal(supervisor.prepareRestore(), 2);
+    const restoring = supervisor.restore();
+    await waitFor(() => fake.calls.length === 1);
+
+    const stopping = supervisor.stopAll(50);
+    assert.equal(fake.calls.length, 1, "row two cannot launch after shutdown begins");
+    releaseLaunch!(handle);
+    await stopping;
+    await restoring;
+
+    assert.equal(fake.calls.length, 1);
+    assert.equal(handle.stopped, true, "the in-flight handle is stopped before adoption");
+    assert.deepEqual(registry.snapshot().restoringSessions, []);
+    assert.equal(registry.getSession("sdk:shutdown-one"), undefined);
+    assert.equal(registry.getSession("sdk:shutdown-two"), undefined);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("restore resumes the same conversation rather than starting a new one", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
@@ -859,6 +959,11 @@ test("restore resumes the same conversation rather than starting a new one", asy
       },
     });
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
+    assert.deepEqual(
+      registry.snapshot().restoringSessions,
+      [],
+      "the real stable id retires its provisional projection after registration",
+    );
     assert.equal(
       registry.getSession("sdk:restore-1")?.agentSessionId,
       "agent-42",

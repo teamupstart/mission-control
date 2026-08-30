@@ -25159,6 +25159,119 @@ span.line-run-prov {
   color: var(--dim);
 }
 
+/* ---- SDK startup projection ---------------------------------------------------------
+   A real Board column so the ordinary frame is available immediately, but never a fleet
+   tone: the cards inside have no driver and are intentionally absent from column counts,
+   selection, drag/drop, actions, search, the Line, and Sitrep. Dashed surfaces borrow the
+   Starting strip's provisional grammar while keeping the dimensions of a Board tile. */
+.restoring-col {
+  --tone-color: var(--working);
+  border-style: dashed;
+  background: color-mix(in oklab, var(--working) 4%, var(--bg-2));
+}
+.restoring-col-note {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.25px;
+}
+.restoring-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  padding: 10px 11px 9px 13px;
+  color: var(--fg);
+  border: 1px dashed color-mix(in oklab, var(--working) 42%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(
+    color-mix(in oklab, var(--working) 5%, var(--panel)),
+    var(--panel-2)
+  );
+  box-shadow: var(--shadow);
+}
+.restoring-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: color-mix(in oklab, var(--working) 65%, var(--neutral));
+  opacity: 0.65;
+}
+.restoring-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.restoring-tile-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restoring-tile-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, var(--working) 28%, transparent);
+  border-top-color: var(--working);
+  border-radius: 50%;
+  animation: starting-strip-spin 0.8s linear infinite;
+}
+.restoring-tile-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restoring-tile-state {
+  align-self: flex-start;
+  padding: 1px 6px;
+  color: var(--working);
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.restoring-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 7px;
+  border: 1px dashed color-mix(in oklab, var(--repo-c) 42%, var(--border-soft));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--repo-c) 4%, transparent);
+}
+.restoring-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px 1px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.restoring-repo-head > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--repo-c);
+}
+.restoring-repo > .restoring-tile {
+  width: auto;
+  margin-inline: 7px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .restoring-tile-spinner { animation: none; }
+}
+
 /* ---- ensemble clusters: sibling members, framed together ----
    A run's members are one piece of work spread over several agents, and on a board they
    scatter like unrelated sessions. The frame is presentational ONLY - it carries no drag

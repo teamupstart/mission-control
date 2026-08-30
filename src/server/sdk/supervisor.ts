@@ -4,6 +4,7 @@ import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import type {
   AgentType,
   PermissionMode,
+  RestoringSession,
   SdkSendDisposition,
   Session,
   ThinkingLevel,
@@ -143,6 +144,10 @@ export class SdkSupervisor {
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
+  /** Exact readable live rows captured once before HTTP starts serving. */
+  private preparedRestoreRows: SdkSessionRow[] | null = null;
+  /** One serial startup pass, retained so shutdown can join its ownership boundary. */
+  private restorePromise: Promise<void> | null = null;
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
   /**
@@ -165,6 +170,33 @@ export class SdkSupervisor {
   ) {}
 
   /**
+   * Read and classify persisted SDK rows once, before the first HTTP snapshot can answer.
+   *
+   * The resulting Registry entries are inert display projections only. Calling this twice
+   * returns the same prepared count and never re-reads SQLite or republishes a row, which is
+   * what prevents one daemon from launching the same conversation twice.
+   */
+  prepareRestore(): number {
+    if (this.preparedRestoreRows !== null) return this.preparedRestoreRows.length;
+    const prepared: SdkSessionRow[] = [];
+    for (const row of listSdkSessions()) {
+      if (row.status === null) {
+        // Written by a build that knows a status this one does not. Left exactly as it is:
+        // failing a row we cannot read would discard a session a newer daemon could resume.
+        console.warn(
+          `[sdk] leaving ${row.id} alone: unreadable status ${JSON.stringify(row.statusRaw)}`,
+        );
+        continue;
+      }
+      if (!sdkSessionIsLive(row)) continue;
+      prepared.push(row);
+      this.registry.upsertRestoringSession(this.restoringView(row));
+    }
+    this.preparedRestoreRows = prepared;
+    return prepared.length;
+  }
+
+  /**
    * Restore what the previous daemon left behind - BEFORE the discovery poller starts.
    *
    * That ordering is a contract, not a nicety. `registry.onSessionsObserved` is the moment
@@ -181,24 +213,29 @@ export class SdkSupervisor {
    * no card ever appearing leaves the task `running` for ever with nothing to look at.
    */
   async restore(): Promise<void> {
-    for (const row of listSdkSessions()) {
-      if (row.status === null) {
-        // Written by a build that knows a status this one does not. Left exactly as it is:
-        // failing a row we cannot read would discard a session a newer daemon could resume.
-        console.warn(
-          `[sdk] leaving ${row.id} alone: unreadable status ${JSON.stringify(row.statusRaw)}`,
-        );
-        continue;
+    this.prepareRestore();
+    if (this.restorePromise) return this.restorePromise;
+    const rows = this.preparedRestoreRows!;
+    const restoring = (async () => {
+      for (const row of rows) {
+        // Shutdown owns the in-flight row below. It must also prevent the next prepared row
+        // from launching, which is why this check sits immediately before each serial step.
+        if (this.shuttingDown) break;
+        try {
+          await this.resume(row);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          if (!this.shuttingDown) this.registerAndEvict(row, why);
+        } finally {
+          // Success has already emitted `session_upsert`; failure has already registered and
+          // begun ordinary eviction. The browser suppresses overlap by id as a second guard.
+          this.registry.removeRestoringSession(row.id);
+        }
       }
-      if (!sdkSessionIsLive(row)) continue;
-      try {
-        await this.resume(row);
-      } catch (err) {
-        const why = err instanceof Error ? err.message : String(err);
-        console.error(`[sdk] could not resume ${row.id}: ${why}`);
-        this.registerAndEvict(row, why);
-      }
-    }
+    })();
+    this.restorePromise = restoring;
+    return restoring;
   }
 
   /**
@@ -271,6 +308,7 @@ export class SdkSupervisor {
     gitRoot?: string | null;
     repoRoot?: string | null;
   }): Promise<Session> {
+    if (this.shuttingDown) throw new Error("the SDK supervisor is shutting down");
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
     const id = input.sessionId ?? newSdkSessionId();
@@ -773,6 +811,13 @@ export class SdkSupervisor {
    */
   async stopAll(timeoutMs = 5000): Promise<void> {
     this.shuttingDown = true;
+    // Preparation can exist before the listener callback starts the pass. Clear those views
+    // immediately, then join an in-flight launch so this method never reports completion
+    // while startup still owns a child, disposable state home, marker, or credential.
+    for (const row of this.preparedRestoreRows ?? []) {
+      this.registry.removeRestoringSession(row.id);
+    }
+    await this.restorePromise?.catch(() => {});
     const ids = [...this.handles.keys()];
     if (ids.length === 0) return;
     const drained = Promise.allSettled(ids.map((id) => this.stop(id)));
@@ -1030,6 +1075,17 @@ export class SdkSupervisor {
         standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
       });
+      // A signal can arrive while a provider handshake is in flight. The handle is now ours,
+      // but no real Registry session has been published yet, so stop and clean it at this
+      // existing ownership boundary instead of briefly adopting an actionable card.
+      if (this.shuttingDown) {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+        if (task?.kind === "pipeline") {
+          this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
+        }
+        return;
+      }
       this.adopt({
         registration: {
           id: row.id,
@@ -1130,6 +1186,21 @@ export class SdkSupervisor {
     } catch (err) {
       console.error(`[sdk] could not surface the unresumable session ${row.id}:`, err);
     }
+  }
+
+  /** The only projection from a durable SDK row into pre-driver presentation. */
+  private restoringView(row: SdkSessionRow): RestoringSession {
+    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    return {
+      id: row.id,
+      agent: row.agent,
+      name: restoredName(row, task?.title ?? null),
+      cwd: row.cwd,
+      repoRoot: task?.repoRoot ?? null,
+      taskId: row.taskId,
+      taskTitle: task?.title ?? null,
+      createdAt: row.createdAt,
+    };
   }
 
   /**

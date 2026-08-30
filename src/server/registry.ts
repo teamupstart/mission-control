@@ -19,6 +19,7 @@ import type {
   FileCommentReview,
   FileCommentThread,
   ReviewItem,
+  RestoringSession,
   ServerEvent,
   Session,
   SessionCost,
@@ -525,6 +526,10 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // blocked on an unanswered review comment. That is attention, not a stage figure, and it
   // reaches the strip through `Session.pendingReviews` and `session_upsert` the way a
   // pending review already does - which is the same reason `review_upsert` is absent above.
+  //
+  // `restoring_session_upsert` / `restoring_session_remove` are DELIBERATELY absent. A
+  // provisional row has no driver and is excluded from every fleet execution count; these
+  // frames move only its inert Board presentation, so a Line refold could not change.
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -630,6 +635,11 @@ interface PassiveState {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  /**
+   * Driverless startup views, kept apart from `sessions` so no live-session consumer can
+   * mistake a persisted row for an adopted driver. Bounded by the one startup restore read.
+   */
+  private restoringSessions = new Map<string, RestoringSession>();
   private managedPipelineLaunches = new Map<string, ManagedPipelineLaunch>();
   private managedPipelineCallers = new Map<string, ManagedPipelineCaller>();
   private prObservations = new Map<string, PrObservation>();
@@ -989,6 +999,7 @@ export class Registry extends EventEmitter {
 
   snapshot(): {
     sessions: Session[];
+    restoringSessions: RestoringSession[];
     reviews: ReviewItem[];
     tasks: Task[];
     personas: PersonaView[];
@@ -1011,6 +1022,7 @@ export class Registry extends EventEmitter {
   } {
     return {
       sessions: [...this.sessions.values()],
+      restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
@@ -1258,6 +1270,18 @@ export class Registry extends EventEmitter {
   subscribe(fn: (e: ServerEvent) => void): () => void {
     this.on("event", fn);
     return () => this.off("event", fn);
+  }
+
+  /** Publish one driverless startup view after its durable row has been classified. */
+  upsertRestoringSession(session: RestoringSession): void {
+    this.restoringSessions.set(session.id, session);
+    this.emitEvent({ type: "restoring_session_upsert", session });
+  }
+
+  /** Retire a startup view after real registration or the ordinary failure lifecycle. */
+  removeRestoringSession(id: string): void {
+    if (!this.restoringSessions.delete(id)) return;
+    this.emitEvent({ type: "restoring_session_remove", id });
   }
 
   onSessionsObserved(fn: () => void): () => void {

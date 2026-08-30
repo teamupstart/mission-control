@@ -121,7 +121,12 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
   await expect(filter).toBeFocused();
   await filter.fill("no restoring row matches this");
   await expect(restoring).toBeHidden();
-  await expect(dashboard.getByText('Nothing matches "no restoring row matches this"')).toBeVisible();
+  const filterEmpty = dashboard.locator(".empty");
+  await expect(filterEmpty.getByText('Nothing matches "no restoring row matches this"')).toBeVisible();
+  await expect(filterEmpty).toContainText(
+    "No session row or backlog task matches that title or status.",
+  );
+  await expect(filterEmpty).toContainText("to see all 1 session row.");
 
   if (process.env.MC_E2E_EVIDENCE) {
     await dashboard.screenshot({ path: join(EVIDENCE, "filtered-restoring-board.png"), fullPage: true });

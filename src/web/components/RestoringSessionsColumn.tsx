@@ -31,7 +31,7 @@ function card(session: RestoringSession): React.JSX.Element {
  * The Board-only home for persisted SDK rows whose drivers are still restoring.
  *
  * It is a separate column and separate component so none of the ordinary tile behaviors are
- * reachable: no selection, drag target, action bar, composer, workflow disclosure, search
+ * reachable: no selection, drag target, action bar, composer, workflow disclosure, live fleet
  * count, or fleet tone. Repository grouping is presentation only and carries no real-session
  * totals. The hook suppresses any row whose stable id has already appeared in `sessions`.
  */

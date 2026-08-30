@@ -2105,6 +2105,12 @@ export function App(): React.JSX.Element {
     (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length + (layout === "board" ? restoringSessions.length : 0);
+  const filterableSessionNoun =
+    layout === "board"
+      ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
+      : filterableSessionCount === 1
+        ? "session"
+        : "sessions";
 
   const viewProps: SessionViewProps = {
     sessions: visible,
@@ -3706,14 +3712,14 @@ export function App(): React.JSX.Element {
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
-              No {layout === "board" ? "session or backlog task" : "session"} matches that title or
-              status.{" "}
+              No {layout === "board" ? "session row or backlog task" : "session"} matches that title
+              or status.{" "}
               <Tooltip label="Clear the filter">
                 <button className="link-btn" onClick={() => setFilter("")}>
                   Clear the filter
                 </button>
               </Tooltip>{" "}
-              to see all {filterableSessionCount} sessions.
+              to see all {filterableSessionCount} {filterableSessionNoun}.
             </p>
           </div>
         )}

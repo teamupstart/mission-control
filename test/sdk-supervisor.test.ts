@@ -915,6 +915,81 @@ test("shutdown joins an in-flight restore and never launches the next prepared r
   }
 });
 
+test("shutdown stays bounded while an in-flight restore owns late handle cleanup", async () => {
+  upsertSdkSession(
+    {
+      id: "sdk:shutdown-deadline",
+      agent: "claude",
+      agentSessionId: "agent-shutdown-deadline",
+      cwd: "/wt/shutdown-deadline",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    },
+    100,
+  );
+  const handle = fakeHandle();
+  let releaseLaunch: ((value: Handle) => void) | null = null;
+  const launchHeld = new Promise<Handle>((resolve) => {
+    releaseLaunch = resolve;
+  });
+  const fake = withFakeDriver(() => launchHeld);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    supervisor.prepareRestore();
+    const restoring = supervisor.restore();
+    await waitFor(() => fake.calls.length === 1);
+
+    const stopping = supervisor.stopAll(20);
+    const outcome = await Promise.race([
+      stopping.then(() => "stopped" as const),
+      new Promise<"deadline-missed">((resolve) =>
+        setTimeout(() => resolve("deadline-missed"), 200),
+      ),
+    ]);
+    releaseLaunch!(handle);
+    await Promise.all([stopping, restoring]);
+
+    assert.equal(outcome, "stopped", "a hung provider handshake cannot hold daemon shutdown");
+    assert.equal(handle.stopped, true, "a handle arriving after the deadline is still cleaned");
+    assert.deepEqual(registry.snapshot().restoringSessions, []);
+    assert.equal(registry.getSession("sdk:shutdown-deadline"), undefined);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("shutdown owns a fresh SDK launch already waiting on its provider", async () => {
+  const id = "sdk:11111111-2222-4333-8444-555555555555";
+  const handle = fakeHandle();
+  let releaseLaunch: ((value: Handle) => void) | null = null;
+  const launchHeld = new Promise<Handle>((resolve) => {
+    releaseLaunch = resolve;
+  });
+  const fake = withFakeDriver(() => launchHeld);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const starting = supervisor.start({ ...START, sessionId: id });
+    await waitFor(() => fake.calls.length === 1);
+
+    const stopping = supervisor.stopAll(200);
+    releaseLaunch!(handle);
+    await assert.rejects(starting, /shutting down/);
+    await stopping;
+
+    assert.equal(handle.stopped, true);
+    assert.equal(registry.getSession(id), undefined);
+    assert.equal(getSdkSession(id), null);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("restore resumes the same conversation rather than starting a new one", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

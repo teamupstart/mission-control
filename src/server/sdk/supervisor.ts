@@ -148,6 +148,8 @@ export class SdkSupervisor {
   private preparedRestoreRows: SdkSessionRow[] | null = null;
   /** One serial startup pass, retained so shutdown can join its ownership boundary. */
   private restorePromise: Promise<void> | null = null;
+  /** Fresh launches that still own a prospective handle or its cleanup. */
+  private startOwnership = new Set<Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
   /**
@@ -317,6 +319,15 @@ export class SdkSupervisor {
     // block inside `prompt`, and sending it here as well would have the agent read the same
     // rule twice on its first turn.
     const outOfBandStanding = outOfBandStandingText(input.standingInstructions?.delivery);
+    let releaseOwnership = (): void => {};
+    const ownership = new Promise<void>((resolve) => {
+      releaseOwnership = resolve;
+    });
+    this.startOwnership.add(ownership);
+    const releaseStartOwnership = (): void => {
+      releaseOwnership();
+      this.startOwnership.delete(ownership);
+    };
     let handle: SdkSessionHandle;
     try {
       handle = await spec.launch({
@@ -339,7 +350,17 @@ export class SdkSupervisor {
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
+      releaseStartOwnership();
       throw error;
+    }
+    if (this.shuttingDown) {
+      try {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+      } finally {
+        releaseStartOwnership();
+      }
+      throw new Error("the SDK supervisor is shutting down");
     }
     let started: Session;
     try {
@@ -368,8 +389,12 @@ export class SdkSupervisor {
         },
       });
     } catch (error) {
-      await handle.stop().catch(() => {});
-      cleanupDisposableAgentStateHome(stateHome);
+      try {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+      } finally {
+        releaseStartOwnership();
+      }
       throw error;
     }
     // What this session was ACTUALLY sent, recorded once. The driver's
@@ -377,14 +402,18 @@ export class SdkSupervisor {
     // be used delivers the block in turn one instead, and a snapshot claiming the durable
     // channel would later tell an assignment the rule was still installed on the process
     // when it was only ever turn-one prose.
-    if (input.standingInstructions?.delivery.text) {
-      this.registry.recordStandingInstructions(started.id, {
-        ...input.standingInstructions.delivery,
-        mechanism:
-          handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
-      });
+    try {
+      if (input.standingInstructions?.delivery.text) {
+        this.registry.recordStandingInstructions(started.id, {
+          ...input.standingInstructions.delivery,
+          mechanism:
+            handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+        });
+      }
+      return started;
+    } finally {
+      releaseStartOwnership();
     }
-    return started;
   }
 
   /**
@@ -812,16 +841,19 @@ export class SdkSupervisor {
   async stopAll(timeoutMs = 5000): Promise<void> {
     this.shuttingDown = true;
     // Preparation can exist before the listener callback starts the pass. Clear those views
-    // immediately, then join an in-flight launch so this method never reports completion
-    // while startup still owns a child, disposable state home, marker, or credential.
+    // immediately, then give in-flight launches the same bounded graceful-drain window as
+    // already-adopted handles. A launch that finishes later still sees `shuttingDown` and
+    // cleans up its own handle instead of adopting it after teardown.
     for (const row of this.preparedRestoreRows ?? []) {
       this.registry.removeRestoringSession(row.id);
     }
-    await this.restorePromise?.catch(() => {});
     const ids = [...this.handles.keys()];
-    if (ids.length === 0) return;
+    const startupOwnership = Promise.allSettled([
+      ...(this.restorePromise ? [this.restorePromise] : []),
+      ...this.startOwnership,
+    ]);
     const drained = Promise.allSettled(ids.map((id) => this.stop(id)));
-    await Promise.race([drained, sleep(timeoutMs)]);
+    await Promise.race([Promise.allSettled([startupOwnership, drained]), sleep(timeoutMs)]);
     // Whatever did not drain in time is still OUR session and still resumable: the row has
     // to say so before the process goes, because after that nothing will.
     for (const id of ids) {

@@ -6016,7 +6016,9 @@ export class Registry extends EventEmitter {
 
   removeTask(id: string): void {
     const t = this.tasks.get(id);
+    const commission = this.pipelineCommissionForTask(id);
     dbDeleteTask(id);
+    if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);

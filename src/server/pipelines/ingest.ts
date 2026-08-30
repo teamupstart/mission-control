@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 
 import {
+  ENGINEER_EVENT_LIMITS,
   activePipelineRepos,
   pipelineRepoKey,
   pipelineRunKey,
@@ -199,6 +200,7 @@ const MAX_MALFORMED_WARNINGS = 3;
 /** Unexpected storage failures are isolated per line, but remain visible in bounded logs. */
 let warnedEngineerFailures = 0;
 const MAX_ENGINEER_FAILURE_WARNINGS = 3;
+let warnedOversizedEngineerEvents = 0;
 
 /**
  * Take one NDJSON batch, store what is new, and say which runs moved.
@@ -285,8 +287,22 @@ export function ingestConductorEvents(body: string, now = Date.now()): PipelineI
       const rawEngineer = envelope.data.event as Record<string, unknown>;
       const unsupportedSchema =
         !parsedEvent.ok &&
+        parsedEvent.code !== "oversized" &&
         Number.isInteger(rawEngineer.schemaVersion) &&
         rawEngineer.schemaVersion !== 1;
+      if (!parsedEvent.ok && parsedEvent.code === "oversized") {
+        counts.malformed += 1;
+        if (warnedOversizedEngineerEvents < MAX_ENGINEER_FAILURE_WARNINGS) {
+          warnedOversizedEngineerEvents += 1;
+          console.warn(
+            `[pipelines] dropped oversized Engineer event; limit is ${ENGINEER_EVENT_LIMITS.maxBytes} bytes` +
+              (warnedOversizedEngineerEvents === MAX_ENGINEER_FAILURE_WARNINGS
+                ? " (further warnings suppressed)"
+                : ""),
+          );
+        }
+        continue;
+      }
       if (
         envelope.data.engineerRunId === undefined ||
         envelope.data.correlationId === undefined ||

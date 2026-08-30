@@ -22,7 +22,9 @@ const {
   applyEngineerEvent,
   bindPipelineCommissionAttempt,
   createPipelineCommission,
+  parseEngineerEvent,
 } = await import("../src/server/pipelines/commissions.ts");
+const { ENGINEER_EVENT_LIMITS } = await import("../src/shared/pipeline.ts");
 const { setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 const { ingestConductorEvents } = await import("../src/server/pipelines/ingest.ts");
 const { refreshPipelineCommission, restorePipelineProjection } = await import(
@@ -147,6 +149,82 @@ test("commission retirement removes its bounded authoring history and task bindi
     pipeline_commission_id: string | null;
   };
   assert.equal(row.pipeline_commission_id, null);
+});
+
+test("task retirement atomically removes its commission family and live projection", () => {
+  reset();
+  const held = commission();
+  assert.equal(
+    applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome,
+    "stored",
+  );
+  const registry = new Registry();
+  registry.initializePipelineCommissions([held]);
+  const frames: string[] = [];
+  registry.subscribe((message) => frames.push(message.type));
+
+  registry.removeTask("task-1");
+
+  assert.equal(getPipelineCommission(held.id), null);
+  assert.equal(countPipelineCommissionEvents(held.id), 0);
+  assert.equal(
+    Number(
+      (
+        db.prepare(`SELECT COUNT(*) AS count FROM pipeline_commission_attempts WHERE commission_id = ?`).get(
+          held.id,
+        ) as { count: number }
+      ).count,
+    ),
+    0,
+  );
+  assert.equal(db.prepare(`SELECT id FROM tasks WHERE id = ?`).get("task-1"), undefined);
+  assert.deepEqual(registry.listPipelineCommissions(), []);
+  assert.ok(frames.includes("pipeline_commission_remove"));
+});
+
+test("Engineer event field and total byte limits fail closed before persistence", () => {
+  reset();
+  commission();
+  const overlongField = event("engineer_run_created", 1, {
+    idea: "x".repeat(ENGINEER_EVENT_LIMITS.textChars + 1),
+  });
+  assert.equal(applyEngineerEvent(overlongField).outcome, "malformed");
+
+  const oversized = {
+    ...event("engineer_run_started", 1),
+    type: "engineer_future_observation",
+    evidence: "x".repeat(ENGINEER_EVENT_LIMITS.maxBytes),
+  };
+  assert.deepEqual(parseEngineerEvent(oversized), {
+    ok: false,
+    code: "oversized",
+    error: `Engineer event exceeds ${ENGINEER_EVENT_LIMITS.maxBytes} bytes`,
+  });
+  assert.equal(applyEngineerEvent(oversized).outcome, "oversized");
+  assert.equal(countPipelineCommissionEvents("commission-task-1"), 0);
+  assert.equal(getPipelineCommission("commission-task-1")?.attempts[0]?.providerRevision, 0);
+
+  const envelope = (engineerEvent: Record<string, unknown>) => ({
+    repo,
+    seq: engineerEvent.revision,
+    event: engineerEvent,
+    engineerRunId: engineerEvent.engineerRunId,
+    correlationId: engineerEvent.correlationId,
+    engineerAttempt: engineerEvent.attempt,
+    attemptKey: engineerEvent.attemptKey,
+  });
+  const good = event("engineer_run_created", 1, { idea: "bounded" });
+  const ingested = ingestConductorEvents(
+    `${JSON.stringify(envelope(oversized))}\n${JSON.stringify(envelope(good))}\n`,
+  );
+  assert.deepEqual(ingested.counts, {
+    received: 2,
+    stored: 1,
+    duplicate: 0,
+    malformed: 1,
+    unconsented: 0,
+  });
+  assert.equal(getPipelineCommission("commission-task-1")?.attempts[0]?.providerRevision, 1);
 });
 
 test("live and replay ordering converge through one monotonic reducer", () => {

@@ -310,6 +310,17 @@ export type PipelineCommissionId = string;
 export const ENGINEER_LIFECYCLE_CAPABILITY = "engineerLifecycleEventsV1" as const;
 export const ENGINEER_LIFECYCLE_SCHEMA_VERSION = 1 as const;
 
+/** Durable Engineer event limits, enforced before any event reaches SQLite. */
+export const ENGINEER_EVENT_LIMITS = {
+  maxBytes: 64 * 1024,
+  identityChars: 512,
+  pathChars: 4096,
+  textChars: 8192,
+  urlChars: 4096,
+  typeChars: 256,
+  artifactPaths: 100,
+} as const;
+
 /** Frozen copy of the provider's DECIDE vocabulary, in its canonical order. */
 export const ENGINEER_STEP_NAMES = [
   "bootstrap",

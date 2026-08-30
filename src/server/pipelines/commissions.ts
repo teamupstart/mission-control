@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  ENGINEER_EVENT_LIMITS,
   ENGINEER_EVENT_TYPES,
   ENGINEER_STEP_NAMES,
   pipelineRunKeyOf,
@@ -178,17 +179,38 @@ export function appendPipelineCommissionAttempt(input: {
 export type ParsedEngineerEvent =
   | { ok: true; known: true; event: EngineerLifecycleEvent }
   | { ok: true; known: false; event: UnknownEngineerLifecycleEvent }
-  | { ok: false; error: string };
+  | { ok: false; code: "malformed" | "oversized"; error: string };
+
+function engineerEventByteLength(value: unknown): number | null {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? null : Buffer.byteLength(encoded, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function engineerEventIsOversized(value: unknown): boolean {
+  const bytes = engineerEventByteLength(value);
+  return bytes !== null && bytes > ENGINEER_EVENT_LIMITS.maxBytes;
+}
 
 /** Validate the exact known payload, while retaining a structurally valid future kind. */
 export function parseEngineerEvent(value: unknown): ParsedEngineerEvent {
+  if (engineerEventIsOversized(value)) {
+    return {
+      ok: false,
+      code: "oversized",
+      error: `Engineer event exceeds ${ENGINEER_EVENT_LIMITS.maxBytes} bytes`,
+    };
+  }
   const base = UnknownEngineerLifecycleEventSchema.safeParse(value);
-  if (!base.success) return { ok: false, error: "invalid Engineer event identity" };
+  if (!base.success) return { ok: false, code: "malformed", error: "invalid Engineer event identity" };
   if (!KNOWN_ENGINEER_EVENTS.has(base.data.type)) {
     return { ok: true, known: false, event: base.data as UnknownEngineerLifecycleEvent };
   }
   const known = EngineerLifecycleEventSchema.safeParse(value);
-  if (!known.success) return { ok: false, error: "malformed known Engineer event" };
+  if (!known.success) return { ok: false, code: "malformed", error: "malformed known Engineer event" };
   return { ok: true, known: true, event: known.data as EngineerLifecycleEvent };
 }
 
@@ -322,7 +344,7 @@ function reduceKnownEvent(
 }
 
 export type EngineerEventApplyResult = {
-  outcome: PipelineCommissionEventCommit | "malformed" | "unknown_commission" | "mismatch" | "terminal" | "collision";
+  outcome: PipelineCommissionEventCommit | "malformed" | "oversized" | "unknown_commission" | "mismatch" | "terminal" | "collision";
   commission: PipelineCommission | null;
 };
 
@@ -332,7 +354,7 @@ export function applyEngineerEvent(
   observedAt = Date.now(),
 ): EngineerEventApplyResult {
   const parsed = parseEngineerEvent(value);
-  if (!parsed.ok) return { outcome: "malformed", commission: null };
+  if (!parsed.ok) return { outcome: parsed.code, commission: null };
   const event = parsed.event;
   const held = pipelineCommissionForEngineerRun(event.engineerRunId);
   if (!held) return { outcome: "unknown_commission", commission: null };
@@ -406,6 +428,9 @@ export function applyUnsupportedEngineerEvent(
   value: unknown,
   observedAt = Date.now(),
 ): EngineerEventApplyResult {
+  if (engineerEventIsOversized(value)) {
+    return { outcome: "oversized", commission: null };
+  }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { outcome: "malformed", commission: null };
   }
@@ -415,16 +440,23 @@ export function applyUnsupportedEngineerEvent(
     Number(event.schemaVersion) < 1 ||
     event.schemaVersion === 1 ||
     typeof event.type !== "string" ||
+    event.type.length > ENGINEER_EVENT_LIMITS.typeChars ||
     typeof event.engineerRunId !== "string" ||
+    event.engineerRunId.length > ENGINEER_EVENT_LIMITS.identityChars ||
     !(typeof event.correlationId === "string" || event.correlationId === null) ||
+    (typeof event.correlationId === "string" && event.correlationId.length > ENGINEER_EVENT_LIMITS.identityChars) ||
     typeof event.attemptKey !== "string" ||
+    event.attemptKey.length > ENGINEER_EVENT_LIMITS.identityChars ||
     !Number.isInteger(event.attempt) ||
     Number(event.attempt) < 1 ||
     !(typeof event.previousEngineerRunId === "string" || event.previousEngineerRunId === null) ||
+    (typeof event.previousEngineerRunId === "string" && event.previousEngineerRunId.length > ENGINEER_EVENT_LIMITS.identityChars) ||
     !Number.isInteger(event.revision) ||
     Number(event.revision) < 1 ||
     typeof event.repoRoot !== "string" ||
+    event.repoRoot.length > ENGINEER_EVENT_LIMITS.pathChars ||
     typeof event.ts !== "string" ||
+    event.ts.length > ENGINEER_EVENT_LIMITS.identityChars ||
     !Number.isFinite(Date.parse(event.ts))
   ) {
     return { outcome: "malformed", commission: null };

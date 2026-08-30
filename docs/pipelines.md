@@ -650,6 +650,12 @@ provider, canonical repository, correlation, attempt, launch key, and Engineer r
 match. Their run-local revision is monotonic and idempotent. A malformed or cross-boundary
 line costs only that item in the batch.
 
+Engineer event fields have explicit identity, path, URL, narrative, and collection limits,
+and the complete UTF-8 JSON event is capped at 64 KiB before either live ingest or replay can
+persist it. An oversized event is counted as `malformed`, dropped without moving the durable
+cursor, and reported through a bounded warning so an unattended producer cannot grow either
+the ledger or daemon logs without limit.
+
 An implementation `event` is stored verbatim and read for two fields it may not carry
 (`type`, `ts`). Nothing validates that older shape: conductor's implementation event union
 is TypeScript-only, unversioned and 104 kinds

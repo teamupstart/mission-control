@@ -6371,16 +6371,33 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
 
 export function deleteTask(id: string): void {
   const d = openDb();
-  d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(id);
-  d.prepare(`DELETE FROM work_episode_prs WHERE task_id = ?`).run(id);
-  d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
-  d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
-  // The retention ledger is keyed on a task that is about to stop existing. Left behind it
-  // would be an orphan whose generation can never match anything again - harmless, but the
-  // table would then only ever grow, and `listOrphanedTaskWorktreeRetentionIds` would be
-  // cleaning up after this function forever instead of after genuine surprises.
-  d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
-  d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `DELETE FROM pipeline_commission_events
+       WHERE commission_id IN (SELECT id FROM pipeline_commissions WHERE task_id = ?)`,
+    ).run(id);
+    d.prepare(
+      `DELETE FROM pipeline_commission_attempts
+       WHERE commission_id IN (SELECT id FROM pipeline_commissions WHERE task_id = ?)`,
+    ).run(id);
+    d.prepare(`DELETE FROM pipeline_commissions WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_repos WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM work_episode_prs WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
+    // The retention ledger is keyed on a task that is about to stop existing. Left behind it
+    // would be an orphan whose generation can never match anything again - harmless, but the
+    // table would then only ever grow, and `listOrphanedTaskWorktreeRetentionIds` would be
+    // cleaning up after this function forever instead of after genuine surprises.
+    d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+    if (ownsTransaction) d.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function listTasks(): Task[] {

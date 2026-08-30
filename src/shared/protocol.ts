@@ -12,6 +12,7 @@ import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
   PipelineConsoleRequestSchema,
+  ENGINEER_EVENT_LIMITS,
   ENGINEER_STEP_COMPLETION_EVIDENCE,
   ENGINEER_STEP_NAMES,
   PIPELINE_PROVIDER_IDS,
@@ -3386,14 +3387,14 @@ export type ConductorIngestEnvelope = z.infer<typeof ConductorIngestEnvelopeSche
 
 const EngineerEventBaseSchema = z.object({
   schemaVersion: z.literal(1),
-  engineerRunId: z.string().min(1),
-  correlationId: z.string().min(1).nullable(),
-  attemptKey: z.string().min(1),
+  engineerRunId: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+  correlationId: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars).nullable(),
+  attemptKey: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
   attempt: z.number().int().positive(),
-  previousEngineerRunId: z.string().min(1).nullable(),
-  repoRoot: z.string().min(1),
+  previousEngineerRunId: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars).nullable(),
+  repoRoot: z.string().min(1).max(ENGINEER_EVENT_LIMITS.pathChars),
   revision: z.number().int().positive(),
-  ts: z.string().datetime(),
+  ts: z.string().datetime().max(ENGINEER_EVENT_LIMITS.identityChars),
 });
 
 const EngineerStepEventSchema = z.object({
@@ -3403,43 +3404,49 @@ const EngineerStepEventSchema = z.object({
 
 /** Exact known Engineer v1 event payloads. Unknown kinds use the base schema below. */
 export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
-  EngineerEventBaseSchema.extend({ type: z.literal("engineer_run_created"), idea: z.string().min(1) }),
+  EngineerEventBaseSchema.extend({
+    type: z.literal("engineer_run_created"),
+    idea: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
+  }),
   EngineerEventBaseSchema.extend({ type: z.literal("engineer_run_started") }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_routing_selected"),
-    project: z.string().min(1),
+    project: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_worktree_created"),
-    worktreePath: z.string().min(1),
-    branch: z.string().min(1),
-    planSlug: z.string().min(1),
+    worktreePath: z.string().min(1).max(ENGINEER_EVENT_LIMITS.pathChars),
+    branch: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    planSlug: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
   }),
   EngineerEventBaseSchema.merge(EngineerStepEventSchema).extend({
     type: z.literal("engineer_step_started"),
-    provider: z.string().min(1).optional(),
-    model: z.string().min(1).optional(),
+    provider: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars).optional(),
+    model: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars).optional(),
   }),
   EngineerEventBaseSchema.merge(EngineerStepEventSchema).extend({
     type: z.literal("engineer_step_completed"),
     completion: z.enum(ENGINEER_STEP_COMPLETION_EVIDENCE),
-    artifactPaths: z.array(z.string().min(1)).max(100).optional(),
+    artifactPaths: z
+      .array(z.string().min(1).max(ENGINEER_EVENT_LIMITS.pathChars))
+      .max(ENGINEER_EVENT_LIMITS.artifactPaths)
+      .optional(),
   }),
   EngineerEventBaseSchema.merge(EngineerStepEventSchema).extend({
     type: z.literal("engineer_step_failed"),
-    error: z.string().min(1),
+    error: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.merge(EngineerStepEventSchema).extend({
     type: z.literal("engineer_step_retried"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.merge(EngineerStepEventSchema).extend({
     type: z.literal("engineer_step_skipped"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_land_reconciled"),
-    planSlug: z.string().min(1),
+    planSlug: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
     track: z.enum(["product", "technical"]),
     tier: z.enum(["S", "M", "L"]),
     completed: z.array(z.enum(ENGINEER_STEP_NAMES)),
@@ -3447,23 +3454,23 @@ export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_land_refused"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_spec_handoff"),
-    planSlug: z.string().min(1),
-    branch: z.string().min(1),
-    prUrl: z.string().url().nullable(),
+    planSlug: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    branch: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    prUrl: z.string().url().max(ENGINEER_EVENT_LIMITS.urlChars).nullable(),
     outcome: z.enum(["pr_opened", "local_commit"]),
     state: z.literal("awaiting_spec_merge"),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_cancelled"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_failed"),
-    error: z.string().min(1),
+    error: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_settled"),
@@ -3473,7 +3480,7 @@ export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
 
 /** Base parser used to retain future event kinds without letting them move projection state. */
 export const UnknownEngineerLifecycleEventSchema = EngineerEventBaseSchema.extend({
-  type: z.string().min(1),
+  type: z.string().min(1).max(ENGINEER_EVENT_LIMITS.typeChars),
 }).passthrough();
 
 /**

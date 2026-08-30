@@ -809,9 +809,15 @@ npm run verify:database-backup -- \
           <p>The validation command never promotes a backup or replaces live state. A recurring capture failure is logged and retried later. A failed pre-migration capture stops startup before schema writes, and a later migration failure reports the recovery point without restoring it automatically.</p>
           <div class="callout danger">
             <strong>Never copy only an open <code>harness.db</code>.</strong>
-            <p>Committed pages may still live in <code>harness.db-wal</code>. An actual restore is an offline operator action: stop every daemon using that state directory, preserve the current database and sidecars, use the same or a newer build, and promote only a candidate that passed validation.</p>
+            <p>Committed pages may still live in <code>harness.db-wal</code>. Promote only a complete candidate that passed validation through the supported offline recovery flow.</p>
           </div>
-          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats.</p>
+          <pre><code><span class="comment"># Restore through the supported, lock-owning product flow</span>
+npm run recover:database -- /absolute/path/to/backup/harness.db
+
+<span class="comment"># Use the printed id when the retained prior database is needed</span>
+npm run recover:database -- --rollback &lt;recovery-id&gt;</code></pre>
+          <p>The recovery command validates a staged candidate before stopping anything, identifies the live daemon from its state lock and health response, proves that daemon belongs to the receipt-verified app before signaling it, proves SQLite is closed by acquiring the kernel-held lock, and preserves rollback material. It attempts exactly one relaunch and reports the observed daemon PID, port, and version after health succeeds. See <a href="database-and-migrations.md#recovering-the-product-database">Database and migrations</a> for the full contract.</p>
+          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats. Development processes are outside this managed-product flow and still use their own explicit lifecycle commands.</p>
         </section>
 
         <section id="sources">

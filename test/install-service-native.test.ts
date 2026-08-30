@@ -202,8 +202,12 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
       `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "daemon", pid: process.pid }) + "\\n");\n`,
   );
 
+  let child: ReturnType<typeof spawn> | null = null;
+  let closePromise: ReturnType<typeof once> | null = null;
+  let buildProcessGroupPid: number | null = null;
+  let cleanupError: unknown = null;
   try {
-    const child = spawn(process.execPath, [copiedEntry], {
+    child = spawn(process.execPath, [copiedEntry], {
       cwd: root,
       env: {
         ...process.env,
@@ -212,6 +216,7 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
       },
       stdio: "pipe",
     });
+    closePromise = once(child, "close");
     const servicePid = child.pid;
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
@@ -226,6 +231,13 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
       recorded = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
     }
     assert.match(recorded, /"stage":"build-start"/, "the native build must start");
+    buildProcessGroupPid = (
+      recorded
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { stage: string; pid: number })
+        .find((event) => event.stage === "build-start")?.pid ?? null
+    );
     child.kill(testedSignal);
 
     const [code, signal] = (await exitPromise) as [number | null, NodeJS.Signals | null];
@@ -243,8 +255,32 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.notEqual(events[0]!.pid, servicePid, "the bounded build runs as a child");
     assert.equal(events[1]!.signal, testedSignal);
   } finally {
+    // Let start-service forward SIGTERM to its detached native-build group. If the fixture is
+    // itself wedged, kill the recorded group and service only after the grace, then wait for its
+    // pipes to close before removing the directory they reference.
+    if (child?.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      const closed = closePromise
+        ? await Promise.race([
+            closePromise.then(() => true, () => true),
+            delay(1_000).then(() => false),
+          ])
+        : true;
+      if (!closed) {
+        if (buildProcessGroupPid !== null) {
+          try {
+            process.kill(-buildProcessGroupPid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") cleanupError = error;
+          }
+        }
+        child.kill("SIGKILL");
+      }
+    }
+    if (closePromise) await closePromise.catch(() => undefined);
     rmSync(root, { recursive: true, force: true });
   }
+  if (cleanupError) throw cleanupError;
 }
 
 test("the LaunchAgent entry stops cleanly on every supported signal during the build", async (t) => {

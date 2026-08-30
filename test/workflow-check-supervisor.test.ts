@@ -324,8 +324,8 @@ test("a command that EXITS leaving a background process still has its group torn
 
 /**
  * One name each, because these two numbers are also the floor the elapsed-time assertion
- * checks. Spelled twice, they drift, and a `700 + 400` that no longer matches the run is a
- * green test asserting nothing.
+ * checks. Spelled twice, they drift, and a timeout plus grace that no longer matches the run
+ * is a green test asserting nothing.
  */
 const STUBBORN_TIMEOUT_MS = COMMAND_TIMEOUT_MS;
 const STUBBORN_GRACE_MS = 400;

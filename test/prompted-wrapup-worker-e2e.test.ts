@@ -1790,7 +1790,9 @@ async function runShipEvidenceScenario(input: {
     port: stub.port,
     claudeBin: fake.bin,
     claudeLog: fake.log,
-    ms: 8_000,
+    // The full suite runs several real-worker fixtures concurrently. This remains an early-exit
+    // ceiling, so a healthy worker pays no extra delay while a loaded host gets time to advance.
+    ms: 20_000,
     until: input.stopOn === "claim"
       ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
       : input.stopOn === "consume"

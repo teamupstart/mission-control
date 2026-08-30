@@ -1,41 +1,57 @@
-/**
- * Start the daemon only when Electron owns the application stack.
- *
- * A Vite URL means the shell is part of `dev:desktop`, where `dev:server`
- * owns the daemon and restarts it independently. Treating a transiently
- * unhealthy dev daemon as absent would start Electron's supervised production
- * daemon, which then loses the port race and restarts forever.
- */
-export async function startElectronOwnedDaemon<T>(
-  devServerUrl: string | undefined,
-  start: () => Promise<T>,
-): Promise<T | null> {
-  if (devServerUrl) return null;
-  return start();
-}
-
-export interface DaemonStartOwnership<T> {
-  ready: Promise<T | null>;
+export interface BackgroundProcess {
   stop(): void;
 }
 
-/** Own a daemon even while its asynchronous adopt-or-spawn decision is still pending. */
-export function ownElectronDaemonStart<T extends { stop(): void }>(
+export interface ElectronBackgroundStack<D, F> {
+  daemon: D;
+  foreman: F | null;
+}
+
+export interface BackgroundStartOwnership<D, F> {
+  ready: Promise<ElectronBackgroundStack<D, F> | null>;
+  stop(): void;
+}
+
+/**
+ * Own the packaged app's background processes even while either start is pending.
+ *
+ * A Vite URL means `dev:server` and, for `make start`, `dev:foreman` own those lifecycles.
+ * Starting packaged copies from Electron would create competing restart loops. In a packaged
+ * app, Foreman starts immediately after the daemon controller exists; it already retries an
+ * unreachable daemon and its lease makes a concurrently started worker a safe standby.
+ */
+export function ownElectronBackgroundStart<
+  D extends BackgroundProcess,
+  F extends BackgroundProcess,
+>(
   devServerUrl: string | undefined,
-  start: () => Promise<T>,
-): DaemonStartOwnership<T> {
-  let daemon: T | null = null;
+  startDaemon: () => Promise<D>,
+  startForeman: () => Promise<F>,
+): BackgroundStartOwnership<D, F> {
+  let daemon: D | null = null;
+  let foreman: F | null = null;
   let stopRequested = false;
-  const ready = startElectronOwnedDaemon(devServerUrl, start).then((started) => {
-    daemon = started;
-    if (stopRequested) daemon?.stop();
-    return started;
-  });
+  const ready = (async (): Promise<ElectronBackgroundStack<D, F> | null> => {
+    if (devServerUrl) return null;
+    daemon = await startDaemon();
+    if (stopRequested) {
+      daemon.stop();
+      return { daemon, foreman: null };
+    }
+    foreman = await startForeman();
+    if (stopRequested) {
+      foreman.stop();
+      daemon.stop();
+    }
+    return { daemon, foreman };
+  })();
   return {
     ready,
     stop() {
       if (stopRequested) return;
       stopRequested = true;
+      // Release Foreman's lease while the daemon can still receive the shutdown request.
+      foreman?.stop();
       daemon?.stop();
     },
   };

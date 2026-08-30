@@ -4,6 +4,7 @@ import {
   ENGINEER_EVENT_LIMITS,
   ENGINEER_EVENT_TYPES,
   ENGINEER_STEP_NAMES,
+  MAX_PIPELINE_COMMISSION_ATTEMPTS,
   pipelineRunKeyOf,
   type EngineerEventBase,
   type EngineerLifecycleEvent,
@@ -163,7 +164,7 @@ export function appendPipelineCommissionAttempt(input: {
   const next: PipelineCommission = {
     ...held,
     lifecycle: "created",
-    attempts: [...held.attempts, attempt],
+    attempts: [...held.attempts, attempt].slice(-MAX_PIPELINE_COMMISSION_ATTEMPTS),
     activeAttempt: attempt.attempt,
     steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "pending" })),
     currentStep: null,

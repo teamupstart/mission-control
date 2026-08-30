@@ -49,9 +49,11 @@ dropped event. Its key is in
 The `pipeline_commissions`, `pipeline_commission_attempts`, and
 `pipeline_commission_events` tables are durable state of a different kind. They preserve one
 Mission Control-owned task commission across ordered provider Engineer attempts, keep one
-run-local replay cursor per attempt, and retain a bounded opaque authoring ledger. Their
-projection can be reconciled through the provider's sanctioned replay command, but it is not
-rebuildable from implementation worktrees and must not be treated as a disposable cache.
+run-local replay cursor per attempt, and retain a bounded opaque authoring ledger. The attempt
+table keeps the full audit, while commission JSON and SSE projections carry only the 20 most
+recent attempts. Their projection can be reconciled through the provider's sanctioned replay
+command, but it is not rebuildable from implementation worktrees and must not be treated as a
+disposable cache.
 
 `archive_capture_jobs` sits beside them and is a different kind of table again: local
 coordination for archives this daemon is still WRITING, one row per archive a task work episode

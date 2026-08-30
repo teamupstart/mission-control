@@ -628,8 +628,10 @@ retain the last good steps and attach a bounded error. A retry appends a success
 with a new cursor and never reopens the terminal predecessor.
 
 Commission projections are bounded whole objects on the existing connect snapshot and SSE
-stream. The browser holds them for forward compatibility but does not render them in this
-phase. There is no polling path and no second browser channel.
+stream. They carry only the 20 most recent attempts; `pipeline_commission_attempts` retains
+the complete durable audit without making reconnect payloads grow forever. The browser holds
+the projection for forward compatibility but does not render it in this phase. There is no
+polling path and no second browser channel.
 
 ### The route
 

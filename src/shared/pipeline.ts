@@ -321,6 +321,9 @@ export const ENGINEER_EVENT_LIMITS = {
   artifactPaths: 100,
 } as const;
 
+/** Recent attempts carried in snapshots; the durable attempt table keeps the full audit. */
+export const MAX_PIPELINE_COMMISSION_ATTEMPTS = 20;
+
 /** Frozen copy of the provider's DECIDE vocabulary, in its canonical order. */
 export const ENGINEER_STEP_NAMES = [
   "bootstrap",

@@ -26,7 +26,9 @@ const {
   createPipelineCommission,
   parseEngineerEvent,
 } = await import("../src/server/pipelines/commissions.ts");
-const { ENGINEER_EVENT_LIMITS } = await import("../src/shared/pipeline.ts");
+const { ENGINEER_EVENT_LIMITS, MAX_PIPELINE_COMMISSION_ATTEMPTS } = await import(
+  "../src/shared/pipeline.ts"
+);
 const { setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 const { ingestConductorEvents } = await import("../src/server/pipelines/ingest.ts");
 const { refreshPipelineCommission, restorePipelineProjection } = await import(
@@ -372,6 +374,63 @@ test("terminal attempts are immutable and retry appends a successor cursor", () 
     previousEngineerRunId: "run-task-1",
   });
   assert.equal(rebound.attempts[1]?.previousEngineerRunId, "run-task-1");
+});
+
+test("commission snapshots bound attempt history while SQLite retains the full audit", () => {
+  reset();
+  commission();
+  const total = MAX_PIPELINE_COMMISSION_ATTEMPTS + 3;
+  const runId = (attempt: number): string =>
+    attempt === 1 ? "run-task-1" : `run-task-1-${attempt}`;
+  const launchKey = (attempt: number): string =>
+    attempt === 1 ? "launch-task-1" : `launch-task-1-${attempt}`;
+
+  for (let attempt = 1; attempt <= total; attempt += 1) {
+    const identity = {
+      engineerRunId: runId(attempt),
+      attemptKey: launchKey(attempt),
+      attempt,
+      previousEngineerRunId: attempt === 1 ? null : runId(attempt - 1),
+    };
+    assert.equal(
+      applyEngineerEvent(event("engineer_run_created", 1, { ...identity, idea: "retry" })).outcome,
+      "stored",
+    );
+    assert.equal(
+      applyEngineerEvent(event("engineer_run_failed", 2, { ...identity, error: "retry" })).outcome,
+      "stored",
+    );
+    if (attempt === total) continue;
+    const next = appendPipelineCommissionAttempt({
+      commissionId: "commission-task-1",
+      launchKey: launchKey(attempt + 1),
+    });
+    assert.ok(next.attempts.length <= MAX_PIPELINE_COMMISSION_ATTEMPTS);
+    bindPipelineCommissionAttempt({
+      commissionId: next.id,
+      attempt: attempt + 1,
+      engineerRunId: runId(attempt + 1),
+      providerAttempt: attempt + 1,
+      attemptKey: launchKey(attempt + 1),
+      previousEngineerRunId: runId(attempt),
+    });
+  }
+
+  const projected = getPipelineCommission("commission-task-1")!;
+  assert.equal(projected.attempts.length, MAX_PIPELINE_COMMISSION_ATTEMPTS);
+  assert.equal(projected.attempts[0]?.attempt, total - MAX_PIPELINE_COMMISSION_ATTEMPTS + 1);
+  assert.equal(projected.attempts.at(-1)?.attempt, total);
+  const attemptCount = db.prepare(
+    `SELECT COUNT(*) AS count FROM pipeline_commission_attempts WHERE commission_id = ?`,
+  ).get("commission-task-1") as { count: number };
+  assert.equal(Number(attemptCount.count), total);
+  const stored = db.prepare(`SELECT state_json FROM pipeline_commissions WHERE id = ?`).get(
+    "commission-task-1",
+  ) as { state_json: string };
+  assert.equal(
+    (JSON.parse(stored.state_json) as PipelineCommission).attempts.length,
+    MAX_PIPELINE_COMMISSION_ATTEMPTS,
+  );
 });
 
 test("identity, ordering, terminal, malformed handoff, and collision checks fail closed", () => {

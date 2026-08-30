@@ -22,6 +22,7 @@ import {
 import {
   isPipelineProviderId,
   isPipelineStepState,
+  MAX_PIPELINE_COMMISSION_ATTEMPTS,
   PIPELINE_COMMISSION_ATTEMPT_STATES,
   PIPELINE_COMMISSION_LIFECYCLES,
   type PipelineCommission,
@@ -7520,6 +7521,18 @@ export function pipelineStoredRepos(): Array<{
 /** A commission's bounded durable Engineer evidence. */
 export const MAX_PIPELINE_COMMISSION_EVENTS = 2000;
 
+function projectedPipelineCommission(commission: PipelineCommission): PipelineCommission {
+  if (commission.attempts.length <= MAX_PIPELINE_COMMISSION_ATTEMPTS) return commission;
+  return {
+    ...commission,
+    attempts: commission.attempts.slice(-MAX_PIPELINE_COMMISSION_ATTEMPTS),
+  };
+}
+
+function pipelineCommissionStateJson(commission: PipelineCommission): string {
+  return JSON.stringify(projectedPipelineCommission(commission));
+}
+
 function validCommissionProjection(value: unknown): value is PipelineCommission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const row = value as Partial<PipelineCommission>;
@@ -7633,9 +7646,18 @@ function commissionAttemptsById(): Map<string, PipelineCommissionAttempt[]> {
     .prepare(
       `SELECT commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
               provider_revision, state, terminal_reason, updated_at
-         FROM pipeline_commission_attempts ORDER BY commission_id, attempt`,
+         FROM (
+           SELECT commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
+                  provider_revision, state, terminal_reason, updated_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY commission_id ORDER BY attempt DESC
+                  ) AS retained_position
+             FROM pipeline_commission_attempts
+         )
+        WHERE retained_position <= ?
+        ORDER BY commission_id, attempt`,
     )
-    .all() as unknown as Array<{
+    .all(MAX_PIPELINE_COMMISSION_ATTEMPTS) as unknown as Array<{
     commission_id: string;
     attempt: number;
     launch_key: string;
@@ -7776,7 +7798,7 @@ export function createPipelineCommissionRow(
       commission.provider,
       commission.repoRoot,
       commission.correlationId,
-      JSON.stringify(commission),
+      pipelineCommissionStateJson(commission),
       commission.activeAttempt,
       commission.linkedRun?.slug ?? null,
       commission.createdAt,
@@ -7848,7 +7870,7 @@ export function upsertPipelineCommissionAttempt(
       `UPDATE pipeline_commissions
           SET state_json = ?, active_attempt = ?, run_slug = ?, updated_at = ? WHERE id = ?`,
     ).run(
-      JSON.stringify(commission),
+      pipelineCommissionStateJson(commission),
       commission.activeAttempt,
       commission.linkedRun?.slug ?? null,
       commission.updatedAt,
@@ -7951,7 +7973,7 @@ export function commitPipelineCommissionEvent(input: {
       `UPDATE pipeline_commissions
           SET state_json = ?, active_attempt = ?, run_slug = ?, updated_at = ? WHERE id = ?`,
     ).run(
-      JSON.stringify(input.commission),
+      pipelineCommissionStateJson(input.commission),
       input.commission.activeAttempt,
       input.commission.linkedRun?.slug ?? null,
       input.commission.updatedAt,

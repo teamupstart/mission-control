@@ -124,7 +124,7 @@ export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null
     return "Managed Agent SDK starts the selected Claude or Codex host with its Engineer skill as turn one. The host uses that harness's configured defaults; Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion. A managed launch failure does not fall back to Terminal. Its background build daemon keeps its own tmux supervision.";
   }
   if (runtime === "terminal") {
-    return "Terminal is Claude-only and opens conduct-ts engineer --idea in a real terminal with live stdin and removes the inherited Claude nesting marker. Conductor owns downstream agent, model, and effort choices, and its provider projection owns task completion.";
+    return "Terminal remains a Claude-only compatibility setting for legacy uncommissioned work. This provider version cannot deliver a reserved Engineer run through Terminal, so new Pipeline dispatches refuse before spawn; use Managed Agent SDK. Conductor still owns downstream agent, model, effort, and task completion.";
   }
   return "The daemon has not confirmed which Conductor Engineer host this dispatch will use.";
 }

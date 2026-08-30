@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ENGINEER_STEP_NAMES,
   PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_HALT_CLASSES,
   type PipelineActionResult,
+  type PipelineCommission,
   type PipelineRun,
 } from "../src/shared/pipeline.ts";
 import {
@@ -22,8 +24,18 @@ import type { RecordEpisode } from "../src/shared/protocol.ts";
 import { Registry } from "../src/server/registry.ts";
 import { Dispatcher } from "../src/server/dispatcher.ts";
 import { TaskManager } from "../src/server/tasks.ts";
-import { getTask as getDurableTask } from "../src/server/db.ts";
+import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
+import {
+  getTask as getDurableTask,
+  upsertPipelineCommissionAttempt,
+} from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
+import {
+  bindPipelineCommissionAttempt,
+  createPipelineCommission,
+} from "../src/server/pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
+import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
@@ -811,6 +823,822 @@ test("managed Pipeline cancellation clears a preallocated session when SDK start
   });
 });
 
+test("failed cancellation during provider reservation leaves the task running", async (t) => {
+  const taskId = "pipeline-cancel-during-reservation";
+  const repoRoot = "/repo/cancel-during-reservation";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel while reserving Engineer",
+  }));
+  let releaseCreate!: (result: { ok: true; value: PipelineEngineerRunSnapshot }) => void;
+  let markCreateStarted!: () => void;
+  const createStarted = new Promise<void>((resolve) => {
+    markCreateStarted = resolve;
+  });
+  const createResult = new Promise<{ ok: true; value: PipelineEngineerRunSnapshot }>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => {
+      markCreateStarted();
+      return createResult;
+    },
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return { ok: false, error: "provider unavailable", outcomeUnknown: true };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await createStarted;
+  const cancellation = tasks.cancel(taskId);
+  const commission = registry.pipelineCommissionForTask(taskId)!;
+  releaseCreate({
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      capability: "engineerLifecycleEventsV1",
+      engineerRunId: "engineer-reserved-after-cancel",
+      correlationId: commission.correlationId,
+      attemptKey: commission.attempts[0]!.launchKey,
+      attempt: 1,
+      previousEngineerRunId: null,
+      repoRoot,
+      idea: "Cancel while reserving Engineer",
+      eventRevision: 1,
+      state: "created",
+    },
+  });
+  assert.deepEqual(await cancellation, {
+    ok: false,
+    error: "could not cancel the provider Engineer run: provider unavailable",
+  });
+  await dispatching;
+
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  assert.equal(supervisor.starts.length, 1);
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-after-cancel"]);
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "created");
+  assert.equal(
+    registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId,
+    "engineer-reserved-after-cancel",
+  );
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.error, null);
+});
+
+test("successful cancellation during provider reservation prevents host launch", async (t) => {
+  const taskId = "pipeline-cancel-reservation-success";
+  const repoRoot = "/repo/cancel-reservation-success";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel the reserved Engineer",
+  }));
+  let releaseCreate!: (result: { ok: true; value: PipelineEngineerRunSnapshot }) => void;
+  let markCreateStarted!: () => void;
+  const createStarted = new Promise<void>((resolve) => {
+    markCreateStarted = resolve;
+  });
+  const createResult = new Promise<{ ok: true; value: PipelineEngineerRunSnapshot }>((resolve) => {
+    releaseCreate = resolve;
+  });
+  let reservedRun!: PipelineEngineerRunSnapshot;
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => {
+      markCreateStarted();
+      return createResult;
+    },
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return { ok: true, value: reservedRun };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  let starts = 0;
+  const supervisor = {
+    start: async () => {
+      starts += 1;
+      throw new Error("a cancelled reservation must not start a host");
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await createStarted;
+  const cancellation = tasks.cancel(taskId);
+  const commission = registry.pipelineCommissionForTask(taskId)!;
+  reservedRun = {
+    schemaVersion: 1,
+    capability: "engineerLifecycleEventsV1",
+    engineerRunId: "engineer-reserved-and-cancelled",
+    correlationId: commission.correlationId,
+    attemptKey: commission.attempts[0]!.launchKey,
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot,
+    idea: "Cancel the reserved Engineer",
+    eventRevision: 1,
+    state: "created",
+  };
+  releaseCreate({
+    ok: true,
+    value: reservedRun,
+  });
+
+  assert.deepEqual(await cancellation, { ok: true });
+  await dispatching;
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(starts, 0);
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-and-cancelled"]);
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+  assert.equal(
+    registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId,
+    "engineer-reserved-and-cancelled",
+  );
+});
+
+test("cancellation after reservation settlement prevents managed host launch", async (t) => {
+  const taskId = "pipeline-cancel-after-reservation";
+  const repoRoot = "/repo/cancel-after-reservation";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel before the managed host launches",
+  }));
+  let reservedRun!: PipelineEngineerRunSnapshot;
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => {
+      reservedRun = {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-cancel-after-reservation",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Cancel before the managed host launches",
+        eventRevision: 1,
+        state: "created",
+      };
+      return { ok: true, value: reservedRun };
+    },
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return { ok: true, value: { ...reservedRun, eventRevision: 2, state: "cancelled" } };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  let markDescriptorStarted!: () => void;
+  let releaseDescriptor!: () => void;
+  const descriptorStarted = new Promise<void>((resolve) => {
+    markDescriptorStarted = resolve;
+  });
+  const descriptorReleased = new Promise<void>((resolve) => {
+    releaseDescriptor = resolve;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => {
+      markDescriptorStarted();
+      await descriptorReleased;
+      return {
+        serverName: "mission-control",
+        command: "/usr/bin/node",
+        args: ["/dist/mcp/server.mjs"],
+        env: {},
+      };
+    },
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await descriptorStarted;
+  const cancellation = await tasks.cancel(taskId);
+  releaseDescriptor();
+  await dispatching;
+
+  assert.deepEqual(cancellation, { ok: true });
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.deepEqual(cancelledRunIds, ["engineer-cancel-after-reservation"]);
+  assert.equal(supervisor.starts.length, 0);
+});
+
+test("commissioned dispatch rejects a provider reservation with mismatched identity", async (t) => {
+  const registry = new Registry();
+  const supervisor = fakeSupervisor(registry);
+  let mismatch: {
+    field: "correlationId" | "repoRoot" | "attemptKey";
+    value: string;
+  } = { field: "correlationId", value: "foreign-correlation" };
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async (input) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: `engineer-mismatched-${mismatch.field}`,
+        correlationId:
+          mismatch.field === "correlationId" ? mismatch.value : input.correlationId,
+        attemptKey: mismatch.field === "attemptKey" ? mismatch.value : input.attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot: mismatch.field === "repoRoot" ? mismatch.value : input.repoRoot,
+        idea: input.idea,
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("a mismatched provider reservation is not owned locally"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    pipelineLaunch: async (repoRoot) => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  for (const candidate of [
+    { field: "correlationId", value: "foreign-correlation" },
+    { field: "repoRoot", value: "/repo/foreign" },
+    { field: "attemptKey", value: "foreign-attempt" },
+  ] as const) {
+    mismatch = candidate;
+    const taskId = `pipeline-mismatched-${candidate.field}`;
+    registry.upsertTask(mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot: `/repo/mismatched-${candidate.field}`,
+      intent: `Reject a mismatched ${candidate.field}`,
+    }));
+
+    await dispatcher.dispatch(taskId);
+
+    assert.equal(registry.getTask(taskId)?.status, "failed");
+    assert.match(registry.getTask(taskId)?.error ?? "", new RegExp(candidate.field));
+    assert.equal(
+      registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId,
+      null,
+    );
+  }
+  assert.equal(supervisor.starts.length, 0);
+});
+
+test("commissioned requests sharing derived task identity reserve separate provider runs", async (t) => {
+  const repoRoot = "/repo/shared-derived-identity";
+  const registry = new Registry();
+  for (const taskId of ["pipeline-shared-identity-one", "pipeline-shared-identity-two"]) {
+    registry.upsertTask(mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot,
+      intent: "Build the same named plan",
+    }));
+  }
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async (input) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: `engineer-${input.correlationId}`,
+        correlationId: input.correlationId,
+        attemptKey: input.attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot: input.repoRoot,
+        idea: input.idea,
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("successful distinct reservations remain active"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch("pipeline-shared-identity-one");
+  await dispatcher.dispatch("pipeline-shared-identity-two");
+
+  const commissions = [
+    registry.pipelineCommissionForTask("pipeline-shared-identity-one"),
+    registry.pipelineCommissionForTask("pipeline-shared-identity-two"),
+  ];
+  assert.deepEqual(
+    [
+      registry.getTask("pipeline-shared-identity-one")?.status,
+      registry.getTask("pipeline-shared-identity-two")?.status,
+    ],
+    ["running", "running"],
+  );
+  assert.equal(supervisor.starts.length, 2);
+  assert.notEqual(commissions[0]?.id, commissions[1]?.id);
+  assert.notEqual(
+    commissions[0]?.attempts[0]?.engineerRunId,
+    commissions[1]?.attempts[0]?.engineerRunId,
+  );
+});
+
+test("provider reservation is cancelled when managed host setup fails", async (t) => {
+  const taskId = "pipeline-reserved-host-failure";
+  const repoRoot = "/repo/reserved-host-failure";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel reservation after host failure",
+  }));
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-reserved-host-failure",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Cancel reservation after host failure",
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: registry.pipelineCommissionForTask(taskId)!.correlationId,
+          attemptKey: registry.pipelineCommissionForTask(taskId)!.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Cancel reservation after host failure",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = {
+    start: async () => {
+      throw new Error("SDK host refused after reservation");
+    },
+    taskLiveness: () => false,
+  } as unknown as SdkSupervisor;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-host-failure"]);
+  assert.equal(registry.getTask(taskId)?.status, "failed");
+  assert.equal(registry.getTask(taskId)?.error, "SDK host refused after reservation");
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+});
+
+test("failed host cleanup keeps the provider reservation owned until cancellation retries", async (t) => {
+  const taskId = "pipeline-reserved-host-cleanup-failure";
+  const repoRoot = "/repo/reserved-host-cleanup-failure";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Retain reservation after host cleanup failure",
+  }));
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async ({ correlationId, attemptKey }) => ({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: "engineer-reserved-host-cleanup-failure",
+        correlationId,
+        attemptKey,
+        attempt: 1,
+        previousEngineerRunId: null,
+        repoRoot,
+        idea: "Retain reservation after host cleanup failure",
+        eventRevision: 1,
+        state: "created",
+      },
+    }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      if (cancelledRunIds.length === 1) {
+        return { ok: false, error: "provider unavailable", outcomeUnknown: true };
+      }
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: registry.pipelineCommissionForTask(taskId)!.correlationId,
+          attemptKey: registry.pipelineCommissionForTask(taskId)!.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Retain reservation after host cleanup failure",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = {
+    start: async () => {
+      throw new Error("SDK host refused after reservation");
+    },
+    taskLiveness: () => false,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  const retainedTask = registry.getTask(taskId)!;
+  const retainedCommission = registry.pipelineCommissionForTask(taskId)!;
+  assert.equal(retainedTask.status, "running");
+  assert.match(retainedTask.error ?? "", /SDK host refused after reservation/);
+  assert.match(retainedTask.error ?? "", /provider unavailable/);
+  assert.equal(retainedCommission.lifecycle, "created");
+  assert.equal(retainedCommission.attempts[0]?.state, "reserved");
+  assert.equal(
+    retainedCommission.attempts[0]?.engineerRunId,
+    "engineer-reserved-host-cleanup-failure",
+  );
+  assert.match(retainedCommission.error ?? "", /provider unavailable/);
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-host-cleanup-failure"]);
+  assert.deepEqual(await tasks.reschedule(taskId), {
+    ok: false,
+    error: "task is running, only a cancelled or failed task can be rescheduled",
+  });
+
+  assert.deepEqual(await tasks.cancel(taskId), { ok: true });
+  assert.deepEqual(cancelledRunIds, [
+    "engineer-reserved-host-cleanup-failure",
+    "engineer-reserved-host-cleanup-failure",
+  ]);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+});
+
+test("a commission persistence race does not strand local task cancellation", async (t) => {
+  const taskId = "pipeline-cancel-commission-race";
+  const repoRoot = "/repo/cancel-commission-race";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+  }));
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    id: "commission-cancel-race",
+    correlationId: "correlation-cancel-race",
+    launchKey: "launch-cancel-race",
+  });
+  const authoring = bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-cancel-race",
+    providerAttempt: 1,
+    attemptKey: "launch-cancel-race",
+    previousEngineerRunId: null,
+  });
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: authoring.id,
+    updatedAt: Date.now(),
+  });
+  registry.upsertPipelineCommission(authoring);
+
+  const settledAttempt = {
+    ...authoring.attempts[0]!,
+    state: "settled" as const,
+    terminalReason: "provider settled during cancellation",
+  };
+  const settled: PipelineCommission = {
+    ...authoring,
+    lifecycle: "settled",
+    attempts: [settledAttempt],
+  };
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => {
+      upsertPipelineCommissionAttempt(settled, settledAttempt);
+      registry.upsertPipelineCommission(settled);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId: "engineer-cancel-race",
+          correlationId: authoring.correlationId,
+          attemptKey: authoring.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Cancel commission race",
+          eventRevision: 2,
+          state: "awaiting_spec_merge",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+
+  const cancellation = await new TaskManager(registry).cancel(taskId);
+
+  assert.equal(cancellation.ok, false);
+  assert.match(cancellation.error ?? "", /could not cancel the Engineer commission/);
+  assert.match(cancellation.error ?? "", /settled pipeline commission cannot be cancelled/);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(registry.pipelineCommission(authoring.id)?.lifecycle, "settled");
+});
+
+test("cancelling implementation preserves the successful Engineer commission", async () => {
+  const taskId = "pipeline-post-handoff-cancel";
+  const repoRoot = "/repo/post-handoff-cancel";
+  const sessionId = `sdk:${taskId}`;
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: sessionId,
+    agent: "claude",
+    name: taskId,
+    cwd: repoRoot,
+    agentSessionId: "engineer-before-cancel",
+    gitBranch: "plan/post-handoff-cancel",
+    gitRoot: repoRoot,
+    repoRoot,
+  });
+  registry.upsertTask(mkTask({
+    id: taskId,
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    sessionId,
+    pipelineCommissionId: "commission-post-handoff",
+    pipelineRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "post-handoff-cancel",
+    },
+  }));
+  const commission: PipelineCommission = {
+    id: "commission-post-handoff",
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    correlationId: "correlation-post-handoff",
+    lifecycle: "awaiting_spec_merge",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-post-handoff",
+      engineerRunId: "engineer-post-handoff",
+      previousEngineerRunId: null,
+      providerRevision: 3,
+      state: "settled",
+      terminalReason: "awaiting_spec_merge",
+      updatedAt: 1_000,
+    }],
+    activeAttempt: 1,
+    steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "done" })),
+    currentStep: null,
+    tier: "M",
+    track: "technical",
+    project: "mission-control",
+    authoringWorktree: `${repoRoot}/.worktrees/spec`,
+    handoff: {
+      planSlug: "post-handoff-cancel",
+      branch: "plan/post-handoff-cancel",
+      prUrl: "https://github.com/example/repo/pull/42",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: "ai-conductor",
+      repoRoot,
+      slug: "post-handoff-cancel",
+    },
+    error: null,
+    createdAt: 500,
+    updatedAt: 1_000,
+  };
+  registry.upsertPipelineCommission(commission);
+  registry.bindTaskToWorkEpisode(taskId, sessionId);
+
+  let markStopStarted!: () => void;
+  let releaseStop!: () => void;
+  const stopStarted = new Promise<void>((resolve) => {
+    markStopStarted = resolve;
+  });
+  const stopped = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  const supervisor = {
+    handleFor: () => ({}),
+    taskLiveness: () => null,
+    stop: async () => {
+      markStopStarted();
+      await stopped;
+    },
+  } as unknown as SdkSupervisor;
+
+  const cancelling = new TaskManager(registry, undefined, supervisor).cancel(taskId);
+  await stopStarted;
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  registry.applyDriverEvent(sessionId, {
+    kind: "bound",
+    agentSessionId: "engineer-after-cancel",
+    transcriptPath: null,
+    modelId: "claude-opus-4",
+    pid: null,
+  });
+  assert.equal(registry.workEpisodeForTask(taskId), null);
+  releaseStop();
+
+  const cancellation = await cancelling;
+
+  assert.equal(cancellation.ok, true);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  const preserved = registry.pipelineCommission(commission.id);
+  assert.deepEqual(preserved, commission);
+  assert.equal(pipelineCommissionLine(preserved!), "Awaiting spec merge");
+});
+
 test("cancellation during SDK start stops the newly created Engineer host", async () => {
   const registry = new Registry();
   registry.upsertTask(
@@ -879,7 +1707,7 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
   assert.equal(registry.getTask("pipeline-sdk-cancel")?.sessionId, null);
 });
 
-test("an unreadable provider key space refuses before the terminal host starts", async (t) => {
+test("an unreadable provider capability refuses before the terminal host starts", async (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-unreadable-"));
   writeFileSync(join(repoRoot, ".worktrees"), "not a directory");
   t.after(() => {
@@ -902,6 +1730,10 @@ test("an unreadable provider key space refuses before the terminal host starts",
   );
   let spawned = false;
   const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: false,
+      error: "could not verify Engineer lifecycle support: provider output was unreadable",
+    }),
     spawn: async () => {
       spawned = true;
       return "unreachable";
@@ -912,11 +1744,14 @@ test("an unreadable provider key space refuses before the terminal host starts",
 
   assert.equal(spawned, false);
   assert.equal(registry.getTask("pipeline-unreadable")?.status, "failed");
-  assert.match(registry.getTask("pipeline-unreadable")?.error ?? "", /could not read current pipeline runs/);
+  assert.match(
+    registry.getTask("pipeline-unreadable")?.error ?? "",
+    /could not verify Engineer lifecycle support/,
+  );
   assert.equal(registry.getTask("pipeline-unreadable")?.pipelineRun, null);
 });
 
-test("an existing provider worktree refuses the same run before terminal spawn", async (t) => {
+test("an authoring worktree cannot bypass the Engineer capability gate", async (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-collision-"));
   const slug = "existing-provider-worktree";
   mkdirSync(join(repoRoot, ".worktrees", slug, ".pipeline"), { recursive: true });
@@ -940,6 +1775,10 @@ test("an existing provider worktree refuses the same run before terminal spawn",
   );
   let spawned = false;
   const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: false,
+      error: "the pipeline provider does not advertise engineerLifecycleEventsV1; upgrade it before dispatch",
+    }),
     spawn: async () => {
       spawned = true;
       return "unreachable";
@@ -952,7 +1791,7 @@ test("an existing provider worktree refuses the same run before terminal spawn",
   assert.equal(registry.getTask("pipeline-provider-collision")?.status, "failed");
   assert.match(
     registry.getTask("pipeline-provider-collision")?.error ?? "",
-    /pipeline run "existing-provider-worktree" already exists/,
+    /does not advertise engineerLifecycleEventsV1/,
   );
   assert.equal(registry.getTask("pipeline-provider-collision")?.pipelineRun, null);
 });

@@ -348,7 +348,10 @@ function conductorConsole(
 }
 
 /** The exact terminal argv for conductor's idea intake, with the nesting guard scrubbed. */
-export function conductorEngineerArgv(bin: string, intent: string): string[] {
+export function conductorEngineerArgv(
+  bin: string,
+  intent: string,
+): string[] {
   return ["/usr/bin/env", "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
 }
 

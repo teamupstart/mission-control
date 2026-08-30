@@ -29,6 +29,67 @@ export function conductorProjectsPath(home: string): string {
   return join(home, "conductor-projects.json");
 }
 
+/** Durable Engineer runs scripted by the fake provider for one daemon. */
+export function conductorEngineerStatePath(home: string): string {
+  return join(home, "conductor-engineer-state.json");
+}
+
+interface FakeEngineerRun {
+  engineerRunId: string;
+  correlationId: string;
+  attemptKey: string;
+  attempt: number;
+  previousEngineerRunId: string | null;
+  repoRoot: string;
+  idea: string;
+  state: string;
+  events: Array<Record<string, unknown>>;
+}
+
+interface FakeEngineerState {
+  runs: FakeEngineerRun[];
+}
+
+/** Add one provider event to the currently active fake Engineer run. */
+export function appendConductorEngineerEvent(
+  home: string,
+  type: string,
+  payload: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const path = conductorEngineerStatePath(home);
+  const state = JSON.parse(readFileSync(path, "utf8")) as FakeEngineerState;
+  const run = state.runs.at(-1);
+  if (!run) throw new Error("the fake provider has no Engineer run");
+  const event = {
+    schemaVersion: 1,
+    engineerRunId: run.engineerRunId,
+    correlationId: run.correlationId,
+    attemptKey: run.attemptKey,
+    attempt: run.attempt,
+    previousEngineerRunId: run.previousEngineerRunId,
+    repoRoot: run.repoRoot,
+    revision: run.events.length + 1,
+    ts: new Date().toISOString(),
+    type,
+    ...payload,
+  };
+  run.events.push(event);
+  if (type === "engineer_run_started") run.state = "authoring";
+  if (type === "engineer_spec_handoff" || type === "engineer_run_settled") {
+    run.state = "awaiting_spec_merge";
+  }
+  if (type === "engineer_run_failed") run.state = "failed";
+  if (type === "engineer_run_cancelled") run.state = "cancelled";
+  writeFileSync(path, JSON.stringify(state, null, 2));
+  return event;
+}
+
+/** The provider-owned Engineer runs, for immutable retry assertions. */
+export function readConductorEngineerRuns(home: string): FakeEngineerRun[] {
+  return (JSON.parse(readFileSync(conductorEngineerStatePath(home), "utf8")) as FakeEngineerState)
+    .runs;
+}
+
 /** One record in the engine's own project registry. */
 export interface FakeConductorProject {
   name: string;
@@ -183,6 +244,29 @@ const flag = (name) => {
   const at = argv.indexOf("--" + name);
   return at >= 0 && at + 1 < argv.length ? argv[at + 1] : null;
 };
+const engineerStatePath = process.env.MC_E2E_CONDUCTOR_ENGINEER_STATE;
+const engineerMode = process.env.MC_E2E_CONDUCTOR_ENGINEER_MODE || "supported";
+const readEngineerState = () => {
+  if (!engineerStatePath) return { runs: [] };
+  try { return JSON.parse(readFileSync(engineerStatePath, "utf8")); }
+  catch { return { runs: [] }; }
+};
+const writeEngineerState = (state) => {
+  if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
+};
+const engineerSnapshot = (run) => ({
+  schemaVersion: 1,
+  capability: "engineerLifecycleEventsV1",
+  engineerRunId: run.engineerRunId,
+  correlationId: run.correlationId,
+  attemptKey: run.attemptKey,
+  attempt: run.attempt,
+  previousEngineerRunId: run.previousEngineerRunId,
+  repoRoot: run.repoRoot,
+  idea: run.idea,
+  eventRevision: run.events.length,
+  state: run.state,
+});
 
 // The documented misbehaviour, on demand. With \`.daemon/REFUSE\` present every verb answers
 // the way the real engine answers an invocation its argv detectors rejected: the generic
@@ -192,6 +276,119 @@ const flag = (name) => {
 if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   process.stdout.write(refusal + "\\n");
   process.stdout.write("run \`conduct-ts inline --help\` for the verbs it carries\\n");
+} else if (argv[0] === "engineer" && argv[1] === "capabilities") {
+  process.stdout.write(JSON.stringify({
+    schemaVersion: 1,
+    engineerLifecycleEventsV1: engineerMode === "supported",
+  }) + "\\n");
+} else if (argv[0] === "engineer" && argv[1] === "run-create") {
+  if (engineerMode !== "supported") {
+    process.stderr.write("Engineer lifecycle capability is unavailable\\n");
+    process.exitCode = 2;
+  } else if (process.env.MC_E2E_CONDUCTOR_ENGINEER_CREATE === "fail") {
+    process.stderr.write("Engineer run reservation failed\\n");
+    process.exitCode = 3;
+  } else {
+    const repoRoot = flag("repo-root");
+    const idea = flag("idea");
+    const correlationId = flag("correlation-id");
+    const attemptKey = flag("attempt-key");
+    const state = readEngineerState();
+    let run = state.runs.find((candidate) =>
+      candidate.repoRoot === repoRoot &&
+      candidate.correlationId === correlationId &&
+      candidate.attemptKey === attemptKey
+    );
+    if (!run) {
+      const lineage = state.runs.filter((candidate) =>
+        candidate.repoRoot === repoRoot && candidate.correlationId === correlationId
+      );
+      const previous = lineage.at(-1) || null;
+      run = {
+        engineerRunId: "engineer-e2e-" + correlationId.slice(0, 12) + "-" + String(lineage.length + 1),
+        correlationId,
+        attemptKey,
+        attempt: lineage.length + 1,
+        previousEngineerRunId: previous ? previous.engineerRunId : null,
+        repoRoot,
+        idea,
+        state: "created",
+        events: [],
+      };
+      run.events.push({
+        schemaVersion: 1,
+        engineerRunId: run.engineerRunId,
+        correlationId,
+        attemptKey,
+        attempt: run.attempt,
+        previousEngineerRunId: run.previousEngineerRunId,
+        repoRoot,
+        revision: 1,
+        ts: new Date().toISOString(),
+        type: "engineer_run_created",
+        idea,
+      });
+      state.runs.push(run);
+      writeEngineerState(state);
+    }
+    process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
+  }
+} else if (argv[0] === "engineer" && argv[1] === "run-inspect") {
+  const repoRoot = flag("repo-root");
+  const correlationId = flag("correlation-id");
+  const state = readEngineerState();
+  const runs = state.runs
+    .filter((run) => run.repoRoot === repoRoot && run.correlationId === correlationId)
+    .map(engineerSnapshot);
+  process.stdout.write(JSON.stringify({
+    schemaVersion: 1,
+    capability: "engineerLifecycleEventsV1",
+    repoRoot,
+    correlationId,
+    runs,
+  }) + "\\n");
+} else if (argv[0] === "engineer" && argv[1] === "run-replay") {
+  const engineerRunId = flag("run-id");
+  const afterRevision = Number(flag("after-revision"));
+  const run = readEngineerState().runs.find((candidate) => candidate.engineerRunId === engineerRunId);
+  if (!run) {
+    process.stderr.write("Unknown Engineer run\\n");
+    process.exitCode = 4;
+  } else {
+    process.stdout.write(JSON.stringify({
+      schemaVersion: 1,
+      engineerRunId,
+      afterRevision,
+      events: run.events.filter((event) => event.revision > afterRevision),
+    }) + "\\n");
+  }
+} else if (argv[0] === "engineer" && argv[1] === "run-cancel") {
+  const engineerRunId = flag("run-id");
+  const state = readEngineerState();
+  const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
+  if (!run) {
+    process.stderr.write("Unknown Engineer run\\n");
+    process.exitCode = 4;
+  } else {
+    if (!["failed", "cancelled", "awaiting_spec_merge"].includes(run.state)) {
+      run.state = "cancelled";
+      run.events.push({
+        schemaVersion: 1,
+        engineerRunId: run.engineerRunId,
+        correlationId: run.correlationId,
+        attemptKey: run.attemptKey,
+        attempt: run.attempt,
+        previousEngineerRunId: run.previousEngineerRunId,
+        repoRoot: run.repoRoot,
+        revision: run.events.length + 1,
+        ts: new Date().toISOString(),
+        type: "engineer_run_cancelled",
+        reason: flag("reason") || "cancelled by Mission Control",
+      });
+      writeEngineerState(state);
+    }
+    process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
+  }
 } else if (argv[0] === "engineer" && flag("idea") !== null) {
   // The ENGINEER SESSION, and it has to stay up.
   //

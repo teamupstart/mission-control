@@ -90,6 +90,9 @@ import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
+import { cancelPipelineCommission } from "./pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import { refreshPipelineCommission } from "./pipelines/index.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -3306,15 +3309,116 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    return this.withCleanupReservation<Ok>(
-      id,
-      { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
-      () => this.cancelReserved(id, t),
-    );
+    const engineerReservation = t.kind === "pipeline"
+      ? this.registry.requestPipelineEngineerReservationCancellation(id)
+      : null;
+    try {
+      return await this.withCleanupReservation<Ok>(
+        id,
+        { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+        () => this.cancelReserved(id, t),
+      );
+    } finally {
+      if (engineerReservation) {
+        this.registry.finishPipelineEngineerReservationCancellation(
+          id,
+          this.registry.getTask(id)?.status === "cancelled",
+        );
+      }
+    }
   }
 
   /** `cancel`'s body, once the cleanup reservation is held. */
   private async cancelReserved(id: string, t: Task): Promise<Ok> {
+    const cancellationWarnings: string[] = [];
+    const commission = this.registry.pipelineCommissionForTask(id);
+    // Once Engineer handed off a specification, cancelling the Task applies to the later
+    // implementation run. The authoring commission is successful history at that point, so
+    // rewriting it to `cancelled` would make every projection claim Engineer failed to finish.
+    const authoringCommission =
+      commission &&
+      commission.handoff === null &&
+      commission.linkedRun === null &&
+      !["awaiting_spec_merge", "cancelled", "settled"].includes(commission.lifecycle)
+        ? commission
+        : null;
+    if (authoringCommission) {
+      const active = authoringCommission.attempts.find(
+        (attempt) => attempt.attempt === authoringCommission.activeAttempt,
+      );
+      if (active && !active.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
+        const reservation = this.registry.requestPipelineEngineerReservationCancellation(id);
+        if (!reservation) {
+          return {
+            ok: false,
+            error: "the provider Engineer run reservation is still in progress - try cancellation again",
+          };
+        }
+        if (!(await reservation)) {
+          return {
+            ok: false,
+            error: "the provider Engineer run reservation did not produce a cancellable run",
+          };
+        }
+        return await this.cancelReserved(id, this.registry.getTask(id) ?? t);
+      }
+      if (active?.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
+        const lifecycle = PIPELINE_PROVIDERS[authoringCommission.provider].engineerLifecycle;
+        if (!lifecycle) {
+          return { ok: false, error: "the Pipeline provider cannot cancel its active Engineer run" };
+        }
+        let stopped;
+        try {
+          stopped = await lifecycle.cancel({
+            engineerRunId: active.engineerRunId,
+            reason: "Pipeline task cancelled in Mission Control",
+          });
+        } catch (error) {
+          return {
+            ok: false,
+            error: `could not cancel the provider Engineer run: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+        }
+        if (!stopped.ok) {
+          return { ok: false, error: `could not cancel the provider Engineer run: ${stopped.error}` };
+        }
+        await refreshPipelineCommission(this.registry, authoringCommission);
+      }
+      try {
+        const cancelled = cancelPipelineCommission({
+          commissionId: authoringCommission.id,
+          reason: "Pipeline task cancelled in Mission Control",
+        });
+        this.registry.upsertPipelineCommission(cancelled);
+      } catch (error) {
+        // Provider cancellation may have succeeded just before replay advances the durable
+        // commission to a terminal lifecycle. Keep cancelling the local task and its agent;
+        // an exception here must not strand them after the provider already stopped.
+        cancellationWarnings.push(
+          `could not cancel the Engineer commission: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (commission && (commission.handoff !== null || commission.linkedRun !== null)) {
+      // A successful Engineer commission is immutable history, so the task is the terminal
+      // cancellation boundary after handoff. Publish that boundary before stopping the SDK
+      // host or capturing archives: either await can observe a native identity rotation, and
+      // a still-running task would otherwise be rebound to the new episode while cancellation
+      // already owns its resources. A teardown failure keeps those resources on this cancelled
+      // row and remains retryable through Cancel.
+      const current = this.registry.getTask(id) ?? t;
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...current,
+        status: "cancelled",
+        completedAt: now,
+        updatedAt: now,
+      });
+    }
     // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
     // writing after capture published an immutable partial but before teardown deletes the
     // tree. Assigned tasks own no worktree and no home, so this deliberately preserves the
@@ -3343,7 +3447,10 @@ export class TaskManager {
       });
       return {
         ok: false,
-        error: `task cancelled, but its resources remain tracked: ${archived.error ?? "this task's archive could not be published"}`,
+        error: `task cancelled, but ${[
+          ...cancellationWarnings,
+          `its resources remain tracked: ${archived.error ?? "this task's archive could not be published"}`,
+        ].join("; ")}`,
       };
     }
 
@@ -3380,9 +3487,12 @@ export class TaskManager {
       completedAt: now,
       updatedAt: now,
     });
-    return teardownError === null
+    if (teardownError !== null) {
+      cancellationWarnings.push(`its resources remain tracked: ${teardownError}`);
+    }
+    return cancellationWarnings.length === 0
       ? { ok: true }
-      : { ok: false, error: `task cancelled, but its resources remain tracked: ${teardownError}` };
+      : { ok: false, error: `task cancelled, but ${cancellationWarnings.join("; ")}` };
   }
 
   /**
@@ -3826,6 +3936,12 @@ export class TaskManager {
       return {
         ok: false,
         error: `task is ${t.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    if (t.kind === "pipeline" && t.status === "cancelled" && t.pipelineCommissionId) {
+      return {
+        ok: false,
+        error: "a cancelled Pipeline commission is terminal; create a new Pipeline task",
       };
     }
     this.reschedulingTasks.add(id);

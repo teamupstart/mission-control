@@ -40,18 +40,22 @@ request as that first turn and leaves the platform-owned context out. See
 for what is and is not covered by that, and for why no evidence path is affected.
 
 An enabled conductor repository offers one different launch owner: **pipeline**. It creates
-the ordinary durable task row, derives conductor's canonical idea slug, and stores that exact
-provider run identity before it starts the configured Engineer host. Dispatch refuses an intent
-with no canonical slug, an unreadable provider run set, a worktree already using the slug, or
-another live Mission Control task that already owns the same provider, repository, and slug. A
-retry clears the old identity and recomputes it from the current intent and provider configuration.
+the ordinary durable task row plus one durable commission. Before the configured Engineer host
+starts, Mission Control reserves the provider Engineer run with the commission correlation and
+an idempotent attempt key. Missing capability, malformed provider output, or reservation failure
+refuses before spawn. The provider's later specification handoff supplies the exact final plan
+slug; Mission Control does not derive it from the request.
 
-The shipped host is **Claude Agent SDK**. Mission Control starts one managed Claude session at the
-repository and sends the exact `/engineer <intent>` command as turn one. It creates no Mission
+The shipped host is **Managed Agent SDK**. Mission Control starts one managed Claude or Codex
+session at the repository and sends its native Engineer command as turn one, together with the
+reserved Engineer run context. It creates no Mission
 Control worktree or terminal home. **Settings → Conductor → Launch runtime** can instead select
 **Terminal**, which keeps the compatibility path: `conduct-ts engineer --idea "<intent>"` opens in
 a real terminal rooted at the repository, with live stdin and inherited `CLAUDECODE` removed so
-Conductor is not nested inside the daemon's Claude session. An SDK preflight or launch error fails
+Conductor is not nested inside the daemon's Claude session. Current provider versions cannot carry
+the reserved run through that launcher, so a new commissioned Terminal dispatch refuses before
+spawn and directs the operator to Managed Agent SDK. Existing uncommissioned Terminal tasks remain
+compatible. An SDK preflight or launch error fails
 the task visibly and never falls back to Terminal. This setting controls only the Engineer host;
 Conductor's background build daemon keeps its own tmux supervision.
 
@@ -62,10 +66,13 @@ autopilot. The SDK host is the task's current session, so Focus, questions, canc
 restart recovery use the ordinary managed-session paths. A Terminal task instead records its
 home and no session id.
 
-Neither host is a completion authority. An idle or merged SDK host cannot finish the task, and a
-host disappearing after the exact run appears only removes the stale session pointer. The task
-reaches done only when its exact provider projection becomes processed, at which point its pull
-request becomes the outcome link. A lost SDK host fails the task if that exact run never appeared.
+Neither host is a completion authority. The interactive Engineer session advances DECIDE only
+from live or replayed provider events and pauses visibly at the specification merge gate. The
+handoff binds the task to the exact implementation run. An idle or merged SDK host cannot finish
+the task, and a host disappearing after the exact run appears only removes the stale session
+pointer. The task reaches done only when that exact provider projection becomes processed, at
+which point its pull request becomes the outcome link. A later provider worker joins the same
+commission through its exact run link and remains driven by the provider.
 The Terminal home stays recorded until standard cleanup releases it. A Terminal task saved by an
 older build with no precomputed run identity can still bind once when a child in that home appears
 inside a projected provider worktree. A discovered child can confirm a matching prebound identity,

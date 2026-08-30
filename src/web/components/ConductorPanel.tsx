@@ -1069,7 +1069,7 @@ export function ConductorPanel({
               ? "Unknown - the daemon has not answered."
               : config.launchRuntime === "agent-sdk"
                 ? "Managed Agent SDK - the shipped default, with no Terminal fallback."
-                : "Terminal - the explicit Claude-only compatibility host."}
+                : "Terminal - retained for legacy uncommissioned work; new commissioned dispatches require Managed Agent SDK."}
           </ConsoleState>
         </ConsoleCard>
 

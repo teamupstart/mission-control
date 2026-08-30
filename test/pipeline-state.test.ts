@@ -286,14 +286,18 @@ test("PAUSED is read from its existence, and a missing .daemon reads as an empty
 
 // ---- worktree enumeration -------------------------------------------------------------
 
-test("only directories holding a .pipeline are runs, and the slug is the directory name", () => {
+test("only directories holding an execution manifest are runs, and the slug is the directory name", () => {
   // The engine cuts spec-authoring (`engineer-<slug>`) and autoresolve (`resolve-<slug>`)
   // worktrees in the same place, and neither is a pipeline run. Without the `.pipeline`
   // test they would each appear as a run with no steps and no state - a permanent empty row.
   const root = repo("enumerate");
   seedConductorRun(root, "beta", {});
   seedConductorRun(root, "alpha", {});
-  mkdirSync(join(root, ".worktrees", "engineer-something"), { recursive: true });
+  mkdirSync(join(root, ".worktrees", "engineer-something", ".pipeline"), { recursive: true });
+  writeFileSync(
+    join(root, ".worktrees", "engineer-something", ".pipeline", "verification.json"),
+    "{}",
+  );
 
   const listing = readWorktrees(root, ".worktrees");
   assert.deepEqual(
@@ -318,6 +322,16 @@ test("sitting exactly at the cap is not a truncated read; one over it is", () =>
       mkdirSync(join(root, ".worktrees", `feat-${String(i).padStart(4, "0")}`, ".pipeline"), {
         recursive: true,
       });
+      writeFileSync(
+        join(
+          root,
+          ".worktrees",
+          `feat-${String(i).padStart(4, "0")}`,
+          ".pipeline",
+          "conduct-state.json",
+        ),
+        "{}",
+      );
     }
   };
 

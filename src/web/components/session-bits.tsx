@@ -34,6 +34,7 @@ import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "
 import {
   PIPELINE_PROVIDER_INFO,
   pipelineStepInfo,
+  type PipelineCommission,
   type PipelineRunLink,
   type PipelineRun,
   type SessionPipelineLink,
@@ -346,6 +347,54 @@ export function TaskPipelineRunChip({
       >
         <span aria-hidden>↝</span>
         {` ${link.slug}`}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function PipelineCommissionChip({
+  commission,
+  line,
+  onOpen,
+}: {
+  commission: PipelineCommission | null;
+  line: string;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!commission) return null;
+  const label = `${line}. Open the complete commission in Runs.`;
+  return (
+    <Tooltip label={label}>
+      <button className="task-pipeline-chip commissioned" aria-label={label} onClick={onOpen}>
+        <span aria-hidden>↝</span>
+        {` ${line}`}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function PipelineCommissionRailMark({
+  commission,
+  line,
+  onOpen,
+}: {
+  commission: PipelineCommission | null;
+  line: string;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!commission) return null;
+  const label = `${line}. Open the complete commission in Runs.`;
+  return (
+    <Tooltip label={label}>
+      <button
+        className="rail-task-pipeline commissioned"
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>↝</span>
       </button>
     </Tooltip>
   );

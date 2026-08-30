@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -540,6 +540,24 @@ test("gate evidence is behind the same consent the projection is", async () => {
 const fakeEngine = writeFakeConductor(home);
 process.env.MC_E2E_CONDUCTOR_LOG = fakeEngine.logPath;
 process.env.MC_E2E_CONDUCTOR_PROJECTS = fakeEngine.projectsPath;
+
+test("the fake Engineer cancel keeps an unknown run as one typed refusal", () => {
+  const result = spawnSync(
+    fakeEngine.bin,
+    ["engineer", "run-cancel", "--run-id", "missing-run", "--reason", "fixture"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MC_E2E_CONDUCTOR_ENGINEER_MODE: "supported",
+        MC_E2E_CONDUCTOR_ENGINEER_STATE: join(home, "missing-engineer-state.json"),
+      },
+    },
+  );
+  assert.equal(result.status, 4);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Unknown Engineer run\n");
+});
 
 /** Run `body` with the fake engine installed, then put the missing binary back. */
 async function withEngine<T>(body: () => Promise<T>): Promise<T> {

@@ -24,6 +24,7 @@ import {
   writeFakeAgents,
 } from "./fake-agents.ts";
 import {
+  conductorEngineerStatePath,
   FAKE_CONDUCTOR_VERSION,
   seedConductorInstallerCheckout,
   writeConductorNodeRuntime,
@@ -370,6 +371,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_CONDUCTOR_BIN: startsMissing ? installBin : conductor.bin,
     AI_CONDUCTOR_REGISTRY: conductor.registryPath,
     MC_E2E_CONDUCTOR_PROJECTS: conductor.projectsPath,
+    MC_E2E_CONDUCTOR_ENGINEER_STATE: conductorEngineerStatePath(home),
     // Where that fake records the verbs it is asked for. Set for every daemon so a spec only
     // has to read the file; a daemon that never spawns a control verb simply leaves it absent.
     MC_E2E_CONDUCTOR_LOG: conductor.logPath,

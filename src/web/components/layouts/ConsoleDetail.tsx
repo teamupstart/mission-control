@@ -45,18 +45,24 @@ import {
   EnsembleChip,
   PipelineChip,
   TaskPipelineRunChip,
+  PipelineCommissionChip,
   SessionWhere,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
-import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
+import {
+  ensembleSummaryFor,
+  pipelineCommissionForSession,
+  type SessionViewProps,
+} from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
 import { unreadAgentReplies } from "../../lib/fileComments.ts";
+import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 
 type Tab = DetailTabId;
 
@@ -184,6 +190,10 @@ export function ConsoleDetail({
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
   const ensembleLink = session.task?.ensemble ?? null;
+  const pipelineCommission = pipelineCommissionForSession(view, session);
+  const pipelineCommissionRun = pipelineCommission?.linkedRun
+    ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
+    : null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
     sessionId: session.id,
     commit: null,
@@ -485,7 +495,7 @@ export function ConsoleDetail({
           onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
         />
         <TaskPipelineRunChip
-          link={session.task?.pipelineRun ?? null}
+          link={pipelineCommission ? null : (session.task?.pipelineRun ?? null)}
           observed={Boolean(
             session.task?.pipelineRun &&
               view.pipelineRunByKey?.has(pipelineRunKeyOf(session.task.pipelineRun)),
@@ -493,6 +503,15 @@ export function ConsoleDetail({
           onOpen={
             session.task?.pipelineRun
               ? () => view.onOpenPipelineRun?.(session.task!.pipelineRun!)
+              : undefined
+          }
+        />
+        <PipelineCommissionChip
+          commission={pipelineCommission}
+          line={pipelineCommission ? pipelineCommissionLine(pipelineCommission, pipelineCommissionRun) : ""}
+          onOpen={
+            pipelineCommission
+              ? () => view.onOpenPipelineCommission?.(pipelineCommission.id)
               : undefined
           }
         />

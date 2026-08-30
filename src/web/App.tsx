@@ -314,6 +314,7 @@ export function App(): React.JSX.Element {
     workflowBindingSummaries,
     ensembleSummaries,
     pipelineRuns,
+    pipelineCommissions,
     fileCommentThreads,
     fileCommentReviews,
     fleetCost,
@@ -1386,6 +1387,7 @@ export function App(): React.JSX.Element {
     route.page === "runs" && route.kind === "pipelines" && pipelinesObserving > 0
       ? "pipelines"
       : "workflows";
+  const [pipelineCommissionSelection, setPipelineCommissionSelection] = useState<string | null>(null);
   const openWorkflowRun = useCallback(
     (runId: string): void => {
       navigate({ page: "runs", runId, ...(keptRunFilters ? { filters: keptRunFilters } : {}) });
@@ -1411,7 +1413,15 @@ export function App(): React.JSX.Element {
     // row all reach this through. `pipelineRunRoute` asks for exactly these three, so both
     // shapes satisfy it structurally and neither caller has to destructure.
     (run: { provider: PipelineRun["provider"]; repoRoot: string; slug: string }): void => {
+      setPipelineCommissionSelection(null);
       navigate(pipelineRunRoute(run));
+    },
+    [navigate],
+  );
+  const openPipelineCommission = useCallback(
+    (commissionId: string): void => {
+      setPipelineCommissionSelection(commissionId);
+      navigate({ page: "runs", kind: "pipelines" });
     },
     [navigate],
   );
@@ -1800,6 +1810,11 @@ export function App(): React.JSX.Element {
     for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
     return map;
   }, [pipelineRuns]);
+  const pipelineCommissionById = useMemo(() => {
+    const map = new Map<string, (typeof pipelineCommissions)[number]>();
+    for (const commission of pipelineCommissions) map.set(commission.id, commission);
+    return map;
+  }, [pipelineCommissions]);
   // The Ensembles tab badge: runs the DAEMON flagged as needing attention (a parked decision,
   // a failure, an unreadable row, or a member sitting on your answer). Counted here, never
   // recomputed - `ensembleNeedsAttention` is the server's derivation and the run list's dot,
@@ -2182,7 +2197,9 @@ export function App(): React.JSX.Element {
     onOpenEnsemble: openEnsembleRun,
     ensembleSummaryByRun,
     onOpenPipelineRun: openPipelineRun,
+    onOpenPipelineCommission: openPipelineCommission,
     pipelineRunByKey,
+    pipelineCommissionById,
   };
 
   /**
@@ -3344,7 +3361,7 @@ export function App(): React.JSX.Element {
                 <RunsKindTabs
                   kind={runsKind}
                   workflowRuns={workflowRuns.length}
-                  pipelineRuns={pipelineRuns.length}
+                  pipelineRuns={pipelineRuns.length + pipelineCommissions.length}
                   onKind={(kind) => navigate(
                     kind === "pipelines" ? { page: "runs", kind } : { page: "runs" },
                   )}
@@ -3353,6 +3370,9 @@ export function App(): React.JSX.Element {
               {runsKind === "pipelines" ? (
                 <PipelineRuns
                   runs={pipelineRuns}
+                  commissions={pipelineCommissions}
+                  selectedCommissionId={pipelineCommissionSelection}
+                  onSelectCommission={setPipelineCommissionSelection}
                   selected={route.page === "runs" ? route.pipelineRun ?? null : null}
                   onSelect={openPipelineRun}
                   onOpenSettings={() => navigate({ page: "settings", category: "conductor" })}

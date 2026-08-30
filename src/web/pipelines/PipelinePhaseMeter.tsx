@@ -1,7 +1,14 @@
-import type { PipelineRun, PipelineStepState, SessionPipelineLink } from "@shared/pipeline.ts";
+import type {
+  PipelineCommission,
+  PipelineRun,
+  PipelineStepState,
+  SessionPipelineLink,
+} from "@shared/pipeline.ts";
 import { Tooltip, type TooltipContent } from "../components/Tooltip.tsx";
 import {
   pipelinePhaseMeter,
+  pipelineCommissionLine,
+  pipelineRunForCommission,
   pipelineStepStatus,
   type PipelinePhaseSegment,
   type PipelineStepRow,
@@ -199,26 +206,31 @@ function fillPercent(segment: PipelinePhaseSegment): number {
 export function PipelinePhaseMeter({
   run,
   link,
+  commission = null,
 }: {
-  run: PipelineRun;
+  run: PipelineRun | null;
   /** The session's own correlation, which is what names the run for assistive tech. */
-  link: SessionPipelineLink;
+  link?: SessionPipelineLink;
+  commission?: PipelineCommission | null;
 }): React.JSX.Element | null {
-  const view = pipelinePhaseMeter(run);
+  if (!run && !commission) return null;
+  const meterRun = commission ? pipelineRunForCommission(commission, run) : run!;
+  const view = pipelinePhaseMeter(meterRun);
   if (!view) return null;
+  const caption = commission ? pipelineCommissionLine(commission, run) : view.caption;
   const extraCount = view.extras.unknown.length + view.extras.outOfBand.length;
 
   return (
     <span
       className="tile-phase-meter"
       role="group"
-      aria-label={`${link.slug} pipeline phases`}
+      aria-label={`${link?.slug ?? commission?.handoff?.planSlug ?? "Pipeline commission"} pipeline phases`}
     >
       <span className="tpm-cap">
         <span className="tpm-glyph" aria-hidden>
           ⇶
         </span>
-        <span className={`tpm-now workflow-${view.captionTone}`}>{view.caption}</span>
+        <span className={`tpm-now workflow-${view.captionTone}`}>{caption}</span>
         {/* THE HALT, unconditionally, as a WORD rather than only as the caption's colour.
             A halt is a fact about the run, not about a phase, so this is its home and a
             phase's popover carrying it too is an addition. Stating it here is what closes the
@@ -253,7 +265,7 @@ export function PipelinePhaseMeter({
         {/* Only when a pile is non-empty. An empty marker, or a zero, would be a control that
             says nothing on the overwhelmingly common run that carries neither. */}
         {extraCount > 0 && (
-          <Tooltip label={extrasPopover(view.extras, view.total, run.lastStep)}>
+          <Tooltip label={extrasPopover(view.extras, view.total, meterRun.lastStep)}>
             <span className="tpm-extras" tabIndex={0}>
               {`+${extraCount}`}
             </span>
@@ -266,7 +278,7 @@ export function PipelinePhaseMeter({
       </span>
       <span className="tpm-bar">
         {view.segments.map((segment) => (
-          <Tooltip key={segment.phase} label={segmentPopover(segment, run.lastStep)}>
+          <Tooltip key={segment.phase} label={segmentPopover(segment, meterRun.lastStep)}>
             {/*
               Focusable, so the per-step states are not mouse-only: they are the whole reason
               this meter has popovers, and `Tooltip` opens on focus as well as hover.

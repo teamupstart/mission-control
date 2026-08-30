@@ -49,7 +49,13 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
     restartTimer = null;
     if (stopped) return;
 
-    const log = openPrivateUtilityLog(opts.logPath);
+    let log: ReturnType<typeof openPrivateUtilityLog>;
+    try {
+      log = openPrivateUtilityLog(opts.logPath);
+    } catch {
+      scheduleRestart();
+      return;
+    }
     try {
       child = forkAndInitializeUtilityProcess(
         () =>
@@ -77,7 +83,11 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
     } catch (err) {
       if (err instanceof UtilityProcessInitializationError) {
         if (child === err.child) {
-          log.write(`[mission-control] ${opts.serviceName} initialization failed; stopping\n`);
+          const details =
+            opts.includeFailureDetails === false ? "" : `: ${String(err.cause)}`;
+          log.write(
+            `[mission-control] ${opts.serviceName} initialization failed${details}; stopping\n`,
+          );
         }
         return;
       }

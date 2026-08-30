@@ -24,6 +24,10 @@ import { sleep } from "../util/timers.ts";
 import { getStandingInstructions } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import {
+  cleanupDisposableAgentStateHome,
+  createDisposableAgentStateHome,
+} from "../agent-subprocess-env.ts";
+import {
   listSdkSessions,
   recordSdkSessionBinding,
   sdkSessionIsLive,
@@ -129,6 +133,8 @@ export class SdkSupervisor {
    */
   private sends = new Map<string, Promise<unknown>>();
   private pumps = new Map<string, Promise<void>>();
+  /** Disposable state owned until the corresponding driver event stream ends. */
+  private stateHomes = new Map<string, string>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
   /** Accepted launch-window prompts held until the driver reports their native Goal key. */
@@ -268,50 +274,66 @@ export class SdkSupervisor {
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
     const id = input.sessionId ?? newSdkSessionId();
+    const stateHome = input.mcp?.env.MISSION_HOME ?? createDisposableAgentStateHome();
     // Out of band only when this pair HAS a channel. A pair without one already carries the
     // block inside `prompt`, and sending it here as well would have the agent read the same
     // rule twice on its first turn.
     const outOfBandStanding = outOfBandStandingText(input.standingInstructions?.delivery);
-    const handle = await spec.launch({
-      cwd: input.cwd,
-      prompt: input.prompt,
-      model: input.model,
-      effort: input.effort,
-      permissionMode: input.permissionMode,
-      mcp: missionMcpForSession(input.mcp, id),
-      extraDirs: input.extraDirs ?? [],
-      standingInstructions: outOfBandStanding,
-      // What to send instead if that channel turns out to be unusable. Composed by the
-      // DISPATCHER, which is the only place that can put the block in the same slot the
-      // channel-less pairs use - below the repository manifest and above the request - because
-      // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
-      // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
-      standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
-      resume: null,
-    });
-    const started = this.adopt({
-      registration: {
-        id,
-        agent: input.agent,
-        name: input.name,
+    let handle: SdkSessionHandle;
+    try {
+      handle = await spec.launch({
         cwd: input.cwd,
-        permissionMode: input.permissionMode,
-        gitBranch: input.gitBranch ?? null,
-        gitRoot: input.gitRoot ?? null,
-        repoRoot: input.repoRoot ?? null,
-      },
-      handle,
-      acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
-      launchPresentation: input.launchPresentation,
-      durable: {
-        taskId: input.taskId,
+        stateHome,
+        prompt: input.prompt,
         model: input.model,
         effort: input.effort,
-        // The driver accepted turn one before `adopt` can persist anything. Recording it
-        // here closes the startup window before the detached event pump catches up.
-        turnInProgress: input.prompt.length > 0,
-      },
-    });
+        permissionMode: input.permissionMode,
+        mcp: missionMcpForSession(input.mcp, id),
+        extraDirs: input.extraDirs ?? [],
+        standingInstructions: outOfBandStanding,
+        // What to send instead if that channel turns out to be unusable. Composed by the
+        // DISPATCHER, which is the only place that can put the block in the same slot the
+        // channel-less pairs use - below the repository manifest and above the request - because
+        // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
+        // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
+        standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
+        resume: null,
+      });
+    } catch (error) {
+      cleanupDisposableAgentStateHome(stateHome);
+      throw error;
+    }
+    let started: Session;
+    try {
+      started = this.adopt({
+        registration: {
+          id,
+          agent: input.agent,
+          name: input.name,
+          cwd: input.cwd,
+          permissionMode: input.permissionMode,
+          gitBranch: input.gitBranch ?? null,
+          gitRoot: input.gitRoot ?? null,
+          repoRoot: input.repoRoot ?? null,
+        },
+        handle,
+        stateHome,
+        acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
+        launchPresentation: input.launchPresentation,
+        durable: {
+          taskId: input.taskId,
+          model: input.model,
+          effort: input.effort,
+          // The driver accepted turn one before `adopt` can persist anything. Recording it
+          // here closes the startup window before the detached event pump catches up.
+          turnInProgress: input.prompt.length > 0,
+        },
+      });
+    } catch (error) {
+      await handle.stop().catch(() => {});
+      cleanupDisposableAgentStateHome(stateHome);
+      throw error;
+    }
     // What this session was ACTUALLY sent, recorded once. The driver's
     // own report wins over what was requested: a Codex launch whose `config/read` could not
     // be used delivers the block in turn one instead, and a snapshot claiming the durable
@@ -338,6 +360,8 @@ export class SdkSupervisor {
   adopt(input: {
     registration: SdkSessionRegistration;
     handle: SdkSessionHandle;
+    /** Disposable launch state, when this handle came through a production launch boundary. */
+    stateHome?: string;
     /** A fresh launch's already-accepted turn one, held until `bound` supplies its key. */
     acceptedInitialPrompt?: string;
     /**
@@ -413,6 +437,7 @@ export class SdkSupervisor {
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
+    if (input.stateHome) this.stateHomes.set(registration.id, input.stateHome);
     this.unfinishedTurns.set(
       registration.id,
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
@@ -899,13 +924,18 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
     try {
-      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
+        row.cwd,
+        stateHome,
+      );
     } catch (err) {
       if (task?.kind === "pipeline") {
         const why = err instanceof Error ? err.message : String(err);
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(`managed Pipeline resume could not resolve Mission MCP: ${why}`);
       }
       console.error(
@@ -917,35 +947,50 @@ export class SdkSupervisor {
       callerCredential = newPipelineCallerCredential();
       mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential);
       if (!mcp) {
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(
           "managed Pipeline resume requires Mission Control's MCP server - rebuild with: npm run build",
         );
       }
-      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run", "report_pipeline_workspace"],
-        mcp,
-      );
+      let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
+      try {
+        published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+          ["adopt_pipeline_run", "report_pipeline_workspace"],
+          mcp,
+        );
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
+      }
       if (!published.ok) {
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(
           `managed Pipeline resume requires its Pipeline reporting tools, but ${published.reason}`,
         );
       }
     }
     if (task?.kind === "pipeline") {
-      this.registry.registerManagedPipelineCaller(
-        task.id,
-        row.id,
-        row.cwd,
-        callerCredential!,
-      );
-      this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+      try {
+        this.registry.registerManagedPipelineCaller(
+          task.id,
+          row.id,
+          row.cwd,
+          callerCredential!,
+        );
+        this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
+      }
     }
     // Read once, here, because both the channel and its prose fallback below carry the same
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
+    let adopted = false;
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
+        stateHome,
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
@@ -1001,6 +1046,7 @@ export class SdkSupervisor {
           repoRoot: task?.repoRoot ?? null,
         },
         handle,
+        stateHome,
         durable: {
           taskId: row.taskId,
           model: row.model,
@@ -1010,6 +1056,7 @@ export class SdkSupervisor {
           acceptedTurns: 0,
         },
       });
+      adopted = true;
       // What the driver reported about the channel it could actually use THIS time, applied
       // to the snapshot the same way a fresh launch applies it in `start`. A Codex resume can
       // find `developerInstructions` unusable now and send the stored block as prose instead;
@@ -1023,6 +1070,7 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
       }
@@ -1156,6 +1204,8 @@ export class SdkSupervisor {
       this.pendingLaunchGoalPrompts.delete(id);
       this.launchGoalNoteKeys.delete(id);
       this.stopping.delete(id);
+      cleanupDisposableAgentStateHome(this.stateHomes.get(id));
+      this.stateHomes.delete(id);
       try {
         setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());
       } catch (err) {

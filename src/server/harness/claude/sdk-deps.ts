@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { agentSubprocessEnv } from "../../agent-subprocess-env.ts";
 import { run } from "../../util/exec.ts";
 import { resolveBinSpec } from "../bin.ts";
 import { claudeBin } from "./bin.ts";
@@ -57,8 +58,10 @@ export async function claudeExecutable(): Promise<string> {
  */
 export function sdkSubprocessEnv(
   base: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
+  stateHome?: string,
 ): Record<string, string | undefined> {
-  const env = { ...base };
+  const env = agentSubprocessEnv(base, { loopbackAccess: true, cwd, stateHome });
   delete env.TMUX_PANE;
   delete env.WEZTERM_PANE;
   delete env.TERM_PROGRAM;
@@ -121,12 +124,12 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
   query: startQuery,
   executable: claudeExecutable,
-  env: () => sdkSubprocessEnv(),
+  env: (cwd, stateHome) => sdkSubprocessEnv(process.env, cwd, stateHome),
 };
 
 /** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */
 export const defaultClaudeSdkOneShotDeps: ClaudeSdkOneShotDeps = {
   query: startQuery,
   executable: claudeExecutable,
-  env: () => sdkSubprocessEnv(),
+  env: (cwd) => sdkSubprocessEnv(process.env, cwd),
 };

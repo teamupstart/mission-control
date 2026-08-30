@@ -688,6 +688,8 @@ export interface ResumeSpec {
 
 export interface SdkLaunchOptions {
   cwd: string;
+  /** Disposable Mission Control state home shared by this session's agent and MCP children. */
+  stateHome: string;
   /** The task intent, delivered as turn one - there is no separate "type the prompt" step. */
   prompt: string;
   model: string | null;

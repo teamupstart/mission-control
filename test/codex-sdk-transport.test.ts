@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { codexRunner, configureCodexRunnerTransport } from "../src/server/llm/codex.ts";
@@ -21,13 +22,15 @@ import { killLiveCodexSdkRuns, runCodexSdkOneShot } from "../src/server/llm/code
 
 test("the sdk transport drives the operator's configured binary, not the SDK's bundled copy", async () => {
   let sawPath: string | undefined;
+  let sawEnv: Record<string, string> | undefined;
   const text = await runCodexSdkOneShot(
     "name this task",
     "/opt/homebrew/bin/codex",
     { model: "gpt-5.6-luna" },
     {
-      createClient: ({ codexPathOverride }) => {
+      createClient: ({ codexPathOverride, env }) => {
         sawPath = codexPathOverride;
+        sawEnv = env;
         return {
           startThread: () => ({
             run: async () => ({ finalResponse: '{"title":"Fix the parser"}' }),
@@ -43,6 +46,15 @@ test("the sdk transport drives the operator's configured binary, not the SDK's b
     "the SDK must be pinned to the configured codex, or the two transports run different binaries",
   );
   assert.equal(text.text, '{"title":"Fix the parser"}');
+  assert.ok(sawEnv?.MISSION_HOME);
+  assert.notEqual(sawEnv?.MISSION_HOME, process.env.MISSION_HOME);
+  assert.equal(sawEnv?.FLEET_HOME, undefined);
+  assert.equal(sawEnv?.HARNESS_HOME, undefined);
+  assert.equal(
+    existsSync(sawEnv!.MISSION_HOME!),
+    false,
+    "the one-shot releases its disposable state home after the SDK turn settles",
+  );
 });
 
 test("an empty final response is an error rather than an empty answer", async () => {
@@ -57,6 +69,21 @@ test("an empty final response is an error rather than an empty answer", async ()
       }),
     /no final response/i,
   );
+});
+
+test("a synchronous SDK construction failure still releases its disposable state home", async () => {
+  let stateHome = "";
+  await assert.rejects(
+    () =>
+      runCodexSdkOneShot("x", "/bin/codex", {}, {
+        createClient: ({ env }) => {
+          stateHome = env.MISSION_HOME!;
+          throw new Error("constructor failed");
+        },
+      }),
+    /constructor failed/,
+  );
+  assert.equal(existsSync(stateHome), false);
 });
 
 test("the sdk transport refuses what it cannot honour rather than dropping it", async () => {

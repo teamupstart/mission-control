@@ -15,7 +15,7 @@
 // would inject it into the model's context), swallow every error, and always exit 0 so a
 // hook never blocks or fails the session - even when the daemon is down.
 
-import { BASE_URL, readToken } from "./harness-runtime.mjs";
+import { BASE_URL, readClientToken } from "./harness-runtime.mjs";
 
 /** How long to wait for the daemon before giving up on an event. */
 const POST_TIMEOUT_MS = 800;
@@ -47,7 +47,7 @@ export async function postHookEvent(body) {
   try {
     await fetch(`${BASE_URL}/hooks/${encodeURIComponent(body.event)}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": readToken() },
+      headers: { "content-type": "application/json", "x-harness-token": readClientToken() },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });

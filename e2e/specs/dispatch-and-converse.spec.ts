@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -1090,7 +1090,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
   await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toHaveCount(0);
 });
 
-test("the dispatched agent was launched headless, without the daemon's terminal identity", async ({
+test("the dispatched agent resolves normal Mission Control state to a disposable home", async ({
   dashboard,
   daemon,
 }) => {
@@ -1103,6 +1103,13 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
     weztermPane: string | null;
     termProgram: string | null;
     entrypoint: string | null;
+    missionHome: string | null;
+    fleetHome: string | null;
+    harnessHome: string | null;
+    resolvedMissionState: string;
+    stateProbe: string;
+    hasMissionApiToken: boolean;
+    missionApiTokenFile: string | null;
   }
 
   // The fake records its own argv and env, so the mock doubles as an assertion surface:
@@ -1169,6 +1176,25 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
       .not.toBe(sentinel);
     expect(actual, `${key} must not reach a dispatched session at all`).toBeNull();
   }
+
+  // The fake performs the same prefix fallback as Mission Control's normal state resolver,
+  // then writes a probe through that result. Before the fix this path was daemon.home, which
+  // is also where the live database sits. The launch now strips both legacy aliases, supplies
+  // a fresh MISSION_HOME, and carries loopback auth independently of that filesystem path.
+  expect(record.missionHome).not.toBeNull();
+  expect(record.missionHome).not.toBe(daemon.home);
+  expect(record.fleetHome).toBeNull();
+  expect(record.harnessHome).toBeNull();
+  expect(record.resolvedMissionState).toBe(record.missionHome);
+  expect(record.stateProbe).toContain("mission-control-agent-state");
+  expect(existsSync(record.stateProbe)).toBe(true);
+  expect(record.hasMissionApiToken).toBe(false);
+  expect(record.missionApiTokenFile).toContain(record.missionHome!);
+  expect(existsSync(record.missionApiTokenFile!)).toBe(true);
+  expect(
+    readdirSync(daemon.home).filter((name) => name.startsWith(".agent-state-resolution-")),
+    "the agent's normal resolver must not write its probe beside the daemon database",
+  ).toEqual([]);
 
   // And it ran in the worktree the dispatch cut, not in the repo or the daemon's cwd.
   expect(record.cwd).toContain(join(daemon.home, "worktree-pools"));

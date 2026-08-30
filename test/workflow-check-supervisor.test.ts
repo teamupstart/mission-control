@@ -143,7 +143,7 @@ test("identity is persisted BEFORE branch code runs", async () => {
   const outcome = await runSupervisedCheck(
     {
       attemptId: "attempt-order",
-      command: ["sh", "-c", 'touch "$1"; echo done', "sh", marker],
+      command: ["sh", "-c", 'printf "%s" "$MISSION_HOME" > "$1"; echo done', "sh", marker],
       leasePath: dir,
       workingSubpath: "",
     },
@@ -154,6 +154,11 @@ test("identity is persisted BEFORE branch code runs", async () => {
   assert.equal(records.length, 1);
   assert.deepEqual(markerWhenRecorded, [false], "branch code had already run when identity was persisted");
   assert.equal(existsSync(marker), true, "and the branch command did run afterwards");
+  assert.equal(
+    existsSync(readFileSync(marker, "utf8")),
+    false,
+    "the supervisor releases the check's disposable state home after process teardown",
+  );
   assert.equal(outcome.emptiness, "empty");
   assert.deepEqual(cleared, ["attempt-order"], "a proven-empty group releases its identity");
 });

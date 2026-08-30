@@ -1414,7 +1414,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0
           ? (capabilitiesFor("codex").multiRepoDispatch?.launchArgs(opts.extraDirs) ?? [])
           : [];
-      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd);
+      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome);
       const config: LaunchConfig = {
         cwd: opts.cwd,
         model: opts.model,

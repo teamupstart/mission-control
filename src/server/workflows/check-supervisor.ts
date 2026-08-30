@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import type { CheckExecutionResult } from "./checks.ts";
 import { scrubCheckEnv } from "./check-env.ts";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { checkRuntimeSupport } from "./check-identity.ts";
 import {
   terminateCheckGroup,
@@ -106,23 +107,29 @@ export async function runSupervisedCheck(
     };
   }
 
-  const outcome = await spawnCheckProcess({
-    attemptId: request.attemptId,
-    command: request.command,
-    // The RESOLVED path, so what was checked for containment is what the command is given.
-    cwd: cwd.path,
-    env: scrubCheckEnv(deps.env ?? process.env, deps.daemonToken ?? readToken()),
-    timeoutMs: request.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
-    maxOutputBytes: deps.maxOutputBytes,
-    readyMs: deps.readyMs,
-    teardown: deps.teardown,
-    // THE GATE, and its ordering is the invariant this whole module exists for: identity is
-    // durable before the command is released, so there is no window in which branch code runs
-    // without a persisted owner. A throw here closes the gate and kills the supervisor with
-    // nothing ever started, which leaves the row carrying its sentinel - the positive proof
-    // recovery needs to tell "never ran" from "may still be running".
-    onSupervisorReady: ({ pid, identity }) => deps.registry.record(request.attemptId, pid, identity),
-  });
+  const env = scrubCheckEnv(deps.env ?? process.env, deps.daemonToken ?? readToken());
+  let outcome: CheckSpawnOutcome;
+  try {
+    outcome = await spawnCheckProcess({
+      attemptId: request.attemptId,
+      command: request.command,
+      // The RESOLVED path, so what was checked for containment is what the command is given.
+      cwd: cwd.path,
+      env,
+      timeoutMs: request.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+      maxOutputBytes: deps.maxOutputBytes,
+      readyMs: deps.readyMs,
+      teardown: deps.teardown,
+      // THE GATE, and its ordering is the invariant this whole module exists for: identity is
+      // durable before the command is released, so there is no window in which branch code runs
+      // without a persisted owner. A throw here closes the gate and kills the supervisor with
+      // nothing ever started, which leaves the row carrying its sentinel - the positive proof
+      // recovery needs to tell "never ran" from "may still be running".
+      onSupervisorReady: ({ pid, identity }) => deps.registry.record(request.attemptId, pid, identity),
+    });
+  } finally {
+    cleanupAgentSubprocessEnv(env);
+  }
 
   // Cleared only on PROVEN emptiness, never on the leader having exited. A row that keeps its
   // identity is a row whose group might still be writing into the tree, and that is precisely

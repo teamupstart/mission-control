@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -82,6 +83,53 @@ async function enablePipelines(
     repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
   });
 }
+
+test("concurrent duplicate Pipeline dispatches reserve only one Engineer run", async ({
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+  const intent = "Keep duplicate Engineer work exclusive";
+  const dispatch = (title: string) =>
+    request<{ id: string }>(daemon, "/api/tasks", "POST", {
+      repoRoot: daemon.repo,
+      intent,
+      title,
+      kind: "pipeline",
+      agent: "codex",
+      backlog: false,
+      workflowId: null,
+    });
+
+  await Promise.all([dispatch("Duplicate Pipeline one"), dispatch("Duplicate Pipeline two")]);
+
+  await expect
+    .poll(async () => {
+      const tasks = (
+        await request<Array<{
+          intent: string;
+          status: string;
+          error: string | null;
+          pipelineCommissionId: string | null;
+        }>>(daemon, "/api/tasks")
+      ).filter((task) => task.intent === intent);
+      return {
+        statuses: tasks.map((task) => task.status).sort(),
+        activeCommissionCount: tasks.filter(
+          (task) => task.status === "running" && task.pipelineCommissionId !== null,
+        ).length,
+        duplicateError: tasks.find((task) => task.status === "failed")?.error ?? null,
+        engineerRuns: existsSync(join(daemon.home, "conductor-engineer-state.json"))
+          ? readConductorEngineerRuns(daemon.home).length
+          : 0,
+      };
+    })
+    .toEqual({
+      statuses: ["failed", "running"],
+      activeCommissionCount: 1,
+      duplicateError: expect.stringMatching(/already owned by active task/),
+      engineerRuns: 1,
+    });
+});
 
 const TERMINAL_COMMISSION_REFUSAL =
   "this provider version cannot deliver a reserved Engineer run through Terminal; use Managed Agent SDK";

@@ -22,6 +22,7 @@ import {
   pipelineLeadRun,
   pipelinePhaseStatus,
   pipelineRail,
+  pipelineRunForCommission,
   pipelineRunLine,
   pipelineStrip,
   pipelineVerdictStatus,
@@ -157,6 +158,30 @@ test("a commission reader continues its meter from the observed implementation r
 
   assert.match(html, /class="tpm-now workflow-running">BUILD · Build · step 2 of 3</);
   assert.doesNotMatch(html, />Awaiting spec merge</);
+});
+
+test("a synthetic commission run retains unknown provider steps after the canonical sequence", () => {
+  const projected = pipelineRunForCommission(commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: "future_review",
+    steps: [
+      { name: "architecture_review", state: "done" },
+      { name: "future_review", state: "in_progress" },
+      { name: "future_ship", state: "pending" },
+    ],
+  }));
+
+  assert.equal(
+    projected.steps.filter((step) => step.name === "architecture_review").length,
+    1,
+    "a recognized step is projected once",
+  );
+  assert.deepEqual(projected.steps.slice(-2), [
+    { name: "future_review", state: "in_progress" },
+    { name: "future_ship", state: "pending" },
+  ]);
 });
 
 // ---- the rail ---------------------------------------------------------------------------

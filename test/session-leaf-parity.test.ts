@@ -25,6 +25,11 @@ import {
 } from "../src/web/components/session-bits.tsx";
 import type { Session } from "../src/shared/types.ts";
 import {
+  pipelineRunKeyOf,
+  type PipelineCommission,
+  type PipelineRun,
+} from "../src/shared/pipeline.ts";
+import {
   meta,
   mkEnsembleLink,
   mkEnsembleSummary,
@@ -154,4 +159,79 @@ test("embedded runtime provenance reaches detail, tile, and rail", () => {
   assert.ok(containsMarkup(detail(session), bit(SessionWhere, { session })));
   assert.ok(containsMarkup(tile(session), bit(RuntimeTileFlag, { session })));
   assert.match(rail(session), new RegExp(runtimeRailMark(session)!));
+});
+
+test("commission leaves follow the exact linked implementation run", () => {
+  const link = { provider: "ai-conductor" as const, repoRoot: "/repo/demo", slug: "linked-build" };
+  const task = mkTaskSummary({
+    id: "pipeline-task",
+    pipelineCommissionId: "commission-linked-build",
+    pipelineRun: link,
+  });
+  const session = mkSession({ task });
+  const commission: PipelineCommission = {
+    id: "commission-linked-build",
+    taskId: task.id,
+    provider: "ai-conductor",
+    repoRoot: link.repoRoot,
+    correlationId: "correlation-linked-build",
+    lifecycle: "awaiting_spec_merge",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-linked-build",
+      engineerRunId: "engineer-linked-build",
+      previousEngineerRunId: null,
+      providerRevision: 3,
+      state: "settled",
+      terminalReason: "awaiting_spec_merge",
+      updatedAt: 1,
+    }],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: "M",
+    track: "technical",
+    project: null,
+    authoringWorktree: null,
+    handoff: {
+      planSlug: link.slug,
+      branch: `plan/${link.slug}`,
+      prUrl: null,
+      outcome: "local_commit",
+    },
+    linkedRun: link,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const implementation: PipelineRun = {
+    ...link,
+    worktree: `${link.repoRoot}/.worktrees/${link.slug}`,
+    tier: "M",
+    track: "technical",
+    steps: [
+      { name: "worktree", state: "done" },
+      { name: "build", state: "in_progress" },
+    ],
+    lastStep: "build",
+    halt: null,
+    group: "building",
+    prUrl: null,
+    costTokens: null,
+    updatedAt: 2,
+  };
+  const expected = "BUILD · Build · step 2 of 2";
+
+  const detailMarkup = detail(session, {
+    pipelineCommissionById: new Map([[commission.id, commission]]),
+    pipelineRunByKey: new Map([[pipelineRunKeyOf(link), implementation]]),
+  });
+  const railMarkup = rail(session, {
+    pipelineCommission: commission,
+    pipelineCommissionRun: implementation,
+  });
+  assert.match(detailMarkup, new RegExp(expected));
+  assert.match(railMarkup, new RegExp(expected));
+  assert.doesNotMatch(detailMarkup, /Awaiting spec merge/);
+  assert.doesNotMatch(railMarkup, /Awaiting spec merge/);
 });

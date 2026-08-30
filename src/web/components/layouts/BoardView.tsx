@@ -258,8 +258,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     />
   );
 
-  const railRow = (s: Session): React.JSX.Element => (
-    <RailRow
+  const railRow = (s: Session): React.JSX.Element => {
+    const commission = pipelineCommissionForSession(props, s);
+    const commissionRun = commission?.linkedRun
+      ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)
+      : null;
+    return <RailRow
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
@@ -278,8 +282,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineRunObserved={Boolean(
         s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
       )}
+      pipelineCommission={commission}
+      pipelineCommissionRun={commissionRun}
+      onOpenPipelineCommission={props.onOpenPipelineCommission}
     />
-  );
+  };
 
   return (
     <main

@@ -27,6 +27,11 @@ interface ProviderWorker {
   cleanup: () => void;
 }
 
+/** Quote one argv word for the shell tmux uses to launch its command. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 /** Start a provider-owned worker in the run worktree, exactly where discovery joins it. */
 function startProviderWorker(cwd: string): ProviderWorker {
   const dir = mkdtempSync(join(tmpdir(), "mc-e2e-pipeline-worker-"));
@@ -50,7 +55,7 @@ function startProviderWorker(cwd: string): ProviderWorker {
       "40",
       "-c",
       cwd,
-      `${join(bin, "claude")} ${script}`,
+      `${shellWord(join(bin, "claude"))} ${shellWord(script)}`,
     ],
     { stdio: "pipe" },
   );
@@ -344,6 +349,21 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
     ).toBeVisible();
     await expect(detail.getByPlaceholder(/^Reply to this session/)).toHaveCount(0);
     await detail.screenshot({ path: join(evidenceDir, "worker-continuation.png") });
+
+    const consoleLayout = await request(daemon, "/api/ui/config", "PUT", { layout: "console" });
+    expect(consoleLayout.ok, await consoleLayout.text()).toBe(true);
+    await dashboard.reload();
+    await dashboard.getByRole("button", { name: "Fleet", exact: true }).click();
+    const commissionProgress = "BUILD · Build · step 13 of 22. Open the complete commission in Runs.";
+    await expect(
+      dashboard.getByRole("button", { name: commissionProgress }).first(),
+    ).toBeVisible();
+    await dashboard.locator("button.rail-row").filter({ hasText: worker.name }).click();
+    const consoleDetail = dashboard.locator(".cdetail");
+    await expect(
+      consoleDetail.getByRole("button", { name: commissionProgress }),
+    ).toBeVisible();
+    await consoleDetail.screenshot({ path: join(evidenceDir, "console-continuation.png") });
   } finally {
     worker.cleanup();
   }

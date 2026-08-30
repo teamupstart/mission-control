@@ -617,14 +617,15 @@ export function pipelineRunForCommission(
 ): PipelineRun {
   if (linkedRun) return linkedRun;
   const engineer = new Map(commission.steps.map((step) => [step.name, step.state]));
-  const steps = PIPELINE_STEPS[commission.provider].map((step) => ({
+  const canonical = new Set(PIPELINE_STEPS[commission.provider].map((step) => step.name));
+  const steps = [...PIPELINE_STEPS[commission.provider].map((step) => ({
     name: step.name,
     state:
       engineer.get(step.name) ??
       (step.name === "worktree" && (commission.authoringWorktree || commission.handoff)
         ? "done"
         : "pending"),
-  }));
+  })), ...commission.steps.filter((step) => !canonical.has(step.name))];
   return {
     provider: commission.provider,
     repoRoot: commission.repoRoot,

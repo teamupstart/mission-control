@@ -25,8 +25,17 @@ import { Registry } from "../src/server/registry.ts";
 import { Dispatcher } from "../src/server/dispatcher.ts";
 import { TaskManager } from "../src/server/tasks.ts";
 import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
-import { getTask as getDurableTask } from "../src/server/db.ts";
+import {
+  getTask as getDurableTask,
+  upsertPipelineCommissionAttempt,
+} from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
+import {
+  bindPipelineCommissionAttempt,
+  createPipelineCommission,
+} from "../src/server/pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
+import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
@@ -812,6 +821,181 @@ test("managed Pipeline cancellation clears a preallocated session when SDK start
     stopped: 0,
     tornDown: 1,
   });
+});
+
+test("cancellation during provider reservation stops the returned run before host launch", async (t) => {
+  const taskId = "pipeline-cancel-during-reservation";
+  const repoRoot = "/repo/cancel-during-reservation";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    intent: "Cancel while reserving Engineer",
+  }));
+  let releaseCreate!: (result: { ok: true; value: PipelineEngineerRunSnapshot }) => void;
+  let markCreateStarted!: () => void;
+  const createStarted = new Promise<void>((resolve) => {
+    markCreateStarted = resolve;
+  });
+  const createResult = new Promise<{ ok: true; value: PipelineEngineerRunSnapshot }>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const cancelledRunIds: string[] = [];
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => {
+      markCreateStarted();
+      return createResult;
+    },
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return { ok: false, error: "provider unavailable", outcomeUnknown: true };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const providerErrors: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    providerErrors.push(args.map(String).join(" "));
+  });
+  let starts = 0;
+  const supervisor = {
+    start: async () => {
+      starts += 1;
+      throw new Error("a settled reservation must not start a host");
+    },
+    taskLiveness: () => null,
+  } as unknown as SdkSupervisor;
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+    }),
+  });
+
+  const dispatching = dispatcher.dispatch(taskId);
+  await createStarted;
+  const cancellation = await tasks.cancel(taskId);
+  assert.equal(cancellation.ok, true);
+  const commission = registry.pipelineCommissionForTask(taskId)!;
+  releaseCreate({
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      capability: "engineerLifecycleEventsV1",
+      engineerRunId: "engineer-reserved-after-cancel",
+      correlationId: commission.correlationId,
+      attemptKey: commission.attempts[0]!.launchKey,
+      attempt: 1,
+      previousEngineerRunId: null,
+      repoRoot,
+      idea: "Cancel while reserving Engineer",
+      eventRevision: 1,
+      state: "created",
+    },
+  });
+  await dispatching;
+
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(starts, 0);
+  assert.deepEqual(cancelledRunIds, ["engineer-reserved-after-cancel"]);
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.lifecycle, "cancelled");
+  assert.equal(registry.pipelineCommissionForTask(taskId)?.attempts[0]?.engineerRunId, null);
+  assert.match(providerErrors.join("\n"), /provider unavailable/);
+});
+
+test("a commission persistence race does not strand local task cancellation", async (t) => {
+  const taskId = "pipeline-cancel-commission-race";
+  const repoRoot = "/repo/cancel-commission-race";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+  }));
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    id: "commission-cancel-race",
+    correlationId: "correlation-cancel-race",
+    launchKey: "launch-cancel-race",
+  });
+  const authoring = bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-cancel-race",
+    providerAttempt: 1,
+    attemptKey: "launch-cancel-race",
+    previousEngineerRunId: null,
+  });
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: authoring.id,
+    updatedAt: Date.now(),
+  });
+  registry.upsertPipelineCommission(authoring);
+
+  const settledAttempt = {
+    ...authoring.attempts[0]!,
+    state: "settled" as const,
+    terminalReason: "provider settled during cancellation",
+  };
+  const settled: PipelineCommission = {
+    ...authoring,
+    lifecycle: "settled",
+    attempts: [settledAttempt],
+  };
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => {
+      upsertPipelineCommissionAttempt(settled, settledAttempt);
+      registry.upsertPipelineCommission(settled);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId: "engineer-cancel-race",
+          correlationId: authoring.correlationId,
+          attemptKey: authoring.attempts[0]!.launchKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: "Cancel commission race",
+          eventRevision: 2,
+          state: "awaiting_spec_merge",
+        },
+      };
+    },
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+
+  const cancellation = await new TaskManager(registry).cancel(taskId);
+
+  assert.equal(cancellation.ok, false);
+  assert.match(cancellation.error ?? "", /could not cancel the Engineer commission/);
+  assert.match(cancellation.error ?? "", /settled pipeline commission cannot be cancelled/);
+  assert.equal(registry.getTask(taskId)?.status, "cancelled");
+  assert.equal(registry.pipelineCommission(authoring.id)?.lifecycle, "settled");
 });
 
 test("cancelling implementation preserves the successful Engineer commission", async () => {

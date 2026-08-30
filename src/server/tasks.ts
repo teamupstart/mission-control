@@ -3318,6 +3318,7 @@ export class TaskManager {
 
   /** `cancel`'s body, once the cleanup reservation is held. */
   private async cancelReserved(id: string, t: Task): Promise<Ok> {
+    const cancellationWarnings: string[] = [];
     const commission = this.registry.pipelineCommissionForTask(id);
     // Once Engineer handed off a specification, cancelling the Task applies to the later
     // implementation run. The authoring commission is successful history at that point, so
@@ -3347,11 +3348,22 @@ export class TaskManager {
         }
         await refreshPipelineCommission(this.registry, authoringCommission);
       }
-      const cancelled = cancelPipelineCommission({
-        commissionId: authoringCommission.id,
-        reason: "Pipeline task cancelled in Mission Control",
-      });
-      this.registry.upsertPipelineCommission(cancelled);
+      try {
+        const cancelled = cancelPipelineCommission({
+          commissionId: authoringCommission.id,
+          reason: "Pipeline task cancelled in Mission Control",
+        });
+        this.registry.upsertPipelineCommission(cancelled);
+      } catch (error) {
+        // Provider cancellation may have succeeded just before replay advances the durable
+        // commission to a terminal lifecycle. Keep cancelling the local task and its agent;
+        // an exception here must not strand them after the provider already stopped.
+        cancellationWarnings.push(
+          `could not cancel the Engineer commission: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
     // Stop an agent we launched BEFORE inspecting its checkout. Otherwise a scout can finish
     // writing after capture published an immutable partial but before teardown deletes the
@@ -3381,7 +3393,10 @@ export class TaskManager {
       });
       return {
         ok: false,
-        error: `task cancelled, but its resources remain tracked: ${archived.error ?? "this task's archive could not be published"}`,
+        error: `task cancelled, but ${[
+          ...cancellationWarnings,
+          `its resources remain tracked: ${archived.error ?? "this task's archive could not be published"}`,
+        ].join("; ")}`,
       };
     }
 
@@ -3418,9 +3433,12 @@ export class TaskManager {
       completedAt: now,
       updatedAt: now,
     });
-    return teardownError === null
+    if (teardownError !== null) {
+      cancellationWarnings.push(`its resources remain tracked: ${teardownError}`);
+    }
+    return cancellationWarnings.length === 0
       ? { ok: true }
-      : { ok: false, error: `task cancelled, but its resources remain tracked: ${teardownError}` };
+      : { ok: false, error: `task cancelled, but ${cancellationWarnings.join("; ")}` };
   }
 
   /**

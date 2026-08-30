@@ -17,7 +17,7 @@ import {
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineCommission, PipelineRunLink } from "@shared/pipeline.ts";
+import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 
@@ -45,6 +45,7 @@ export function RailRow({
   onOpenPipelineRun,
   pipelineRunObserved = false,
   pipelineCommission = null,
+  pipelineCommissionRun = null,
   onOpenPipelineCommission,
 }: {
   session: Session;
@@ -65,6 +66,7 @@ export function RailRow({
   onOpenPipelineRun?: (link: PipelineRunLink) => void;
   pipelineRunObserved?: boolean;
   pipelineCommission?: PipelineCommission | null;
+  pipelineCommissionRun?: PipelineRun | null;
   onOpenPipelineCommission?: (commissionId: string) => void;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
@@ -178,7 +180,7 @@ export function RailRow({
             />
             <PipelineCommissionRailMark
               commission={pipelineCommission}
-              line={pipelineCommission ? pipelineCommissionLine(pipelineCommission) : ""}
+              line={pipelineCommission ? pipelineCommissionLine(pipelineCommission, pipelineCommissionRun) : ""}
               onOpen={
                 pipelineCommission
                   ? () => onOpenPipelineCommission?.(pipelineCommission.id)

@@ -958,6 +958,36 @@ export class Dispatcher {
       }
       const reservedRun = reserved;
       if (!reservedRun) throw new Error("the provider did not return an Engineer run");
+      const currentCommission = this.registry.pipelineCommission(commission.id);
+      if (
+        !this.stillDispatching(taskId) ||
+        currentCommission?.lifecycle === "cancelled"
+      ) {
+        // Cancellation can win while the provider is reserving the run, before its identity
+        // exists in the commission. That cancel cannot stop what it cannot name, so this
+        // continuation owns the newly returned identity and must stop it before any Mission
+        // Control host starts. The task and commission stay terminal even if the provider
+        // refuses the stop: starting a host after either terminal write would resurrect work.
+        try {
+          const stopped = await lifecycle.cancel({
+            engineerRunId: reservedRun.engineerRunId,
+            reason: "Pipeline task settled in Mission Control before Engineer host launch",
+          });
+          if (!stopped.ok) {
+            console.error(
+              `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${stopped.error}`,
+            );
+          }
+        } catch (error) {
+          console.error(
+            `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        await this.abortIfSettled(taskId);
+        return;
+      }
       commission = bindPipelineCommissionAttempt({
         commissionId: commission.id,
         attempt: attempt.attempt,

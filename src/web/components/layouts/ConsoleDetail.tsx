@@ -191,6 +191,9 @@ export function ConsoleDetail({
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
   const ensembleLink = session.task?.ensemble ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
+  const pipelineCommissionRun = pipelineCommission?.linkedRun
+    ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
+    : null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
     sessionId: session.id,
     commit: null,
@@ -505,7 +508,7 @@ export function ConsoleDetail({
         />
         <PipelineCommissionChip
           commission={pipelineCommission}
-          line={pipelineCommission ? pipelineCommissionLine(pipelineCommission) : ""}
+          line={pipelineCommission ? pipelineCommissionLine(pipelineCommission, pipelineCommissionRun) : ""}
           onOpen={
             pipelineCommission
               ? () => view.onOpenPipelineCommission?.(pipelineCommission.id)

@@ -369,24 +369,26 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   if (!run) {
     process.stderr.write("Unknown Engineer run\\n");
     process.exitCode = 4;
-  } else if (!["failed", "cancelled", "awaiting_spec_merge"].includes(run.state)) {
-    run.state = "cancelled";
-    run.events.push({
-      schemaVersion: 1,
-      engineerRunId: run.engineerRunId,
-      correlationId: run.correlationId,
-      attemptKey: run.attemptKey,
-      attempt: run.attempt,
-      previousEngineerRunId: run.previousEngineerRunId,
-      repoRoot: run.repoRoot,
-      revision: run.events.length + 1,
-      ts: new Date().toISOString(),
-      type: "engineer_run_cancelled",
-      reason: flag("reason") || "cancelled by Mission Control",
-    });
-    writeEngineerState(state);
+  } else {
+    if (!["failed", "cancelled", "awaiting_spec_merge"].includes(run.state)) {
+      run.state = "cancelled";
+      run.events.push({
+        schemaVersion: 1,
+        engineerRunId: run.engineerRunId,
+        correlationId: run.correlationId,
+        attemptKey: run.attemptKey,
+        attempt: run.attempt,
+        previousEngineerRunId: run.previousEngineerRunId,
+        repoRoot: run.repoRoot,
+        revision: run.events.length + 1,
+        ts: new Date().toISOString(),
+        type: "engineer_run_cancelled",
+        reason: flag("reason") || "cancelled by Mission Control",
+      });
+      writeEngineerState(state);
+    }
+    process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
   }
-  process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
 } else if (argv[0] === "engineer" && flag("idea") !== null) {
   // The ENGINEER SESSION, and it has to stay up.
   //

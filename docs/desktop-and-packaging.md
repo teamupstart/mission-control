@@ -1,18 +1,32 @@
 # Desktop shell and packaging
 
 Mission Control can run as a local daemon during development or as a macOS Electron app.
-The [Electron main process](../src/main/index.ts) starts the daemon and embeds the dashboard;
+The [Electron main process](../src/main/index.ts) starts the daemon and Foreman worker, then embeds the dashboard;
 the [preload entrypoint](../src/preload/index.ts) keeps the renderer boundary explicit.
 
-The build creates separate bundles for the web dashboard, daemon, Electron main and preload
-processes, MCP server, and hook bridges. The commands are defined in
+The build creates separate bundles for the web dashboard, daemon, Foreman worker, Electron main
+and preload processes, MCP server, and hook bridges. The commands are defined in
 [`package.json`](../package.json). [`electron-builder.yml`](../electron-builder.yml) packages
 the built files and a small set of source assets that external tools read at runtime.
 
 The package intentionally leaves `asar` disabled. Hook and MCP satellite scripts are launched
 by an external Node process, and skills are read through filesystem links, so both require
-plain files on disk. The Electron shell starts the daemon; it does not become a second state
-owner.
+plain files on disk. The Electron shell supervises the daemon and the HTTP-only Foreman worker;
+it does not become a second state owner. Foreman never opens SQLite, and its daemon lease keeps
+an independently started worker safe as a standby.
+
+## Startup while SDK sessions restore
+
+The packaged window loads the ordinary daemon-served dashboard as soon as the daemon owns its
+resolved state home, has opened the database, and has bound HTTP. Persisted SDK conversations may
+still be restoring serially at that point. The Board renders each readable live persisted row as a
+provisional **Restoring** card, then replaces it with the real Registry session under the same
+stable id when the driver is adopted.
+
+Those provisional cards are display-only. They cannot be selected, messaged, dragged, assigned,
+bound to a workflow, or counted as live work. `/api/health` likewise reports that the daemon and
+authenticated API are reachable, not that all SDK drivers are ready. Terminal discovery and the
+first startup reconciliation remain gated behind completion of the full SDK restore pass.
 
 ## Managed install and the receipt
 

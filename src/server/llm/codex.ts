@@ -12,6 +12,7 @@ import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
+import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 
 const CODEX_BIN = resolveAgentBin("codex");
 
@@ -45,7 +46,8 @@ const live = new Set<ReturnType<typeof spawn>>();
 const liveSchemaDirs = new Set<string>();
 
 function headlessEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_HEADLESS: "1" };
+  const env: NodeJS.ProcessEnv = agentSubprocessEnv(process.env, { loopbackAccess: true });
+  env.MISSION_HEADLESS = "1";
   delete env.TMUX_PANE;
   delete env.WEZTERM_PANE;
   return env;
@@ -320,12 +322,20 @@ export const codexRunner: LlmRunner = {
         if (opts.model) args.push("--model", opts.model);
         for (const image of images) args.push("--image", image.path);
         args.push("-");
-        const child = spawn(CODEX_BIN, args, {
-          cwd: tmpdir(),
-          stdio: ["pipe", "pipe", "pipe"],
-          env: headlessEnv(),
-          detached: true,
-        });
+        const env = headlessEnv();
+        const child = (() => {
+          try {
+            return spawn(CODEX_BIN, args, {
+              cwd: tmpdir(),
+              stdio: ["pipe", "pipe", "pipe"],
+              env,
+              detached: true,
+            });
+          } catch (error) {
+            cleanupAgentSubprocessEnv(env);
+            throw error;
+          }
+        })();
         hookExitOnce();
         live.add(child);
         let out = "";
@@ -336,6 +346,7 @@ export const codexRunner: LlmRunner = {
           settled = true;
           clearTimeout(timer);
           live.delete(child);
+          cleanupAgentSubprocessEnv(env);
         };
         const timer = setTimeout(() => {
           killTree(child);

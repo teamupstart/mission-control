@@ -16,6 +16,36 @@ export function stateLockBuildTarget(platform, arch) {
   return { platform, arch };
 }
 
+/**
+ * Remove download provenance inherited by a freshly copied local addon on macOS.
+ *
+ * The linker gives the bundle a valid ad-hoc signature, but a worktree can itself carry
+ * `com.apple.provenance`. `copyFile` preserves that attribute on this host, and macOS then kills
+ * Node while it loads the state-lock addon. Listing first distinguishes an already-clean file
+ * without interpreting platform-specific error text. Every listing or deletion failure stays
+ * fatal because shipping an addon the daemon cannot load would make both ordinary startup and
+ * database recovery fail without a JavaScript diagnostic.
+ */
+export function clearDarwinProvenance(
+  path,
+  platform = processPlatform,
+  execute = execFileSync,
+) {
+  if (platform !== "darwin") return false;
+  const attributes = String(
+    execute("/usr/bin/xattr", [path], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+  if (!attributes.split(/\r?\n/).includes("com.apple.provenance")) return false;
+  execute("/usr/bin/xattr", ["-d", "com.apple.provenance", path], {
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  return true;
+}
+
 export async function buildStateLockNative() {
   const target = stateLockBuildTarget(processPlatform, processArch);
   const sourceDir = resolve("native/state-lock");
@@ -31,6 +61,7 @@ export async function buildStateLockNative() {
   );
   await mkdir(outputDir, { recursive: true });
   await copyFile(built, output);
+  clearDarwinProvenance(output);
   console.log(`[state-lock-native] built ${target.platform} ${target.arch} ${output}`);
 }
 

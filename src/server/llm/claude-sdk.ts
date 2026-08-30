@@ -10,6 +10,7 @@ import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
 import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -152,7 +153,9 @@ export async function runClaudeSdkOneShot(
   timer.unref?.();
 
   let stderr = "";
+  let subprocessEnv: NodeJS.ProcessEnv | undefined;
   const execute = async (): Promise<ClaudeSdkOneShotResult> => {
+    const cwd = realpathSync(grant?.cwd ?? HEADLESS_CWD);
     const executable = await deps.executable();
     if (controller.signal.aborted) {
       throw cancelError ?? new Error("Claude Agent SDK run aborted");
@@ -201,6 +204,7 @@ export async function runClaudeSdkOneShot(
     // records the resolved cwd in its encoded project path, and `headlessTranscriptDir()`
     // resolves the same value before sweeping. Passing the unresolved spelling would make
     // the test seam and the pruner disagree about where this run belongs.
+    subprocessEnv = deps.env(cwd);
     const query = await deps.query({
       prompt: images.length === 0
         ? prompt
@@ -251,13 +255,13 @@ export async function runClaudeSdkOneShot(
         // bounds are OURS. Inheriting theirs silently would make the next move invisible
         // from here.
         ...(grant ? {} : { maxTurns: opts.schema ? 3 : 1 }),
-        cwd: realpathSync(grant?.cwd ?? HEADLESS_CWD),
+        cwd,
         pathToClaudeCodeExecutable: executable,
         // A headless Claude run fires the same machine-installed hooks as an interactive
         // one. Strip every inherited pane identity and add the independent marker that
         // lets a current hook decline the event entirely. Both layers matter because the
         // installed hook may come from an older checkout.
-        env: { ...deps.env(), MISSION_HEADLESS: "1" },
+        env: { ...subprocessEnv, MISSION_HEADLESS: "1" },
         abortController: controller,
         stderr: (data) => {
           stderr = (stderr + data).slice(-4_096);
@@ -291,5 +295,6 @@ export async function runClaudeSdkOneShot(
   } finally {
     clearTimeout(timer);
     live.delete(run);
+    cleanupAgentSubprocessEnv(subprocessEnv);
   }
 }

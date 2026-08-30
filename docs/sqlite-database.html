@@ -801,17 +801,23 @@ ORDER BY type DESC, name;</code></pre>
 
         <section id="backup">
           <p class="eyebrow">Recovery boundaries</p>
-          <h2>Back up a stopped database</h2>
-          <p>For an offline backup, stop Mission Control and copy <code>harness.db</code> together with <code>harness.db-wal</code> and <code>harness.db-shm</code> when present. Keeping the WAL sidecars matters because committed pages may not yet have been checkpointed into the main file.</p>
-          <pre><code><span class="comment"># 1. Stop development processes</span>
-make stop-all
+          <h2>Use verified SQLite recovery points</h2>
+          <p>The daemon writes hourly full-database snapshots under <code>$MISSION_HOME/backups/database/</code> with SQLite's online backup API and keeps the newest 24. The first scheduled capture waits for the hourly interval instead of competing with daemon startup. Before startup changes an existing database schema, it writes and verifies a separate <code>VACUUM INTO</code> recovery point and keeps the newest 10. Both mechanisms include committed WAL pages, run <code>PRAGMA integrity_check</code>, and publish only a verified private file.</p>
+          <pre><code><span class="comment"># Validate integrity and current-build forward migration in a disposable copy</span>
+npm run verify:database-backup -- \
+  ~/.mission-control/backups/database/&lt;snapshot&gt;.sqlite3</code></pre>
+          <p>The validation command never promotes a backup or replaces live state. A recurring capture failure is logged and retried later. A failed pre-migration capture stops startup before schema writes, and a later migration failure reports the recovery point without restoring it automatically.</p>
+          <div class="callout danger">
+            <strong>Never copy only an open <code>harness.db</code>.</strong>
+            <p>Committed pages may still live in <code>harness.db-wal</code>. Promote only a complete candidate that passed validation through the supported offline recovery flow.</p>
+          </div>
+          <pre><code><span class="comment"># Restore through the supported, lock-owning product flow</span>
+npm run recover:database -- /absolute/path/to/backup/harness.db
 
-<span class="comment"># 2. Copy all SQLite files from the resolved state directory</span>
-<span class="comment">#    Default: ~/.mission-control/</span>
-
-<span class="comment"># 3. Restore only while the daemon is stopped</span>
-<span class="comment">#    Use the same or a newer Mission Control build.</span></code></pre>
-          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats. If the daemon is packaged or installed as a login service, stop that owner too before replacing files.</p>
+<span class="comment"># Use the printed id when the retained prior database is needed</span>
+npm run recover:database -- --rollback &lt;recovery-id&gt;</code></pre>
+          <p>The recovery command validates a staged candidate before stopping anything, identifies the live daemon from its state lock and health response, proves that daemon belongs to the receipt-verified app before signaling it, proves SQLite is closed by acquiring the kernel-held lock, and preserves rollback material. It attempts exactly one relaunch and reports the observed daemon PID, port, and version after health succeeds. See <a href="database-and-migrations.md#recovering-the-product-database">Database and migrations</a> for the full contract.</p>
+          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats. Development processes are outside this managed-product flow and still use their own explicit lifecycle commands.</p>
         </section>
 
         <section id="sources">

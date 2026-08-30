@@ -10,6 +10,7 @@ flowchart LR
   operator[Operator] --> dashboard[Web dashboard\nReact]
   dashboard <-->|HTTP + SSE| daemon[Daemon\nHono + Registry]
   electron[Electron shell] -->|starts and embeds| daemon
+  electron -->|supervises packaged worker| foreman
   electron -->|loads| dashboard
   mcp[MCP server] <-->|stdio| agent[Agent or editor]
   mcp -->|loopback HTTP| daemon
@@ -34,7 +35,7 @@ HTTP interface, so they cannot create competing state writers.
 | --- | --- | --- |
 | Daemon | Composes services, serves the loopback API and dashboard, and owns SQLite writes. | [Daemon entrypoint](../src/server/index.ts), [database](database-and-migrations.md) |
 | Web dashboard | React interface that reads snapshots and applies live SSE updates. | [Event stream](event-stream.md), [UI reference](ui.md) |
-| Electron shell | Starts the local daemon and embeds the built dashboard. | [Desktop shell](desktop-and-packaging.md) |
+| Electron shell | Starts the local daemon, supervises Foreman in packaged builds, and embeds the built dashboard. | [Desktop shell](desktop-and-packaging.md) |
 | Session system | Discovers terminal sessions, supervises embedded SDK sessions, and removes sessions through one lifecycle. | [Session lifecycle](session-lifecycle.md) |
 | Dispatch and harnesses | Chooses a runtime and expresses agent and terminal differences through capabilities. | [Dispatch](dispatch-and-runtimes.md), [harnesses](harnesses-and-terminals.md) |
 | Work coordination | Runs workflows, personas, session actions, ensembles, tasks, queues, and schedules. | [Workflow system](workflow-system.md), [tasks and schedules](tasks-and-scheduling.md) |

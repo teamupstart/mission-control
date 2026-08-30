@@ -544,12 +544,20 @@ process.env.MC_E2E_CONDUCTOR_PROJECTS = fakeEngine.projectsPath;
 /** Run `body` with the fake engine installed, then put the missing binary back. */
 async function withEngine<T>(body: () => Promise<T>): Promise<T> {
   const had = process.env.MISSION_CONDUCTOR_BIN;
+  const hadRegistry = process.env.AI_CONDUCTOR_REGISTRY;
   process.env.MISSION_CONDUCTOR_BIN = fakeEngine.bin;
+  // The fake's mutable project file stands in for Conductor's registry too. A force probe
+  // normally reads it through `engineer projects`; if that child hits its bounded timeout
+  // under full-suite contention, the production file fallback must observe the same state.
+  process.env.AI_CONDUCTOR_REGISTRY = fakeEngine.projectsPath;
   rmSync(fakeEngine.logPath, { force: true });
   try {
     return await body();
   } finally {
-    process.env.MISSION_CONDUCTOR_BIN = had;
+    if (had === undefined) delete process.env.MISSION_CONDUCTOR_BIN;
+    else process.env.MISSION_CONDUCTOR_BIN = had;
+    if (hadRegistry === undefined) delete process.env.AI_CONDUCTOR_REGISTRY;
+    else process.env.AI_CONDUCTOR_REGISTRY = hadRegistry;
   }
 }
 

@@ -4,6 +4,7 @@ import { unwrapEnvelope } from "./llm/structured.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
 import { validateLlmImages } from "./llm/images.ts";
+import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import type { LlmImageInput } from "@shared/llm.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
@@ -228,12 +229,20 @@ function runClaudeRaw(
     if (opts.schema) args.push("--json-schema", opts.schema);
     if (opts.model) args.push("--model", opts.model);
     if (opts.settings) args.push("--settings", opts.settings);
-    const child = spawn(CLAUDE_BIN, args, {
-      cwd: opts.cwd ?? HEADLESS_CWD,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: headlessEnv(),
-      detached: true,
-    });
+    const env = headlessEnv();
+    const child = (() => {
+      try {
+        return spawn(CLAUDE_BIN, args, {
+          cwd: opts.cwd ?? HEADLESS_CWD,
+          stdio: ["pipe", "pipe", "pipe"],
+          env,
+          detached: true,
+        });
+      } catch (error) {
+        cleanupAgentSubprocessEnv(env);
+        throw error;
+      }
+    })();
     hookExitOnce();
     live.add(child);
     let out = "";
@@ -246,6 +255,7 @@ function runClaudeRaw(
       if (timer) clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
+      cleanupAgentSubprocessEnv(env);
       return true;
     };
     const onAbort = (): void => {
@@ -434,7 +444,8 @@ function headlessEnv(): NodeJS.ProcessEnv {
   // Annotated, not inferred: spreading `process.env` drops its index signature, so an
   // inferred type is the literal `{ MISSION_HEADLESS: string }` and the deletes below stop
   // compiling.
-  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_HEADLESS: "1" };
+  const env: NodeJS.ProcessEnv = agentSubprocessEnv(process.env, { loopbackAccess: true });
+  env.MISSION_HEADLESS = "1";
   delete env.TMUX_PANE;
   delete env.WEZTERM_PANE;
   return env;

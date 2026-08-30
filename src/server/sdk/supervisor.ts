@@ -4,6 +4,7 @@ import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import type {
   AgentType,
   PermissionMode,
+  RestoringSession,
   SdkSendDisposition,
   Session,
   ThinkingLevel,
@@ -23,6 +24,10 @@ import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
 import { getStandingInstructions } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import {
+  cleanupDisposableAgentStateHome,
+  createDisposableAgentStateHome,
+} from "../agent-subprocess-env.ts";
 import {
   listSdkSessions,
   recordSdkSessionBinding,
@@ -129,6 +134,8 @@ export class SdkSupervisor {
    */
   private sends = new Map<string, Promise<unknown>>();
   private pumps = new Map<string, Promise<void>>();
+  /** Disposable state owned until the corresponding driver event stream ends. */
+  private stateHomes = new Map<string, string>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
   /** Accepted launch-window prompts held until the driver reports their native Goal key. */
@@ -137,6 +144,12 @@ export class SdkSupervisor {
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
+  /** Exact readable live rows captured once before HTTP starts serving. */
+  private preparedRestoreRows: SdkSessionRow[] | null = null;
+  /** One serial startup pass, retained so shutdown can join its ownership boundary. */
+  private restorePromise: Promise<void> | null = null;
+  /** Fresh launches that still own a prospective handle or its cleanup. */
+  private startOwnership = new Set<Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
   /**
@@ -159,6 +172,33 @@ export class SdkSupervisor {
   ) {}
 
   /**
+   * Read and classify persisted SDK rows once, before the first HTTP snapshot can answer.
+   *
+   * The resulting Registry entries are inert display projections only. Calling this twice
+   * returns the same prepared count and never re-reads SQLite or republishes a row, which is
+   * what prevents one daemon from launching the same conversation twice.
+   */
+  prepareRestore(): number {
+    if (this.preparedRestoreRows !== null) return this.preparedRestoreRows.length;
+    const prepared: SdkSessionRow[] = [];
+    for (const row of listSdkSessions()) {
+      if (row.status === null) {
+        // Written by a build that knows a status this one does not. Left exactly as it is:
+        // failing a row we cannot read would discard a session a newer daemon could resume.
+        console.warn(
+          `[sdk] leaving ${row.id} alone: unreadable status ${JSON.stringify(row.statusRaw)}`,
+        );
+        continue;
+      }
+      if (!sdkSessionIsLive(row)) continue;
+      prepared.push(row);
+      this.registry.upsertRestoringSession(this.restoringView(row));
+    }
+    this.preparedRestoreRows = prepared;
+    return prepared.length;
+  }
+
+  /**
    * Restore what the previous daemon left behind - BEFORE the discovery poller starts.
    *
    * That ordering is a contract, not a nicety. `registry.onSessionsObserved` is the moment
@@ -175,24 +215,29 @@ export class SdkSupervisor {
    * no card ever appearing leaves the task `running` for ever with nothing to look at.
    */
   async restore(): Promise<void> {
-    for (const row of listSdkSessions()) {
-      if (row.status === null) {
-        // Written by a build that knows a status this one does not. Left exactly as it is:
-        // failing a row we cannot read would discard a session a newer daemon could resume.
-        console.warn(
-          `[sdk] leaving ${row.id} alone: unreadable status ${JSON.stringify(row.statusRaw)}`,
-        );
-        continue;
+    this.prepareRestore();
+    if (this.restorePromise) return this.restorePromise;
+    const rows = this.preparedRestoreRows!;
+    const restoring = (async () => {
+      for (const row of rows) {
+        // Shutdown owns the in-flight row below. It must also prevent the next prepared row
+        // from launching, which is why this check sits immediately before each serial step.
+        if (this.shuttingDown) break;
+        try {
+          await this.resume(row);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          if (!this.shuttingDown) this.registerAndEvict(row, why);
+        } finally {
+          // Success has already emitted `session_upsert`; failure has already registered and
+          // begun ordinary eviction. The browser suppresses overlap by id as a second guard.
+          this.registry.removeRestoringSession(row.id);
+        }
       }
-      if (!sdkSessionIsLive(row)) continue;
-      try {
-        await this.resume(row);
-      } catch (err) {
-        const why = err instanceof Error ? err.message : String(err);
-        console.error(`[sdk] could not resume ${row.id}: ${why}`);
-        this.registerAndEvict(row, why);
-      }
-    }
+    })();
+    this.restorePromise = restoring;
+    return restoring;
   }
 
   /**
@@ -265,66 +310,110 @@ export class SdkSupervisor {
     gitRoot?: string | null;
     repoRoot?: string | null;
   }): Promise<Session> {
+    if (this.shuttingDown) throw new Error("the SDK supervisor is shutting down");
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
     const id = input.sessionId ?? newSdkSessionId();
+    const stateHome = input.mcp?.env.MISSION_HOME ?? createDisposableAgentStateHome();
     // Out of band only when this pair HAS a channel. A pair without one already carries the
     // block inside `prompt`, and sending it here as well would have the agent read the same
     // rule twice on its first turn.
     const outOfBandStanding = outOfBandStandingText(input.standingInstructions?.delivery);
-    const handle = await spec.launch({
-      cwd: input.cwd,
-      prompt: input.prompt,
-      model: input.model,
-      effort: input.effort,
-      permissionMode: input.permissionMode,
-      mcp: missionMcpForSession(input.mcp, id),
-      extraDirs: input.extraDirs ?? [],
-      standingInstructions: outOfBandStanding,
-      // What to send instead if that channel turns out to be unusable. Composed by the
-      // DISPATCHER, which is the only place that can put the block in the same slot the
-      // channel-less pairs use - below the repository manifest and above the request - because
-      // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
-      // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
-      standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
-      resume: null,
+    let releaseOwnership = (): void => {};
+    const ownership = new Promise<void>((resolve) => {
+      releaseOwnership = resolve;
     });
-    const started = this.adopt({
-      registration: {
-        id,
-        agent: input.agent,
-        name: input.name,
+    this.startOwnership.add(ownership);
+    const releaseStartOwnership = (): void => {
+      releaseOwnership();
+      this.startOwnership.delete(ownership);
+    };
+    let handle: SdkSessionHandle;
+    try {
+      handle = await spec.launch({
         cwd: input.cwd,
-        permissionMode: input.permissionMode,
-        gitBranch: input.gitBranch ?? null,
-        gitRoot: input.gitRoot ?? null,
-        repoRoot: input.repoRoot ?? null,
-      },
-      handle,
-      acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
-      launchPresentation: input.launchPresentation,
-      durable: {
-        taskId: input.taskId,
+        stateHome,
+        prompt: input.prompt,
         model: input.model,
         effort: input.effort,
-        // The driver accepted turn one before `adopt` can persist anything. Recording it
-        // here closes the startup window before the detached event pump catches up.
-        turnInProgress: input.prompt.length > 0,
-      },
-    });
+        permissionMode: input.permissionMode,
+        mcp: missionMcpForSession(input.mcp, id),
+        extraDirs: input.extraDirs ?? [],
+        standingInstructions: outOfBandStanding,
+        // What to send instead if that channel turns out to be unusable. Composed by the
+        // DISPATCHER, which is the only place that can put the block in the same slot the
+        // channel-less pairs use - below the repository manifest and above the request - because
+        // that ordering is produced by `intentWithRepoManifest`, not by wrapping a finished
+        // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
+        standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
+        resume: null,
+      });
+    } catch (error) {
+      cleanupDisposableAgentStateHome(stateHome);
+      releaseStartOwnership();
+      throw error;
+    }
+    if (this.shuttingDown) {
+      try {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+      } finally {
+        releaseStartOwnership();
+      }
+      throw new Error("the SDK supervisor is shutting down");
+    }
+    let started: Session;
+    try {
+      started = this.adopt({
+        registration: {
+          id,
+          agent: input.agent,
+          name: input.name,
+          cwd: input.cwd,
+          permissionMode: input.permissionMode,
+          gitBranch: input.gitBranch ?? null,
+          gitRoot: input.gitRoot ?? null,
+          repoRoot: input.repoRoot ?? null,
+        },
+        handle,
+        stateHome,
+        acceptedInitialPrompt: input.acceptedGoalPrompt ?? input.prompt,
+        launchPresentation: input.launchPresentation,
+        durable: {
+          taskId: input.taskId,
+          model: input.model,
+          effort: input.effort,
+          // The driver accepted turn one before `adopt` can persist anything. Recording it
+          // here closes the startup window before the detached event pump catches up.
+          turnInProgress: input.prompt.length > 0,
+        },
+      });
+    } catch (error) {
+      try {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+      } finally {
+        releaseStartOwnership();
+      }
+      throw error;
+    }
     // What this session was ACTUALLY sent, recorded once. The driver's
     // own report wins over what was requested: a Codex launch whose `config/read` could not
     // be used delivers the block in turn one instead, and a snapshot claiming the durable
     // channel would later tell an assignment the rule was still installed on the process
     // when it was only ever turn-one prose.
-    if (input.standingInstructions?.delivery.text) {
-      this.registry.recordStandingInstructions(started.id, {
-        ...input.standingInstructions.delivery,
-        mechanism:
-          handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
-      });
+    try {
+      if (input.standingInstructions?.delivery.text) {
+        this.registry.recordStandingInstructions(started.id, {
+          ...input.standingInstructions.delivery,
+          mechanism:
+            handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+        });
+      }
+      return started;
+    } finally {
+      releaseStartOwnership();
     }
-    return started;
   }
 
   /**
@@ -338,6 +427,8 @@ export class SdkSupervisor {
   adopt(input: {
     registration: SdkSessionRegistration;
     handle: SdkSessionHandle;
+    /** Disposable launch state, when this handle came through a production launch boundary. */
+    stateHome?: string;
     /** A fresh launch's already-accepted turn one, held until `bound` supplies its key. */
     acceptedInitialPrompt?: string;
     /**
@@ -413,6 +504,7 @@ export class SdkSupervisor {
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
+    if (input.stateHome) this.stateHomes.set(registration.id, input.stateHome);
     this.unfinishedTurns.set(
       registration.id,
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
@@ -748,10 +840,20 @@ export class SdkSupervisor {
    */
   async stopAll(timeoutMs = 5000): Promise<void> {
     this.shuttingDown = true;
+    // Preparation can exist before the listener callback starts the pass. Clear those views
+    // immediately, then give in-flight launches the same bounded graceful-drain window as
+    // already-adopted handles. A launch that finishes later still sees `shuttingDown` and
+    // cleans up its own handle instead of adopting it after teardown.
+    for (const row of this.preparedRestoreRows ?? []) {
+      this.registry.removeRestoringSession(row.id);
+    }
     const ids = [...this.handles.keys()];
-    if (ids.length === 0) return;
+    const startupOwnership = Promise.allSettled([
+      ...(this.restorePromise ? [this.restorePromise] : []),
+      ...this.startOwnership,
+    ]);
     const drained = Promise.allSettled(ids.map((id) => this.stop(id)));
-    await Promise.race([drained, sleep(timeoutMs)]);
+    await Promise.race([Promise.allSettled([startupOwnership, drained]), sleep(timeoutMs)]);
     // Whatever did not drain in time is still OUR session and still resumable: the row has
     // to say so before the process goes, because after that nothing will.
     for (const id of ids) {
@@ -899,13 +1001,18 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
     try {
-      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
+        row.cwd,
+        stateHome,
+      );
     } catch (err) {
       if (task?.kind === "pipeline") {
         const why = err instanceof Error ? err.message : String(err);
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(`managed Pipeline resume could not resolve Mission MCP: ${why}`);
       }
       console.error(
@@ -917,35 +1024,50 @@ export class SdkSupervisor {
       callerCredential = newPipelineCallerCredential();
       mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential);
       if (!mcp) {
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(
           "managed Pipeline resume requires Mission Control's MCP server - rebuild with: npm run build",
         );
       }
-      const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-        ["adopt_pipeline_run", "report_pipeline_workspace"],
-        mcp,
-      );
+      let published: Awaited<ReturnType<typeof verifyMissionMcpTools>>;
+      try {
+        published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
+          ["adopt_pipeline_run", "report_pipeline_workspace"],
+          mcp,
+        );
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
+      }
       if (!published.ok) {
+        cleanupDisposableAgentStateHome(stateHome);
         throw new Error(
           `managed Pipeline resume requires its Pipeline reporting tools, but ${published.reason}`,
         );
       }
     }
     if (task?.kind === "pipeline") {
-      this.registry.registerManagedPipelineCaller(
-        task.id,
-        row.id,
-        row.cwd,
-        callerCredential!,
-      );
-      this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+      try {
+        this.registry.registerManagedPipelineCaller(
+          task.id,
+          row.id,
+          row.cwd,
+          callerCredential!,
+        );
+        this.registry.beginManagedPipelineLaunch(task.id, row.id, row.cwd);
+      } catch (error) {
+        cleanupDisposableAgentStateHome(stateHome);
+        throw error;
+      }
     }
     // Read once, here, because both the channel and its prose fallback below carry the same
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
+    let adopted = false;
     try {
       const handle = await spec.launch({
         cwd: row.cwd,
+        stateHome,
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
@@ -985,6 +1107,17 @@ export class SdkSupervisor {
         standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
       });
+      // A signal can arrive while a provider handshake is in flight. The handle is now ours,
+      // but no real Registry session has been published yet, so stop and clean it at this
+      // existing ownership boundary instead of briefly adopting an actionable card.
+      if (this.shuttingDown) {
+        await handle.stop().catch(() => {});
+        cleanupDisposableAgentStateHome(stateHome);
+        if (task?.kind === "pipeline") {
+          this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
+        }
+        return;
+      }
       this.adopt({
         registration: {
           id: row.id,
@@ -1001,6 +1134,7 @@ export class SdkSupervisor {
           repoRoot: task?.repoRoot ?? null,
         },
         handle,
+        stateHome,
         durable: {
           taskId: row.taskId,
           model: row.model,
@@ -1010,6 +1144,7 @@ export class SdkSupervisor {
           acceptedTurns: 0,
         },
       });
+      adopted = true;
       // What the driver reported about the channel it could actually use THIS time, applied
       // to the snapshot the same way a fresh launch applies it in `start`. A Codex resume can
       // find `developerInstructions` unusable now and send the stored block as prose instead;
@@ -1023,6 +1158,7 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
       }
@@ -1082,6 +1218,21 @@ export class SdkSupervisor {
     } catch (err) {
       console.error(`[sdk] could not surface the unresumable session ${row.id}:`, err);
     }
+  }
+
+  /** The only projection from a durable SDK row into pre-driver presentation. */
+  private restoringView(row: SdkSessionRow): RestoringSession {
+    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    return {
+      id: row.id,
+      agent: row.agent,
+      name: restoredName(row, task?.title ?? null),
+      cwd: row.cwd,
+      repoRoot: task?.repoRoot ?? null,
+      taskId: row.taskId,
+      taskTitle: task?.title ?? null,
+      createdAt: row.createdAt,
+    };
   }
 
   /**
@@ -1156,6 +1307,8 @@ export class SdkSupervisor {
       this.pendingLaunchGoalPrompts.delete(id);
       this.launchGoalNoteKeys.delete(id);
       this.stopping.delete(id);
+      cleanupDisposableAgentStateHome(this.stateHomes.get(id));
+      this.stateHomes.delete(id);
       try {
         setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());
       } catch (err) {

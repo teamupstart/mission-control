@@ -79,6 +79,7 @@ import {
 import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import {
@@ -2858,7 +2859,7 @@ export class TaskManager {
     const workflowEvidence = this.workflowEvidenceEnabledForTask(t);
     const requiresSubmissionTool = t.kind === "scout" || workflowEvidence;
     const mcpDescriptor = requiresSubmissionTool
-      ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)()
+      ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)(s.cwd ?? undefined)
       : null;
     if (requiresSubmissionTool && !mcpDescriptor) {
       return {
@@ -2890,16 +2891,21 @@ export class TaskManager {
       // evidence tool. A scout carrying a Persona workflow needs both, so asking about the
       // first and inferring the second would admit a bundle publishing only the older of the
       // two - the same stale `dist/` this probe exists for, one tool later.
-      const published = await (
-        opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
-      )(
-        [
-          ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
-          ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
-        ],
-        s.startedAt,
-        mcpDescriptor,
-      );
+      let published: Awaited<ReturnType<typeof verifyMissionMcpToolsForRunningSession>>;
+      try {
+        published = await (
+          opts.verifyMissionMcpToolsForRunningSession ?? verifyMissionMcpToolsForRunningSession
+        )(
+          [
+            ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
+            ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
+          ],
+          s.startedAt,
+          mcpDescriptor,
+        );
+      } finally {
+        cleanupAgentSubprocessEnv(mcpDescriptor?.env);
+      }
       if (!published.ok) {
         return {
           ok: false,

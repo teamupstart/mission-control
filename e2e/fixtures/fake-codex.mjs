@@ -56,6 +56,15 @@ const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only 
  */
 const HELD_TURN_MS = Number(process.env.MC_E2E_CODEX_HELD_TURN_MS ?? 5_000);
 /**
+ * Hold only the native resume handshake, so a restart spec can observe the daemon while
+ * the driver is genuinely not yet adoptable. The default is zero and leaves every other
+ * spec byte-for-byte on the existing timing path.
+ */
+const RESUME_DELAY_MS = Math.max(
+  0,
+  Number(process.env.MC_E2E_CODEX_RESUME_DELAY_MS ?? 0) || 0,
+);
+/**
  * The reasoning effort this Codex records in its rollout, or unset for the default fake.
  *
  * Everything this flag turns on is a rollout record real Codex always writes and this fake
@@ -112,6 +121,14 @@ if (recordDir) {
   writeFileSync(
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
     JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }, null, 2),
+  );
+}
+
+function recordResumePhase(phase) {
+  if (!recordDir) return;
+  writeFileSync(
+    join(recordDir, "codex", `resume-${phase}.json`),
+    JSON.stringify({ phase, threadId: THREAD_ID, at: Date.now() }, null, 2),
   );
 }
 
@@ -583,7 +600,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       respond(id, { userAgent: "fake-codex/e2e" });
       return;
     case "thread/start":
-    case "thread/resume":
       respond(id, {
         thread: thread({ type: "idle" }),
         model: MODEL,
@@ -597,6 +613,27 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         reasoningEffort: RECORDED_EFFORT,
       });
       return;
+    case "thread/resume": {
+      recordResumePhase("started");
+      const finishResume = () => {
+        respond(id, {
+          thread: thread({ type: "idle" }),
+          model: MODEL,
+          modelProvider: "openai",
+          serviceTier: null,
+          cwd: process.cwd(),
+          instructionSources: [],
+          approvalPolicy: params?.approvalPolicy ?? "onRequest",
+          approvalsReviewer: params?.approvalsReviewer ?? "user",
+          sandbox: { type: "workspaceWrite" },
+          reasoningEffort: RECORDED_EFFORT,
+        });
+        recordResumePhase("completed");
+      };
+      if (RESUME_DELAY_MS > 0) setTimeout(finishResume, RESUME_DELAY_MS);
+      else finishResume();
+      return;
+    }
     case "turn/start": {
       const turnId = `turn-${++turnSeq}`;
       // Answered BEFORE a single notification is written, and the turn's own frames are

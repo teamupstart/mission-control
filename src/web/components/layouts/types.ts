@@ -3,6 +3,7 @@ import type {
   FileCommentReview,
   FileCommentThread,
   ReviewItem,
+  RestoringSession,
   Session,
   Task,
 } from "@shared/types.ts";
@@ -36,6 +37,8 @@ export interface WorkflowDisclosureHandle {
 export interface SessionViewProps {
   /** The visible, sorted sessions - already filtered; layouts render exactly these. */
   sessions: Session[];
+  /** Driverless startup rows. Board-only, inert, and excluded from every session total. */
+  restoringSessions?: RestoringSession[];
   /**
    * Every known task, unfiltered. Lookups only: resolving a drop's title, and the
    * dependency/ordering reads (`nextUpTaskId`, `backlogIndex`) that are wrong unless

@@ -139,16 +139,21 @@ export async function* readFrames(child: {
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */
 export interface CodexSdkDeps {
   /** Start one connection. `args` are the launch-scoped `-c` config overrides. */
-  connect(args: readonly string[], cwd: string): Promise<AppServerTransport>;
+  connect(args: readonly string[], cwd: string, stateHome?: string): Promise<AppServerTransport>;
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
-  async connect(args, cwd) {
+  async connect(args, cwd, stateHome) {
     // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
     // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    return spawnAppServer(await codexExecutable(), args, cwd, sdkSubprocessEnv());
+    return spawnAppServer(
+      await codexExecutable(),
+      args,
+      cwd,
+      sdkSubprocessEnv(process.env, cwd, stateHome),
+    );
   },
 };

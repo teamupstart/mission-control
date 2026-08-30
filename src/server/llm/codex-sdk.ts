@@ -2,6 +2,7 @@ import { tmpdir } from "node:os";
 
 import { Codex } from "@openai/codex-sdk";
 import type { LlmRunOptions } from "@shared/llm.ts";
+import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 
 /**
  * One headless Codex call, driven through `@openai/codex-sdk` instead of hand-parsed argv.
@@ -76,7 +77,11 @@ export interface CodexSdkDeps {
    * Handed the WHOLE options object rather than just the path, so a test can assert the
    * posture that reaches the provider instead of only the binary that runs it.
    */
-  createClient?: (options: { codexPathOverride: string; config: unknown }) => {
+  createClient?: (options: {
+    codexPathOverride: string;
+    config: unknown;
+    env: Record<string, string>;
+  }) => {
     startThread(options?: unknown): SdkThread;
   };
 }
@@ -122,31 +127,35 @@ export async function runCodexSdkOneShot(
     throw new Error("the codex SDK transport does not support images");
   }
 
-  const clientOptions = { codexPathOverride: codexBin, config: CLIENT_CONFIG };
-  const client = deps.createClient
-    ? deps.createClient(clientOptions)
-    : new Codex(clientOptions);
-
-  // The same posture the exec transport spells out in argv: no project rules, read-only,
-  // never prompt for approval, no shell, and a working directory outside any checkout. A
-  // transport that quietly ran with wider powers than its sibling would make the config
-  // choice a security decision, which it must not be.
-  const thread = client.startThread({
-    ...THREAD_POSTURE,
-    ...(opts.model ? { model: opts.model } : {}),
-  });
-
+  const env = agentSubprocessEnv(process.env, { loopbackAccess: true });
   const controller = new AbortController();
   liveRuns.add(controller);
-  // `outputSchema` is the SDK's spelling of the exec transport's `--output-schema`. Passing
-  // it keeps a structured job answering the same shape on either transport; omitting it made
-  // the two paths disagree for exactly the callers that care most.
-  const run = thread.run(prompt, {
-    signal: controller.signal,
-    ...(opts.schema ? { outputSchema: opts.schema } : {}),
-  });
-
   try {
+    const clientOptions = {
+      codexPathOverride: codexBin,
+      config: CLIENT_CONFIG,
+      env,
+    };
+    const client = deps.createClient
+      ? deps.createClient(clientOptions)
+      : new Codex(clientOptions);
+
+    // The same posture the exec transport spells out in argv: no project rules, read-only,
+    // never prompt for approval, no shell, and a working directory outside any checkout. A
+    // transport that quietly ran with wider powers than its sibling would make the config
+    // choice a security decision, which it must not be.
+    const thread = client.startThread({
+      ...THREAD_POSTURE,
+      ...(opts.model ? { model: opts.model } : {}),
+    });
+
+    // `outputSchema` is the SDK's spelling of the exec transport's `--output-schema`. Passing
+    // it keeps a structured job answering the same shape on either transport; omitting it made
+    // the two paths disagree for exactly the callers that care most.
+    const run = thread.run(prompt, {
+      signal: controller.signal,
+      ...(opts.schema ? { outputSchema: opts.schema } : {}),
+    });
     const result = opts.timeoutMs
       ? await withTimeout(run, opts.timeoutMs, controller)
       : await run;
@@ -155,6 +164,7 @@ export async function runCodexSdkOneShot(
     return { text, usage: result.usage ?? null, threadId: thread.id ?? "" };
   } finally {
     liveRuns.delete(controller);
+    cleanupAgentSubprocessEnv(env);
   }
 }
 

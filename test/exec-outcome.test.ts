@@ -24,7 +24,12 @@ test("a command that runs and fails is a refusal, not an unknown", () => {
 });
 
 test("a command that succeeds is not an unknown either", () => {
-  return run(process.execPath, ["-e", "process.stdout.write('ok')"]).then((res) => {
+  // The full suite runs six process-heavy files at once. This case proves the successful
+  // outcome classification, not the shared four-second discovery budget, so give the child
+  // enough time to be scheduled under that documented contention.
+  return run(process.execPath, ["-e", "process.stdout.write('ok')"], {
+    timeoutMs: 10_000,
+  }).then((res) => {
     assert.equal(res.code, 0);
     assert.equal(res.stdout, "ok");
     assert.equal(res.outcomeUnknown, false);
@@ -62,7 +67,10 @@ test("a command we time out on is an unknown outcome", () => {
 // definite "this response cannot be made smaller by asking again".
 test("an overflow is named as itself, and is not an unknown outcome", () => {
   const spew = "process.stdout.write('x'.repeat(200000))";
-  return run(process.execPath, ["-e", spew], { maxBuffer: 1024 }).then((res) => {
+  return run(process.execPath, ["-e", spew], {
+    maxBuffer: 1024,
+    timeoutMs: 15_000,
+  }).then((res) => {
     assert.equal(res.overflowed, true);
     assert.equal(res.outcomeUnknown, false, "an overflow is a fact about the response");
     assert.match(res.stderr, /maxBuffer/i, "and it has to be legible to a caller");

@@ -38,6 +38,7 @@ import {
   TaskWorktreeRetentionObserver,
 } from "./task-worktree-retention.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
+import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
@@ -93,13 +94,15 @@ import {
 } from "./product-issues.ts";
 import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
+import { DatabaseBackupService } from "./database-backups/service.ts";
+import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 
 // Before SQLite is opened or migrations can run. The ownership file lives beside the
 // database, so API ports are irrelevant and two independent state homes remain independent.
 // Its native handle holds an OS lock for this process lifetime; crashes release that lock in
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
-openDb();
+const database = openDb();
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
 // config edit reaches the next call in both processes.
@@ -323,6 +326,10 @@ workflows.start();
 // It starts only after the port is won, so the daemon remains the sole durable writer.
 const settingsBackups = new SettingsBackupService(personas.store, { registry });
 let stopSettingsBackups = () => {};
+// Full recovery points are separate from logical Settings snapshots. They capture the whole
+// SQLite database through SQLite itself and are never restored by the running daemon.
+const databaseBackups = new DatabaseBackupService(database);
+let stopDatabaseBackups = async () => {};
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
 // engine that launches member waves, captures submissions and recovers, runs the Best-of-N
@@ -400,24 +407,15 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
-// Embedded (SDK-runtime) sessions, restored BEFORE the poller starts - the other half of the
-// gate above. `onSessionsObserved` fires on the first COMPLETED sweep, and every restart twin
-// hangs off it, so a session registered after that moment is invisible to the reconciliation
-// that would have settled its task. Restoring first is what makes an embedded session look
-// exactly like a rediscovered terminal one to `reconcileTasksWithNoLiveSession` and
-// `reconcileBindingsAfterDiscovery`. A fresh installation has no persisted SDK session row, so
-// this has nothing to restore until its first embedded dispatch. Awaited rather than
-// fire-and-forget for the ordering itself, and best-effort because a daemon that refused to
-// start over one unresumable session would be worse than one running without it.
 // Restore provider commissions first. A retained Engineer may rotate its native conversation
 // identity while resuming; that rotation must resolve against the exact handoff commission
 // before generic work-episode ownership decides whether the task was abandoned.
 restorePipelineProjection(registry);
-try {
-  await sdkSessions.restore();
-} catch (err) {
-  console.error("[sdk] could not restore embedded sessions:", err);
-}
+// Capture the bounded, inert view of every readable live SDK row BEFORE HTTP can answer.
+// Driver restoration itself starts only after the listener wins the port below. The split
+// removes serial provider handshakes from first paint without weakening the load-bearing
+// discovery gate: `startPoller` is still started only after the owned restore promise settles.
+sdkSessions.prepareRestore();
 // The daemon's half of usage accounting. Installed before the Inspector starts, because
 // the Inspector runs IN this process and would otherwise spend before there was anywhere
 // to record it. Straight to the ledger - the daemon is the only process allowed to write
@@ -425,7 +423,7 @@ try {
 setLlmSpendSink((report) => {
   if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
-const stopPoller = startPoller(registry);
+let stopPoller = () => {};
 // The durable worktree activity clock. Non-destructive by construction: it records when each
 // terminal task's checkouts last changed in a way Git can see, and the 30-day deadline that
 // implies, and it reclaims nothing - see `task-worktree-retention.ts`.
@@ -584,11 +582,25 @@ if (hasDist) {
   app.get("*", serveStatic({ path: join(webDir, "index.html") }));
 }
 
+let shutdownStarted = false;
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  // Restoration remains serial, but is no longer on the listener's critical path. Terminal
+  // discovery and every first-observation reconciliation still wait for every prepared SDK
+  // row to adopt or follow register-and-evict. A failed port bind never reaches this callback,
+  // so it cannot launch a driver.
+  void startDiscoveryAfterSdkRestore(
+    sdkSessions.restore(),
+    () => startPoller(registry),
+    () => shutdownStarted,
+    (err) => console.error("[sdk] could not restore embedded sessions:", err),
+  ).then((stop) => {
+    if (stop) stopPoller = stop;
+  });
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
+  stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
   // Adopt every review the store still believes is running, so a daemon restart RESUMES a
   // walkthrough rather than re-sending its outstanding comment. There is nothing to re-send:
   // `recoverSendingPendingTurns` has just turned any in-flight row `uncertain`, which lands on
@@ -659,10 +671,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   console.log(`[mission-control] listening on ${where}`);
 });
 
-let shutdownStarted = false;
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
   stopAgentsShadow();

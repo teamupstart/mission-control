@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Phased implementation index for fast Mission Control session bootstrap">
+  <title>Fast session bootstrap: phased implementation</title>
+  <style>
+    :root { color-scheme:light dark; --bg:#edf1f5; --paper:#fbfcfd; --ink:#17212b; --muted:#607080; --line:#c8d2db; --navy:#142a3b; --blue:#2d759b; --cyan:#62bbb4; --amber:#c57b25; --soft:#eaf2f4; --green:#287768; --code:#10212d; --shadow:0 20px 55px rgba(20,42,59,.14); }
+    * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:var(--bg); font:16px/1.62 "Avenir Next",Avenir,"Segoe UI",sans-serif; }
+    main { width:min(1080px,calc(100% - 28px)); margin:20px auto 72px; background:var(--paper); box-shadow:var(--shadow); }
+    header { padding:clamp(34px,7vw,72px); color:#edf8f9; background:var(--navy); border-top:6px solid var(--cyan); }
+    h1,h2,h3 { font-family:"Iowan Old Style",Palatino,Georgia,serif; } h1 { max-width:850px; margin:10px 0 18px; font-size:clamp(2.6rem,7vw,5.4rem); line-height:.98; letter-spacing:-.045em; }
+    header p { max-width:820px; color:#d8e7ea; font-size:1.13rem; } .eyebrow,code,pre,th,.pill { font-family:"SFMono-Regular",Consolas,monospace; }
+    .eyebrow { color:#9edbd6; font-size:.75rem; letter-spacing:.15em; text-transform:uppercase; } .pill { display:inline-block; padding:7px 11px; color:#10212d; background:#9edbd6; font-size:.76rem; font-weight:700; }
+    article { padding:clamp(24px,6vw,64px); } h2 { margin:52px 0 14px; color:var(--navy); font-size:clamp(1.8rem,4vw,2.7rem); } h2:first-child { margin-top:0; } h3 { margin:27px 0 8px; font-size:1.28rem; }
+    p,li { max-width:86ch; } li + li { margin-top:7px; } a { color:var(--blue); text-underline-offset:.2em; } code { padding:.08em .28em; color:#e9f3f5; background:var(--code); border-radius:3px; }
+    pre { overflow:auto; padding:17px; color:#e9f3f5; background:var(--code); border-radius:5px; } table { width:100%; border-collapse:collapse; margin:22px 0; } th,td { padding:12px 14px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); } th { color:var(--muted); font-size:.76rem; letter-spacing:.05em; text-transform:uppercase; }
+    .metric { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin:24px 0; background:var(--line); border:1px solid var(--line); } .metric div { padding:19px; background:var(--paper); } .metric strong { display:block; color:var(--blue); font:700 1.65rem "SFMono-Regular",Consolas,monospace; } .metric span { color:var(--muted); font-size:.8rem; }
+    .phase { padding:22px; border:1px solid var(--line); border-left:6px solid var(--cyan); border-radius:7px; } .phase h3 { margin-top:0; } .flow { margin:26px 0; padding:18px; overflow:auto; background:var(--soft); border:1px solid var(--line); } .flow svg { display:block; min-width:720px; width:100%; height:auto; } .flow text { fill:#17212b; font-family:"SFMono-Regular",Consolas,monospace; }
+    .ok { color:var(--green); font-weight:700; }
+    @media (max-width:700px) { .metric { grid-template-columns:1fr; } main { width:calc(100% - 14px); margin-top:7px; } }
+    @media (prefers-color-scheme:dark) { :root { --bg:#0a1015; --paper:#111920; --ink:#e3eaee; --muted:#9eacb7; --line:#2d3b46; --navy:#102536; --blue:#82c9ea; --soft:#16232c; } h2 { color:#cee9f5; } .flow text { fill:#e3eaee; } }
+  </style>
+</head>
+<body><main>
+  <header>
+    <div class="eyebrow">Phased implementation index · 2026-08-30</div>
+    <h1>One merge unit for one truthful startup boundary</h1>
+    <p>The transient wire projection, early HTTP bind, supervisor lifecycle, SSE ordering, and inert Board handoff ship together. Any smaller split would publish a dead or misleading intermediate state.</p>
+    <span class="pill">1 PHASE · 1 REPOSITORY · 1 TASK</span>
+  </header>
+  <article>
+    <h2>Source and approved decisions</h2>
+    <p>Source: <a href="plan.html">Fast installed-app session bootstrap</a>. The operator approved early Board serving with dedicated restoring cards and directly requested this phased plan and task schedule.</p>
+    <ul>
+      <li>Use the daemon-served React app, not a separate local loading application.</li>
+      <li>Use a dedicated transient projection, not synthetic real sessions or dispatching tasks.</li>
+      <li>Move HTTP before awaited restore while keeping terminal discovery after it.</li>
+      <li>Keep SDK restore serial.</li>
+      <li>Fix SSE bootstrap ordering in the same merge unit.</li>
+    </ul>
+
+    <h2>Investigated findings</h2>
+    <ul>
+      <li><code>src/server/index.ts</code> owns the full startup and shutdown sequence; the state-home lock remains before SQLite and serving.</li>
+      <li>The supervisor's required contract is register-or-evict before first terminal observation, not before HTTP.</li>
+      <li>The Registry and browser snapshot are the only live bootstrap. The new collection must move through shared types, Registry, SSE, and <code>useEventStream</code> together.</li>
+      <li>Background restore makes the existing snapshot-before-subscribe gap load-bearing.</li>
+      <li>The built E2E fixture already supports crash/restart and SDK idle-restore verification.</li>
+      <li>Early serving creates a new shutdown race that the supervisor must own.</li>
+    </ul>
+
+    <h2>Sizing estimate</h2>
+    <div class="metric"><div><strong>420-620</strong><span>estimated non-test implementation lines</span></div><div><strong>0</strong><span>schema migrations or external repositories</span></div><div><strong>1</strong><span>coherent implementation phase</span></div></div>
+    <p>The range covers shared projection/events, supervisor lifecycle, server ordering, race-free SSE, Board rendering, styles, and docs. Tests are excluded and expected to be substantial because startup concurrency and action refusal need direct proof.</p>
+
+    <h2>Phase-count rationale</h2>
+    <p>Splitting layers would produce a projection that cannot appear, an early server that falsely reports an empty fleet, or a visible bootstrap whose events can be lost. The complete vertical slice is concentrated in existing owners and has an established E2E restart fixture, so one phase is both achievable and safer.</p>
+
+    <h2>Phase table</h2>
+    <table><thead><tr><th>Phase</th><th>Outcome</th><th>Direct dependency</th><th>Merge unit</th></tr></thead><tbody><tr><td>1 · Serve the Board while SDK sessions restore</td><td>Paint inert restoring cards before serial adoption completes, preserving reconciliation, SSE, and shutdown correctness</td><td>Planning session</td><td>One pull request in Mission Control</td></tr></tbody></table>
+    <section class="phase"><h3>Phase 1 guide</h3><p><a href="phase-1-serve-board-during-sdk-restore.md">Read the complete implementation route</a>. It covers shared contracts, prepared restore lifecycle, shutdown coordination, daemon reordering, SSE initial delivery, inert Board rendering, built restart coverage, visual evidence, docs, and exit criteria.</p></section>
+
+    <h2>Dependency graph and merge order</h2>
+    <div class="flow" aria-label="Implementation dependency graph"><svg viewBox="0 0 820 260" role="img" aria-labelledby="dep-title dep-desc"><title id="dep-title">One-phase implementation dependency graph</title><desc id="dep-desc">The planning pull request must merge before the single implementation task can start.</desc><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#c57b25"/></marker></defs><rect x="45" y="75" width="235" height="100" rx="10" fill="#dceaf0" stroke="#2d759b" stroke-width="2"/><text x="162" y="112" text-anchor="middle" font-size="13" font-weight="700">Planning artifacts</text><text x="162" y="136" text-anchor="middle" font-size="12">commit + push + PR merge</text><text x="162" y="156" text-anchor="middle" font-size="12">publishes task paths</text><path d="M280 125 L400 125" stroke="#c57b25" stroke-width="4" marker-end="url(#a)"/><rect x="410" y="55" width="350" height="140" rx="10" fill="#dff0eb" stroke="#287768" stroke-width="2"/><text x="585" y="91" text-anchor="middle" font-size="13" font-weight="700">Phase 1</text><text x="585" y="116" text-anchor="middle" font-size="12">early serve + restore projection</text><text x="585" y="138" text-anchor="middle" font-size="12">safe handoff + SSE + shutdown</text><text x="585" y="160" text-anchor="middle" font-size="12">built browser verification</text><text x="585" y="181" text-anchor="middle" font-size="11">one reviewable pull request</text></svg></div>
+    <p>There is no internal concurrency group. The single task remains backlogged until the planning pull request reaches the default branch.</p>
+
+    <h2>Cross-phase contracts</h2>
+    <ul>
+      <li>State-home ownership and database open precede serving.</li>
+      <li>Real Registry sessions require a live terminal process or adopted SDK driver.</li>
+      <li>The restore projection is transient, bounded, and rebuilt from existing rows.</li>
+      <li>Success or existing register-and-evict failure settles before a provisional row retires.</li>
+      <li>Terminal discovery waits for the restore promise.</li>
+      <li>SSE subscribes before snapshot capture.</li>
+      <li>Restoring rows never participate in fleet automation, counts, selection, or actions.</li>
+      <li>Shutdown prevents later launches and cleans the in-flight restore through the supervisor.</li>
+      <li>Health means serving, not that every driver is ready.</li>
+    </ul>
+
+    <h2>Final verification strategy</h2>
+    <pre><code>node --test --import ./test/setup-state.mjs --import tsx test/sdk-supervisor.test.ts test/session-runtime.test.ts test/sse-initial-delivery.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run smoke
+npx playwright test e2e/specs/sdk-startup-bootstrap.spec.ts
+npx playwright test e2e/specs/sdk-idle-restore.spec.ts</code></pre>
+    <p>The final pull request must include built-Board screenshots of both the held restoring state and the exact settled replacement.</p>
+
+    <h2>Complete-plan audit</h2>
+    <ul>
+      <li>Every approved source-plan behavior is owned by Phase 1.</li>
+      <li>No migration, external repository, later repair phase, or undocumented cleanup is required.</li>
+      <li>Projection, server, UI, lifecycle, failure, shutdown, SSE, docs, and E2E proof agree on one stable id and one real-session authority.</li>
+      <li>The scheduled task can rely on the three Markdown paths only after this planning pull request merges.</li>
+    </ul>
+    <p class="ok">Audit result: one phase is sufficient and required for a truthful vertical slice.</p>
+
+    <h2>Cross-phase audit record</h2>
+    <p>Reconciled on 2026-08-30 against current <code>main</code>, including merged state-home ownership, Pipeline commission recovery, and isolated agent subprocess state. Serial restoration remains deliberate; SSE and shutdown were folded into the phase because early serving makes both correctness boundaries.</p>
+  </article>
+</main></body>
+</html>

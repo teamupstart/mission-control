@@ -152,7 +152,11 @@ const failingRunner: LlmRunner = {
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 5_000) assert.fail(message);
+    // This file drives real check subprocesses twice. Under the suite's six workers (and CI's
+    // eight), a repaired round can spend more than five seconds waiting for CPU even though its
+    // isolated runtime is under a second. Keep the poll frequent, but give the owning workflow
+    // the same contention headroom as the other real-process integration fixtures.
+    if (Date.now() - started > 15_000) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

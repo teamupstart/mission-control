@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Detached macOS update helper. The Electron process copies this file to a fresh temp
 // directory before launching it, because both the app bundle and updater-owned clone can be
-// rewritten during the update. Keep every import in this file a node: builtin and do not add
-// runtime imports after work begins.
+// rewritten during the update. Its one sibling module is copied into the same directory before
+// launch and imports only node: builtins. Do not add runtime imports after work begins.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -14,8 +14,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { replaceAppBundle } from "./app-bundle-swap.mjs";
 
 export const UPDATE_OUTCOME_SCHEMA = 1;
 const PARENT_EXIT_TIMEOUT_MS = 120_000;
@@ -81,6 +82,17 @@ export function sanitizeDiagnostic(value) {
     .slice(0, 500);
 }
 
+/** Keep the decisive tail of a failed child process instead of only its exit status. */
+export function installFailureSummary(output) {
+  const ansiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  const lines = String(output ?? "")
+    .replace(ansiPattern, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.slice(-3).join(" | ").slice(-400);
+}
+
 export function writeOutcome(path, outcome) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -95,41 +107,6 @@ export function writeOutcome(path, outcome) {
     rmSync(temporary, { force: true });
     throw error;
   }
-}
-
-function restoreBundle({ appPath, backupApp, pid, ops, keepFailedAs }) {
-  const parent = dirname(appPath);
-  const rollback = join(parent, `.${basename(appPath)}.rollback-${pid}`);
-  const failed = join(parent, `.${basename(appPath)}.failed-${pid}`);
-  ops.remove(rollback);
-  ops.remove(failed);
-  ops.copy(backupApp, rollback);
-  const hadApp = ops.exists(appPath);
-  if (hadApp) ops.move(appPath, failed);
-  try {
-    ops.move(rollback, appPath);
-  } catch (error) {
-    if (hadApp && ops.exists(failed)) ops.move(failed, appPath);
-    throw error;
-  }
-  // The bundle that failed is the only evidence of HOW it failed, so it is never deleted here.
-  // Filing it under the durable directory is preferred; leaving it in place as `.failed-<pid>`
-  // beside the installed app is the fallback when there is nowhere durable to put it. Filing it
-  // must not be able to turn a rollback that worked into a reported failure, so a move that
-  // throws falls back rather than propagating.
-  if (!hadApp) {
-    ops.remove(failed);
-    return null;
-  }
-  if (keepFailedAs) {
-    try {
-      ops.move(failed, keepFailedAs);
-      return keepFailedAs;
-    } catch {
-      // nowhere durable to put it after all - leave it where it is
-    }
-  }
-  return failed;
 }
 
 function restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops }) {
@@ -158,7 +135,13 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
     exists: existsSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     move: renameSync,
-    copy: (from, to) => execFileSync("cp", ["-R", from, to], { stdio: "ignore" }),
+    // Keep stderr in a thrown error. The caller sanitizes it before it reaches the outcome,
+    // and "Operation not permitted" is the difference between a diagnosable rollback and the
+    // old generic "Command failed: cp" report.
+    copy: (from, to) => execFileSync("cp", ["-R", from, to], {
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+    }),
     nowIso: () => new Date().toISOString(),
     waitForParent: async (pid) => {
       const deadline = Date.now() + PARENT_EXIT_TIMEOUT_MS;
@@ -193,7 +176,8 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
         killSignal: "SIGKILL",
       });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-      if (output) log(output);
+      const summary = installFailureSummary(output);
+      if (summary) log(summary);
       if (result.error?.code === "ETIMEDOUT") {
         throw new Error(
           `the build did not finish within ${Math.round(installTimeoutMs / 60_000)} minutes and was stopped`,
@@ -201,8 +185,21 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
       }
       if (result.error) throw result.error;
       if (result.status !== 0) {
-        throw new Error(`the build/install command exited ${result.status ?? 1}`);
+        throw new Error(
+          `the build/install command exited ${result.status ?? 1}${summary ? `: ${summary}` : ""}`,
+        );
       }
+    },
+    restoreApp: (backupApp, appPath, pid) => {
+      const restored = replaceAppBundle({
+        sourceBundle: backupApp,
+        appPath,
+        appsDir: dirname(appPath),
+        pid,
+        keepPrevious: true,
+      });
+      if (restored.problem) throw new Error(restored.problem);
+      return restored.failedBundle;
     },
     launch: (appPath) => {
       const result = spawnSync("open", [appPath], { encoding: "utf8" });
@@ -259,21 +256,15 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       // state directory was too broken to hold a second one.
       keepTemporaryBackup = !kept;
       try {
-        const failedBundle = restoreBundle({
-          appPath: args.appPath,
-          backupApp,
-          pid: process.pid,
-          ops,
-          keepFailedAs: kept ? join(retained, "failed-app.bundle") : null,
-        });
+        const failedBundle = ops.restoreApp(backupApp, args.appPath, process.pid);
         restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops });
-        if (!kept && failedBundle) {
+        if (failedBundle) {
           // Paths are redacted out of the log, so this can only say WHERE in the abstract. Both
-          // locations are deterministic: the helper's own temp directory, and a `.failed-<pid>`
-          // sibling of the installed app. A stale sibling can only accumulate on a machine whose
-          // state directory cannot be written at all, which has to be fixed by hand regardless.
+          // locations are deterministic: the helper's own temp directory, and a `.failed-update`
+          // sibling of the installed app. The next bundle transaction replaces that one retained
+          // failed bundle, so repeated failures do not accumulate privileged directories.
           ops.log(
-            "durable retention was unavailable: the previous app bundle and receipt were left in the update helper's temp directory, and the failed bundle beside the installed app",
+            `${kept ? "the previous app bundle and receipt were retained in the state directory" : "durable retention was unavailable, so the previous app bundle and receipt remain in the update helper's temp directory"}; the failed bundle remains beside the installed app`,
           );
         }
       } catch (restoreError) {

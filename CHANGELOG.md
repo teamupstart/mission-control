@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.1](https://github.com/teamupstart/mission-control/compare/v1.3.0...v1.3.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* make app auto-upgrades privilege-safe ([#843](https://github.com/teamupstart/mission-control/issues/843)) ([11e7fd8](https://github.com/teamupstart/mission-control/commit/11e7fd8c54852a043a46f8c443dc8c0d4a0dabea))
+
+## [1.3.0](https://github.com/teamupstart/mission-control/compare/v1.2.0...v1.3.0) (2026-08-30)
+
+
+### Features
+
+* add verified automatic database backups ([#839](https://github.com/teamupstart/mission-control/issues/839)) ([3125aaa](https://github.com/teamupstart/mission-control/commit/3125aaa82401e3ad572cce01ce7871626682db6e))
+
+
+### Bug Fixes
+
+* **settings:** verify trust snapshot coverage ([#829](https://github.com/teamupstart/mission-control/issues/829)) ([9bcfc96](https://github.com/teamupstart/mission-control/commit/9bcfc965302b9346f99c6307eaaedc2a6ec89cc6))
+* **setup:** detect login-shell agent binaries ([#828](https://github.com/teamupstart/mission-control/issues/828)) ([6d85d0b](https://github.com/teamupstart/mission-control/commit/6d85d0b4566d037ffaecb7643ec3f3c13ae4fb77))
+* **worktrees:** recover quarantined cleanup and speed inventory ([#832](https://github.com/teamupstart/mission-control/issues/832)) ([6b7fb8d](https://github.com/teamupstart/mission-control/commit/6b7fb8df2e81437b263985f9abbad22731cbb83b))
+
 ## [1.2.0](https://github.com/teamupstart/mission-control/compare/v1.1.0...v1.2.0) (2026-08-28)
 
 

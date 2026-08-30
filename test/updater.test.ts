@@ -4,6 +4,7 @@ import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { UpdateApplyOutcome } from "../src/shared/update.ts";
 import {
+  detachedUpdateHelperSources,
   latestStableRelease,
   sanitizeLogLine,
   sanitizeReleaseNotes,
@@ -32,6 +33,18 @@ const release = (over: Partial<ReleaseInfo> = {}): ReleaseInfo => ({
   isPrerelease: false,
   body: "## Fixed\n\n- Safer updates",
   ...over,
+});
+
+test("the detached updater carries its narrowly scoped bundle-swap support module", () => {
+  assert.deepEqual(
+    detachedUpdateHelperSources(
+      "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
+    ),
+    [
+      "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
+    ],
+  );
 });
 
 function fixture(over: Partial<UpdaterPort> = {}) {

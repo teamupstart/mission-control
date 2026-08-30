@@ -238,6 +238,7 @@ rather than failing outright.
 | No second release ever proposed | The `release-as` pin is still in `release-please-config.json`. |
 | Update reported success, app still old | An install made outside `/Applications` on a build predating the `--apps-dir` fix. |
 | Relaunch never appears after a successful update | The single-instance lock again, or `open` landed in a different `MISSION_HOME`. |
+| Checkout reports `unable to unlink old` | A historical `sudo make install` left unwritable directories in `app-src`. Run an installer containing the repair as the signed-in account. It replaces the disposable clone, then requests macOS administrator authorization only for the final `/Applications` swap. Do not run the whole command with `sudo`. |
 
 `update.log` in the state directory is the diagnostic of record. It rotates at 1 MB and redacts
 credentials and absolute paths, so expect `<path>` where a directory would be.

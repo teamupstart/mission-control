@@ -1,5 +1,23 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  PRIVILEGED_SWAP_APPLESCRIPT,
+  bundleSwapShellCommand,
+  privilegedBundleSwapCommand,
+  replaceAppBundle,
+} from "../scripts/app-bundle-swap.mjs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   GH_ARGS,
@@ -7,6 +25,7 @@ import {
   appsDirProblem,
   canonicalRemoteUrl,
   existingCloneCommands,
+  firstUnwritableCloneDirectory,
   newestStableRelease,
   remoteProblem,
   stagingPaths,
@@ -16,6 +35,7 @@ import {
   parseRemote,
   plistVersion,
   receiptReleaseTag,
+  rebuildUpdaterOwnedClone,
   resolveInstallRepo,
   resolveTargetRef,
 } from "../scripts/install-app.mjs";
@@ -197,6 +217,71 @@ test("the updater-owned clone's former canonical remote is accepted for migratio
   );
 });
 
+test("a privileged updater clone is replaced without depending on permissions inside it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "mission-privileged-clone-"));
+  const origin = join(root, "origin");
+  const clone = join(root, "app-src");
+  const locked = join(clone, "src", "server", "setup");
+  const preserved = `${clone}.unusable-4242`;
+  t.after(() => {
+    try { chmodSync(join(preserved, "src", "server", "setup"), 0o755); } catch {}
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(origin, "src", "server", "setup"), { recursive: true });
+  const git = (args: string[], cwd = origin) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  };
+  git(["init", "--initial-branch=main"]);
+  git(["config", "user.email", "updater-test@example.invalid"]);
+  git(["config", "user.name", "Updater Test"]);
+  writeFileSync(join(origin, "src", "server", "setup", "index.ts"), "export const version = 1;\n");
+  git(["add", "."]);
+  git(["commit", "-m", "initial"]);
+  const initial = spawnSync("git", ["rev-parse", "HEAD"], { cwd: origin, encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(origin, "src", "server", "setup", "index.ts"), "export const version = 2;\n");
+  git(["add", "."]);
+  git(["commit", "-m", "update"]);
+  git(["clone", origin, clone], root);
+  git(["checkout", "--force", initial], clone);
+
+  // This is the end-user failure shape from the live updater-owned clone: the clone root is
+  // writable, but a nested directory cannot unlink the tracked file Git needs to replace.
+  chmodSync(locked, 0o555);
+  assert.equal(firstUnwritableCloneDirectory(clone), locked);
+  const checkout = spawnSync("git", ["checkout", "--force", "main"], {
+    cwd: clone,
+    encoding: "utf8",
+  });
+  assert.notEqual(checkout.status, 0);
+  assert.match(checkout.stderr, /unable to unlink old .*src\/server\/setup\/index\.ts/);
+
+  const result = rebuildUpdaterOwnedClone({
+    clone,
+    remoteUrl: origin,
+    pid: 4242,
+    run: (command: string, args: string[]) => {
+      const child = spawnSync(command, args, { encoding: "utf8" });
+      return {
+        status: child.status ?? 1,
+        stdout: child.stdout ?? "",
+        stderr: child.stderr ?? "",
+      };
+    },
+    ops: {
+      exists: existsSync,
+      move: renameSync,
+      remove: (path: string) => rmSync(path, { recursive: true, force: true }),
+    },
+  });
+
+  assert.deepEqual(result, { problem: null, preserved });
+  assert.equal(firstUnwritableCloneDirectory(clone), null);
+  assert.equal(readFileSync(join(clone, "src", "server", "setup", "index.ts"), "utf8"), "export const version = 2;\n");
+  assert.ok(existsSync(preserved), "the clone that needs privileged cleanup remains recoverable");
+});
+
 test("the clone keeps the caller's transport and the canonical repository", () => {
   assert.equal(canonicalRemoteUrl("ssh"), `ssh://git@github.com/${CANONICAL_REPO}.git`);
   assert.equal(canonicalRemoteUrl("https"), `https://github.com/${CANONICAL_REPO}.git`);
@@ -302,7 +387,14 @@ test("a missing install directory stops the install before the copy invents one"
 });
 
 /** A fake filesystem for the swap: records every operation and can fail a chosen one. */
-function bundleFs(present: string[], failOn: { copy?: boolean; move?: (from: string) => boolean } = {}) {
+function bundleFs(
+  present: string[],
+  failOn: {
+    copy?: boolean;
+    move?: (from: string, to: string) => boolean;
+    remove?: (path: string) => boolean;
+  } = {},
+) {
   const paths = new Set(present);
   const log: string[] = [];
   return {
@@ -316,12 +408,13 @@ function bundleFs(present: string[], failOn: { copy?: boolean; move?: (from: str
       },
       move(from: string, to: string) {
         log.push(`move ${from} -> ${to}`);
-        if (failOn.move?.(from)) throw new Error("Input/output error");
+        if (failOn.move?.(from, to)) throw new Error("Input/output error");
         paths.delete(from);
         paths.add(to);
       },
       remove(path: string) {
         log.push(`remove ${path}`);
+        if (failOn.remove?.(path)) throw new Error("Operation not permitted");
         paths.delete(path);
       },
       exists(path: string) {
@@ -339,12 +432,61 @@ const SWAP = {
 };
 
 test("the staged bundle and the set-aside app are hidden siblings of the destination", () => {
-  const { staged, previous } = stagingPaths({ appsDir: "/Applications", pid: 4242 });
+  const { staged, previous, failed } = stagingPaths({ appsDir: "/Applications", pid: 4242 });
   // Same directory, so both moves below are renames on one filesystem rather than a second copy.
   assert.equal(staged, "/Applications/.Mission Control.app.incoming-4242");
   assert.equal(previous, "/Applications/.Mission Control.app.previous-4242");
+  assert.equal(failed, "/Applications/.Mission Control.app.failed-update");
   assert.notEqual(staged, previous);
 });
+
+test("an unwritable /Applications uses one narrowly scoped administrator transaction", () => {
+  const commands: string[] = [];
+  const result = replaceAppBundle({
+    sourceBundle: "/private/tmp/Mission 'Control.app",
+    appPath: "/Applications/Mission Control.app",
+    appsDir: "/Applications",
+    pid: 4242,
+    platform: "darwin",
+    writable: false,
+    runElevated: (command) => commands.push(command),
+  });
+
+  assert.deepEqual(result, { problem: null, elevated: true, failedBundle: null });
+  assert.equal(commands.length, 1);
+  assert.match(commands[0]!, /^set -eu\n/);
+  assert.match(commands[0]!, /\/bin\/cp -R/);
+  assert.match(commands[0]!, /'"'"'/, "a quote in the source path is shell-escaped");
+  assert.match(commands[0]!, /\/Applications\/\.Mission Control\.app\.incoming-4242/);
+  assert.match(commands[0]!, /\/Applications\/Mission Control\.app/);
+  assert.doesNotMatch(PRIVILEGED_SWAP_APPLESCRIPT, /Applications|private\/tmp/);
+  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with administrator privileges/);
+});
+
+test("administrator authorization cannot target an arbitrary install directory", () => {
+  const plan = privilegedBundleSwapCommand({
+    sourceBundle: "/tmp/Mission Control.app",
+    appPath: "/tmp/Applications/Mission Control.app",
+    appsDir: "/tmp/Applications",
+    pid: 4242,
+    keepPrevious: false,
+  });
+  assert.equal(plan.command, null);
+  assert.match(String(plan.problem), /restricted to \/Applications\/Mission Control\.app/);
+});
+
+test(
+  "the administrator AppleScript compiles without requesting authorization when no transaction is supplied",
+  { skip: process.platform !== "darwin" },
+  () => {
+    const result = spawnSync("/usr/bin/osascript", ["-e", PRIVILEGED_SWAP_APPLESCRIPT], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /expected one bundle transaction/);
+    assert.doesNotMatch(result.stderr, /administrator|privilege|authorization/i);
+  },
+);
 
 test("the app is copied to a staging path first and only then swapped in", () => {
   const fs = bundleFs([SWAP.appPath]);
@@ -356,6 +498,7 @@ test("the app is copied to a staging path first and only then swapped in", () =>
     `move ${SWAP.appPath} -> ${previous}`,
     `move ${staged} -> ${SWAP.appPath}`,
     `remove ${previous}`,
+    `remove ${stagingPaths(SWAP).failed}`,
   ]);
   assert.ok(fs.paths.has(SWAP.appPath));
   assert.ok(!fs.paths.has(staged));
@@ -407,4 +550,68 @@ test("a staging path left by a killed run is cleared before staging", () => {
   const fs = bundleFs([SWAP.appPath, staged]);
   assert.equal(swapAppBundle({ ...SWAP, ops: fs.ops }), null);
   assert.equal(fs.log[0], `remove ${staged}`);
+});
+
+test("post-swap retention failure cannot turn an installed app into a failed transaction", () => {
+  const { previous, failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], {
+    move: (_from, to) => to === failed,
+  });
+
+  assert.equal(swapAppBundle({ ...SWAP, keepPrevious: true, ops: fs.ops }), null);
+  assert.ok(fs.paths.has(SWAP.appPath), "the new app is live after the decisive move");
+  assert.ok(fs.paths.has(previous), "the displaced app remains at the fallback sibling");
+  assert.ok(!fs.paths.has(failed), "the failed filing destination was not claimed");
+});
+
+test("post-swap deletion failure cannot turn an installed app into a failed transaction", () => {
+  const { previous } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], {
+    remove: (path) => path === previous,
+  });
+
+  assert.equal(swapAppBundle({ ...SWAP, ops: fs.ops }), null);
+  assert.ok(fs.paths.has(SWAP.appPath), "the new app is live after the decisive move");
+  assert.ok(fs.paths.has(previous), "the displaced app remains when cleanup fails");
+});
+
+test("the privileged shell transaction tolerates a failed post-swap retention step", async (t) => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("the permission failure requires a non-root test process");
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "mission-bundle-retention-"));
+  const sourceBundle = join(root, "source.app");
+  const appPath = join(root, "Mission Control.app");
+  const staged = join(root, ".incoming");
+  const previous = join(root, ".previous");
+  const failed = join(root, ".failed-update");
+  t.after(() => {
+    try { chmodSync(failed, 0o755); } catch {}
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  mkdirSync(sourceBundle);
+  mkdirSync(appPath);
+  mkdirSync(failed);
+  writeFileSync(join(sourceBundle, "version.txt"), "new\n");
+  writeFileSync(join(appPath, "version.txt"), "old\n");
+  writeFileSync(join(failed, "locked.txt"), "retained evidence\n");
+  chmodSync(failed, 0o555);
+
+  const command = bundleSwapShellCommand({
+    sourceBundle,
+    appPath,
+    staged,
+    previous,
+    failed,
+    keepPrevious: true,
+  });
+  const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(readFileSync(join(appPath, "version.txt"), "utf8"), "new\n");
+  assert.equal(readFileSync(join(previous, "version.txt"), "utf8"), "old\n");
+  assert.equal(readFileSync(join(failed, "locked.txt"), "utf8"), "retained evidence\n");
 });

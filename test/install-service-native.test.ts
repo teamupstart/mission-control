@@ -21,6 +21,11 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installer = join(repo, "scripts", "install-service.mjs");
 const serviceEntry = join(repo, "scripts", "start-service.mjs");
 
+// These cases wait for a newly spawned Node process to record readiness. Under the full
+// concurrent suite, process scheduling can take several seconds before any fixture code runs.
+// Keep the wait bounded without mistaking host contention for a service-entry failure.
+const NATIVE_PROCESS_READY_TIMEOUT_MS = 15_000;
+
 function plistProgramArguments(plist: string): string[] {
   const block = plist.match(
     /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/,
@@ -126,7 +131,7 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + NATIVE_PROCESS_READY_TIMEOUT_MS;
     let recorded = "";
     while (!recorded.includes('"stage":"daemon"') && Date.now() < deadline) {
       await delay(20);
@@ -211,7 +216,7 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + NATIVE_PROCESS_READY_TIMEOUT_MS;
     let recorded = "";
     while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {
       await delay(20);

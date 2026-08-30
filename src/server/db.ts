@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
@@ -11,6 +11,7 @@ import {
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
 import { DB_PATH, envVar } from "./config.ts";
+import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
@@ -126,7 +127,35 @@ import {
  * backlog, running intent, and recent outcomes), current work-cycle projections, and the
  * session event log.
  */
-let db: DatabaseSync;
+let db: DatabaseSync | undefined;
+
+/**
+ * The durable marker for the forward migration contract below.
+ *
+ * Increment this whenever `upgradeDatabaseToCurrentSchema` gains a schema or data migration.
+ * The old value is what makes `openDb` capture one verified recovery point before that upgrade.
+ * The new value is written only after the entire upgrade succeeds, so an interrupted migration
+ * remains pending on the next start. A database from a newer build is never stamped backwards.
+ */
+export const CURRENT_DATABASE_SCHEMA_VERSION = 1;
+
+function databaseSchemaVersion(d: DatabaseSync): number {
+  const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
+  const version = Number(row.user_version);
+  if (!Number.isSafeInteger(version)) {
+    throw new TypeError(`Database user_version is not an integer: ${String(row.user_version)}`);
+  }
+  return version;
+}
+
+function databaseHasPendingMigration(d: DatabaseSync): boolean {
+  return databaseSchemaVersion(d) < CURRENT_DATABASE_SCHEMA_VERSION;
+}
+
+function markDatabaseSchemaCurrent(d: DatabaseSync): void {
+  if (!databaseHasPendingMigration(d)) return;
+  d.exec(`PRAGMA user_version = ${CURRENT_DATABASE_SCHEMA_VERSION};`);
+}
 
 /**
  * What `test/setup-state.mjs` recorded about this machine BEFORE any test module ran.
@@ -546,9 +575,58 @@ export function openDb(): DatabaseSync {
   // believes it redirected itself, and every statement still lands in the previous one.
   assertTestStateIsolation();
   if (db) return db;
+  let existingDatabase = false;
+  try {
+    existingDatabase = statSync(DB_PATH).size > 0;
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
   mkdirSync(dirname(DB_PATH), { recursive: true });
-  db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL;");
+  const opened = new DatabaseSync(DB_PATH);
+  let recoveryPoint: DatabaseBackupRecord | undefined;
+  const pendingMigration = existingDatabase && databaseHasPendingMigration(opened);
+  if (pendingMigration) {
+    try {
+      recoveryPoint = new DatabaseBackupService(opened).capturePreMigration();
+    } catch (error) {
+      try {
+        opened.close();
+      } catch {}
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Database startup stopped before migrations because its recovery backup failed: ${reason}`,
+        { cause: error },
+      );
+    }
+  }
+
+  try {
+    upgradeDatabaseToCurrentSchema(opened);
+  } catch (error) {
+    try {
+      opened.close();
+    } catch {}
+    const reason = error instanceof Error ? error.message : String(error);
+    const recovery = recoveryPoint
+      ? ` Recovery point: ${recoveryPoint.path}.`
+      : existingDatabase
+        ? " No schema migration was pending, so no pre-migration recovery point was created."
+        : " No earlier database state existed to back up.";
+    throw new Error(
+      `Database startup or migration failed: ${reason}.${recovery} Healthy live state was not replaced automatically.`,
+      { cause: error },
+    );
+  }
+  db = opened;
+  return opened;
+}
+
+/**
+ * The one forward-upgrade contract for both the live database and disposable restore
+ * verification. Callers must provide a database they own and may mutate.
+ */
+export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
+  d.exec("PRAGMA journal_mode = WAL;");
   // No `busy_timeout` beside it, and that is a decision rather than an omission.
   //
   // This process is the only one that writes here. Everything else that needs state reaches
@@ -581,8 +659,8 @@ export function openDb(): DatabaseSync {
   // by convention, and turning the pragma on cannot retroactively constrain a relation the
   // schema never declared. A new REFERENCES clause on an older table therefore becomes
   // live the moment it is written, which is the point.
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec(`
+  d.exec("PRAGMA foreign_keys = ON;");
+  d.exec(`
     CREATE TABLE IF NOT EXISTS reviews (
       id                     TEXT PRIMARY KEY,
       session_id             TEXT NOT NULL,
@@ -2968,10 +3046,10 @@ export function openDb(): DatabaseSync {
       updated_at    INTEGER NOT NULL
     );
   `);
-  db.exec(inFlightIndexSql());
-  db.exec(outstandingFileCommentIndexSql());
-  migrate(db);
-  return db;
+  d.exec(inFlightIndexSql());
+  d.exec(outstandingFileCommentIndexSql());
+  migrate(d);
+  markDatabaseSchemaCurrent(d);
 }
 
 /**

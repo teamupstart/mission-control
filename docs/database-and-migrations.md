@@ -14,6 +14,12 @@ The practical implication is that a schema change is not just a new-table change
 also open safely against an operator's existing database. Keep the migration beside the
 schema and create dependent indexes only after the columns exist.
 
+## Full-database recovery points
+
+Mission Control creates verified recovery points for normal operation and schema upgrades. See
+[Backup and restore](sqlite-database.html#backup) in the database field guide for the authoritative
+backup, retention, validation, failure-handling, and offline-restore procedure.
+
 This page is an orientation aid. The authoritative requirements for database changes,
 append-only identifiers, and ledgers are [Database changes](agent-guides/change-contracts.md#database-changes),
 [Persisted identifiers](agent-guides/change-contracts.md#persisted-identifiers), and

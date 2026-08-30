@@ -101,7 +101,29 @@ test("verified restore reloads its window and invalidates other windows without 
   );
   await request(daemon, "/api/ui/config", {
     method: "PUT",
-    body: { layout: "board", richText: false },
+    body: {
+      layout: "board",
+      richText: false,
+      trustStaged: ["/snapshot/staged-repository"],
+    },
+  });
+  const desiredTrustRepo = daemon.repo;
+  const workflowPolicy = await request<Record<string, unknown>>(daemon, "/api/workflows/config");
+  await request(daemon, "/api/foreman/config", {
+    method: "PUT",
+    body: { repoAllowlist: [desiredTrustRepo] },
+  });
+  await request(daemon, "/api/workflows/config", {
+    method: "PUT",
+    body: { ...workflowPolicy, repoAllowlist: [desiredTrustRepo] },
+  });
+  await request(daemon, "/api/inspector/config", {
+    method: "PUT",
+    body: { repoAllowlist: [desiredTrustRepo] },
+  });
+  await request(daemon, "/api/shipping/config", {
+    method: "PUT",
+    body: { repoAllowlist: [desiredTrustRepo] },
   });
 
   // Reboot after removing only today's disposable fixture snapshot. The production startup
@@ -129,7 +151,24 @@ test("verified restore reloads its window and invalidates other windows without 
 
   await request(daemon, "/api/ui/config", {
     method: "PUT",
-    body: { layout: "console", richText: true },
+    body: { layout: "console", richText: true, trustStaged: ["/current/staged-repository"] },
+  });
+  const currentTrustRepo = "/current/trusted-repository";
+  await request(daemon, "/api/foreman/config", {
+    method: "PUT",
+    body: { repoAllowlist: [currentTrustRepo] },
+  });
+  await request(daemon, "/api/workflows/config", {
+    method: "PUT",
+    body: { ...workflowPolicy, repoAllowlist: [currentTrustRepo] },
+  });
+  await request(daemon, "/api/inspector/config", {
+    method: "PUT",
+    body: { repoAllowlist: [currentTrustRepo] },
+  });
+  await request(daemon, "/api/shipping/config", {
+    method: "PUT",
+    body: { repoAllowlist: [currentTrustRepo] },
   });
   await request(daemon, `/api/personas/${desiredPersona.id}`, {
     method: "PATCH",
@@ -243,12 +282,43 @@ test("verified restore reloads its window and invalidates other windows without 
   await expect(dashboard.getByRole("heading", { name: "Restore", exact: true })).toBeVisible();
   await expect(dashboard.getByRole("radio", { name: /Select Safety snapshot from/ })).toBeEnabled();
 
-  const ui = await request<{ config: { layout: string; richText: boolean } }>(daemon, "/api/ui/config");
-  expect(ui.config).toMatchObject({ layout: "board", richText: false });
+  const ui = await request<{
+    config: { layout: string; richText: boolean; trustStaged: string[] };
+  }>(daemon, "/api/ui/config");
+  expect(ui.config).toMatchObject({
+    layout: "board",
+    richText: false,
+    trustStaged: ["/snapshot/staged-repository"],
+  });
   await expect.poll(async () => dashboard.evaluate(() => {
     const raw = localStorage.getItem("mission-control.ui");
     return raw ? JSON.parse(raw) as { layout?: string; richText?: boolean } : null;
   })).toMatchObject({ layout: "board", richText: false });
+
+  const restoredTrust = await Promise.all([
+    request<{ repoAllowlist: string[] }>(daemon, "/api/foreman/config"),
+    request<{ repoAllowlist: string[] }>(daemon, "/api/workflows/config"),
+    request<{ repoAllowlist: string[] }>(daemon, "/api/inspector/config"),
+    request<{ repoAllowlist: string[] }>(daemon, "/api/shipping/config"),
+  ]);
+  for (const config of restoredTrust) expect(config.repoAllowlist).toEqual([desiredTrustRepo]);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
+  const trustTable = dashboard.getByRole("table", { name: "Repository trust grants" });
+  for (const grant of [
+    "Foreman sends live",
+    "Workflows act",
+    "GitHub Inspector posts reviews",
+    "YOLO merges",
+  ]) {
+    await expect(trustTable.getByRole("button", {
+      name: `Revoke: ${grant} for ${desiredTrustRepo}`,
+    })).toHaveAttribute("aria-pressed", "true");
+    await expect(trustTable.getByRole("button", {
+      name: `Grant: ${grant} for /snapshot/staged-repository`,
+    })).toHaveAttribute("aria-pressed", "false");
+  }
+  await shoot(dashboard, "trust-restored");
 
   const persona = await request<{ guidanceMarkdown: string }>(daemon, `/api/personas/${desiredPersona.id}`);
   expect(persona.guidanceMarkdown).toBe("# Snapshot reviewer\n\nUse the verified snapshot guidance.");

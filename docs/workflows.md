@@ -1462,8 +1462,8 @@ design rather than a hang. Foreman's loop ticks every four seconds and a session
 settled-idle for ten before it counts as finished, so a new round cannot start sooner. Nothing
 is broken during that pause; the run is simply waiting for the session to hold still.
 
-**The loop does not advance without the Foreman worker running.** Foreman is a separate process
-(`npm run foreman`), not part of the daemon, and the completion claim comes from it. Enabled
+**The Foreman completion path does not advance without the Foreman worker running.** Foreman is a separate process,
+supervised by the packaged app or started with `npm run foreman` in development, and that completion claim comes from it. Enabled
 with no worker running is enabled and idle - the **Foreman** control in the top bar reports
 whether a worker actually holds the lease. [Repair resumption](#repair-resumption) is the other
 route to round N+1 and needs no worker at all, which is why an `auto` version keeps moving on a

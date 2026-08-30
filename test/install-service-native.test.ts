@@ -214,9 +214,9 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    // Match the daemon-start case above: the full suite runs six process-heavy files at once,
-    // and this assertion is about signal forwarding after the build starts, not scheduler
-    // latency before the fixture child gets its first turn.
+    // Native build startup competes with other process-heavy files in the full suite. Keep
+    // polling because this assertion is about signal forwarding after the build starts, not
+    // scheduler latency before the fixture child gets its first turn.
     const deadline = Date.now() + 10_000;
     let recorded = "";
     while (!recorded.includes('"stage":"build-start"') && Date.now() < deadline) {

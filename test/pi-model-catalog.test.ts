@@ -310,7 +310,8 @@ test("Pi discovery maps framing, RPC, availability, and process failures to boun
   await t.test("actual child spawn error", async () => {
     const result = await discoverPiModels(join(home, "missing-pi-binary"), {
       requestId: () => "probe-id",
-      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 1_000, closeGraceMs: 10 },
+      // Real child scheduling can exceed one second while the six-file suite is saturated.
+      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 5_000, closeGraceMs: 10 },
     });
     assert.deepEqual(result, { ok: false, problem: "process_failed" });
   });
@@ -318,7 +319,7 @@ test("Pi discovery maps framing, RPC, availability, and process failures to boun
   await t.test("actual child non-zero close after stdout EOF", async () => {
     const result = await discoverPiModels(process.execPath, {
       requestId: () => "probe-id",
-      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 1_000, closeGraceMs: 10 },
+      bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 5_000, closeGraceMs: 10 },
     });
     assert.deepEqual(result, { ok: false, problem: "process_failed" });
   });

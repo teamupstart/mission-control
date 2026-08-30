@@ -7,8 +7,11 @@ then reconciles durable records against that observed state.
 
 [`src/server/db.ts`](../src/server/db.ts) is both the schema and the upgrade path. It opens
 the database, creates base tables, and applies additive migrations for existing installs.
-The daemon composition root calls `openDb()` before it starts services, making the daemon
-the only SQLite writer. Other processes, including Foreman and MCP, use loopback HTTP.
+The daemon composition root acquires `$MISSION_HOME/daemon.lock` before calling `openDb()` or
+running any migration. That process-lifetime OS lock, rather than the API port, makes the daemon
+the only SQLite writer for a state home. If ownership is unavailable, startup reports the
+current owner's PID and port and exits without opening the database. Other processes, including
+Foreman and MCP, use loopback HTTP.
 
 The practical implication is that a schema change is not just a new-table change: it must
 also open safely against an operator's existing database. Keep the migration beside the

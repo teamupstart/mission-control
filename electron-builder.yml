@@ -2,8 +2,8 @@
 #
 # The app is fully self-contained from the artifacts under dist/ - the daemon,
 # UI, MCP server, and hook bridge each inline their JS deps, while the daemon's
-# raw Node-API Keep Awake addon ships at dist/native/keep-awake.node. node:sqlite
-# is a builtin, so no node_modules ship at runtime.
+# raw Node-API state-lock and Keep Awake addons ship under dist/native/. node:sqlite is a
+# builtin, so no node_modules ship at runtime.
 #
 # asar is OFF on purpose: Claude Code launches the satellite scripts
 # (dist/satellites/hook.mjs, dist/mcp/server.mjs) with an EXTERNAL node that
@@ -19,7 +19,7 @@ directories:
   buildResources: build
 
 # Only the built artifacts + the tray image + the skills catalog + package.json
-# (for "main"/version). `dist/**/*` includes the native Keep Awake addon beside
+# (for "main"/version). `dist/**/*` includes both native addons beside
 # the JS bundles. node_modules are intentionally excluded: every JS runtime dep
 # is inlined by esbuild, and node:sqlite is a builtin. This keeps the app ~275MB smaller.
 #

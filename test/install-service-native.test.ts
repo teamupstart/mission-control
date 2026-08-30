@@ -94,7 +94,7 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
   mkdirSync(serverDir, { recursive: true });
   copyFileSync(serviceEntry, copiedEntry);
   writeFileSync(
-    join(scripts, "build-keep-awake-native.mjs"),
+    join(scripts, "build-native.mjs"),
     `import { appendFileSync } from "node:fs";\n` +
       `appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify({ stage: "build", pid: process.pid }) + "\\n");\n`,
   );
@@ -126,7 +126,10 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
     assert.ok(servicePid, "the service entry must start");
     const exitPromise = once(child, "exit");
 
-    const deadline = Date.now() + 3_000;
+    // The full suite runs six process-heavy files at once. Give the child enough time to be
+    // scheduled under that documented contention; the assertion still waits only for one
+    // local append and fails immediately once the deadline is reached.
+    const deadline = Date.now() + 10_000;
     let recorded = "";
     while (!recorded.includes('"stage":"daemon"') && Date.now() < deadline) {
       await delay(20);
@@ -174,7 +177,7 @@ async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void
   mkdirSync(serverDir, { recursive: true });
   copyFileSync(serviceEntry, copiedEntry);
   writeFileSync(
-    join(scripts, "build-keep-awake-native.mjs"),
+    join(scripts, "build-native.mjs"),
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
       `const signal = process.env.SERVICE_TEST_SIGNAL;\n` +

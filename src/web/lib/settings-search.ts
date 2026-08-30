@@ -806,7 +806,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     anchor: "trust/matrix",
     keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix"],
     kind: "jump",
-    backup: backupDomains("foreman", "workflow-policy", "inspector", "shipping", "pipelines"),
+    backup: backupDomains("ui", "foreman", "workflow-policy", "inspector", "shipping"),
   },
 ];
 

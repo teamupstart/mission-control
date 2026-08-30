@@ -6,6 +6,7 @@ import {
   type AppConfigValueClass,
 } from "../src/shared/app-config-entries.ts";
 import {
+  backupDomains,
   SETTINGS_BACKUP_DOMAINS,
   SETTINGS_BACKUP_DOMAIN_IDS,
 } from "../src/shared/settings-backup-domains.ts";
@@ -192,6 +193,17 @@ test("generated Settings controls inherit backup coverage in their generators", 
     const control = SETTINGS_CONTROLS.find((candidate) => candidate.id === `harness-${agent}`);
     assert.deepEqual(control?.backup, { kind: "domain", domains: ["harnesses"] });
   }
+});
+
+test("the Trust matrix declares every persisted grant source", () => {
+  const trust = SETTINGS_CONTROLS.find((control) => control.id === "trust-grants");
+  assert.deepEqual(trust?.backup, backupDomains(
+    "ui",
+    "foreman",
+    "workflow-policy",
+    "inspector",
+    "shipping",
+  ));
 });
 
 function compileTimeCoverageContracts(): void {

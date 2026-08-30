@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings snapshot coverage audit</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0b0f14; --panel: #121922; --line: #263241; --text: #edf3f8; --muted: #9baabd; --green: #45d6a1; --amber: #f2b75b; --blue: #71b7ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width: min(1120px, calc(100% - 40px)); margin: 40px auto 64px; }
+    h1, h2, h3 { line-height: 1.2; margin: 0; }
+    h1 { font-size: clamp(2rem, 5vw, 3.4rem); max-width: 850px; }
+    h2 { font-size: 1.35rem; margin-bottom: 14px; }
+    h3 { font-size: 1rem; margin-bottom: 8px; color: var(--blue); }
+    p { margin: 0 0 12px; }
+    a { color: var(--blue); }
+    code { color: #d8e7f5; font: .92em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .eyebrow { color: var(--green); font-size: .78rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .lede { max-width: 880px; margin: 16px 0 28px; color: var(--muted); font-size: 1.08rem; }
+    .verdict { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; margin: 24px 0; }
+    .card, section { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 22px; }
+    section { margin-top: 18px; }
+    .status { display: inline-block; border: 1px solid color-mix(in srgb, var(--green), transparent 45%); border-radius: 999px; padding: 4px 10px; color: var(--green); font-weight: 800; font-size: .78rem; text-transform: uppercase; }
+    .finding { font-size: 1.2rem; font-weight: 700; margin-top: 12px; }
+    .metric { font-size: 2.4rem; font-weight: 800; line-height: 1; margin: 10px 0 8px; }
+    .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: var(--green); font-weight: 800; }
+    .intentional { color: var(--amber); font-weight: 800; }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    li + li { margin-top: 6px; }
+    .flow { overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 760px; height: auto; margin-top: 14px; }
+    .box { fill: #17212c; stroke: #35475b; stroke-width: 2; }
+    .arrow { stroke: #71b7ff; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    .svg-title { fill: #edf3f8; font: 700 16px ui-sans-serif, system-ui; text-anchor: middle; }
+    .svg-sub { fill: #9baabd; font: 13px ui-sans-serif, system-ui; text-anchor: middle; }
+    .limits { border-left: 3px solid var(--amber); }
+    @media (max-width: 760px) { .verdict { grid-template-columns: 1fr; } main { width: min(100% - 24px, 1120px); margin-top: 24px; } .card, section { padding: 17px; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Mission Control investigation</div>
+  <h1>Trust is backed up, but its coverage contract named the wrong source</h1>
+  <p class="lede">The runtime snapshot already serializes and restores every supported Trust value. The gap was in the control-level inventory: Trust declared the unrelated Pipelines domain and omitted the UI domain that owns ungranted staged rows. That made the coverage check incomplete and left the user-visible restore behavior untested.</p>
+
+  <div class="verdict">
+    <article class="card">
+      <span class="status">Verified and fixed</span>
+      <p class="finding">No supported persisted setting is missing from format v1.</p>
+      <p class="muted">The typed registry automatically includes every field classified as a setting and refuses unregistered config ownership.</p>
+    </article>
+    <article class="card">
+      <div class="eyebrow">Coverage</div>
+      <div class="metric">21 domains</div>
+      <p class="muted">15 Settings domains, 1 runtime settings domain, and 5 reusable Library catalog domains.</p>
+    </article>
+  </div>
+
+  <section>
+    <h2>Trust restore inventory</h2>
+    <table>
+      <thead><tr><th>User-visible value</th><th>Persisted owner</th><th>Snapshot domain</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Ungranted staged repository rows</td><td><code>UiConfig.trustStaged</code></td><td><code>ui</code></td><td class="yes">Captured and restored</td></tr>
+        <tr><td>Foreman sends live</td><td><code>ForemanConfig.repoAllowlist</code></td><td><code>foreman</code></td><td class="yes">Captured and restored</td></tr>
+        <tr><td>Workflows act</td><td><code>WorkflowPolicy.repoAllowlist</code></td><td><code>workflow-policy</code></td><td class="yes">Captured and restored</td></tr>
+        <tr><td>GitHub Inspector posts reviews</td><td><code>InspectorConfig.repoAllowlist</code></td><td><code>inspector</code></td><td class="yes">Captured and restored</td></tr>
+        <tr><td>YOLO merges</td><td><code>ShippingConfig.repoAllowlist</code></td><td><code>shipping</code></td><td class="yes">Captured and restored</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Trust is a view over these five lists, not its own database record. See <a href="../../../src/web/lib/trust.ts"><code>src/web/lib/trust.ts:1-27</code></a> and the exhaustive classifications in <a href="../../../src/shared/app-config-entries.ts"><code>src/shared/app-config-entries.ts:143-245</code></a>.</p>
+  </section>
+
+  <section class="flow">
+    <h2>Why the bug escaped</h2>
+    <svg viewBox="0 0 980 230" role="img" aria-label="Trust data flows through five registered settings domains into a settings snapshot and back into the Trust matrix">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#71b7ff"/></marker></defs>
+      <path class="arrow" d="M255 68H380"/><path class="arrow" d="M600 68H725"/><path class="arrow" d="M835 105V170H255"/>
+      <rect class="box" x="30" y="28" width="225" height="80" rx="12"/><text class="svg-title" x="142" y="60">Five Trust sources</text><text class="svg-sub" x="142" y="84">UI + four subsystem lists</text>
+      <rect class="box" x="380" y="28" width="220" height="80" rx="12"/><text class="svg-title" x="490" y="60">Typed registry</text><text class="svg-sub" x="490" y="84">setting fields included</text>
+      <rect class="box" x="725" y="28" width="225" height="80" rx="12"/><text class="svg-title" x="837" y="60">Logical snapshot</text><text class="svg-sub" x="837" y="84">digest-bound JSON</text>
+      <rect class="box" x="30" y="150" width="225" height="60" rx="12"/><text class="svg-title" x="142" y="185">Restored Trust matrix</text>
+    </svg>
+    <p>The runtime path was complete. The separate searchable-control declaration incorrectly mapped Trust to <code>pipelines</code> and omitted <code>ui</code>. The old generic coverage test could prove that every named domain existed, but not that this composite control named the right domains. The corrected declaration is at <a href="../../../src/web/lib/settings-search.ts"><code>src/web/lib/settings-search.ts:802-810</code></a>.</p>
+  </section>
+
+  <section>
+    <h2>Full settings inventory</h2>
+    <p>Verified configuration domains are <code>ui</code>, <code>harnesses</code>, <code>worktrees</code>, <code>skills</code>, <code>cost</code>, <code>foreman</code>, <code>foreman-instructions</code>, <code>workflow-policy</code>, <code>task-sources</code>, <code>models</code>, <code>standing-instructions</code>, <code>inspector</code>, <code>shipping</code>, <code>pipelines</code>, <code>repo-index</code>, and runtime domain <code>away</code>. Reusable Library domains are <code>personas</code>, <code>session-actions</code>, <code>workflow-commands</code>, <code>workflow-definitions</code>, and <code>workflow-versions</code>.</p>
+    <p>The stable domain registry is the source of this inventory: <a href="../../../src/shared/settings-backup-domains.ts"><code>src/shared/settings-backup-domains.ts:7-30</code></a>. The config registry is exhaustive by field and drives capture directly: <a href="../../../src/shared/app-config-entries.ts"><code>src/shared/app-config-entries.ts:258-309</code></a>.</p>
+  </section>
+
+  <section class="limits">
+    <h2>Intentionally not restored</h2>
+    <ul>
+      <li><span class="intentional">Operational:</span> current away state and timestamp, Foreman lease, setup-banner dismissal, and cost telemetry last-seen watermark.</li>
+      <li><span class="intentional">Derived:</span> Skills reload generations, generated backlog plan, and cost telemetry enablement watermark.</li>
+      <li><span class="intentional">Work state:</span> tasks, sessions, queues, schedules, worktrees, bindings, runs, reviews, usage, archives, leases, projections, and ledgers.</li>
+      <li><span class="intentional">Machine authority:</span> credentials, tokens, environment secrets, and built-in catalogs supplied by the installed build.</li>
+      <li><span class="intentional">Navigation state:</span> last-open repository and workflow selection remain browser navigation context, not Settings controls.</li>
+    </ul>
+    <p class="muted">These boundaries match the documented snapshot contract at <a href="../../../docs/configuration.md"><code>docs/configuration.md:191-218</code></a>.</p>
+  </section>
+
+  <section>
+    <h2>Implemented safeguards</h2>
+    <ul>
+      <li>Corrected Trust backup metadata from <code>pipelines</code> to <code>ui</code>.</li>
+      <li>Added a focused contract test that pins all five persisted Trust sources: <a href="../../../test/settings-backup-coverage.test.ts"><code>test/settings-backup-coverage.test.ts:198-207</code></a>.</li>
+      <li>Extended the built-dashboard restore scenario to capture distinct Trust values, mutate them, restore the snapshot, assert all five daemon values, and inspect the rendered matrix: <a href="../../../e2e/specs/settings-backup-restore.spec.ts"><code>e2e/specs/settings-backup-restore.spec.ts:102-321</code></a>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Evidence and limits</h2>
+    <p>Verified on 2026-08-29 from repository source, the focused unit contract, TypeScript, lint, a production build, and the focused Chromium restore scenario. The browser scenario passed with all four grant cells on and the staged repository row present with all cells off. This audit covers supported application persistence paths. A future developer could still bypass the typed registry with raw SQLite code, but that would be outside the documented settings ownership contract and existing code style.</p>
+  </section>
+</main>
+</body>
+</html>

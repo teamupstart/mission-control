@@ -281,6 +281,17 @@ export interface ManagedPipelineLaunch {
   cwd: string;
 }
 
+/** In-process handoff between provider run reservation and task cancellation. */
+interface PipelineEngineerReservationBoundary {
+  cancelRequested: boolean;
+  reservationSettled: boolean;
+  reservation: Promise<boolean>;
+  settleReservation: (bound: boolean) => void;
+  cancellationSettled: boolean;
+  cancellation: Promise<void>;
+  settleCancellation: () => void;
+}
+
 /** Capability-backed identity of the MCP child belonging to one managed Pipeline host. */
 export interface ManagedPipelineCaller {
   taskId: string;
@@ -642,6 +653,8 @@ export class Registry extends EventEmitter {
   private restoringSessions = new Map<string, RestoringSession>();
   private managedPipelineLaunches = new Map<string, ManagedPipelineLaunch>();
   private managedPipelineCallers = new Map<string, ManagedPipelineCaller>();
+  /** Transient provider reservations that cancellation may need to name before host launch. */
+  private pipelineEngineerReservations = new Map<string, PipelineEngineerReservationBoundary>();
   private prObservations = new Map<string, PrObservation>();
   /**
    * Pull requests each session has already been announced as the author of.
@@ -1174,6 +1187,63 @@ export class Registry extends EventEmitter {
 
   managedPipelineLaunch(sessionId: string): ManagedPipelineLaunch | null {
     return this.managedPipelineLaunches.get(sessionId) ?? null;
+  }
+
+  beginPipelineEngineerReservation(taskId: string): void {
+    if (this.pipelineEngineerReservations.has(taskId)) {
+      throw new Error(`Pipeline task ${taskId} already has an Engineer reservation in flight`);
+    }
+    let settleReservation!: (bound: boolean) => void;
+    let settleCancellation!: () => void;
+    this.pipelineEngineerReservations.set(taskId, {
+      cancelRequested: false,
+      reservationSettled: false,
+      reservation: new Promise<boolean>((resolve) => {
+        settleReservation = resolve;
+      }),
+      settleReservation,
+      cancellationSettled: false,
+      cancellation: new Promise<void>((resolve) => {
+        settleCancellation = resolve;
+      }),
+      settleCancellation,
+    });
+  }
+
+  requestPipelineEngineerReservationCancellation(taskId: string): Promise<boolean> | null {
+    const boundary = this.pipelineEngineerReservations.get(taskId);
+    if (!boundary) return null;
+    boundary.cancelRequested = true;
+    return boundary.reservation;
+  }
+
+  settlePipelineEngineerReservation(taskId: string, bound: boolean): boolean {
+    const boundary = this.pipelineEngineerReservations.get(taskId);
+    if (!boundary) return false;
+    if (!boundary.reservationSettled) {
+      boundary.reservationSettled = true;
+      boundary.settleReservation(bound);
+    }
+    return boundary.cancelRequested;
+  }
+
+  waitForPipelineEngineerReservationCancellation(taskId: string): Promise<void> | null {
+    return this.pipelineEngineerReservations.get(taskId)?.cancellation ?? null;
+  }
+
+  finishPipelineEngineerReservationCancellation(taskId: string): void {
+    const boundary = this.pipelineEngineerReservations.get(taskId);
+    if (!boundary || boundary.cancellationSettled) return;
+    boundary.cancellationSettled = true;
+    boundary.settleCancellation();
+  }
+
+  endPipelineEngineerReservation(taskId: string): void {
+    const boundary = this.pipelineEngineerReservations.get(taskId);
+    if (!boundary) return;
+    if (!boundary.reservationSettled) boundary.settleReservation(false);
+    if (!boundary.cancellationSettled) boundary.settleCancellation();
+    this.pipelineEngineerReservations.delete(taskId);
   }
 
   registerManagedPipelineCaller(

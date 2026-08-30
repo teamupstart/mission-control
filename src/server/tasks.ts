@@ -3334,15 +3334,45 @@ export class TaskManager {
       const active = authoringCommission.attempts.find(
         (attempt) => attempt.attempt === authoringCommission.activeAttempt,
       );
+      if (active && !active.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
+        const reservation = this.registry.requestPipelineEngineerReservationCancellation(id);
+        if (!reservation) {
+          return {
+            ok: false,
+            error: "the provider Engineer run reservation is still in progress - try cancellation again",
+          };
+        }
+        try {
+          if (!(await reservation)) {
+            return {
+              ok: false,
+              error: "the provider Engineer run reservation did not produce a cancellable run",
+            };
+          }
+          return await this.cancelReserved(id, this.registry.getTask(id) ?? t);
+        } finally {
+          this.registry.finishPipelineEngineerReservationCancellation(id);
+        }
+      }
       if (active?.engineerRunId && !["cancelled", "failed", "settled"].includes(active.state)) {
         const lifecycle = PIPELINE_PROVIDERS[authoringCommission.provider].engineerLifecycle;
         if (!lifecycle) {
           return { ok: false, error: "the Pipeline provider cannot cancel its active Engineer run" };
         }
-        const stopped = await lifecycle.cancel({
-          engineerRunId: active.engineerRunId,
-          reason: "Pipeline task cancelled in Mission Control",
-        });
+        let stopped;
+        try {
+          stopped = await lifecycle.cancel({
+            engineerRunId: active.engineerRunId,
+            reason: "Pipeline task cancelled in Mission Control",
+          });
+        } catch (error) {
+          return {
+            ok: false,
+            error: `could not cancel the provider Engineer run: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+        }
         if (!stopped.ok) {
           return { ok: false, error: `could not cancel the provider Engineer run: ${stopped.error}` };
         }

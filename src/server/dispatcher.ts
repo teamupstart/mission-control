@@ -982,109 +982,105 @@ export class Dispatcher {
       if (!attempt) throw new Error("the Pipeline commission has no active Engineer attempt");
       const commissionId = commission.id;
       let reserved: PipelineEngineerRunSnapshot | null = null;
-      const created = await lifecycle.create({
-        repoRoot: task.repoRoot,
-        idea: task.intent,
-        correlationId: commission.correlationId,
-        attemptKey: attempt.launchKey,
-      });
-      if (created.ok) {
-        reserved = created.value;
-      } else {
-        // Creation is idempotent. Inspecting the exact correlation closes the response-lost
-        // case without minting another run or another launch key.
-        const inspected = await lifecycle.inspectCorrelation({
+      let reservationBound = false;
+      this.registry.beginPipelineEngineerReservation(taskId);
+      try {
+        const created = await lifecycle.create({
           repoRoot: task.repoRoot,
+          idea: task.intent,
           correlationId: commission.correlationId,
+          attemptKey: attempt.launchKey,
         });
-        reserved = inspected.ok
-          ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
-          : null;
-        if (!reserved) {
-          throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
-        }
-      }
-      const reservedRun = reserved;
-      if (!reservedRun) throw new Error("the provider did not return an Engineer run");
-      const currentCommission = this.registry.pipelineCommission(commission.id);
-      if (
-        !this.stillDispatching(taskId) ||
-        currentCommission?.lifecycle === "cancelled"
-      ) {
-        // Cancellation can win while the provider is reserving the run, before its identity
-        // exists in the commission. That cancel cannot stop what it cannot name, so this
-        // continuation owns the newly returned identity and must stop it before any Mission
-        // Control host starts. The task and commission stay terminal even if the provider
-        // refuses the stop: starting a host after either terminal write would resurrect work.
-        // Even a terminal commission must retain the provider identity before cleanup. If
-        // the stop is refused, that durable identity is the only actionable handle an
-        // operator or a later recovery pass has for the external run.
-        try {
-          const bound = bindPipelineCommissionAttempt({
-            commissionId,
-            attempt: attempt.attempt,
-            engineerRunId: reservedRun.engineerRunId,
-            providerAttempt: reservedRun.attempt,
-            attemptKey: reservedRun.attemptKey,
-            previousEngineerRunId: reservedRun.previousEngineerRunId,
+        if (created.ok) {
+          reserved = created.value;
+        } else {
+          // Creation is idempotent. Inspecting the exact correlation closes the response-lost
+          // case without minting another run or another launch key.
+          const inspected = await lifecycle.inspectCorrelation({
+            repoRoot: task.repoRoot,
+            correlationId: commission.correlationId,
           });
-          this.registry.upsertPipelineCommission(bound);
-        } catch (error) {
-          console.error(
-            `[pipelines] could not retain cancelled Engineer run ${reservedRun.engineerRunId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+          reserved = inspected.ok
+            ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
+            : null;
+          if (!reserved) {
+            throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
+          }
         }
-        const retainCancellationFailure = (reason: string): void => {
+        const reservedRun = reserved;
+        if (!reservedRun) throw new Error("the provider did not return an Engineer run");
+        commission = bindPipelineCommissionAttempt({
+          commissionId: commission.id,
+          attempt: attempt.attempt,
+          engineerRunId: reservedRun.engineerRunId,
+          providerAttempt: reservedRun.attempt,
+          attemptKey: reservedRun.attemptKey,
+          previousEngineerRunId: reservedRun.previousEngineerRunId,
+        });
+        engineerRunId = reservedRun.engineerRunId;
+        engineerCommissionId = commissionId;
+        engineerLifecycle = lifecycle;
+        this.registry.upsertPipelineCommission(commission);
+        reservationBound = true;
+
+        // A cancellation requested before the provider returned an id must use the same
+        // fail-closed path as a cancellation requested one tick later. Publish the id, then
+        // hold host launch until TaskManager reports whether the provider actually stopped.
+        if (this.registry.settlePipelineEngineerReservation(taskId, true)) {
+          await this.registry.waitForPipelineEngineerReservationCancellation(taskId);
+          if (await this.abortIfSettled(taskId)) return;
+        }
+
+        const currentCommission = this.registry.pipelineCommission(commission.id);
+        if (
+          !this.stillDispatching(taskId) ||
+          currentCommission?.lifecycle === "cancelled"
+        ) {
+          // A non-cancellation terminal transition can still win after reservation. Retain
+          // the exact provider identity and stop it before any Mission Control host starts.
+          const retainCancellationFailure = (reason: string): void => {
+            try {
+              const failed = recordPipelineCommissionCancellationFailure({
+                commissionId,
+                engineerRunId: reservedRun.engineerRunId,
+                reason,
+              });
+              this.registry.upsertPipelineCommission(failed);
+            } catch (error) {
+              console.error(
+                `[pipelines] could not retain cancellation failure for Engineer run ${reservedRun.engineerRunId}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          };
           try {
-            const failed = recordPipelineCommissionCancellationFailure({
-              commissionId,
+            const stopped = await lifecycle.cancel({
               engineerRunId: reservedRun.engineerRunId,
-              reason,
+              reason: "Pipeline task settled in Mission Control before Engineer host launch",
             });
-            this.registry.upsertPipelineCommission(failed);
+            if (!stopped.ok) {
+              retainCancellationFailure(stopped.error);
+              console.error(
+                `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${stopped.error}`,
+              );
+            }
           } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            retainCancellationFailure(message);
             console.error(
-              `[pipelines] could not retain cancellation failure for Engineer run ${reservedRun.engineerRunId}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+              `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${message}`,
             );
           }
-        };
-        try {
-          const stopped = await lifecycle.cancel({
-            engineerRunId: reservedRun.engineerRunId,
-            reason: "Pipeline task settled in Mission Control before Engineer host launch",
-          });
-          if (!stopped.ok) {
-            retainCancellationFailure(stopped.error);
-            console.error(
-              `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${stopped.error}`,
-            );
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          retainCancellationFailure(message);
-          console.error(
-            `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${message}`,
-          );
+          await this.abortIfSettled(taskId);
+          return;
         }
-        await this.abortIfSettled(taskId);
-        return;
+      } finally {
+        if (!reservationBound) {
+          this.registry.settlePipelineEngineerReservation(taskId, false);
+        }
+        this.registry.endPipelineEngineerReservation(taskId);
       }
-      commission = bindPipelineCommissionAttempt({
-        commissionId: commission.id,
-        attempt: attempt.attempt,
-        engineerRunId: reservedRun.engineerRunId,
-        providerAttempt: reservedRun.attempt,
-        attemptKey: reservedRun.attemptKey,
-        previousEngineerRunId: reservedRun.previousEngineerRunId,
-      });
-      engineerRunId = reservedRun.engineerRunId;
-      engineerCommissionId = commissionId;
-      engineerLifecycle = lifecycle;
-      this.registry.upsertPipelineCommission(commission);
     } else {
       const runKey = pipelineRunKeyOf(launch.pipelineRun);
       const owner = this.registry.listTasks().find(

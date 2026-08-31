@@ -12,6 +12,7 @@ export function useComposerActivity(sessionId: string): {
   onFocus: () => void;
   onBlur: () => void;
   onInput: () => void;
+  release: () => void;
 } {
   const clientId = useRef(globalThis.crypto.randomUUID());
   const focused = useRef(false);
@@ -33,20 +34,20 @@ export function useComposerActivity(sessionId: string): {
     heartbeat.current = setInterval(() => report(true), HEARTBEAT_MS);
   }, [report, stopHeartbeat]);
 
-  const onBlur = useCallback((): void => {
+  const release = useCallback((): void => {
+    const wasFocused = focused.current;
     focused.current = false;
     stopHeartbeat();
-    report(false);
+    if (wasFocused) report(false);
   }, [report, stopHeartbeat]);
+
+  const onBlur = release;
 
   const onInput = useCallback((): void => {
     report(focused.current, true);
   }, [report]);
 
-  useEffect(() => () => {
-    stopHeartbeat();
-    if (focused.current) report(false);
-  }, [report, stopHeartbeat]);
+  useEffect(() => release, [release]);
 
-  return { onFocus, onBlur, onInput };
+  return { onFocus, onBlur, onInput, release };
 }

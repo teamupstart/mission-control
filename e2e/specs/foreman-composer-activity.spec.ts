@@ -91,6 +91,8 @@ test("Foreman waits while the operator is composing and for one minute after inp
   await reportsComposer(dashboard, { focused: true, typed: false }, () => reply.focus());
   await reply.press("Enter");
   await expect(detail.getByRole("article", { name: "you", exact: true })).toHaveCount(2);
+  await reportsComposer(dashboard, { focused: false, typed: false }, () => reply.press("Escape"));
+  await expect(reply).not.toBeFocused();
 
   const afterHumanSend = await foremanPost(daemon, id);
   expect(afterHumanSend.status, "a human send must not end the one-minute quiet period").toBe(409);

@@ -2,7 +2,7 @@
 
 **Source plan:** `docs/plans/engineer-progress-and-refusal-visibility/plan.md`
 **Status:** Ready to schedule
-**Repository set:** Mission Control plus `/Users/jordan.mance/workspace/upstart/ai-conductor`
+**Repository set:** Mission Control plus `mancej/ai-conductor`
 
 ## Implementation outcome
 
@@ -80,7 +80,7 @@ flowchart LR
 
 | Phase | Primary repository | Attached context | Direct dependency | Merge outcome |
 | --- | --- | --- | --- | --- |
-| [Phase 1: Record live Engineer progress and preserve artifact identity](phase-1-ai-conductor-engineer-host-contract.md) | `/Users/jordan.mance/workspace/upstart/ai-conductor` | Mission Control, context-only | Planning session | Codex/no-hook Engineer runs record live lifecycle events and author under the reserved slug |
+| [Phase 1: Record live Engineer progress and preserve artifact identity](phase-1-ai-conductor-engineer-host-contract.md) | `mancej/ai-conductor` through the task-provided checkout | Mission Control, context-only | Planning session | Codex/no-hook Engineer runs record live lifecycle events and author under the reserved slug |
 | [Phase 2: Surface recoverable Engineer refusals](phase-2-mission-control-refusal-visibility.md) | Mission Control | AI Conductor, context-only | Planning session | Board, Console, and Runs visibly distinguish a recoverable refusal from ordinary authoring |
 
 ## Concurrency and merge order

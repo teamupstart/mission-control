@@ -14,11 +14,11 @@ reproduced artifact-stem refusal does not occur when the canonical skill is foll
 - Phased index: `docs/plans/engineer-progress-and-refusal-visibility/phased-plan.md`.
 - Direct phase dependencies: none.
 - Scheduling dependency: the Mission Control planning session and plan PR must merge first.
-- Start from current `origin/main` in `/Users/jordan.mance/workspace/upstart/ai-conductor`.
+- Start from current `origin/main` in the task-provided `mancej/ai-conductor` checkout.
 
 ## Repository scope
 
-### Primary: `/Users/jordan.mance/workspace/upstart/ai-conductor`
+### Primary: `mancej/ai-conductor` in the task-provided checkout
 
 Implement, test, document, commit, push, and open the AI Conductor pull request.
 

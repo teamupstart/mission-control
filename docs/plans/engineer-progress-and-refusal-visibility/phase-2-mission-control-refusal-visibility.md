@@ -20,7 +20,7 @@ return to running when the provider records a retry or later successful transiti
 
 Implement, test, document, commit, push, and open the Mission Control pull request.
 
-### Attached context-only: `/Users/jordan.mance/workspace/upstart/ai-conductor`
+### Attached context-only: `mancej/ai-conductor` in the task-provided checkout
 
 Read the current provider event and reducer semantics. Do not edit AI Conductor. An AI Conductor diff
 makes this phase incomplete rather than multi-repository.

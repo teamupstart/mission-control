@@ -12,6 +12,28 @@ import {
 
 const repo = join(import.meta.dirname, "..");
 
+function topLevelMappingLines(workflow: string, key: string): string[] {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.indexOf(`${key}:`);
+  assert.notEqual(start, -1, `missing top-level ${key} mapping`);
+
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line || !/^[ \t]+\S/.test(line)) break;
+    values.push(line);
+  }
+  return values;
+}
+
+function namedWorkflowStep(workflow: string, name: string): string {
+  const marker = `      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `missing workflow step ${JSON.stringify(name)}`);
+  const next = workflow.indexOf("\n      - name: ", start + marker.length);
+  return workflow.slice(start, next === -1 ? undefined : next);
+}
+
 test("Release Please-compatible commit subjects are accepted", () => {
   for (const subject of [
     "fix: repair release input",
@@ -72,21 +94,36 @@ test("the pull request and release workflows enforce the same validator", () => 
   assert.match(pullRequestWorkflow, /pull_request_target:/);
   assert.doesNotMatch(pullRequestWorkflow, /^  pull_request:/m);
   assert.match(pullRequestWorkflow, /types: \[opened, edited, synchronize, reopened\]/);
-  assert.match(pullRequestWorkflow, /^permissions:\n  contents: read$/m);
-  assert.doesNotMatch(pullRequestWorkflow, /contents: write|write-all/);
-  assert.match(pullRequestWorkflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
-  assert.match(pullRequestWorkflow, /RELEASE_COMMIT_SUBJECT: \$\{\{ github\.event\.pull_request\.title \}\}/);
-  assert.match(pullRequestWorkflow, /node scripts\/assert-release-commit\.mjs/);
+  assert.deepEqual(topLevelMappingLines(pullRequestWorkflow, "permissions"), ["  contents: read"]);
+  assert.doesNotMatch(pullRequestWorkflow, /^[ \t]+permissions:/m);
+
+  const titleCheckout = namedWorkflowStep(
+    pullRequestWorkflow,
+    "Check out the trusted title validator",
+  );
+  assert.match(titleCheckout, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  const titleGuard = namedWorkflowStep(
+    pullRequestWorkflow,
+    "Assert Release Please can parse the pull request title",
+  );
+  assert.match(titleGuard, /RELEASE_COMMIT_SUBJECT: \$\{\{ github\.event\.pull_request\.title \}\}/);
+  assert.match(titleGuard, /node scripts\/assert-release-commit\.mjs/);
 
   const checkout = releaseWorkflow.indexOf("name: Check out the release input");
   const guard = releaseWorkflow.indexOf("name: Assert Release Please can parse the new commits");
   const token = releaseWorkflow.indexOf("name: Mint the mission-control-release installation token");
   assert.ok(checkout >= 0 && checkout < guard && guard < token);
+  assert.match(releaseWorkflow, /^on:\n  push:\n    branches: \[main\]$/m);
+  assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:/);
   assert.match(releaseWorkflow, /fetch-depth: 0/);
-  assert.match(releaseWorkflow, /if: \$\{\{ github\.event_name == 'push' \}\}/);
-  assert.match(releaseWorkflow, /RELEASE_BASE_SHA: \$\{\{ github\.event\.before \}\}/);
-  assert.match(releaseWorkflow, /RELEASE_HEAD_SHA: \$\{\{ github\.sha \}\}/);
-  assert.match(releaseWorkflow, /node scripts\/assert-release-commit\.mjs/);
+  const releaseGuard = namedWorkflowStep(
+    releaseWorkflow,
+    "Assert Release Please can parse the new commits",
+  );
+  assert.doesNotMatch(releaseGuard, /^\s+if:/m);
+  assert.match(releaseGuard, /RELEASE_BASE_SHA: \$\{\{ github\.event\.before \}\}/);
+  assert.match(releaseGuard, /RELEASE_HEAD_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(releaseGuard, /node scripts\/assert-release-commit\.mjs/);
   assert.match(releaseWorkflow, /uses: googleapis\/release-please-action@v5/);
   assert.doesNotMatch(releaseWorkflow, /uses: googleapis\/release-please-action@v4/);
 });

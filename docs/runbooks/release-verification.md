@@ -247,10 +247,11 @@ Before merge, rename the pull request to `type(optional-scope): description`; th
 will recheck it. Once its squash commit is already on `main`, changing the pull request title cannot
 rewrite that commit. Instead, add a `BEGIN_COMMIT_OVERRIDE` / `END_COMMIT_OVERRIDE` block containing
 valid Conventional Commit lines to the merged pull request body, then rerun the Release workflow
-through `workflow_dispatch`. The commit preflight runs only for push events because a manual run has
-no push range; Release Please applies the supported override when it rebuilds the release notes. For
-a direct push with no originating pull request, push a new releasable Conventional Commit directly
-to `main` to advance the release; do not rewrite `main` history.
+with a new releasable Conventional Commit on `main`. The resulting push passes the preflight, and
+Release Please applies the supported override when it rebuilds the release notes. For a direct push
+with no originating pull request, push a new releasable Conventional Commit directly to `main` to
+advance the release; do not rewrite `main` history. Re-run the failed push workflow only for a
+transient failure after its commit preflight passed.
 
 `update.log` in the state directory is the diagnostic of record. It rotates at 1 MB and redacts
 credentials and absolute paths, so expect `<path>` where a directory would be.

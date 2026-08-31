@@ -39,7 +39,6 @@ name: Release
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -63,10 +62,6 @@ jobs:
           fetch-depth: 0
 
       - name: Assert Release Please can parse the new commits
-        # workflow_dispatch is the explicit recovery path for a merged pull request whose body
-        # contains Release Please's BEGIN_COMMIT_OVERRIDE block. It has no push range to validate,
-        # so let Release Please consume that override instead of re-rejecting the bad head subject.
-        if: ${{ github.event_name == 'push' }}
         env:
           RELEASE_BASE_SHA: ${{ github.event.before }}
           RELEASE_HEAD_SHA: ${{ github.sha }}

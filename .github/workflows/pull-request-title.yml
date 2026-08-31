@@ -2,9 +2,11 @@ name: Pull request title
 
 # Release Please reads the commit subject GitHub creates from a merged pull request. Validate the
 # title on every event that can change that subject, including a title edit after an earlier green
-# check. The script is checked out from the base SHA so a pull request cannot weaken its own gate.
+# check. `pull_request_target` loads this workflow from the trusted base branch, and the script is
+# also checked out from the base SHA, so a pull request cannot weaken its own gate. A new validator
+# starts running only after the pull request that introduced it has landed on the base branch.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, synchronize, reopened]
 
 permissions:

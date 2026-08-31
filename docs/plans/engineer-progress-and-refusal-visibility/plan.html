@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engineer Progress and Refusal Visibility</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f7fb; --panel:#fff; --text:#172033; --muted:#5c667a; --line:#dce1ea; --accent:#3b5ccc; --accent-soft:#edf1ff; --bad:#a43434; --good:#24735b; --code:#eef1f6; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.58 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1120px,calc(100% - 32px)); margin:32px auto 64px; }
+    article { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:clamp(24px,5vw,56px); box-shadow:0 16px 48px rgba(22,32,51,.08); }
+    h1 { margin:0 0 8px; font-size:clamp(2rem,5vw,3.5rem); line-height:1.05; letter-spacing:-.04em; }
+    h2 { margin:40px 0 12px; padding-top:18px; border-top:1px solid var(--line); font-size:1.45rem; }
+    h3 { margin:26px 0 8px; font-size:1.08rem; }
+    p,li { max-width:82ch; }
+    .meta { color:var(--muted); margin:0 0 28px; }
+    .lead { font-size:1.18rem; color:var(--muted); }
+    .callout { border-left:4px solid var(--accent); background:var(--accent-soft); padding:14px 18px; border-radius:0 10px 10px 0; }
+    code { background:var(--code); padding:.12rem .35rem; border-radius:5px; font-size:.92em; }
+    ul,ol { padding-left:1.35rem; }
+    li+li { margin-top:.45rem; }
+    .flow { overflow-x:auto; border:1px solid var(--line); border-radius:14px; padding:18px; background:var(--bg); }
+    svg { display:block; min-width:860px; width:100%; height:auto; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
+    .card { border:1px solid var(--line); border-radius:12px; padding:18px; }
+    .card h3 { margin-top:0; }
+    .owner { color:var(--good); font-weight:700; }
+    .blocked { color:var(--bad); font-weight:700; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#0d1220; --panel:#151b2b; --text:#edf1fb; --muted:#aab3c7; --line:#30394c; --accent:#91a8ff; --accent-soft:#1c294c; --bad:#ffaaaa; --good:#7bdbbd; --code:#232b3d; } article { box-shadow:none; } }
+  </style>
+</head>
+<body><main><article>
+  <h1>Engineer Progress and Refusal Visibility</h1>
+  <p class="meta"><strong>Status:</strong> Approved for phased implementation · <strong>Requested:</strong> 2026-08-31 · <strong>Repositories:</strong> Mission Control and AI Conductor</p>
+  <p class="lead">Make approved DECIDE work advance the Pipeline meter live, prevent the reproduced feature-stem refusal when the canonical workflow is followed, and show any remaining recoverable refusal as blocked instead of ordinary authoring.</p>
+
+  <h2>Outcome</h2>
+  <p>When a managed Codex Pipeline Engineer authors and the operator approves DECIDE artifacts, the Pipeline meter advances during the work instead of remaining on an earlier stage. If Engineer later refuses to land the artifact set, every Mission Control surface that shows the commission makes that blocked state and its exact reason visible.</p>
+
+  <h2>Reproduced failure</h2>
+  <ol>
+    <li>AI Conductor recorded run creation, start, repository routing, and worktree creation. The host then authored an approved PRD, stories, and plan, but the provider journal received no step start, completion, or skip events. Mission Control had no provider-owned progress to project.</li>
+    <li><code>land</code> refused because the PRD, stories, and plan used <code>hello-endpoint</code> rather than the exact worktree-reserved stem. Mission Control retained the refusal reason, but the Board meter still said <code>Engineer authoring</code>.</li>
+  </ol>
+  <p class="callout"><strong>This was not an approval-ingest delay.</strong> The approved files existed on disk while the lifecycle journal remained unchanged.</p>
+
+  <h2>Ownership decisions</h2>
+  <div class="grid">
+    <section class="card"><h3 class="owner">AI Conductor owns truth</h3><p>Engineer step events, accepted completion evidence, feature artifact identity, land reconciliation, and refusal reasons remain provider-owned.</p></section>
+    <section class="card"><h3 class="owner">Mission Control owns projection</h3><p>Mission Control consumes provider events and presents commission state. It does not inspect artifacts, infer approval from transcript text, or emit lifecycle events.</p></section>
+    <section class="card"><h3>One authoritative identity</h3><p>The <code>slug</code> and <code>engineerRunId</code> returned by <code>engineer worktree</code> govern the rest of the authoring run.</p></section>
+    <section class="card"><h3>Evidence-backed completion</h3><p>Tool return is insufficient. Completion comes from an accepted workflow result, deterministic artifact validation, or land reconciliation.</p></section>
+  </div>
+
+  <h2>Target flow</h2>
+  <div class="flow">
+    <svg viewBox="0 0 1040 330" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Target Engineer progress and refusal flow</title>
+      <desc id="flow-desc">Codex records validated authoring transitions in AI Conductor. AI Conductor sends events to Mission Control. Mission Control projects them on Board, Console, and Runs. Artifact names use the worktree returned slug before land.</desc>
+      <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)">
+        <path d="M230 90 H390"/><path d="M650 90 H810"/><path d="M130 145 V255 H390"/><path d="M650 255 H810"/><path d="M520 210 V145"/>
+      </g>
+      <g fill="var(--panel)" stroke="var(--accent)" stroke-width="2">
+        <rect x="30" y="42" width="200" height="96" rx="12"/><rect x="390" y="42" width="260" height="96" rx="12"/><rect x="810" y="42" width="200" height="96" rx="12"/>
+        <rect x="390" y="210" width="260" height="88" rx="12"/><rect x="810" y="210" width="200" height="88" rx="12"/>
+      </g>
+      <g fill="currentColor" text-anchor="middle" font-family="ui-sans-serif,system-ui" font-size="16">
+        <text x="130" y="78" font-weight="700">Codex Engineer host</text><text x="130" y="106">run-record transitions</text>
+        <text x="520" y="74" font-weight="700">AI Conductor</text><text x="520" y="102">lifecycle store and replay</text>
+        <text x="910" y="74" font-weight="700">Mission Control</text><text x="910" y="102">Board · Console · Runs</text>
+        <text x="520" y="244" font-weight="700">Feature artifacts</text><text x="520" y="272">filenames use returned slug</text>
+        <text x="910" y="244" font-weight="700">land</text><text x="910" y="272">reconciled or refused</text>
+      </g>
+      <g fill="var(--muted)" text-anchor="middle" font-family="ui-sans-serif,system-ui" font-size="13">
+        <text x="310" y="78">validated events</text><text x="730" y="78">push + replay</text><text x="730" y="244">deterministic gate</text>
+      </g>
+    </svg>
+  </div>
+
+  <h2>AI Conductor changes</h2>
+  <ul>
+    <li>Capture exact <code>engineerRunId</code>, <code>slug</code>, <code>branch</code>, and <code>worktreePath</code> from worktree creation.</li>
+    <li>Use validated <code>run-record</code> transitions around applicable authoring steps for Codex and other no-hook hosts.</li>
+    <li>Use accepted-result or artifact-validation completion evidence, with explicit skips, failures, and retries.</li>
+    <li>Name feature-scoped artifacts from the returned slug and audit names before land.</li>
+    <li>Keep the authoring worktree on refusal and repair the same run in place.</li>
+    <li>Pin the contract in provider skill tests and maintained lifecycle documentation.</li>
+  </ul>
+
+  <h2>Mission Control changes</h2>
+  <p>Keep the provider lifecycle event contract unchanged. Add an optional, explicitly typed Mission Control commission blocker that records only failed-step or land-refusal provenance, with legacy commissions defaulting to no blocker. Render only that blocker as halted, carry the exact reason through the existing accessible control, keep the lifecycle nonterminal, and clear it on provider recovery. A generic commission error or retry reason never implies a halt.</p>
+  <p>Do not add <code>run-record</code> commands to the Mission Control launch prompt. That would duplicate the provider skill's workflow contract.</p>
+
+  <h2>Acceptance criteria</h2>
+  <ol>
+    <li>Codex-hosted authoring emits live evidence-backed start, completion, skip, failure, and retry transitions.</li>
+    <li>An approved PRD advances the meter before land.</li>
+    <li>Feature artifacts use the exact returned slug, preventing the reproduced naming refusal.</li>
+    <li>Land keeps its independent deterministic validation.</li>
+    <li>A land refusal or failed current step is visibly blocked on Board, Console, and Runs with an accessible exact reason.</li>
+    <li>A retry remains running and later provider progress clears stale refusal presentation.</li>
+    <li>Mission Control classifies blocked presentation only from explicit reducer-owned event provenance, never from generic error shape.</li>
+    <li>Mission Control never infers step completion or writes provider state.</li>
+    <li>Existing Claude, direct Engineer, BUILD/SHIP, replay, and uncommissioned flows remain compatible.</li>
+  </ol>
+
+  <h2>Non-goals</h2>
+  <ul><li>No provider lifecycle wire redesign or approval inference from files and conversation text. The optional blocker is a Mission Control consumer projection.</li><li>No automatic repair of an existing artifact set.</li><li>No automatic spec merge or implementation-run change.</li><li>No reopening of completed continuity phases.</li></ul>
+
+  <h2>Verification strategy</h2>
+  <div class="grid">
+    <section class="card"><h3>AI Conductor</h3><p>Mutation-resistant skill contract checks, existing lifecycle and land tests, then required typecheck, lint, test, and build gates.</p></section>
+    <section class="card"><h3>Mission Control</h3><p>Persistence, reducer, and view-model tests for explicit blocker provenance and legacy rows, plus a built-dashboard Playwright reproduction with fake agents, keyboard assertions, geometry review, screenshots, and focused transcript evidence.</p></section>
+  </div>
+
+  <h2>Publication decision</h2>
+  <p>The operator explicitly requested the phased implementation plan and scheduled tasks on 2026-08-31. There are no unresolved product or architecture choices.</p>
+</article></main></body></html>

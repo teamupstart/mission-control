@@ -106,6 +106,18 @@ test("a drill-in stashes nothing: every column stays mounted across the morph", 
   assert.equal(modes.get("attention"), "calm");
 });
 
+test("a dispatch with no sessions yet keeps the working column, and only that one", () => {
+  const before = modesFor([]);
+  assert.equal(before.get("working"), "stashed");
+
+  const modes = boardColumnModes(groupByTone([]), NONE, false, 1);
+  assert.equal(modes.get("working"), "sessions");
+  assert.equal(modes.get("attention"), "calm");
+  for (const tone of ["idle", "neutral", "exited"] as const) {
+    assert.equal(modes.get(tone), "stashed", tone);
+  }
+});
+
 test("every tone gets a verdict - no column can fall through the rules unrendered", () => {
   const modes = modesFor([]);
   assert.equal(modes.size, TONE_GROUPS.length);

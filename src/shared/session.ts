@@ -95,6 +95,36 @@ export function provisioningTasks(tasks: Task[]): Task[] {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/**
+ * How far a provisioning task has got, read off the fields it already carries.
+ *
+ * There is no new event and no new field behind this. `Dispatcher.dispatch` patches the task
+ * as it goes and `patch` broadcasts `task_upsert`, so the browser is already told each of
+ * these four times:
+ *
+ *  0 `prepare`  - no worktree yet: the base is being resolved and the worktree provisioned,
+ *                 which on a cold pool slot runs the repository's setup command too.
+ *  1 `launch`   - `worktreePath`/`branch` recorded, the agent binary is being spawned.
+ *  2 `discover` - `homeName` recorded, waiting for the session to appear at that cwd.
+ *  3 `handover` - `terminalResourceId` recorded, waiting for ready and delivering turn one.
+ *
+ * Ordered by which field lands first, NOT by a step count, because the embedded runtime
+ * never writes the middle two: an SDK dispatch goes `prepare`, `launch`, and then its
+ * session exists. A reader that showed "2 of 4" would stall there forever; a reader that
+ * names the phase degrades to naming fewer of them.
+ *
+ * Only meaningful for a task `provisioningTasks` returned. A bound task's phase is the
+ * session's state, which is a different question with a different answer.
+ */
+export type DispatchPhase = "prepare" | "launch" | "discover" | "handover";
+
+export function dispatchPhase(task: Task): DispatchPhase {
+  if (!task.worktreePath) return "prepare";
+  if (!task.homeName) return "launch";
+  if (!task.terminalResourceId) return "discover";
+  return "handover";
+}
+
 /** Finished tasks (done/failed/cancelled), newest first. Caller slices to RECENT_TASKS_CAP. */
 export function finishedTasks(tasks: Task[]): Task[] {
   return tasks

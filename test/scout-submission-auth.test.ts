@@ -6,6 +6,10 @@ import test, { after } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "mission-scout-submission-auth-"));
 process.env.MISSION_HOME = home;
+const inheritedCredential = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
+const inheritedCredentialFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
+delete process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
+delete process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
 
 const {
   provisionScoutSubmissionCredential,
@@ -21,6 +25,10 @@ const {
 const isolatedCredentialPaths: string[] = [];
 
 after(() => {
+  if (inheritedCredential === undefined) delete process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
+  else process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL = inheritedCredential;
+  if (inheritedCredentialFile === undefined) delete process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
+  else process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE = inheritedCredentialFile;
   rmSync(home, { recursive: true, force: true });
   for (const path of isolatedCredentialPaths) rmSync(path, { force: true });
 });

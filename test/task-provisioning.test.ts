@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backlogTasks, finishedTasks, provisioningTasks } from "../src/shared/session.ts";
+import {
+  backlogTasks,
+  dispatchPhase,
+  finishedTasks,
+  provisioningTasks,
+} from "../src/shared/session.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 /**
@@ -47,10 +52,55 @@ test("a burst dispatched together lists in the order it was sent", () => {
   assert.deepEqual(provisioningTasks(tasks).map((t) => t.id), ["first", "second", "third"]);
 });
 
-test("a task leaves the strip the moment its session binds", () => {
+test("a task leaves the placeholder projection the moment its session binds", () => {
   // The handover, which is what keeps the placeholder from outliving its replacement: the
   // very event that gives the fleet a real card is the one that empties this list.
   const task = mkTask({ id: "t", status: "dispatching", sessionId: null });
   assert.equal(provisioningTasks([task]).length, 1);
   assert.equal(provisioningTasks([{ ...task, sessionId: "s1" }]).length, 0);
+});
+
+test("the phase is read off the fields the dispatcher has already written", () => {
+  const base = { status: "dispatching" as const, sessionId: null };
+  assert.equal(
+    dispatchPhase(mkTask({ ...base, worktreePath: null, homeName: null, terminalResourceId: null })),
+    "prepare",
+  );
+  assert.equal(
+    dispatchPhase(mkTask({ ...base, worktreePath: "/wt/a", homeName: null, terminalResourceId: null })),
+    "launch",
+  );
+  assert.equal(
+    dispatchPhase(mkTask({ ...base, worktreePath: "/wt/a", homeName: "a-1", terminalResourceId: null })),
+    "discover",
+  );
+  assert.equal(
+    dispatchPhase(mkTask({ ...base, worktreePath: "/wt/a", homeName: "a-1", terminalResourceId: "%1" })),
+    "handover",
+  );
+});
+
+test("each field only advances the phase once the ones before it have landed", () => {
+  assert.equal(
+    dispatchPhase(mkTask({
+      status: "dispatching",
+      sessionId: null,
+      worktreePath: null,
+      homeName: "a-1",
+      terminalResourceId: "%1",
+    })),
+    "prepare",
+  );
+});
+
+test("an embedded dispatch reports the two phases it has, and never a stalled count", () => {
+  const sdk = mkTask({
+    status: "dispatching",
+    sessionId: null,
+    worktreePath: "/wt/a",
+    homeName: null,
+    terminalResourceId: null,
+  });
+  assert.equal(dispatchPhase(sdk), "launch");
+  assert.equal(provisioningTasks([{ ...sdk, sessionId: "s1", status: "running" }]).length, 0);
 });

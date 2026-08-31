@@ -22115,86 +22115,117 @@ button.sc-row:focus-visible {
 }
 
 /* ============================================================================
-   Starting strip: dispatched tasks that have no session yet.
+   Pending dispatch: a task that has been dispatched and has no session yet.
 
-   Sits directly under `.line` and takes its gutters from the same two rules, for the
-   same reason - it is a sibling of the strip above it and of the board below, and a
-   third gutter here would misalign it against both. `flex: none` keeps it out of the
-   full-height shells' scroll calculation exactly as `.line` is kept out.
-
-   It has NO fixed height, which is the one place it deliberately parts from `.line`.
-   The Line is always answering something so it holds its band; this is empty almost
-   all of the time and renders nothing at all when it is, so the board must not carry
-   a permanent gap reserved for it.
+   Drawn inside the fleet, at the top of Working - a tile in a board column and a row in
+   the console rail - rather than in a band above the layouts. These rules mark the row as
+   a placeholder and show how far provisioning has progressed. Everything else is the real
+   `.tile` and `.rail-row` vocabulary the placeholder borrows.
    ============================================================================ */
-.starting-strip {
+.pend-meter {
+  display: inline-flex;
+  gap: 3px;
   flex: none;
-  padding-inline: 4px;
-  margin-bottom: 18px;
-}
-.app-console .starting-strip,
-.app-board .starting-strip {
-  margin-bottom: 0;
-  padding: 10px 22px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.starting-strip-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.starting-strip-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--fg) 3%, transparent);
-}
-
-/* Dashed rather than solid, and the only card on the page that is: this is a card for a
-   thing that does not exist yet, and the border says so before any of the words do. */
-.starting-strip-title {
-  color: var(--fg);
-  font-weight: 500;
-}
-
-.starting-strip-meta,
-.starting-strip-status {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.starting-strip-spinner {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
-  border-top-color: var(--fg);
   align-self: center;
-  animation: starting-strip-spin 0.8s linear infinite;
+}
+.pend-seg {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.pend-seg.is-done {
+  background: var(--working);
+}
+.pend-seg.is-live {
+  background: color-mix(in srgb, var(--working) 55%, transparent);
+  animation: pend-breathe 1.1s ease-in-out infinite;
+}
+@keyframes pend-breathe {
+  50% { background: var(--working); }
 }
 
-@keyframes starting-strip-spin {
-  to { transform: rotate(360deg); }
+.pend-list-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  flex: none;
 }
 
-/* Provisioning is a wait, not an animation people asked for. Honour the setting and let the
-   ring sit still - the row still says "Starting…" in words, so nothing is lost. */
+.pend-tile {
+  cursor: default;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--working) 34%, var(--border));
+  background: color-mix(in srgb, var(--working) 5%, var(--panel));
+  box-shadow: none;
+  flex: none;
+}
+.pend-phase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+.pend-skel {
+  height: 8px;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--fg) 7%, transparent) 0%,
+    color-mix(in srgb, var(--fg) 13%, transparent) 45%,
+    color-mix(in srgb, var(--fg) 7%, transparent) 90%
+  );
+  background-size: 220% 100%;
+  animation: pend-shimmer 1.5s linear infinite;
+}
+.pend-skel-a { width: 78%; }
+.pend-skel-b { width: 46%; }
+@keyframes pend-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -100% 0; }
+}
+.pend-foot {
+  color: var(--dim);
+}
+.pend-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pend-repo {
+  margin-left: auto;
+  flex: none;
+}
+
+.pend-rail {
+  cursor: default;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--working) 30%, var(--border));
+  background: color-mix(in srgb, var(--working) 4%, transparent);
+}
+.pend-state {
+  color: var(--working);
+}
+.pend-sep {
+  padding: 0 5px;
+  color: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.pend-rail .pend-seg {
+  width: 9px;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .starting-strip-spinner { animation: none; }
+  .pend-seg.is-live {
+    animation: none;
+    background: color-mix(in srgb, var(--working) 55%, transparent);
+  }
+  .pend-skel { animation: none; }
 }
 
 /* The Fleet page's own "the snapshot has not arrived yet" mark - see the `hasSnapshot`
-   branch beside "No agent sessions detected" in `App.tsx`. Sized up from
-   `.starting-strip-spinner` rather than sharing its class: that one sits inline in a 9px-tall
-   row, this one is the whole point of a page that has nothing else on it yet. */
+   branch beside "No agent sessions detected" in `App.tsx`. */
 .empty-spinner {
   display: inline-block;
   width: 20px;
@@ -22203,7 +22234,11 @@ button.sc-row:focus-visible {
   border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--fg) 20%, transparent);
   border-top-color: var(--fg);
-  animation: starting-strip-spin 0.8s linear infinite;
+  animation: fleet-spinner-spin 0.8s linear infinite;
+}
+
+@keyframes fleet-spinner-spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -25222,7 +25257,7 @@ span.line-run-prov {
   border: 1.5px solid color-mix(in srgb, var(--working) 28%, transparent);
   border-top-color: var(--working);
   border-radius: 50%;
-  animation: starting-strip-spin 0.8s linear infinite;
+  animation: fleet-spinner-spin 0.8s linear infinite;
 }
 .restoring-tile-meta {
   overflow: hidden;

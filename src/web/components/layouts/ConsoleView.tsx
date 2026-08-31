@@ -1,5 +1,6 @@
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
+import { provisioningTasks } from "@shared/session.ts";
 import {
   clusterFallbackLabel,
   fleetRows,
@@ -11,6 +12,7 @@ import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
+import { PendingList } from "../PendingDispatch.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import {
@@ -54,7 +56,12 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     heldSessionIds(props.workflowRunsBySession),
     useUiConfig().groupBoardByRepo,
   );
-  const groups = order.groups.filter((g) => g.sessions.length > 0);
+  const pending = provisioningTasks(props.tasks);
+  // Keep Working mounted for the first dispatch onto an otherwise quiet fleet because its
+  // task-backed placeholders live inside that group.
+  const groups = order.groups.filter(
+    (g) => g.sessions.length > 0 || (g.tone === "working" && pending.length > 0),
+  );
   const repoTotals = repoSessionTotals(order);
   // Which repository groups are folded, from the store `App` and the board read too. Shared
   // rather than per-layout: the board's focused column BECOMES this rail on drill-in, so two
@@ -144,8 +151,12 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                   dispatch glance actually scans. One number when the group is one kind of
                   thing, two when it is not; the free side drops at zero exactly as the
                   board's pill and `fleetRows`' free rule do. */}
+              {/* A placeholder is a visible row and counts in unsplit Working. It is not a
+                  free or held agent because the session does not exist yet. */}
               {g.heldFrom === null ? (
-                <span className="rail-group-n">{g.sessions.length}</span>
+                <span className="rail-group-n">
+                  {g.sessions.length + (g.tone === "working" ? pending.length : 0)}
+                </span>
               ) : (
                 <span className="rail-group-n rail-group-split">
                   {g.heldFrom > 0 && (
@@ -159,6 +170,9 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 </span>
               )}
             </div>
+            {/* Not interactive and not part of session navigation: arrow keys continue to
+                walk only real session ids while the placeholder occupies the right place. */}
+            {g.tone === "working" && <PendingList tasks={pending} variant="rail" />}
             {/* Sibling members of one run sit under a header row of their own, inside the
                 tone section they belong to. The header is NOT a session row: rail navigation
                 walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}

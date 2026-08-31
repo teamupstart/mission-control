@@ -72,6 +72,8 @@ test("the pull request and release workflows enforce the same validator", () => 
   assert.match(pullRequestWorkflow, /pull_request_target:/);
   assert.doesNotMatch(pullRequestWorkflow, /^  pull_request:/m);
   assert.match(pullRequestWorkflow, /types: \[opened, edited, synchronize, reopened\]/);
+  assert.match(pullRequestWorkflow, /^permissions:\n  contents: read$/m);
+  assert.doesNotMatch(pullRequestWorkflow, /contents: write|write-all/);
   assert.match(pullRequestWorkflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(pullRequestWorkflow, /RELEASE_COMMIT_SUBJECT: \$\{\{ github\.event\.pull_request\.title \}\}/);
   assert.match(pullRequestWorkflow, /node scripts\/assert-release-commit\.mjs/);
@@ -81,6 +83,7 @@ test("the pull request and release workflows enforce the same validator", () => 
   const token = releaseWorkflow.indexOf("name: Mint the mission-control-release installation token");
   assert.ok(checkout >= 0 && checkout < guard && guard < token);
   assert.match(releaseWorkflow, /fetch-depth: 0/);
+  assert.match(releaseWorkflow, /if: \$\{\{ github\.event_name == 'push' \}\}/);
   assert.match(releaseWorkflow, /RELEASE_BASE_SHA: \$\{\{ github\.event\.before \}\}/);
   assert.match(releaseWorkflow, /RELEASE_HEAD_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(releaseWorkflow, /node scripts\/assert-release-commit\.mjs/);

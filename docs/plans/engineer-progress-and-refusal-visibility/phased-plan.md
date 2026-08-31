@@ -1,7 +1,7 @@
 # Phased Plan: Engineer Progress and Refusal Visibility
 
-**Source plan:** `docs/plans/engineer-progress-and-refusal-visibility/plan.md`  
-**Status:** Ready to schedule  
+**Source plan:** `docs/plans/engineer-progress-and-refusal-visibility/plan.md`
+**Status:** Ready to schedule
 **Repository set:** Mission Control plus `/Users/jordan.mance/workspace/upstart/ai-conductor`
 
 ## Implementation outcome

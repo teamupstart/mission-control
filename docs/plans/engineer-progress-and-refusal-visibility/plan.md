@@ -1,7 +1,7 @@
 # Engineer Progress and Refusal Visibility
 
-**Status:** Approved for phased implementation  
-**Requested:** 2026-08-31  
+**Status:** Approved for phased implementation
+**Requested:** 2026-08-31
 **Repository set:** Mission Control and `/Users/jordan.mance/workspace/upstart/ai-conductor`
 
 ## Outcome

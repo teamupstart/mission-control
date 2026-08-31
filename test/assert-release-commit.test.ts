@@ -69,6 +69,8 @@ test("the pull request and release workflows enforce the same validator", () => 
   );
   const releaseWorkflow = readFileSync(join(repo, ".github", "workflows", "release.yml"), "utf8");
 
+  assert.match(pullRequestWorkflow, /pull_request_target:/);
+  assert.doesNotMatch(pullRequestWorkflow, /^  pull_request:/m);
   assert.match(pullRequestWorkflow, /types: \[opened, edited, synchronize, reopened\]/);
   assert.match(pullRequestWorkflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(pullRequestWorkflow, /RELEASE_COMMIT_SUBJECT: \$\{\{ github\.event\.pull_request\.title \}\}/);

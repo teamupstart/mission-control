@@ -246,12 +246,12 @@ rather than failing outright.
 Before merge, rename the pull request to `type(optional-scope): description`; the title workflow
 will recheck it. Once its squash commit is already on `main`, changing the pull request title cannot
 rewrite that commit. Instead, add a `BEGIN_COMMIT_OVERRIDE` / `END_COMMIT_OVERRIDE` block containing
-valid Conventional Commit lines to the merged pull request body, then rerun the Release workflow
-with a new releasable Conventional Commit on `main`. The resulting push passes the preflight, and
-Release Please applies the supported override when it rebuilds the release notes. For a direct push
+valid Conventional Commit lines to the merged pull request body, then land a new releasable
+Conventional Commit on `main`. Its push starts the Release workflow, passes the preflight, and lets
+Release Please apply the supported override when it rebuilds the release notes. For a direct push
 with no originating pull request, push a new releasable Conventional Commit directly to `main` to
-advance the release; do not rewrite `main` history. Re-run the failed push workflow only for a
-transient failure after its commit preflight passed.
+advance the release; do not rewrite `main` history. Use GitHub's **Re-run jobs** control only for a
+transient failure after that push's commit preflight passed.
 
 `update.log` in the state directory is the diagnostic of record. It rotates at 1 MB and redacts
 credentials and absolute paths, so expect `<path>` where a directory would be.

@@ -199,9 +199,20 @@ Actions variable and `RELEASE_PLEASE_APP_PRIVATE_KEY` is a repository Actions se
 installed only on this repository with contents, issues, and pull-request write access. The
 organization policy prevents the default `GITHUB_TOKEN` from opening pull requests, so replacing
 the configured App token with the default token makes the Release workflow fail on every push to
-`main`. The first release was pinned to `v1.0.0` through the package's `release-as` setting. That
-one-time pin was removed once `v1.0.0` published, so releases now resume normal version calculation
-from the conventional-commit history. Leaving it in place is not a cosmetic oversight:
+`main`.
+
+Release Please does not fail when it cannot parse a commit subject. It omits that commit and can
+exit successfully after considering zero commits, without opening or updating the standing release
+pull request. [`pull-request-title.yml`](../.github/workflows/pull-request-title.yml) checks every
+pull request title when it is opened, changed, or synchronized. The Release workflow independently
+rechecks each first-parent commit added to `main` before it mints the App token. Both gates use
+[`scripts/assert-release-commit.mjs`](../scripts/assert-release-commit.mjs), whose accepted shape is
+`type(optional-scope)!: description`. Use `fix:` for a patch and `feat:` for a feature; other
+lowercase Conventional Commit types are parseable but may not create a release on their own.
+
+The first release was pinned to `v1.0.0` through the package's `release-as` setting. That one-time
+pin was removed once `v1.0.0` published, so releases now resume normal version calculation from the
+conventional-commit history. Leaving it in place is not a cosmetic oversight:
 `release-as` forces the same version on every subsequent run, so with the manifest already at
 `1.0.0` release-please proposes `1.0.0` again and no later release can be cut at all.
 

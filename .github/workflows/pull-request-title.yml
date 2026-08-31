@@ -1,0 +1,32 @@
+name: Pull request title
+
+# Release Please reads the commit subject GitHub creates from a merged pull request. Validate the
+# title on every event that can change that subject, including a title edit after an earlier green
+# check. The script is checked out from the base SHA so a pull request cannot weaken its own gate.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    name: release-compatible title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted title validator
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Assert Release Please can parse the pull request title
+        env:
+          RELEASE_COMMIT_SUBJECT: ${{ github.event.pull_request.title }}
+        run: node scripts/assert-release-commit.mjs

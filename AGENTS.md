@@ -106,10 +106,11 @@ On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=se
 CI defines three jobs and reports eight checks. `gates` (typecheck and lint) uses GitHub-hosted
 `ubuntu-latest`; `unit (node 24)` and `unit (node 26)` (tests, build, and bundle smoke) use the
 `frontend-platform` 8-core runner with eight workers; and five `e2e` shards (the Playwright
-suite, on Node.js 24 only) use the same group's 4-core runner with four workers each. Lint is
-now a CI job rather than a local-only check, so a lint failure now turns CI red - `main`
-carries no branch protection, so that is a signal to act on and not a mechanical block.
-`.github/workflows/ci.yml` documents the runner and worker policy.
+suite, on Node.js 24 only) use the same group's 4-core runner with four workers each. The separate
+pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
+by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns
+CI red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
+block. `.github/workflows/ci.yml` documents the runner and worker policy.
 
 ## Working rules
 

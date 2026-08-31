@@ -119,6 +119,8 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
 
   assert.deepEqual([
     text(applying).includes("Preparing to update Mission Control to 0.2.0."),
+    text(applying).includes("administrator permission"),
+    text(applying).includes("/Applications"),
     controls(applying).length === 0,
     text(manualError).includes("Could not check for updates. Try again."),
     controls(manualError).join(",") === "Retry,Dismiss",
@@ -133,5 +135,5 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     idle === "",
     text(longNotes).includes("VISIBLE_RELEASE_SUMMARY"),
     !text(longNotes).includes(distinctiveSuffix),
-  ], Array.from({ length: 14 }, () => true));
+  ], Array.from({ length: 16 }, () => true));
 });

@@ -89,6 +89,8 @@ test("desktop update banner exposes the complete update flow while the browser s
   await screenshot("available");
   await dashboard.getByRole("button", { name: "Update Now" }).click();
   await expect(status).toContainText("Preparing to update");
+  await expect(status).toContainText("administrator permission");
+  await expect(status).toContainText("/Applications");
   await screenshot("applying");
 
   await dashboard.evaluate((next: UpdateSnapshot) => {

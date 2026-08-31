@@ -17,10 +17,12 @@ import { join, resolve } from "node:path";
 
 export const APP_BUNDLE_NAME = "Mission Control.app";
 export const DEFAULT_APPS_DIR = "/Applications";
+export const ADMINISTRATOR_AUTHORIZATION_PROMPT =
+  "Mission Control needs administrator permission to install this update in /Applications.";
 
 export const PRIVILEGED_SWAP_APPLESCRIPT = `on run argv
   if (count of argv) is not 1 then error "expected one bundle transaction"
-  do shell script (item 1 of argv) with administrator privileges
+  do shell script (item 1 of argv) with prompt "${ADMINISTRATOR_AUTHORIZATION_PROMPT}" with administrator privileges
 end run`;
 
 function shellQuote(value) {

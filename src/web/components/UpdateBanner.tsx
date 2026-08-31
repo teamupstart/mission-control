@@ -24,7 +24,10 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   if (snapshot.phase === "applying") {
     return (
       <section className="app-banner app-banner-update" role="status">
-        <strong>Preparing to update Mission Control to {snapshot.newVersion}.</strong>
+        <div className="app-banner-copy">
+          <strong>Preparing to update Mission Control to {snapshot.newVersion}.</strong>
+          <p>If macOS asks for administrator permission, it is Mission Control installing the update in /Applications.</p>
+        </div>
       </section>
     );
   }

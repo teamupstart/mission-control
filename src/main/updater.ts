@@ -322,6 +322,14 @@ export function detachedUpdateHelperSources(helperSource: string): string[] {
   return [helperSource, join(dirname(helperSource), "app-bundle-swap.mjs")];
 }
 
+/** Preserve the user's CLI PATH after Electron quits and the detached installer takes over. */
+export function detachedUpdateHelperEnvironment(
+  current: NodeJS.ProcessEnv = process.env,
+  path: string = loginShellPath(),
+): NodeJS.ProcessEnv {
+  return { ...current, PATH: path };
+}
+
 export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "mission-control-update-"));
   try {
@@ -349,7 +357,11 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
             "--log-path",
             args.logPath,
           ],
-          { detached: true, stdio: ["ignore", logFd, logFd] },
+          {
+            detached: true,
+            stdio: ["ignore", logFd, logFd],
+            env: detachedUpdateHelperEnvironment(),
+          },
         );
         child.once("error", reject);
         child.once("spawn", () => {

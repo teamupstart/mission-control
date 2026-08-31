@@ -4,6 +4,7 @@ import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { UpdateApplyOutcome } from "../src/shared/update.ts";
 import {
+  detachedUpdateHelperEnvironment,
   detachedUpdateHelperSources,
   latestStableRelease,
   sanitizeLogLine,
@@ -44,6 +45,19 @@ test("the detached updater carries its narrowly scoped bundle-swap support modul
       "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
     ],
+  );
+});
+
+test("the detached updater carries the login-shell PATH into the installer", () => {
+  assert.deepEqual(
+    detachedUpdateHelperEnvironment(
+      { PATH: "/usr/bin:/bin", MISSION_HOME: "/state" },
+      "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    ),
+    {
+      PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+      MISSION_HOME: "/state",
+    },
   );
 });
 

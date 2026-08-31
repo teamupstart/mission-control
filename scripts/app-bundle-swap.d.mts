@@ -7,6 +7,7 @@ export interface BundleOps {
 
 export const APP_BUNDLE_NAME: string;
 export const DEFAULT_APPS_DIR: string;
+export const ADMINISTRATOR_AUTHORIZATION_PROMPT: string;
 export const PRIVILEGED_SWAP_APPLESCRIPT: string;
 
 export function stagingPaths(input: { appsDir: string; pid: number | string }): {

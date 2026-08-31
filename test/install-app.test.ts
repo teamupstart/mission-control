@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  ADMINISTRATOR_AUTHORIZATION_PROMPT,
   PRIVILEGED_SWAP_APPLESCRIPT,
   bundleSwapShellCommand,
   privilegedBundleSwapCommand,
@@ -459,8 +460,16 @@ test("an unwritable /Applications uses one narrowly scoped administrator transac
   assert.match(commands[0]!, /'"'"'/, "a quote in the source path is shell-escaped");
   assert.match(commands[0]!, /\/Applications\/\.Mission Control\.app\.incoming-4242/);
   assert.match(commands[0]!, /\/Applications\/Mission Control\.app/);
-  assert.doesNotMatch(PRIVILEGED_SWAP_APPLESCRIPT, /Applications|private\/tmp/);
+  // The script may name the fixed destination in explanatory copy, but the transaction and
+  // its source path still arrive only through argv after the path checks above.
+  assert.doesNotMatch(PRIVILEGED_SWAP_APPLESCRIPT, /private\/tmp|Mission Control\.app/);
   assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with administrator privileges/);
+  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with prompt/);
+  assert.equal(
+    ADMINISTRATOR_AUTHORIZATION_PROMPT,
+    "Mission Control needs administrator permission to install this update in /Applications.",
+  );
+  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /Mission Control needs administrator permission/);
 });
 
 test("administrator authorization cannot target an arbitrary install directory", () => {

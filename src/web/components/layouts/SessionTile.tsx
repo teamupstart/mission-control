@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import type { PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
+import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
@@ -63,6 +63,7 @@ export function SessionTile({
   onOpenPipelineRun,
   pipelineRunObserved = false,
   pipelineRun = null,
+  pipelineCommission = null,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -109,6 +110,7 @@ export function SessionTile({
    * provider enabled - so the meter fails open into drawing nothing.
    */
   pipelineRun?: PipelineRun | null;
+  pipelineCommission?: PipelineCommission | null;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
@@ -279,8 +281,12 @@ export function SessionTile({
           registry AND on both halves of the join, so the overwhelmingly common session - one
           with no correlation at all - renders nothing rather than an empty bar. The cluster
           head above this tile already names the run; this says what the run has done. */}
-      {shown("pipelinePhases") && session.pipeline && pipelineRun && (
-        <PipelinePhaseMeter run={pipelineRun} link={session.pipeline} />
+      {shown("pipelinePhases") && ((session.pipeline && pipelineRun) || pipelineCommission) && (
+        <PipelinePhaseMeter
+          run={pipelineRun}
+          link={session.pipeline ?? undefined}
+          commission={pipelineCommission}
+        />
       )}
 
       {/* D′ is a cropped rung of the same Stage Ladder the Console detail draws. The summary
@@ -356,8 +362,8 @@ export function SessionTile({
               : undefined
           }
         />
-        <TaskPipelineRunTileFlag
-          link={session.task?.pipelineRun ?? null}
+      <TaskPipelineRunTileFlag
+        link={pipelineCommission ? null : (session.task?.pipelineRun ?? null)}
           observed={pipelineRunObserved}
           onOpen={
             session.task?.pipelineRun

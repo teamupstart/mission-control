@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import {
   conductorWorktree,
   readConductorInvocations,
+  readConductorEngineerRuns,
   seedConductorDaemon,
   seedConductorRun,
   writeConductorProjects,
@@ -80,6 +82,112 @@ async function enablePipelines(
     foremanMechanicalTriage,
     repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
   });
+}
+
+test("concurrent same-intent Pipeline dispatches reserve independent Engineer runs", async ({
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+  const intent = "Keep duplicate Engineer work exclusive";
+  const dispatch = (title: string) =>
+    request<{ id: string }>(daemon, "/api/tasks", "POST", {
+      repoRoot: daemon.repo,
+      intent,
+      title,
+      kind: "pipeline",
+      agent: "codex",
+      backlog: false,
+      workflowId: null,
+    });
+
+  await Promise.all([dispatch("Duplicate Pipeline one"), dispatch("Duplicate Pipeline two")]);
+
+  await expect
+    .poll(async () => {
+      const tasks = (
+        await request<Array<{
+          intent: string;
+          status: string;
+          error: string | null;
+          pipelineCommissionId: string | null;
+        }>>(daemon, "/api/tasks")
+      ).filter((task) => task.intent === intent);
+      return {
+        statuses: tasks.map((task) => task.status).sort(),
+        activeCommissionIds: tasks
+          .filter((task) => task.status === "running")
+          .flatMap((task) => task.pipelineCommissionId ?? []),
+        errors: tasks.flatMap((task) => task.error ?? []),
+        engineerRuns: existsSync(join(daemon.home, "conductor-engineer-state.json"))
+          ? readConductorEngineerRuns(daemon.home).map((run) => ({
+              engineerRunId: run.engineerRunId,
+              correlationId: run.correlationId,
+              attemptKey: run.attemptKey,
+            }))
+          : [],
+      };
+    })
+    .toMatchObject({
+      statuses: ["running", "running"],
+      errors: [],
+      activeCommissionIds: [expect.any(String), expect.any(String)],
+      engineerRuns: [
+        {
+          engineerRunId: expect.any(String),
+          correlationId: expect.any(String),
+          attemptKey: expect.any(String),
+        },
+        {
+          engineerRunId: expect.any(String),
+          correlationId: expect.any(String),
+          attemptKey: expect.any(String),
+        },
+      ],
+    });
+
+  const tasks = (
+    await request<Array<{
+      intent: string;
+      pipelineCommissionId: string | null;
+    }>>(daemon, "/api/tasks")
+  ).filter((task) => task.intent === intent);
+  const runs = readConductorEngineerRuns(daemon.home);
+  expect(new Set(tasks.map((task) => task.pipelineCommissionId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.engineerRunId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.correlationId)).size).toBe(2);
+  expect(new Set(runs.map((run) => run.attemptKey)).size).toBe(2);
+});
+
+const TERMINAL_COMMISSION_REFUSAL =
+  "this provider version cannot deliver a reserved Engineer run through Terminal; use Managed Agent SDK";
+
+async function expectTerminalCommissionRefused(
+  daemon: DaemonHandle,
+  message: string,
+): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        (
+          await request<Array<{
+            kind: string;
+            status: string;
+            error: string | null;
+            sessionId: string | null;
+            homeName: string | null;
+            pipelineRun: { provider: string; repoRoot: string; slug: string } | null;
+          }>>(daemon, "/api/tasks")
+        ).find((task) => task.kind === "pipeline"),
+      { message },
+    )
+    .toMatchObject({
+      kind: "pipeline",
+      status: "failed",
+      error: TERMINAL_COMMISSION_REFUSAL,
+      sessionId: null,
+      homeName: null,
+      pipelineRun: null,
+    });
 }
 
 /** User prompts recorded by the cost-free Codex SDK fixture. */
@@ -219,6 +327,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
             status: string;
             sessionId: string | null;
             homeName: string | null;
+            pipelineCommissionId: string | null;
             pipelineRun: { provider: string; repoRoot: string; slug: string } | null;
           }>>(daemon, "/api/tasks")
         ).find((task) => task.kind === "pipeline"),
@@ -230,11 +339,8 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       status: "running",
       sessionId: expect.stringMatching(/^sdk:/),
       homeName: null,
-      pipelineRun: {
-        provider: "ai-conductor",
-        repoRoot: daemon.repo,
-        slug: "build-the-sdk-hosted-pipeline-route",
-      },
+      pipelineCommissionId: expect.any(String),
+      pipelineRun: null,
     });
   const tasks = await request<Array<{
     id: string;
@@ -243,18 +349,23 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   }>>(daemon, "/api/tasks");
   const task = tasks.find((candidate) => candidate.kind === "pipeline");
   expect(task?.sessionId).toMatch(/^sdk:/);
+  let engineerRunId = "";
+  await expect
+    .poll(() => {
+      engineerRunId = readConductorEngineerRuns(daemon.home).at(-1)?.engineerRunId ?? "";
+      return engineerRunId;
+    })
+    .toMatch(/^engineer-e2e-/);
   await expect
     .poll(() => codexPrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
     .toBe(
       `$engineer - run this skill now. ${intent}\n\n` +
-      "[Mission Control launch context: the reserved Pipeline run is " +
-      "build-the-sdk-hosted-pipeline-route. If Engineer resumes a different existing run, " +
-      "call adopt_pipeline_run with that run's slug before continuing. No call is needed " +
-      "when Engineer creates the reserved run. After Engineer creates or enters its " +
-      "authoring worktree, call report_pipeline_workspace with that absolute path before " +
-      "editing files there.]",
+      `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
+      "Pass that exact id as --engineer-run-id when creating the authoring worktree. " +
+      "After Engineer creates or enters that worktree, call report_pipeline_workspace with " +
+      "its absolute path before editing files there.]",
     );
 
   // Engineer authors the spec outside the host's fixed SDK cwd. This is the real shape
@@ -351,7 +462,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   await shoot(dashboard, "10-managed-workspace-files", detail);
 });
 
-test.describe("managed Pipeline run adoption", () => {
+test.describe("managed Pipeline worker separation", () => {
   test.use({
     daemonEnv: {
       CLAUDECODE: "nested-e2e-parent",
@@ -376,12 +487,11 @@ test.describe("managed Pipeline run adoption", () => {
   });
   test.skip(tmuxMissing, "tmux is not installed on this machine");
 
-  test("the task adopts an existing run without turning its interactive host into a worker", async ({
+  test("an unrelated existing run does not turn the commissioned host into a worker", async ({
     dashboard,
     daemon,
   }) => {
     const adoptedSlug = "deploy-health-and-rds-connectivity";
-    const reservedSlug = "resume-the-managed-deployment-health-run";
     seedConductorRun(daemon.repo, adoptedSlug, {
       steps: { worktree: "done", build: "in_progress" },
       lastStep: "build",
@@ -427,6 +537,7 @@ test.describe("managed Pipeline run adoption", () => {
         kind: string;
         status: string;
         sessionId: string | null;
+        pipelineCommissionId: string | null;
         pipelineRun: PipelineLink | null;
       };
       type PipelineSession = {
@@ -455,38 +566,39 @@ test.describe("managed Pipeline run adoption", () => {
             return {
               task: task && {
                 status: task.status,
-                slug: task.pipelineRun?.slug,
+                commissionId: task.pipelineCommissionId,
+                slug: task.pipelineRun?.slug ?? null,
               },
               host: host && {
                 runtime: host.runtime,
                 state: host.state,
                 pipeline: host.pipeline,
               },
-              worker: providerWorker?.pipeline?.slug,
+              worker: providerWorker && {
+                slug: providerWorker.pipeline?.slug ?? null,
+                taskId: providerWorker.task?.id ?? null,
+              },
             };
           },
           {
-            message: "the reserved task, interactive host, and existing run's provider worker should all be visible",
+            message: "the commission host and unrelated provider worker should remain distinct",
             timeout: 30_000,
           },
         )
         .toEqual({
-          task: { status: "running", slug: reservedSlug },
+          task: { status: "running", commissionId: expect.any(String), slug: null },
           host: { runtime: "sdk", state: expect.stringMatching(/^(working|idle)$/), pipeline: null },
-          worker: adoptedSlug,
+          worker: { slug: adoptedSlug, taskId: null },
         });
 
       expect(task).toBeDefined();
       expect(host).toBeDefined();
       expect(providerWorker).toBeDefined();
-      const plannedName = `This task plans ${reservedSlug}. Open its run in Runs.`;
-      const adoptedName = `This task continues in ${adoptedSlug}. Open its run in Runs.`;
 
       await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
       await dashboard.reload();
       const hostTile = dashboard.locator("div.tile").filter({ hasText: host!.name });
       await expect(hostTile).toBeVisible();
-      await expect(hostTile.getByRole("button", { name: plannedName })).toBeVisible();
       await expect(
         dashboard.locator("div.board-cluster").filter({ hasText: providerWorker!.name }),
       ).toHaveCount(1);
@@ -500,70 +612,10 @@ test.describe("managed Pipeline run adoption", () => {
         .getByRole("navigation", { name: "Sessions" })
         .locator("button.rail-row")
         .filter({ hasText: host!.name });
-      const railTaskRun = dashboard
-        .getByRole("navigation", { name: "Sessions" })
-        .locator("button.rail-task-pipeline");
-      await expect(railTaskRun).toBeVisible();
-      await expect(railTaskRun).toHaveAttribute("aria-label", plannedName);
       await hostRow.click();
       const detail = dashboard.locator(".console-detail");
       await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
-      await expect(detail.getByRole("button", { name: plannedName })).toBeVisible();
       await expect(detail.locator("button.pipeline-chip")).toHaveCount(0);
-
-      // The real MCP tool accepts only this object. Its bridge proves which managed host
-      // called by returning the opaque capability in that host's MCP registration.
-      const toolInput = { slug: adoptedSlug };
-      const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
-      let callerCredential: string | null = null;
-      await expect
-        .poll(() => {
-          callerCredential = codexPipelineCallerCredential(daemon);
-          return callerCredential;
-        })
-        .toMatch(/^[A-Za-z0-9_-]{43}$/);
-      const adoption = await fetch(`${daemon.baseURL}/mcp/pipelines/adopt`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-harness-token": token,
-          [PIPELINE_CALLER_CREDENTIAL_HEADER]: callerCredential!,
-        },
-        body: JSON.stringify(toolInput),
-      });
-      expect(adoption.status, await adoption.text()).toBe(200);
-
-      await expect
-        .poll(async () => {
-          const current = (await request<PipelineTask[]>(daemon, "/api/tasks")).find(
-            (candidate) => candidate.id === task!.id,
-          );
-          return { status: current?.status, pipelineRun: current?.pipelineRun };
-        })
-        .toEqual({
-          status: "running",
-          pipelineRun: { provider: "ai-conductor", repoRoot: daemon.repo, slug: adoptedSlug },
-        });
-      await expect(detail.getByRole("button", { name: adoptedName })).toBeVisible();
-      await expect(railTaskRun).toHaveAttribute("aria-label", adoptedName);
-      await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
-      const railBox = await railTaskRun.boundingBox();
-      const desktopWidth = await dashboard.evaluate(() => window.innerWidth);
-      expect(railBox, "the desktop rail task-run control should have laid-out geometry").not.toBeNull();
-      expect(railBox!.x).toBeGreaterThanOrEqual(0);
-      expect(railBox!.x + railBox!.width).toBeLessThanOrEqual(desktopWidth);
-      await dashboard.setViewportSize({ width: 420, height: 900 });
-      // The narrow Console intentionally collapses its rail. Its detail replacement must
-      // retain the same reachable run control without clipping it off-screen.
-      const narrowRunControls = [detail.getByRole("button", { name: adoptedName })];
-      for (const control of narrowRunControls) {
-        await expect(control).toBeVisible();
-        const box = await control.boundingBox();
-        expect(box, "the task-run control should have laid-out geometry").not.toBeNull();
-        expect(box!.x).toBeGreaterThanOrEqual(0);
-        expect(box!.x + box!.width).toBeLessThanOrEqual(420);
-      }
-      await shoot(dashboard, "08-managed-adoption-console-narrow");
       await expect
         .poll(async () => {
           const sessions = await request<PipelineSession[]>(daemon, "/api/sessions");
@@ -572,61 +624,11 @@ test.describe("managed Pipeline run adoption", () => {
             worker:
               sessions.find((candidate) => candidate.id === providerWorker!.id)?.pipeline?.slug ??
               null,
+            workerTask:
+              sessions.find((candidate) => candidate.id === providerWorker!.id)?.task?.id ?? null,
           };
         })
-        .toEqual({ host: null, worker: adoptedSlug });
-
-      await detail.getByRole("button", { name: adoptedName }).click();
-      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
-      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
-
-      await dashboard.setViewportSize({ width: 1440, height: 900 });
-      await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-      const restoredHostRow = dashboard
-        .getByRole("navigation", { name: "Sessions" })
-        .locator("button.rail-row")
-        .filter({ hasText: host!.name });
-      await restoredHostRow.click();
-      const restoredRailRun = dashboard
-        .getByRole("navigation", { name: "Sessions" })
-        .locator("button.rail-task-pipeline");
-      await restoredRailRun.click();
-      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
-      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
-
-      await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
-      await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-      await dashboard.reload();
-      const adoptedHostTile = dashboard.locator("div.tile").filter({ hasText: host!.name });
-      const adoptedBoardRun = adoptedHostTile.getByRole("button", { name: adoptedName });
-      await expect(adoptedBoardRun).toBeVisible();
-      await expect(
-        dashboard.locator("div.board-cluster").filter({ hasText: providerWorker!.name }),
-      ).toHaveCount(1);
-      await expect(
-        dashboard.locator("div.board-cluster").filter({ hasText: host!.name }),
-      ).toHaveCount(0);
-      await shoot(dashboard, "09-managed-adoption-board-desktop");
-      await adoptedBoardRun.click();
-      await expect.poll(() => new URL(dashboard.url()).hash).toMatch(new RegExp(`/${adoptedSlug}$`));
-      await expect(dashboard.locator(".pipelines-reader")).toContainText(adoptedSlug);
-
-      seedConductorDaemon(daemon.repo, {
-        pid: process.pid,
-        processed: { [adoptedSlug]: { prUrl: null } },
-      });
-      await expect
-        .poll(
-          async () =>
-            (await request<PipelineTask[]>(daemon, "/api/tasks")).find(
-              (candidate) => candidate.id === task!.id,
-            )?.status,
-          {
-            message: "only the provider's processed projection should settle the adopted task",
-            timeout: 15_000,
-          },
-        )
-        .toBe("done");
+        .toEqual({ host: null, worker: adoptedSlug, workerTask: null });
     } finally {
       worker.cleanup();
     }
@@ -663,7 +665,7 @@ test("guided managed Agent SDK pipeline asks for an eligible harness", async ({
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
 });
 
-test("terminal pipeline normalizes a stale non-Claude agent before dispatch", async ({
+test("terminal pipeline normalizes a stale non-Claude agent and refuses before spawn", async ({
   dashboard,
   daemon,
 }) => {
@@ -687,21 +689,13 @@ test("terminal pipeline normalizes a stale non-Claude agent before dispatch", as
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect
-    .poll(
-      async () =>
-        (
-          await request<Array<{ agent: string; kind: string; status: string }>>(
-            daemon,
-            "/api/tasks",
-          )
-        ).find((task) => task.kind === "pipeline"),
-      { message: "the terminal pipeline task should carry the normalized Claude host" },
-    )
-    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
+  await expectTerminalCommissionRefused(
+    daemon,
+    "the terminal pipeline task should fail before launching the normalized Claude host",
+  );
 });
 
-test("an open pipeline dispatch follows a live host runtime change", async ({
+test("an open pipeline dispatch follows a live runtime change and refuses Terminal", async ({
   dashboard,
   daemon,
 }) => {
@@ -721,7 +715,7 @@ test("an open pipeline dispatch follows a live host runtime change", async ({
 
   await enablePipelines(daemon, false, "terminal");
 
-  await expect(dialog.getByText(/Terminal is Claude-only/)).toBeVisible();
+  await expect(dialog.getByText(/cannot deliver a reserved Engineer run through Terminal/)).toBeVisible();
   await expect(agent).toBeDisabled();
   await expect(agent).toHaveValue("claude");
   await shoot(dashboard, "07-terminal-pipeline-live-runtime-normalized", dialog);
@@ -732,21 +726,13 @@ test("an open pipeline dispatch follows a live host runtime change", async ({
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect
-    .poll(
-      async () =>
-        (
-          await request<Array<{ agent: string; kind: string; status: string }>>(
-            daemon,
-            "/api/tasks",
-          )
-        ).find((task) => task.kind === "pipeline"),
-      { message: "the live runtime change should dispatch the normalized Claude host" },
-    )
-    .toMatchObject({ agent: "claude", kind: "pipeline", status: "running" });
+  await expectTerminalCommissionRefused(
+    daemon,
+    "the live Terminal runtime should refuse before launching the normalized Claude host",
+  );
 });
 
-test("guided dispatch offers pipeline only in an enabled repo and launches a real terminal home", async ({
+test("guided dispatch offers pipeline only in an enabled repo and refuses commissioned Terminal", async ({
   dashboard,
   daemon,
 }) => {
@@ -793,9 +779,11 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await expect(dialog.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: /Effort/ })).toBeDisabled();
   await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toBeDisabled();
-  await expect(dialog.getByText(/Terminal is Claude-only and opens conduct-ts engineer --idea/)).toBeVisible();
-  await expect(dialog.getByText(/live stdin and removes the inherited Claude nesting marker/)).toBeVisible();
-  await expect(dialog.getByText(/provider projection owns task completion/)).toBeVisible();
+  await expect(dialog.getByText(/cannot deliver a reserved Engineer run through Terminal/)).toBeVisible();
+  await expect(dialog.getByText(/new Pipeline dispatches refuse before spawn/)).toBeVisible();
+  await expect(
+    dialog.getByText(/Conductor still owns downstream agent, model, effort, and task completion/),
+  ).toBeVisible();
   await shoot(dashboard, "01-pipeline-dispatch", dialog);
 
   const intent = "Ship the phase six pipeline weave";
@@ -803,35 +791,10 @@ test("guided dispatch offers pipeline only in an enabled repo and launches a rea
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect
-    .poll(
-      async () =>
-        (
-          await request<Array<{
-            kind: string;
-            status: string;
-            sessionId: string | null;
-            homeName: string | null;
-            pipelineRun: { provider: string; repoRoot: string; slug: string } | null;
-          }>>(
-            daemon,
-            "/api/tasks",
-          )
-        ).find((task) => task.kind === "pipeline"),
-      { message: "the pipeline task should own a running terminal home" },
-    )
-    .toMatchObject({
-      kind: "pipeline",
-      status: "running",
-      sessionId: null,
-      homeName: expect.any(String),
-      pipelineRun: {
-        provider: "ai-conductor",
-        repoRoot: daemon.repo,
-        slug: "ship-the-phase-six-pipeline-weave",
-      },
-    });
-
+  await expectTerminalCommissionRefused(
+    daemon,
+    "guided Terminal dispatch should refuse before creating a host or commission",
+  );
 });
 
 test("a projected pipeline pull request is adopted under pipeline provenance and appears in Shipped", async ({

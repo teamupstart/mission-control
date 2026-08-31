@@ -21,7 +21,11 @@ import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
-import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
+import {
+  ensembleSummaryFor,
+  pipelineCommissionForSession,
+  type SessionViewProps,
+} from "./types.ts";
 import {
   blockedMembersIn,
   ColumnWidthToggle,
@@ -177,8 +181,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
   // second rendering.
-  const tile = (s: Session): React.JSX.Element => (
-    <SessionTile
+  const tile = (s: Session): React.JSX.Element => {
+    const commission = pipelineCommissionForSession(props, s);
+    return <SessionTile
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
@@ -207,10 +212,15 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // states per correlated card per sweep - and the projection is already here, so this
       // is the whole cost of the feature on the wire: nothing.
       pipelineRun={
-        s.pipeline ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(s.pipeline)) ?? null) : null
+        commission?.linkedRun
+          ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)
+          : s.pipeline
+            ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(s.pipeline)) ?? null)
+            : null
       }
+      pipelineCommission={commission}
     />
-  );
+  };
   /**
    * One column's rows - section rules and repository frames included - rendered by whichever
    * row component this surface uses. The rule and frame placement lives in `fleetRows`, so the
@@ -248,8 +258,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     />
   );
 
-  const railRow = (s: Session): React.JSX.Element => (
-    <RailRow
+  const railRow = (s: Session): React.JSX.Element => {
+    const commission = pipelineCommissionForSession(props, s);
+    const commissionRun = commission?.linkedRun
+      ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)
+      : null;
+    return <RailRow
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
@@ -268,8 +282,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineRunObserved={Boolean(
         s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
       )}
+      pipelineCommission={commission}
+      pipelineCommissionRun={commissionRun}
+      onOpenPipelineCommission={props.onOpenPipelineCommission}
     />
-  );
+  };
 
   return (
     <main

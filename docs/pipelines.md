@@ -31,7 +31,9 @@ automatic only while that panel is open, registration is an explicit provider CL
 guided installation is an explicit terminal launch, and observation is a separate explicit
 consent write. With nothing switched on, a watch tick reads one config value and returns: no
 probe spawns, no engine file is opened, and no pipeline event crosses the stream.
-- **The engine's files are the source of truth.** The `pipeline_runs` table is a cache, in
+- **Provider evidence is the source of truth.** Versioned Engineer events, recovered through
+  provider replay, drive the pre-merge DECIDE projection. The implementation run's engine
+  files drive BUILD and SHIP. The `pipeline_runs` table is a cache, in
   the same family as the archive index: every column is derived from files still on disk, so
   deleting it costs one refresh pass. Nothing may be stored there that is not already under
   the engine's control - a note or a label of your own belongs on a task. This holds when
@@ -202,7 +204,7 @@ reads, per consented repository:
 
 | Path | What it is |
 | --- | --- |
-| `.worktrees/<slug>/` | One feature's worktree. The slug is the plan stem, which is the engine's own canonical key. Directories with no `.pipeline/` (its spec-authoring and autoresolve worktrees) are not pipelines and are skipped. |
+| `.worktrees/<slug>/` | One implementation worktree. The slug is the plan stem, which is the engine's own canonical key. A `.pipeline/` directory alone is not a run: authoring and autoresolve worktrees are skipped unless `.pipeline/conduct-state.json` exists. |
 | `.worktrees/<slug>/.pipeline/conduct-state.json` | Per-step statuses as flat top-level keys, plus `last_step`, `complexity_tier`, `track` and `pr_url`. `refused` means an entry condition, environmental guard, or human-judgement boundary ended the attempt without the step's own work failing; it remains unsatisfied and is displayed as refused. |
 | `.worktrees/<slug>/.pipeline/gates/<step>.json` | One gate's verdict. A `skipped: ` reason prefix marks a step that was skipped rather than one whose evidence passed. |
 | `.worktrees/<slug>/.pipeline/HALT`, `HALT.class` | Why it stopped. The first non-empty line of `HALT` is the reason; an absent or unrecognised class reads as `unclassified`. |
@@ -606,12 +608,12 @@ already holding - and the plugin flushes every 250ms, so "read the ledger of wha
 just pushed" is "read it several times a second", which is a *faster* cadence than the tick
 this was meant to relax, on precisely the runs it was relaxed for.
 
-### Durable Engineer commission foundation
+### Durable Engineer commissions
 
-Mission Control also understands ai-conductor's versioned
-`engineerLifecycleEventsV1` contract. This is dormant infrastructure in the current phase:
-Pipeline dispatch still follows the existing implementation-run path, and no Board, Console,
-Runs, session-grouping, or task-chip behavior reads the new projection yet.
+Mission Control uses ai-conductor's versioned `engineerLifecycleEventsV1` contract for every
+new Pipeline dispatch. Before starting either host, it durably creates a commission and attempt,
+reserves the provider Engineer run with an idempotent launch key, binds the returned run id, and
+only then launches Engineer. A missing capability or failed reservation refuses before spawn.
 
 A commission is Mission Control-owned durable task state. It retains one opaque commission
 id, one correlation id, ordered Engineer attempts, an independent provider revision cursor
@@ -629,9 +631,10 @@ with a new cursor and never reopens the terminal predecessor.
 
 Commission projections are bounded whole objects on the existing connect snapshot and SSE
 stream. They carry only the 20 most recent attempts; `pipeline_commission_attempts` retains
-the complete durable audit without making reconnect payloads grow forever. The browser holds
-the projection for forward compatibility but does not render it in this phase. There is no
-polling path and no second browser channel.
+the complete durable audit without making reconnect payloads grow forever. Board cards show
+the full meter immediately, Console and rail chips name the lifecycle, and Runs shows attempts,
+the specification gate, and the exact linked implementation run. There is no browser polling
+path and no second browser channel.
 
 ### The route
 
@@ -812,22 +815,20 @@ rejects a non-Claude Terminal task before spawning it. A managed SDK preflight o
 fails the task and never calls the Terminal launcher. The launch setting does not affect
 ai-conductor's background build daemon, which retains its own tmux supervision.
 
-Before either host starts, the provider derives the same lowercase, ASCII-alphanumeric,
-hyphenated, 50-character idea slug Engineer uses for its plan and worktree. Mission Control
-refuses an empty result, an unreadable provider run set, an existing worktree with that slug, or
-another live task already owning the same provider, repository, and slug. It then persists the
-complete run link before starting the host, closing the interval in which two Mission Control
-dispatches could claim the same future run.
+Before either host starts, Mission Control persists one opaque commission and attempt, then asks
+the provider to reserve the exact Engineer run. The provider correlation and launch key make a
+lost create response safe to inspect and retry without producing a second run. A terminal failed
+attempt can append a successor with a new launch key and predecessor, while a non-terminal attempt
+cannot be duplicated. The final plan slug is accepted only from the provider's handoff event.
 
-Managed hosts also receive launch-scoped `adopt_pipeline_run` and
-`report_pipeline_workspace` Mission MCP tools. Engineer calls the first only when it resumes a
-different existing run instead of creating the reserved slug. The tool
-accepts only the observed slug. Mission Control derives the task, provider, repository, and live
-SDK host from daemon-issued launch context and captured caller evidence. Adoption is refused when
-the target is not projected, another active task owns it, the reserved run is already projected,
-or the caller is not that task's current managed host. The same task-scoped MCP identity is rebuilt
-when an SDK conversation resumes after a daemon restart. A missing or stale tool bundle fails the
-managed dispatch before the host starts; it never falls back to Terminal.
+Managed hosts receive the reserved Engineer run context plus the launch-scoped
+`report_pipeline_workspace` Mission MCP tool. No bearer credential appears in prompt text. The
+same task-scoped MCP identity is rebuilt when an SDK conversation resumes after a daemon restart.
+A missing or stale tool bundle fails the managed dispatch before the host starts; it never falls
+back to Terminal. The attached provider contract does not expose reserved-run delivery through its
+interactive Terminal launcher, so new commissioned dispatches refuse that stored runtime before
+spawn and direct the operator to Managed Agent SDK. Legacy uncommissioned Terminal tasks remain
+readable and keep their existing lifecycle.
 
 Engineer calls `report_pipeline_workspace` immediately after creating or entering its authoring
 worktree. Mission Control accepts only an existing, exact Git worktree root directly under the
@@ -854,11 +855,24 @@ still binds through its Terminal home when a child appears inside a projected wo
 legacy join may fill a null link or confirm a matching one, but it never rewrites a different
 prebound identity.
 
-The managed host card reads this durable relationship through `TaskSummary.pipelineRun`. Before
-the reserved run is present in the provider projection, Board, Console rail, and Console detail
-say that the task *plans* the slug. Once the run is observed or explicitly adopted, they say that
-the task *continues in* it and link to Runs. This is task ownership only: the host keeps
-`Session.pipeline = null`, remains messageable, and never joins a provider-worker cluster.
+The managed host card reads the durable commission through `TaskSummary.pipelineCommissionId`.
+It shows **Starting Engineer** before provider progress, the current DECIDE step from live or
+replayed evidence, and **Awaiting spec merge** after handoff. The handoff atomically binds
+`Task.pipelineRun` to the exact final slug. When that implementation run appears, ordinary BUILD
+and SHIP projection continues the same meter and a provider worker joins through its exact
+`Session.pipeline` link. The Engineer session keeps `Session.pipeline = null` and remains
+messageable; the provider worker keeps the standard driven-by-provider composer boundary.
+
+Cancelling during authoring calls the provider capability before making the commission terminal.
+Task cancellation cannot be retried under that commission. An Engineer attempt failure remains
+explicitly retryable: a new ordered attempt is added, prior history stays immutable, and replay
+after a daemon restart resumes from each attempt's stored revision. Until provider evidence or
+the exact implementation run proves progress, the UI does not infer it from an authoring
+worktree, branch, title, or `.pipeline/` artifacts.
+
+After the specification handoff, cancellation applies to the implementation task only. The
+settled Engineer commission remains successful history, so Board, Console, and Runs continue to
+show the handoff or implementation phase instead of retroactively reporting Engineer cancelled.
 
 When a projected run first reports `pr_url`, Mission Control adopts that pull request into the
 existing GitHub Inspector ledger with source `pipeline`, provided its owner and repository

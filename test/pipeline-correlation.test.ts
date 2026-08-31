@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { PipelineRun } from "../src/shared/pipeline.ts";
+import {
+  ENGINEER_STEP_NAMES,
+  type PipelineCommission,
+  type PipelineRun,
+} from "../src/shared/pipeline.ts";
 import { canMessage, messageBlockReason } from "../src/shared/pane.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
@@ -85,6 +89,114 @@ test("a session working in a run's worktree is stamped with the run it belongs t
     slug: "add-widgets",
     step: "build",
   });
+});
+
+test("a first-seen provider worker resolves its commissioned task through the exact run", () => {
+  const registry = new Registry();
+  const projected = mkRun();
+  const task = mkTask({
+    id: "commissioned-task",
+    kind: "pipeline",
+    repoRoot: REPO,
+    status: "running",
+    pipelineCommissionId: "commission-1",
+    pipelineRun: {
+      provider: projected.provider,
+      repoRoot: projected.repoRoot,
+      slug: projected.slug,
+    },
+  });
+  const commission: PipelineCommission = {
+    id: "commission-1",
+    taskId: task.id,
+    provider: projected.provider,
+    repoRoot: projected.repoRoot,
+    correlationId: "correlation-1",
+    lifecycle: "awaiting_spec_merge",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-1",
+      engineerRunId: "engineer-1",
+      previousEngineerRunId: null,
+      providerRevision: 3,
+      state: "settled",
+      terminalReason: "awaiting_spec_merge",
+      updatedAt: 1_000,
+    }],
+    activeAttempt: 1,
+    steps: ENGINEER_STEP_NAMES.map((name) => ({ name, state: "pending" })),
+    currentStep: null,
+    tier: "M",
+    track: "product",
+    project: "demo",
+    authoringWorktree: `${REPO}/.worktrees/spec`,
+    handoff: {
+      planSlug: projected.slug,
+      branch: `plan/${projected.slug}`,
+      prUrl: "https://github.com/example/demo/pull/1",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: projected.provider,
+      repoRoot: projected.repoRoot,
+      slug: projected.slug,
+    },
+    error: null,
+    createdAt: 1_000,
+    updatedAt: 1_000,
+  };
+
+  registry.upsertTask(task);
+  registry.initializePipelineRuns([projected]);
+  registry.initializePipelineCommissions([commission]);
+
+  const retainedHost = registry.registerSdkSession({
+    id: "sdk:retained-engineer",
+    agent: "codex",
+    name: "retained Engineer",
+    cwd: REPO,
+    agentSessionId: "engineer-before-restart",
+    gitBranch: null,
+    gitRoot: REPO,
+    repoRoot: REPO,
+  });
+  registry.upsertTask({ ...task, sessionId: retainedHost.id });
+  registry.bindTaskToWorkEpisode(task.id, retainedHost.id);
+  registry.applyDriverEvent(retainedHost.id, {
+    kind: "bound",
+    agentSessionId: "engineer-after-restart",
+    transcriptPath: null,
+    modelId: "gpt-5",
+    pid: null,
+  });
+  assert.equal(registry.getTask(task.id)?.status, "running");
+  assert.equal(registry.getTask(task.id)?.sessionId, retainedHost.id);
+  assert.equal(registry.workEpisodeForTask(task.id)?.agentSessionId, "engineer-after-restart");
+
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "later-worker" })]);
+
+  const session = registry.getSession("later-worker")!;
+  assert.deepEqual(session.pipeline, {
+    provider: projected.provider,
+    repoRoot: projected.repoRoot,
+    slug: projected.slug,
+    step: projected.lastStep,
+  });
+  assert.equal(session.task?.id, task.id);
+  assert.equal(session.task?.pipelineCommissionId, commission.id);
+  assert.deepEqual(session.task?.pipelineRun, commission.linkedRun);
+
+  registry.upsertTask({
+    ...registry.getTask(task.id)!,
+    status: "done",
+    outcome: "shipped",
+    updatedAt: 2_000,
+  });
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "later-worker" }),
+    mkDiscovered({ syntheticId: "worker-after-completion", pid: 2, tty: "ttys2" }),
+  ]);
+  assert.equal(registry.getSession("worker-after-completion")?.task, null);
 });
 
 test("the stamp carries the repository root, because two repos can hold one slug", () => {

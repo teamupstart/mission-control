@@ -71,6 +71,18 @@ import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import { preparePiLaunch } from "./harness/pi/launch.ts";
 import { pipelineTaskLaunch } from "./pipelines/index.ts";
+import {
+  appendPipelineCommissionAttempt,
+  bindPipelineCommissionAttempt,
+  cancelPipelineCommission,
+  createPipelineCommission,
+  recordPipelineCommissionCancellationFailure,
+} from "./pipelines/commissions.ts";
+import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import type {
+  PipelineEngineerLifecycle,
+  PipelineEngineerRunSnapshot,
+} from "./pipelines/types.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 
@@ -884,30 +896,179 @@ export class Dispatcher {
     if (task.workflowId !== null) {
       throw new Error("a pipeline task cannot hand off to an after-work Workflow");
     }
-    const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
-      task.repoRoot,
-      task.intent,
-    );
-    if (!launch.ok) throw new Error(launch.error);
-
-    const runKey = pipelineRunKeyOf(launch.pipelineRun);
-    const owner = this.registry.listTasks().find(
-      (candidate) =>
-        candidate.id !== taskId &&
-        candidate.kind === "pipeline" &&
-        (candidate.status === "running" || candidate.status === "dispatching") &&
-        candidate.pipelineRun !== null &&
-        pipelineRunKeyOf(candidate.pipelineRun) === runKey,
-    );
-    if (owner) {
-      throw new Error(
-        `pipeline run "${launch.pipelineRun.slug}" is already owned by active task ${owner.id}`,
+    let engineerRunId: string | null = null;
+    let engineerCommissionId: string | null = null;
+    let engineerLifecycle: PipelineEngineerLifecycle | null = null;
+    try {
+      const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
+        task.repoRoot,
+        task.intent,
       );
-    }
+      if (!launch.ok) throw new Error(launch.error);
 
-    // This write is the ownership boundary. It is synchronous and durable, so another
-    // dispatch sees the claim before this one yields to either host launcher.
-    this.patch(taskId, { pipelineRun: launch.pipelineRun });
+      if ("provider" in launch) {
+      const provider = PIPELINE_PROVIDERS[launch.provider];
+      const lifecycle = provider.engineerLifecycle;
+      if (!lifecycle) {
+        throw new Error("the pipeline provider lost Engineer lifecycle support before launch");
+      }
+      let commission = task.pipelineCommissionId
+        ? this.registry.pipelineCommission(task.pipelineCommissionId)
+        : null;
+      if (task.pipelineCommissionId && !commission) {
+        throw new Error("the task names a Pipeline commission that could not be restored");
+      }
+      if (!commission) {
+        commission = createPipelineCommission({
+          taskId,
+          provider: launch.provider,
+          repoRoot: task.repoRoot,
+        });
+        this.patch(taskId, { pipelineCommissionId: commission.id, pipelineRun: null });
+        this.registry.upsertPipelineCommission(commission);
+      } else {
+        const active = commission.attempts.find(
+          (attempt) => attempt.attempt === commission!.activeAttempt,
+        );
+        if (active && ["failed", "cancelled"].includes(active.state)) {
+          commission = appendPipelineCommissionAttempt({ commissionId: commission.id });
+          this.registry.upsertPipelineCommission(commission);
+        } else if (active?.state === "settled" || commission.lifecycle === "awaiting_spec_merge") {
+          throw new Error("the Pipeline specification is already awaiting merge and cannot restart Engineer");
+        }
+      }
+
+      const attempt = commission.attempts.find(
+        (candidate) => candidate.attempt === commission!.activeAttempt,
+      );
+      if (!attempt) throw new Error("the Pipeline commission has no active Engineer attempt");
+      const commissionId = commission.id;
+      let reserved: PipelineEngineerRunSnapshot | null = null;
+      let reservationBound = false;
+      this.registry.beginPipelineEngineerReservation(taskId);
+      try {
+        const created = await lifecycle.create({
+          repoRoot: task.repoRoot,
+          idea: task.intent,
+          correlationId: commission.correlationId,
+          attemptKey: attempt.launchKey,
+        });
+        if (created.ok) {
+          reserved = created.value;
+        } else {
+          // Creation is idempotent. Inspecting the exact correlation closes the response-lost
+          // case without minting another run or another launch key.
+          const inspected = await lifecycle.inspectCorrelation({
+            repoRoot: task.repoRoot,
+            correlationId: commission.correlationId,
+          });
+          reserved = inspected.ok
+            ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
+            : null;
+          if (!reserved) {
+            throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
+          }
+        }
+        const reservedRun = reserved;
+        if (!reservedRun) throw new Error("the provider did not return an Engineer run");
+        const mismatchedIdentity = [
+          reservedRun.correlationId !== commission.correlationId ? "correlationId" : null,
+          reservedRun.repoRoot !== task.repoRoot ? "repoRoot" : null,
+          reservedRun.attemptKey !== attempt.launchKey ? "attemptKey" : null,
+        ].filter((field): field is string => field !== null);
+        if (mismatchedIdentity.length > 0) {
+          throw new Error(
+            `provider Engineer run identity does not match the commission: ${mismatchedIdentity.join(", ")}`,
+          );
+        }
+        commission = bindPipelineCommissionAttempt({
+          commissionId: commission.id,
+          attempt: attempt.attempt,
+          engineerRunId: reservedRun.engineerRunId,
+          providerAttempt: reservedRun.attempt,
+          attemptKey: reservedRun.attemptKey,
+          previousEngineerRunId: reservedRun.previousEngineerRunId,
+        });
+        engineerRunId = reservedRun.engineerRunId;
+        engineerCommissionId = commissionId;
+        engineerLifecycle = lifecycle;
+        this.registry.upsertPipelineCommission(commission);
+        reservationBound = true;
+
+        // A cancellation requested before the provider returned an id must use the same
+        // fail-closed path as a cancellation requested one tick later. Publish the id, then
+        // hold host launch until TaskManager reports whether the provider actually stopped.
+        if (this.registry.settlePipelineEngineerReservation(taskId, true)) {
+          await this.registry.waitForPipelineEngineerReservationCancellation(taskId);
+          if (await this.abortIfSettled(taskId)) return;
+        }
+
+        const currentCommission = this.registry.pipelineCommission(commission.id);
+        if (
+          !this.stillDispatching(taskId) ||
+          currentCommission?.lifecycle === "cancelled"
+        ) {
+          // A non-cancellation terminal transition can still win after reservation. Retain
+          // the exact provider identity and stop it before any Mission Control host starts.
+          const retainCancellationFailure = (reason: string): void => {
+            try {
+              const failed = recordPipelineCommissionCancellationFailure({
+                commissionId,
+                engineerRunId: reservedRun.engineerRunId,
+                reason,
+              });
+              this.registry.upsertPipelineCommission(failed);
+            } catch (error) {
+              console.error(
+                `[pipelines] could not retain cancellation failure for Engineer run ${reservedRun.engineerRunId}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          };
+          try {
+            const stopped = await lifecycle.cancel({
+              engineerRunId: reservedRun.engineerRunId,
+              reason: "Pipeline task settled in Mission Control before Engineer host launch",
+            });
+            if (!stopped.ok) {
+              retainCancellationFailure(stopped.error);
+              console.error(
+                `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${stopped.error}`,
+              );
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            retainCancellationFailure(message);
+            console.error(
+              `[pipelines] could not cancel reserved Engineer run ${reservedRun.engineerRunId}: ${message}`,
+            );
+          }
+          await this.abortIfSettled(taskId);
+          return;
+        }
+      } finally {
+        if (!reservationBound) {
+          this.registry.settlePipelineEngineerReservation(taskId, false);
+        }
+      }
+    } else {
+      const runKey = pipelineRunKeyOf(launch.pipelineRun);
+      const owner = this.registry.listTasks().find(
+        (candidate) =>
+          candidate.id !== taskId &&
+          candidate.kind === "pipeline" &&
+          (candidate.status === "running" || candidate.status === "dispatching") &&
+          candidate.pipelineRun !== null &&
+          pipelineRunKeyOf(candidate.pipelineRun) === runKey,
+      );
+      if (owner) {
+        throw new Error(
+          `pipeline run "${launch.pipelineRun.slug}" is already owned by active task ${owner.id}`,
+        );
+      }
+      this.patch(taskId, { pipelineRun: launch.pipelineRun });
+    }
 
     if (launch.launchRuntime === "agent-sdk") {
       if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
@@ -943,7 +1104,9 @@ export class Dispatcher {
           );
         }
         const published = await (this.deps.verifyMissionMcpTools ?? verifyMissionMcpTools)(
-          ["adopt_pipeline_run", "report_pipeline_workspace"],
+          "provider" in launch
+            ? ["report_pipeline_workspace"]
+            : ["adopt_pipeline_run", "report_pipeline_workspace"],
           descriptor,
         );
         if (!published.ok) {
@@ -959,13 +1122,29 @@ export class Dispatcher {
       // Held in its own binding for the same reason `piText` is: turn one now has a second
       // reader, and the launch marker has to fingerprint the exact string the driver was
       // given. Recomposing it at the second site is how the two answers drift apart.
-      const engineerPrompt =
-        `${engineerCommand} ${task.intent}\n\n` +
-        `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
-        `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
-        `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
-        `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
-        `with that absolute path before editing files there.]`;
+      const engineerPrompt = "provider" in launch
+        ? `${engineerCommand} ${task.intent}\n\n` +
+          `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
+          `Pass that exact id as --engineer-run-id when creating the authoring worktree. ` +
+          `After Engineer creates or enters that worktree, call report_pipeline_workspace with ` +
+          `its absolute path before editing files there.]`
+        : `${engineerCommand} ${task.intent}\n\n` +
+          `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
+          `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
+          `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
+          `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
+          `with that absolute path before editing files there.]`;
+      if ("provider" in launch) {
+        while (true) {
+          const cancellation = this.registry.claimPipelineEngineerHostLaunch(taskId);
+          if (!cancellation) break;
+          await cancellation;
+          if (await this.abortIfSettled(taskId)) {
+            cleanupDisposableAgentStateHome(stateHome);
+            return;
+          }
+        }
+      }
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
       this.patch(taskId, { sessionId });
@@ -1043,12 +1222,13 @@ export class Dispatcher {
 
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);
-    const [command, ...args] = launch.argv;
+    const terminalLaunch = launch;
+    const [command, ...args] = terminalLaunch.argv;
     if (!command) throw new Error("the pipeline provider returned no launch command");
     const homeName = await (this.deps.spawn ?? spawnUniquely)(
       label,
       shortId,
-      launch.cwd,
+      terminalLaunch.cwd,
       command,
       args,
     );
@@ -1058,7 +1238,85 @@ export class Dispatcher {
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
     // later in the engine's worktree; their correlation remains a compatibility backstop
     // for tasks created before provider identity was known at launch.
-    this.patch(taskId, { status: "running", sessionId: null });
+      this.patch(taskId, { status: "running", sessionId: null });
+    } catch (error) {
+      if (engineerRunId && engineerCommissionId && engineerLifecycle) {
+        const failedRunId = engineerRunId;
+        const failedCommissionId = engineerCommissionId;
+        const failedLifecycle = engineerLifecycle;
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const retainFailure = (reason: string): void => {
+          try {
+            const failed = recordPipelineCommissionCancellationFailure({
+              commissionId: failedCommissionId,
+              engineerRunId: failedRunId,
+              reason,
+            });
+            this.registry.upsertPipelineCommission(failed);
+          } catch (commissionError) {
+            console.error(
+              `[pipelines] could not retain failed host cleanup for Engineer run ${failedRunId}: ${
+                commissionError instanceof Error ? commissionError.message : String(commissionError)
+              }`,
+            );
+          }
+        };
+        let cleanupFailure: string | null = null;
+        try {
+          const stopped = await failedLifecycle.cancel({
+            engineerRunId: failedRunId,
+            reason: `Mission Control Engineer host setup failed: ${originalMessage}`,
+          });
+          if (!stopped.ok) {
+            cleanupFailure = stopped.error;
+          }
+        } catch (cancelError) {
+          cleanupFailure = cancelError instanceof Error ? cancelError.message : String(cancelError);
+        }
+        if (cleanupFailure) {
+          retainFailure(cleanupFailure);
+          console.error(
+            `[pipelines] could not cancel Engineer run ${failedRunId} after host setup failed: ${cleanupFailure}`,
+          );
+          // The provider run is still live or its outcome is unknown. Keep both records
+          // active and bound to that exact run so reschedule cannot mint a successor and
+          // the ordinary Cancel action can retry the provider stop.
+          this.patch(taskId, {
+            status: "running",
+            error:
+              `${originalMessage} - provider Engineer run ${failedRunId} remains owned ` +
+              `because cleanup failed: ${cleanupFailure}; Cancel to retry cleanup`,
+          });
+          return;
+        }
+        try {
+          const cancelled = cancelPipelineCommission({
+            commissionId: failedCommissionId,
+            reason: `Engineer host setup failed: ${originalMessage}`,
+          });
+          this.registry.upsertPipelineCommission(cancelled);
+        } catch (commissionError) {
+          const message = commissionError instanceof Error
+            ? commissionError.message
+            : String(commissionError);
+          console.error(
+            `[pipelines] could not make stopped host reservation ${failedRunId} terminal: ${message}`,
+          );
+          // The provider stop succeeded, but until its local boundary is durable the task
+          // remains the recovery owner and cannot be rescheduled into a duplicate attempt.
+          this.patch(taskId, {
+            status: "running",
+            error:
+              `${originalMessage} - provider Engineer run ${failedRunId} stopped, but ` +
+              `Mission Control could not record cleanup: ${message}; Cancel to retry cleanup`,
+          });
+          return;
+        }
+      }
+      throw error;
+    } finally {
+      this.registry.endPipelineEngineerReservation(taskId);
+    }
   }
 
   /**

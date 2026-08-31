@@ -407,6 +407,10 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
+// Restore provider commissions first. A retained Engineer may rotate its native conversation
+// identity while resuming; that rotation must resolve against the exact handoff commission
+// before generic work-episode ownership decides whether the task was abandoned.
+restorePipelineProjection(registry);
 // Capture the bounded, inert view of every readable live SDK row BEFORE HTTP can answer.
 // Driver restoration itself starts only after the listener wins the port below. The split
 // removes serial provider handshakes from first paint without weakening the load-bearing
@@ -485,7 +489,6 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // and so a repository whose consent was withdrawn while the daemon was down never comes
 // back as a frame about a repository nobody enabled. Inert on the shipped configuration:
 // with no repository consented to, the restore prunes nothing and each tick is one KV read.
-restorePipelineProjection(registry);
 const stopPipelines = startPipelineWatcher(registry);
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -

@@ -21,7 +21,11 @@ import {
   RepoGroupHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
-import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
+import {
+  ensembleSummaryFor,
+  pipelineCommissionForSession,
+  type SessionViewProps,
+} from "./types.ts";
 
 /**
  * Split-pane master/detail: a dense rail of every session, one always-open detail
@@ -62,8 +66,12 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   // pane there is no reader to hand focus to, so it always presents as the rail.
   const zone = active ? props.consoleZone : "rail";
 
-  const railRow = (s: Session): React.JSX.Element => (
-    <RailRow
+  const railRow = (s: Session): React.JSX.Element => {
+    const commission = pipelineCommissionForSession(props, s);
+    const commissionRun = commission?.linkedRun
+      ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)
+      : null;
+    return <RailRow
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
@@ -80,8 +88,11 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       pipelineRunObserved={Boolean(
         s.task?.pipelineRun && props.pipelineRunByKey?.has(pipelineRunKeyOf(s.task.pipelineRun)),
       )}
+      pipelineCommission={commission}
+      pipelineCommissionRun={commissionRun}
+      onOpenPipelineCommission={props.onOpenPipelineCommission}
     />
-  );
+  };
 
   /**
    * One rail row that is not a section rule: a loose session, or a run's framed siblings.

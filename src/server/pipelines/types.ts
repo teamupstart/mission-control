@@ -328,6 +328,7 @@ export interface PipelineProvider {
   taskArgv(
     intent: string,
     repoRoot: string,
+    engineerRunId?: string,
   ): Promise<{ argv: string[]; cwd: string } | { refused: string }>;
 }
 

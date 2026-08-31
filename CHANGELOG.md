@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.3](https://github.com/teamupstart/mission-control/compare/v1.3.2...v1.3.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **foreman:** protect active session composers ([#848](https://github.com/teamupstart/mission-control/issues/848)) ([00c2aa9](https://github.com/teamupstart/mission-control/commit/00c2aa9963617a1c53ed381d8d3376f08dfc57d1))
+* **pipelines:** detect stale conductor bundles ([#851](https://github.com/teamupstart/mission-control/issues/851)) ([f9a5009](https://github.com/teamupstart/mission-control/commit/f9a500978b6e48023bfe61394c0302d820ee370b))
+* **updater:** clarify authorization and preserve CLI PATH ([#850](https://github.com/teamupstart/mission-control/issues/850)) ([2e6c2a3](https://github.com/teamupstart/mission-control/commit/2e6c2a3916cf127f03a50c693902e26ff48bb538))
+
 ## [1.3.2](https://github.com/teamupstart/mission-control/compare/v1.3.1...v1.3.2) (2026-08-31)
 
 

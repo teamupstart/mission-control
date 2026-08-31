@@ -7,6 +7,7 @@ import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { useComposerActivity } from "../lib/composer-activity.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
@@ -137,6 +138,7 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerActivity = useComposerActivity(session.id);
   const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>(
     "see-work:session-actions",
     session.task?.id,
@@ -476,7 +478,12 @@ export function ActionBar({
             // without these the text died with it and reopening Send showed a blank.
             // Neither gesture is a human deleting anything.
             defaultValue={readDraft(session.id, "send")}
-            onChange={(e) => writeDraft(session.id, "send", e.currentTarget.value)}
+            onFocus={composerActivity.onFocus}
+            onBlur={composerActivity.onBlur}
+            onChange={(e) => {
+              writeDraft(session.id, "send", e.currentTarget.value);
+              composerActivity.onInput();
+            }}
             onKeyDown={(e) => {
               if (
                 latestEditable &&

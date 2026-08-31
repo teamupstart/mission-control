@@ -13,6 +13,7 @@ import {
   BacklogPlanSchema,
   CompleteTaskSchema,
   CompleteRetroNoChangeSchema,
+  ComposerActivitySchema,
   CreatePersonaSchema,
   ImportPersonaSchema,
   ReimportPersonaSchema,
@@ -178,6 +179,7 @@ import {
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
+import { ComposerActivityTracker } from "./composer-activity.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
   InspectorStatus,
@@ -625,14 +627,22 @@ async function parseBody<S extends ZodTypeAny>(
 
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
+const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+
+interface ForemanWriteRefusal {
+  error: string;
+  status: 403 | 409;
+}
 
 /**
- * The daemon's half of the Foreman invite rule: may this actor type into this session?
+ * The daemon's final Foreman write boundary: may this actor type into this session now?
  *
  * A BACKSTOP, deliberately redundant with the worker's own selection gates. The worker
  * decides what to act on from a `/api/sessions` snapshot, so a stale snapshot, an invite
  * withdrawn mid-pass, or simply a worker built before this rule existed can all produce a
- * request the worker itself would no longer make. Those all end at the same place - text
+ * request the worker itself would no longer make. Browser composer state is just as
+ * time-sensitive, so the worker cannot safely cache that decision either. Those all end
+ * at the same place - text
  * in somebody's pane - and that is the failure this whole plan exists to prevent, so the
  * daemon re-asks the question at the boundary it owns rather than trusting the caller to
  * have asked it. The worker never reads SQLite; the daemon always does.
@@ -644,8 +654,15 @@ const FOREMAN_UNINVITED = "Foreman is not invited into this session";
  * they are shared with the dashboard and are bookkeeping downstream of a typing act these
  * gates already refused, so widening their schemas would buy nothing.
  */
-function foremanWriteRefused(session: Session, by: "human" | "foreman" | "workflow"): boolean {
-  return by === "foreman" && session.foremanInvite === null;
+function foremanWriteRefusal(
+  activity: ComposerActivityTracker,
+  session: Session,
+  by: "human" | "foreman" | "workflow",
+): ForemanWriteRefusal | null {
+  if (by !== "foreman") return null;
+  if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
+  if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  return null;
 }
 
 /**
@@ -987,6 +1004,7 @@ export function buildApp(
   setupInstallDeps?: SetupInstallRouteDeps,
 ): Hono {
   const app = new Hono();
+  const composerActivity = new ComposerActivityTracker();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
   const panes = paneDeps ?? defaultPaneDeps;
@@ -4159,8 +4177,11 @@ export function buildApp(
     // dangling row, and refusing it would strand the review instead of protecting anyone.
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
-    if (ownerSession && foremanWriteRefused(ownerSession, parsed.data.by)) {
-      return c.json({ error: FOREMAN_UNINVITED }, 403);
+    const refusal = ownerSession
+      ? foremanWriteRefusal(composerActivity, ownerSession, parsed.data.by)
+      : null;
+    if (refusal) {
+      return c.json({ error: refusal.error }, refusal.status);
     }
     try {
       const updated = reviews.resolve(
@@ -4179,6 +4200,15 @@ export function buildApp(
   });
 
   // --- session actions (localhost only) ---
+  app.post("/api/sessions/:id/composer-activity", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ComposerActivitySchema);
+    if (!parsed.ok) return parsed.res;
+    composerActivity.record(session.id, parsed.data.clientId, parsed.data);
+    return c.json({ ok: true });
+  });
+
   app.post("/api/sessions/:id/send", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -4190,8 +4220,9 @@ export function buildApp(
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    if (foremanWriteRefused(session, parsed.data.origin)) {
-      return c.json({ error: FOREMAN_UNINVITED }, 403);
+    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    if (refusal) {
+      return c.json({ error: refusal.error }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
@@ -4239,11 +4270,12 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
-    // 403 rather than this route's usual 409: a 409 says the pane declined and invites a
-    // retry when the screen settles, and this refusal is neither about the pane nor going
-    // to change on one. Nothing is typed and no ask is retired.
-    if (foremanWriteRefused(session, parsed.data.by)) {
-      return c.json({ ok: false as const, error: FOREMAN_UNINVITED }, 403);
+    // An absent invite stays 403 because it will not change when the pane settles. Active
+    // human composition is 409 because retrying after the quiet period is expected.
+    // Nothing is typed and no ask is retired in either case.
+    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    if (refusal) {
+      return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
     // Held before either branch delivers, because both clear the ask they answered - see
     // `retireForemanNoteForDialog`.
@@ -4279,9 +4311,10 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
-    // See `/select-option`: 403, before the shape check, before anything is ticked.
-    if (foremanWriteRefused(session, parsed.data.by)) {
-      return c.json({ ok: false as const, error: FOREMAN_UNINVITED }, 403);
+    // See `/select-option`: refuse before the shape check and before anything is ticked.
+    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    if (refusal) {
+      return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
     const { options, answers } = parsed.data;
     // See the same line in `/select-option`: the ask is gone once it has been answered.
@@ -4388,8 +4421,9 @@ export function buildApp(
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    if (foremanWriteRefused(session, parsed.data.origin)) {
-      return c.json({ error: FOREMAN_UNINVITED, pasted: false }, 403);
+    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    if (refusal) {
+      return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);

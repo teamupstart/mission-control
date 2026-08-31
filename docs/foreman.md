@@ -61,6 +61,10 @@ Foreman will actually pick up. The daemon enforces this a second time at the bou
 owns: a Foreman-marked write into an uninvited session is refused outright, so a stale or
 misbehaving worker cannot reach a pane it was never invited to.
 
+That same boundary yields to a person composing a reply. Foreman does not post while any
+dashboard send box for the session is focused, or until one minute has passed since the
+person last edited that box. Human and Workflow messages are unaffected.
+
 None of this touches what **you** can do. Messaging a session by hand, dragging a task onto
 it, and answering its reviews yourself are unchanged and are never invite-gated - an invite
 governs the background loop, not your own hands.

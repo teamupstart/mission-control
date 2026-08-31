@@ -1569,6 +1569,16 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  reportComposerActivity: (
+    id: string,
+    clientId: string,
+    focused: boolean,
+    typed = false,
+  ) => post(`/api/sessions/${encodeURIComponent(id)}/composer-activity`, {
+    clientId,
+    focused,
+    typed,
+  }),
   recallPendingTurn: (id: string, turnId: string, revision: number) =>
     post<ActionResult & { text?: string }>(
       `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,

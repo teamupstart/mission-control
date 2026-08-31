@@ -153,6 +153,35 @@ test("/inject never gates a human or a workflow, invited or not", async () => {
   }
 });
 
+test("/inject refuses Foreman while the dashboard composer is active but never gates the human", async () => {
+  const { registry, app } = harness();
+  const s = discover(registry);
+  registry.setForemanInvite(s.id, "dispatch");
+
+  const activity = await post(app, `/api/sessions/${s.id}/composer-activity`, {
+    clientId: "dashboard-tab-a",
+    focused: true,
+    typed: false,
+  });
+  assert.equal(activity.status, 200);
+
+  const refused = await post(app, `/api/sessions/${s.id}/inject`, {
+    text: "Foreman should wait.",
+    origin: "foreman",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "Foreman is waiting while the user composes a reply",
+    pasted: false,
+  });
+
+  const human = await post(app, `/api/sessions/${s.id}/inject`, {
+    text: "My message still goes through the human path.",
+    origin: "human",
+  });
+  assert.notEqual(human.status, 409);
+});
+
 test("/select-option and /submit-options refuse a foreman answer into an uninvited session", async () => {
   // Answering a menu is typing too - it presses a key in somebody's pane and commits them
   // to a choice. 403 rather than this route's usual 409: a 409 says "the pane declined,

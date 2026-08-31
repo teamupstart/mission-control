@@ -209,6 +209,10 @@ rechecks each first-parent commit added to `main` before it mints the App token.
 [`scripts/assert-release-commit.mjs`](../scripts/assert-release-commit.mjs), whose accepted shape is
 `type(optional-scope)!: description`. Use `fix:` for a patch and `feat:` for a feature; other
 lowercase Conventional Commit types are parseable but may not create a release on their own.
+The title workflow runs as `pull_request_target` and executes the validator from the base SHA, so a
+pull request cannot change its own gate. The pull request that first introduces the workflow is not
+title-checked by that new workflow; its merge subject is still checked by the release preflight on
+the resulting push to `main`.
 
 The first release was pinned to `v1.0.0` through the package's `release-as` setting. That one-time
 pin was removed once `v1.0.0` published, so releases now resume normal version calculation from the

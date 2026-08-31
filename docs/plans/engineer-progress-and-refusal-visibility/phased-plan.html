@@ -24,13 +24,13 @@
     <li>The validated lifecycle CLI already exists. The canonical Engineer skill omits its no-hook use.</li>
     <li>The worktree command already returns and persists the exact Engineer run id and feature slug.</li>
     <li>Land intentionally enforces the reserved feature stem, while the skill lets artifacts choose a shorter stem.</li>
-    <li>Mission Control correctly preserves the provider refusal reason and clears it on the next event.</li>
-    <li>The shared commission view only halts terminal failures, so recoverable refusal still looks like authoring.</li>
-    <li>No new event, route, ingest, migration, or replay contract is required.</li>
+    <li>Mission Control preserves the provider refusal as a generic error and clears it on the next event, but does not retain the error's event-kind provenance.</li>
+    <li>The shared commission view only halts terminal failures, so recoverable refusal still looks like authoring. Generic error shape is not a safe substitute for provenance.</li>
+    <li>No provider event, route, ingest, migration, or replay change is required. Mission Control adds one optional consumer projection field.</li>
   </ol>
 
   <h2>Size and phase rationale</h2>
-  <p><strong>Estimated non-test implementation and maintained documentation: 210-330 lines.</strong> AI Conductor accounts for roughly 130-210 lines; Mission Control accounts for 80-120. Tests are excluded and expected to add 180-300 lines.</p>
+  <p><strong>Estimated non-test implementation and maintained documentation: 220-350 lines.</strong> AI Conductor accounts for roughly 130-210 lines; Mission Control accounts for 90-140. Tests are excluded and expected to add 180-300 lines.</p>
   <p>Two phases keep provider ownership and browser presentation separately reviewable. Each repository remains operable alone, and the fixed existing interface allows parallel implementation and either merge order.</p>
 
   <h2>Dependency graph</h2>
@@ -45,21 +45,21 @@
   <h2>Phases</h2>
   <div class="grid">
     <section class="card phase"><h3>Phase 1: AI Conductor host contract</h3><p>Make the canonical Engineer skill parse returned identity, record evidence-backed no-hook lifecycle transitions, name feature artifacts from the reserved slug, and guide in-place refusal repair.</p><p><a href="phase-1-ai-conductor-engineer-host-contract.md">Detailed Phase 1 Markdown</a></p><p><strong>Primary:</strong> <code>/Users/jordan.mance/workspace/upstart/ai-conductor</code><br><strong>Context-only:</strong> Mission Control</p></section>
-    <section class="card phase"><h3>Phase 2: Mission Control refusal visibility</h3><p>Derive a recoverable blocked view from existing commission facts, reuse the accessible phase meter, and prove refusal plus recovery across Board, Console, and Runs in the built browser.</p><p><a href="phase-2-mission-control-refusal-visibility.md">Detailed Phase 2 Markdown</a></p><p><strong>Primary:</strong> Mission Control<br><strong>Context-only:</strong> AI Conductor</p></section>
+    <section class="card phase"><h3>Phase 2: Mission Control refusal visibility</h3><p>Add explicit failed-step and land-refusal blocker provenance to the commission projection, reuse the accessible phase meter, and prove refusal plus recovery across Board, Console, and Runs in the built browser.</p><p><a href="phase-2-mission-control-refusal-visibility.md">Detailed Phase 2 Markdown</a></p><p><strong>Primary:</strong> Mission Control<br><strong>Context-only:</strong> AI Conductor</p></section>
   </div>
 
   <h2>Phase table</h2>
   <div class="table"><table><thead><tr><th>Phase</th><th>Primary repository</th><th>Direct dependency</th><th>Merge outcome</th></tr></thead><tbody><tr><td>1 · AI Conductor host contract</td><td>AI Conductor</td><td>Planning session</td><td>No-hook hosts record live lifecycle events and author with the reserved slug.</td></tr><tr><td>2 · Mission Control refusal visibility</td><td>Mission Control</td><td>Planning session</td><td>Shared Pipeline surfaces visibly distinguish recoverable refusal from ordinary authoring.</td></tr></tbody></table></div>
 
   <h2>Cross-phase contracts</h2>
-  <div class="table"><table><thead><tr><th>Contract</th><th>Owner</th><th>Consumer rule</th></tr></thead><tbody><tr><td>Step truth and completion evidence</td><td>AI Conductor</td><td>Mission Control projects events and never reconstructs them.</td></tr><tr><td>Run identity and feature slug</td><td>AI Conductor</td><td>Hosts use returned values; commission id, run id, and final plan slug remain distinct.</td></tr><tr><td>Recoverable refusal</td><td>Shared existing event semantics</td><td>Visible as blocked, not terminal; later provider events may clear it.</td></tr><tr><td>Commission reducer</td><td>Mission Control</td><td>Each accepted event clears stale error before applying its own state.</td></tr><tr><td>Wire compatibility</td><td>Existing contract</td><td>No event rename, ingest narrowing, migration, or revision change.</td></tr></tbody></table></div>
+  <div class="table"><table><thead><tr><th>Contract</th><th>Owner</th><th>Consumer rule</th></tr></thead><tbody><tr><td>Step truth and completion evidence</td><td>AI Conductor</td><td>Mission Control projects events and never reconstructs them.</td></tr><tr><td>Run identity and feature slug</td><td>AI Conductor</td><td>Hosts use returned values; commission id, run id, and final plan slug remain distinct.</td></tr><tr><td>Recoverable refusal</td><td>Shared existing event semantics</td><td>Visible as blocked, not terminal; later provider events may clear it.</td></tr><tr><td>Commission blocker projection</td><td>Mission Control</td><td>An optional typed field records only failed-step or land-refusal provenance. Generic errors and retries do not imply a halt.</td></tr><tr><td>Wire compatibility</td><td>Existing provider contract</td><td>No provider event rename, ingest narrowing, migration, or revision change.</td></tr></tbody></table></div>
 
   <h2>Scheduling and publication</h2>
   <ul><li>Commit and push this source plan, both HTML pages, the phased index, and both phase files before task creation.</li><li>Both tasks depend on the current planning session and remain backlogged until the planning PR merges.</li><li>Each task changes only its primary repository and treats the attached repository as read-only context.</li><li>The tasks have no dependency edge between them and may execute concurrently.</li></ul>
 
   <h2>Final verification</h2>
-  <ol><li>AI Conductor contract checks fail if lifecycle recording, evidence, retry/skip handling, or returned-slug naming is removed.</li><li>Existing lifecycle and land tests prove the instructions match executable gates.</li><li>Mission Control tests distinguish failed, refused, retrying, and recovered commission shapes.</li><li>Built-browser coverage with fake agents proves accessible refusal visibility and visual quality.</li><li>Both repositories pass their required typecheck, lint, test, and build gates.</li></ol>
+  <ol><li>AI Conductor contract checks fail if lifecycle recording, evidence, retry/skip handling, or returned-slug naming is removed.</li><li>Existing lifecycle and land tests prove the instructions match executable gates.</li><li>Mission Control tests preserve explicit blocker provenance, legacy rows, and failed, refused, retrying, unrelated-error, and recovered shapes.</li><li>Built-browser coverage with fake agents proves accessible refusal visibility and visual quality.</li><li>Both repositories pass their required typecheck, lint, test, and build gates.</li></ol>
 
   <h2>Audit record</h2>
-  <ul><li>Ownership remains provider truth versus consumer projection.</li><li>The phases consume the existing interface and can merge in either order.</li><li>Refusal remains recoverable and the next accepted provider event clears it.</li><li>Each repository is primary exactly once and context-only exactly once.</li></ul>
+  <ul><li>Ownership remains provider truth versus consumer projection.</li><li>The phases consume the existing provider interface and can merge in either order.</li><li>Mission Control records explicit blocker provenance instead of inferring from generic error shape.</li><li>Refusal remains recoverable and the next accepted provider event clears it.</li><li>Each repository is primary exactly once and context-only exactly once.</li></ul>
 </article></main></body></html>

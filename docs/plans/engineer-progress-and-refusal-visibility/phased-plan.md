@@ -33,24 +33,25 @@ recoverable refusal unmistakable on Mission Control's shared Pipeline surfaces.
    not bind the feature artifacts to the returned slug.
 5. Mission Control's dispatcher passes the reserved Engineer run id and authoring-worktree reporting
    instruction. Adding step-by-step provider commands there would duplicate AI Conductor's skill.
-6. Mission Control's commission reducer retains `engineer_land_refused` as a recoverable authoring
-   error and clears it on the next provider event. That is compatible with repair in place.
+6. Mission Control's commission reducer retains `engineer_land_refused` as a generic recoverable
+   authoring error and clears it on the next provider event, but the persisted commission does not
+   preserve whether that error came from land refusal, step failure, or retry.
 7. The shared synthetic commission view creates a halt only for terminal `lifecycle === "failed"`.
-   A land refusal therefore remains visually `Engineer authoring` on the Board meter even though its
-   exact reason is already projected.
+   A land refusal therefore remains visually `Engineer authoring`; deriving a new halt from generic
+   error shape would be ambiguous, so Phase 2 must add explicit reducer-owned blocker provenance.
 8. The built-dashboard continuity fixture already drives real commission ingest with fake agents and
    is the correct E2E seam for the visible regression.
 
 ## Size estimate
 
-Estimated non-test implementation and maintained contract documentation: **210-330 lines**.
+Estimated non-test implementation and maintained contract documentation: **220-350 lines**.
 
 Assumptions:
 
 - 130-210 lines in AI Conductor for the executable lifecycle/naming contract and maintained
   references. Existing CLI and event-store production code should not need expansion.
-- 80-120 lines in Mission Control for shared view-model behavior, accessible refusal presentation,
-  and product documentation.
+- 90-140 lines in Mission Control for additive commission blocker provenance, compatibility decoding,
+  shared view-model behavior, accessible refusal presentation, and product documentation.
 - Tests are excluded and are expected to add roughly 180-300 lines across shell contract checks,
   TypeScript unit coverage, and Playwright E2E coverage.
 
@@ -63,7 +64,8 @@ different owners and verification suites.
   contract plus a browser-visible consumer hardening change even though each repository remains
   operable alone.
 - Splitting by repository makes the ownership boundary reviewable and permits both fixes to run in
-  parallel because Mission Control consumes existing commission fields and no new wire contract.
+  parallel because Mission Control consumes existing provider events and adds only its own additive
+  commission projection field, without changing the provider wire contract.
 - Neither phase is preparation, test-only, documentation-only, or cleanup-only. Each lands working
   behavior in its repository.
 
@@ -87,8 +89,8 @@ Both phases depend directly on the planning session and may execute concurrently
 PR merges. Neither phase depends on the other's code:
 
 - Phase 1 changes provider guidance and its provider-side contract tests.
-- Phase 2 consumes the existing `PipelineCommission.error`, step states, and reducer-clearing
-  behavior without changing the event schema.
+- Phase 2 consumes existing Engineer event kinds and adds an explicit Mission Control-owned blocker
+  field without changing the provider event schema.
 
 The pull requests may merge in either order. The complete user experience exists when both merge.
 
@@ -98,8 +100,9 @@ The pull requests may merge in either order. The complete user experience exists
 | --- | --- | --- |
 | Engineer step truth and completion evidence | AI Conductor | Mission Control projects events and never reconstructs them from files or transcripts. |
 | Worktree run identity and feature slug | AI Conductor | Hosts use returned values; Mission Control keeps commission id, Engineer run id, and final plan slug distinct. |
-| Recoverable refusal | AI Conductor event, Mission Control presentation | `engineer_land_refused` does not terminate the run; later provider events may clear the visible block. |
-| Commission reducer | Mission Control | Each accepted event clears stale error before applying its own state, so recovery needs no second cleanup path. |
+| Recoverable refusal | AI Conductor event, Mission Control presentation | `engineer_land_refused` does not terminate the run; Mission Control records its explicit kind and later provider events may clear the visible block. |
+| Commission blocker projection | Mission Control | An additive typed field records only `step_failed` or `land_refused` provenance; generic errors and retry reasons never imply a halt. |
+| Commission reducer | Mission Control | Each accepted recovery event clears stale error and blocker before applying its own state, so recovery needs no second cleanup path. |
 | Wire compatibility | Existing shared contract | Neither phase renames events, narrows ingest, or changes revision and replay semantics. |
 
 ## Publication and task scheduling contract
@@ -119,8 +122,9 @@ The pull requests may merge in either order. The complete user experience exists
    completion evidence, explicit skip/retry handling, or returned-slug naming.
 2. Phase 1 reuses the real lifecycle CLI and land tests to prove instructions match executable
    behavior and deterministic gates remain authoritative.
-3. Phase 2 proves the view model classifies a failed current step and a land refusal as visibly
-   blocked, keeps a retry running, and clears stale refusal presentation on recovery.
+3. Phase 2 proves persistence and the reducer retain explicit failed-step or land-refusal provenance,
+   legacy commissions remain readable, the view model blocks only on that provenance, a retry stays
+   running, and recovery clears the blocker.
 4. Phase 2 reproduces the user-visible defect in the built browser with fake agents and records
    screenshot plus command evidence.
 5. Both repositories run their full required typecheck, lint, test, and build gates before their
@@ -130,9 +134,12 @@ The pull requests may merge in either order. The complete user experience exists
 
 - 2026-08-31, ownership audit: lifecycle calls and artifact naming remain entirely in AI Conductor;
   Mission Control adds no competing progress source.
-- 2026-08-31, compatibility audit: the phases consume only existing event and commission fields, so
-  they can merge in either order.
+- 2026-08-31, compatibility audit: the phases consume the existing provider event contract; Mission
+  Control adds only an optional projection field with a legacy-safe default, so they can merge in
+  either order.
 - 2026-08-31, recovery audit: a refusal remains nonterminal and is cleared by the next accepted
   provider event through the existing reducer reset.
+- 2026-08-31, Inspector audit: replaced generic error-shape inference with an explicit typed blocker
+  set from `engineer_step_failed` and `engineer_land_refused` only.
 - 2026-08-31, task-scope audit: each repository is primary exactly once and context-only once; no
   task is allowed to edit its attached context repository.

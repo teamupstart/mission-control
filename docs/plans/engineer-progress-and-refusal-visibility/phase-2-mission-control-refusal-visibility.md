@@ -27,7 +27,8 @@ makes this phase incomplete rather than multi-repository.
 
 ## Scope
 
-- Derive a recoverable blocked presentation from existing commission error and step facts.
+- Add explicit, reducer-owned provenance for recoverable failed-step and land-refusal blockers.
+- Derive the blocked presentation only from that typed provenance.
 - Reuse the shared Pipeline phase meter across Board, Console, and Runs.
 - Show the exact provider reason accessibly without making the commission terminal.
 - Clear the presentation naturally when the next provider event clears or supersedes the error.
@@ -36,7 +37,7 @@ makes this phase incomplete rather than multi-repository.
 ## Non-goals
 
 - No provider lifecycle emission, artifact inspection, approval inference, or filesystem polling.
-- No change to shared event discriminants, ingest envelope, revision rules, or database schema.
+- No change to provider event discriminants, ingest envelope, revision rules, or SQLite schema.
 - No terminal failure transition for `engineer_land_refused`.
 - No lifecycle command instructions in the Mission Control dispatch prompt.
 - No automatic artifact repair, rename, land retry, or spec merge.
@@ -44,7 +45,8 @@ makes this phase incomplete rather than multi-repository.
 ## Verified repository findings and inherited contracts
 
 - `reduceKnownEvent` clears `commission.error` at the start of each accepted event before applying
-  the new event. A later retry or success already removes stale refusal state.
+  the new event. A later retry or success already removes stale refusal state, but the commission
+  does not retain which event kind produced a current generic error.
 - `engineer_step_failed` stores a failed step and error. `engineer_step_retried` stores an in-progress
   step and reason. `engineer_land_refused` stores an error while leaving the run authoring.
 - `pipelineRunForCommission` currently creates a halt only for terminal commission failure, so the
@@ -58,25 +60,46 @@ makes this phase incomplete rather than multi-repository.
 
 ## Implementation steps
 
-### 1. Define the recoverable blocked view in the shared model
+### 1. Preserve explicit blocker provenance in the commission projection
+
+Extend `PipelineCommission` with one optional, bounded blocker projection whose discriminated kinds
+are exactly `step_failed` and `land_refused`. Carry the provider reason and the canonical step only
+for the failed-step variant. Keep this field Mission Control-owned; do not add it to AI Conductor's
+event schema or ingest envelope.
+
+Update commission creation, database JSON decoding, persistence round trips, and the reducer so:
+
+- legacy rows with no blocker decode to `null`;
+- `engineer_step_failed` sets `step_failed` provenance;
+- `engineer_land_refused` sets `land_refused` provenance;
+- a retry, accepted completion, successful land reconciliation, or later successful transition
+  clears the blocker through the normal event fold;
+- terminal cancellation/failure keeps its existing lifecycle-based halt rather than being recast as
+  a recoverable blocker;
+- unknown events cannot manufacture, retain past a known recovery event, or reinterpret a blocker.
+
+Do not derive blocker kind from reason text, a generic `commission.error`, the absence of a current
+step, or the absence of a running retry.
+
+### 2. Define the recoverable blocked view in the shared model
 
 Add one focused predicate or fold in `src/web/pipelines/pipeline-run-model.ts` that distinguishes:
 
 - terminal run failure;
-- a current step whose projected state is `failed`;
-- a land refusal represented by a current commission error with no running retry;
+- an explicit `step_failed` blocker whose step is still failed;
+- an explicit `land_refused` blocker;
 - a retry whose current step is `in_progress`, which remains running even if the retry event carries
   a reason.
 
 Use that fold in `pipelineRunForCommission` to supply a synthetic unclassified halt and `halted`
-group only while the recoverable block is current. Keep the commission's persisted lifecycle and
-attempt state unchanged.
+group only while the explicit recoverable blocker is current. Keep the commission's lifecycle and
+attempt state nonterminal.
 
 Update `pipelineCommissionLine` so the short status does not say ordinary authoring while the shared
 model says blocked. Preserve the exact reason in the existing halt presentation rather than
 truncating or replacing it with guessed remediation.
 
-### 2. Reuse the existing accessible meter presentation
+### 3. Reuse the existing accessible meter presentation
 
 Keep `PipelinePhaseMeter` as the single rendering seam. Adjust it only if the shared synthetic run
 cannot expose the exact reason through the existing keyboard-reachable `halted` control and tooltip.
@@ -85,20 +108,23 @@ Do not add a second alert component with independent status logic.
 Verify Board card width, narrow-card wrapping, Console detail, and Runs detail. Treat clipping,
 ambiguous color-only status, or inaccessible refusal details as defects in scope.
 
-### 3. Add focused reducer and view-model tests
+### 4. Add focused persistence, reducer, and view-model tests
 
 Extend existing pipeline commission, runs-view, and phase-meter tests to prove:
 
-- land refusal remains authoring in persisted lifecycle but renders blocked with its exact reason;
-- failed current step renders blocked;
+- legacy persisted commissions with no blocker remain readable and do not synthesize one;
+- land refusal remains authoring in persisted lifecycle, records `land_refused`, and renders blocked
+  with its exact reason;
+- failed current step records `step_failed` and renders blocked;
+- an unrelated generic commission error with the same shape does not render blocked;
 - retry-in-progress renders running rather than halted;
-- the next accepted completion or retry event clears stale refusal presentation;
+- the next accepted completion or retry event clears stale blocker and refusal presentation;
 - terminal failure behavior is unchanged;
 - a future unknown provider step remains visible and does not break the fold.
 
 Prefer direct fold assertions for semantics and static markup only for DOM shape and accessible copy.
 
-### 4. Reproduce and verify in the built browser
+### 5. Reproduce and verify in the built browser
 
 Extend the existing conductor planning continuity E2E or add a narrowly named spec using the same
 fixture. Drive a real commission through the built daemon and dashboard with fake agents:
@@ -113,7 +139,7 @@ fixture. Drive a real commission through the built daemon and dashboard with fak
 Capture a gitignored screenshot and focused Playwright transcript under `e2e/.artifacts/` for review
 and workflow evidence. Never commit the evidence files.
 
-### 5. Align product documentation
+### 6. Align product documentation
 
 Update `docs/pipelines.md` only as needed to state that recoverable Engineer refusals are visible as
 blocked without becoming terminal, and that later provider events clear them. Preserve the existing
@@ -121,9 +147,11 @@ provider-ownership and replay model.
 
 ## Data, API, and compatibility details
 
-- No migration or durable schema change.
+- No SQLite migration. `PipelineCommission` gains one optional discriminated blocker field in its
+  persisted JSON and browser wire projection; missing legacy values normalize to `null`.
 - No new SSE event, route, ingest field, or provider adapter command.
-- The browser derives presentation from the already-delivered `PipelineCommission` projection.
+- The browser derives presentation from the explicitly typed blocker delivered in the existing
+  `PipelineCommission` projection.
 - Unknown future step names continue through the existing tolerant model.
 - Recovery relies on the existing reducer's per-event error reset, not a new cleanup timer or polling
   path.
@@ -168,5 +196,8 @@ turning every informational retry reason into a halt.
 - 2026-08-31, ownership audit: Mission Control presents existing provider facts and emits none.
 - 2026-08-31, recovery audit: the commission remains nonterminal; a later provider event clears the
   error through the existing reducer.
-- 2026-08-31, compatibility audit: no wire, migration, ingest, or replay contract changes.
+- 2026-08-31, compatibility audit: no provider event, ingest, replay, route, or SQLite contract
+  changes; the additive commission blocker defaults safely for legacy JSON.
+- 2026-08-31, Inspector audit: generic `commission.error` shape is not provenance. Only explicit
+  reducer branches for step failure and land refusal may set a recoverable blocker.
 - 2026-08-31, repository audit: AI Conductor is context-only and must remain unchanged.

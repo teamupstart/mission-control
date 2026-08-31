@@ -90,7 +90,7 @@
   </ul>
 
   <h2>Mission Control changes</h2>
-  <p>Keep the provider integration and persisted schema unchanged. Harden the shared commission view so a failed current step or land refusal visibly halts the synthetic meter, carries the exact reason through the existing accessible control, stays nonterminal, and returns to running after a provider retry or later successful event.</p>
+  <p>Keep the provider lifecycle event contract unchanged. Add an optional, explicitly typed Mission Control commission blocker that records only failed-step or land-refusal provenance, with legacy commissions defaulting to no blocker. Render only that blocker as halted, carry the exact reason through the existing accessible control, keep the lifecycle nonterminal, and clear it on provider recovery. A generic commission error or retry reason never implies a halt.</p>
   <p>Do not add <code>run-record</code> commands to the Mission Control launch prompt. That would duplicate the provider skill's workflow contract.</p>
 
   <h2>Acceptance criteria</h2>
@@ -101,17 +101,18 @@
     <li>Land keeps its independent deterministic validation.</li>
     <li>A land refusal or failed current step is visibly blocked on Board, Console, and Runs with an accessible exact reason.</li>
     <li>A retry remains running and later provider progress clears stale refusal presentation.</li>
+    <li>Mission Control classifies blocked presentation only from explicit reducer-owned event provenance, never from generic error shape.</li>
     <li>Mission Control never infers step completion or writes provider state.</li>
     <li>Existing Claude, direct Engineer, BUILD/SHIP, replay, and uncommissioned flows remain compatible.</li>
   </ol>
 
   <h2>Non-goals</h2>
-  <ul><li>No wire-schema redesign or approval inference from files and conversation text.</li><li>No automatic repair of an existing artifact set.</li><li>No automatic spec merge or implementation-run change.</li><li>No reopening of completed continuity phases.</li></ul>
+  <ul><li>No provider lifecycle wire redesign or approval inference from files and conversation text. The optional blocker is a Mission Control consumer projection.</li><li>No automatic repair of an existing artifact set.</li><li>No automatic spec merge or implementation-run change.</li><li>No reopening of completed continuity phases.</li></ul>
 
   <h2>Verification strategy</h2>
   <div class="grid">
     <section class="card"><h3>AI Conductor</h3><p>Mutation-resistant skill contract checks, existing lifecycle and land tests, then required typecheck, lint, test, and build gates.</p></section>
-    <section class="card"><h3>Mission Control</h3><p>Reducer and view-model tests plus a built-dashboard Playwright reproduction with fake agents, keyboard assertions, geometry review, screenshots, and focused transcript evidence.</p></section>
+    <section class="card"><h3>Mission Control</h3><p>Persistence, reducer, and view-model tests for explicit blocker provenance and legacy rows, plus a built-dashboard Playwright reproduction with fake agents, keyboard assertions, geometry review, screenshots, and focused transcript evidence.</p></section>
   </div>
 
   <h2>Publication decision</h2>

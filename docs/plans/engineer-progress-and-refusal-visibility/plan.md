@@ -79,10 +79,15 @@ a second lifecycle API unless implementation proves a missing deterministic prim
 
 ## Mission Control changes
 
-Keep the provider integration and persisted contract unchanged. Harden the shared commission view
-model so a current provider-projected failed step or land refusal produces a visible halted treatment
-and exact reason on the Board, Console, and Runs surfaces. A retry-in-progress remains running, and a
-later successful or retry event clears the old refusal through the existing reducer behavior.
+Keep the provider integration and lifecycle event contract unchanged. Extend Mission Control's
+commission projection with an additive, explicitly typed recoverable blocker that records whether the
+provider reported a failed step or a land refusal, plus its exact reason and step when applicable.
+Older persisted commissions decode with no blocker. The reducer sets the blocker only from those
+specific Engineer event kinds and clears it on the next accepted retry or successful transition.
+
+Harden the shared commission view model to render only that explicit blocker as a visible halted
+treatment on the Board, Console, and Runs surfaces. A generic `commission.error` or retry reason is
+not blocker provenance, and a retry-in-progress remains running.
 
 Reproduce the problem in the built dashboard with Playwright: dispatch a fake managed Engineer,
 advance it through real commission ingest, emit a nonterminal land refusal, and assert the card and
@@ -105,14 +110,17 @@ provider skill's workflow contract and create two instructions that can drift.
 5. A land refusal or failed current step is visibly blocked on Board, Console, and Runs, with the
    exact reason reachable by keyboard and assistive technology.
 6. A step retry remains visibly in progress, and a later provider event removes stale refusal copy.
-7. Mission Control does not infer step completion, read authoring artifacts, or write provider
+7. Mission Control classifies the blocked presentation only from an explicit reducer-owned event
+   provenance field, never from the shape or absence of a generic error or retry.
+8. Mission Control does not infer step completion, read authoring artifacts, or write provider
    lifecycle state.
-8. Existing Claude, direct Engineer, BUILD/SHIP, replay, and uncommissioned flows remain compatible.
+9. Existing Claude, direct Engineer, BUILD/SHIP, replay, and uncommissioned flows remain compatible.
 
 ## Non-goals
 
-- No change to the Engineer lifecycle wire schema, event discriminants, revision rules, or Mission
-  Control ingest envelope unless a repository contradiction is found during implementation.
+- No change to the Engineer lifecycle event schema, event discriminants, revision rules, or Mission
+  Control ingest envelope. The additive Mission Control commission blocker is a consumer projection,
+  not a provider lifecycle field.
 - No automatic PRD approval detection from files or conversation text.
 - No automatic repair or rename of an already-authored artifact set.
 - No automatic spec merge or implementation-run behavior change.
@@ -129,8 +137,8 @@ provider skill's workflow contract and create two instructions that can drift.
 
 ### Mission Control
 
-- Add focused reducer/view-model and static-render coverage for failed-step, land-refused,
-  retry-in-progress, and recovered shapes.
+- Add focused persistence/reducer/view-model and static-render coverage for explicit failed-step and
+  land-refused blocker provenance, legacy rows without it, retry-in-progress, and recovered shapes.
 - Add a built-dashboard Playwright scenario with fake agents and visible evidence for the card and
   detail surfaces.
 - Run focused tests, typecheck, lint, build, smoke, and the focused E2E spec.

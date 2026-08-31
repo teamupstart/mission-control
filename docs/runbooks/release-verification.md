@@ -236,6 +236,7 @@ rather than failing outright.
 | `phase: "up-to-date"` forever, `checkedAt` non-null | Genuinely current, or no *stable* release exists. Check the gate query. |
 | `up-to-date` with `checkedAt: null` | The check never ran. Look in `update.log`. |
 | No second release ever proposed | The `release-as` pin is still in `release-please-config.json`. |
+| Release log says `commit could not be parsed`, then considers zero commits | A pre-validation run received non-Conventional Commit subjects. Current workflows reject these as `release input rejected`; rename the pull request with `type(optional-scope): description` before merge. |
 | Update reported success, app still old | An install made outside `/Applications` on a build predating the `--apps-dir` fix. |
 | Relaunch never appears after a successful update | The single-instance lock again, or `open` landed in a different `MISSION_HOME`. |
 | Checkout reports `unable to unlink old` | A historical `sudo make install` left unwritable directories in `app-src`. Run an installer containing the repair as the signed-in account. It replaces the disposable clone, then requests macOS administrator authorization only for the final `/Applications` swap. Do not run the whole command with `sudo`. |

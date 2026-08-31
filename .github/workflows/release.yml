@@ -13,6 +13,10 @@ name: Release
 # request is the release: the next run of this workflow sees the release commit, creates the
 # `vX.Y.Z` tag, and publishes the GitHub Release.
 #
+# Release Please treats an unparseable commit as omitted input, not an error. The validator below
+# checks each first-parent commit added by this push before minting a write token, so a title that
+# would turn the workflow into a successful no-op is a loud failure instead.
+#
 # `.release-please-manifest.json` is bootstrapped at 0.1.0 - the version already in
 # `package.json` - rather than left for the action to infer, because there is no tag history to
 # infer it from and an invented first version would not match the shipped app.
@@ -51,6 +55,19 @@ jobs:
     runs-on: ubuntu-latest
     name: release-please
     steps:
+      - name: Check out the release input
+        uses: actions/checkout@v5
+        with:
+          # The push range can contain several rebased commits. Full history lets the validator
+          # walk exactly that first-parent range instead of guessing from a shallow checkout.
+          fetch-depth: 0
+
+      - name: Assert Release Please can parse the new commits
+        env:
+          RELEASE_BASE_SHA: ${{ github.event.before }}
+          RELEASE_HEAD_SHA: ${{ github.sha }}
+        run: node scripts/assert-release-commit.mjs
+
       - name: Mint the mission-control-release installation token
         id: release-app-token
         uses: actions/create-github-app-token@v3.2.0
@@ -63,7 +80,7 @@ jobs:
 
       - name: Open or update the release pull request, and release when one is merged
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ steps.release-app-token.outputs.token }}
           config-file: release-please-config.json

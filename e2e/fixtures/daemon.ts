@@ -245,19 +245,21 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";
+  const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
-  if (piOnLoginShellOnly) {
-    mkdirSync(dirname(loginPiBin), { recursive: true });
-    copyFileSync(bins.pi, loginPiBin);
-    chmodSync(loginPiBin, 0o755);
+  if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
+    if (piOnLoginShellOnly) {
+      mkdirSync(dirname(loginPiBin), { recursive: true });
+      copyFileSync(bins.pi, loginPiBin);
+      chmodSync(loginPiBin, 0o755);
+    }
     writeFileSync(
       loginShell,
       '#!/bin/sh\nprintf \'__MISSION_PATH__%s__MISSION_PATH__\' "$MC_E2E_LOGIN_SHELL_PATH"\n',
     );
     chmodSync(loginShell, 0o755);
   }
-  const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   if (conductorNodeVersion !== undefined) {
     writeConductorNodeRuntime(home, conductorNodeVersion);
   }
@@ -441,6 +443,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     isolatedEnv.MC_E2E_LOGIN_SHELL_PATH =
       `${dirname(loginPiBin)}${delimiter}${dirname(process.execPath)}${delimiter}/usr/bin${delimiter}/bin`;
     delete isolatedEnv.MC_E2E_PI_LOGIN_SHELL_ONLY;
+  } else if (conductorNodeVersion !== undefined) {
+    // Setup forces a login-shell PATH refresh before inspecting installer prerequisites.
+    // Keep that refresh inside the same controlled fake Node runtime as the daemon's
+    // inherited PATH so an operator's shell cannot replace the version this fixture owns.
+    isolatedEnv.SHELL = loginShell;
+    isolatedEnv.MC_E2E_LOGIN_SHELL_PATH = isolatedEnv.PATH;
   }
 
   // One repository-settings spec must exercise the config-backed defaults. Scrub every

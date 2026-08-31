@@ -81,10 +81,13 @@ export function boardColumnModes(
   groups: readonly ToneGroup[],
   revealed: ReadonlySet<Tone>,
   focused: boolean,
+  /** Provisioning tasks whose placeholders live in the Working column. */
+  pending = 0,
 ): Map<Tone, ColumnMode> {
   const out = new Map<Tone, ColumnMode>();
   for (const g of groups) {
     if (g.sessions.length > 0) out.set(g.tone, "sessions");
+    else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
     else if (g.tone === "attention") out.set(g.tone, "calm");
     else if (revealed.has(g.tone) || focused) out.set(g.tone, "revealed");
     else out.set(g.tone, "stashed");

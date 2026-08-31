@@ -44,7 +44,6 @@ import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
-import { StartingStrip } from "./components/StartingStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
@@ -2113,10 +2112,11 @@ export function App(): React.JSX.Element {
 
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
-  // Whether the CURRENT layout has anything to draw. Only the board renders tasks, so
-  // only the board survives an empty session list - see the render gate below.
+  // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
+  // the board additionally renders backlog and restoring-session rows.
   const layoutHasContent =
     visible.length > 0 ||
+    dispatchingTasks.length > 0 ||
     (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length + (layout === "board" ? restoringSessions.length : 0);
@@ -3519,14 +3519,12 @@ export function App(): React.JSX.Element {
           onDensity={setLineDensity}
         />
 
-        {/* Dispatched, still provisioning. Here for the Line's reason and in the Line's slot:
-            above every layout and outside the `layoutHasContent` gate, because the state it
-            reports on is exactly the one where the board below has nothing to show yet - a
-            first dispatch onto a quiet fleet. It draws nothing at all when the list is empty,
-            so the steady-state page is unchanged. */}
-        <StartingStrip tasks={dispatchingTasks} />
+        {/* A dispatched task with no session now renders inside the fleet, at the top of the
+            Working group where its real row will land. Both layouts own that placement through
+            `PendingDispatch`, and `layoutHasContent` keeps the fleet mounted for a first
+            dispatch onto a quiet fleet. */}
 
-        {/* The drawer, between the strip and the layouts and a sibling of both. It pushes
+        {/* The drawer, between the Line and the layouts and a sibling of both. It pushes
             the board down and hands the space back on close; the cards below are the same
             cards at the same size in every state, which is the one thing this whole surface
             was not allowed to change. Mounted only while open, so the two drawers that fetch
@@ -3684,11 +3682,11 @@ export function App(): React.JSX.Element {
         )}
 
         {/* Not while something is starting. A dispatch that has been accepted but has not
-            bound its session yet is already drawn in the Starting strip above, and this
-            screen would sit directly under it saying the opposite - "No agent sessions
+            bound its session yet is already drawn as a placeholder in the fleet below, and
+            this screen would sit directly over it saying the opposite - "No agent sessions
             detected", telling the operator to go start one by hand in the seconds after they
-            asked for exactly that. Same rule the filter's empty state below already follows:
-            never report nothing while the something is on screen. */}
+            asked for exactly that. `layoutHasContent` counts these tasks so the layout holding
+            the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
           (layout !== "board" || restoringSessions.length === 0) &&
           dispatchingTasks.length === 0 && (

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
+import { provisioningTasks } from "@shared/session.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
@@ -17,6 +18,7 @@ import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.t
 import { useUiConfig } from "../../lib/uiConfig.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
+import { PendingList } from "../PendingDispatch.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
@@ -175,7 +177,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     ? stateDisplay(selected).tone
     : null;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null);
+  /**
+   * Dispatched, still provisioning: the placeholders at the top of the `working` column.
+   *
+   * The full task list is intentional. A dispatch made seconds ago must not disappear because
+   * a fleet filter is still typed, which would recreate the dropped-dispatch symptom this
+   * placeholder closes.
+   */
+  const pending = provisioningTasks(props.tasks);
+
+  const modes = boardColumnModes(groups, revealed, focusedTone != null, pending.length);
   const stashed = groups.filter((g) => modes.get(g.tone) === "stashed");
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
@@ -383,8 +394,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     dropping the free RULE in the same case. "0 free · 1 held" counts a side of
                     the split that is not there, and the pair then disagreed with the single
                     rule below it about whether this column had two halves at all. */}
+                {/* A placeholder is a visible row and counts in the unsplit Working column.
+                    It is not included in the free/held split because no session exists yet. */}
                 {g.heldFrom === null ? (
-                  <span className="board-col-n">{g.sessions.length}</span>
+                  <span className="board-col-n">
+                    {g.sessions.length + (g.tone === "working" ? pending.length : 0)}
+                  </span>
                 ) : (
                   <>
                     {g.heldFrom > 0 && (
@@ -422,6 +437,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
               </header>
               <div className="board-col-body">
+                {/* Keep the placeholder at the top of Working, and use the rail shape while
+                    this column is drilled in so the Board-to-Console morph stays coherent. */}
+                {g.tone === "working" && (
+                  <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
+                )}
                 {calm ? (
                   <p className="board-allclear">
                     <span className="board-allclear-tick" aria-hidden>
@@ -431,7 +451,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     <span>Nothing is waiting on you</span>
                   </p>
                 ) : g.sessions.length === 0 ? (
-                  <p className="board-col-empty">Nothing here</p>
+                  g.tone === "working" && pending.length > 0 ? null : (
+                    <p className="board-col-empty">Nothing here</p>
+                  )
                 ) : isRail ? (
                   // The clicked column, now a console rail: the same RailRow (and the same
                   // cluster header) the console uses, so opening a column and switching to

@@ -236,10 +236,20 @@ rather than failing outright.
 | `phase: "up-to-date"` forever, `checkedAt` non-null | Genuinely current, or no *stable* release exists. Check the gate query. |
 | `up-to-date` with `checkedAt: null` | The check never ran. Look in `update.log`. |
 | No second release ever proposed | The `release-as` pin is still in `release-please-config.json`. |
-| Release log says `commit could not be parsed`, then considers zero commits | A pre-validation run received non-Conventional Commit subjects. Current workflows reject these as `release input rejected`; rename the pull request with `type(optional-scope): description` before merge. |
+| Release log says `commit could not be parsed`, then considers zero commits | A pre-validation run received non-Conventional Commit subjects. See [Recovering a skipped release commit](#recovering-a-skipped-release-commit). |
 | Update reported success, app still old | An install made outside `/Applications` on a build predating the `--apps-dir` fix. |
 | Relaunch never appears after a successful update | The single-instance lock again, or `open` landed in a different `MISSION_HOME`. |
 | Checkout reports `unable to unlink old` | A historical `sudo make install` left unwritable directories in `app-src`. Run an installer containing the repair as the signed-in account. It replaces the disposable clone, then requests macOS administrator authorization only for the final `/Applications` swap. Do not run the whole command with `sudo`. |
+
+### Recovering a skipped release commit
+
+Before merge, rename the pull request to `type(optional-scope): description`; the title workflow
+will recheck it. Once its squash commit is already on `main`, changing the pull request title cannot
+rewrite that commit. Instead, add a `BEGIN_COMMIT_OVERRIDE` / `END_COMMIT_OVERRIDE` block containing
+valid Conventional Commit lines to the merged pull request body, then rerun the Release workflow
+through `workflow_dispatch`. Release Please applies that supported override when it rebuilds the
+release notes. For a direct push with no originating pull request, merge a new releasable
+Conventional Commit to advance the release; do not rewrite `main` history.
 
 `update.log` in the state directory is the diagnostic of record. It rotates at 1 MB and redacts
 credentials and absolute paths, so expect `<path>` where a directory would be.

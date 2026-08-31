@@ -20,7 +20,9 @@ function topLevelMappingLines(workflow: string, key: string): string[] {
   const values: string[] = [];
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!line || !/^[ \t]+\S/.test(line)) break;
+    if (line === undefined) break;
+    if (!line.trim()) continue;
+    if (!/^[ \t]+\S/.test(line)) break;
     values.push(line);
   }
   return values;
@@ -113,8 +115,10 @@ test("the pull request and release workflows enforce the same validator", () => 
   const guard = releaseWorkflow.indexOf("name: Assert Release Please can parse the new commits");
   const token = releaseWorkflow.indexOf("name: Mint the mission-control-release installation token");
   assert.ok(checkout >= 0 && checkout < guard && guard < token);
-  assert.match(releaseWorkflow, /^on:\n  push:\n    branches: \[main\]$/m);
-  assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:/);
+  assert.deepEqual(topLevelMappingLines(releaseWorkflow, "on"), [
+    "  push:",
+    "    branches: [main]",
+  ]);
   assert.match(releaseWorkflow, /fetch-depth: 0/);
   const releaseGuard = namedWorkflowStep(
     releaseWorkflow,

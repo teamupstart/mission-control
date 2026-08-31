@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -23,6 +23,11 @@ import { resolveBinPath, run } from "../../util/exec.ts";
 // on `PATH` costs a fleet with an enabled repository exactly nothing.
 
 const INFO = PIPELINE_PROVIDER_INFO["ai-conductor"];
+const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
+const SOURCE_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const ENGINE_SOURCE_SHA_SIDECAR = ".engine-source-sha";
+const MAX_VERSION_BYTES = 512;
+const MAX_SOURCE_SHA_BYTES = 128;
 
 /** How long one probe subprocess gets before it is killed and reported as unreachable. */
 const PROBE_TIMEOUT_MS = 5000;
@@ -54,39 +59,127 @@ export function conductorRegistryPath(env: NodeJS.ProcessEnv = process.env): str
 }
 
 /**
- * The engine's version, derived from the installation the resolved binary points into.
+ * The engine's version, derived from the published bundle the resolved binary will execute.
  *
  * There is no `--version` flag - verified against the engine's own CLI, which never calls
- * Commander's `.version()`. What the installation does have is a `VERSION` file at the
- * harness root, and the installed binary is a symlink to `<harnessRoot>/bin/conduct-ts`,
- * so resolving the link and reading its grandparent is the derivation. Two levels up is
- * checked as well, for an installation that nests the shim one directory deeper.
+ * Commander's `.version()`. Published bundles stamp their source commit beside the executable,
+ * and that commit owns the VERSION that describes the bytes. A legacy installation without the
+ * stamp falls back to the VERSION at the harness root. Two possible roots are checked because an
+ * installation may nest the shim one directory deeper.
  *
- * Null is an ordinary answer meaning "this build could not tell", and the panel says so
- * rather than inventing one. It is never used to gate anything: an operator whose layout
- * this does not recognise still gets detection, consent and a projection.
+ * Null is an ordinary answer meaning "this build could not tell", and the panel says so rather
+ * than inventing one. When both versions are known but differ, the probe names the mismatch and
+ * the lifecycle gate refuses before an older CLI can interpret the capability name as an idea.
  */
-export function conductorVersion(binPath: string | null): string | null {
-  if (!binPath) return null;
+function versionMarker(path: string): string | null {
+  try {
+    const file = statSync(path);
+    if (!file.isFile() || file.size > MAX_VERSION_BYTES) return null;
+    const text = readFileSync(path, "utf8").trim();
+    return VERSION_PATTERN.test(text) ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ConductorInstallationVersion {
+  version: string | null;
+  checkoutVersion: string | null;
+  checkoutRoot: string | null;
+  stale: boolean;
+}
+
+/**
+ * Read the version of the bundle `conduct-ts` will actually execute.
+ *
+ * A source checkout can advance while its gitignored `dist` link still names an older
+ * published bundle. The checkout VERSION is not executable identity in that state. Published
+ * Conductor bundles carry the source commit in `.engine-source-sha`, so resolve that commit's
+ * VERSION through the same checkout and use the current marker only as a legacy fallback.
+ */
+export async function conductorInstallationVersion(
+  binPath: string | null,
+): Promise<ConductorInstallationVersion> {
+  const unknown: ConductorInstallationVersion = {
+    version: null,
+    checkoutVersion: null,
+    checkoutRoot: null,
+    stale: false,
+  };
+  if (!binPath) return unknown;
   let real: string;
   try {
     real = realpathSync(binPath);
   } catch {
-    return null;
+    return unknown;
   }
+
   // `<root>/bin/conduct-ts` -> `<root>`, then one more level for a deeper shim.
   const roots = [dirname(dirname(real)), dirname(dirname(dirname(real)))];
   for (const root of roots) {
-    const file = join(root, "VERSION");
+    const checkoutVersion = versionMarker(join(root, "VERSION"));
+    if (checkoutVersion === null) continue;
+
+    let sourceSha: string | null = null;
     try {
-      if (!existsSync(file)) continue;
-      const text = readFileSync(file, "utf8").trim();
-      if (text !== "" && text.length <= 64) return text;
+      const entry = realpathSync(join(root, "src", "conductor", "dist", "index.js"));
+      const sidecar = join(dirname(entry), ENGINE_SOURCE_SHA_SIDECAR);
+      const file = statSync(sidecar);
+      if (file.isFile() && file.size <= MAX_SOURCE_SHA_BYTES) {
+        const text = readFileSync(sidecar, "utf8").trim();
+        if (SOURCE_SHA_PATTERN.test(text)) sourceSha = text;
+      }
     } catch {
-      // An unreadable VERSION is the same answer as an absent one.
+      // Legacy and non-standard installations have no published-source sidecar.
     }
+
+    if (sourceSha === null) {
+      return { version: checkoutVersion, checkoutVersion, checkoutRoot: root, stale: false };
+    }
+
+    const published = await run("git", ["-C", root, "show", `${sourceSha}:VERSION`], {
+      cwd: root,
+      timeoutMs: 2_000,
+      maxBuffer: MAX_VERSION_BYTES,
+    });
+    const version =
+      published.code === 0 && !published.outcomeUnknown && !published.overflowed
+        ? VERSION_PATTERN.test(published.stdout.trim())
+          ? published.stdout.trim()
+          : null
+        : null;
+    if (version === null) {
+      return { version: null, checkoutVersion, checkoutRoot: root, stale: false };
+    }
+    return {
+      version,
+      checkoutVersion,
+      checkoutRoot: root,
+      stale: version !== checkoutVersion,
+    };
   }
-  return null;
+  return unknown;
+}
+
+export function staleConductorBundleError(
+  reading: ConductorInstallationVersion,
+): string | null {
+  if (
+    !reading.stale ||
+    reading.version === null ||
+    reading.checkoutVersion === null ||
+    reading.checkoutRoot === null
+  ) {
+    return null;
+  }
+  return (
+    `installed conduct-ts bundle is ${reading.version}, but its checkout is ${reading.checkoutVersion}; ` +
+    `rerun ${join(reading.checkoutRoot, "bin", "install")} before dispatch`
+  );
+}
+
+export async function conductorVersion(binPath: string | null): Promise<string | null> {
+  return (await conductorInstallationVersion(binPath)).version;
 }
 
 /**
@@ -160,9 +253,10 @@ export async function probeConductor(): Promise<PipelineProbe> {
     };
   }
 
-  const version = conductorVersion(binPath);
+  const installation = await conductorInstallationVersion(binPath);
+  const version = installation.version;
   let projects: PipelineProject[] | null = null;
-  let error: string | null = null;
+  let error: string | null = staleConductorBundleError(installation);
 
   const result = await run(binPath, ["engineer", "projects"], {
     timeoutMs: PROBE_TIMEOUT_MS,
@@ -181,10 +275,12 @@ export async function probeConductor(): Promise<PipelineProbe> {
     const fromFile = projectsFromRegistryFile(registryPath);
     if (fromFile === null) {
       projects = [];
-      error = `could not read ${registryPath}, and ${bin} engineer projects did not answer with JSON`;
+      const detail = `could not read ${registryPath}, and ${bin} engineer projects did not answer with JSON`;
+      error = error ? `${error}; ${detail}` : detail;
     } else {
       projects = fromFile;
-      error = `${bin} engineer projects did not answer with JSON; read ${registryPath} instead`;
+      const detail = `${bin} engineer projects did not answer with JSON; read ${registryPath} instead`;
+      error = error ? `${error}; ${detail}` : detail;
     }
   }
 

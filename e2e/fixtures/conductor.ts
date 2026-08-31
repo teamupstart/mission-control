@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -574,6 +581,55 @@ export function writeFakeConductor(home: string): FakeConductor {
     registryPath: join(home, "fake-ai-conductor-registry.json"),
     logPath: conductorLogPath(home),
   };
+}
+
+/** Give the fake the same stale published-bundle shape a pulled checkout can have. */
+export function makeFakeConductorBundleStale(fake: FakeConductor): void {
+  const publishedVersion = "0.103.0";
+  const checkoutVersion = "0.104.0";
+  writeFileSync(join(fake.root, "VERSION"), `${publishedVersion}\n`);
+  execFileSync("git", ["-C", fake.root, "init", "-q"]);
+  execFileSync("git", ["-C", fake.root, "add", "VERSION"]);
+  execFileSync(
+    "git",
+    [
+      "-C",
+      fake.root,
+      "-c",
+      "user.name=e2e",
+      "-c",
+      "user.email=e2e@example.com",
+      "commit",
+      "-qm",
+      "published version",
+    ],
+  );
+  const sourceSha = execFileSync("git", ["-C", fake.root, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  const conductorRoot = join(fake.root, "src", "conductor");
+  const versionDir = join(conductorRoot, "dist-versions", "published");
+  mkdirSync(versionDir, { recursive: true });
+  writeFileSync(join(versionDir, ".engine-source-sha"), `${sourceSha}\n`);
+  writeFileSync(join(versionDir, "index.js"), "// stale published fixture\n");
+  symlinkSync(join("dist-versions", "published"), join(conductorRoot, "dist"), "dir");
+
+  writeFileSync(join(fake.root, "VERSION"), `${checkoutVersion}\n`);
+  execFileSync("git", ["-C", fake.root, "add", "VERSION"]);
+  execFileSync(
+    "git",
+    [
+      "-C",
+      fake.root,
+      "-c",
+      "user.name=e2e",
+      "-c",
+      "user.email=e2e@example.com",
+      "commit",
+      "-qm",
+      "checkout version",
+    ],
+  );
 }
 
 /** Where the fake engine records what it was asked to do, for one daemon. */

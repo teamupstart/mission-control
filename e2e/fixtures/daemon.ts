@@ -26,6 +26,7 @@ import {
 import {
   conductorEngineerStatePath,
   FAKE_CONDUCTOR_VERSION,
+  makeFakeConductorBundleStale,
   seedConductorInstallerCheckout,
   writeConductorNodeRuntime,
   writeFakeConductor,
@@ -265,6 +266,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   writeProductConsentBin(home);
   const conductor = writeFakeConductor(home);
+  if (extraEnv.MC_E2E_CONDUCTOR_STALE_BUNDLE === "1") {
+    makeFakeConductorBundleStale(conductor);
+  }
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
   const secondRepo = seedRepo(workspace, "second-repo");

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phased Plan: Engineer Progress and Refusal Visibility</title>
+  <style>
+    :root { color-scheme:light dark; --bg:#f6f7fb; --panel:#fff; --text:#172033; --muted:#5c667a; --line:#dce1ea; --accent:#3b5ccc; --soft:#edf1ff; --code:#eef1f6; }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:16px/1.58 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif} main{width:min(1160px,calc(100% - 32px));margin:32px auto 64px} article{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:clamp(24px,5vw,56px);box-shadow:0 16px 48px rgba(22,32,51,.08)} h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;letter-spacing:-.04em} h2{margin:40px 0 12px;padding-top:18px;border-top:1px solid var(--line);font-size:1.45rem} h3{margin:20px 0 8px}.meta,.lead{color:var(--muted)} .lead{font-size:1.16rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}.card{border:1px solid var(--line);border-radius:13px;padding:19px}.card h3{margin-top:0}.phase{border-top:5px solid var(--accent)}code{background:var(--code);padding:.12rem .35rem;border-radius:5px;font-size:.92em}ul,ol{padding-left:1.35rem}li+li{margin-top:.45rem}.table{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:12px 14px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}.flow{overflow-x:auto;border:1px solid var(--line);border-radius:14px;padding:18px;background:var(--bg)}svg{display:block;min-width:800px;width:100%;height:auto}a{color:var(--accent)}@media(prefers-color-scheme:dark){:root{--bg:#0d1220;--panel:#151b2b;--text:#edf1fb;--muted:#aab3c7;--line:#30394c;--accent:#91a8ff;--soft:#1c294c;--code:#232b3d}article{box-shadow:none}}
+  </style>
+</head>
+<body><main><article>
+  <h1>Phased Plan: Engineer Progress and Refusal Visibility</h1>
+  <p class="meta"><strong>Source:</strong> <a href="plan.html">Engineer Progress and Refusal Visibility</a> · <strong>Status:</strong> Ready to schedule</p>
+  <p class="lead">Two independent repository-owned phases restore provider progress and make recoverable refusal visible. Both release after this planning PR merges and may run concurrently.</p>
+
+  <h2>Implementation outcome</h2>
+  <p>Restore live DECIDE progress for managed Codex Engineer runs at the provider source, prevent the reproduced artifact-stem refusal when the canonical workflow is followed, and make any remaining recoverable refusal unmistakable on Mission Control's shared Pipeline surfaces.</p>
+
+  <h2>Incorporated decisions</h2>
+  <ul><li>The operator explicitly asked to plan and schedule both repository fixes.</li><li>AI Conductor owns lifecycle emission, completion evidence, artifact identity, and land behavior.</li><li>Mission Control owns commission projection and visible presentation only.</li><li>No AI Conductor planning skill is used.</li><li>A duplicated launch-prompt workaround is rejected in favor of one durable provider contract.</li></ul>
+
+  <h2>Repository findings</h2>
+  <ol>
+    <li>The validated lifecycle CLI already exists. The canonical Engineer skill omits its no-hook use.</li>
+    <li>The worktree command already returns and persists the exact Engineer run id and feature slug.</li>
+    <li>Land intentionally enforces the reserved feature stem, while the skill lets artifacts choose a shorter stem.</li>
+    <li>Mission Control correctly preserves the provider refusal reason and clears it on the next event.</li>
+    <li>The shared commission view only halts terminal failures, so recoverable refusal still looks like authoring.</li>
+    <li>No new event, route, ingest, migration, or replay contract is required.</li>
+  </ol>
+
+  <h2>Size and phase rationale</h2>
+  <p><strong>Estimated non-test implementation and maintained documentation: 210-330 lines.</strong> AI Conductor accounts for roughly 130-210 lines; Mission Control accounts for 80-120. Tests are excluded and expected to add 180-300 lines.</p>
+  <p>Two phases keep provider ownership and browser presentation separately reviewable. Each repository remains operable alone, and the fixed existing interface allows parallel implementation and either merge order.</p>
+
+  <h2>Dependency graph</h2>
+  <div class="flow"><svg viewBox="0 0 980 260" role="img" aria-labelledby="graph-title graph-desc">
+    <title id="graph-title">Parallel phase dependency graph</title><desc id="graph-desc">The merged planning pull request releases two independent tasks, one in AI Conductor and one in Mission Control.</desc>
+    <defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="currentColor"/></marker></defs>
+    <g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#a)"><path d="M270 130 H390 V62 H485"/><path d="M270 130 H390 V198 H485"/></g>
+    <g fill="var(--panel)" stroke="var(--accent)" stroke-width="2"><rect x="35" y="84" width="235" height="92" rx="13"/><rect x="485" y="18" width="450" height="88" rx="13"/><rect x="485" y="154" width="450" height="88" rx="13"/></g>
+    <g fill="currentColor" font-family="ui-sans-serif,system-ui"><text x="152" y="121" text-anchor="middle" font-weight="700">Planning PR merged</text><text x="152" y="148" text-anchor="middle">paths reach default branch</text><text x="710" y="54" text-anchor="middle" font-weight="700">Phase 1 · AI Conductor</text><text x="710" y="81" text-anchor="middle">record progress and preserve slug identity</text><text x="710" y="190" text-anchor="middle" font-weight="700">Phase 2 · Mission Control</text><text x="710" y="217" text-anchor="middle">surface recoverable refusal</text></g>
+  </svg></div>
+
+  <h2>Phases</h2>
+  <div class="grid">
+    <section class="card phase"><h3>Phase 1: AI Conductor host contract</h3><p>Make the canonical Engineer skill parse returned identity, record evidence-backed no-hook lifecycle transitions, name feature artifacts from the reserved slug, and guide in-place refusal repair.</p><p><a href="phase-1-ai-conductor-engineer-host-contract.md">Detailed Phase 1 Markdown</a></p><p><strong>Primary:</strong> <code>/Users/jordan.mance/workspace/upstart/ai-conductor</code><br><strong>Context-only:</strong> Mission Control</p></section>
+    <section class="card phase"><h3>Phase 2: Mission Control refusal visibility</h3><p>Derive a recoverable blocked view from existing commission facts, reuse the accessible phase meter, and prove refusal plus recovery across Board, Console, and Runs in the built browser.</p><p><a href="phase-2-mission-control-refusal-visibility.md">Detailed Phase 2 Markdown</a></p><p><strong>Primary:</strong> Mission Control<br><strong>Context-only:</strong> AI Conductor</p></section>
+  </div>
+
+  <h2>Phase table</h2>
+  <div class="table"><table><thead><tr><th>Phase</th><th>Primary repository</th><th>Direct dependency</th><th>Merge outcome</th></tr></thead><tbody><tr><td>1 · AI Conductor host contract</td><td>AI Conductor</td><td>Planning session</td><td>No-hook hosts record live lifecycle events and author with the reserved slug.</td></tr><tr><td>2 · Mission Control refusal visibility</td><td>Mission Control</td><td>Planning session</td><td>Shared Pipeline surfaces visibly distinguish recoverable refusal from ordinary authoring.</td></tr></tbody></table></div>
+
+  <h2>Cross-phase contracts</h2>
+  <div class="table"><table><thead><tr><th>Contract</th><th>Owner</th><th>Consumer rule</th></tr></thead><tbody><tr><td>Step truth and completion evidence</td><td>AI Conductor</td><td>Mission Control projects events and never reconstructs them.</td></tr><tr><td>Run identity and feature slug</td><td>AI Conductor</td><td>Hosts use returned values; commission id, run id, and final plan slug remain distinct.</td></tr><tr><td>Recoverable refusal</td><td>Shared existing event semantics</td><td>Visible as blocked, not terminal; later provider events may clear it.</td></tr><tr><td>Commission reducer</td><td>Mission Control</td><td>Each accepted event clears stale error before applying its own state.</td></tr><tr><td>Wire compatibility</td><td>Existing contract</td><td>No event rename, ingest narrowing, migration, or revision change.</td></tr></tbody></table></div>
+
+  <h2>Scheduling and publication</h2>
+  <ul><li>Commit and push this source plan, both HTML pages, the phased index, and both phase files before task creation.</li><li>Both tasks depend on the current planning session and remain backlogged until the planning PR merges.</li><li>Each task changes only its primary repository and treats the attached repository as read-only context.</li><li>The tasks have no dependency edge between them and may execute concurrently.</li></ul>
+
+  <h2>Final verification</h2>
+  <ol><li>AI Conductor contract checks fail if lifecycle recording, evidence, retry/skip handling, or returned-slug naming is removed.</li><li>Existing lifecycle and land tests prove the instructions match executable gates.</li><li>Mission Control tests distinguish failed, refused, retrying, and recovered commission shapes.</li><li>Built-browser coverage with fake agents proves accessible refusal visibility and visual quality.</li><li>Both repositories pass their required typecheck, lint, test, and build gates.</li></ol>
+
+  <h2>Audit record</h2>
+  <ul><li>Ownership remains provider truth versus consumer projection.</li><li>The phases consume the existing interface and can merge in either order.</li><li>Refusal remains recoverable and the next accepted provider event clears it.</li><li>Each repository is primary exactly once and context-only exactly once.</li></ul>
+</article></main></body></html>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
@@ -7,6 +7,7 @@ import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { useComposerActivity } from "../lib/composer-activity.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { clearInterrupting, interruptReport, markInterrupting } from "../lib/interrupting.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
@@ -137,6 +138,12 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerActivity = useComposerActivity(session.id);
+  const releaseComposerActivity = composerActivity.release;
+  const closeComposer = useCallback((): void => {
+    releaseComposerActivity();
+    setComposing(false);
+  }, [releaseComposerActivity]);
   const tourTargetRef = useTourTaskTargetRef<HTMLDivElement>(
     "see-work:session-actions",
     session.task?.id,
@@ -218,7 +225,7 @@ export function ActionBar({
       // Sent, so the draft is spent. On failure it stays: `run` has already put the
       // reason on screen next to the text it's about.
       clearDraft(session.id, "send");
-      if (r.delivery !== "pending") setComposing(false);
+      if (r.delivery !== "pending") closeComposer();
       if (inputRef.current) inputRef.current.value = "";
     }
   }
@@ -274,8 +281,8 @@ export function ActionBar({
   // exists. Close this fallback the moment that reply box appears.
   // The text is in the draft map, so reopening Send brings it straight back.
   useEffect(() => {
-    if (hasReply) setComposing(false);
-  }, [hasReply]);
+    if (hasReply) closeComposer();
+  }, [hasReply, closeComposer]);
 
   function focusPane() {
     void run("focus", () => api.focus(session.id));
@@ -324,12 +331,12 @@ export function ActionBar({
   // Both open their dialog rather than acting: the confirm lives in the modal, which
   // owns its own Escape, so the chord and the button reach the identical flow.
   function requestComplete() {
-    setComposing(false);
+    closeComposer();
     onComplete?.();
   }
 
   function requestKill() {
-    setComposing(false);
+    closeComposer();
     onKill?.();
   }
 
@@ -370,7 +377,7 @@ export function ActionBar({
   // themselves off first - App stands down while any is open (`overlays.anyOpen`), so
   // clearing their state from here would be reaching across that boundary.
   function cancel() {
-    setComposing(false);
+    closeComposer();
   }
 
   function toggleQueue() {
@@ -476,7 +483,12 @@ export function ActionBar({
             // without these the text died with it and reopening Send showed a blank.
             // Neither gesture is a human deleting anything.
             defaultValue={readDraft(session.id, "send")}
-            onChange={(e) => writeDraft(session.id, "send", e.currentTarget.value)}
+            onFocus={composerActivity.onFocus}
+            onBlur={composerActivity.onBlur}
+            onChange={(e) => {
+              writeDraft(session.id, "send", e.currentTarget.value);
+              composerActivity.onInput();
+            }}
             onKeyDown={(e) => {
               if (
                 latestEditable &&
@@ -497,7 +509,7 @@ export function ActionBar({
                 e.preventDefault();
                 void submitMessage();
               }
-              if (e.key === "Escape") setComposing(false);
+              if (e.key === "Escape") closeComposer();
             }}
           />
           <Tooltip label={busy === "send" ? "Sending…" : "Send this message to the agent's prompt"}>
@@ -506,7 +518,7 @@ export function ActionBar({
             </button>
           </Tooltip>
           <Tooltip label="Close the compose box - the draft is kept">
-            <button className="btn btn-ghost" onClick={() => setComposing(false)}>
+            <button className="btn btn-ghost" onClick={closeComposer}>
               Cancel
             </button>
           </Tooltip>

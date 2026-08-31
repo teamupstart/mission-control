@@ -17,6 +17,7 @@ import { liveActivity } from "@shared/session.ts";
 import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { useComposerActivity } from "../lib/composer-activity.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
@@ -301,6 +302,7 @@ export function TranscriptPanel({
   const turnFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerActivity = useComposerActivity(sessionId);
   /**
    * WHY this session cannot be replied to, when it cannot: the reason behind `canSend`.
    *
@@ -1081,7 +1083,12 @@ export function TranscriptPanel({
             // holding when the card collapsed; `onChange` keeps that copy current at
             // the cost of a Map set per keystroke.
             defaultValue={readDraft(sessionId, "reply")}
-            onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
+            onFocus={composerActivity.onFocus}
+            onBlur={composerActivity.onBlur}
+            onChange={(e) => {
+              writeDraft(sessionId, "reply", e.currentTarget.value);
+              composerActivity.onInput();
+            }}
             onPaste={drop.onPaste}
             onKeyDown={(e) => {
               if (

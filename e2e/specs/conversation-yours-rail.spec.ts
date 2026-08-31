@@ -181,6 +181,7 @@ async function conversationWithMessages(
   page: Page,
   daemon: DaemonHandle,
   texts: string[] = [FIRST, SECOND, THIRD],
+  beforeTyping?: (target: FleetSession) => Promise<void>,
 ): Promise<ReturnType<Page["locator"]>> {
   await dispatch(page, daemon);
 
@@ -194,6 +195,10 @@ async function conversationWithMessages(
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
 
+  if (beforeTyping) {
+    await beforeTyping(await session(daemon));
+  }
+
   for (const [i, text] of texts.entries()) {
     await reply.fill(text);
     await reply.press("Enter");
@@ -203,6 +208,15 @@ async function conversationWithMessages(
     await expect(turnsBy(card, "you")).toHaveCount(i + 2);
   }
   return card;
+}
+
+async function conversationWithForeman(
+  page: Page,
+  daemon: DaemonHandle,
+  texts?: string[],
+): Promise<ReturnType<Page["locator"]>> {
+  return await conversationWithMessages(page, daemon, texts, (target) =>
+    delivers(daemon, target, "foreman", FOREMAN_SAYS));
 }
 
 /** The rail, by the landmark it names itself with. */
@@ -275,10 +289,9 @@ test("both groups and a jump, in one frame", async ({ dashboard, daemon }) => {
   // still read as out of view.
   await dashboard.setViewportSize({ width: 1280, height: 1000 });
   await enableSkills(daemon);
-  const card = await conversationWithMessages(dashboard, daemon, [FIRST]);
+  const card = await conversationWithForeman(dashboard, daemon, [FIRST]);
 
   const target = await session(daemon);
-  await delivers(daemon, target, "foreman", FOREMAN_SAYS);
   await expect(turnsBy(card, FOREMAN)).toBeVisible();
   await missionControlDelivers(daemon, target);
   await expect(turnsBy(card, MISSION_CONTROL)).toBeVisible();
@@ -323,10 +336,9 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   daemon,
 }) => {
   await enableSkills(daemon);
-  const card = await conversationWithMessages(dashboard, daemon);
+  const card = await conversationWithForeman(dashboard, daemon);
 
   const target = await session(daemon);
-  await delivers(daemon, target, "foreman", FOREMAN_SAYS);
   await expect(turnsBy(card, FOREMAN)).toBeVisible();
   await delivers(daemon, target, "workflow", WORKFLOW_SAYS);
   await expect(turnsBy(card, WORKFLOW)).toBeVisible();
@@ -364,8 +376,8 @@ test("the Yours tab lists what you sent, and says who sent the rest", async ({
   // purely so a browser test could name it would be furniture, not accessibility.
 
   // And the delivered turns sit BELOW the operator's own, whatever order they arrived in.
-  // All three were delivered after all four were typed, but it is the grouping that puts
-  // them last rather than the clock.
+  // Foreman arrived before the operator's replies while the other two arrived after them,
+  // so only the grouping can put all three last.
   const ordered = rows(card);
   await expect(ordered).toHaveCount(7);
   for (const [i, byline] of [FOREMAN, WORKFLOW, MISSION_CONTROL].entries()) {
@@ -547,8 +559,7 @@ test("the rail keeps following your latest message, and reopens on it", async ({
   // it stopped following - one delivered turn was enough to break it for the rest of the
   // session. And the flag was shared across both tabs, so a list left scrolled up handed
   // that position to the other tab.
-  const card = await conversationWithMessages(dashboard, daemon);
-  await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
+  const card = await conversationWithForeman(dashboard, daemon);
   await expect(turnsBy(card, FOREMAN)).toBeVisible();
   await rail(card).getByRole("tab", { name: "Yours" }).click();
 
@@ -607,8 +618,7 @@ test("find's You scope and the Yours tab agree about whose message is whose", as
   // The two controls the conversation offers under the word "you", in the same column,
   // asserted against the same delivered turn. They disagreed before: find selected on the
   // role alone, so its "You" pill returned rows whose own byline said foreman.
-  const card = await conversationWithMessages(dashboard, daemon);
-  await delivers(daemon, await session(daemon), "foreman", FOREMAN_SAYS);
+  const card = await conversationWithForeman(dashboard, daemon);
   await expect(turnsBy(card, FOREMAN)).toBeVisible();
 
   await card.locator(".detail-body").focus();

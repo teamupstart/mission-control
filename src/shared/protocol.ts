@@ -4015,6 +4015,16 @@ export const InjectPromptSchema = z.object({
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
 
+/** Transient browser presence used only to keep Foreman clear of a human draft. */
+export const ComposerActivitySchema = z.object({
+  /** One id per dashboard tab, so one tab cannot clear another tab's focus. */
+  clientId: z.string().min(1).max(100),
+  focused: z.boolean(),
+  /** True when this report follows an edit to the composer value. */
+  typed: z.boolean().optional().default(false),
+});
+export type ComposerActivity = z.infer<typeof ComposerActivitySchema>;
+
 /**
  * What `POST /api/sessions/:id/retro` did, discriminated because the two arms are different
  * events with different follow-ups.

@@ -441,6 +441,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     isolatedEnv.PATH = `/usr/bin${delimiter}/bin`;
     isolatedEnv.SHELL = loginShell;
     isolatedEnv.MC_E2E_LOGIN_SHELL_PATH =
+      `${conductorNodeVersion === undefined ? "" : `${join(home, "bin")}${delimiter}`}` +
       `${dirname(loginPiBin)}${delimiter}${dirname(process.execPath)}${delimiter}/usr/bin${delimiter}/bin`;
     delete isolatedEnv.MC_E2E_PI_LOGIN_SHELL_ONLY;
   } else if (conductorNodeVersion !== undefined) {

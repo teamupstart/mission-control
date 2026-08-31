@@ -22152,7 +22152,7 @@ button.sc-row:focus-visible {
   flex: none;
 }
 
-.pend-tile {
+.tile.pend-tile {
   cursor: default;
   border-style: dashed;
   border-color: color-mix(in srgb, var(--working) 34%, var(--border));
@@ -22199,7 +22199,7 @@ button.sc-row:focus-visible {
   flex: none;
 }
 
-.pend-rail {
+.rail-row.pend-rail {
   cursor: default;
   border-style: dashed;
   border-color: color-mix(in srgb, var(--working) 30%, var(--border));

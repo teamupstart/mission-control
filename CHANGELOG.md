@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/teamupstart/mission-control/compare/v1.3.1...v1.3.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **release:** reject unparseable release commits ([#846](https://github.com/teamupstart/mission-control/issues/846)) ([1e5bd3c](https://github.com/teamupstart/mission-control/commit/1e5bd3cd37bfaf4d7711552c982177b08cb7fb74))
+
 ## [1.3.1](https://github.com/teamupstart/mission-control/compare/v1.3.0...v1.3.1) (2026-08-30)
 
 

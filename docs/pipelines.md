@@ -108,6 +108,13 @@ commands for cloning the recognized upstream, activating Node.js 26+, and runnin
 `./bin/install` manually. Those commands remain operator instructions: Mission Control never
 executes them from the browser.
 
+For a versioned published bundle, the detected engine version comes from the source commit
+stamped beside the exact `dist` target that `conduct-ts` executes, not from the possibly newer
+checkout's `VERSION` file. If those versions differ, Settings shows both and points to that
+checkout's `bin/install`. Pipeline dispatch refuses before asking the old bundle for lifecycle
+capabilities, because older Engineer CLIs can treat an unknown capability word as an interactive
+idea and launch an agent instead of returning machine-readable JSON.
+
 The compact commissioning line keeps three facts separate: **Engine → Register repo →
 Observe**. They are not interchangeable milestones:
 

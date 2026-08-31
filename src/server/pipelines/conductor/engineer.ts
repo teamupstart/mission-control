@@ -12,7 +12,11 @@ import type {
   PipelineEngineerRunSnapshot,
 } from "../types.ts";
 import { parseEngineerEvent, parseUnsupportedEngineerEvent } from "../commissions.ts";
-import { conductorBin } from "./probe.ts";
+import {
+  conductorBin,
+  conductorInstallationVersion,
+  staleConductorBundleError,
+} from "./probe.ts";
 
 const CAPABILITY_TIMEOUT_MS = 5000;
 const CAPABILITY_CACHE_MS = 30_000;
@@ -124,6 +128,10 @@ async function capability(): Promise<PipelineEngineerResult<{ supported: boolean
   const promise = (async (): Promise<
     PipelineEngineerResult<{ supported: boolean }>
   > => {
+    const bin = await executable();
+    if (!bin.ok) return bin;
+    const stale = staleConductorBundleError(await conductorInstallationVersion(bin.value));
+    if (stale) return { ok: false, error: stale, outcomeUnknown: false };
     const answer = await execute(["engineer", "capabilities"], CAPABILITY_TIMEOUT_MS);
     if (!answer.ok) return answer;
     const row = record(answer.value.parsed);

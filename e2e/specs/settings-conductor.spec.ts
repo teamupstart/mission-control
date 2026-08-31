@@ -67,6 +67,35 @@ function installerTerminals(recordDir: string): { argv: string[] }[] {
   return recordsIn<{ argv: string[] }>(recordDir, (file) => file.startsWith("cmux-"));
 }
 
+test.describe("with a stale published Conductor bundle", () => {
+  test.use({
+    daemonEnv: {
+      MISSION_PIPELINE_TICK_MS: "1000",
+      MC_E2E_CONDUCTOR_STALE_BUNDLE: "1",
+    },
+  });
+
+  test("shows the executable version and the exact installer repair", async ({ page, daemon }) => {
+    await openConductor(page, daemon.baseURL);
+
+    await expect(page.getByText(/Installed at .*conduct-ts.*version 0\.103\.0/)).toBeVisible();
+    await expect(
+      page.getByText(/bundle is 0\.103\.0, but its checkout is 0\.104\.0/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(`${daemon.conductor.root}/bin/install`, { exact: false }),
+    ).toBeVisible();
+    await shoot(page, "08-stale-bundle");
+    if (process.env.MC_E2E_EVIDENCE) {
+      await page.locator('[data-anchor="conductor/detection"]').screenshot({
+        path: `${EVIDENCE}09-stale-bundle-warning.png`,
+      });
+      // oxlint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/settings-conductor/09-stale-bundle-warning.png");
+    }
+  });
+});
+
 test("an installed engine registers a workspace and observes it through one honest flow", async ({
   page,
   daemon,

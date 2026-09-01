@@ -17,6 +17,8 @@ import {
 import {
   PIPELINE_GROUP_ORDER,
   pipelineAttempts,
+  pipelineCommissionBlocker,
+  pipelineCommissionLine,
   pipelineEyebrow,
   pipelineKickbackRule,
   pipelineLeadRun,
@@ -134,6 +136,7 @@ function commission(over: Partial<PipelineCommission> = {}): PipelineCommission 
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...over,
+    blocker: over.blocker ?? null,
   };
 }
 
@@ -182,6 +185,88 @@ test("a synthetic commission run retains unknown provider steps after the canoni
     { name: "future_review", state: "in_progress" },
     { name: "future_ship", state: "pending" },
   ]);
+});
+
+test("only explicit current commission blockers synthesize a recoverable halt", () => {
+  const refusal = "artifact stem does not match the reserved feature slug";
+  const landRefused = commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: null,
+    blocker: { kind: "land_refused", reason: refusal },
+    error: refusal,
+  });
+  assert.deepEqual(pipelineCommissionBlocker(landRefused), landRefused.blocker);
+  assert.equal(pipelineCommissionLine(landRefused), "Engineer land refused");
+  assert.deepEqual(pipelineRunForCommission(landRefused).halt, {
+    class: "unclassified",
+    reason: refusal,
+  });
+  assert.equal(pipelineRunForCommission(landRefused).group, "halted");
+  assert.equal(landRefused.lifecycle, "authoring", "presentation must not terminate the commission");
+
+  const failed = commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: "architecture_review",
+    steps: [{ name: "architecture_review", state: "failed" }],
+    blocker: {
+      kind: "step_failed",
+      step: "architecture_review",
+      reason: "provider credentials expired",
+    },
+    error: "provider credentials expired",
+  });
+  assert.equal(pipelineCommissionLine(failed), "Architecture Review failed");
+  assert.equal(pipelineRunForCommission(failed).group, "halted");
+
+  const retrying = commission({
+    ...failed,
+    currentStep: "architecture_review",
+    steps: [{ name: "architecture_review", state: "in_progress" }],
+    blocker: null,
+    error: "provider access restored",
+  });
+  assert.equal(pipelineCommissionBlocker(retrying), null);
+  assert.equal(pipelineCommissionLine(retrying), "Architecture Review");
+  assert.equal(pipelineRunForCommission(retrying).group, "building");
+  assert.equal(pipelineRunForCommission(retrying).halt, null);
+
+  const genericError = commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: null,
+    blocker: null,
+    error: refusal,
+  });
+  assert.equal(pipelineCommissionLine(genericError), "Engineer authoring");
+  assert.equal(pipelineRunForCommission(genericError).group, "eligible");
+  assert.equal(pipelineRunForCommission(genericError).halt, null);
+});
+
+test("a stale failed-step blocker cannot outlive the failed current step", () => {
+  const stale = commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: "plan",
+    steps: [
+      { name: "architecture_review", state: "failed" },
+      { name: "plan", state: "in_progress" },
+    ],
+    blocker: {
+      kind: "step_failed",
+      step: "architecture_review",
+      reason: "old failure",
+    },
+    error: "old failure",
+  });
+  assert.equal(pipelineCommissionBlocker(stale), null);
+  assert.equal(pipelineCommissionLine(stale), "Plan");
+  assert.equal(pipelineRunForCommission(stale).group, "building");
 });
 
 // ---- the rail ---------------------------------------------------------------------------

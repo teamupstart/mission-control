@@ -638,10 +638,12 @@ with a new cursor and never reopens the terminal predecessor.
 
 Commission projections are bounded whole objects on the existing connect snapshot and SSE
 stream. They carry only the 20 most recent attempts; `pipeline_commission_attempts` retains
-the complete durable audit without making reconnect payloads grow forever. Board cards show
-the full meter immediately, Console and rail chips name the lifecycle, and Runs shows attempts,
-the specification gate, and the exact linked implementation run. There is no browser polling
-path and no second browser channel.
+the complete durable audit without making reconnect payloads grow forever. Board cards and
+Console show the full meter immediately, rail chips name the lifecycle, and Runs shows attempts,
+the specification gate, and the exact linked implementation run. A recoverable Engineer step
+failure or land refusal appears as halted with the provider's exact reason while the commission
+remains nonterminal. The next accepted retry or successful transition clears that treatment
+through the same event fold. There is no browser polling path and no second browser channel.
 
 ### The route
 

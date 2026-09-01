@@ -141,6 +141,7 @@ test("a first-seen provider worker resolves its commissioned task through the ex
       repoRoot: projected.repoRoot,
       slug: projected.slug,
     },
+    blocker: null,
     error: null,
     createdAt: 1_000,
     updatedAt: 1_000,

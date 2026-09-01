@@ -63,6 +63,7 @@ import { Tooltip } from "../Tooltip.tsx";
 import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
 import { unreadAgentReplies } from "../../lib/fileComments.ts";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
+import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 
 type Tab = DetailTabId;
 
@@ -560,6 +561,15 @@ export function ConsoleDetail({
         {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
         <CostChip cost={session.cost} />
       </header>
+
+      {pipelineCommission && (
+        <div className="detail-pipeline-meter">
+          <PipelinePhaseMeter
+            run={pipelineCommissionRun}
+            commission={pipelineCommission}
+          />
+        </div>
+      )}
 
       {/* Drawn only when it has an occupant. Nothing structural hangs off this element:
           `.detail-head` and `.detail-tabs` each own their own bottom rule, so the band's

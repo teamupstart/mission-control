@@ -87,6 +87,7 @@ function commission(over: Partial<PipelineCommission> = {}): PipelineCommission 
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...over,
+    blocker: over.blocker ?? null,
   };
 }
 

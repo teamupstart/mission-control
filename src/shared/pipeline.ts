@@ -507,6 +507,11 @@ export interface PipelineCommissionHandoff {
   outcome: "pr_opened" | "local_commit";
 }
 
+/** Recoverable provider refusal retained with explicit reducer-owned provenance. */
+export type PipelineCommissionBlocker =
+  | { kind: "step_failed"; step: string; reason: string }
+  | { kind: "land_refused"; reason: string };
+
 /**
  * Durable, bounded whole-object projection sent in snapshots and incremental SSE frames.
  * Event bodies and artifact paths stay in the bounded SQLite ledger and never ride this wire.
@@ -528,6 +533,7 @@ export interface PipelineCommission {
   authoringWorktree: string | null;
   handoff: PipelineCommissionHandoff | null;
   linkedRun: PipelineRunLink | null;
+  blocker: PipelineCommissionBlocker | null;
   error: string | null;
   createdAt: number;
   updatedAt: number;

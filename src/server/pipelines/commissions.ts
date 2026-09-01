@@ -77,6 +77,7 @@ export function createPipelineCommission(input: {
     authoringWorktree: null,
     handoff: null,
     linkedRun: null,
+    blocker: null,
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -175,6 +176,7 @@ export function appendPipelineCommissionAttempt(input: {
     authoringWorktree: null,
     handoff: null,
     linkedRun: null,
+    blocker: null,
     error: null,
     updatedAt: now,
   };
@@ -212,6 +214,7 @@ export function cancelPipelineCommission(input: {
       entry.attempt === attempt.attempt ? attempt : entry,
     ),
     currentStep: null,
+    blocker: null,
     error: input.reason,
     updatedAt: now,
   };
@@ -336,6 +339,7 @@ function reduceKnownEvent(
 ): { commission: PipelineCommission; attempt: PipelineCommissionAttempt } {
   let next: PipelineCommission = {
     ...commission,
+    blocker: null,
     error: null,
     updatedAt: Date.parse(event.ts),
   };
@@ -379,6 +383,7 @@ function reduceKnownEvent(
         ...next,
         currentStep: event.step,
         steps: setStep(next.steps, event.step, "failed"),
+        blocker: { kind: "step_failed", step: event.step, reason: event.error },
         error: event.error,
       };
       break;
@@ -405,7 +410,11 @@ function reduceKnownEvent(
       break;
     }
     case "engineer_land_refused":
-      next = { ...next, error: event.reason };
+      next = {
+        ...next,
+        blocker: { kind: "land_refused", reason: event.reason },
+        error: event.reason,
+      };
       break;
     case "engineer_spec_handoff":
       next = {

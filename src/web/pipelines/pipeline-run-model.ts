@@ -610,12 +610,24 @@ export function pipelinePhaseMeter(run: PipelineRun): PipelinePhaseMeterView | n
   };
 }
 
+/** A current recoverable blocker, or null when provider recovery already superseded it. */
+export function pipelineCommissionBlocker(
+  commission: PipelineCommission,
+): PipelineCommission["blocker"] {
+  const blocker = commission.blocker;
+  if (!blocker) return null;
+  if (blocker.kind === "land_refused") return blocker;
+  const step = commission.steps.find((entry) => entry.name === blocker.step);
+  return commission.currentStep === blocker.step && step?.state === "failed" ? blocker : null;
+}
+
 /** One shared run-shaped view for Board, Console, and Runs commission progress. */
 export function pipelineRunForCommission(
   commission: PipelineCommission,
   linkedRun: PipelineRun | null = null,
 ): PipelineRun {
   if (linkedRun) return linkedRun;
+  const blocker = pipelineCommissionBlocker(commission);
   const engineer = new Map(commission.steps.map((step) => [step.name, step.state]));
   const canonical = new Set(PIPELINE_STEPS[commission.provider].map((step) => step.name));
   const steps = [...PIPELINE_STEPS[commission.provider].map((step) => ({
@@ -638,9 +650,11 @@ export function pipelineRunForCommission(
     halt:
       commission.lifecycle === "failed" && commission.error
         ? { class: "unclassified", reason: commission.error }
+        : blocker
+          ? { class: "unclassified", reason: blocker.reason }
         : null,
     group:
-      commission.lifecycle === "failed"
+      commission.lifecycle === "failed" || blocker
         ? "halted"
         : commission.lifecycle === "awaiting_spec_merge"
           ? "waiting"
@@ -665,6 +679,12 @@ export function pipelineCommissionLine(
   if (commission.lifecycle === "unsupported") return "Engineer unsupported";
   if (commission.lifecycle === "awaiting_spec_merge" || commission.handoff) {
     return "Awaiting spec merge";
+  }
+  const blocker = pipelineCommissionBlocker(commission);
+  if (blocker?.kind === "land_refused") return "Engineer land refused";
+  if (blocker?.kind === "step_failed") {
+    const label = pipelineStepInfo(commission.provider, blocker.step)?.label ?? blocker.step;
+    return `${label} failed`;
   }
   if ((commission.activeAttempt ?? 1) > 1 && (attempt?.providerRevision ?? 0) <= 1) {
     return `Retrying Engineer (attempt ${commission.activeAttempt})`;

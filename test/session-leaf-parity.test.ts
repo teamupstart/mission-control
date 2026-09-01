@@ -200,6 +200,7 @@ test("commission leaves follow the exact linked implementation run", () => {
       outcome: "local_commit",
     },
     linkedRun: link,
+    blocker: null,
     error: null,
     createdAt: 1,
     updatedAt: 1,

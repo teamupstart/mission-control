@@ -1593,6 +1593,7 @@ test("cancelling implementation preserves the successful Engineer commission", a
       repoRoot,
       slug: "post-handoff-cancel",
     },
+    blocker: null,
     error: null,
     createdAt: 500,
     updatedAt: 1_000,

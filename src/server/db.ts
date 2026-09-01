@@ -7664,6 +7664,16 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
       typeof row.handoff.branch === "string" &&
       nullableString(row.handoff.prUrl) &&
       (row.handoff.outcome === "pr_opened" || row.handoff.outcome === "local_commit"));
+  const blocker = row.blocker;
+  const blockerValid =
+    blocker === undefined ||
+    blocker === null ||
+    (typeof blocker === "object" &&
+      !Array.isArray(blocker) &&
+      ((blocker.kind === "land_refused" && typeof blocker.reason === "string") ||
+        (blocker.kind === "step_failed" &&
+          typeof blocker.step === "string" &&
+          typeof blocker.reason === "string")));
   return (
     typeof row.id === "string" &&
     typeof row.taskId === "string" &&
@@ -7683,6 +7693,7 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     nullableString(row.authoringWorktree) &&
     handoffValid &&
     linkedRunValid &&
+    blockerValid &&
     nullableString(row.error) &&
     typeof row.createdAt === "number" &&
     typeof row.updatedAt === "number"
@@ -7719,6 +7730,7 @@ function fallbackCommission(row: {
     linkedRun: row.run_slug
       ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
       : null,
+    blocker: null,
     error: reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -7828,6 +7840,7 @@ export function loadPipelineCommissions(): PipelineCommission[] {
     }
     out.push({
       ...parsed,
+      blocker: parsed.blocker ?? null,
       attempts: attemptRows.map((attempt) => {
         const projected = parsed.attempts.find((entry) => entry.attempt === attempt.attempt);
         return projected ? { ...projected, ...attempt } : attempt;

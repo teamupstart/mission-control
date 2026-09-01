@@ -23998,6 +23998,13 @@ span.line-run-prov {
   flex: 1;
 }
 
+.detail-pipeline-meter {
+  flex: none;
+  padding: 9px 22px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 38%, transparent);
+}
+
 .detail-sub {
   flex: none;
   display: flex;

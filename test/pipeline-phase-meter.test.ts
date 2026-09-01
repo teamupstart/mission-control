@@ -5,7 +5,12 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import type { PipelineRun, PipelineStep, SessionPipelineLink } from "../src/shared/pipeline.ts";
+import type {
+  PipelineCommission,
+  PipelineRun,
+  PipelineStep,
+  SessionPipelineLink,
+} from "../src/shared/pipeline.ts";
 import {
   pipelineEyebrow,
   pipelinePhaseMeter,
@@ -250,6 +255,53 @@ test("the halt reaches the card as a word, not only as the caption's colour", ()
         + "Only an operator can clear this one; the engine will not re-kick it.",
     ),
     "the halt marker has no plain-text description",
+  );
+});
+
+test("a recoverable commission refusal reuses the accessible halted presentation", () => {
+  const reason = "artifact stem does not match the reserved feature slug";
+  const commission: PipelineCommission = {
+    id: "commission-1",
+    taskId: "task-1",
+    provider: "ai-conductor",
+    repoRoot: REPO,
+    correlationId: "correlation-1",
+    lifecycle: "authoring",
+    attempts: [{
+      attempt: 1,
+      launchKey: "launch-1",
+      engineerRunId: "engineer-1",
+      previousEngineerRunId: null,
+      providerRevision: 5,
+      state: "authoring",
+      terminalReason: null,
+      updatedAt: 1,
+    }],
+    activeAttempt: 1,
+    steps: [{ name: "architecture_review", state: "done" }],
+    currentStep: null,
+    tier: "M",
+    track: "product",
+    project: "mission-control",
+    authoringWorktree: `${REPO}/.worktrees/spec`,
+    handoff: null,
+    linkedRun: null,
+    blocker: { kind: "land_refused", reason },
+    error: reason,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const html = renderToStaticMarkup(
+    createElement(PipelinePhaseMeter, { run: null, commission }),
+  );
+
+  assert.match(html, /class="tpm-now workflow-failed">Engineer land refused</);
+  assert.match(html, /class="tpm-halt workflow-failed" tabindex="0"[^>]*>halted</);
+  assert.ok(html.includes(reason));
+  assert.ok(
+    html.includes(
+      `Halted - Unclassified. ${reason}. The engine recorded no class, so nothing here guesses one.`,
+    ),
   );
 });
 

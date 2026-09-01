@@ -7,6 +7,7 @@ import { execPath } from "node:process";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   appendConductorEngineerEvent,
+  readConductorEngineerRuns,
   seedConductorRun,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
@@ -367,4 +368,132 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   } finally {
     worker.cleanup();
   }
+});
+
+test("a recoverable Engineer land refusal is visible everywhere until provider recovery", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+  const layout = await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
+  expect(layout.ok, await layout.text()).toBe(true);
+  await dashboard.reload();
+
+  const title = "Make Recoverable Engineer Refusals Visible";
+  const refusal =
+    "artifact stem hello-endpoint does not match reserved feature engineer-20260831-hello-endpoint";
+  const refusalDescription =
+    `Halted - Unclassified. ${refusal}. ` +
+    "The engine recorded no class, so nothing here guesses one.";
+  const evidenceDir = join("e2e", ".artifacts", "conductor-planning-continuity");
+  mkdirSync(evidenceDir, { recursive: true });
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByPlaceholder("What should this agent do?").fill(title);
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+
+  const card = dashboard.locator(".tile").filter({ hasText: title });
+  await expect(card).toBeVisible();
+  await expect
+    .poll(() => {
+      try {
+        return readConductorEngineerRuns(daemon.home).length;
+      } catch {
+        return 0;
+      }
+    }, {
+      message: "the fake provider should reserve the Engineer run before events are emitted",
+    })
+    .toBe(1);
+
+  appendConductorEngineerEvent(daemon.home, "engineer_run_started");
+  appendConductorEngineerEvent(daemon.home, "engineer_step_started", {
+    step: "architecture_review",
+    stepAttempt: 1,
+    provider: "openai",
+    model: "gpt-5",
+  });
+  await expect(card.getByText("Architecture Review", { exact: true })).toBeVisible();
+
+  appendConductorEngineerEvent(daemon.home, "engineer_land_refused", { reason: refusal });
+  await expect(card.getByText("Engineer land refused", { exact: true })).toBeVisible();
+  const boardHalt = card.getByText("halted", { exact: true });
+  await expect(boardHalt).toBeVisible();
+  await expect(boardHalt).toHaveAccessibleDescription(refusalDescription);
+  await boardHalt.focus();
+  await expect(dashboard.locator(".tooltip").getByText(refusal, { exact: true })).toBeVisible();
+  await dashboard.screenshot({ path: join(evidenceDir, "recoverable-land-refusal-board.png") });
+
+  await boardHalt.blur();
+  await dashboard.setViewportSize({ width: 820, height: 900 });
+  await expect(card).toBeVisible();
+  await boardHalt.focus();
+  await expect(dashboard.locator(".tooltip").getByText(refusal, { exact: true })).toBeVisible();
+  await dashboard.screenshot({
+    path: join(evidenceDir, "recoverable-land-refusal-board-narrow.png"),
+  });
+  await boardHalt.blur();
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+
+  await dashboard.getByRole("button", { name: "Runs", exact: true }).click();
+  await dashboard.getByRole("tab", { name: /Pipelines 1/ }).click();
+  const runsReader = dashboard.locator(".pipelines-reader");
+  await expect(
+    runsReader.locator(".tpm-now").getByText("Engineer land refused", { exact: true }),
+  ).toBeVisible();
+  const runsHalt = runsReader.getByText("halted", { exact: true });
+  await expect(runsHalt).toHaveAccessibleDescription(refusalDescription);
+  await runsHalt.focus();
+  await expect(dashboard.locator(".tooltip").getByText(refusal, { exact: true })).toBeVisible();
+  await dashboard.screenshot({ path: join(evidenceDir, "recoverable-land-refusal-runs.png") });
+
+  const consoleLayout = await request(daemon, "/api/ui/config", "PUT", { layout: "console" });
+  expect(consoleLayout.ok, await consoleLayout.text()).toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Fleet", exact: true }).click();
+  await dashboard.locator("button.rail-row").filter({ hasText: title }).click();
+  const consoleDetail = dashboard.locator(".cdetail");
+  const consoleMeter = consoleDetail.getByRole("group", { name: /pipeline phases$/ });
+  await expect(
+    consoleMeter.getByText("Engineer land refused", { exact: true }),
+  ).toBeVisible();
+  const consoleHalt = consoleMeter.getByText("halted", { exact: true });
+  await expect(consoleHalt).toHaveAccessibleDescription(refusalDescription);
+  await consoleHalt.focus();
+  await expect(dashboard.locator(".tooltip").getByText(refusal, { exact: true })).toBeVisible();
+  await dashboard.screenshot({
+    path: join(evidenceDir, "recoverable-land-refusal-console.png"),
+  });
+
+  appendConductorEngineerEvent(daemon.home, "engineer_step_retried", {
+    step: "architecture_review",
+    stepAttempt: 2,
+    reason: "provider access restored",
+  });
+  await expect(consoleMeter.getByText("Architecture Review", { exact: true })).toBeVisible();
+  await expect(consoleMeter.getByText("Engineer land refused", { exact: true })).toHaveCount(0);
+  await expect(consoleMeter.getByText("halted", { exact: true })).toHaveCount(0);
+  await expect(dashboard.locator(".tt-desc").filter({ hasText: refusal })).toHaveCount(0);
+
+  const boardLayout = await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
+  expect(boardLayout.ok, await boardLayout.text()).toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Fleet", exact: true }).click();
+  await expect(card.getByText("Architecture Review", { exact: true })).toBeVisible();
+  await expect(card.getByText("halted", { exact: true })).toHaveCount(0);
+  await dashboard.getByRole("button", { name: "Fleet", exact: true }).blur();
+  await dashboard.screenshot({ path: join(evidenceDir, "provider-recovered-board.png") });
+
+  await dashboard.getByRole("button", { name: "Runs", exact: true }).click();
+  await dashboard.getByRole("tab", { name: /Pipelines 1/ }).click();
+  await expect(
+    runsReader.locator(".tpm-now").getByText("Architecture Review", { exact: true }),
+  ).toBeVisible();
+  await expect(runsReader.getByText("halted", { exact: true })).toHaveCount(0);
+  await expect(dashboard.locator(".tt-desc").filter({ hasText: refusal })).toHaveCount(0);
 });

@@ -349,6 +349,99 @@ test("live and replay ordering converge through one monotonic reducer", () => {
   assert.equal(taskRow.pipeline_slug, "final-plan");
 });
 
+test("recoverable Engineer blockers retain exact provenance and clear on recovery", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_run_started", 2)).outcome, "stored");
+  assert.equal(
+    applyEngineerEvent(
+      event("engineer_step_started", 3, {
+        step: "architecture_review",
+        stepAttempt: 1,
+      }),
+    ).outcome,
+    "stored",
+  );
+
+  const stepReason = "provider credentials expired";
+  assert.equal(
+    applyEngineerEvent(
+      event("engineer_step_failed", 4, {
+        step: "architecture_review",
+        stepAttempt: 1,
+        error: stepReason,
+      }),
+    ).outcome,
+    "stored",
+  );
+  assert.deepEqual(getPipelineCommission("commission-task-1")?.blocker, {
+    kind: "step_failed",
+    step: "architecture_review",
+    reason: stepReason,
+  });
+
+  assert.equal(
+    applyEngineerEvent(
+      event("engineer_step_retried", 5, {
+        step: "architecture_review",
+        stepAttempt: 2,
+        reason: "provider access restored",
+      }),
+    ).outcome,
+    "stored",
+  );
+  let held = getPipelineCommission("commission-task-1")!;
+  assert.equal(held.blocker, null);
+  assert.equal(held.error, "provider access restored");
+  assert.equal(held.currentStep, "architecture_review");
+  assert.equal(
+    held.steps.find((step) => step.name === "architecture_review")?.state,
+    "in_progress",
+  );
+
+  const landReason = "artifact stem does not match the reserved feature slug";
+  assert.equal(
+    applyEngineerEvent(event("engineer_land_refused", 6, { reason: landReason })).outcome,
+    "stored",
+  );
+  held = getPipelineCommission("commission-task-1")!;
+  assert.equal(held.lifecycle, "authoring");
+  assert.deepEqual(held.blocker, { kind: "land_refused", reason: landReason });
+
+  assert.equal(
+    applyEngineerEvent(
+      event("engineer_step_completed", 7, {
+        step: "architecture_review",
+        stepAttempt: 2,
+        completion: "accepted_result",
+      }),
+    ).outcome,
+    "stored",
+  );
+  held = getPipelineCommission("commission-task-1")!;
+  assert.equal(held.blocker, null);
+  assert.equal(held.error, null);
+});
+
+test("legacy commission JSON without blocker normalizes to null", () => {
+  reset();
+  commission();
+  const row = db.prepare(`SELECT state_json FROM pipeline_commissions WHERE id = ?`).get(
+    "commission-task-1",
+  ) as { state_json: string };
+  const legacy = JSON.parse(row.state_json) as Record<string, unknown>;
+  delete legacy.blocker;
+  db.prepare(`UPDATE pipeline_commissions SET state_json = ? WHERE id = ?`).run(
+    JSON.stringify(legacy),
+    "commission-task-1",
+  );
+
+  const held = getPipelineCommission("commission-task-1")!;
+  assert.equal(held.lifecycle, "created");
+  assert.equal(held.blocker, null);
+});
+
 test("unknown kinds advance the exact cursor without changing the projection", () => {
   reset();
   commission();

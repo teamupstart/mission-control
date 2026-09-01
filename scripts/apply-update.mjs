@@ -240,9 +240,18 @@ export function acquireHelperLock(directory, ops) {
       // its owning pid is not running: deleting a live helper's staging file would make its
       // rename fail for no reason. Identity-pinned like every other delete here - the pid is in
       // the name, so this can only ever clear the leftovers of the process named in it.
+      //
+      // The recorded start time is read for the same reason claims carry one: passing null here
+      // reduced the check to a bare pid test, so a staging file whose pid macOS had since reused
+      // would have been retained forever. A staging file holds the entry body, so the identity
+      // is right there. Unreadable ones fall back to the pid alone and are retained whenever it
+      // answers, which is the conservative direction.
       const staging = parseStagingEntryName(name);
-      if (staging && !ops.isLive({ pid: staging.pid, startedAt: null })) {
-        ops.removeEntry(directory, name);
+      if (staging) {
+        const recorded = ops.readEntry(directory, name);
+        if (!ops.isLive({ pid: staging.pid, startedAt: recorded?.startedAt ?? null })) {
+          ops.removeEntry(directory, name);
+        }
       }
       continue;
     }
@@ -632,20 +641,30 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   } catch (error) {
     return await fail(error);
   } finally {
-    // Released before the temp directory goes, so the relaunched app can retry immediately.
-    // A helper killed between here and the claim leaves its entry behind, which the next helper
-    // clears once it can prove the writing process is gone - by pid AND start time, so a reused
-    // pid cannot keep a dead helper's claim alive.
-    if (heldEntry !== null) {
-      try {
-        releaseHelperLock(lockDirectory, heldEntry, ops.lock);
-      } catch (error) {
-        ops.log(`could not release the update lock: ${error?.message ?? error}`);
+    // Cleanup first, lock released last, so the claim covers everything this helper does rather
+    // than most of it. Nothing here needs the lock today - each helper's temp directory is its
+    // own, created by a fresh `mkdtemp` per launch, so a later helper could not collide with
+    // this removal even if it started early. The ordering is for the invariant: work added to
+    // this block later is covered by construction instead of silently running unprotected.
+    //
+    // The release sits in its own `finally` so a cleanup failure cannot leave the lock held,
+    // which would block every future update rather than just this one.
+    try {
+      // Every exit path except one: a failure that could not file its backup anywhere durable
+      // keeps it here instead. Its home is a temp directory, so the OS still reclaims it.
+      if (!keepTemporaryBackup) ops.remove(tempDirectory);
+    } finally {
+      // A helper killed before reaching here leaves its entry behind, which the next helper
+      // clears once it can prove the writing process is gone - by pid AND start time, so a
+      // reused pid cannot keep a dead helper's claim alive.
+      if (heldEntry !== null) {
+        try {
+          releaseHelperLock(lockDirectory, heldEntry, ops.lock);
+        } catch (error) {
+          ops.log(`could not release the update lock: ${error?.message ?? error}`);
+        }
       }
     }
-    // Every exit path except one: a failure that could not file its backup anywhere durable
-    // keeps it here instead. Its home is a temp directory, so the OS still reclaims it.
-    if (!keepTemporaryBackup) ops.remove(tempDirectory);
   }
 }
 

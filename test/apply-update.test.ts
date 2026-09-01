@@ -537,11 +537,19 @@ test("the lock is released on the way out so the next attempt can start at once"
   await runApplyUpdate(args(state), f.ops);
 
   assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
-  // Released before the relaunch, so the app that comes back can retry immediately.
+  // The claim is released last, in the `finally`, so it covers every action this helper takes -
+  // including the relaunch that `fail()` issues and the temp-directory cleanup after it. The
+  // relaunched app can therefore be told an update is still in progress for a moment, which is
+  // the intended trade: the next attempt refuses rather than overlapping with this one.
   assert.ok(
     f.actions.indexOf(`lock-release:${FIXTURE_ENTRY}`) >
       f.actions.indexOf("launch:/Applications/Mission Control.app"),
-    "the release happens in the finally, after the relaunch is issued",
+    "the release happens after the relaunch is issued",
+  );
+  assert.ok(
+    f.actions.indexOf(`lock-release:${FIXTURE_ENTRY}`) >
+      f.actions.indexOf(`remove:${f.tempDirectory}`),
+    "and after the temp directory is cleaned up, so the claim covers all of it",
   );
   assert.equal(f.locks.size, 0, "no claim entry is left behind");
 });
@@ -780,6 +788,52 @@ test("a staging file left by a killed helper is swept, and a live helper's is no
   // 7788 is still running, so its rename is still coming and its staging file is left alone.
   assert.ok(c.names().includes(liveStaging));
   assert.ok(!c.names().includes(deadStaging));
+});
+
+test("a staging file whose pid was reused is still swept", () => {
+  // The same reuse trap as claims, one level down. Sweeping on the pid alone meant a staging file
+  // whose number macOS had since handed to an unrelated long-lived process was retained forever.
+  // A staging file holds the entry body, so the recorded start time is right there to compare.
+  const stale = stagingEntryName(9182, 500);
+  const store = new Map<string, string>([
+    [
+      `/state/update-helper.lock.d/${stale}`,
+      JSON.stringify({ pid: 9182, startedAt: "Mon Sep  1 07:00:00 2026" }),
+    ],
+  ]);
+  const ops = claimStore(store, {
+    pid: 4242,
+    now: () => 1000,
+    // The pid answers a signal, but it is a different process now.
+    live: () => true,
+    startedAt: (pid) => (pid === 9182 ? "Mon Sep  1 09:30:00 2026" : `start-${pid}`),
+  });
+
+  const result = acquireHelperLock("/state/update-helper.lock.d", ops);
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    store.has(`/state/update-helper.lock.d/${stale}`),
+    false,
+    "a reused pid must not keep a staging file alive forever",
+  );
+});
+
+test("an unreadable staging file is retained while its pid still answers", () => {
+  // Conservative direction: without a readable identity there is no proof of reuse, so a staging
+  // file whose pid answers is left alone rather than deleted out from under a pending rename.
+  const halfWritten = stagingEntryName(7788, 600);
+  const store = new Map<string, string>([
+    [`/state/update-helper.lock.d/${halfWritten}`, "{ truncated"],
+  ]);
+  const ops = claimStore(store, {
+    pid: 4242,
+    now: () => 1000,
+    live: (pid) => pid === 7788,
+  });
+
+  assert.equal(acquireHelperLock("/state/update-helper.lock.d", ops).ok, true);
+  assert.ok(store.has(`/state/update-helper.lock.d/${halfWritten}`));
 });
 
 test("a staging name is never read as a claim, and vice versa", () => {

@@ -258,6 +258,11 @@ export function attemptSwapAppBundle({
     // Where the displaced bundle actually is, rather than where it was meant to go. The caller
     // reports this location to the operator, so guessing it wrong sends them to an empty path.
     retainedAt = filed ? failed : previous;
+    // An older retained bundle this account could not delete, which is why filing failed. It is
+    // still on disk and nothing else will find it: `sweepDisplacedBundles` scans `previous-*`
+    // siblings only and never this fixed path. Same reporting the branch below already did - it
+    // was missing here, so exactly one of the two ways to reach it stayed silent.
+    if (!filed && ops.exists(failed)) stranded.push(failed);
   } else if (hadPrevious) {
     try {
       ops.remove(previous);
@@ -347,15 +352,38 @@ export function directoryTreeIsWritable(root) {
  * is a far better outcome than refusing to update, and this keeps it from accumulating: the
  * generation after a privileged install is owned by this account and deletes cleanly.
  *
- * Never touches the live transaction's own sibling, which is the retention fallback the swap
- * relies on when it cannot file the displaced bundle. Every failure is ignored; reclaiming disk
- * is not worth failing an install over.
+ * Reclaims only bundles whose owning process is gone, and excluding this transaction's own pid
+ * is not enough to establish that. A `previous-<pid>` sibling is the ONLY copy of the installed
+ * app for the window between "move the app aside" and "move the staged app live" - so deleting a
+ * concurrent transaction's sibling in that window means that if its staged move then fails, its
+ * rollback has nothing to restore and the person is left with no app at all. Trading a working
+ * app for reclaimed disk is not a trade worth making.
+ *
+ * The helper lock does not make this safe on its own: `install-app.mjs` is a supported command
+ * anyone can run directly, so a swap can be in flight without any claim being held. The pid is
+ * in the filename, so liveness is checkable without coordination, and the conservative direction
+ * is to keep - a live pid leaves a bundle unreclaimed, which only costs disk.
+ *
+ * Never touches the live transaction's own sibling either, which is the retention fallback the
+ * swap relies on when it cannot file the displaced bundle. Every failure is ignored; reclaiming
+ * disk is not worth failing an install over.
  */
 export function sweepDisplacedBundles({
   appsDir,
   keepPid,
   readdir = readdirSync,
   remove = (path) => rmSync(path, { recursive: true, force: true }),
+  isRunning = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // EPERM means alive and owned by another account, which is still alive. Only ESRCH is
+      // evidence of absence, and anything unexpected reads as "still running" so an
+      // in-flight transaction is never swept on a guess.
+      return error?.code !== "ESRCH";
+    }
+  },
 }) {
   const prefix = `.${APP_BUNDLE_NAME}.previous-`;
   const keep = `${prefix}${keepPid}`;
@@ -368,6 +396,12 @@ export function sweepDisplacedBundles({
   }
   for (const entry of entries) {
     if (!entry.startsWith(prefix) || entry === keep) continue;
+    const pid = Number(entry.slice(prefix.length));
+    // Not a pid this can reason about, so not a bundle it will delete. An unparseable suffix
+    // could belong to anything, including a transaction still running.
+    if (!Number.isInteger(pid) || pid < 1) continue;
+    // Possibly mid-swap, and its sibling may be the only copy of the installed app.
+    if (isRunning(pid)) continue;
     try {
       remove(join(appsDir, entry));
     } catch {

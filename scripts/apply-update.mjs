@@ -133,22 +133,28 @@ export function processIsAlive(pid, kill = (target) => process.kill(target, 0)) 
 }
 
 /**
- * A process's start time, which is what makes a pid an identity rather than a coincidence.
+ * What makes a pid an identity rather than a coincidence: its start time AND its command.
  *
  * A pid on its own is reusable. A helper killed while holding a claim leaves its pid behind, and
  * macOS is free to hand that number to something unrelated - a shell, a browser tab's helper,
  * anything long-lived. `kill(pid, 0)` then answers "alive" forever and every future update reports
- * one already in progress, with no updater anywhere near the clone. Pairing the pid with the start
- * time of the process that actually wrote the entry makes reuse detectable: same number, different
- * process, different start time.
+ * one already in progress, with no updater anywhere near the clone.
  *
- * Null when it cannot be read, which every caller treats as "cannot prove this is gone".
+ * The start time alone is not enough, because `ps -o lstart=` has one-second granularity: a pid
+ * reused by a process that started within the same second as the original helper would compare
+ * equal. The command line closes that, and cheaply - it is the same single `ps` call - because
+ * the helper's argv names its own `mkdtemp` temp directory and the tag it is installing, which
+ * nothing else on the machine is going to reproduce in the same second under the same pid.
+ *
+ * Both fields together, compared as one opaque string. Null when it cannot be read, which every
+ * caller treats as "cannot prove this is gone".
  */
-export function processStartedAt(pid, run = defaultProcessQuery) {
+export function processIdentity(pid, run = defaultProcessQuery) {
   if (!Number.isInteger(pid) || pid < 1) return null;
   try {
     const out = run(pid);
-    const value = String(out ?? "").trim();
+    // Collapse whitespace: `ps` pads its columns, and the padding is not identity.
+    const value = String(out ?? "").replace(/\s+/g, " ").trim();
     return value === "" ? null : value;
   } catch {
     return null;
@@ -156,7 +162,7 @@ export function processStartedAt(pid, run = defaultProcessQuery) {
 }
 
 function defaultProcessQuery(pid) {
-  return execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+  return execFileSync("/bin/ps", ["-o", "lstart=,command=", "-p", String(pid)], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -171,13 +177,13 @@ function defaultProcessQuery(pid) {
  */
 export function claimIsLive(entry, deps = {}) {
   const alive = deps.alive ?? ((pid) => processIsAlive(pid));
-  const startedAt = deps.startedAt ?? ((pid) => processStartedAt(pid));
+  const identityOf = deps.identity ?? ((pid) => processIdentity(pid));
   if (!alive(entry.pid)) return false;
   // Nothing recorded to compare against, or nothing readable now: cannot prove reuse, so live.
-  if (!entry.startedAt) return true;
-  const now = startedAt(entry.pid);
+  if (!entry.identity) return true;
+  const now = identityOf(entry.pid);
   if (now === null) return true;
-  return now === entry.startedAt;
+  return now === entry.identity;
 }
 
 /**
@@ -216,13 +222,13 @@ export function acquireHelperLock(directory, ops) {
   const mine = {
     createdAtMs: ops.now(),
     pid: ops.pid,
-    startedAt: ops.startedAt(ops.pid),
+    identity: ops.identity(ops.pid),
   };
   const myName = claimEntryName(mine);
   // Written under a temporary name and renamed into place, so an entry is never visible in a
   // half-written state. A competitor reading a truncated entry could not tell a live helper
   // mid-write from an abandoned one, and would be entitled to delete it.
-  ops.writeEntry(directory, myName, JSON.stringify({ pid: mine.pid, startedAt: mine.startedAt }));
+  ops.writeEntry(directory, myName, JSON.stringify({ pid: mine.pid, identity: mine.identity }));
 
   let names;
   try {
@@ -249,7 +255,7 @@ export function acquireHelperLock(directory, ops) {
       const staging = parseStagingEntryName(name);
       if (staging) {
         const recorded = ops.readEntry(directory, name);
-        if (!ops.isLive({ pid: staging.pid, startedAt: recorded?.startedAt ?? null })) {
+        if (!ops.isLive({ pid: staging.pid, identity: recorded?.identity ?? null })) {
           ops.removeEntry(directory, name);
         }
       }
@@ -257,7 +263,7 @@ export function acquireHelperLock(directory, ops) {
     }
     if (name === myName) continue;
     const recorded = ops.readEntry(directory, name);
-    const entry = { ...parsed, startedAt: recorded?.startedAt ?? null };
+    const entry = { ...parsed, identity: recorded?.identity ?? null };
     if (!ops.isLive(entry)) {
       // Its writer is gone. Safe to remove: the filename pins whose entry this is, so this can
       // only ever clear the claim of the process named in it.
@@ -282,11 +288,11 @@ export function releaseHelperLock(directory, entryName, ops) {
 }
 
 export function realHelperLockOperations() {
-  const startedAt = (pid) => processStartedAt(pid);
+  const identity = (pid) => processIdentity(pid);
   return {
     pid: process.pid,
     now: () => Date.now(),
-    startedAt,
+    identity,
     isLive: (entry) => claimIsLive(entry),
     ensureDirectory: (directory) => mkdirSync(directory, { recursive: true }),
     list: (directory) => readdirSync(directory),

@@ -7,25 +7,30 @@ export interface ApplyUpdateArgs {
   logPath: string;
 }
 
-/** A helper's claim on the update lock, identified by pid and the writer's process start time. */
+/**
+ * A helper's claim on the update lock.
+ *
+ * `identity` is the writer's process start time AND command line, because the start time alone
+ * has one-second granularity and would compare equal for a pid reused within the same second.
+ */
 export interface ClaimEntry {
   createdAtMs: number;
   pid: number;
   name: string;
-  startedAt?: string | null;
+  identity?: string | null;
 }
 
 export interface HelperLockOps {
   /** This helper's own pid, so a test can act as a helper other than the test process. */
   pid: number;
   now(): number;
-  startedAt(pid: number): string | null;
-  isLive(entry: { pid: number; startedAt?: string | null }): boolean;
+  identity(pid: number): string | null;
+  isLive(entry: { pid: number; identity?: string | null }): boolean;
   ensureDirectory(directory: string): void;
   list(directory: string): string[];
   /** Must publish the entry atomically, so it is never visible half-written. */
   writeEntry(directory: string, name: string, body: string): void;
-  readEntry(directory: string, name: string): { pid?: number; startedAt?: string | null } | null;
+  readEntry(directory: string, name: string): { pid?: number; identity?: string | null } | null;
   removeEntry(directory: string, name: string): void;
 }
 
@@ -49,13 +54,13 @@ export const INSTALL_TIMEOUT_MS: number;
 export const RETAINED_FAILURE_DIR_NAME: string;
 export const HELPER_LOCK_DIR_NAME: string;
 export function processIsAlive(pid: number, kill?: (pid: number) => void): boolean;
-export function processStartedAt(
+export function processIdentity(
   pid: number,
   run?: (pid: number) => string,
 ): string | null;
 export function claimIsLive(
-  entry: { pid: number; startedAt?: string | null },
-  deps?: { alive?: (pid: number) => boolean; startedAt?: (pid: number) => string | null },
+  entry: { pid: number; identity?: string | null },
+  deps?: { alive?: (pid: number) => boolean; identity?: (pid: number) => string | null },
 ): boolean;
 export function claimPrecedes(
   a: { createdAtMs: number; pid: number },

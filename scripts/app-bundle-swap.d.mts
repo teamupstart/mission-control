@@ -78,6 +78,8 @@ export function sweepDisplacedBundles(input: {
   keepPid: number | string;
   readdir?: (path: string) => string[];
   remove?: (path: string) => void;
+  /** Must be conservative: anything short of proof of absence keeps the bundle. */
+  isRunning?: (pid: number) => boolean;
 }): string[];
 export function replaceAppBundle(input: {
   sourceBundle: string;

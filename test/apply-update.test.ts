@@ -12,7 +12,7 @@ import {
   HELPER_LOCK_DIR_NAME,
   parseClaimEntryName,
   parseStagingEntryName,
-  processStartedAt,
+  processIdentity,
   releaseHelperLock,
   stagingEntryName,
   INSTALL_TIMEOUT_MS,
@@ -48,23 +48,23 @@ function claimStore(
     pid: number;
     now: () => number;
     live: (pid: number) => boolean;
-    startedAt?: (pid: number) => string | null;
+    identity?: (pid: number) => string | null;
     onClaim?: (name: string) => void;
     onRelease?: (name: string) => void;
     onList?: () => void;
   },
 ) {
-  const startedAt = options.startedAt ?? ((pid: number) => `start-${pid}`);
+  const identity = options.identity ?? ((pid: number) => `start-${pid}`);
   const key = (directory: string, name: string) => `${directory}/${name}`;
   return {
     pid: options.pid,
     now: options.now,
-    startedAt,
+    identity,
     // Delegates to the real predicate rather than reimplementing it. A fixture that decides
     // liveness itself would let the production rule regress to a bare `kill(pid, 0)` with every
     // one of these tests still green - which is exactly what a mutation run caught here.
-    isLive: (entry: { pid: number; startedAt?: string | null }) =>
-      claimIsLive(entry, { alive: options.live, startedAt }),
+    isLive: (entry: { pid: number; identity?: string | null }) =>
+      claimIsLive(entry, { alive: options.live, identity }),
     ensureDirectory: () => {},
     list: (directory: string) => {
       options.onList?.();
@@ -81,7 +81,7 @@ function claimStore(
       const raw = store.get(key(directory, name));
       if (raw === undefined) return null;
       try {
-        return JSON.parse(raw) as { pid?: number; startedAt?: string | null };
+        return JSON.parse(raw) as { pid?: number; identity?: string | null };
       } catch {
         return null;
       }
@@ -481,7 +481,7 @@ test("a second helper refuses to run while the first still holds the lock", asyn
   // An earlier claim from a helper that is still running.
   f.locks.set(
     `${join(state, HELPER_LOCK_DIR_NAME)}/${claimEntryName({ createdAtMs: 500, pid: 9182 })}`,
-    JSON.stringify({ pid: 9182, startedAt: "start-9182" }),
+    JSON.stringify({ pid: 9182, identity: "start-9182" }),
   );
 
   const result = await runApplyUpdate(args(state), f.ops);
@@ -516,7 +516,7 @@ test("a lock left by a killed helper is reclaimed rather than waited out", async
   const abandoned = claimEntryName({ createdAtMs: 500, pid: 9182 });
   f.locks.set(
     `${join(state, HELPER_LOCK_DIR_NAME)}/${abandoned}`,
-    JSON.stringify({ pid: 9182, startedAt: "start-9182" }),
+    JSON.stringify({ pid: 9182, identity: "start-9182" }),
   );
 
   const result = await runApplyUpdate(args(state), f.ops);
@@ -611,9 +611,9 @@ test("a live process is distinguished from a departed one without guessing", () 
 });
 
 function claimDir(
-  entries: Record<string, { pid: number; startedAt?: string | null }>,
+  entries: Record<string, { pid: number; identity?: string | null }>,
   live: number[],
-  self: { pid: number; now: number; startedAt?: string | null },
+  self: { pid: number; now: number; identity?: string | null },
   hooks: { onList?: () => void } = {},
 ) {
   const DIR = "/state/update-helper.lock.d";
@@ -624,7 +624,7 @@ function claimDir(
     pid: self.pid,
     now: () => self.now,
     live: (pid) => live.includes(pid),
-    startedAt: (pid) => (pid === self.pid ? (self.startedAt ?? `start-${pid}`) : `start-${pid}`),
+    identity: (pid) => (pid === self.pid ? (self.identity ?? `start-${pid}`) : `start-${pid}`),
     onList: hooks.onList,
   });
   const names = () =>
@@ -636,7 +636,7 @@ test("a live claim by anyone else makes this helper withdraw", () => {
   // The whole decision is a read of the directory. No contender mutates a name another live
   // helper owns, which is the property the two single-shared-file designs could not provide.
   const other = claimEntryName({ createdAtMs: 500, pid: 9182 });
-  const c = claimDir({ [other]: { pid: 9182, startedAt: "start-9182" } }, [9182, 4242], {
+  const c = claimDir({ [other]: { pid: 9182, identity: "start-9182" } }, [9182, 4242], {
     pid: 4242,
     now: 1000,
   });
@@ -667,7 +667,7 @@ test("an earlier timestamp cannot displace a helper that is already holding the 
   // entry earlier - and a key the arriving process chooses cannot decide who was there first.
   // Hence the rule that needs no ordering at all: hold it only when alone.
   const running = claimEntryName({ createdAtMs: 9000, pid: 9182 });
-  const c = claimDir({ [running]: { pid: 9182, startedAt: "start-9182" } }, [9182, 4242], {
+  const c = claimDir({ [running]: { pid: 9182, identity: "start-9182" } }, [9182, 4242], {
     pid: 4242,
     // Earlier than the live holder's entry, which under the old rule would have won.
     now: 1000,
@@ -689,7 +689,7 @@ test("two contenders over one directory never both hold it, on any interleaving"
       pid,
       now: () => now,
       live: () => true,
-      startedAt: (p) => `start-${p}`,
+      identity: (p) => `start-${p}`,
     });
 
   for (const [aTime, bTime] of [[500, 900], [900, 500], [700, 700]] as const) {
@@ -709,7 +709,7 @@ test("two contenders over one directory never both hold it, on any interleaving"
       const store = new Map<string, string>();
       store.set(
         `${DIR}/${claimEntryName({ createdAtMs: bTime, pid: 200 })}`,
-        JSON.stringify({ pid: 200, startedAt: "start-200" }),
+        JSON.stringify({ pid: 200, identity: "start-200" }),
       );
       const a = acquireHelperLock(DIR, mk(store, 100, aTime));
       assert.equal(a.ok, false, `overlapping A must stand down with times ${aTime}/${bTime}`);
@@ -725,7 +725,7 @@ test("two contenders over one directory never both hold it, on any interleaving"
 test("a claim whose writer is gone is cleared, and the clearing helper proceeds", () => {
   const abandoned = claimEntryName({ createdAtMs: 500, pid: 9182 });
   // 9182 is not in `live`: the helper was killed mid-update.
-  const c = claimDir({ [abandoned]: { pid: 9182, startedAt: "start-9182" } }, [4242], {
+  const c = claimDir({ [abandoned]: { pid: 9182, identity: "start-9182" } }, [4242], {
     pid: 4242,
     now: 1000,
   });
@@ -746,7 +746,7 @@ test("a reused pid does not keep a dead helper's claim alive", () => {
   const store = new Map<string, string>([
     [
       `/state/update-helper.lock.d/${abandoned}`,
-      JSON.stringify({ pid: 9182, startedAt: "Mon Sep  1 07:00:00 2026" }),
+      JSON.stringify({ pid: 9182, identity: "Mon Sep  1 07:00:00 2026" }),
     ],
   ]);
   const ops = claimStore(store, {
@@ -754,7 +754,7 @@ test("a reused pid does not keep a dead helper's claim alive", () => {
     now: () => 1000,
     // The pid answers to a signal - but it is a different process now.
     live: () => true,
-    startedAt: (pid) =>
+    identity: (pid) =>
       pid === 9182 ? "Mon Sep  1 09:30:00 2026" : `start-${pid}`,
   });
 
@@ -798,7 +798,7 @@ test("a staging file whose pid was reused is still swept", () => {
   const store = new Map<string, string>([
     [
       `/state/update-helper.lock.d/${stale}`,
-      JSON.stringify({ pid: 9182, startedAt: "Mon Sep  1 07:00:00 2026" }),
+      JSON.stringify({ pid: 9182, identity: "Mon Sep  1 07:00:00 2026" }),
     ],
   ]);
   const ops = claimStore(store, {
@@ -806,7 +806,7 @@ test("a staging file whose pid was reused is still swept", () => {
     now: () => 1000,
     // The pid answers a signal, but it is a different process now.
     live: () => true,
-    startedAt: (pid) => (pid === 9182 ? "Mon Sep  1 09:30:00 2026" : `start-${pid}`),
+    identity: (pid) => (pid === 9182 ? "Mon Sep  1 09:30:00 2026" : `start-${pid}`),
   });
 
   const result = acquireHelperLock("/state/update-helper.lock.d", ops);
@@ -851,18 +851,18 @@ test("a staging name is never read as a claim, and vice versa", () => {
 test("liveness is conservative when a process cannot be identified", () => {
   // Anything short of proof that the writer is gone counts as live: a wrongly-kept claim defers
   // one update, a wrongly-removed one puts two helpers in one clone.
-  const live = { alive: () => true, startedAt: () => "same" };
-  assert.equal(claimIsLive({ pid: 10, startedAt: "same" }, live), true);
-  assert.equal(claimIsLive({ pid: 10, startedAt: "different" }, live), false);
+  const live = { alive: () => true, identity: () => "same" };
+  assert.equal(claimIsLive({ pid: 10, identity: "same" }, live), true);
+  assert.equal(claimIsLive({ pid: 10, identity: "different" }, live), false);
   // No recorded start time (an older entry), or none readable now: cannot prove reuse, so live.
-  assert.equal(claimIsLive({ pid: 10, startedAt: null }, live), true);
+  assert.equal(claimIsLive({ pid: 10, identity: null }, live), true);
   assert.equal(
-    claimIsLive({ pid: 10, startedAt: "same" }, { alive: () => true, startedAt: () => null }),
+    claimIsLive({ pid: 10, identity: "same" }, { alive: () => true, identity: () => null }),
     true,
   );
   // Only a dead pid is proof.
   assert.equal(
-    claimIsLive({ pid: 10, startedAt: "same" }, { alive: () => false, startedAt: () => "same" }),
+    claimIsLive({ pid: 10, identity: "same" }, { alive: () => false, identity: () => "same" }),
     false,
   );
 });
@@ -899,14 +899,55 @@ test("claim entry names round-trip and sort by time then pid", () => {
   assert.equal(claimPrecedes({ createdAtMs: 1, pid: 2 }, { createdAtMs: 1, pid: 1 }), false);
 });
 
-test("a process start time is read for a real pid and refused for an impossible one", () => {
-  assert.equal(processStartedAt(0), null);
-  assert.equal(processStartedAt(-1), null);
-  assert.equal(processStartedAt(4242, () => "  Mon Sep  1 07:00:00 2026  "), "Mon Sep  1 07:00:00 2026");
-  assert.equal(processStartedAt(4242, () => ""), null);
-  assert.equal(processStartedAt(4242, () => { throw new Error("no such process"); }), null);
+test("a pid reused within the same second is still distinguished", () => {
+  // `ps -o lstart=` has one-second granularity, so a start time alone compares EQUAL for a pid
+  // reused by a process that happened to start in the same second - and the stale claim then
+  // reads as the original live helper, refusing every update until that unrelated process exits.
+  // The command line closes it, at no extra cost: it comes from the same single `ps` call.
+  const sameSecond = "Tue Sep  1 18:03:54 2026";
+  const helper = `${sameSecond} node /var/folders/xx/T/mission-control-update-3oAUfF/apply-update.mjs --target-tag v1.3.4`;
+  const unrelated = `${sameSecond} /Applications/Some Other.app/Contents/MacOS/Some Other`;
+  assert.notEqual(helper, unrelated, "the command line is what tells them apart");
+
+  const entry = { pid: 9182, identity: helper };
+  assert.equal(
+    claimIsLive(entry, { alive: () => true, identity: () => helper }),
+    true,
+    "the original helper is still running",
+  );
+  assert.equal(
+    claimIsLive(entry, { alive: () => true, identity: () => unrelated }),
+    false,
+    "a same-second pid reuse is detected and the claim reclaimed",
+  );
+});
+
+test("a process identity carries both the start time and the command", () => {
+  // Asserted on the real query rather than a stub, because dropping `command=` from the `ps`
+  // arguments is the regression this guards and a stub would not notice.
+  const mine = processIdentity(process.pid);
+  assert.ok(mine, "this process has an identity");
+  assert.match(mine!, /\d{4}/, "carries the start year from lstart");
+  assert.ok(mine!.includes("node") || mine!.includes(process.execPath), `carries the command: ${mine}`);
+  // Padding is collapsed, so the same process compares equal across reads.
+  assert.equal(mine, processIdentity(process.pid));
+  assert.doesNotMatch(mine!, /  /, "column padding is not part of the identity");
+});
+
+test("a process identity is read for a real pid and refused for an impossible one", () => {
+  assert.equal(processIdentity(0), null);
+  assert.equal(processIdentity(-1), null);
+  // Whitespace is collapsed, not just trimmed: `ps` pads its columns, and how wide it padded is
+  // not part of who the process is. Two reads of the same process must compare equal.
+  assert.equal(
+    processIdentity(4242, () => "  Mon Sep  1 07:00:00 2026   node /tmp/x.mjs  "),
+    "Mon Sep 1 07:00:00 2026 node /tmp/x.mjs",
+  );
+  assert.equal(processIdentity(4242, () => ""), null);
+  assert.equal(processIdentity(4242, () => "   "), null);
+  assert.equal(processIdentity(4242, () => { throw new Error("no such process"); }), null);
   // This process exists, so the real query must produce something for it.
-  assert.ok((processStartedAt(process.pid) ?? "").length > 0);
+  assert.ok((processIdentity(process.pid) ?? "").length > 0);
 });
 
 test("the real lock ops claim, refuse, and reclaim against a real directory", async (t) => {
@@ -927,7 +968,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
   // The entry records this process's identity, start time included.
   const body = JSON.parse(await readFile(join(directory, first.entryName!), "utf8"));
   assert.equal(body.pid, process.pid);
-  assert.equal(body.startedAt, processStartedAt(process.pid));
+  assert.equal(body.identity, processIdentity(process.pid));
 
   // This process is alive, so a second claim is refused rather than granted, and the refusal
   // leaves only the original entry behind.
@@ -945,7 +986,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
   const abandoned = claimEntryName({ createdAtMs: 1, pid: departed });
   await writeFile(
     join(directory, abandoned),
-    JSON.stringify({ pid: departed, startedAt: "Mon Sep  1 07:00:00 2026" }),
+    JSON.stringify({ pid: departed, identity: "Mon Sep  1 07:00:00 2026" }),
   );
 
   const third = acquireHelperLock(directory, ops);

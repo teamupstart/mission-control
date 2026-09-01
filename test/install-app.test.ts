@@ -752,6 +752,32 @@ test("retention reports where the displaced bundle actually is, not where it was
   assert.ok(!fs.paths.has(failed));
 });
 
+test("an older retained bundle that blocks filing is reported", () => {
+  // The reason filing fails: an earlier retained bundle at the fixed slot that this account
+  // cannot delete. It stays on disk and nothing else finds it - `sweepDisplacedBundles` scans
+  // `previous-*` siblings only and never this fixed path - so if it is not reported here it is
+  // not reported at all.
+  const { previous, failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath, failed], { remove: (path) => path === failed });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null, "the install still succeeded");
+  assert.equal(result.failedBundle, previous, "this run's bundle is at the fallback");
+  assert.deepEqual(result.stranded, [failed], "and the blocker is named");
+  assert.ok(fs.paths.has(failed), "which is true: it is still there");
+});
+
 test("retention reports the fixed slot when filing there succeeds", () => {
   const { failed } = stagingPaths(SWAP);
   const fs = bundleFs([SWAP.appPath]);
@@ -785,6 +811,9 @@ test("bundles displaced by an earlier privileged install are reclaimed, except t
       ".Mission Control.app.failed-update",
       "Safari.app",
     ],
+    // Injected, not inherited: pids 111 and 222 might genuinely be running on the machine this
+    // suite happens to execute on, and the sweep asks the real OS by default.
+    isRunning: () => false,
     remove: (path) => {
       // A root-owned tree this account can rename but not empty, which is the whole reason
       // these get left behind in the first place.
@@ -797,6 +826,49 @@ test("bundles displaced by an earlier privileged install are reclaimed, except t
   assert.deepEqual(stranded, ["/Applications/.Mission Control.app.previous-222"]);
 });
 
+test("a concurrent transaction's rollback bundle is never swept", () => {
+  // The worst defect the sweep could have, and it is not hypothetical: `install-app.mjs` is a
+  // supported command anyone can run directly, so a swap can be in flight with no helper claim
+  // held. Between "move the installed app aside" and "move the staged app live", that
+  // `previous-<pid>` sibling is the ONLY copy of the app. Sweeping it because it is not THIS
+  // transaction's pid means that if the other transaction's staged move then fails, its rollback
+  // has nothing to restore - and the person is left with no installed app at all.
+  const removed: string[] = [];
+  const stranded = sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [
+      ".Mission Control.app.previous-111",
+      ".Mission Control.app.previous-999",
+      ".Mission Control.app.previous-4242",
+    ],
+    // 999 is another swap still running; 111 belongs to a process long gone.
+    isRunning: (pid) => pid === 999,
+    remove: (path) => removed.push(path),
+  });
+
+  assert.deepEqual(removed, ["/Applications/.Mission Control.app.previous-111"]);
+  assert.deepEqual(stranded, []);
+});
+
+test("a bundle whose pid cannot be read is left alone", () => {
+  // An unparseable suffix could belong to anything, including a transaction still running, so it
+  // is not something to delete on a guess.
+  const removed: string[] = [];
+  sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [
+      ".Mission Control.app.previous-",
+      ".Mission Control.app.previous-not-a-pid",
+      ".Mission Control.app.previous-0",
+    ],
+    isRunning: () => false,
+    remove: (path) => removed.push(path),
+  });
+  assert.deepEqual(removed, []);
+});
+
 test("the live transaction's own displaced bundle is never swept", () => {
   // It is the retention fallback the swap relies on when it cannot file the displaced bundle,
   // so sweeping it would destroy the only remaining copy of the previous app.
@@ -805,6 +877,7 @@ test("the live transaction's own displaced bundle is never swept", () => {
     appsDir: "/Applications",
     keepPid: 4242,
     readdir: () => [".Mission Control.app.previous-4242"],
+    isRunning: () => false,
     remove: (path) => removed.push(path),
   });
   assert.deepEqual(removed, []);

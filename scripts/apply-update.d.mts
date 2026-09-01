@@ -13,8 +13,14 @@ export interface HelperLockOps {
   write(fd: number, text: string): void;
   close(fd: number): void;
   read(path: string): string;
+  /**
+   * Must be atomic and must raise ENOENT when the source is gone. Stale-lock reclamation is
+   * built on exactly one contender being able to move a given lock file.
+   */
+  move(from: string, to: string): void;
   remove(path: string): void;
   alive(pid: number): boolean;
+  log?(line: string): void;
 }
 
 export interface ApplyOperations {

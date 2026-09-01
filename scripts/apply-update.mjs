@@ -91,12 +91,34 @@ export function processIsAlive(pid, kill = (target) => process.kill(target, 0)) 
 /**
  * Take the helper lock, or report who holds it.
  *
- * `O_EXCL` is the whole mechanism: the create either wins or finds an existing file, with no
- * window between checking and claiming. A leftover from a helper that was killed is detected by
- * reading its pid rather than by age, so there is no timeout to tune and no wait before a
- * genuinely stale lock can be reclaimed.
+ * Two atomic primitives carry this, and nothing else is trusted:
+ *
+ * - `O_EXCL` create for the claim, so there is no window between checking and claiming.
+ * - `rename` for reclaiming a stale lock, so exactly one contender can take a given lock file
+ *   and the rest get ENOENT instead of a turn.
+ *
+ * A leftover from a helper that was killed is identified by reading its pid, not by age, so
+ * there is no timeout to tune and no wait before a genuinely stale lock can be reclaimed. That
+ * read is an observation rather than a guarantee, so reclamation re-checks the pid of the file
+ * it actually took and puts it back if it took the wrong one - see below. Nothing here removes
+ * a lock it has not first taken ownership of, which is what keeps a reclaim from deleting a
+ * lock another helper created in the meantime.
+ *
+ * Single-shot by design: a contender that loses any of these steps refuses rather than looping.
+ * The app is relaunched on failure and offers Retry, so the retry is the person's, not a spin.
  */
 export function acquireHelperLock(path, ops) {
+  // Null for absent, unreadable, and unparseable alike. A lock whose pid cannot be established
+  // names nobody, and every caller below treats that as "no identified holder" rather than
+  // inventing one - including the window where a winning contender has moved the file aside but
+  // not yet created its own.
+  const readPid = (from) => {
+    try {
+      return Number(String(ops.read(from) ?? "").trim()) || null;
+    } catch {
+      return null;
+    }
+  };
   const claim = () => {
     const fd = ops.open(path);
     try {
@@ -111,16 +133,58 @@ export function acquireHelperLock(path, ops) {
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
-  const holder = Number(String(ops.read(path) ?? "").trim());
-  if (ops.alive(holder)) return { ok: false, heldBy: holder };
-  // Stale: the recorded helper is gone. Remove and retry once. A second EEXIST means another
-  // helper claimed it in between, and that one is live by construction.
-  ops.remove(path);
+  const holder = readPid(path);
+  if (holder !== null && ops.alive(holder)) return { ok: false, heldBy: holder };
+
+  // Stale, as far as this helper could see a moment ago - and "a moment ago" is the whole
+  // problem. Deleting the lock outright here trusted that observation, so two helpers that both
+  // saw the same dead pid would both delete and both claim: the second one's delete removes the
+  // FIRST one's freshly created lock, and the collision this lock exists to prevent happens
+  // anyway, now with the added confidence of a lock file.
+  //
+  // So reclamation takes the file rather than deleting it, and then proves that what it took is
+  // the file it decided about. The rename is the atomic step: exactly one contender can move a
+  // given lock, and the losers get ENOENT rather than a turn.
+  const stolen = `${path}.stale-${process.pid}`;
+  try {
+    ops.remove(stolen);
+  } catch {
+    // A leftover from an attempt of ours that was killed. The move below reports it if it matters.
+  }
+  try {
+    ops.move(path, stolen);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    // Another contender reclaimed it first. Whoever won is live by construction, so this attempt
+    // is over; the next one reads their pid and refuses on the fast path above.
+    return { ok: false, heldBy: readPid(path) };
+  }
+
+  const taken = readPid(stolen);
+  if (taken !== holder) {
+    // Not the stale lock after all: a helper claimed it between the read above and the move, and
+    // this just took a LIVE lock out from under them. Put it back and stand down - the file is
+    // theirs, and the brief absence is invisible to them because they only touch it again to
+    // release it.
+    try {
+      ops.move(stolen, path);
+    } catch (error) {
+      ops.log?.(`could not return a lock taken from helper ${taken}: ${error?.message ?? error}`);
+    }
+    return { ok: false, heldBy: taken };
+  }
+
+  try {
+    ops.remove(stolen);
+  } catch {
+    // The stale pid file is confirmed dead and already out of the way; failing to delete it
+    // leaks one small file rather than blocking the update.
+  }
   try {
     return claim();
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    return { ok: false, heldBy: Number(String(ops.read(path) ?? "").trim()) || null };
+    return { ok: false, heldBy: readPid(path) };
   }
 }
 
@@ -137,6 +201,9 @@ export function realHelperLockOperations() {
     write: (fd, text) => writeSync(fd, text),
     close: closeSync,
     read: (path) => readFileSync(path, "utf8"),
+    // Plain `renameSync`, because the atomicity is the point: exactly one contender can move a
+    // given lock file, and the rest get ENOENT instead of a turn.
+    move: renameSync,
     remove: (path) => rmSync(path, { force: true }),
     alive: (pid) => processIsAlive(pid),
   };

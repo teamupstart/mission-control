@@ -97,10 +97,28 @@ function operations(
         if (path !== undefined) locks.set(path, text);
       },
       close: () => {},
-      read: (path: string) => locks.get(path) ?? "",
+      read: (path: string) => {
+        if (!locks.has(path)) {
+          const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return locks.get(path) ?? "";
+      },
+      move: (from: string, to: string) => {
+        if (!locks.has(from)) {
+          const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
+          error.code = "ENOENT";
+          throw error;
+        }
+        locks.set(to, locks.get(from) ?? "");
+        locks.delete(from);
+      },
       remove: (path: string) => {
         locks.delete(path);
-        actions.push(`lock-release:${path}`);
+        // Only the lock itself is a release. Clearing a `.stale-` sidecar is reclamation
+        // bookkeeping and would otherwise read as a second release in these assertions.
+        if (!path.includes(".stale-")) actions.push(`lock-release:${path}`);
       },
       alive: (pid: number) => pid === options.lockHeldBy,
     },
@@ -533,6 +551,131 @@ test("a live process is distinguished from a departed one without guessing", () 
   assert.equal(processIsAlive(4242, () => { throw eperm; }), true);
   assert.equal(processIsAlive(0), false);
   assert.equal(processIsAlive(-1), false);
+});
+
+function lockOps(store: Map<string, string>, live: number[], hooks: {
+  onMove?: (from: string, to: string) => void;
+} = {}) {
+  const enoent = () => {
+    const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
+    error.code = "ENOENT";
+    return error;
+  };
+  return {
+    open: (path: string) => {
+      if (store.has(path)) {
+        const error: NodeJS.ErrnoException = new Error("EEXIST: file already exists");
+        error.code = "EEXIST";
+        throw error;
+      }
+      store.set(path, "");
+      return 1;
+    },
+    write: (_fd: number, text: string) => {
+      // The claim writes immediately after its exclusive create, so the newest key is its file.
+      const created = [...store.keys()].at(-1);
+      if (created !== undefined) store.set(created, text);
+    },
+    close: () => {},
+    read: (path: string) => {
+      if (!store.has(path)) throw enoent();
+      return store.get(path) ?? "";
+    },
+    move: (from: string, to: string) => {
+      hooks.onMove?.(from, to);
+      if (!store.has(from)) throw enoent();
+      store.set(to, store.get(from) ?? "");
+      store.delete(from);
+    },
+    remove: (path: string) => void store.delete(path),
+    alive: (pid: number) => live.includes(pid),
+  };
+}
+
+test("two helpers that both see the same dead lock cannot both claim it", () => {
+  // The exact interleaving GitHub Inspector reported. Reclamation used to DELETE the lock it had
+  // decided was stale, so helper B's delete removed helper A's freshly created lock and B claimed
+  // it too - reinstating the collision the lock exists to prevent, now with a lock file to make
+  // it look handled. Reclamation now takes the file with an atomic move and proves that what it
+  // took is the file it decided about.
+  const DEAD = 9182;
+  const HELPER_A = 5150;
+  const path = "/state/update-helper.lock";
+  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
+
+  // B has already read DEAD and judged it stale. A claims the lock inside B's window - modelled
+  // by landing A's claim exactly when B reaches its move, which is the decisive instant.
+  const ops = lockOps(store, [HELPER_A], {
+    onMove: (from) => {
+      if (from === path && store.get(from) === `${DEAD}\n`) store.set(path, `${HELPER_A}\n`);
+    },
+  });
+
+  const b = acquireHelperLock(path, ops);
+
+  assert.equal(b.ok, false, "helper B must not claim a lock helper A already holds");
+  assert.equal(b.heldBy, HELPER_A, "and it reports who actually holds it");
+  // A's lock is intact and still A's. B put back what it should not have taken.
+  assert.equal(store.get(path), `${HELPER_A}\n`);
+  assert.deepEqual(
+    [...store.keys()].filter((key) => key.includes(".stale-")),
+    [],
+    "no sidecar was left behind",
+  );
+});
+
+test("the loser of a stale-lock race is told no rather than given a turn", () => {
+  // Both contenders see the same dead pid and both reach reclamation. The move is the atomic
+  // step, so exactly one can take the file; the other gets ENOENT and stands down.
+  const DEAD = 9182;
+  const path = "/state/update-helper.lock";
+  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
+  const ops = lockOps(store, []);
+
+  const first = acquireHelperLock(path, ops);
+  assert.equal(first.ok, true, "the first contender reclaims the dead lock");
+  assert.equal(store.get(path), `${process.pid}\n`);
+
+  // A second contender now finds a live holder on the fast path and never reaches reclamation.
+  const live = lockOps(store, [process.pid]);
+  const second = acquireHelperLock(path, live);
+  assert.equal(second.ok, false);
+  assert.equal(second.heldBy, process.pid);
+});
+
+test("a contender that loses the move stands down instead of claiming", () => {
+  // The other side of the race: another helper took the stale lock first, so the file is simply
+  // gone when this contender reaches for it. A lost move is a refusal - never a fall-through to
+  // a claim, which is what would put two helpers back in the same clone.
+  const DEAD = 9182;
+  const path = "/state/update-helper.lock";
+  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
+  const ops = lockOps(store, [], {
+    // The winner has moved it aside and has not created its own lock yet, which is exactly the
+    // instant a real `rename` reports ENOENT.
+    onMove: (from) => void (from === path && store.delete(path)),
+  });
+  let opens = 0;
+  const counted = { ...ops, open: (p: string) => { opens += 1; return ops.open(p); } };
+
+  const result = acquireHelperLock(path, counted);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.heldBy, null, "there is no identified holder mid-handover");
+  // One open only: the opening EEXIST probe. Losing the move must not lead to a second attempt,
+  // which would create a lock beside the winner's and put two helpers in the same clone.
+  assert.equal(opens, 1);
+  assert.equal(store.has(path), false, "the winner's handover was left alone");
+});
+
+test("an empty or unreadable lock file is reclaimable rather than permanently blocking", () => {
+  // A helper killed between the exclusive create and the write leaves a lock naming nobody.
+  // Treating that as a live holder would block every future update.
+  const path = "/state/update-helper.lock";
+  const store = new Map<string, string>([[path, ""]]);
+  const result = acquireHelperLock(path, lockOps(store, []));
+  assert.equal(result.ok, true);
+  assert.equal(store.get(path), `${process.pid}\n`);
 });
 
 test("the real lock ops claim exclusively, reclaim a dead pid, and create the state dir", async (t) => {

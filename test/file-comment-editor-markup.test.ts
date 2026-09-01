@@ -402,6 +402,7 @@ test("an expanded thread shows what was said, offers a reply, and offers to clos
   const html = renderToStaticMarkup(
     createElement(FileCommentThreadCard, {
       thread: thread(),
+      displayQuote: "line two says something",
       busy: false,
       error: null,
       onReply: () => Promise.resolve(true),
@@ -442,6 +443,7 @@ test("a resolved thread offers to reopen, and an agent reply is attributed to th
   const html = renderToStaticMarkup(
     createElement(FileCommentThreadCard, {
       thread: settled,
+      displayQuote: "line two says something",
       busy: false,
       error: null,
       onReply: () => Promise.resolve(true),
@@ -460,6 +462,7 @@ test("a thread past the wire cap says it is showing a tail, rather than losing t
   const html = renderToStaticMarkup(
     createElement(FileCommentThreadCard, {
       thread: thread({ messageCount: 64 }),
+      displayQuote: "line two says something",
       busy: false,
       error: null,
       onReply: () => Promise.resolve(true),

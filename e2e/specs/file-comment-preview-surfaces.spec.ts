@@ -76,8 +76,30 @@ const HTML_SOURCE = [
   "<tr><th>Retries</th><th>Window</th></tr>",                   // 9
   "<tr><td>3</td><td>30s</td></tr>",                            // 10
   "</table>",                                                   // 11
-  "</body>",                                                    // 12
-  "</html>",                                                    // 13
+  "<hr />",                                                     // 12
+  '<div id="multi-block" style="padding: 10px">'               // 13
+    + "<style>.unseen { color: red; }</style>"
+    + "<p>First paragraph.</p>"
+    + "<script>window.unseen = true;</script>"
+    + "<span hidden>Hidden attribute.</span>"
+    + '<span style="display: none">Display none.</span>'
+    + '<span style="visibility: hidden">Visibility hidden.</span>'
+    + "<p>Second paragraph.</p></div>",
+  '<select id="frequency"><option>Daily</option>'               // 14
+    + "<option>Weekly</option></select>",
+  '<div id="only-hidden" style="padding: 10px">'               // 15
+    + "<script>window.hiddenOnly = true;</script>"
+    + "<span hidden>Hidden only.</span></div>",
+  '<p id="inline-block" style="padding: 10px">'                // 16
+    + '<span style="display: inline-block">first</span>second</p>',
+  '<div id="only-comment" style="padding: 10px">'              // 17
+    + "<!-- internal implementation note --></div>",
+  '<input id="search-query" type="text" value="Search term">', // 18
+  '<details id="closed-details" style="padding: 10px">'        // 19
+    + "<summary>Visible summary.</summary>"
+    + "<p>Collapsed implementation detail.</p></details>",
+  "</body>",                                                    // 20
+  "</html>",                                                    // 21
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -424,14 +446,22 @@ test.describe("commenting on a rendered document", () => {
     await frame.getByText("Read this carefully.").hover();
     await shoot(page.locator(".file-content"), page, "html-hover");
     await frame.getByText("Read this carefully.").click();
-    // The composer quotes the SOURCE, markup and all - `Read this carefully.` is what the
-    // browser shows, and appears nowhere in the file.
+    // The exact source element remains the durable anchor, but the reader sees the text the
+    // preview rendered rather than markup that only the re-anchor machinery needs.
     const composer = page.getByRole("region", { name: "New comment on line 4" });
-    await expect(composer.getByText("<p>Read <strong>this</strong> carefully.</p>")).toBeVisible();
+    await expect(composer.getByText("Read this carefully.", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("<strong>");
     await page.getByRole("textbox", { name: "Comment on line 4" }).fill(HTML_COMMENT);
     await shoot(page.locator(".file-content"), page, "html-composer");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 4" })).toBeHidden();
+
+    // The same projection is used when the durable thread is reopened, not only while the
+    // composer still owns the freshly resolved block.
+    await frame.getByText("Read this carefully.").click();
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ });
+    await expect(thread.getByText("Read this carefully.", { exact: true })).toBeVisible();
+    await expect(thread).not.toContainText("<strong>");
 
     // A row inside a table written with no `<tbody>`. The browser inserts one; a source tag
     // walk does not, and would land an element off.
@@ -449,6 +479,24 @@ test.describe("commenting on a rendered document", () => {
     // Source, not rendered text, so a later `reanchor()` can find it in the file again.
     expect(stored[0]!.quote).toBe("<p>Read <strong>this</strong> carefully.</p>");
     expect(stored[1]!.quote).toBe("<tr><td>3</td><td>30s</td></tr>");
+
+    // An element with no text cannot produce a useful prose quote, so its exact markup is
+    // the intentional exception rather than a blank comment header.
+    await frame.locator("hr").click();
+    const elementComposer = page.getByRole("region", { name: "New comment on line 12" });
+    await expect(elementComposer.getByText("<hr />", { exact: true })).toBeVisible();
+    await elementComposer.getByRole("button", { name: "Cancel" }).click();
+
+    // A container can itself be the clicked block when its padding is the pointer target.
+    // Its descendant blocks remain separate sentences in the human-readable projection,
+    // while non-rendered descendants contribute nothing to what the person reads.
+    await frame.locator("#multi-block").click({ position: { x: 3, y: 3 } });
+    const containerComposer = page.getByRole("region", { name: "New comment on line 13" });
+    await expect(
+      containerComposer.getByText("First paragraph. Second paragraph.", { exact: true }),
+    ).toBeVisible();
+    await expect(containerComposer).not.toContainText("First paragraph.Second paragraph.");
+    await containerComposer.getByRole("button", { name: "Cancel" }).click();
 
     await expectMarkerOnLine(page, 4);
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
@@ -486,6 +534,127 @@ test.describe("commenting on a rendered document", () => {
     const existingThread = page.getByRole("region", { name: /^Comment MC-\w+ on line / });
     await expect(existingThread.getByPlaceholder("Reply…")).toBeVisible();
     await shoot(page.locator(".file-content"), page, "moved-html-thread-open");
+  });
+
+  test("a single-select HTML quote names only the option the control renders", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#frequency").click();
+    const composer = page.getByRole("region", { name: "New comment on line 14" });
+    await expect(composer.getByText("Daily", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("Weekly");
+  });
+
+  test("an all-hidden HTML container never restores its filtered descendants", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#only-hidden").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 15" });
+    await expect(
+      composer.getByText('<div id="only-hidden" style="padding: 10px"></div>', { exact: true }),
+    ).toBeVisible();
+    await expect(composer).not.toContainText("window.hiddenOnly");
+    await expect(composer).not.toContainText("Hidden only.");
+  });
+
+  test("an inline-block descendant does not invent whitespace in the quote", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#inline-block").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 16" });
+    await expect(composer.getByText("firstsecond", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("first second");
+  });
+
+  test("an HTML comment-only container does not expose its source comment", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#only-comment").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 17" });
+    await expect(
+      composer.getByText('<div id="only-comment" style="padding: 10px"></div>', { exact: true }),
+    ).toBeVisible();
+    await expect(composer).not.toContainText("internal implementation note");
+  });
+
+  test("a text input HTML quote shows the value rendered by the control", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#search-query").click();
+    const composer = page.getByRole("region", { name: "New comment on line 18" });
+    await expect(composer.getByText("Search term", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("input");
+  });
+
+  test("a closed details HTML quote excludes its collapsed content", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#closed-details").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 19" });
+    await expect(composer.getByText("Visible summary.", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("Collapsed implementation detail.");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({
@@ -717,6 +886,9 @@ test.describe("commenting on a rendered document", () => {
 
     // `Fish & chips, twice.` on screen; `Fish &amp; chips, twice.` in the file.
     await frame.getByText("Fish & chips, twice.").click();
+    const entityComposer = page.getByRole("region", { name: "New comment on line 5" });
+    await expect(entityComposer.getByText("Fish & chips, twice.", { exact: true })).toBeVisible();
+    await expect(entityComposer).not.toContainText("&amp;");
     await writeComment(page, "line 5", "Entities are not the point of this sentence.");
 
     // The SECOND of two paragraphs that read identically. Position is what tells them apart -
@@ -812,7 +984,7 @@ test.describe("commenting on a rendered document", () => {
     // The dock carries the anchor itself, which is the job the source column was doing.
     await expect(
       page.getByRole("region", { name: "New comment on line 4" })
-        .getByText("<p>Read <strong>this</strong> carefully.</p>"),
+        .getByText("Read this carefully.", { exact: true }),
     ).toBeVisible();
     // The whole pane, so the photograph carries what the assertions above just proved: the
     // toolbar with Preview pressed, the rendered document at full width, no source column,

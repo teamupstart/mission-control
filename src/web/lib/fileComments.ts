@@ -18,6 +18,55 @@ import {
 } from "@shared/file-comments.ts";
 
 /**
+ * Descendants whose text reads as a separate region even though `textContent` contributes
+ * no boundary around them. Kept to HTML elements with stable default block/table/list layout;
+ * an inline `style` can add other boxes and is handled alongside this set below.
+ */
+const HTML_COMMENT_TEXT_BOUNDARY_TAGS = new Set([
+  "address", "article", "aside", "blockquote", "caption", "dd", "details", "dialog", "div",
+  "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+  "h4", "h5", "h6", "header", "hgroup", "hr", "legend", "li", "main", "menu", "nav",
+  "ol", "option", "p", "pre", "search", "section", "summary", "table", "tbody", "td",
+  "tfoot", "th", "thead", "tr", "ul",
+]);
+
+/** Elements whose descendant text is source, metadata, or fallback rather than rendered copy. */
+const HTML_COMMENT_NON_RENDERED_TAGS = new Set([
+  "base", "head", "link", "meta", "noscript", "script", "style", "template", "title",
+]);
+
+const HTML_COMMENT_BLOCK_DISPLAY_VALUES = new Set([
+  "block", "flex", "flow-root", "grid", "list-item", "table",
+]);
+
+const HTML_COMMENT_VISIBLE_INPUT_VALUE_TYPES = new Set([
+  "button", "date", "datetime-local", "email", "month", "number", "reset", "search",
+  "submit", "tel", "text", "time", "url", "week",
+]);
+
+function isHiddenHtmlCommentElement(element: Element): boolean {
+  const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
+    ? element.style
+    : null;
+  const display = inlineStyle?.display.trim().toLowerCase() ?? "";
+  const visibility = inlineStyle?.visibility.trim().toLowerCase() ?? "";
+  const contentVisibility = inlineStyle?.contentVisibility.trim().toLowerCase() ?? "";
+  return element.hasAttribute("hidden")
+    || (element instanceof HTMLInputElement && element.type === "hidden")
+    || display === "none"
+    || visibility === "hidden"
+    || visibility === "collapse"
+    || contentVisibility === "hidden";
+}
+
+function isBlockHtmlCommentDisplay(display: string): boolean {
+  if (HTML_COMMENT_BLOCK_DISPLAY_VALUES.has(display)) return true;
+  const tokens = display.split(/\s+/u);
+  if (tokens.includes("inline")) return false;
+  return tokens.includes("block") || tokens.includes("list-item");
+}
+
+/**
  * Whether the Editor can anchor a comment in this document.
  *
  * **Deliberately not `previewable`.** That predicate answers a different question - "is
@@ -84,6 +133,138 @@ export function anchorForLine(
     };
   }
   return null;
+}
+
+/**
+ * What a rendered-document comment quotes back to the reader.
+ *
+ * HTML comments carry two deliberately different representations. `quote` is the source
+ * line used by ordinary re-anchoring, and `htmlBlockQuote` is the exact element used by the
+ * structural resolver. Both must remain markup so a moved element can still be found. That
+ * machinery is not what a person needs to read in the comment panel, though, so the panel
+ * projects the exact block to decoded text without changing either durable value.
+ *
+ * A block with no visible text, such as `<hr>`, keeps its retained element markup. An empty
+ * display quote would make the target unknowable, while the element itself is the only useful
+ * human description in that case. Server rendering has no DOM parser and keeps the raw value;
+ * the live dashboard recomputes this display-only projection in the browser.
+ */
+export function fileCommentQuoteForDisplay(
+  surface: FileCommentThread["surface"],
+  quote: string,
+  htmlBlockQuote?: string | null,
+): string {
+  if (surface !== "html") return quote;
+  const block = htmlBlockQuote ?? quote;
+  if (typeof document === "undefined") return block;
+
+  const template = document.createElement("template");
+  template.innerHTML = block;
+  const sourceTag = template.content.firstElementChild?.tagName.toLowerCase() ?? null;
+  let projectionChanged = false;
+  // A closed disclosure renders only its first summary child. Its other child nodes remain in
+  // `textContent`, however, so remove them before projecting what the person could actually see.
+  for (const details of template.content.querySelectorAll<HTMLDetailsElement>(
+    "details:not([open])",
+  )) {
+    let summary: Element | undefined;
+    for (const child of details.children) {
+      if (child.tagName.toLowerCase() !== "summary") continue;
+      summary = child;
+      break;
+    }
+    for (let index = details.childNodes.length - 1; index >= 0; index -= 1) {
+      const child = details.childNodes[index];
+      if (child === summary) continue;
+      child?.remove();
+      projectionChanged = true;
+    }
+    if (!summary) {
+      details.replaceChildren(document.createTextNode("Details"));
+      projectionChanged = true;
+    }
+  }
+  // Text-like and button inputs render their value without contributing it to `textContent`.
+  // Controls such as checkboxes, radios, ranges, and colors do not visibly render that value,
+  // so they deliberately keep the element-markup fallback. Passwords name their visible shape
+  // without exposing the source value.
+  for (const input of template.content.querySelectorAll<HTMLInputElement>("input")) {
+    if (isHiddenHtmlCommentElement(input) || !input.value) continue;
+    if (input.type === "password") {
+      input.replaceWith(document.createTextNode("•".repeat([...input.value].length)));
+      projectionChanged = true;
+      continue;
+    }
+    if (HTML_COMMENT_VISIBLE_INPUT_VALUE_TYPES.has(input.type)) {
+      input.replaceWith(document.createTextNode(input.value));
+      projectionChanged = true;
+    }
+  }
+  // A collapsed single-select renders only its selected label. A list box (`multiple` or
+  // `size > 1`) visibly presents its option list, so the generic descendant projection is
+  // correct for that separate control shape.
+  for (const select of template.content.querySelectorAll<HTMLSelectElement>(
+    "select:not([multiple])",
+  )) {
+    if (select.size > 1 || isHiddenHtmlCommentElement(select)) continue;
+    const selectedLabel = select.selectedOptions.item(0)?.label.trim() ?? "";
+    if (selectedLabel) {
+      select.replaceWith(document.createTextNode(selectedLabel));
+      projectionChanged = true;
+    } else {
+      // Preserve the control as the textless fallback without leaking every unselected option.
+      select.replaceChildren();
+      projectionChanged = true;
+    }
+  }
+  // `textContent` includes source-only nodes and explicitly hidden descendants. Remove the
+  // states we can determine from inert markup before projecting the text a person saw.
+  for (const element of template.content.querySelectorAll("*")) {
+    if (
+      !HTML_COMMENT_NON_RENDERED_TAGS.has(element.tagName.toLowerCase())
+      && !isHiddenHtmlCommentElement(element)
+    ) {
+      continue;
+    }
+    element.remove();
+    projectionChanged = true;
+  }
+  // HTML comments are non-rendered nodes rather than elements, so the selector above cannot
+  // see them. Remove them separately before the markup fallback is captured or a comment-only
+  // container would expose its source note in the quote.
+  const commentWalker = document.createTreeWalker(template.content, NodeFilter.SHOW_COMMENT);
+  const comments: Comment[] = [];
+  while (commentWalker.nextNode()) comments.push(commentWalker.currentNode as Comment);
+  for (const comment of comments) {
+    comment.remove();
+    projectionChanged = true;
+  }
+  // Capture the fallback BEFORE adding synthetic text boundaries. It may differ from `block`
+  // because source-only or hidden descendants have been removed, and returning `block` here
+  // would restore exactly the content this display projection intentionally filtered out.
+  const retainedMarkup = projectionChanged ? template.innerHTML.trim() : block;
+  // HTML layout creates visible separation that `textContent` does not represent. Add the
+  // boundary on BOTH sides so `<p>First</p>tail` and `lead<p>Second</p>` remain separate.
+  // The fragment stays inside an inert template: connecting untrusted checkout HTML to the
+  // dashboard document could load an image or iframe merely to compute its styles.
+  for (const element of template.content.querySelectorAll("*")) {
+    const tag = element.tagName.toLowerCase();
+    if (tag === "br") {
+      element.replaceWith(document.createTextNode(" "));
+      continue;
+    }
+    const inlineDisplay = element instanceof HTMLElement
+      ? element.style.display.trim().toLowerCase()
+      : "";
+    const styledBlock = isBlockHtmlCommentDisplay(inlineDisplay);
+    if (!HTML_COMMENT_TEXT_BOUNDARY_TAGS.has(tag) && !styledBlock) continue;
+    element.before(document.createTextNode(" "));
+    element.after(document.createTextNode(" "));
+  }
+  const text = (template.content.textContent ?? "")
+    .replace(/[\s\u00a0]+/gu, " ")
+    .trim();
+  return text || retainedMarkup || (sourceTag ? `<${sourceTag}>` : block);
 }
 
 /** A thread's opening comment - the row a draft edits and the one a reader sees first. */

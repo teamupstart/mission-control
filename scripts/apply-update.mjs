@@ -7,16 +7,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,8 +63,37 @@ export const RETAINED_FAILURE_DIR_NAME = "failed-update";
  * only ever answer one. A second helper also writes its own `in-progress` over the first
  * helper's finished outcome, which is what turns a reported failure back into "the previous
  * update did not finish".
+ *
+ * Held as a directory of per-helper claim entries rather than as one shared lock file, and that
+ * shape is the point. Two attempts at a single shared name both foundered on the same thing: a
+ * contender deciding a lock was abandoned, then acting on that decision a moment later, by which
+ * time it might be acting on a DIFFERENT, live helper's lock. Deleting outright let two helpers
+ * both claim; taking-then-verifying moved the window rather than closing it, because taking a
+ * live lock aside is itself destructive and putting it back can overwrite a third helper.
+ *
+ * Here, no contender ever writes or removes a name another live helper owns. Each helper creates
+ * exactly one entry named after its own identity, and the holder is decided by reading the
+ * directory - a decision that needs no mutation at all. The only entries anyone deletes are their
+ * own, and those belonging to a process proven gone, which is safe precisely because the entry
+ * name pins whose it is. There is no shared mutable name left to race over, and no timeout to
+ * tune.
  */
-export const HELPER_LOCK_FILE_NAME = "update-helper.lock";
+export const HELPER_LOCK_DIR_NAME = "update-helper.lock.d";
+
+/** Ordering key for a claim entry: earliest wins, pid settles a same-millisecond tie. */
+export function claimPrecedes(a, b) {
+  return a.createdAtMs !== b.createdAtMs ? a.createdAtMs < b.createdAtMs : a.pid < b.pid;
+}
+
+export function claimEntryName({ createdAtMs, pid }) {
+  return `${String(createdAtMs).padStart(15, "0")}-${pid}.claim`;
+}
+
+export function parseClaimEntryName(name) {
+  const match = /^(\d{15})-(\d+)\.claim$/.exec(name);
+  if (!match) return null;
+  return { createdAtMs: Number(match[1]), pid: Number(match[2]), name };
+}
 
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 
@@ -89,123 +116,158 @@ export function processIsAlive(pid, kill = (target) => process.kill(target, 0)) 
 }
 
 /**
- * Take the helper lock, or report who holds it.
+ * A process's start time, which is what makes a pid an identity rather than a coincidence.
  *
- * Two atomic primitives carry this, and nothing else is trusted:
+ * A pid on its own is reusable. A helper killed while holding a claim leaves its pid behind, and
+ * macOS is free to hand that number to something unrelated - a shell, a browser tab's helper,
+ * anything long-lived. `kill(pid, 0)` then answers "alive" forever and every future update reports
+ * one already in progress, with no updater anywhere near the clone. Pairing the pid with the start
+ * time of the process that actually wrote the entry makes reuse detectable: same number, different
+ * process, different start time.
  *
- * - `O_EXCL` create for the claim, so there is no window between checking and claiming.
- * - `rename` for reclaiming a stale lock, so exactly one contender can take a given lock file
- *   and the rest get ENOENT instead of a turn.
- *
- * A leftover from a helper that was killed is identified by reading its pid, not by age, so
- * there is no timeout to tune and no wait before a genuinely stale lock can be reclaimed. That
- * read is an observation rather than a guarantee, so reclamation re-checks the pid of the file
- * it actually took and puts it back if it took the wrong one - see below. Nothing here removes
- * a lock it has not first taken ownership of, which is what keeps a reclaim from deleting a
- * lock another helper created in the meantime.
- *
- * Single-shot by design: a contender that loses any of these steps refuses rather than looping.
- * The app is relaunched on failure and offers Retry, so the retry is the person's, not a spin.
+ * Null when it cannot be read, which every caller treats as "cannot prove this is gone".
  */
-export function acquireHelperLock(path, ops) {
-  // Null for absent, unreadable, and unparseable alike. A lock whose pid cannot be established
-  // names nobody, and every caller below treats that as "no identified holder" rather than
-  // inventing one - including the window where a winning contender has moved the file aside but
-  // not yet created its own.
-  const readPid = (from) => {
-    try {
-      return Number(String(ops.read(from) ?? "").trim()) || null;
-    } catch {
-      return null;
-    }
-  };
-  const claim = () => {
-    const fd = ops.open(path);
-    try {
-      ops.write(fd, `${process.pid}\n`);
-    } finally {
-      ops.close(fd);
-    }
-    return { ok: true, heldBy: null };
-  };
+export function processStartedAt(pid, run = defaultProcessQuery) {
+  if (!Number.isInteger(pid) || pid < 1) return null;
   try {
-    return claim();
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
-  }
-  const holder = readPid(path);
-  if (holder !== null && ops.alive(holder)) return { ok: false, heldBy: holder };
-
-  // Stale, as far as this helper could see a moment ago - and "a moment ago" is the whole
-  // problem. Deleting the lock outright here trusted that observation, so two helpers that both
-  // saw the same dead pid would both delete and both claim: the second one's delete removes the
-  // FIRST one's freshly created lock, and the collision this lock exists to prevent happens
-  // anyway, now with the added confidence of a lock file.
-  //
-  // So reclamation takes the file rather than deleting it, and then proves that what it took is
-  // the file it decided about. The rename is the atomic step: exactly one contender can move a
-  // given lock, and the losers get ENOENT rather than a turn.
-  const stolen = `${path}.stale-${process.pid}`;
-  try {
-    ops.remove(stolen);
+    const out = run(pid);
+    const value = String(out ?? "").trim();
+    return value === "" ? null : value;
   } catch {
-    // A leftover from an attempt of ours that was killed. The move below reports it if it matters.
-  }
-  try {
-    ops.move(path, stolen);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    // Another contender reclaimed it first. Whoever won is live by construction, so this attempt
-    // is over; the next one reads their pid and refuses on the fast path above.
-    return { ok: false, heldBy: readPid(path) };
-  }
-
-  const taken = readPid(stolen);
-  if (taken !== holder) {
-    // Not the stale lock after all: a helper claimed it between the read above and the move, and
-    // this just took a LIVE lock out from under them. Put it back and stand down - the file is
-    // theirs, and the brief absence is invisible to them because they only touch it again to
-    // release it.
-    try {
-      ops.move(stolen, path);
-    } catch (error) {
-      ops.log?.(`could not return a lock taken from helper ${taken}: ${error?.message ?? error}`);
-    }
-    return { ok: false, heldBy: taken };
-  }
-
-  try {
-    ops.remove(stolen);
-  } catch {
-    // The stale pid file is confirmed dead and already out of the way; failing to delete it
-    // leaks one small file rather than blocking the update.
-  }
-  try {
-    return claim();
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
-    return { ok: false, heldBy: readPid(path) };
+    return null;
   }
 }
 
+function defaultProcessQuery(pid) {
+  return execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
+/**
+ * Whether the process that wrote a claim entry is still running.
+ *
+ * Conservative on purpose: anything short of proof that the writer is gone counts as live. A
+ * wrongly-kept claim defers one update, and the person clicks Retry; a wrongly-removed claim puts
+ * two helpers in one clone, which is the failure this whole mechanism exists to prevent.
+ */
+export function claimIsLive(entry, deps = {}) {
+  const alive = deps.alive ?? ((pid) => processIsAlive(pid));
+  const startedAt = deps.startedAt ?? ((pid) => processStartedAt(pid));
+  if (!alive(entry.pid)) return false;
+  // Nothing recorded to compare against, or nothing readable now: cannot prove reuse, so live.
+  if (!entry.startedAt) return true;
+  const now = startedAt(entry.pid);
+  if (now === null) return true;
+  return now === entry.startedAt;
+}
+
+/**
+ * Take the helper claim, or report who holds it.
+ *
+ * The whole decision is made by reading the directory. This helper writes exactly one entry -
+ * its own - and then looks at what is there; it never writes or removes a name that belongs to
+ * another live helper, so there is no shared mutable state for two contenders to race over. That
+ * is the property both earlier attempts lacked.
+ *
+ * The rule is that a helper holds the lock only when its own entry is the ONLY live one. It
+ * deliberately involves no ordering, because ordering was wrong: an earlier version ranked
+ * entries by (createdAtMs, pid) and let the earliest live claim win, which a contender arriving
+ * LATER could break simply by writing an entry stamped earlier - displacing a helper that was
+ * already running. A key the arriving process chooses cannot decide who was there first.
+ *
+ * "Alone or nothing" needs no clock, no tie-break, and no trust:
+ *
+ *   For this helper to hold the lock, its listing must show no other live entry. Its own entry
+ *   is always written before it lists. So if two helpers both held the lock, each must have
+ *   listed before the other's entry existed - yet each entry was written before that helper
+ *   listed, which cannot be true of both. At most one helper can hold it, on every interleaving.
+ *
+ * The price is that two helpers starting close enough together can both see each other and both
+ * stand down, leaving the update deferred rather than running. That is the right way to be
+ * wrong: the person clicks Retry and the next attempt is alone. Two helpers in one clone is the
+ * failure this exists to prevent, and it is not recoverable by retrying.
+ *
+ * Entries whose writing process is proven gone are removed. That is the one delete that touches
+ * somebody else's name, and it is safe because the name says whose it is and `claimIsLive`
+ * refuses to declare a process gone on anything less than proof.
+ */
+export function acquireHelperLock(directory, ops) {
+  ops.ensureDirectory(directory);
+
+  const mine = {
+    createdAtMs: ops.now(),
+    pid: ops.pid,
+    startedAt: ops.startedAt(ops.pid),
+  };
+  const myName = claimEntryName(mine);
+  // Written under a temporary name and renamed into place, so an entry is never visible in a
+  // half-written state. A competitor reading a truncated entry could not tell a live helper
+  // mid-write from an abandoned one, and would be entitled to delete it.
+  ops.writeEntry(directory, myName, JSON.stringify({ pid: mine.pid, startedAt: mine.startedAt }));
+
+  let names;
+  try {
+    names = ops.list(directory);
+  } catch (error) {
+    ops.removeEntry(directory, myName);
+    throw error;
+  }
+
+  let rival = null;
+  for (const name of names) {
+    const parsed = parseClaimEntryName(name);
+    if (!parsed || name === myName) continue;
+    const recorded = ops.readEntry(directory, name);
+    const entry = { ...parsed, startedAt: recorded?.startedAt ?? null };
+    if (!ops.isLive(entry)) {
+      // Its writer is gone. Safe to remove: the filename pins whose entry this is, so this can
+      // only ever clear the claim of the process named in it.
+      ops.removeEntry(directory, name);
+      continue;
+    }
+    // Only to decide which pid to name in the message, so the report is stable rather than
+    // dependent on directory order. Any live rival at all is already decisive.
+    if (rival === null || claimPrecedes(entry, rival)) rival = entry;
+  }
+
+  if (rival === null) return { ok: true, heldBy: null, entryName: myName };
+  // Withdraw rather than linger: an entry left behind by a helper that is not running would make
+  // it look like a live contender to everyone who reads the directory next.
+  ops.removeEntry(directory, myName);
+  return { ok: false, heldBy: rival.pid, entryName: null };
+}
+
+/** Withdraw this helper's own claim. The only entry it is ever this helper's job to remove. */
+export function releaseHelperLock(directory, entryName, ops) {
+  ops.removeEntry(directory, entryName);
+}
+
 export function realHelperLockOperations() {
+  const startedAt = (pid) => processStartedAt(pid);
   return {
-    // `wx` is the exclusive create the whole mechanism rests on. The mkdir is here because the
-    // claim now happens before the first outcome is written, and writing that outcome used to be
-    // what created the state directory - without this, a state directory that does not exist yet
-    // would fail the claim instead of the update proceeding.
-    open: (path) => {
-      mkdirSync(dirname(path), { recursive: true });
-      return openSync(path, "wx", 0o600);
+    pid: process.pid,
+    now: () => Date.now(),
+    startedAt,
+    isLive: (entry) => claimIsLive(entry),
+    ensureDirectory: (directory) => mkdirSync(directory, { recursive: true }),
+    list: (directory) => readdirSync(directory),
+    writeEntry: (directory, name, body) => {
+      // `.tmp-` is outside the `<digits>-<pid>.claim` pattern, so a temporary file is never read
+      // as a claim even if this helper dies between the write and the rename.
+      const staging = join(directory, `.tmp-${process.pid}-${Date.now()}`);
+      writeFileSync(staging, `${body}\n`, { encoding: "utf8", mode: 0o600 });
+      renameSync(staging, join(directory, name));
     },
-    write: (fd, text) => writeSync(fd, text),
-    close: closeSync,
-    read: (path) => readFileSync(path, "utf8"),
-    // Plain `renameSync`, because the atomicity is the point: exactly one contender can move a
-    // given lock file, and the rest get ENOENT instead of a turn.
-    move: renameSync,
-    remove: (path) => rmSync(path, { force: true }),
-    alive: (pid) => processIsAlive(pid),
+    readEntry: (directory, name) => {
+      try {
+        return JSON.parse(readFileSync(join(directory, name), "utf8"));
+      } catch {
+        return null;
+      }
+    },
+    removeEntry: (directory, name) => rmSync(join(directory, name), { force: true }),
   };
 }
 
@@ -405,12 +467,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   const backupApp = join(tempDirectory, "previous-app.bundle");
   const backupReceipt = join(tempDirectory, "previous-receipt.json");
   const retained = join(args.stateDirectory, RETAINED_FAILURE_DIR_NAME);
-  const lockPath = join(args.stateDirectory, HELPER_LOCK_FILE_NAME);
+  const lockDirectory = join(args.stateDirectory, HELPER_LOCK_DIR_NAME);
   const targetVersion = args.targetTag.replace(/^v/, "");
   let backupReady = false;
   let hadReceipt = false;
   let keepTemporaryBackup = false;
-  let lockHeld = false;
+  let heldEntry = null;
 
   const record = (outcome) => writeOutcome(outcomePath, outcome);
   /**
@@ -491,7 +553,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   // would corrupt, so it must not be written until this helper knows it is the only one.
   let claimed;
   try {
-    claimed = acquireHelperLock(lockPath, ops.lock);
+    claimed = acquireHelperLock(lockDirectory, ops.lock);
   } catch (error) {
     claimed = { ok: false, heldBy: null, problem: error?.message ?? String(error) };
   }
@@ -504,7 +566,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     ops.log(message);
     return { ok: false, message };
   }
-  lockHeld = true;
+  heldEntry = claimed.entryName;
 
   try {
     record({ result: "in-progress", targetVersion, recordedAt: ops.nowIso() });
@@ -543,11 +605,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     return await fail(error);
   } finally {
     // Released before the temp directory goes, so the relaunched app can retry immediately.
-    // A helper killed between here and the claim leaves the file behind, which the next
-    // helper reclaims by pid rather than by waiting a timeout out.
-    if (lockHeld) {
+    // A helper killed between here and the claim leaves its entry behind, which the next helper
+    // clears once it can prove the writing process is gone - by pid AND start time, so a reused
+    // pid cannot keep a dead helper's claim alive.
+    if (heldEntry !== null) {
       try {
-        ops.lock.remove(lockPath);
+        releaseHelperLock(lockDirectory, heldEntry, ops.lock);
       } catch (error) {
         ops.log(`could not release the update lock: ${error?.message ?? error}`);
       }

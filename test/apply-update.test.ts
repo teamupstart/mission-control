@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   acquireHelperLock,
-  HELPER_LOCK_FILE_NAME,
+  claimEntryName,
+  claimIsLive,
+  claimPrecedes,
+  HELPER_LOCK_DIR_NAME,
+  parseClaimEntryName,
+  processStartedAt,
+  releaseHelperLock,
   INSTALL_TIMEOUT_MS,
   installFailureSummary,
   parseArgs,
@@ -29,6 +35,63 @@ function args(stateDirectory: string) {
     logPath: join(stateDirectory, "update.log"),
   };
 }
+
+/**
+ * An in-memory claims directory. Keyed by `<directory>/<entry name>`, so the ordering the real
+ * implementation reads out of filenames is exactly what these tests exercise.
+ */
+function claimStore(
+  store: Map<string, string>,
+  options: {
+    pid: number;
+    now: () => number;
+    live: (pid: number) => boolean;
+    startedAt?: (pid: number) => string | null;
+    onClaim?: (name: string) => void;
+    onRelease?: (name: string) => void;
+    onList?: () => void;
+  },
+) {
+  const startedAt = options.startedAt ?? ((pid: number) => `start-${pid}`);
+  const key = (directory: string, name: string) => `${directory}/${name}`;
+  return {
+    pid: options.pid,
+    now: options.now,
+    startedAt,
+    // Delegates to the real predicate rather than reimplementing it. A fixture that decides
+    // liveness itself would let the production rule regress to a bare `kill(pid, 0)` with every
+    // one of these tests still green - which is exactly what a mutation run caught here.
+    isLive: (entry: { pid: number; startedAt?: string | null }) =>
+      claimIsLive(entry, { alive: options.live, startedAt }),
+    ensureDirectory: () => {},
+    list: (directory: string) => {
+      options.onList?.();
+      const prefix = `${directory}/`;
+      return [...store.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length));
+    },
+    writeEntry: (directory: string, name: string, body: string) => {
+      store.set(key(directory, name), body);
+      options.onClaim?.(name);
+    },
+    readEntry: (directory: string, name: string) => {
+      const raw = store.get(key(directory, name));
+      if (raw === undefined) return null;
+      try {
+        return JSON.parse(raw) as { pid?: number; startedAt?: string | null };
+      } catch {
+        return null;
+      }
+    },
+    removeEntry: (directory: string, name: string) => {
+      if (store.delete(key(directory, name))) options.onRelease?.(name);
+    },
+  };
+}
+
+/** The entry the fixture helper writes, given its fixed pid and clock. */
+const FIXTURE_ENTRY = claimEntryName({ createdAtMs: 1_000_000, pid: 4242 });
 
 function operations(
   options: {
@@ -81,47 +144,13 @@ function operations(
       path.includes("previous-app.bundle")
         ? (options.backupVersion ?? null)
         : (options.installedVersion ?? null),
-    lock: {
-      open: (path: string) => {
-        if (locks.has(path)) {
-          const error: NodeJS.ErrnoException = new Error("EEXIST: file already exists");
-          error.code = "EEXIST";
-          throw error;
-        }
-        locks.set(path, "");
-        actions.push(`lock-claim:${path}`);
-        return 7;
-      },
-      write: (_fd: number, text: string) => {
-        const [path] = [...locks.keys()].slice(-1);
-        if (path !== undefined) locks.set(path, text);
-      },
-      close: () => {},
-      read: (path: string) => {
-        if (!locks.has(path)) {
-          const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
-          error.code = "ENOENT";
-          throw error;
-        }
-        return locks.get(path) ?? "";
-      },
-      move: (from: string, to: string) => {
-        if (!locks.has(from)) {
-          const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
-          error.code = "ENOENT";
-          throw error;
-        }
-        locks.set(to, locks.get(from) ?? "");
-        locks.delete(from);
-      },
-      remove: (path: string) => {
-        locks.delete(path);
-        // Only the lock itself is a release. Clearing a `.stale-` sidecar is reclamation
-        // bookkeeping and would otherwise read as a second release in these assertions.
-        if (!path.includes(".stale-")) actions.push(`lock-release:${path}`);
-      },
-      alive: (pid: number) => pid === options.lockHeldBy,
-    },
+    lock: claimStore(locks, {
+      pid: 4242,
+      now: () => 1_000_000,
+      live: (pid) => pid === options.lockHeldBy,
+      onClaim: (name) => actions.push(`lock-claim:${name}`),
+      onRelease: (name) => actions.push(`lock-release:${name}`),
+    }),
     launch: (path: string) => {
       actions.push(`launch:${path}`);
       if (options.launchFails && firstLaunch) {
@@ -156,7 +185,7 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
   const waitIndex = f.actions.indexOf("wait:42");
   assert.ok(waitIndex >= 0);
   const beforeWait = [
-    `lock-claim:${join(state, HELPER_LOCK_FILE_NAME)}`,
+    `lock-claim:${FIXTURE_ENTRY}`,
     `remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`,
   ];
   assert.ok(
@@ -447,7 +476,11 @@ test("a second helper refuses to run while the first still holds the lock", asyn
   const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations({ lockHeldBy: 9182 });
-  f.locks.set(join(state, HELPER_LOCK_FILE_NAME), "9182\n");
+  // An earlier claim from a helper that is still running.
+  f.locks.set(
+    `${join(state, HELPER_LOCK_DIR_NAME)}/${claimEntryName({ createdAtMs: 500, pid: 9182 })}`,
+    JSON.stringify({ pid: 9182, startedAt: "start-9182" }),
+  );
 
   const result = await runApplyUpdate(args(state), f.ops);
 
@@ -460,8 +493,17 @@ test("a second helper refuses to run while the first still holds the lock", asyn
   assert.ok(!f.actions.some((action) => action.startsWith("install:")));
   assert.ok(!f.actions.some((action) => action.startsWith("wait:")));
   assert.ok(!f.actions.some((action) => action.startsWith("launch:")));
-  assert.ok(!f.actions.some((action) => action.startsWith("lock-release:")));
   await assert.rejects(() => readFile(join(state, "update-outcome.json"), "utf8"));
+
+  // The running helper's claim is untouched. The only entry this attempt removed is the one it
+  // wrote itself, withdrawn on the way out so it does not look like a contender to the next
+  // helper that reads the directory.
+  const holder = claimEntryName({ createdAtMs: 500, pid: 9182 });
+  assert.ok(f.locks.has(`${join(state, HELPER_LOCK_DIR_NAME)}/${holder}`), "holder's claim kept");
+  assert.deepEqual(
+    f.actions.filter((action) => action.startsWith("lock-release:")),
+    [`lock-release:${FIXTURE_ENTRY}`],
+  );
 });
 
 test("a lock left by a killed helper is reclaimed rather than waited out", async (t) => {
@@ -469,14 +511,20 @@ test("a lock left by a killed helper is reclaimed rather than waited out", async
   t.after(() => rm(state, { recursive: true, force: true }));
   // No `lockHeldBy`, so the recorded pid is not alive: the helper was killed mid-update.
   const f = operations();
-  f.locks.set(join(state, HELPER_LOCK_FILE_NAME), "9182\n");
+  const abandoned = claimEntryName({ createdAtMs: 500, pid: 9182 });
+  f.locks.set(
+    `${join(state, HELPER_LOCK_DIR_NAME)}/${abandoned}`,
+    JSON.stringify({ pid: 9182, startedAt: "start-9182" }),
+  );
 
   const result = await runApplyUpdate(args(state), f.ops);
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.equal(result.ok, true);
   assert.equal(outcome.result, "success");
-  assert.ok(f.actions.includes(`lock-claim:${join(state, HELPER_LOCK_FILE_NAME)}`));
+  assert.ok(f.actions.includes(`lock-claim:${FIXTURE_ENTRY}`));
+  // The abandoned entry is cleared, which is safe because its filename says whose it was.
+  assert.equal(f.locks.has(`${join(state, HELPER_LOCK_DIR_NAME)}/${abandoned}`), false);
 });
 
 test("the lock is released on the way out so the next attempt can start at once", async (t) => {
@@ -486,15 +534,14 @@ test("the lock is released on the way out so the next attempt can start at once"
 
   await runApplyUpdate(args(state), f.ops);
 
-  const lockPath = join(state, HELPER_LOCK_FILE_NAME);
-  assert.ok(f.actions.includes(`lock-release:${lockPath}`));
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
   // Released before the relaunch, so the app that comes back can retry immediately.
   assert.ok(
-    f.actions.indexOf(`lock-release:${lockPath}`) >
+    f.actions.indexOf(`lock-release:${FIXTURE_ENTRY}`) >
       f.actions.indexOf("launch:/Applications/Mission Control.app"),
     "the release happens in the finally, after the relaunch is issued",
   );
-  assert.equal(f.locks.size, 0);
+  assert.equal(f.locks.size, 0, "no claim entry is left behind");
 });
 
 test("an install that never reached the app is not rolled back", async (t) => {
@@ -553,157 +600,268 @@ test("a live process is distinguished from a departed one without guessing", () 
   assert.equal(processIsAlive(-1), false);
 });
 
-function lockOps(store: Map<string, string>, live: number[], hooks: {
-  onMove?: (from: string, to: string) => void;
-} = {}) {
-  const enoent = () => {
-    const error: NodeJS.ErrnoException = new Error("ENOENT: no such file");
-    error.code = "ENOENT";
-    return error;
-  };
-  return {
-    open: (path: string) => {
-      if (store.has(path)) {
-        const error: NodeJS.ErrnoException = new Error("EEXIST: file already exists");
-        error.code = "EEXIST";
-        throw error;
-      }
-      store.set(path, "");
-      return 1;
-    },
-    write: (_fd: number, text: string) => {
-      // The claim writes immediately after its exclusive create, so the newest key is its file.
-      const created = [...store.keys()].at(-1);
-      if (created !== undefined) store.set(created, text);
-    },
-    close: () => {},
-    read: (path: string) => {
-      if (!store.has(path)) throw enoent();
-      return store.get(path) ?? "";
-    },
-    move: (from: string, to: string) => {
-      hooks.onMove?.(from, to);
-      if (!store.has(from)) throw enoent();
-      store.set(to, store.get(from) ?? "");
-      store.delete(from);
-    },
-    remove: (path: string) => void store.delete(path),
-    alive: (pid: number) => live.includes(pid),
-  };
+function claimDir(
+  entries: Record<string, { pid: number; startedAt?: string | null }>,
+  live: number[],
+  self: { pid: number; now: number; startedAt?: string | null },
+  hooks: { onList?: () => void } = {},
+) {
+  const DIR = "/state/update-helper.lock.d";
+  const store = new Map<string, string>(
+    Object.entries(entries).map(([name, body]) => [`${DIR}/${name}`, JSON.stringify(body)]),
+  );
+  const ops = claimStore(store, {
+    pid: self.pid,
+    now: () => self.now,
+    live: (pid) => live.includes(pid),
+    startedAt: (pid) => (pid === self.pid ? (self.startedAt ?? `start-${pid}`) : `start-${pid}`),
+    onList: hooks.onList,
+  });
+  const names = () =>
+    [...store.keys()].map((k) => k.slice(DIR.length + 1)).sort();
+  return { DIR, store, ops, names };
 }
 
-test("two helpers that both see the same dead lock cannot both claim it", () => {
-  // The exact interleaving GitHub Inspector reported. Reclamation used to DELETE the lock it had
-  // decided was stale, so helper B's delete removed helper A's freshly created lock and B claimed
-  // it too - reinstating the collision the lock exists to prevent, now with a lock file to make
-  // it look handled. Reclamation now takes the file with an atomic move and proves that what it
-  // took is the file it decided about.
-  const DEAD = 9182;
-  const HELPER_A = 5150;
-  const path = "/state/update-helper.lock";
-  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
-
-  // B has already read DEAD and judged it stale. A claims the lock inside B's window - modelled
-  // by landing A's claim exactly when B reaches its move, which is the decisive instant.
-  const ops = lockOps(store, [HELPER_A], {
-    onMove: (from) => {
-      if (from === path && store.get(from) === `${DEAD}\n`) store.set(path, `${HELPER_A}\n`);
-    },
+test("a live claim by anyone else makes this helper withdraw", () => {
+  // The whole decision is a read of the directory. No contender mutates a name another live
+  // helper owns, which is the property the two single-shared-file designs could not provide.
+  const other = claimEntryName({ createdAtMs: 500, pid: 9182 });
+  const c = claimDir({ [other]: { pid: 9182, startedAt: "start-9182" } }, [9182, 4242], {
+    pid: 4242,
+    now: 1000,
   });
 
-  const b = acquireHelperLock(path, ops);
+  const result = acquireHelperLock(c.DIR, c.ops);
 
-  assert.equal(b.ok, false, "helper B must not claim a lock helper A already holds");
-  assert.equal(b.heldBy, HELPER_A, "and it reports who actually holds it");
-  // A's lock is intact and still A's. B put back what it should not have taken.
-  assert.equal(store.get(path), `${HELPER_A}\n`);
-  assert.deepEqual(
-    [...store.keys()].filter((key) => key.includes(".stale-")),
-    [],
-    "no sidecar was left behind",
+  assert.equal(result.ok, false);
+  assert.equal(result.heldBy, 9182);
+  assert.equal(result.entryName, null);
+  // Ours was withdrawn; theirs was never touched.
+  assert.deepEqual(c.names(), [other]);
+});
+
+test("a helper alone in the directory holds the lock", () => {
+  const c = claimDir({}, [4242], { pid: 4242, now: 1000 });
+  const result = acquireHelperLock(c.DIR, c.ops);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.heldBy, null);
+  assert.equal(result.entryName, claimEntryName({ createdAtMs: 1000, pid: 4242 }));
+  assert.deepEqual(c.names(), [claimEntryName({ createdAtMs: 1000, pid: 4242 })]);
+});
+
+test("an earlier timestamp cannot displace a helper that is already holding the lock", () => {
+  // The bug an exhaustive pass over this caught in the FIRST version of this directory design,
+  // which ranked entries by (createdAtMs, pid) and let the earliest live claim win. A contender
+  // arriving later could then take the lock from a helper already running, just by stamping its
+  // entry earlier - and a key the arriving process chooses cannot decide who was there first.
+  // Hence the rule that needs no ordering at all: hold it only when alone.
+  const running = claimEntryName({ createdAtMs: 9000, pid: 9182 });
+  const c = claimDir({ [running]: { pid: 9182, startedAt: "start-9182" } }, [9182, 4242], {
+    pid: 4242,
+    // Earlier than the live holder's entry, which under the old rule would have won.
+    now: 1000,
+  });
+
+  const result = acquireHelperLock(c.DIR, c.ops);
+
+  assert.equal(result.ok, false, "an earlier stamp must not take a running helper's lock");
+  assert.equal(result.heldBy, 9182);
+  assert.deepEqual(c.names(), [running], "the running helper's entry is untouched");
+});
+
+test("two contenders over one directory never both hold it, on any interleaving", () => {
+  // The invariant every earlier design broke. Both schedules that matter are replayed for every
+  // combination of timestamps, including a later arrival stamped earlier and an exact tie.
+  const DIR = "/state/update-helper.lock.d";
+  const mk = (store: Map<string, string>, pid: number, now: number) =>
+    claimStore(store, {
+      pid,
+      now: () => now,
+      live: () => true,
+      startedAt: (p) => `start-${p}`,
+    });
+
+  for (const [aTime, bTime] of [[500, 900], [900, 500], [700, 700]] as const) {
+    // Schedule 1 - sequential: A completes, then B arrives. Exactly one holder, and it is A.
+    {
+      const store = new Map<string, string>();
+      const a = acquireHelperLock(DIR, mk(store, 100, aTime));
+      const b = acquireHelperLock(DIR, mk(store, 200, bTime));
+      assert.equal(a.ok, true, `A should hold with times ${aTime}/${bTime}`);
+      assert.equal(b.ok, false, `B must not also hold with times ${aTime}/${bTime}`);
+      assert.equal(b.heldBy, 100);
+    }
+
+    // Schedule 2 - overlapping: each helper's entry is already present when the other lists, so
+    // each sees a live rival. Both stand down. Deferred, never doubled.
+    {
+      const store = new Map<string, string>();
+      store.set(
+        `${DIR}/${claimEntryName({ createdAtMs: bTime, pid: 200 })}`,
+        JSON.stringify({ pid: 200, startedAt: "start-200" }),
+      );
+      const a = acquireHelperLock(DIR, mk(store, 100, aTime));
+      assert.equal(a.ok, false, `overlapping A must stand down with times ${aTime}/${bTime}`);
+      // A withdrew its own entry, so only B's remains for B to find itself alone with.
+      assert.deepEqual(
+        [...store.keys()],
+        [`${DIR}/${claimEntryName({ createdAtMs: bTime, pid: 200 })}`],
+      );
+    }
+  }
+});
+
+test("a claim whose writer is gone is cleared, and the clearing helper proceeds", () => {
+  const abandoned = claimEntryName({ createdAtMs: 500, pid: 9182 });
+  // 9182 is not in `live`: the helper was killed mid-update.
+  const c = claimDir({ [abandoned]: { pid: 9182, startedAt: "start-9182" } }, [4242], {
+    pid: 4242,
+    now: 1000,
+  });
+
+  const result = acquireHelperLock(c.DIR, c.ops);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(c.names(), [claimEntryName({ createdAtMs: 1000, pid: 4242 })]);
+});
+
+test("a reused pid does not keep a dead helper's claim alive", () => {
+  // GitHub Inspector's second finding. A helper killed while holding the lock leaves its pid
+  // behind; macOS is free to hand that number to something unrelated and long-lived, after which
+  // `kill(pid, 0)` answers "alive" forever and every future update reports one already in
+  // progress with no updater anywhere near the clone. The recorded start time is what tells the
+  // two apart.
+  const abandoned = claimEntryName({ createdAtMs: 500, pid: 9182 });
+  const store = new Map<string, string>([
+    [
+      `/state/update-helper.lock.d/${abandoned}`,
+      JSON.stringify({ pid: 9182, startedAt: "Mon Sep  1 07:00:00 2026" }),
+    ],
+  ]);
+  const ops = claimStore(store, {
+    pid: 4242,
+    now: () => 1000,
+    // The pid answers to a signal - but it is a different process now.
+    live: () => true,
+    startedAt: (pid) =>
+      pid === 9182 ? "Mon Sep  1 09:30:00 2026" : `start-${pid}`,
+  });
+
+  const result = acquireHelperLock("/state/update-helper.lock.d", ops);
+
+  assert.equal(result.ok, true, "a reused pid must not block updates forever");
+  assert.equal(
+    store.has(`/state/update-helper.lock.d/${abandoned}`),
+    false,
+    "the dead helper's claim was cleared",
   );
 });
 
-test("the loser of a stale-lock race is told no rather than given a turn", () => {
-  // Both contenders see the same dead pid and both reach reclamation. The move is the atomic
-  // step, so exactly one can take the file; the other gets ENOENT and stands down.
-  const DEAD = 9182;
-  const path = "/state/update-helper.lock";
-  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
-  const ops = lockOps(store, []);
-
-  const first = acquireHelperLock(path, ops);
-  assert.equal(first.ok, true, "the first contender reclaims the dead lock");
-  assert.equal(store.get(path), `${process.pid}\n`);
-
-  // A second contender now finds a live holder on the fast path and never reaches reclamation.
-  const live = lockOps(store, [process.pid]);
-  const second = acquireHelperLock(path, live);
-  assert.equal(second.ok, false);
-  assert.equal(second.heldBy, process.pid);
+test("liveness is conservative when a process cannot be identified", () => {
+  // Anything short of proof that the writer is gone counts as live: a wrongly-kept claim defers
+  // one update, a wrongly-removed one puts two helpers in one clone.
+  const live = { alive: () => true, startedAt: () => "same" };
+  assert.equal(claimIsLive({ pid: 10, startedAt: "same" }, live), true);
+  assert.equal(claimIsLive({ pid: 10, startedAt: "different" }, live), false);
+  // No recorded start time (an older entry), or none readable now: cannot prove reuse, so live.
+  assert.equal(claimIsLive({ pid: 10, startedAt: null }, live), true);
+  assert.equal(
+    claimIsLive({ pid: 10, startedAt: "same" }, { alive: () => true, startedAt: () => null }),
+    true,
+  );
+  // Only a dead pid is proof.
+  assert.equal(
+    claimIsLive({ pid: 10, startedAt: "same" }, { alive: () => false, startedAt: () => "same" }),
+    false,
+  );
 });
 
-test("a contender that loses the move stands down instead of claiming", () => {
-  // The other side of the race: another helper took the stale lock first, so the file is simply
-  // gone when this contender reaches for it. A lost move is a refusal - never a fall-through to
-  // a claim, which is what would put two helpers back in the same clone.
-  const DEAD = 9182;
-  const path = "/state/update-helper.lock";
-  const store = new Map<string, string>([[path, `${DEAD}\n`]]);
-  const ops = lockOps(store, [], {
-    // The winner has moved it aside and has not created its own lock yet, which is exactly the
-    // instant a real `rename` reports ENOENT.
-    onMove: (from) => void (from === path && store.delete(path)),
+test("a failed directory read withdraws this helper's entry instead of leaving it behind", () => {
+  // An entry left behind by a helper that never went on to hold the lock would make it look like
+  // a live contender to everyone reading the directory next.
+  const c = claimDir({}, [4242], { pid: 4242, now: 1000 }, {
+    onList: () => {
+      throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    },
   });
-  let opens = 0;
-  const counted = { ...ops, open: (p: string) => { opens += 1; return ops.open(p); } };
 
-  const result = acquireHelperLock(path, counted);
-
-  assert.equal(result.ok, false);
-  assert.equal(result.heldBy, null, "there is no identified holder mid-handover");
-  // One open only: the opening EEXIST probe. Losing the move must not lead to a second attempt,
-  // which would create a lock beside the winner's and put two helpers in the same clone.
-  assert.equal(opens, 1);
-  assert.equal(store.has(path), false, "the winner's handover was left alone");
+  assert.throws(() => acquireHelperLock(c.DIR, c.ops), /EIO/);
+  assert.deepEqual(c.names(), []);
 });
 
-test("an empty or unreadable lock file is reclaimable rather than permanently blocking", () => {
-  // A helper killed between the exclusive create and the write leaves a lock naming nobody.
-  // Treating that as a live holder would block every future update.
-  const path = "/state/update-helper.lock";
-  const store = new Map<string, string>([[path, ""]]);
-  const result = acquireHelperLock(path, lockOps(store, []));
-  assert.equal(result.ok, true);
-  assert.equal(store.get(path), `${process.pid}\n`);
+test("claim entry names round-trip and sort by time then pid", () => {
+  const name = claimEntryName({ createdAtMs: 1_756_720_000_000, pid: 4242 });
+  assert.deepEqual(parseClaimEntryName(name), {
+    createdAtMs: 1_756_720_000_000,
+    pid: 4242,
+    name,
+  });
+  // Fixed width, so a lexical directory listing and the numeric order agree.
+  assert.equal(name.split("-")[0]!.length, 15);
+  assert.equal(parseClaimEntryName("not-a-claim"), null);
+  assert.equal(parseClaimEntryName(".tmp-4242-1756720000000"), null);
+
+  assert.equal(claimPrecedes({ createdAtMs: 1, pid: 9 }, { createdAtMs: 2, pid: 1 }), true);
+  assert.equal(claimPrecedes({ createdAtMs: 2, pid: 1 }, { createdAtMs: 1, pid: 9 }), false);
+  // Same millisecond: pid settles it, so both contenders reach the same answer.
+  assert.equal(claimPrecedes({ createdAtMs: 1, pid: 1 }, { createdAtMs: 1, pid: 2 }), true);
+  assert.equal(claimPrecedes({ createdAtMs: 1, pid: 2 }, { createdAtMs: 1, pid: 1 }), false);
 });
 
-test("the real lock ops claim exclusively, reclaim a dead pid, and create the state dir", async (t) => {
-  // The lock tests above inject their ops, so none of them can notice the real implementation
-  // losing its exclusivity: `openSync(path, "w")` in place of `"wx"` would satisfy every one of
-  // them and still let two helpers run. Real files, real flags.
+test("a process start time is read for a real pid and refused for an impossible one", () => {
+  assert.equal(processStartedAt(0), null);
+  assert.equal(processStartedAt(-1), null);
+  assert.equal(processStartedAt(4242, () => "  Mon Sep  1 07:00:00 2026  "), "Mon Sep  1 07:00:00 2026");
+  assert.equal(processStartedAt(4242, () => ""), null);
+  assert.equal(processStartedAt(4242, () => { throw new Error("no such process"); }), null);
+  // This process exists, so the real query must produce something for it.
+  assert.ok((processStartedAt(process.pid) ?? "").length > 0);
+});
+
+test("the real lock ops claim, refuse, and reclaim against a real directory", async (t) => {
+  // The tests above inject their ops, so none of them exercises the real filesystem
+  // implementation - a `writeEntry` that is not atomic, or a `list` that misses entries, would
+  // satisfy every one of them. Real directories, real files, real `ps`.
   const root = await mkdtemp(join(tmpdir(), "mission-apply-real-lock-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const ops = realHelperLockOperations();
-  // A state directory that does not exist yet. The claim now runs before the first outcome is
+  // A state directory that does not exist yet. The claim runs before the first outcome is
   // written, and writing that outcome used to be what created the directory.
-  const lockPath = join(root, "not-created-yet", HELPER_LOCK_FILE_NAME);
+  const directory = join(root, "not-created-yet", HELPER_LOCK_DIR_NAME);
 
-  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
-  assert.equal((await readFile(lockPath, "utf8")).trim(), String(process.pid));
+  const first = acquireHelperLock(directory, ops);
+  assert.equal(first.ok, true);
+  assert.equal(first.heldBy, null);
+  assert.ok(first.entryName);
+  // The entry records this process's identity, start time included.
+  const body = JSON.parse(await readFile(join(directory, first.entryName!), "utf8"));
+  assert.equal(body.pid, process.pid);
+  assert.equal(body.startedAt, processStartedAt(process.pid));
 
-  // This process is alive, so a second claim is refused rather than granted.
-  const second = acquireHelperLock(lockPath, ops);
+  // This process is alive, so a second claim is refused rather than granted, and the refusal
+  // leaves only the original entry behind.
+  const second = acquireHelperLock(directory, ops);
   assert.equal(second.ok, false);
   assert.equal(second.heldBy, process.pid);
+  assert.equal(second.entryName, null);
+  assert.deepEqual(await readdir(directory), [first.entryName]);
 
-  // A helper killed mid-update is reclaimed by pid, with no timeout to wait out.
+  // A helper killed mid-update leaves an entry naming a process that no longer exists. Reclaimed
+  // with no timeout to wait out.
+  releaseHelperLock(directory, first.entryName!, ops);
   let departed = 4_194_304;
   while (processIsAlive(departed)) departed -= 1;
-  await writeFile(lockPath, String(departed));
-  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
-  assert.equal((await readFile(lockPath, "utf8")).trim(), String(process.pid));
+  const abandoned = claimEntryName({ createdAtMs: 1, pid: departed });
+  await writeFile(
+    join(directory, abandoned),
+    JSON.stringify({ pid: departed, startedAt: "Mon Sep  1 07:00:00 2026" }),
+  );
 
-  ops.remove(lockPath);
-  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
+  const third = acquireHelperLock(directory, ops);
+  assert.equal(third.ok, true, "an abandoned entry does not block a new helper");
+  assert.deepEqual(await readdir(directory), [third.entryName]);
+
+  releaseHelperLock(directory, third.entryName!, ops);
+  assert.deepEqual(await readdir(directory), []);
 });

@@ -7,20 +7,26 @@ export interface ApplyUpdateArgs {
   logPath: string;
 }
 
+/** A helper's claim on the update lock, identified by pid and the writer's process start time. */
+export interface ClaimEntry {
+  createdAtMs: number;
+  pid: number;
+  name: string;
+  startedAt?: string | null;
+}
+
 export interface HelperLockOps {
-  /** Must create exclusively, so an existing lock raises EEXIST rather than being overwritten. */
-  open(path: string): number;
-  write(fd: number, text: string): void;
-  close(fd: number): void;
-  read(path: string): string;
-  /**
-   * Must be atomic and must raise ENOENT when the source is gone. Stale-lock reclamation is
-   * built on exactly one contender being able to move a given lock file.
-   */
-  move(from: string, to: string): void;
-  remove(path: string): void;
-  alive(pid: number): boolean;
-  log?(line: string): void;
+  /** This helper's own pid, so a test can act as a helper other than the test process. */
+  pid: number;
+  now(): number;
+  startedAt(pid: number): string | null;
+  isLive(entry: { pid: number; startedAt?: string | null }): boolean;
+  ensureDirectory(directory: string): void;
+  list(directory: string): string[];
+  /** Must publish the entry atomically, so it is never visible half-written. */
+  writeEntry(directory: string, name: string, body: string): void;
+  readEntry(directory: string, name: string): { pid?: number; startedAt?: string | null } | null;
+  removeEntry(directory: string, name: string): void;
 }
 
 export interface ApplyOperations {
@@ -41,12 +47,31 @@ export interface ApplyOperations {
 export const UPDATE_OUTCOME_SCHEMA: number;
 export const INSTALL_TIMEOUT_MS: number;
 export const RETAINED_FAILURE_DIR_NAME: string;
-export const HELPER_LOCK_FILE_NAME: string;
+export const HELPER_LOCK_DIR_NAME: string;
 export function processIsAlive(pid: number, kill?: (pid: number) => void): boolean;
+export function processStartedAt(
+  pid: number,
+  run?: (pid: number) => string,
+): string | null;
+export function claimIsLive(
+  entry: { pid: number; startedAt?: string | null },
+  deps?: { alive?: (pid: number) => boolean; startedAt?: (pid: number) => string | null },
+): boolean;
+export function claimPrecedes(
+  a: { createdAtMs: number; pid: number },
+  b: { createdAtMs: number; pid: number },
+): boolean;
+export function claimEntryName(input: { createdAtMs: number; pid: number }): string;
+export function parseClaimEntryName(name: string): ClaimEntry | null;
 export function acquireHelperLock(
-  path: string,
+  directory: string,
   ops: HelperLockOps,
-): { ok: boolean; heldBy: number | null; problem?: string };
+): { ok: boolean; heldBy: number | null; entryName: string | null; problem?: string };
+export function releaseHelperLock(
+  directory: string,
+  entryName: string,
+  ops: HelperLockOps,
+): void;
 export function realHelperLockOperations(): HelperLockOps;
 export function rollbackIsNeeded(input: {
   installedVersion: string | null;

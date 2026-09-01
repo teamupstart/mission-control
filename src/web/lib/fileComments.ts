@@ -39,6 +39,11 @@ const HTML_COMMENT_BLOCK_DISPLAY_VALUES = new Set([
   "block", "flex", "flow-root", "grid", "list-item", "table",
 ]);
 
+const HTML_COMMENT_VISIBLE_INPUT_VALUE_TYPES = new Set([
+  "button", "date", "datetime-local", "email", "month", "number", "reset", "search",
+  "submit", "tel", "text", "time", "url", "week",
+]);
+
 function isHiddenHtmlCommentElement(element: Element): boolean {
   const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
     ? element.style
@@ -47,6 +52,7 @@ function isHiddenHtmlCommentElement(element: Element): boolean {
   const visibility = inlineStyle?.visibility.trim().toLowerCase() ?? "";
   const contentVisibility = inlineStyle?.contentVisibility.trim().toLowerCase() ?? "";
   return element.hasAttribute("hidden")
+    || (element instanceof HTMLInputElement && element.type === "hidden")
     || display === "none"
     || visibility === "hidden"
     || visibility === "collapse"
@@ -155,6 +161,20 @@ export function fileCommentQuoteForDisplay(
   const template = document.createElement("template");
   template.innerHTML = block;
   const sourceTag = template.content.firstElementChild?.tagName.toLowerCase() ?? null;
+  // Text-like and button inputs render their value without contributing it to `textContent`.
+  // Controls such as checkboxes, radios, ranges, and colors do not visibly render that value,
+  // so they deliberately keep the element-markup fallback. Passwords name their visible shape
+  // without exposing the source value.
+  for (const input of template.content.querySelectorAll<HTMLInputElement>("input")) {
+    if (isHiddenHtmlCommentElement(input) || !input.value) continue;
+    if (input.type === "password") {
+      input.replaceWith(document.createTextNode("•".repeat([...input.value].length)));
+      continue;
+    }
+    if (HTML_COMMENT_VISIBLE_INPUT_VALUE_TYPES.has(input.type)) {
+      input.replaceWith(document.createTextNode(input.value));
+    }
+  }
   // A collapsed single-select renders only its selected label. A list box (`multiple` or
   // `size > 1`) visibly presents its option list, so the generic descendant projection is
   // correct for that separate control shape.

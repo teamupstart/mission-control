@@ -94,8 +94,9 @@ const HTML_SOURCE = [
     + '<span style="display: inline-block">first</span>second</p>',
   '<div id="only-comment" style="padding: 10px">'              // 17
     + "<!-- internal implementation note --></div>",
-  "</body>",                                                    // 18
-  "</html>",                                                    // 19
+  '<input id="search-query" type="text" value="Search term">', // 18
+  "</body>",                                                    // 19
+  "</html>",                                                    // 20
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -613,6 +614,24 @@ test.describe("commenting on a rendered document", () => {
       composer.getByText('<div id="only-comment" style="padding: 10px"></div>', { exact: true }),
     ).toBeVisible();
     await expect(composer).not.toContainText("internal implementation note");
+  });
+
+  test("a text input HTML quote shows the value rendered by the control", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#search-query").click();
+    const composer = page.getByRole("region", { name: "New comment on line 18" });
+    await expect(composer.getByText("Search term", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("input");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({

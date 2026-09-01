@@ -7,16 +7,24 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { replaceAppBundle } from "./app-bundle-swap.mjs";
+import {
+  RESTORE_AUTHORIZATION_PROMPT,
+  bundleShortVersion,
+  replaceAppBundle,
+} from "./app-bundle-swap.mjs";
 
 export const UPDATE_OUTCOME_SCHEMA = 1;
 const PARENT_EXIT_TIMEOUT_MS = 120_000;
@@ -45,7 +53,108 @@ export const INSTALL_TIMEOUT_MS = 45 * 60 * 1000;
  */
 export const RETAINED_FAILURE_DIR_NAME = "failed-update";
 
+/**
+ * The one helper allowed to be updating at a time.
+ *
+ * `UpdateController.applyPromise` only ever guarded one app PROCESS, and this helper's whole
+ * job is to outlive that process: it waits for the app to quit, works, and relaunches it. The
+ * relaunched app reads `update-outcome.json`, offers Retry, and a second helper starts against
+ * the same updater-owned clone as the first. That is not hypothetical - it is what the failing
+ * logs show, twice over: `npm error ENOTEMPTY: directory not empty, rmdir` from two `npm ci`
+ * runs in one clone, and four administrator panels inside a minute, of which the person could
+ * only ever answer one. A second helper also writes its own `in-progress` over the first
+ * helper's finished outcome, which is what turns a reported failure back into "the previous
+ * update did not finish".
+ */
+export const HELPER_LOCK_FILE_NAME = "update-helper.lock";
+
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
+
+/**
+ * Whether `pid` still names a live process, for deciding if a lock is stale.
+ *
+ * EPERM means it is alive and owned by somebody else, which is still alive. Only ESRCH is
+ * evidence of absence, so an unexpected error reads as "assume alive" - refusing to start
+ * costs one deferred update, while wrongly stealing a live lock costs the collision this
+ * whole mechanism exists to prevent.
+ */
+export function processIsAlive(pid, kill = (target) => process.kill(target, 0)) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    kill(pid);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+/**
+ * Take the helper lock, or report who holds it.
+ *
+ * `O_EXCL` is the whole mechanism: the create either wins or finds an existing file, with no
+ * window between checking and claiming. A leftover from a helper that was killed is detected by
+ * reading its pid rather than by age, so there is no timeout to tune and no wait before a
+ * genuinely stale lock can be reclaimed.
+ */
+export function acquireHelperLock(path, ops) {
+  const claim = () => {
+    const fd = ops.open(path);
+    try {
+      ops.write(fd, `${process.pid}\n`);
+    } finally {
+      ops.close(fd);
+    }
+    return { ok: true, heldBy: null };
+  };
+  try {
+    return claim();
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  const holder = Number(String(ops.read(path) ?? "").trim());
+  if (ops.alive(holder)) return { ok: false, heldBy: holder };
+  // Stale: the recorded helper is gone. Remove and retry once. A second EEXIST means another
+  // helper claimed it in between, and that one is live by construction.
+  ops.remove(path);
+  try {
+    return claim();
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    return { ok: false, heldBy: Number(String(ops.read(path) ?? "").trim()) || null };
+  }
+}
+
+export function realHelperLockOperations() {
+  return {
+    // `wx` is the exclusive create the whole mechanism rests on. The mkdir is here because the
+    // claim now happens before the first outcome is written, and writing that outcome used to be
+    // what created the state directory - without this, a state directory that does not exist yet
+    // would fail the claim instead of the update proceeding.
+    open: (path) => {
+      mkdirSync(dirname(path), { recursive: true });
+      return openSync(path, "wx", 0o600);
+    },
+    write: (fd, text) => writeSync(fd, text),
+    close: closeSync,
+    read: (path) => readFileSync(path, "utf8"),
+    remove: (path) => rmSync(path, { force: true }),
+    alive: (pid) => processIsAlive(pid),
+  };
+}
+
+/**
+ * Whether the installed app still has to be rolled back.
+ *
+ * The rollback is not free: on a bundle this account cannot rewrite it raises a second
+ * administrator panel, and it used to raise one for a failure that never touched the app at
+ * all - the install swap being cancelled. Comparing what is installed against the backup
+ * answers the question directly. An unreadable or missing bundle is "unknown", and unknown
+ * restores, because a bundle whose identity cannot be established is the one worth restoring.
+ */
+export function rollbackIsNeeded({ installedVersion, backupVersion }) {
+  if (installedVersion === null || backupVersion === null) return true;
+  return installedVersion !== backupVersion;
+}
 
 export function parseArgs(argv) {
   const values = {};
@@ -197,10 +306,19 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
         appsDir: dirname(appPath),
         pid,
         keepPrevious: true,
+        // Its own sentence. Sharing the install prompt meant the panel that undoes an update
+        // asked to "install this update", so authorizing the rollback looked like authorizing
+        // the upgrade - and in the failing logs that is precisely the panel that got approved.
+        prompt: RESTORE_AUTHORIZATION_PROMPT,
       });
       if (restored.problem) throw new Error(restored.problem);
+      for (const stray of restored.stranded) {
+        log(`a bundle displaced by an earlier privileged install could not be removed: ${stray}`);
+      }
       return restored.failedBundle;
     },
+    bundleVersion: (path) => bundleShortVersion(path),
+    lock: realHelperLockOperations(),
     launch: (appPath) => {
       const result = spawnSync("open", [appPath], { encoding: "utf8" });
       if (result.error) throw result.error;
@@ -220,10 +338,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   const backupApp = join(tempDirectory, "previous-app.bundle");
   const backupReceipt = join(tempDirectory, "previous-receipt.json");
   const retained = join(args.stateDirectory, RETAINED_FAILURE_DIR_NAME);
+  const lockPath = join(args.stateDirectory, HELPER_LOCK_FILE_NAME);
   const targetVersion = args.targetTag.replace(/^v/, "");
   let backupReady = false;
   let hadReceipt = false;
   let keepTemporaryBackup = false;
+  let lockHeld = false;
 
   const record = (outcome) => writeOutcome(outcomePath, outcome);
   /**
@@ -255,8 +375,21 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       // better than the alternative, which would delete the only copy precisely because the
       // state directory was too broken to hold a second one.
       keepTemporaryBackup = !kept;
+      // The install may well have failed without ever reaching the app - a cancelled or refused
+      // authorization is exactly that - and restoring over an app that was never touched buys
+      // nothing while costing a second administrator panel. That second panel is how the person
+      // ended up authorizing an undo while the upgrade they asked for stayed unapplied.
+      const needed = rollbackIsNeeded({
+        installedVersion: ops.exists(args.appPath) ? ops.bundleVersion(args.appPath) : null,
+        backupVersion: ops.bundleVersion(backupApp),
+      });
       try {
-        const failedBundle = ops.restoreApp(backupApp, args.appPath, process.pid);
+        let failedBundle = null;
+        if (needed) {
+          failedBundle = ops.restoreApp(backupApp, args.appPath, process.pid);
+        } else {
+          ops.log("the installed app still matches the backup, so no rollback was needed");
+        }
         restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops });
         if (failedBundle) {
           // Paths are redacted out of the log, so this can only say WHERE in the abstract. Both
@@ -286,6 +419,25 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     }
     return { ok: false, message };
   };
+
+  // Before the in-progress record, not after: the outcome file is the thing a second helper
+  // would corrupt, so it must not be written until this helper knows it is the only one.
+  let claimed;
+  try {
+    claimed = acquireHelperLock(lockPath, ops.lock);
+  } catch (error) {
+    claimed = { ok: false, heldBy: null, problem: error?.message ?? String(error) };
+  }
+  if (!claimed.ok) {
+    // Deliberately no outcome written and no relaunch attempted. Both belong to the helper that
+    // holds the lock, and writing either here is the clobbering this prevents.
+    const message = claimed.problem
+      ? `could not claim the update lock: ${sanitizeDiagnostic(claimed.problem)}`
+      : `another update is already in progress${claimed.heldBy ? ` (helper ${claimed.heldBy})` : ""}`;
+    ops.log(message);
+    return { ok: false, message };
+  }
+  lockHeld = true;
 
   try {
     record({ result: "in-progress", targetVersion, recordedAt: ops.nowIso() });
@@ -323,6 +475,16 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   } catch (error) {
     return await fail(error);
   } finally {
+    // Released before the temp directory goes, so the relaunched app can retry immediately.
+    // A helper killed between here and the claim leaves the file behind, which the next
+    // helper reclaims by pid rather than by waiting a timeout out.
+    if (lockHeld) {
+      try {
+        ops.lock.remove(lockPath);
+      } catch (error) {
+        ops.log(`could not release the update lock: ${error?.message ?? error}`);
+      }
+    }
     // Every exit path except one: a failure that could not file its backup anywhere durable
     // keeps it here instead. Its home is a temp directory, so the OS still reclaims it.
     if (!keepTemporaryBackup) ops.remove(tempDirectory);

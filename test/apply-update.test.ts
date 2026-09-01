@@ -5,11 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  acquireHelperLock,
+  HELPER_LOCK_FILE_NAME,
   INSTALL_TIMEOUT_MS,
   installFailureSummary,
   parseArgs,
+  processIsAlive,
   realApplyOperations,
+  realHelperLockOperations,
   RETAINED_FAILURE_DIR_NAME,
+  rollbackIsNeeded,
   runApplyUpdate,
   sanitizeDiagnostic,
 } from "../scripts/apply-update.mjs";
@@ -31,10 +36,21 @@ function operations(
     launchFails?: boolean;
     retainFails?: boolean;
     waitFails?: boolean;
+    restoreFails?: boolean;
+    /**
+     * Bundle versions the rollback decision reads. Both default to null - "unknown" - which
+     * restores, because a fixture that does not model `Info.plist` has not established that the
+     * app survived and the helper treats an unreadable bundle as one worth restoring.
+     */
+    installedVersion?: string | null;
+    backupVersion?: string | null;
+    /** A live helper already holding the lock. */
+    lockHeldBy?: number;
   } = {},
 ) {
   const actions: string[] = [];
   let firstLaunch = true;
+  const locks = new Map<string, string>();
   const ops = {
     exists: (path: string) => !path.includes("rollback-") && !path.includes("failed-"),
     remove: (path: string) => actions.push(`remove:${path}`),
@@ -58,7 +74,35 @@ function operations(
     restoreApp: (backupApp: string, appPath: string, pid: number) => {
       const failed = `${appPath.slice(0, appPath.lastIndexOf("/") + 1)}.Mission Control.app.failed-update`;
       actions.push(`restore:${backupApp}->${appPath}:failed=${failed}:pid=${pid}`);
+      if (options.restoreFails) throw new Error("the rollback could not be authorized");
       return failed;
+    },
+    bundleVersion: (path: string) =>
+      path.includes("previous-app.bundle")
+        ? (options.backupVersion ?? null)
+        : (options.installedVersion ?? null),
+    lock: {
+      open: (path: string) => {
+        if (locks.has(path)) {
+          const error: NodeJS.ErrnoException = new Error("EEXIST: file already exists");
+          error.code = "EEXIST";
+          throw error;
+        }
+        locks.set(path, "");
+        actions.push(`lock-claim:${path}`);
+        return 7;
+      },
+      write: (_fd: number, text: string) => {
+        const [path] = [...locks.keys()].slice(-1);
+        if (path !== undefined) locks.set(path, text);
+      },
+      close: () => {},
+      read: (path: string) => locks.get(path) ?? "",
+      remove: (path: string) => {
+        locks.delete(path);
+        actions.push(`lock-release:${path}`);
+      },
+      alive: (pid: number) => pid === options.lockHeldBy,
     },
     launch: (path: string) => {
       actions.push(`launch:${path}`);
@@ -72,7 +116,7 @@ function operations(
   // The helper backs up into its own directory, which under test is this repository's
   // `scripts/` - the module it imported apply-update.mjs from.
   const tempDirectory = join(process.cwd(), "scripts");
-  return { ops, actions, tempDirectory };
+  return { ops, actions, tempDirectory, locks };
 }
 
 test("the helper waits, backs up, installs the exact tag, records success, and relaunches by path", async (t) => {
@@ -88,14 +132,18 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
   assert.equal(outcome.result, "success");
   assert.equal(outcome.targetVersion, "1.2.4");
   // The wait comes before every action that touches the installed app - which is what this
-  // pinned, and is not the same as being literally first now that clearing the previous
-  // attempt's retained evidence runs ahead of it. That clear touches only the state directory.
+  // pinned, and is not the same as being literally first now that claiming the helper lock and
+  // clearing the previous attempt's retained evidence both run ahead of it. Both touch only the
+  // state directory.
   const waitIndex = f.actions.indexOf("wait:42");
   assert.ok(waitIndex >= 0);
+  const beforeWait = [
+    `lock-claim:${join(state, HELPER_LOCK_FILE_NAME)}`,
+    `remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`,
+  ];
   assert.ok(
-    f.actions
-      .slice(0, waitIndex)
-      .every((action) => action === `remove:${join(state, RETAINED_FAILURE_DIR_NAME)}`),
+    f.actions.slice(0, waitIndex).every((action) => beforeWait.includes(action)),
+    `something touched the app before the wait: ${f.actions.slice(0, waitIndex).join(", ")}`,
   );
   assert.ok(f.actions.some((action) => action.includes("previous-app.bundle")));
   assert.ok(
@@ -368,4 +416,151 @@ test("when there is nowhere durable to retain it, the backup is kept rather than
   assert.ok(!f.actions.includes(`remove:${f.tempDirectory}`));
   assert.ok(restore?.includes("failed=/Applications/.Mission Control.app.failed-update"));
   assert.ok(f.actions.some((action) => action.startsWith("log:durable retention was unavailable")));
+});
+
+test("a second helper refuses to run while the first still holds the lock", async (t) => {
+  // The cascade this closes. `UpdateController.applyPromise` only ever guarded one app PROCESS,
+  // and the helper outlives that process by design: it waits for the app to quit, works, and
+  // relaunches it. The relaunched app reads the outcome, offers Retry, and a second helper
+  // starts against the same updater-owned clone. The failing update log records both halves of
+  // the collision - `npm error ENOTEMPTY: directory not empty, rmdir` from two `npm ci` runs in
+  // one clone, and four administrator panels inside a minute, of which one person could answer
+  // at most one.
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const f = operations({ lockHeldBy: 9182 });
+  f.locks.set(join(state, HELPER_LOCK_FILE_NAME), "9182\n");
+
+  const result = await runApplyUpdate(args(state), f.ops);
+
+  assert.equal(result.ok, false);
+  assert.match(String(result.message), /another update is already in progress \(helper 9182\)/);
+  // Nothing that belongs to the running helper was touched: no build, no backup, no relaunch,
+  // and above all no outcome. A second helper writing its own `in-progress` over the first
+  // helper's finished outcome is what turned a reported failure back into "the previous update
+  // did not finish".
+  assert.ok(!f.actions.some((action) => action.startsWith("install:")));
+  assert.ok(!f.actions.some((action) => action.startsWith("wait:")));
+  assert.ok(!f.actions.some((action) => action.startsWith("launch:")));
+  assert.ok(!f.actions.some((action) => action.startsWith("lock-release:")));
+  await assert.rejects(() => readFile(join(state, "update-outcome.json"), "utf8"));
+});
+
+test("a lock left by a killed helper is reclaimed rather than waited out", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-stale-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  // No `lockHeldBy`, so the recorded pid is not alive: the helper was killed mid-update.
+  const f = operations();
+  f.locks.set(join(state, HELPER_LOCK_FILE_NAME), "9182\n");
+
+  const result = await runApplyUpdate(args(state), f.ops);
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+
+  assert.equal(result.ok, true);
+  assert.equal(outcome.result, "success");
+  assert.ok(f.actions.includes(`lock-claim:${join(state, HELPER_LOCK_FILE_NAME)}`));
+});
+
+test("the lock is released on the way out so the next attempt can start at once", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-release-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const f = operations({ installFails: true });
+
+  await runApplyUpdate(args(state), f.ops);
+
+  const lockPath = join(state, HELPER_LOCK_FILE_NAME);
+  assert.ok(f.actions.includes(`lock-release:${lockPath}`));
+  // Released before the relaunch, so the app that comes back can retry immediately.
+  assert.ok(
+    f.actions.indexOf(`lock-release:${lockPath}`) >
+      f.actions.indexOf("launch:/Applications/Mission Control.app"),
+    "the release happens in the finally, after the relaunch is issued",
+  );
+  assert.equal(f.locks.size, 0);
+});
+
+test("an install that never reached the app is not rolled back", async (t) => {
+  // A cancelled or refused authorization fails the install without touching the app. Restoring
+  // over it buys nothing and costs a second administrator panel - and that second panel is how
+  // the person ended up authorizing an undo while the upgrade they asked for stayed unapplied.
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-no-rollback-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await writeFile(join(state, "install-receipt.json"), "old receipt");
+  const f = operations({ installFails: true, installedVersion: "1.3.3", backupVersion: "1.3.3" });
+
+  const result = await runApplyUpdate(args(state), f.ops);
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+
+  assert.equal(result.ok, false);
+  assert.equal(outcome.result, "failure");
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")), "no rollback was run");
+  assert.ok(f.actions.some((action) => action.includes("no rollback was needed")));
+  // The failure is still reported and the working app still comes back.
+  assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
+});
+
+test("an install that did replace the app is rolled back", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-rollback-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await writeFile(join(state, "install-receipt.json"), "old receipt");
+  const f = operations({ installFails: true, installedVersion: "1.2.4", backupVersion: "1.3.3" });
+
+  const result = await runApplyUpdate(args(state), f.ops);
+
+  assert.equal(result.ok, false);
+  assert.ok(f.actions.some((action) => action.startsWith("restore:")), "the rollback ran");
+});
+
+test("a bundle whose version cannot be read is rolled back", () => {
+  // Unknown restores. A bundle whose identity cannot be established is the one worth restoring,
+  // so a missing app, an unreadable plist, and a plist with no version all roll back.
+  assert.equal(rollbackIsNeeded({ installedVersion: null, backupVersion: "1.3.3" }), true);
+  assert.equal(rollbackIsNeeded({ installedVersion: "1.3.3", backupVersion: null }), true);
+  assert.equal(rollbackIsNeeded({ installedVersion: null, backupVersion: null }), true);
+  assert.equal(rollbackIsNeeded({ installedVersion: "1.3.3", backupVersion: "1.3.3" }), false);
+  assert.equal(rollbackIsNeeded({ installedVersion: "1.3.4", backupVersion: "1.3.3" }), true);
+});
+
+test("a live process is distinguished from a departed one without guessing", () => {
+  assert.equal(processIsAlive(process.pid), true);
+  const esrch: NodeJS.ErrnoException = new Error("no such process");
+  esrch.code = "ESRCH";
+  assert.equal(processIsAlive(4242, () => { throw esrch; }), false);
+  // EPERM means alive and owned by somebody else, which is still alive. Anything unexpected
+  // reads as alive too: deferring one update is cheaper than stealing a live helper's lock.
+  const eperm: NodeJS.ErrnoException = new Error("operation not permitted");
+  eperm.code = "EPERM";
+  assert.equal(processIsAlive(4242, () => { throw eperm; }), true);
+  assert.equal(processIsAlive(0), false);
+  assert.equal(processIsAlive(-1), false);
+});
+
+test("the real lock ops claim exclusively, reclaim a dead pid, and create the state dir", async (t) => {
+  // The lock tests above inject their ops, so none of them can notice the real implementation
+  // losing its exclusivity: `openSync(path, "w")` in place of `"wx"` would satisfy every one of
+  // them and still let two helpers run. Real files, real flags.
+  const root = await mkdtemp(join(tmpdir(), "mission-apply-real-lock-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ops = realHelperLockOperations();
+  // A state directory that does not exist yet. The claim now runs before the first outcome is
+  // written, and writing that outcome used to be what created the directory.
+  const lockPath = join(root, "not-created-yet", HELPER_LOCK_FILE_NAME);
+
+  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
+  assert.equal((await readFile(lockPath, "utf8")).trim(), String(process.pid));
+
+  // This process is alive, so a second claim is refused rather than granted.
+  const second = acquireHelperLock(lockPath, ops);
+  assert.equal(second.ok, false);
+  assert.equal(second.heldBy, process.pid);
+
+  // A helper killed mid-update is reclaimed by pid, with no timeout to wait out.
+  let departed = 4_194_304;
+  while (processIsAlive(departed)) departed -= 1;
+  await writeFile(lockPath, String(departed));
+  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
+  assert.equal((await readFile(lockPath, "utf8")).trim(), String(process.pid));
+
+  ops.remove(lockPath);
+  assert.deepEqual(acquireHelperLock(lockPath, ops), { ok: true, heldBy: null });
 });

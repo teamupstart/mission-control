@@ -55,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import {
   APP_BUNDLE_NAME,
   DEFAULT_APPS_DIR,
+  plistVersion,
   replaceAppBundle,
   stagingPaths,
   swapAppBundle,
@@ -73,7 +74,7 @@ import {
   xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
-export { APP_BUNDLE_NAME, DEFAULT_APPS_DIR, stagingPaths, swapAppBundle };
+export { APP_BUNDLE_NAME, DEFAULT_APPS_DIR, plistVersion, stagingPaths, swapAppBundle };
 
 /** The updater-owned clone, inside the existing state directory. */
 export const SOURCE_CLONE_DIR_NAME = "app-src";
@@ -381,14 +382,6 @@ export function receiptReleaseTag({ ref, source }) {
   return /^v\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(ref) ? ref : null;
 }
 
-/** The app's user-facing version out of a packaged `Info.plist`. */
-export function plistVersion(text) {
-  const match = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(
-    String(text ?? ""),
-  );
-  return match?.[1]?.trim() || null;
-}
-
 /**
  * Why the app cannot be installed into this directory, or `null` when it can.
  *
@@ -657,6 +650,12 @@ function installApp(options) {
       pid: process.pid,
     });
     if (swap.problem) fail(swap.problem);
+    for (const stray of swap.stranded) {
+      // A bundle displaced by an earlier privileged install, which this account can rename but
+      // not delete. Naming it is the only way anyone reclaims the space, and it is a hidden
+      // sibling that Finder does not show.
+      warning(`${stray} is owned by another account and could not be removed; delete it with an administrator account`);
+    }
     ok(`installed ${appPath}${swap.elevated ? " with administrator authorization" : ""}`);
   }
 

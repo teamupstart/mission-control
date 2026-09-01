@@ -95,8 +95,11 @@ const HTML_SOURCE = [
   '<div id="only-comment" style="padding: 10px">'              // 17
     + "<!-- internal implementation note --></div>",
   '<input id="search-query" type="text" value="Search term">', // 18
-  "</body>",                                                    // 19
-  "</html>",                                                    // 20
+  '<details id="closed-details" style="padding: 10px">'        // 19
+    + "<summary>Visible summary.</summary>"
+    + "<p>Collapsed implementation detail.</p></details>",
+  "</body>",                                                    // 20
+  "</html>",                                                    // 21
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -632,6 +635,26 @@ test.describe("commenting on a rendered document", () => {
     const composer = page.getByRole("region", { name: "New comment on line 18" });
     await expect(composer.getByText("Search term", { exact: true })).toBeVisible();
     await expect(composer).not.toContainText("input");
+  });
+
+  test("a closed details HTML quote excludes its collapsed content", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#closed-details").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 19" });
+    await expect(composer.getByText("Visible summary.", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("Collapsed implementation detail.");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({

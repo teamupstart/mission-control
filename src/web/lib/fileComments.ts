@@ -162,6 +162,28 @@ export function fileCommentQuoteForDisplay(
   template.innerHTML = block;
   const sourceTag = template.content.firstElementChild?.tagName.toLowerCase() ?? null;
   let projectionChanged = false;
+  // A closed disclosure renders only its first summary child. Its other child nodes remain in
+  // `textContent`, however, so remove them before projecting what the person could actually see.
+  for (const details of template.content.querySelectorAll<HTMLDetailsElement>(
+    "details:not([open])",
+  )) {
+    let summary: Element | undefined;
+    for (const child of details.children) {
+      if (child.tagName.toLowerCase() !== "summary") continue;
+      summary = child;
+      break;
+    }
+    for (let index = details.childNodes.length - 1; index >= 0; index -= 1) {
+      const child = details.childNodes[index];
+      if (child === summary) continue;
+      child?.remove();
+      projectionChanged = true;
+    }
+    if (!summary) {
+      details.replaceChildren(document.createTextNode("Details"));
+      projectionChanged = true;
+    }
+  }
   // Text-like and button inputs render their value without contributing it to `textContent`.
   // Controls such as checkboxes, radios, ranges, and colors do not visibly render that value,
   // so they deliberately keep the element-markup fallback. Passwords name their visible shape

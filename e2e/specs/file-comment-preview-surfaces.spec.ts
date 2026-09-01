@@ -85,8 +85,13 @@ const HTML_SOURCE = [
     + '<span style="display: none">Display none.</span>'
     + '<span style="visibility: hidden">Visibility hidden.</span>'
     + "<p>Second paragraph.</p></div>",
-  "</body>",                                                    // 14
-  "</html>",                                                    // 15
+  '<select id="frequency"><option>Daily</option>'               // 14
+    + "<option>Weekly</option></select>",
+  '<div id="only-hidden" style="padding: 10px">'               // 15
+    + "<script>window.hiddenOnly = true;</script>"
+    + "<span hidden>Hidden only.</span></div>",
+  "</body>",                                                    // 16
+  "</html>",                                                    // 17
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -521,6 +526,47 @@ test.describe("commenting on a rendered document", () => {
     const existingThread = page.getByRole("region", { name: /^Comment MC-\w+ on line / });
     await expect(existingThread.getByPlaceholder("Reply…")).toBeVisible();
     await shoot(page.locator(".file-content"), page, "moved-html-thread-open");
+  });
+
+  test("a single-select HTML quote names only the option the control renders", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#frequency").click();
+    const composer = page.getByRole("region", { name: "New comment on line 14" });
+    await expect(composer.getByText("Daily", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("Weekly");
+  });
+
+  test("an all-hidden HTML container never restores its filtered descendants", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#only-hidden").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 15" });
+    await expect(
+      composer.getByText('<div id="only-hidden" style="padding: 10px"></div>', { exact: true }),
+    ).toBeVisible();
+    await expect(composer).not.toContainText("window.hiddenOnly");
+    await expect(composer).not.toContainText("Hidden only.");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({

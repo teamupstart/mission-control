@@ -35,6 +35,20 @@ const HTML_COMMENT_NON_RENDERED_TAGS = new Set([
   "base", "head", "link", "meta", "noscript", "script", "style", "template", "title",
 ]);
 
+function isHiddenHtmlCommentElement(element: Element): boolean {
+  const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
+    ? element.style
+    : null;
+  const display = inlineStyle?.display.trim().toLowerCase() ?? "";
+  const visibility = inlineStyle?.visibility.trim().toLowerCase() ?? "";
+  const contentVisibility = inlineStyle?.contentVisibility.trim().toLowerCase() ?? "";
+  return element.hasAttribute("hidden")
+    || display === "none"
+    || visibility === "hidden"
+    || visibility === "collapse"
+    || contentVisibility === "hidden";
+}
+
 /**
  * Whether the Editor can anchor a comment in this document.
  *
@@ -113,10 +127,10 @@ export function anchorForLine(
  * machinery is not what a person needs to read in the comment panel, though, so the panel
  * projects the exact block to decoded text without changing either durable value.
  *
- * A block with no text, such as `<hr>`, keeps its exact markup. An empty display quote would
- * make the target unknowable, while the element itself is the only useful human description
- * in that case. Server rendering has no DOM parser and also keeps the raw value; the live
- * dashboard recomputes this display-only projection in the browser.
+ * A block with no visible text, such as `<hr>`, keeps its retained element markup. An empty
+ * display quote would make the target unknowable, while the element itself is the only useful
+ * human description in that case. Server rendering has no DOM parser and keeps the raw value;
+ * the live dashboard recomputes this display-only projection in the browser.
  */
 export function fileCommentQuoteForDisplay(
   surface: FileCommentThread["surface"],
@@ -129,25 +143,37 @@ export function fileCommentQuoteForDisplay(
 
   const template = document.createElement("template");
   template.innerHTML = block;
+  const sourceTag = template.content.firstElementChild?.tagName.toLowerCase() ?? null;
+  // A collapsed single-select renders only its selected label. A list box (`multiple` or
+  // `size > 1`) visibly presents its option list, so the generic descendant projection is
+  // correct for that separate control shape.
+  for (const select of template.content.querySelectorAll<HTMLSelectElement>(
+    "select:not([multiple])",
+  )) {
+    if (select.size > 1 || isHiddenHtmlCommentElement(select)) continue;
+    const selectedLabel = select.selectedOptions.item(0)?.label.trim() ?? "";
+    if (selectedLabel) {
+      select.replaceWith(document.createTextNode(selectedLabel));
+    } else {
+      // Preserve the control as the textless fallback without leaking every unselected option.
+      select.replaceChildren();
+    }
+  }
   // `textContent` includes source-only nodes and explicitly hidden descendants. Remove the
   // states we can determine from inert markup before projecting the text a person saw.
   for (const element of template.content.querySelectorAll("*")) {
-    const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
-      ? element.style
-      : null;
-    const display = inlineStyle?.display.trim().toLowerCase() ?? "";
-    const visibility = inlineStyle?.visibility.trim().toLowerCase() ?? "";
-    const contentVisibility = inlineStyle?.contentVisibility.trim().toLowerCase() ?? "";
-    const hiddenByMarkup = element.hasAttribute("hidden")
-      || display === "none"
-      || visibility === "hidden"
-      || visibility === "collapse"
-      || contentVisibility === "hidden";
-    if (!HTML_COMMENT_NON_RENDERED_TAGS.has(element.tagName.toLowerCase()) && !hiddenByMarkup) {
+    if (
+      !HTML_COMMENT_NON_RENDERED_TAGS.has(element.tagName.toLowerCase())
+      && !isHiddenHtmlCommentElement(element)
+    ) {
       continue;
     }
     element.remove();
   }
+  // Capture the fallback BEFORE adding synthetic text boundaries. It may differ from `block`
+  // because source-only or hidden descendants have been removed, and returning `block` here
+  // would restore exactly the content this display projection intentionally filtered out.
+  const retainedMarkup = template.innerHTML.trim();
   // HTML layout creates visible separation that `textContent` does not represent. Add the
   // boundary on BOTH sides so `<p>First</p>tail` and `lead<p>Second</p>` remain separate.
   // The fragment stays inside an inert template: connecting untrusted checkout HTML to the
@@ -172,7 +198,7 @@ export function fileCommentQuoteForDisplay(
   const text = (template.content.textContent ?? "")
     .replace(/[\s\u00a0]+/gu, " ")
     .trim();
-  return text || block;
+  return text || retainedMarkup || (sourceTag ? `<${sourceTag}>` : block);
 }
 
 /** A thread's opening comment - the row a draft edits and the one a reader sees first. */

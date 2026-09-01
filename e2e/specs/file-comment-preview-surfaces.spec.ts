@@ -76,7 +76,7 @@ const HTML_SOURCE = [
   "<tr><th>Retries</th><th>Window</th></tr>",                   // 9
   "<tr><td>3</td><td>30s</td></tr>",                            // 10
   "</table>",                                                   // 11
-  "<hr>",                                                       // 12
+  "<hr />",                                                     // 12
   '<div id="multi-block" style="padding: 10px">'               // 13
     + "<style>.unseen { color: red; }</style>"
     + "<p>First paragraph.</p>"
@@ -481,7 +481,7 @@ test.describe("commenting on a rendered document", () => {
     // the intentional exception rather than a blank comment header.
     await frame.locator("hr").click();
     const elementComposer = page.getByRole("region", { name: "New comment on line 12" });
-    await expect(elementComposer.getByText("<hr>", { exact: true })).toBeVisible();
+    await expect(elementComposer.getByText("<hr />", { exact: true })).toBeVisible();
     await elementComposer.getByRole("button", { name: "Cancel" }).click();
 
     // A container can itself be the clicked block when its padding is the pointer target.

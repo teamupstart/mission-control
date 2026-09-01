@@ -161,6 +161,7 @@ export function fileCommentQuoteForDisplay(
   const template = document.createElement("template");
   template.innerHTML = block;
   const sourceTag = template.content.firstElementChild?.tagName.toLowerCase() ?? null;
+  let projectionChanged = false;
   // Text-like and button inputs render their value without contributing it to `textContent`.
   // Controls such as checkboxes, radios, ranges, and colors do not visibly render that value,
   // so they deliberately keep the element-markup fallback. Passwords name their visible shape
@@ -169,10 +170,12 @@ export function fileCommentQuoteForDisplay(
     if (isHiddenHtmlCommentElement(input) || !input.value) continue;
     if (input.type === "password") {
       input.replaceWith(document.createTextNode("•".repeat([...input.value].length)));
+      projectionChanged = true;
       continue;
     }
     if (HTML_COMMENT_VISIBLE_INPUT_VALUE_TYPES.has(input.type)) {
       input.replaceWith(document.createTextNode(input.value));
+      projectionChanged = true;
     }
   }
   // A collapsed single-select renders only its selected label. A list box (`multiple` or
@@ -185,9 +188,11 @@ export function fileCommentQuoteForDisplay(
     const selectedLabel = select.selectedOptions.item(0)?.label.trim() ?? "";
     if (selectedLabel) {
       select.replaceWith(document.createTextNode(selectedLabel));
+      projectionChanged = true;
     } else {
       // Preserve the control as the textless fallback without leaking every unselected option.
       select.replaceChildren();
+      projectionChanged = true;
     }
   }
   // `textContent` includes source-only nodes and explicitly hidden descendants. Remove the
@@ -200,6 +205,7 @@ export function fileCommentQuoteForDisplay(
       continue;
     }
     element.remove();
+    projectionChanged = true;
   }
   // HTML comments are non-rendered nodes rather than elements, so the selector above cannot
   // see them. Remove them separately before the markup fallback is captured or a comment-only
@@ -207,11 +213,14 @@ export function fileCommentQuoteForDisplay(
   const commentWalker = document.createTreeWalker(template.content, NodeFilter.SHOW_COMMENT);
   const comments: Comment[] = [];
   while (commentWalker.nextNode()) comments.push(commentWalker.currentNode as Comment);
-  for (const comment of comments) comment.remove();
+  for (const comment of comments) {
+    comment.remove();
+    projectionChanged = true;
+  }
   // Capture the fallback BEFORE adding synthetic text boundaries. It may differ from `block`
   // because source-only or hidden descendants have been removed, and returning `block` here
   // would restore exactly the content this display projection intentionally filtered out.
-  const retainedMarkup = template.innerHTML.trim();
+  const retainedMarkup = projectionChanged ? template.innerHTML.trim() : block;
   // HTML layout creates visible separation that `textContent` does not represent. Add the
   // boundary on BOTH sides so `<p>First</p>tail` and `lead<p>Second</p>` remain separate.
   // The fragment stays inside an inert template: connecting untrusted checkout HTML to the

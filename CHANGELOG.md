@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.4](https://github.com/teamupstart/mission-control/compare/v1.3.3...v1.3.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **files:** show readable HTML comment quotes ([#856](https://github.com/teamupstart/mission-control/issues/856)) ([e290e78](https://github.com/teamupstart/mission-control/commit/e290e78080f1c56da3f189307158fa060c39ade0))
+* **pipelines:** show recoverable Engineer blockers ([#854](https://github.com/teamupstart/mission-control/issues/854)) ([745ff51](https://github.com/teamupstart/mission-control/commit/745ff519373387aee6e87f449d74e24ea06148f1))
+* **web:** keep Dispatch responsive with comments open ([#857](https://github.com/teamupstart/mission-control/issues/857)) ([66ffb30](https://github.com/teamupstart/mission-control/commit/66ffb30a956f765ae6e0fa508ab2eececc84fd88))
+
 ## [1.3.3](https://github.com/teamupstart/mission-control/compare/v1.3.2...v1.3.3) (2026-08-31)
 
 

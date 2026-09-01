@@ -92,8 +92,10 @@ const HTML_SOURCE = [
     + "<span hidden>Hidden only.</span></div>",
   '<p id="inline-block" style="padding: 10px">'                // 16
     + '<span style="display: inline-block">first</span>second</p>',
-  "</body>",                                                    // 17
-  "</html>",                                                    // 18
+  '<div id="only-comment" style="padding: 10px">'              // 17
+    + "<!-- internal implementation note --></div>",
+  "</body>",                                                    // 18
+  "</html>",                                                    // 19
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -589,6 +591,28 @@ test.describe("commenting on a rendered document", () => {
     const composer = page.getByRole("region", { name: "New comment on line 16" });
     await expect(composer.getByText("firstsecond", { exact: true })).toBeVisible();
     await expect(composer).not.toContainText("first second");
+  });
+
+  test("an HTML comment-only container does not expose its source comment", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#only-comment").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 17" });
+    await expect(
+      composer.getByText('<div id="only-comment" style="padding: 10px"></div>', { exact: true }),
+    ).toBeVisible();
+    await expect(composer).not.toContainText("internal implementation note");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({

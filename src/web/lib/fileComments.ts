@@ -181,6 +181,13 @@ export function fileCommentQuoteForDisplay(
     }
     element.remove();
   }
+  // HTML comments are non-rendered nodes rather than elements, so the selector above cannot
+  // see them. Remove them separately before the markup fallback is captured or a comment-only
+  // container would expose its source note in the quote.
+  const commentWalker = document.createTreeWalker(template.content, NodeFilter.SHOW_COMMENT);
+  const comments: Comment[] = [];
+  while (commentWalker.nextNode()) comments.push(commentWalker.currentNode as Comment);
+  for (const comment of comments) comment.remove();
   // Capture the fallback BEFORE adding synthetic text boundaries. It may differ from `block`
   // because source-only or hidden descendants have been removed, and returning `block` here
   // would restore exactly the content this display projection intentionally filtered out.

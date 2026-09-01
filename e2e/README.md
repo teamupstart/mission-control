@@ -86,6 +86,24 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Dispatch over a large comment index
+
+`file-comment-dispatch-performance.spec.ts` keeps its CPU assertion opt-in because a browser
+performance comparison needs an otherwise idle host. The profile drives 160 comments and 80
+real session updates, then compares Chromium renderer task CPU, sequential typing time, and
+image-attachment time with the comment rail closed and open. Each open-rail ratio must stay
+below 1.5x the closed-rail sample. Run the functional case and profile together with:
+
+```sh
+MC_E2E_EVIDENCE=1 MC_E2E_PROFILE=1 npx playwright test \
+  e2e/specs/file-comment-dispatch-performance.spec.ts --project=chromium --workers=1
+```
+
+The successful screenshot is written to
+`e2e/.artifacts/file-comment-dispatch-performance/dispatch-over-comments.png`. The profiler
+prints one `FILE_COMMENT_DISPATCH_PROFILE` JSON record so the exact before and after values can
+be retained as workflow evidence rather than restated from memory.
+
 ### A card item switched off across two Board columns
 
 `e2e/.artifacts/board-card-customization/` is the whole-board half of the same feature:

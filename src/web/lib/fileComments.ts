@@ -35,6 +35,10 @@ const HTML_COMMENT_NON_RENDERED_TAGS = new Set([
   "base", "head", "link", "meta", "noscript", "script", "style", "template", "title",
 ]);
 
+const HTML_COMMENT_BLOCK_DISPLAY_VALUES = new Set([
+  "block", "flex", "flow-root", "grid", "list-item", "table",
+]);
+
 function isHiddenHtmlCommentElement(element: Element): boolean {
   const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
     ? element.style
@@ -47,6 +51,13 @@ function isHiddenHtmlCommentElement(element: Element): boolean {
     || visibility === "hidden"
     || visibility === "collapse"
     || contentVisibility === "hidden";
+}
+
+function isBlockHtmlCommentDisplay(display: string): boolean {
+  if (HTML_COMMENT_BLOCK_DISPLAY_VALUES.has(display)) return true;
+  const tokens = display.split(/\s+/u);
+  if (tokens.includes("inline")) return false;
+  return tokens.includes("block") || tokens.includes("list-item");
 }
 
 /**
@@ -187,11 +198,8 @@ export function fileCommentQuoteForDisplay(
     const inlineDisplay = element instanceof HTMLElement
       ? element.style.display.trim().toLowerCase()
       : "";
-    const styledBox = inlineDisplay !== ""
-      && inlineDisplay !== "inline"
-      && inlineDisplay !== "contents"
-      && inlineDisplay !== "none";
-    if (!HTML_COMMENT_TEXT_BOUNDARY_TAGS.has(tag) && !styledBox) continue;
+    const styledBlock = isBlockHtmlCommentDisplay(inlineDisplay);
+    if (!HTML_COMMENT_TEXT_BOUNDARY_TAGS.has(tag) && !styledBlock) continue;
     element.before(document.createTextNode(" "));
     element.after(document.createTextNode(" "));
   }

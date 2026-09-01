@@ -90,8 +90,10 @@ const HTML_SOURCE = [
   '<div id="only-hidden" style="padding: 10px">'               // 15
     + "<script>window.hiddenOnly = true;</script>"
     + "<span hidden>Hidden only.</span></div>",
-  "</body>",                                                    // 16
-  "</html>",                                                    // 17
+  '<p id="inline-block" style="padding: 10px">'                // 16
+    + '<span style="display: inline-block">first</span>second</p>',
+  "</body>",                                                    // 17
+  "</html>",                                                    // 18
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -567,6 +569,26 @@ test.describe("commenting on a rendered document", () => {
     ).toBeVisible();
     await expect(composer).not.toContainText("window.hiddenOnly");
     await expect(composer).not.toContainText("Hidden only.");
+  });
+
+  test("an inline-block descendant does not invent whitespace in the quote", async ({
+    dashboard: page,
+    daemon,
+  }) => {
+    await dispatch(page, daemon);
+    const cwd = await sessionCwd(daemon);
+    write(cwd, HTML, HTML_SOURCE);
+    await useConsoleLayout(page, daemon);
+    await openFiles(page);
+    await choose(page, HTML);
+    await startCommenting(page);
+
+    await page.frameLocator("iframe.html-preview").locator("#inline-block").click({
+      position: { x: 3, y: 3 },
+    });
+    const composer = page.getByRole("region", { name: "New comment on line 16" });
+    await expect(composer.getByText("firstsecond", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("first second");
   });
 
   test("the comments rail follows compact HTML after earlier lines are inserted", async ({

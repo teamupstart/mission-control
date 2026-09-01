@@ -76,8 +76,9 @@ const HTML_SOURCE = [
   "<tr><th>Retries</th><th>Window</th></tr>",                   // 9
   "<tr><td>3</td><td>30s</td></tr>",                            // 10
   "</table>",                                                   // 11
-  "</body>",                                                    // 12
-  "</html>",                                                    // 13
+  "<hr>",                                                       // 12
+  "</body>",                                                    // 13
+  "</html>",                                                    // 14
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -424,14 +425,22 @@ test.describe("commenting on a rendered document", () => {
     await frame.getByText("Read this carefully.").hover();
     await shoot(page.locator(".file-content"), page, "html-hover");
     await frame.getByText("Read this carefully.").click();
-    // The composer quotes the SOURCE, markup and all - `Read this carefully.` is what the
-    // browser shows, and appears nowhere in the file.
+    // The exact source element remains the durable anchor, but the reader sees the text the
+    // preview rendered rather than markup that only the re-anchor machinery needs.
     const composer = page.getByRole("region", { name: "New comment on line 4" });
-    await expect(composer.getByText("<p>Read <strong>this</strong> carefully.</p>")).toBeVisible();
+    await expect(composer.getByText("Read this carefully.", { exact: true })).toBeVisible();
+    await expect(composer).not.toContainText("<strong>");
     await page.getByRole("textbox", { name: "Comment on line 4" }).fill(HTML_COMMENT);
     await shoot(page.locator(".file-content"), page, "html-composer");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 4" })).toBeHidden();
+
+    // The same projection is used when the durable thread is reopened, not only while the
+    // composer still owns the freshly resolved block.
+    await frame.getByText("Read this carefully.").click();
+    const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 4$/ });
+    await expect(thread.getByText("Read this carefully.", { exact: true })).toBeVisible();
+    await expect(thread).not.toContainText("<strong>");
 
     // A row inside a table written with no `<tbody>`. The browser inserts one; a source tag
     // walk does not, and would land an element off.
@@ -449,6 +458,13 @@ test.describe("commenting on a rendered document", () => {
     // Source, not rendered text, so a later `reanchor()` can find it in the file again.
     expect(stored[0]!.quote).toBe("<p>Read <strong>this</strong> carefully.</p>");
     expect(stored[1]!.quote).toBe("<tr><td>3</td><td>30s</td></tr>");
+
+    // An element with no text cannot produce a useful prose quote, so its exact markup is
+    // the intentional exception rather than a blank comment header.
+    await frame.locator("hr").click();
+    const elementComposer = page.getByRole("region", { name: "New comment on line 12" });
+    await expect(elementComposer.getByText("<hr>", { exact: true })).toBeVisible();
+    await elementComposer.getByRole("button", { name: "Cancel" }).click();
 
     await expectMarkerOnLine(page, 4);
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();
@@ -717,6 +733,9 @@ test.describe("commenting on a rendered document", () => {
 
     // `Fish & chips, twice.` on screen; `Fish &amp; chips, twice.` in the file.
     await frame.getByText("Fish & chips, twice.").click();
+    const entityComposer = page.getByRole("region", { name: "New comment on line 5" });
+    await expect(entityComposer.getByText("Fish & chips, twice.", { exact: true })).toBeVisible();
+    await expect(entityComposer).not.toContainText("&amp;");
     await writeComment(page, "line 5", "Entities are not the point of this sentence.");
 
     // The SECOND of two paragraphs that read identically. Position is what tells them apart -
@@ -812,7 +831,7 @@ test.describe("commenting on a rendered document", () => {
     // The dock carries the anchor itself, which is the job the source column was doing.
     await expect(
       page.getByRole("region", { name: "New comment on line 4" })
-        .getByText("<p>Read <strong>this</strong> carefully.</p>"),
+        .getByText("Read this carefully.", { exact: true }),
     ).toBeVisible();
     // The whole pane, so the photograph carries what the assertions above just proved: the
     // toolbar with Preview pressed, the rendered document at full width, no source column,

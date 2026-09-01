@@ -86,6 +86,45 @@ export function anchorForLine(
   return null;
 }
 
+/**
+ * What a rendered-document comment quotes back to the reader.
+ *
+ * HTML comments carry two deliberately different representations. `quote` is the source
+ * line used by ordinary re-anchoring, and `htmlBlockQuote` is the exact element used by the
+ * structural resolver. Both must remain markup so a moved element can still be found. That
+ * machinery is not what a person needs to read in the comment panel, though, so the panel
+ * projects the exact block to decoded text without changing either durable value.
+ *
+ * A block with no text, such as `<hr>`, keeps its exact markup. An empty display quote would
+ * make the target unknowable, while the element itself is the only useful human description
+ * in that case. Server rendering has no DOM parser and also keeps the raw value; the live
+ * dashboard recomputes this display-only projection in the browser.
+ */
+export function fileCommentQuoteForDisplay(
+  surface: FileCommentThread["surface"],
+  quote: string,
+  htmlBlockQuote?: string | null,
+): string {
+  if (surface !== "html") return quote;
+  const block = htmlBlockQuote ?? quote;
+  if (typeof document === "undefined") return block;
+
+  const template = document.createElement("template");
+  template.innerHTML = block;
+  // These elements establish visible separation without necessarily contributing a text
+  // node of their own. Preserve that separation before collapsing source indentation.
+  for (const lineBreak of template.content.querySelectorAll("br")) {
+    lineBreak.replaceWith(document.createTextNode(" "));
+  }
+  for (const cell of template.content.querySelectorAll("td + td, th + th, th + td, td + th")) {
+    cell.before(document.createTextNode(" "));
+  }
+  const text = (template.content.textContent ?? "")
+    .replace(/[\s\u00a0]+/gu, " ")
+    .trim();
+  return text || block;
+}
+
 /** A thread's opening comment - the row a draft edits and the one a reader sees first. */
 export function openingMessage(thread: FileCommentThread): FileCommentThread["messages"][number] | null {
   return thread.messages[0] ?? null;

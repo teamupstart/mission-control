@@ -140,6 +140,7 @@ export function FileCommentComposer({
  */
 export function FileCommentThreadCard({
   thread,
+  displayQuote,
   busy,
   error,
   onReply,
@@ -148,6 +149,8 @@ export function FileCommentThreadCard({
   onClose,
 }: {
   thread: FileCommentThreadModel;
+  /** Human-readable projection; durable anchor markup stays on `thread`. */
+  displayQuote: string;
   busy: boolean;
   error: string | null;
   /** Resolves true when the reply reached the thread. False keeps the text to retry. */
@@ -199,7 +202,7 @@ export function FileCommentThreadCard({
           <button className="icon-btn" aria-label={`Collapse comment ${thread.shortId}`} onClick={onClose}>✕</button>
         </Tooltip>
       </header>
-      <blockquote className="file-comment-quote mono">{thread.quote}</blockquote>
+      <blockquote className="file-comment-quote mono">{displayQuote}</blockquote>
       {truncated && (
         <p className="file-comment-truncated">
           Showing the most recent {thread.messages.length} of {thread.messageCount} messages.

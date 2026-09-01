@@ -17,6 +17,7 @@ import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.
 import { FileCommentRail } from "./FileCommentRail.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
 import {
+  fileCommentQuoteForDisplay,
   isCommentableDocument,
   markerLabel,
   markerTone,
@@ -1910,7 +1911,11 @@ export function FileWorkspace({
         <FileCommentComposer
           startLine={composer.startLine}
           endLine={composer.endLine}
-          quote={composer.quote}
+          quote={fileCommentQuoteForDisplay(
+            composer.surface,
+            composer.quote,
+            composer.htmlBlockQuote,
+          )}
           value={composer.text}
           busy={composer.busy}
           error={composer.error}
@@ -1924,6 +1929,11 @@ export function FileWorkspace({
       return (
         <FileCommentThreadCard
           thread={openThread}
+          displayQuote={fileCommentQuoteForDisplay(
+            openThread.surface,
+            openThread.quote,
+            openThread.htmlBlockQuote,
+          )}
           busy={threadBusy}
           error={threadError?.refreshable ? null : (threadError?.message ?? null)}
           onReply={(body) => reply(openThread.id, body)}

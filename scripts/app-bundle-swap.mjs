@@ -191,6 +191,8 @@ export function attemptSwapAppBundle({
     return {
       problem: `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`,
       appIntact: true,
+      retainedAt: null,
+      stranded: [],
     };
   }
 
@@ -203,6 +205,8 @@ export function attemptSwapAppBundle({
       return {
         problem: `could not move the existing app aside: ${why(err)}. ${appPath} is unchanged.`,
         appIntact: true,
+        retainedAt: null,
+        stranded: [],
       };
     }
   }
@@ -228,24 +232,49 @@ export function attemptSwapAppBundle({
       // The one case where the installed app is NOT where it was. A privileged retry would
       // stage over a half-dismantled destination, so this failure is final.
       appIntact: hadPrevious ? restored : true,
+      retainedAt: null,
+      stranded: [],
     };
   }
 
   // Once the new bundle is live, filing or deleting the displaced bundle is best-effort.
   // A cleanup failure must leave the successful transaction successful. In the retention
   // case, `previous` is the fallback location when the durable `failed` sibling cannot be used.
+  //
+  // Best-effort still has to be honest, though. Swallowing these errors silently meant the run
+  // that STRANDED a bundle was the one run that never mentioned it: an unprivileged swap over a
+  // root-owned predecessor cannot empty the tree it renamed aside, and `sweepDisplacedBundles`
+  // skips the live transaction's own sibling, so the operator heard nothing until some later
+  // update happened to sweep it.
+  const stranded = [];
+  let retainedAt = null;
   if (hadPrevious && keepPrevious) {
+    let filed = false;
     try {
       ops.remove(failed);
       ops.move(previous, failed);
+      filed = true;
     } catch {}
+    // Where the displaced bundle actually is, rather than where it was meant to go. The caller
+    // reports this location to the operator, so guessing it wrong sends them to an empty path.
+    retainedAt = filed ? failed : previous;
   } else if (hadPrevious) {
-    try { ops.remove(previous); } catch {}
+    try {
+      ops.remove(previous);
+    } catch {
+      stranded.push(previous);
+    }
   }
   if (!keepPrevious) {
-    try { ops.remove(failed); } catch {}
+    try {
+      ops.remove(failed);
+    } catch {
+      // A retained bundle from an earlier failed update that this account cannot delete. Still
+      // occupying disk, so it is still worth naming.
+      if (ops.exists(failed)) stranded.push(failed);
+    }
   }
-  return { problem: null, appIntact: true };
+  return { problem: null, appIntact: true, retainedAt, stranded };
 }
 
 /** The long-standing string-returning contract, kept for callers that cannot act on a retry. */
@@ -394,6 +423,13 @@ export function replaceAppBundle({
     );
   },
 }) {
+  /**
+   * The retention slot the privileged transaction aims for.
+   *
+   * Only the elevated path uses this, and only as its best available answer: the shell script
+   * does its own filing and reports nothing back, so its fallback to `previous` cannot be seen
+   * from here. The unprivileged path knows exactly where the bundle ended up and says so.
+   */
   const retained = () => (keepPrevious ? stagingPaths({ appsDir, pid }).failed : null);
   let stranded = [];
   let unprivileged = null;
@@ -409,11 +445,26 @@ export function replaceAppBundle({
       ops,
     });
     if (!attempt.problem) {
-      return { problem: null, elevated: false, failedBundle: retained(), stranded };
+      return {
+        problem: null,
+        elevated: false,
+        // What the transaction reports it actually retained, not what it set out to retain. The
+        // fallback location is real: filing the displaced bundle into the fixed slot can fail,
+        // and naming the slot anyway sends whoever reads this to an empty path.
+        failedBundle: attempt.retainedAt,
+        // Includes anything this transaction could not clean up after itself. Without that, the
+        // one run that stranded a bundle was the only run that never mentioned it.
+        stranded: [...stranded, ...attempt.stranded],
+      };
     }
     // Nothing an administrator can put right, or nothing left to safely retry over.
     if (platform !== "darwin" || !attempt.appIntact) {
-      return { problem: attempt.problem, elevated: false, failedBundle: null, stranded };
+      return {
+        problem: attempt.problem,
+        elevated: false,
+        failedBundle: null,
+        stranded: [...stranded, ...attempt.stranded],
+      };
     }
     unprivileged = attempt.problem;
   } else if (platform !== "darwin") {

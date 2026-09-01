@@ -9,6 +9,10 @@ export interface SwapAttempt {
   problem: string | null;
   /** Whether the installed app survived the attempt, so a privileged retry is safe. */
   appIntact: boolean;
+  /** Where the displaced bundle actually ended up when retaining it, including the fallback. */
+  retainedAt: string | null;
+  /** Paths this transaction could not clean up after itself and that still occupy disk. */
+  stranded: string[];
 }
 
 export const APP_BUNDLE_NAME: string;
@@ -92,6 +96,9 @@ export function replaceAppBundle(input: {
   problem: string | null;
   elevated: boolean;
   failedBundle: string | null;
-  /** Bundles displaced by earlier privileged installs that could not be reclaimed. */
+  /**
+   * Bundles that could not be reclaimed and still occupy disk: those displaced by earlier
+   * privileged installs, and any this transaction could not clean up after itself.
+   */
   stranded: string[];
 };

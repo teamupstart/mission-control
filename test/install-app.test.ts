@@ -679,6 +679,99 @@ test("the attempt reports whether the installed app survived a failure", () => {
   assert.equal(lost.appIntact, false, "an unrestorable rollback does not");
 });
 
+test("a displaced bundle this run could not delete is reported, not silently left", () => {
+  // The run that STRANDS a bundle used to be the one run that never mentioned it. An unprivileged
+  // swap over a root-owned predecessor cannot empty the tree it renamed aside, the cleanup error
+  // was swallowed, and the pre-swap sweep skips the live transaction's own sibling - so nothing
+  // reached the operator until some later update happened to sweep it.
+  const { previous } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { remove: (path) => path === previous });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: () => {
+      throw new Error("no authorization should be requested");
+    },
+  });
+
+  assert.equal(result.problem, null, "the install still succeeded");
+  assert.equal(result.elevated, false);
+  assert.deepEqual(result.stranded, [previous], "and the leftover is named");
+  assert.ok(fs.paths.has(previous), "which is true: it is still there");
+});
+
+test("a stranded bundle from the sweep and one from this run are both reported", () => {
+  const { previous } = stagingPaths(SWAP);
+  const older = "/Applications/.Mission Control.app.previous-111";
+  const fs = bundleFs([SWAP.appPath], { remove: (path) => path === previous });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [older],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null);
+  assert.deepEqual(result.stranded, [older, previous]);
+});
+
+test("retention reports where the displaced bundle actually is, not where it was aimed", () => {
+  // Filing into the fixed `failed-update` slot is best-effort, and when it fails the displaced
+  // bundle stays at the pid-named sibling. Reporting the slot regardless sent anyone following
+  // the path to somewhere empty.
+  const { previous, failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { move: (_from, to) => to === failed });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null);
+  assert.equal(result.failedBundle, previous, "the fallback location, which is where it is");
+  assert.ok(fs.paths.has(previous));
+  assert.ok(!fs.paths.has(failed));
+});
+
+test("retention reports the fixed slot when filing there succeeds", () => {
+  const { failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath]);
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.failedBundle, failed);
+  assert.ok(fs.paths.has(failed));
+});
+
 test("bundles displaced by an earlier privileged install are reclaimed, except the live one", () => {
   const removed: string[] = [];
   const stranded = sweepDisplacedBundles({

@@ -49,6 +49,22 @@ function validPid(pid) {
   return /^\d+$/.test(String(pid)) && Number(pid) > 0;
 }
 
+/**
+ * The pid a displaced-bundle suffix names, or null when the suffix is not one this code wrote.
+ *
+ * `Number()` is far too generous to decide what to delete recursively: it accepts `123.0`,
+ * `0x7b`, `1e3` and whitespace-padded forms, all of which coerce to perfectly valid integers.
+ * `stagingPaths` only ever writes a canonical decimal pid, so any other spelling is a directory
+ * this code could not have created - and the sweep's entire safety argument is that the filename
+ * pins whose bundle it is. A name we could not have produced pins nothing, so it is not ours to
+ * remove. `isSafeInteger` rules out the overflowed forms that survive the pattern.
+ */
+export function displacedBundlePid(suffix) {
+  if (!/^[1-9][0-9]*$/.test(String(suffix))) return null;
+  const pid = Number(suffix);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
 /** A numeric uid or gid, which is the only form the privileged transaction will chown to. */
 function validId(id) {
   return Number.isInteger(id) && id >= 0;
@@ -396,10 +412,10 @@ export function sweepDisplacedBundles({
   }
   for (const entry of entries) {
     if (!entry.startsWith(prefix) || entry === keep) continue;
-    const pid = Number(entry.slice(prefix.length));
-    // Not a pid this can reason about, so not a bundle it will delete. An unparseable suffix
-    // could belong to anything, including a transaction still running.
-    if (!Number.isInteger(pid) || pid < 1) continue;
+    const pid = displacedBundlePid(entry.slice(prefix.length));
+    // Not a suffix this code writes, so not a bundle it will delete. Such a name could belong to
+    // anything - another tool, a person's backup - and a transaction still running besides.
+    if (pid === null) continue;
     // Possibly mid-swap, and its sibling may be the only copy of the installed app.
     if (isRunning(pid)) continue;
     try {

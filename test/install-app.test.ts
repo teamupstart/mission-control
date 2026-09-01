@@ -9,6 +9,7 @@ import {
   bundleOwnerSpec,
   bundleSwapShellCommand,
   directoryIsWritable,
+  displacedBundlePid,
   directoryTreeIsWritable,
   privilegedBundleSwapCommand,
   replaceAppBundle,
@@ -851,9 +852,12 @@ test("a concurrent transaction's rollback bundle is never swept", () => {
   assert.deepEqual(stranded, []);
 });
 
-test("a bundle whose pid cannot be read is left alone", () => {
-  // An unparseable suffix could belong to anything, including a transaction still running, so it
-  // is not something to delete on a guess.
+test("only a canonical decimal pid suffix is ever deleted", () => {
+  // `Number()` is far too generous to decide what to delete recursively: `123.0`, `0x7b`, `1e3`
+  // and whitespace-padded forms all coerce to valid integers, and an unsafe integer survives
+  // `Number.isInteger` too. `stagingPaths` only ever writes a canonical decimal pid, so every
+  // other spelling names a directory this code could not have created - another tool's, or a
+  // person's - and the sweep's whole safety argument is that the filename pins whose it is.
   const removed: string[] = [];
   sweepDisplacedBundles({
     appsDir: "/Applications",
@@ -862,11 +866,41 @@ test("a bundle whose pid cannot be read is left alone", () => {
       ".Mission Control.app.previous-",
       ".Mission Control.app.previous-not-a-pid",
       ".Mission Control.app.previous-0",
+      ".Mission Control.app.previous-123.0",
+      ".Mission Control.app.previous-0x7b",
+      ".Mission Control.app.previous-1e3",
+      ".Mission Control.app.previous- 12 ",
+      ".Mission Control.app.previous-+7",
+      ".Mission Control.app.previous-99999999999999999999",
+      ".Mission Control.app.previous-0123",
+      // The one canonical spelling, and the only one that may be removed.
+      ".Mission Control.app.previous-777",
     ],
     isRunning: () => false,
     remove: (path) => removed.push(path),
   });
-  assert.deepEqual(removed, []);
+  assert.deepEqual(removed, ["/Applications/.Mission Control.app.previous-777"]);
+});
+
+test("a displaced-bundle pid is parsed only in the spelling this code writes", () => {
+  assert.equal(displacedBundlePid("777"), 777);
+  assert.equal(displacedBundlePid(String(process.pid)), process.pid);
+  for (const rejected of [
+    "",
+    "0",
+    "0123",
+    "123.0",
+    "0x7b",
+    "1e3",
+    " 12 ",
+    "+7",
+    "-7",
+    "not-a-pid",
+    "12abc",
+    "99999999999999999999",
+  ]) {
+    assert.equal(displacedBundlePid(rejected), null, `rejects ${JSON.stringify(rejected)}`);
+  }
 });
 
 test("the live transaction's own displaced bundle is never swept", () => {

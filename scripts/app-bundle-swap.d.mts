@@ -21,6 +21,7 @@ export const ADMINISTRATOR_AUTHORIZATION_PROMPT: string;
 export const RESTORE_AUTHORIZATION_PROMPT: string;
 export const PRIVILEGED_SWAP_APPLESCRIPT: string;
 
+export function displacedBundlePid(suffix: string): number | null;
 export function bundleOwnerSpec(
   uid: number | undefined,
   gid: number | undefined,

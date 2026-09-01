@@ -30,6 +30,11 @@ const HTML_COMMENT_TEXT_BOUNDARY_TAGS = new Set([
   "tfoot", "th", "thead", "tr", "ul",
 ]);
 
+/** Elements whose descendant text is source, metadata, or fallback rather than rendered copy. */
+const HTML_COMMENT_NON_RENDERED_TAGS = new Set([
+  "base", "head", "link", "meta", "noscript", "script", "style", "template", "title",
+]);
+
 /**
  * Whether the Editor can anchor a comment in this document.
  *
@@ -124,6 +129,25 @@ export function fileCommentQuoteForDisplay(
 
   const template = document.createElement("template");
   template.innerHTML = block;
+  // `textContent` includes source-only nodes and explicitly hidden descendants. Remove the
+  // states we can determine from inert markup before projecting the text a person saw.
+  for (const element of template.content.querySelectorAll("*")) {
+    const inlineStyle = element instanceof HTMLElement || element instanceof SVGElement
+      ? element.style
+      : null;
+    const display = inlineStyle?.display.trim().toLowerCase() ?? "";
+    const visibility = inlineStyle?.visibility.trim().toLowerCase() ?? "";
+    const contentVisibility = inlineStyle?.contentVisibility.trim().toLowerCase() ?? "";
+    const hiddenByMarkup = element.hasAttribute("hidden")
+      || display === "none"
+      || visibility === "hidden"
+      || visibility === "collapse"
+      || contentVisibility === "hidden";
+    if (!HTML_COMMENT_NON_RENDERED_TAGS.has(element.tagName.toLowerCase()) && !hiddenByMarkup) {
+      continue;
+    }
+    element.remove();
+  }
   // HTML layout creates visible separation that `textContent` does not represent. Add the
   // boundary on BOTH sides so `<p>First</p>tail` and `lead<p>Second</p>` remain separate.
   // The fragment stays inside an inert template: connecting untrusted checkout HTML to the

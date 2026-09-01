@@ -78,7 +78,13 @@ const HTML_SOURCE = [
   "</table>",                                                   // 11
   "<hr>",                                                       // 12
   '<div id="multi-block" style="padding: 10px">'               // 13
-    + "<p>First paragraph.</p><p>Second paragraph.</p></div>",
+    + "<style>.unseen { color: red; }</style>"
+    + "<p>First paragraph.</p>"
+    + "<script>window.unseen = true;</script>"
+    + "<span hidden>Hidden attribute.</span>"
+    + '<span style="display: none">Display none.</span>'
+    + '<span style="visibility: hidden">Visibility hidden.</span>'
+    + "<p>Second paragraph.</p></div>",
   "</body>",                                                    // 14
   "</html>",                                                    // 15
 ].join("\n");
@@ -469,7 +475,8 @@ test.describe("commenting on a rendered document", () => {
     await elementComposer.getByRole("button", { name: "Cancel" }).click();
 
     // A container can itself be the clicked block when its padding is the pointer target.
-    // Its descendant blocks remain separate sentences in the human-readable projection.
+    // Its descendant blocks remain separate sentences in the human-readable projection,
+    // while non-rendered descendants contribute nothing to what the person reads.
     await frame.locator("#multi-block").click({ position: { x: 3, y: 3 } });
     const containerComposer = page.getByRole("region", { name: "New comment on line 13" });
     await expect(

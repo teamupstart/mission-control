@@ -77,8 +77,10 @@ const HTML_SOURCE = [
   "<tr><td>3</td><td>30s</td></tr>",                            // 10
   "</table>",                                                   // 11
   "<hr>",                                                       // 12
-  "</body>",                                                    // 13
-  "</html>",                                                    // 14
+  '<div id="multi-block" style="padding: 10px">'               // 13
+    + "<p>First paragraph.</p><p>Second paragraph.</p></div>",
+  "</body>",                                                    // 14
+  "</html>",                                                    // 15
 ].join("\n");
 
 const HTML_HISTORY = "docs/plans/comment-history.html";
@@ -465,6 +467,16 @@ test.describe("commenting on a rendered document", () => {
     const elementComposer = page.getByRole("region", { name: "New comment on line 12" });
     await expect(elementComposer.getByText("<hr>", { exact: true })).toBeVisible();
     await elementComposer.getByRole("button", { name: "Cancel" }).click();
+
+    // A container can itself be the clicked block when its padding is the pointer target.
+    // Its descendant blocks remain separate sentences in the human-readable projection.
+    await frame.locator("#multi-block").click({ position: { x: 3, y: 3 } });
+    const containerComposer = page.getByRole("region", { name: "New comment on line 13" });
+    await expect(
+      containerComposer.getByText("First paragraph. Second paragraph.", { exact: true }),
+    ).toBeVisible();
+    await expect(containerComposer).not.toContainText("First paragraph.Second paragraph.");
+    await containerComposer.getByRole("button", { name: "Cancel" }).click();
 
     await expectMarkerOnLine(page, 4);
     await expect(page.getByRole("button", { name: /on line 10,/ })).toBeVisible();

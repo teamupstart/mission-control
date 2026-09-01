@@ -18,6 +18,19 @@ import {
 } from "@shared/file-comments.ts";
 
 /**
+ * Descendants whose text reads as a separate region even though `textContent` contributes
+ * no boundary around them. Kept to HTML elements with stable default block/table/list layout;
+ * an inline `style` can add other boxes and is handled alongside this set below.
+ */
+const HTML_COMMENT_TEXT_BOUNDARY_TAGS = new Set([
+  "address", "article", "aside", "blockquote", "caption", "dd", "details", "dialog", "div",
+  "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+  "h4", "h5", "h6", "header", "hgroup", "hr", "legend", "li", "main", "menu", "nav",
+  "ol", "option", "p", "pre", "search", "section", "summary", "table", "tbody", "td",
+  "tfoot", "th", "thead", "tr", "ul",
+]);
+
+/**
  * Whether the Editor can anchor a comment in this document.
  *
  * **Deliberately not `previewable`.** That predicate answers a different question - "is
@@ -111,13 +124,26 @@ export function fileCommentQuoteForDisplay(
 
   const template = document.createElement("template");
   template.innerHTML = block;
-  // These elements establish visible separation without necessarily contributing a text
-  // node of their own. Preserve that separation before collapsing source indentation.
-  for (const lineBreak of template.content.querySelectorAll("br")) {
-    lineBreak.replaceWith(document.createTextNode(" "));
-  }
-  for (const cell of template.content.querySelectorAll("td + td, th + th, th + td, td + th")) {
-    cell.before(document.createTextNode(" "));
+  // HTML layout creates visible separation that `textContent` does not represent. Add the
+  // boundary on BOTH sides so `<p>First</p>tail` and `lead<p>Second</p>` remain separate.
+  // The fragment stays inside an inert template: connecting untrusted checkout HTML to the
+  // dashboard document could load an image or iframe merely to compute its styles.
+  for (const element of template.content.querySelectorAll("*")) {
+    const tag = element.tagName.toLowerCase();
+    if (tag === "br") {
+      element.replaceWith(document.createTextNode(" "));
+      continue;
+    }
+    const inlineDisplay = element instanceof HTMLElement
+      ? element.style.display.trim().toLowerCase()
+      : "";
+    const styledBox = inlineDisplay !== ""
+      && inlineDisplay !== "inline"
+      && inlineDisplay !== "contents"
+      && inlineDisplay !== "none";
+    if (!HTML_COMMENT_TEXT_BOUNDARY_TAGS.has(tag) && !styledBox) continue;
+    element.before(document.createTextNode(" "));
+    element.after(document.createTextNode(" "));
   }
   const text = (template.content.textContent ?? "")
     .replace(/[\s\u00a0]+/gu, " ")

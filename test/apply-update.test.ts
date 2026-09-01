@@ -11,8 +11,10 @@ import {
   claimPrecedes,
   HELPER_LOCK_DIR_NAME,
   parseClaimEntryName,
+  parseStagingEntryName,
   processStartedAt,
   releaseHelperLock,
+  stagingEntryName,
   INSTALL_TIMEOUT_MS,
   installFailureSummary,
   parseArgs,
@@ -756,6 +758,40 @@ test("a reused pid does not keep a dead helper's claim alive", () => {
     false,
     "the dead helper's claim was cleared",
   );
+});
+
+test("a staging file left by a killed helper is swept, and a live helper's is not", () => {
+  // A helper killed between writing its staging file and renaming it into place leaves that file
+  // behind. It can never be mistaken for a claim - the name cannot match the claim pattern - but
+  // without a sweep it would sit in the state directory forever, one per killed helper.
+  const deadStaging = stagingEntryName(9182, 500);
+  const liveStaging = stagingEntryName(7788, 600);
+  const c = claimDir({}, [7788, 4242], { pid: 4242, now: 1000 });
+  c.store.set(`${c.DIR}/${deadStaging}`, "half-written");
+  c.store.set(`${c.DIR}/${liveStaging}`, "half-written");
+
+  const result = acquireHelperLock(c.DIR, c.ops);
+
+  assert.equal(result.ok, true, "staging files are not claims and do not block");
+  assert.deepEqual(c.names().sort(), [
+    claimEntryName({ createdAtMs: 1000, pid: 4242 }),
+    liveStaging,
+  ].sort());
+  // 7788 is still running, so its rename is still coming and its staging file is left alone.
+  assert.ok(c.names().includes(liveStaging));
+  assert.ok(!c.names().includes(deadStaging));
+});
+
+test("a staging name is never read as a claim, and vice versa", () => {
+  const staging = stagingEntryName(4242, 1_756_720_000_000);
+  assert.equal(parseClaimEntryName(staging), null);
+  assert.deepEqual(parseStagingEntryName(staging), { pid: 4242, name: staging });
+  const claim = claimEntryName({ createdAtMs: 1_756_720_000_000, pid: 4242 });
+  assert.equal(parseStagingEntryName(claim), null);
+  assert.ok(parseClaimEntryName(claim));
+  // Neither pattern claims an unrelated file.
+  assert.equal(parseStagingEntryName("README"), null);
+  assert.equal(parseClaimEntryName("README"), null);
 });
 
 test("liveness is conservative when a process cannot be identified", () => {

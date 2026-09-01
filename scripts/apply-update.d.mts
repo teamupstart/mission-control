@@ -63,6 +63,10 @@ export function claimPrecedes(
 ): boolean;
 export function claimEntryName(input: { createdAtMs: number; pid: number }): string;
 export function parseClaimEntryName(name: string): ClaimEntry | null;
+export function stagingEntryName(pid: number, createdAtMs: number): string;
+export function parseStagingEntryName(
+  name: string,
+): { pid: number; name: string } | null;
 export function acquireHelperLock(
   directory: string,
   ops: HelperLockOps,

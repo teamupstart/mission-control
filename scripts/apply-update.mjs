@@ -95,6 +95,23 @@ export function parseClaimEntryName(name) {
   return { createdAtMs: Number(match[1]), pid: Number(match[2]), name };
 }
 
+/** The staging name an entry is written under before being renamed into place. */
+export function stagingEntryName(pid, createdAtMs) {
+  return `.tmp-${pid}-${createdAtMs}`;
+}
+
+/**
+ * The pid that owns a staging file, or null when the name is not one.
+ *
+ * A helper killed between writing its staging file and renaming it into place leaves that file
+ * behind. It is never mistaken for a claim - the name cannot match the claim pattern - but
+ * without this it would sit in the state directory forever, one per killed helper.
+ */
+export function parseStagingEntryName(name) {
+  const match = /^\.tmp-(\d+)-(\d+)$/.exec(name);
+  return match ? { pid: Number(match[1]), name } : null;
+}
+
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 
 /**
@@ -218,7 +235,18 @@ export function acquireHelperLock(directory, ops) {
   let rival = null;
   for (const name of names) {
     const parsed = parseClaimEntryName(name);
-    if (!parsed || name === myName) continue;
+    if (!parsed) {
+      // A staging file whose helper died before it could rename it into place. Removed only when
+      // its owning pid is not running: deleting a live helper's staging file would make its
+      // rename fail for no reason. Identity-pinned like every other delete here - the pid is in
+      // the name, so this can only ever clear the leftovers of the process named in it.
+      const staging = parseStagingEntryName(name);
+      if (staging && !ops.isLive({ pid: staging.pid, startedAt: null })) {
+        ops.removeEntry(directory, name);
+      }
+      continue;
+    }
+    if (name === myName) continue;
     const recorded = ops.readEntry(directory, name);
     const entry = { ...parsed, startedAt: recorded?.startedAt ?? null };
     if (!ops.isLive(entry)) {
@@ -256,7 +284,7 @@ export function realHelperLockOperations() {
     writeEntry: (directory, name, body) => {
       // `.tmp-` is outside the `<digits>-<pid>.claim` pattern, so a temporary file is never read
       // as a claim even if this helper dies between the write and the rename.
-      const staging = join(directory, `.tmp-${process.pid}-${Date.now()}`);
+      const staging = join(directory, stagingEntryName(process.pid, Date.now()));
       writeFileSync(staging, `${body}\n`, { encoding: "utf8", mode: 0o600 });
       renameSync(staging, join(directory, name));
     },

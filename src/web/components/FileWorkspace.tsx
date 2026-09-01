@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
@@ -213,17 +221,7 @@ function focusCurrentFileRow(root: ParentNode): boolean {
   return true;
 }
 
-export function FileWorkspace({
-  session,
-  controller,
-  fileCommentThreads = [],
-  fileCommentReviews = [],
-  fileLineRequest = null,
-  onExtract,
-  extracted = false,
-  isOverlayOpen,
-  ref,
-}: {
+export interface FileWorkspaceProps {
   session: Session;
   controller: SessionFilesController;
   /**
@@ -250,7 +248,41 @@ export function FileWorkspace({
   extracted?: boolean;
   isOverlayOpen?: () => boolean;
   ref?: React.Ref<FileWorkspaceHandle>;
-}): React.JSX.Element {
+}
+
+/**
+ * Session upserts carry activity, cost, state, and transcript progress several times during
+ * an active turn. Files reads only the session identity and display name, so those unrelated
+ * fields must not redraw CodeMirror and every open comment-index row. That redraw is especially
+ * expensive while Dispatch is also painting its controlled form on each keystroke.
+ */
+export function fileWorkspacePropsEqual(
+  previous: FileWorkspaceProps,
+  next: FileWorkspaceProps,
+): boolean {
+  return previous.session.id === next.session.id
+    && previous.session.name === next.session.name
+    && previous.controller === next.controller
+    && previous.fileCommentThreads === next.fileCommentThreads
+    && previous.fileCommentReviews === next.fileCommentReviews
+    && previous.fileLineRequest === next.fileLineRequest
+    && previous.onExtract === next.onExtract
+    && previous.extracted === next.extracted
+    && previous.isOverlayOpen === next.isOverlayOpen
+    && previous.ref === next.ref;
+}
+
+function FileWorkspaceBody({
+  session,
+  controller,
+  fileCommentThreads = [],
+  fileCommentReviews = [],
+  fileLineRequest = null,
+  onExtract,
+  extracted = false,
+  isOverlayOpen,
+  ref,
+}: FileWorkspaceProps): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
@@ -2425,6 +2457,8 @@ export function FileWorkspace({
     </section>
   );
 }
+
+export const FileWorkspace = memo(FileWorkspaceBody, fileWorkspacePropsEqual);
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

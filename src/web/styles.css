@@ -4864,16 +4864,27 @@ body.is-pane-resizing {
 .file-comment-rail-list {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  position: relative;
   margin: 0;
   padding: 5px;
   overflow: auto;
   list-style: none;
 }
+.file-comment-rail-spacer {
+  pointer-events: none;
+}
+.file-comment-rail-item {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  right: 5px;
+  /* The virtual rail uses a fixed row pitch. Keep every descendant inside that slot so a
+     long comment preview can never paint across the next independently positioned row. */
+  overflow: hidden;
+}
 .file-comment-rail-row {
   width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 4px;

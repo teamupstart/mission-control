@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -206,6 +206,10 @@ export function ConsoleDetail({
   const [inviteError, setInviteError] = useState<string | null>(null);
   const transcriptRef = useRef<TranscriptHandle>(null);
   const filesRef = useRef<FileWorkspaceHandle>(null);
+  const extractFiles = useCallback(
+    () => view.onOpenFiles(session.id),
+    [session.id, view.onOpenFiles],
+  );
   const paneRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   /**
@@ -847,7 +851,7 @@ export function ConsoleDetail({
                 fileCommentThreads={view.fileCommentThreads}
                 fileCommentReviews={view.fileCommentReviews}
                 fileLineRequest={view.fileLineRequest}
-                onExtract={() => view.onOpenFiles(session.id)}
+                onExtract={extractFiles}
                 isOverlayOpen={view.isOverlayOpen}
               />
             ) : (

@@ -40,7 +40,10 @@ import {
   FileCommentComposer,
   FileCommentThreadCard,
 } from "../src/web/components/FileCommentThread.tsx";
-import { FileCommentRail } from "../src/web/components/FileCommentRail.tsx";
+import {
+  FileCommentRail,
+  fileCommentRailWindow,
+} from "../src/web/components/FileCommentRail.tsx";
 import {
   anchorForLine,
   isCommentableDocument,
@@ -317,6 +320,12 @@ test("the comments rail indexes every thread, including resolved ones", () => {
   assert.ok(html.includes("This one is already closed."));
   assert.ok(html.includes("resolved"));
   assert.match(html, /aria-current="true"/);
+});
+
+test("the comments rail keeps a bounded DOM window while covering either end of a large index", () => {
+  assert.deepEqual(fileCommentRailWindow(160, 0, 640), { start: 0, end: 12 });
+  assert.deepEqual(fileCommentRailWindow(160, 14_080, 640), { start: 156, end: 160 });
+  assert.deepEqual(fileCommentRailWindow(2, 0, 640), { start: 0, end: 2 });
 });
 
 test("the composer names the line it is anchored to and quotes it back", () => {

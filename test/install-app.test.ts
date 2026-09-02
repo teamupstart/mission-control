@@ -2,10 +2,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   ADMINISTRATOR_AUTHORIZATION_PROMPT,
+  APP_BUNDLE_NAME,
   PRIVILEGED_SWAP_APPLESCRIPT,
+  RESTORE_AUTHORIZATION_PROMPT,
+  attemptSwapAppBundle,
+  bundleOwnerSpec,
   bundleSwapShellCommand,
+  directoryIsWritable,
+  displacedBundlePid,
+  directoryTreeIsWritable,
   privilegedBundleSwapCommand,
   replaceAppBundle,
+  sweepDisplacedBundles,
 } from "../scripts/app-bundle-swap.mjs";
 import {
   chmodSync,
@@ -449,27 +457,473 @@ test("an unwritable /Applications uses one narrowly scoped administrator transac
     appsDir: "/Applications",
     pid: 4242,
     platform: "darwin",
-    writable: false,
+    appsDirWritable: false,
     runElevated: (command) => commands.push(command),
   });
 
-  assert.deepEqual(result, { problem: null, elevated: true, failedBundle: null });
+  assert.deepEqual(result, {
+    problem: null,
+    elevated: true,
+    failedBundle: null,
+    stranded: [],
+  });
   assert.equal(commands.length, 1);
   assert.match(commands[0]!, /^set -eu\n/);
   assert.match(commands[0]!, /\/bin\/cp -R/);
   assert.match(commands[0]!, /'"'"'/, "a quote in the source path is shell-escaped");
   assert.match(commands[0]!, /\/Applications\/\.Mission Control\.app\.incoming-4242/);
   assert.match(commands[0]!, /\/Applications\/Mission Control\.app/);
-  // The script may name the fixed destination in explanatory copy, but the transaction and
-  // its source path still arrive only through argv after the path checks above.
+  // The transaction, its source path, and now the prompt all arrive only through argv after
+  // the path checks above. Nothing a caller supplies is interpolated into the script source.
   assert.doesNotMatch(PRIVILEGED_SWAP_APPLESCRIPT, /private\/tmp|Mission Control\.app/);
   assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with administrator privileges/);
-  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with prompt/);
+  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /with prompt \(item 2 of argv\)/);
+  assert.doesNotMatch(PRIVILEGED_SWAP_APPLESCRIPT, /needs administrator permission/);
   assert.equal(
     ADMINISTRATOR_AUTHORIZATION_PROMPT,
     "Mission Control needs administrator permission to install this update in /Applications.",
   );
-  assert.match(PRIVILEGED_SWAP_APPLESCRIPT, /Mission Control needs administrator permission/);
+});
+
+test("the install and the rollback ask for authorization in their own words", () => {
+  // One shared prompt meant the panel that UNDOES an update still read "install this update",
+  // so the only reading available to the person answering it was that approving it applied the
+  // upgrade. The failing update log records exactly that: the install panel was dismissed and
+  // the rollback panel authorized, leaving the old app in place and the update reported failed.
+  assert.match(ADMINISTRATOR_AUTHORIZATION_PROMPT, /install this update/);
+  assert.match(RESTORE_AUTHORIZATION_PROMPT, /restore the previous app/);
+  assert.notEqual(ADMINISTRATOR_AUTHORIZATION_PROMPT, RESTORE_AUTHORIZATION_PROMPT);
+
+  const prompts: string[] = [];
+  replaceAppBundle({
+    sourceBundle: "/private/tmp/Mission Control.app",
+    appPath: "/Applications/Mission Control.app",
+    appsDir: "/Applications",
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: false,
+    prompt: RESTORE_AUTHORIZATION_PROMPT,
+    runElevated: (_command, prompt) => prompts.push(prompt),
+  });
+  assert.deepEqual(prompts, [RESTORE_AUTHORIZATION_PROMPT]);
+});
+
+test("an elevated install hands the new bundle back to the signed-in account", () => {
+  // The ratchet this closes: the privileged `cp` runs as root, so every elevated install left a
+  // root-owned bundle - and a root-owned bundle is what sent the NEXT update down the
+  // privileged path too. One install needing authorization made all of them need it.
+  const commands: string[] = [];
+  replaceAppBundle({
+    sourceBundle: "/private/tmp/Mission Control.app",
+    appPath: "/Applications/Mission Control.app",
+    appsDir: "/Applications",
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: false,
+    owner: "501:20",
+    runElevated: (command) => commands.push(command),
+  });
+
+  const staged = "/Applications/.Mission Control.app.incoming-4242";
+  assert.match(commands[0]!, /\/usr\/sbin\/chown -R '501:20'/);
+  // Before the bundle goes live and inside `set -eu`, so a chown that fails fails while the
+  // installed app is still untouched rather than after it has been replaced.
+  const chownAt = commands[0]!.indexOf("chown");
+  const liveAt = commands[0]!.indexOf(`/bin/mv '${staged}' '/Applications/Mission Control.app'`);
+  assert.ok(chownAt > 0 && liveAt > chownAt, "the chown precedes the decisive move");
+  assert.doesNotMatch(commands[0]!, /chown[^\n]*\|\| true/);
+});
+
+test("the privileged transaction refuses a non-numeric owner", () => {
+  // Numeric ids only: name lookup is not dependable in this authorization context - authd logs
+  // `User not found` for the very account it then matches by uid - and a name is a string the
+  // shell transaction would have to trust.
+  const plan = privilegedBundleSwapCommand({
+    sourceBundle: "/private/tmp/Mission Control.app",
+    appPath: "/Applications/Mission Control.app",
+    appsDir: "/Applications",
+    pid: 4242,
+    keepPrevious: false,
+    owner: "root:wheel",
+  });
+  assert.equal(plan.command, null);
+  assert.match(String(plan.problem), /numeric uid:gid/);
+});
+
+test("a bundle this account cannot rewrite is replaced without asking for authorization", () => {
+  // The defect this closes, and the whole reason auto-upgrade kept failing. A previous elevated
+  // install leaves a root-owned bundle, and the writability check demanded write access to every
+  // directory INSIDE it before it would use the ordinary filesystem path. The transaction never
+  // writes into that bundle - it stages a sibling, renames the old bundle aside, and renames the
+  // new one in, all of which need `appsDir` alone - so the prompt it forced was never required.
+  //
+  // Modelled the way the real failure presents: `/Applications` is writable, and the outgoing
+  // bundle is not. `move` and `copy` therefore succeed, which is what the filesystem does.
+  const fs = bundleFs([SWAP.appPath]);
+  const prompts: string[] = [];
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: (_command, prompt) => prompts.push(prompt),
+  });
+
+  assert.equal(result.problem, null);
+  assert.equal(result.elevated, false, "no administrator authorization was requested");
+  assert.deepEqual(prompts, [], "no authorization panel was raised");
+  assert.ok(fs.paths.has(SWAP.appPath), "the new app is live");
+});
+
+test("authorization is requested only after the plain attempt has failed", () => {
+  // Attempt, then escalate - rather than predicting which path will work. A move that genuinely
+  // cannot be done unprivileged still reaches the administrator transaction, so nothing that
+  // used to be installable stops being installable.
+  const { staged } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { move: (from) => from === staged });
+  const prompts: string[] = [];
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: (_command, prompt) => prompts.push(prompt),
+  });
+
+  assert.equal(result.problem, null);
+  assert.equal(result.elevated, true);
+  assert.deepEqual(prompts, [ADMINISTRATOR_AUTHORIZATION_PROMPT]);
+});
+
+test("a plain attempt that left the app dismantled is not retried with authorization", () => {
+  // The one failure that must NOT escalate: the app was moved aside and could not be moved back,
+  // so a privileged retry would stage over a half-dismantled destination. Reported, not retried.
+  const { staged, previous } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], {
+    move: (from) => from === staged || from === previous,
+  });
+  const prompts: string[] = [];
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: (_command, prompt) => prompts.push(prompt),
+  });
+
+  assert.match(String(result.problem), /move it back by hand/);
+  assert.equal(result.elevated, false);
+  assert.deepEqual(prompts, [], "no authorization was requested for an unsafe retry");
+});
+
+test("an escalated failure reports why the plain attempt failed as well", () => {
+  // "User canceled" on its own reads as the whole story. It is not: an ordinary install was
+  // tried first, and why THAT could not finish is what tells anyone reading the log what to fix.
+  const { staged } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { move: (from) => from === staged });
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: () => {
+      throw new Error("execution error: User canceled. (-128)");
+    },
+  });
+
+  assert.match(String(result.problem), /could not put the new app in place/);
+  assert.match(String(result.problem), /User canceled/);
+});
+
+test("the attempt reports whether the installed app survived a failure", () => {
+  const failedCopy = attemptSwapAppBundle({
+    ...SWAP,
+    ops: bundleFs([SWAP.appPath], { copy: true }).ops,
+  });
+  assert.match(String(failedCopy.problem), /could not stage the new app/);
+  assert.equal(failedCopy.appIntact, true, "a failed copy leaves the app intact");
+
+  const failedAside = attemptSwapAppBundle({
+    ...SWAP,
+    ops: bundleFs([SWAP.appPath], { move: (from) => from === SWAP.appPath }).ops,
+  });
+  assert.match(String(failedAside.problem), /could not move the existing app aside/);
+  assert.equal(failedAside.appIntact, true, "a failed move-aside leaves the app intact");
+
+  const { staged, previous } = stagingPaths(SWAP);
+  const restored = attemptSwapAppBundle({
+    ...SWAP,
+    ops: bundleFs([SWAP.appPath], { move: (from) => from === staged }).ops,
+  });
+  assert.equal(restored.appIntact, true, "a restored rollback leaves the app intact");
+
+  const lost = attemptSwapAppBundle({
+    ...SWAP,
+    ops: bundleFs([SWAP.appPath], { move: (from) => from === staged || from === previous }).ops,
+  });
+  assert.equal(lost.appIntact, false, "an unrestorable rollback does not");
+});
+
+test("a displaced bundle this run could not delete is reported, not silently left", () => {
+  // The run that STRANDS a bundle used to be the one run that never mentioned it. An unprivileged
+  // swap over a root-owned predecessor cannot empty the tree it renamed aside, the cleanup error
+  // was swallowed, and the pre-swap sweep skips the live transaction's own sibling - so nothing
+  // reached the operator until some later update happened to sweep it.
+  const { previous } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { remove: (path) => path === previous });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+    runElevated: () => {
+      throw new Error("no authorization should be requested");
+    },
+  });
+
+  assert.equal(result.problem, null, "the install still succeeded");
+  assert.equal(result.elevated, false);
+  assert.deepEqual(result.stranded, [previous], "and the leftover is named");
+  assert.ok(fs.paths.has(previous), "which is true: it is still there");
+});
+
+test("a stranded bundle from the sweep and one from this run are both reported", () => {
+  const { previous } = stagingPaths(SWAP);
+  const older = "/Applications/.Mission Control.app.previous-111";
+  const fs = bundleFs([SWAP.appPath], { remove: (path) => path === previous });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [older],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null);
+  assert.deepEqual(result.stranded, [older, previous]);
+});
+
+test("retention reports where the displaced bundle actually is, not where it was aimed", () => {
+  // Filing into the fixed `failed-update` slot is best-effort, and when it fails the displaced
+  // bundle stays at the pid-named sibling. Reporting the slot regardless sent anyone following
+  // the path to somewhere empty.
+  const { previous, failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath], { move: (_from, to) => to === failed });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null);
+  assert.equal(result.failedBundle, previous, "the fallback location, which is where it is");
+  assert.ok(fs.paths.has(previous));
+  assert.ok(!fs.paths.has(failed));
+});
+
+test("an older retained bundle that blocks filing is reported", () => {
+  // The reason filing fails: an earlier retained bundle at the fixed slot that this account
+  // cannot delete. It stays on disk and nothing else finds it - `sweepDisplacedBundles` scans
+  // `previous-*` siblings only and never this fixed path - so if it is not reported here it is
+  // not reported at all.
+  const { previous, failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath, failed], { remove: (path) => path === failed });
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.problem, null, "the install still succeeded");
+  assert.equal(result.failedBundle, previous, "this run's bundle is at the fallback");
+  assert.deepEqual(result.stranded, [failed], "and the blocker is named");
+  assert.ok(fs.paths.has(failed), "which is true: it is still there");
+});
+
+test("retention reports the fixed slot when filing there succeeds", () => {
+  const { failed } = stagingPaths(SWAP);
+  const fs = bundleFs([SWAP.appPath]);
+
+  const result = replaceAppBundle({
+    sourceBundle: SWAP.packagedApp,
+    appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir,
+    pid: 4242,
+    keepPrevious: true,
+    platform: "darwin",
+    appsDirWritable: true,
+    sweep: () => [],
+    ops: fs.ops,
+  });
+
+  assert.equal(result.failedBundle, failed);
+  assert.ok(fs.paths.has(failed));
+});
+
+test("bundles displaced by an earlier privileged install are reclaimed, except the live one", () => {
+  const removed: string[] = [];
+  const stranded = sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [
+      "Mission Control.app",
+      ".Mission Control.app.previous-111",
+      ".Mission Control.app.previous-222",
+      ".Mission Control.app.previous-4242",
+      ".Mission Control.app.failed-update",
+      "Safari.app",
+    ],
+    // Injected, not inherited: pids 111 and 222 might genuinely be running on the machine this
+    // suite happens to execute on, and the sweep asks the real OS by default.
+    isRunning: () => false,
+    remove: (path) => {
+      // A root-owned tree this account can rename but not empty, which is the whole reason
+      // these get left behind in the first place.
+      if (path.endsWith("previous-222")) throw new Error("Operation not permitted");
+      removed.push(path);
+    },
+  });
+
+  assert.deepEqual(removed, ["/Applications/.Mission Control.app.previous-111"]);
+  assert.deepEqual(stranded, ["/Applications/.Mission Control.app.previous-222"]);
+});
+
+test("a concurrent transaction's rollback bundle is never swept", () => {
+  // The worst defect the sweep could have, and it is not hypothetical: `install-app.mjs` is a
+  // supported command anyone can run directly, so a swap can be in flight with no helper claim
+  // held. Between "move the installed app aside" and "move the staged app live", that
+  // `previous-<pid>` sibling is the ONLY copy of the app. Sweeping it because it is not THIS
+  // transaction's pid means that if the other transaction's staged move then fails, its rollback
+  // has nothing to restore - and the person is left with no installed app at all.
+  const removed: string[] = [];
+  const stranded = sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [
+      ".Mission Control.app.previous-111",
+      ".Mission Control.app.previous-999",
+      ".Mission Control.app.previous-4242",
+    ],
+    // 999 is another swap still running; 111 belongs to a process long gone.
+    isRunning: (pid) => pid === 999,
+    remove: (path) => removed.push(path),
+  });
+
+  assert.deepEqual(removed, ["/Applications/.Mission Control.app.previous-111"]);
+  assert.deepEqual(stranded, []);
+});
+
+test("only a canonical decimal pid suffix is ever deleted", () => {
+  // `Number()` is far too generous to decide what to delete recursively: `123.0`, `0x7b`, `1e3`
+  // and whitespace-padded forms all coerce to valid integers, and an unsafe integer survives
+  // `Number.isInteger` too. `stagingPaths` only ever writes a canonical decimal pid, so every
+  // other spelling names a directory this code could not have created - another tool's, or a
+  // person's - and the sweep's whole safety argument is that the filename pins whose it is.
+  const removed: string[] = [];
+  sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [
+      ".Mission Control.app.previous-",
+      ".Mission Control.app.previous-not-a-pid",
+      ".Mission Control.app.previous-0",
+      ".Mission Control.app.previous-123.0",
+      ".Mission Control.app.previous-0x7b",
+      ".Mission Control.app.previous-1e3",
+      ".Mission Control.app.previous- 12 ",
+      ".Mission Control.app.previous-+7",
+      ".Mission Control.app.previous-99999999999999999999",
+      ".Mission Control.app.previous-0123",
+      // The one canonical spelling, and the only one that may be removed.
+      ".Mission Control.app.previous-777",
+    ],
+    isRunning: () => false,
+    remove: (path) => removed.push(path),
+  });
+  assert.deepEqual(removed, ["/Applications/.Mission Control.app.previous-777"]);
+});
+
+test("a displaced-bundle pid is parsed only in the spelling this code writes", () => {
+  assert.equal(displacedBundlePid("777"), 777);
+  assert.equal(displacedBundlePid(String(process.pid)), process.pid);
+  for (const rejected of [
+    "",
+    "0",
+    "0123",
+    "123.0",
+    "0x7b",
+    "1e3",
+    " 12 ",
+    "+7",
+    "-7",
+    "not-a-pid",
+    "12abc",
+    "99999999999999999999",
+  ]) {
+    assert.equal(displacedBundlePid(rejected), null, `rejects ${JSON.stringify(rejected)}`);
+  }
+});
+
+test("the live transaction's own displaced bundle is never swept", () => {
+  // It is the retention fallback the swap relies on when it cannot file the displaced bundle,
+  // so sweeping it would destroy the only remaining copy of the previous app.
+  const removed: string[] = [];
+  sweepDisplacedBundles({
+    appsDir: "/Applications",
+    keepPid: 4242,
+    readdir: () => [".Mission Control.app.previous-4242"],
+    isRunning: () => false,
+    remove: (path) => removed.push(path),
+  });
+  assert.deepEqual(removed, []);
+});
+
+test("an owner spec is produced only from usable numeric ids", () => {
+  assert.equal(bundleOwnerSpec(501, 20), "501:20");
+  assert.equal(bundleOwnerSpec(0, 0), "0:0");
+  // No uid available means no chown rather than a guessed one, and the transaction still runs.
+  assert.equal(bundleOwnerSpec(undefined, undefined), null);
+  assert.equal(bundleOwnerSpec(-1, 20), null);
+  assert.equal(bundleOwnerSpec(501, undefined), null);
 });
 
 test("administrator authorization cannot target an arbitrary install directory", () => {
@@ -623,4 +1077,68 @@ test("the privileged shell transaction tolerates a failed post-swap retention st
   assert.equal(readFileSync(join(appPath, "version.txt"), "utf8"), "new\n");
   assert.equal(readFileSync(join(previous, "version.txt"), "utf8"), "old\n");
   assert.equal(readFileSync(join(failed, "locked.txt"), "utf8"), "retained evidence\n");
+});
+
+test("the real writability check does not demand a rewritable outgoing bundle", async (t) => {
+  // The regression that made auto-upgrade fail repeatedly, pinned against the DEFAULT check
+  // rather than an injected one. The tests above pass `appsDirWritable` explicitly, so they
+  // cannot notice `directoryTreeIsWritable` being reinstated in the default - and that
+  // reinstatement IS the defect: it requires write access to every directory inside the
+  // outgoing bundle, which a bundle left by a previous elevated install does not grant, and
+  // which the transaction never needed. Real directories, real permissions, no injection.
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    t.skip("an unwritable directory does not constrain root");
+    return;
+  }
+
+  const appsDir = await mkdtemp(join(tmpdir(), "mission-bundle-unwritable-"));
+  const sourceBundle = join(appsDir, "source.app");
+  const appPath = join(appsDir, APP_BUNDLE_NAME);
+  const locked = join(appPath, "Contents");
+  const displaced = stagingPaths({ appsDir, pid: process.pid }).previous;
+  t.after(() => {
+    // The displaced bundle keeps the unwritable directories, which is the whole point: an
+    // unprivileged swap can rename a bundle it cannot rewrite out of the way, but it cannot
+    // empty one. Teardown has to undo the permissions the test set, or it cannot clean up.
+    for (const path of [locked, appPath, displaced, join(displaced, "Contents")]) {
+      try { chmodSync(path, 0o755); } catch {}
+    }
+    rmSync(appsDir, { recursive: true, force: true });
+  });
+
+  mkdirSync(sourceBundle);
+  writeFileSync(join(sourceBundle, "version.txt"), "new\n");
+  mkdirSync(locked, { recursive: true });
+  writeFileSync(join(locked, "version.txt"), "old\n");
+  // Exactly the shape a root-owned install leaves behind: the parent stays writable, the
+  // bundle's own directories do not.
+  chmodSync(locked, 0o555);
+  chmodSync(appPath, 0o555);
+
+  assert.equal(directoryIsWritable(appsDir), true, "the install directory is writable");
+  assert.equal(
+    directoryTreeIsWritable(appPath),
+    false,
+    "the outgoing bundle is not rewritable, which is what used to force a prompt",
+  );
+
+  const prompts: string[] = [];
+  const result = replaceAppBundle({
+    sourceBundle,
+    appPath,
+    appsDir,
+    pid: process.pid,
+    platform: "darwin",
+    // No `appsDirWritable` and no `ops`: the real predicate and the real filesystem decide.
+    runElevated: (_command, prompt) => prompts.push(prompt),
+  });
+
+  assert.equal(result.problem, null, `the swap failed: ${result.problem}`);
+  assert.equal(result.elevated, false, "no administrator authorization was requested");
+  assert.deepEqual(prompts, [], "no authorization panel was raised");
+  assert.equal(
+    readFileSync(join(appPath, "version.txt"), "utf8"),
+    "new\n",
+    "the new bundle is live",
+  );
 });

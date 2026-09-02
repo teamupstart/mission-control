@@ -9,6 +9,7 @@ import {
   constants as fsConstants,
   existsSync,
   lstatSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -19,10 +20,25 @@ export const APP_BUNDLE_NAME = "Mission Control.app";
 export const DEFAULT_APPS_DIR = "/Applications";
 export const ADMINISTRATOR_AUTHORIZATION_PROMPT =
   "Mission Control needs administrator permission to install this update in /Applications.";
+/**
+ * The rollback wears its own sentence.
+ *
+ * One shared constant meant the panel raised to put the OLD app back still read "install this
+ * update in /Applications", so an operator who authorized it had every reason to believe they
+ * were approving the upgrade. They were approving its undo. Authorizing a rollback is a
+ * different decision from authorizing an install and has to read as one.
+ */
+export const RESTORE_AUTHORIZATION_PROMPT =
+  "Mission Control needs administrator permission to restore the previous app in /Applications.";
 
+/**
+ * The prompt travels through argv beside the transaction rather than interpolated into the
+ * source. Two callers now supply two different sentences, and a sentence spliced into an
+ * AppleScript string literal is one quote away from changing what the script says.
+ */
 export const PRIVILEGED_SWAP_APPLESCRIPT = `on run argv
-  if (count of argv) is not 1 then error "expected one bundle transaction"
-  do shell script (item 1 of argv) with prompt "${ADMINISTRATOR_AUTHORIZATION_PROMPT}" with administrator privileges
+  if (count of argv) is not 2 then error "expected one bundle transaction and one prompt"
+  do shell script (item 1 of argv) with prompt (item 2 of argv) with administrator privileges
 end run`;
 
 function shellQuote(value) {
@@ -31,6 +47,39 @@ function shellQuote(value) {
 
 function validPid(pid) {
   return /^\d+$/.test(String(pid)) && Number(pid) > 0;
+}
+
+/**
+ * The pid a displaced-bundle suffix names, or null when the suffix is not one this code wrote.
+ *
+ * `Number()` is far too generous to decide what to delete recursively: it accepts `123.0`,
+ * `0x7b`, `1e3` and whitespace-padded forms, all of which coerce to perfectly valid integers.
+ * `stagingPaths` only ever writes a canonical decimal pid, so any other spelling is a directory
+ * this code could not have created - and the sweep's entire safety argument is that the filename
+ * pins whose bundle it is. A name we could not have produced pins nothing, so it is not ours to
+ * remove. `isSafeInteger` rules out the overflowed forms that survive the pattern.
+ */
+export function displacedBundlePid(suffix) {
+  if (!/^[1-9][0-9]*$/.test(String(suffix))) return null;
+  const pid = Number(suffix);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
+/** A numeric uid or gid, which is the only form the privileged transaction will chown to. */
+function validId(id) {
+  return Number.isInteger(id) && id >= 0;
+}
+
+/**
+ * `uid:gid` for the privileged chown, or null when this account cannot be named numerically.
+ *
+ * Numeric ids on purpose. In the authorization context this transaction runs in, macOS name
+ * lookup is not dependable - authd logs `User not found` for the very account it then matches
+ * by uid - and a chown under `set -eu` that fails on a name lookup would abort an otherwise
+ * good install.
+ */
+export function bundleOwnerSpec(uid, gid) {
+  return validId(uid) && validId(gid) ? `${uid}:${gid}` : null;
 }
 
 export function stagingPaths({ appsDir, pid }) {
@@ -49,6 +98,7 @@ export function bundleSwapShellCommand({
   previous,
   failed,
   keepPrevious,
+  owner = null,
 }) {
   const q = shellQuote;
   // The copy and decisive moves stay subject to `set -eu`. These commands run only after the
@@ -63,6 +113,16 @@ export function bundleSwapShellCommand({
     "set -eu",
     `/bin/rm -rf ${q(staged)} ${q(previous)}`,
     `/bin/cp -R ${q(sourceBundle)} ${q(staged)}`,
+    // The `cp` above runs as root, so without this the installed bundle ends up root-owned -
+    // and a root-owned bundle is exactly the condition that sends the NEXT update down this
+    // privileged path too. One install needing authorization used to mean every install after
+    // it needed authorization. Handing the staged copy back to the signed-in account before it
+    // goes live is what makes elevation a one-off rather than a ratchet.
+    //
+    // Inside `set -eu` deliberately: a chown that fails has produced a bundle this account
+    // cannot maintain, and it fails here, before anything has been moved and while the
+    // installed app is still untouched.
+    ...(owner ? [`/usr/sbin/chown -R ${q(owner)} ${q(staged)}`] : []),
     "had_previous=0",
     `if [ -e ${q(appPath)} ]; then /bin/mv ${q(appPath)} ${q(previous)}; had_previous=1; fi`,
     `if /bin/mv ${q(staged)} ${q(appPath)}; then`,
@@ -82,8 +142,18 @@ export function bundleSwapShellCommand({
  * AppleScript. All paths are single-quoted for /bin/sh. The only elevated destination this
  * module permits is the exact product bundle in /Applications.
  */
-export function privilegedBundleSwapCommand({ sourceBundle, appPath, appsDir, pid, keepPrevious }) {
+export function privilegedBundleSwapCommand({
+  sourceBundle,
+  appPath,
+  appsDir,
+  pid,
+  keepPrevious,
+  owner = null,
+}) {
   if (!validPid(pid)) return { command: null, problem: "the bundle transaction pid is invalid" };
+  if (owner !== null && !/^\d+:\d+$/.test(String(owner))) {
+    return { command: null, problem: "the bundle owner must be numeric uid:gid" };
+  }
   const exactAppsDir = resolve(appsDir);
   const exactAppPath = resolve(appPath);
   const expectedAppPath = join(DEFAULT_APPS_DIR, APP_BUNDLE_NAME);
@@ -105,12 +175,27 @@ export function privilegedBundleSwapCommand({ sourceBundle, appPath, appsDir, pi
     previous,
     failed,
     keepPrevious,
+    owner,
   });
   return { command, problem: null };
 }
 
-/** Pure transaction used directly when the destination directory is already writable. */
-export function swapAppBundle({ packagedApp, appPath, appsDir, pid, keepPrevious = false, ops }) {
+/**
+ * Pure transaction used directly when the destination directory is already writable.
+ *
+ * Reports not only WHETHER it failed but whether the installed app survived the attempt, which
+ * is what lets `replaceAppBundle` decide between escalating to an administrator-authorized
+ * retry and stopping. Every failure below except one is arranged to leave the installed app
+ * exactly where it was, so the common answer is `appIntact: true` and a retry is safe.
+ */
+export function attemptSwapAppBundle({
+  packagedApp,
+  appPath,
+  appsDir,
+  pid,
+  keepPrevious = false,
+  ops,
+}) {
   const { staged, previous, failed } = stagingPaths({ appsDir, pid });
   const why = (err) => (err instanceof Error ? err.message : String(err));
 
@@ -119,7 +204,12 @@ export function swapAppBundle({ packagedApp, appPath, appsDir, pid, keepPrevious
     ops.copy(packagedApp, staged);
   } catch (err) {
     ops.remove(staged);
-    return `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`;
+    return {
+      problem: `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`,
+      appIntact: true,
+      retainedAt: null,
+      stranded: [],
+    };
   }
 
   const hadPrevious = ops.exists(appPath);
@@ -128,7 +218,12 @@ export function swapAppBundle({ packagedApp, appPath, appsDir, pid, keepPrevious
       ops.move(appPath, previous);
     } catch (err) {
       ops.remove(staged);
-      return `could not move the existing app aside: ${why(err)}. ${appPath} is unchanged.`;
+      return {
+        problem: `could not move the existing app aside: ${why(err)}. ${appPath} is unchanged.`,
+        appIntact: true,
+        retainedAt: null,
+        stranded: [],
+      };
     }
   }
 
@@ -148,24 +243,87 @@ export function swapAppBundle({ packagedApp, appPath, appsDir, pid, keepPrevious
         ? "The previous app was restored."
         : `The previous app is at ${previous} - move it back by hand.`
       : "Nothing was installed.";
-    return `could not put the new app in place at ${appPath}: ${why(err)}. ${state}`;
+    return {
+      problem: `could not put the new app in place at ${appPath}: ${why(err)}. ${state}`,
+      // The one case where the installed app is NOT where it was. A privileged retry would
+      // stage over a half-dismantled destination, so this failure is final.
+      appIntact: hadPrevious ? restored : true,
+      retainedAt: null,
+      stranded: [],
+    };
   }
 
   // Once the new bundle is live, filing or deleting the displaced bundle is best-effort.
   // A cleanup failure must leave the successful transaction successful. In the retention
   // case, `previous` is the fallback location when the durable `failed` sibling cannot be used.
+  //
+  // Best-effort still has to be honest, though. Swallowing these errors silently meant the run
+  // that STRANDED a bundle was the one run that never mentioned it: an unprivileged swap over a
+  // root-owned predecessor cannot empty the tree it renamed aside, and `sweepDisplacedBundles`
+  // skips the live transaction's own sibling, so the operator heard nothing until some later
+  // update happened to sweep it.
+  const stranded = [];
+  let retainedAt = null;
   if (hadPrevious && keepPrevious) {
+    let filed = false;
     try {
       ops.remove(failed);
       ops.move(previous, failed);
+      filed = true;
     } catch {}
+    // Where the displaced bundle actually is, rather than where it was meant to go. The caller
+    // reports this location to the operator, so guessing it wrong sends them to an empty path.
+    retainedAt = filed ? failed : previous;
+    // An older retained bundle this account could not delete, which is why filing failed. It is
+    // still on disk and nothing else will find it: `sweepDisplacedBundles` scans `previous-*`
+    // siblings only and never this fixed path. Same reporting the branch below already did - it
+    // was missing here, so exactly one of the two ways to reach it stayed silent.
+    if (!filed && ops.exists(failed)) stranded.push(failed);
   } else if (hadPrevious) {
-    try { ops.remove(previous); } catch {}
+    try {
+      ops.remove(previous);
+    } catch {
+      stranded.push(previous);
+    }
   }
   if (!keepPrevious) {
-    try { ops.remove(failed); } catch {}
+    try {
+      ops.remove(failed);
+    } catch {
+      // A retained bundle from an earlier failed update that this account cannot delete. Still
+      // occupying disk, so it is still worth naming.
+      if (ops.exists(failed)) stranded.push(failed);
+    }
   }
-  return null;
+  return { problem: null, appIntact: true, retainedAt, stranded };
+}
+
+/** The long-standing string-returning contract, kept for callers that cannot act on a retry. */
+export function swapAppBundle(args) {
+  return attemptSwapAppBundle(args).problem;
+}
+
+/** `CFBundleShortVersionString` out of an `Info.plist` body, or null when it is not stated. */
+export function plistVersion(text) {
+  const match = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(
+    String(text ?? ""),
+  );
+  return match?.[1]?.trim() || null;
+}
+
+/**
+ * The version an installed bundle reports, or null when that cannot be established.
+ *
+ * Null is the answer for a missing app, an unreadable plist, and a plist with no version, and
+ * every caller treats it as "unknown" rather than as any particular version - a bundle whose
+ * identity cannot be read is exactly the one worth being careful about.
+ */
+export function bundleShortVersion(appPath, read = (path) => readFileSync(path, "utf8")) {
+  try {
+    return plistVersion(read(join(appPath, "Contents", "Info.plist")));
+  } catch {
+    return null;
+  }
 }
 
 export function directoryIsWritable(path, access = accessSync) {
@@ -177,6 +335,14 @@ export function directoryIsWritable(path, access = accessSync) {
   }
 }
 
+/**
+ * Deliberately no longer consulted before choosing a path. See `replaceAppBundle`.
+ *
+ * It answers "can this account rewrite every directory inside the bundle", which the swap does
+ * not need and never did: the transaction renames the outgoing bundle aside and never writes
+ * into it. Kept because it is the honest test of whether the displaced tree can also be
+ * DELETED afterwards, which is the one thing an unprivileged swap genuinely cannot do.
+ */
 export function directoryTreeIsWritable(root) {
   const pending = [root];
   while (pending.length > 0) {
@@ -195,8 +361,92 @@ export function directoryTreeIsWritable(root) {
 }
 
 /**
- * Use ordinary filesystem operations whenever possible. On macOS, an unwritable /Applications
- * destination gets one native administrator prompt for only the fixed bundle transaction.
+ * Best-effort reclamation of bundles displaced by earlier runs.
+ *
+ * An unprivileged swap can always rename a bundle it does not own out of the way, but it cannot
+ * empty one - so a root-owned predecessor gets left behind as a `previous-<pid>` sibling. That
+ * is a far better outcome than refusing to update, and this keeps it from accumulating: the
+ * generation after a privileged install is owned by this account and deletes cleanly.
+ *
+ * Reclaims only bundles whose owning process is gone, and excluding this transaction's own pid
+ * is not enough to establish that. A `previous-<pid>` sibling is the ONLY copy of the installed
+ * app for the window between "move the app aside" and "move the staged app live" - so deleting a
+ * concurrent transaction's sibling in that window means that if its staged move then fails, its
+ * rollback has nothing to restore and the person is left with no app at all. Trading a working
+ * app for reclaimed disk is not a trade worth making.
+ *
+ * The helper lock does not make this safe on its own: `install-app.mjs` is a supported command
+ * anyone can run directly, so a swap can be in flight without any claim being held. The pid is
+ * in the filename, so liveness is checkable without coordination, and the conservative direction
+ * is to keep - a live pid leaves a bundle unreclaimed, which only costs disk.
+ *
+ * Never touches the live transaction's own sibling either, which is the retention fallback the
+ * swap relies on when it cannot file the displaced bundle. Every failure is ignored; reclaiming
+ * disk is not worth failing an install over.
+ */
+export function sweepDisplacedBundles({
+  appsDir,
+  keepPid,
+  readdir = readdirSync,
+  remove = (path) => rmSync(path, { recursive: true, force: true }),
+  isRunning = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // EPERM means alive and owned by another account, which is still alive. Only ESRCH is
+      // evidence of absence, and anything unexpected reads as "still running" so an
+      // in-flight transaction is never swept on a guess.
+      return error?.code !== "ESRCH";
+    }
+  },
+}) {
+  const prefix = `.${APP_BUNDLE_NAME}.previous-`;
+  const keep = `${prefix}${keepPid}`;
+  const stranded = [];
+  let entries = [];
+  try {
+    entries = readdir(appsDir);
+  } catch {
+    return stranded;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || entry === keep) continue;
+    const pid = displacedBundlePid(entry.slice(prefix.length));
+    // Not a suffix this code writes, so not a bundle it will delete. Such a name could belong to
+    // anything - another tool, a person's backup - and a transaction still running besides.
+    if (pid === null) continue;
+    // Possibly mid-swap, and its sibling may be the only copy of the installed app.
+    if (isRunning(pid)) continue;
+    try {
+      remove(join(appsDir, entry));
+    } catch {
+      stranded.push(join(appsDir, entry));
+    }
+  }
+  return stranded;
+}
+
+/**
+ * Install the bundle, asking for administrator authorization only when the plain attempt proved
+ * it was needed.
+ *
+ * This used to PREDICT which path would work, and predicted it wrongly in the one case that
+ * matters. The check required every directory inside the outgoing bundle to be writable, so a
+ * root-owned app - which is what a previous elevated install leaves behind - sent every later
+ * update straight to an administrator prompt. The transaction never writes into that bundle: it
+ * stages a sibling, renames the old bundle aside, and renames the new one in, all of which need
+ * write and execute on `appsDir` alone. Renaming a root-owned bundle out of a writable
+ * `/Applications` succeeds for any admin user.
+ *
+ * That prediction was also expensive to get wrong. The prompt it forced is raised by a detached
+ * helper whose app has already quit, so macOS brings the authorization panel up unfocused and
+ * behind whatever is on screen, and authd deny-lists `/usr/bin/osascript` besides. A panel
+ * nobody sees is dismissed, `do shell script` reports `User canceled (-128)`, and a routine
+ * update fails for want of permission it never required.
+ *
+ * So: attempt, then escalate. The attempt is arranged to leave the installed app untouched on
+ * every failure but one, and only that survivable kind escalates.
  */
 export function replaceAppBundle({
   sourceBundle,
@@ -204,25 +454,39 @@ export function replaceAppBundle({
   appsDir,
   pid,
   keepPrevious = false,
+  prompt = ADMINISTRATOR_AUTHORIZATION_PROMPT,
   platform = process.platform,
-  writable = directoryIsWritable(appsDir)
-    && (!existsSync(appPath) || directoryTreeIsWritable(appPath)),
+  appsDirWritable = directoryIsWritable(appsDir),
+  owner = bundleOwnerSpec(process.getuid?.(), process.getgid?.()),
+  sweep = () => sweepDisplacedBundles({ appsDir, keepPid: pid }),
   ops = {
     copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit" }),
     move: renameSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     exists: existsSync,
   },
-  runElevated = (command) => {
+  runElevated = (command, promptText) => {
     execFileSync(
       "/usr/bin/osascript",
-      ["-e", PRIVILEGED_SWAP_APPLESCRIPT, command],
+      ["-e", PRIVILEGED_SWAP_APPLESCRIPT, command, promptText],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
   },
 }) {
-  if (writable) {
-    const problem = swapAppBundle({
+  /**
+   * The retention slot the privileged transaction aims for.
+   *
+   * Only the elevated path uses this, and only as its best available answer: the shell script
+   * does its own filing and reports nothing back, so its fallback to `previous` cannot be seen
+   * from here. The unprivileged path knows exactly where the bundle ended up and says so.
+   */
+  const retained = () => (keepPrevious ? stagingPaths({ appsDir, pid }).failed : null);
+  let stranded = [];
+  let unprivileged = null;
+
+  if (appsDirWritable) {
+    stranded = sweep();
+    const attempt = attemptSwapAppBundle({
       packagedApp: sourceBundle,
       appPath,
       appsDir,
@@ -230,36 +494,62 @@ export function replaceAppBundle({
       keepPrevious,
       ops,
     });
+    if (!attempt.problem) {
+      return {
+        problem: null,
+        elevated: false,
+        // What the transaction reports it actually retained, not what it set out to retain. The
+        // fallback location is real: filing the displaced bundle into the fixed slot can fail,
+        // and naming the slot anyway sends whoever reads this to an empty path.
+        failedBundle: attempt.retainedAt,
+        // Includes anything this transaction could not clean up after itself. Without that, the
+        // one run that stranded a bundle was the only run that never mentioned it.
+        stranded: [...stranded, ...attempt.stranded],
+      };
+    }
+    // Nothing an administrator can put right, or nothing left to safely retry over.
+    if (platform !== "darwin" || !attempt.appIntact) {
+      return {
+        problem: attempt.problem,
+        elevated: false,
+        failedBundle: null,
+        stranded: [...stranded, ...attempt.stranded],
+      };
+    }
+    unprivileged = attempt.problem;
+  } else if (platform !== "darwin") {
     return {
-      problem,
+      problem: `${appsDir} is not writable`,
       elevated: false,
-      failedBundle: !problem && keepPrevious ? stagingPaths({ appsDir, pid }).failed : null,
+      failedBundle: null,
+      stranded,
     };
   }
-  if (platform !== "darwin") {
-    return { problem: `${appsDir} is not writable`, elevated: false, failedBundle: null };
-  }
+
   const plan = privilegedBundleSwapCommand({
     sourceBundle,
     appPath,
     appsDir,
     pid,
     keepPrevious,
+    owner,
   });
-  if (plan.problem) return { problem: plan.problem, elevated: false, failedBundle: null };
+  if (plan.problem) {
+    return { problem: plan.problem, elevated: false, failedBundle: null, stranded };
+  }
   try {
-    runElevated(plan.command);
-    return {
-      problem: null,
-      elevated: true,
-      failedBundle: keepPrevious ? stagingPaths({ appsDir, pid }).failed : null,
-    };
+    runElevated(plan.command, prompt);
+    return { problem: null, elevated: true, failedBundle: retained(), stranded };
   } catch (error) {
     const detail = error?.stderr || error?.message || error;
+    // Both halves, because "User canceled" alone reads as the whole story when the real story
+    // is that an ordinary install was attempted first and says why it could not finish.
+    const why = `administrator-authorized app bundle transaction failed: ${String(detail).trim()}`;
     return {
-      problem: `administrator-authorized app bundle transaction failed: ${String(detail).trim()}`,
+      problem: unprivileged ? `${unprivileged} ${why}` : why,
       elevated: true,
       failedBundle: null,
+      stranded,
     };
   }
 }

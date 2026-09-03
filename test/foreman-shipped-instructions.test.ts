@@ -21,8 +21,17 @@ import { join } from "node:path";
 // two-levels-down module the `../../` depends on would all keep every existing test green.
 //
 // This file therefore sets no seed override on purpose. It is the one place that reads the
-// real path.
+// real path - and "sets none" is not enough, because an override it INHERITED would redirect
+// it just as effectively. `foremanInstructionsPath()` prefers `envVar("FOREMAN_INSTRUCTIONS")`
+// over the shipped file, and `envVar` walks `MISSION_` then `FLEET_` then `HARNESS_`, so all
+// three names have to go. `test/setup-state.mjs` clears the two `*_HOME` aliases and nothing
+// else, and an operator who has configured a custom Foreman document has exactly this
+// variable exported - so without these three lines this file would quietly validate their
+// document on their machine and the shipped one in CI, which is the worst available split.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "foreman-shipped-home-"));
+delete process.env.MISSION_FOREMAN_INSTRUCTIONS;
+delete process.env.FLEET_FOREMAN_INSTRUCTIONS;
+delete process.env.HARNESS_FOREMAN_INSTRUCTIONS;
 
 const { foremanInstructionsPath } = await import("../src/server/config.ts");
 const { foremanInstructionsView } = await import("../src/server/foreman/instructions.ts");
@@ -36,6 +45,14 @@ const flat = (text: string) => text.replace(/\s+/gu, " ");
 
 test("the shipped standing instructions resolve to a real, non-empty document", () => {
   const path = foremanInstructionsPath();
+  // Stated rather than assumed. If an override reaches this worker by a route the preamble
+  // does not clear, every assertion below would pass against the wrong document and report
+  // that the shipped seed is healthy.
+  assert.match(
+    path,
+    /[/\\]personas[/\\]FOREMAN\.md$/,
+    `an override redirected the seed to ${path}; this file must read the shipped document`,
+  );
   assert.equal(
     existsSync(path),
     true,

@@ -32,7 +32,7 @@ function createdIssueUrl(stdout: string, expectedRepo: string): string | undefin
         .split("/")
         .filter(Boolean);
       return (
-        (candidate.protocol === "https:" || candidate.protocol === "http:") &&
+        candidate.protocol === "https:" &&
         candidate.host.toLowerCase() === target.host.toLowerCase() &&
         (target.owner === undefined || owner?.toLowerCase() === target.owner.toLowerCase()) &&
         (target.name === undefined || name?.toLowerCase() === target.name.toLowerCase()) &&

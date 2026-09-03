@@ -531,8 +531,13 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     );
   });
 
-  await t.test("an older gh release cannot receive attachment argv", async () => {
-    const upload = saveImageUpload(pngHead, "old-gh.png");
+  await t.test("concurrent attachment submits reserve before the version probe", async () => {
+    const upload = saveImageUpload(pngHead, "concurrent.png");
+    let releaseVersion!: (value: ReturnType<typeof stubRun>) => void;
+    const versionPending = new Promise<ReturnType<typeof stubRun>>((resolve) => {
+      releaseVersion = resolve;
+    });
+    let versionCalls = 0;
     let issueCreates = 0;
     const service = new ProductIssueService({
       consent: CONSENTS,
@@ -540,6 +545,40 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
         if (args[0] === "--version") {
+          versionCalls++;
+          return versionPending;
+        }
+        issueCreates++;
+        return stubRun({
+          stdout: "https://github.com/acme/public-issues/issues/57\n",
+          stderr: "",
+          code: 0,
+        });
+      },
+    });
+    const input = request({ attachmentUploadIds: [upload.uploadId] });
+    assert.equal(service.preview("dashboard", input).outcome, "preview");
+    const first = service.submit("dashboard", input);
+    const second = await service.submit("dashboard", input);
+    assert.equal(second.outcome, "unknown");
+    assert.equal(versionCalls, 1);
+    assert.equal(issueCreates, 0);
+    releaseVersion(stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 }));
+    assert.equal((await first).outcome, "created");
+    assert.equal(issueCreates, 1);
+  });
+
+  await t.test("an older gh release cannot receive attachment argv", async () => {
+    const upload = saveImageUpload(pngHead, "old-gh.png");
+    let versionChecks = 0;
+    let issueCreates = 0;
+    const service = new ProductIssueService({
+      consent: CONSENTS,
+      target,
+      attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
+      runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          versionChecks++;
           return stubRun({ stdout: "gh version 2.98.0 (test)\n", stderr: "", code: 0 });
         }
         issueCreates++;
@@ -552,6 +591,8 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     assert.equal(result.outcome, "configuration");
     assert.match(result.outcome === "configuration" ? result.message : "", /2\.99\.0 or newer/);
     assert.equal(issueCreates, 0);
+    assert.equal((await service.submit("dashboard", input)).outcome, "configuration");
+    assert.equal(versionChecks, 2, "a read-only version refusal releases the submission claim");
   });
 
   await t.test("a partial upload is created once and returns a warning", async () => {
@@ -645,6 +686,7 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     const result = await service.submit("dashboard", input);
     assert.equal(issueCreates, 0, "attachment validation must finish before issue creation");
     assert.equal(result.outcome, "refused");
+    assert.equal((await service.submit("dashboard", input)).outcome, "refused");
     return result.outcome === "refused" ? result.message : "";
   }
 

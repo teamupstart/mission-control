@@ -697,16 +697,32 @@ export class ProductIssueService {
       }
     }
 
+    // Reserve the opening before the read-only version probe yields. Without this, two
+    // attachment submissions can both pass the guard above and both reach issue creation.
+    // Pre-publication refusals release the reservation; from the create call onward it is
+    // retained unless gh proves that nothing was published.
+    this.claims.set(request.requestId, {
+      state: "in-flight",
+      expiresAt: now + REQUEST_TTL_MS,
+    });
+
     let attachmentArgs: string[] = [];
     if (this.attachments.enabled && request.attachmentUploadIds.length > 0) {
-      const version = await this.runner(ghBin(), ["--version"], {
-        timeoutMs: PREFLIGHT_TIMEOUT_MS,
-      });
+      let version: RunResult;
+      try {
+        version = await this.runner(ghBin(), ["--version"], {
+          timeoutMs: PREFLIGHT_TIMEOUT_MS,
+        });
+      } catch (error) {
+        this.claims.delete(request.requestId);
+        throw error;
+      }
       if (
         version.outcomeUnknown ||
         version.code !== 0 ||
         !supportsProductIssueAttachments(version.stdout)
       ) {
+        this.claims.delete(request.requestId);
         return configuration(`${ATTACHMENTS_VERSION_REASON}; nothing was published`);
       }
 
@@ -715,7 +731,10 @@ export class ProductIssueService {
         request.attachmentUploadIds,
         now,
       );
-      if (!resolved.ok) return refused(`${resolved.error}; nothing was published`);
+      if (!resolved.ok) {
+        this.claims.delete(request.requestId);
+        return refused(`${resolved.error}; nothing was published`);
+      }
       attachmentArgs = resolved.args;
     }
 
@@ -723,11 +742,6 @@ export class ProductIssueService {
     const environment = this.environment(request);
     const body = renderProductIssueBody(draft, environment);
     const labels = productIssueLabels(request.type, source);
-    this.claims.set(request.requestId, {
-      state: "in-flight",
-      expiresAt: now + REQUEST_TTL_MS,
-    });
-
     let result: RunResult;
     try {
       result = await this.runner(

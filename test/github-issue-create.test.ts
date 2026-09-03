@@ -89,6 +89,30 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
   assert.deepEqual(
     githubIssueCreateOutcome(
       stubRun({
+        stdout: "http://github.com/acme/issues/issues/3\n",
+        stderr: "request failed",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.com:444/acme/issues/issues/3\n",
+        stderr: "request failed",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
         stdout: "https://github.example.com/acme/issues/issues/3\n",
         stderr: "",
         code: 0,

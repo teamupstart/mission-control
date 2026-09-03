@@ -246,6 +246,7 @@ export function ProductIssueModal({
     preflight?.attachments.reason ??
     preflight?.problems[0]?.message ??
     "Checking GitHub CLI screenshot support";
+  const textOnlyAvailable = preflight?.ready === true && !preflight.attachments.enabled;
   const attachmentLimitReached = draft.attachments.length >= PRODUCT_ISSUE_LIMITS.attachmentCount;
   const attachmentIntakeDisabled = !attachmentsEnabled || submitting || attachmentLimitReached;
   const drop = useImageDrop({
@@ -418,7 +419,9 @@ export function ProductIssueModal({
                   `JPEG, GIF, or WebP images. Each can be at most ` +
                   `${PRODUCT_ISSUE_LIMITS.attachmentBytes / 1024 / 1024} MB and together at most ` +
                   `${PRODUCT_ISSUE_LIMITS.attachmentAggregateBytes / 1024 / 1024} MB.`
-                : `${attachmentReason}. You can still submit a text-only report.`}
+                : textOnlyAvailable
+                  ? `${attachmentReason}. You can still submit a text-only report.`
+                  : attachmentReason}
             </p>
             <Tooltip
               label={
@@ -648,7 +651,9 @@ export function ProductIssueLayer({
    */
   const requestIdRef = useRef<string>(newRequestId());
   const draftRef = useRef(draft);
-  draftRef.current = draft;
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   /** Ignore a preflight or preview reply that a newer opening or keystroke has outrun. */
   const generationRef = useRef(0);
 
@@ -671,7 +676,9 @@ export function ProductIssueLayer({
   // else - a refusal, an unknown outcome, an ordinary close - keeps them.
   const createdUrl = result?.outcome === "created" ? result.issueUrl : null;
   const clearOnNextOpen = useRef(false);
-  clearOnNextOpen.current = createdUrl !== null;
+  useEffect(() => {
+    clearOnNextOpen.current = createdUrl !== null;
+  }, [createdUrl]);
 
   useEffect(() => {
     if (!open) return;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -100,6 +101,19 @@ function draw(overrides: Partial<ProductIssueModalProps> = {}): string {
   return renderToStaticMarkup(withOverlayHost(createElement(ProductIssueModal, props)));
 }
 
+test("abandoned renders cannot replace the attachment cleanup refs", () => {
+  const source = readFileSync(
+    new URL("../src/web/components/ProductIssueModal.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /^  (?:draftRef|clearOnNextOpen)\.current =/m);
+  assert.match(source, /useEffect\(\(\) => \{\n    draftRef\.current = draft;\n  \}, \[draft\]\);/);
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\n    clearOnNextOpen\.current = createdUrl !== null;\n  \}, \[createdUrl\]\);/,
+  );
+});
+
 test("all five approved report types are offered, in the contract's order", () => {
   const html = draw();
   const order = PRODUCT_ISSUE_TYPES.map((type) => PRODUCT_ISSUE_TYPE_UI[type].label);
@@ -182,6 +196,24 @@ test("an older GitHub CLI leaves text reports available and explains the screens
   assert.match(html, /You can still submit a text-only report/);
   assert.match(html, /<input type="file"[^>]*disabled=""/);
   assert.match(html, /is-unavailable/);
+});
+
+test("an unavailable preflight does not claim that text-only submission is available", () => {
+  const checking = draw({ preflight: null, preview: null });
+  assert.match(checking, /Checking GitHub CLI screenshot support/);
+  assert.doesNotMatch(checking, /still submit a text-only report/);
+
+  const blocked = draw({
+    preflight: {
+      ready: false,
+      target: "acme/public-issues",
+      attachments: PREFLIGHT_READY.attachments,
+      problems: [{ code: "gh-auth", message: "GitHub CLI is not authenticated" }],
+    },
+    preview: null,
+  });
+  assert.match(blocked, /GitHub CLI is not authenticated/);
+  assert.doesNotMatch(blocked, /still submit a text-only report/);
 });
 
 test("submit is closed until the draft validates, preflight is ready and a preview matches", () => {

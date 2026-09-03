@@ -668,6 +668,7 @@ test("missing GitHub auth and a missing label each produce actionable copy", asy
   script(daemon, { preflight: "gh-auth", issueCreate: "created" });
   await openFromTopbar(dashboard);
   await expect(form(dashboard).getByRole("alert")).toContainText("gh auth login");
+  await expect(form(dashboard).getByText(/still submit a text-only report/)).toHaveCount(0);
   await expect(submit(dashboard)).toBeDisabled();
   await dashboard.getByRole("button", { name: "Close", exact: true }).click();
 

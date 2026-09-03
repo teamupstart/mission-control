@@ -344,6 +344,13 @@ function mount() {
     card.querySelector(".artifact-dir").textContent = chosen.slice(0, chosen.lastIndexOf("/") + 1);
     const size = card.querySelector(".artifact-size");
     if (size) size.textContent = (doc.size / 1024).toFixed(1) + " KB";
+    // The ACTION labels have to move with the selection too. They are the accessible names
+    // the planned e2e spec selects by, so a stale one both misannounces the target to a
+    // screen reader and breaks a role/label selector.
+    const refresh = card.querySelector(".artifact-act:not(.is-primary)");
+    if (refresh) refresh.setAttribute("aria-label", "Refresh preview of " + chosen);
+    const comment = card.querySelector(".artifact-act.is-primary");
+    if (comment) comment.setAttribute("aria-label", "Comment on " + chosen + " in Files");
     const frame = card.querySelector(".artifact-preview");
     if (!frame) continue;
     const eligible = card.classList.contains("is-open") && nearViewport.has(card);

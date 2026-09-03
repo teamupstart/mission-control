@@ -208,6 +208,10 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   Accessible names: the card is `Preview of <path>`; Refresh is `Refresh preview of <path>`;
   the comment action is `Comment on <path> in Files`. The disclosure carries `aria-expanded`
   and `aria-controls` pointing at the body.
+  **Derive all three names from the card's current path**, never from a value captured once.
+  They are what the Playwright spec selects by, so a name that has drifted from its artifact
+  both misannounces the target to a screen reader and silently breaks a role/label selector -
+  the failure looks like a missing control rather than a wrong label.
 - **Refusal body**, one sentence plus one explanation, for each of: over
   `MAX_SESSION_PREVIEW_BYTES`, not decodable text, file gone, and containment refusal. The
   header keeps both actions in every refusal state.
@@ -384,6 +388,8 @@ Look at the running app, not only the diff:
 - An artifact whose page links a checkout-local stylesheet renders styled, proving the inlined
   source reached `htmlPreviewSource`.
 - The header contains no nested interactive controls.
+- Every accessible name on a card names that card's own artifact, so a role/label selector
+  finds the control belonging to the path it asked for.
 - **Comment in Files** lands on the file, in Preview, with comment mode armed, from both a
   cold open and an already-open Files tab.
 - Every refusal state renders its own sentence, with both header actions intact - and a
@@ -488,6 +494,14 @@ preview.
   click would still have landed on nothing. An explicit re-expand step now sits between them. And the collapse must keep the body wrapper in the DOM so `aria-controls`
   still resolves; the mockup already did this (verified in both states), so the fix is to state
   the invariant and assert it.
+- **2026-09-03, review round 9 reconciliation.** One comment, valid. The mockup's artifact
+  picker updated the card's title, name, directory, size and frame, but left the Refresh and
+  Comment aria-labels naming whichever artifact was rendered first. In the app a card is bound
+  to one path, so the swap itself is mockup-only chrome - but the labels are exactly what the
+  Playwright spec selects by, so the general rule is worth stating: derive every accessible
+  name from the card's current path rather than capturing it once, because a drifted name
+  fails as a *missing* control rather than as a wrong label. Fixed in the mockup and added as
+  an exit criterion.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

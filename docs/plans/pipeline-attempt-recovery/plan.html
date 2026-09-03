@@ -218,7 +218,7 @@
         <text class="t" x="725" y="200" text-anchor="middle">Commission reducer</text><text class="s" x="725" y="223" text-anchor="middle">one durable projection</text>
         <path class="a" d="M635 211 H565"/>
         <rect class="state" x="350" y="163" rx="12" width="215" height="96"/>
-        <text class="t" x="457" y="194" text-anchor="middle">Workspace view</text><text class="s" x="457" y="217" text-anchor="middle">availability, branch, commit,</text><text class="s" x="457" y="238" text-anchor="middle">attempt and capabilities</text>
+        <text class="t" x="457" y="194" text-anchor="middle">Workspace view</text><text class="s" x="457" y="217" text-anchor="middle">availability, branch, stored commit,</text><text class="s" x="457" y="238" text-anchor="middle">attempt and capabilities</text>
         <path class="a" d="M350 211 H280"/>
         <rect class="box" x="20" y="163" rx="12" width="260" height="96"/>
         <text class="t" x="150" y="194" text-anchor="middle">Task surfaces</text><text class="s" x="150" y="217" text-anchor="middle">Diff, Files, branch, workflow,</text><text class="s" x="150" y="238" text-anchor="middle">shell, attention and progress</text>
@@ -242,9 +242,9 @@
       <thead><tr><th>State</th><th>Diff</th><th>Files</th><th>Writes and comments</th><th>Shell and external open</th></tr></thead>
       <tbody>
         <tr><td>Available</td><td class="yes">Live worktree</td><td class="yes">Live tree</td><td class="yes">Allowed after revalidation</td><td class="yes">Allowed after revalidation</td></tr>
-        <tr><td>Retired</td><td class="yes">Pinned branch commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
-        <tr><td>Missing with valid ref</td><td class="yes">Pinned branch commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
-        <tr><td>Pending or invalid ref</td><td>Named empty state</td><td>Named empty state</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+        <tr><td>Retired</td><td class="yes">Stored attempt commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+        <tr><td>Missing with stored commit</td><td class="yes">Stored attempt commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+        <tr><td>Pending or unavailable object</td><td>Named empty state</td><td>Named empty state</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
       </tbody>
     </table>
   </section>
@@ -273,7 +273,7 @@
     <h2>Four phases, each with a coherent owner and rollback boundary</h2>
     <div class="card phase" data-n="1">
       <h3>Durable identity and safe Git-ref evidence</h3>
-      <p><strong>Mission Control.</strong> Preserve branch and plan slug, add the central resolver, branch-ref Diff and read-only Files, correct branch/header/workflow behavior, and move caller credentials out of process arguments. Useful with today's provider.</p>
+      <p><strong>Mission Control.</strong> Preserve branch, plan slug, and a durable attempt evidence commit; add the central resolver, commit-backed Diff and read-only Files, correct branch/header/workflow behavior, and move caller credentials out of process arguments. Useful with today's provider.</p>
     </div>
     <div class="card phase" data-n="2">
       <h3>Complete provider lifecycle and ownership contract</h3>
@@ -325,7 +325,7 @@
       <tbody>
         <tr><td>Retention timeout</td><td>Retain through review, then clean on merge, close, cancel, or a bounded provider-owned timeout. Final duration needs provider-owner input.</td></tr>
         <tr><td>Remote transport probes</td><td>Use transport-specific checks and an explicit inconclusive result. Never claim a read probe proves write authorization.</td></tr>
-        <tr><td>Moving or collected refs</td><td>Pin each response to a commit and tolerate later unavailability without enabling writes.</td></tr>
+        <tr><td>Moving refs or collected objects</td><td>Persist and freeze the attempt commit, never re-resolve the branch, and expose unavailable evidence if the object disappears.</td></tr>
         <tr><td>Historical lineage deeper than one child</td><td>Do not adopt it automatically. This plan supports only one exact direct successor.</td></tr>
         <tr><td>Mixed provider versions</td><td>Capability-gate retry and ownership guarantees; preserve explicit legacy and unknown states.</td></tr>
       </tbody>

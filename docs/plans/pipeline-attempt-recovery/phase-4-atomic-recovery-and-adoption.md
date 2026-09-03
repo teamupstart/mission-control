@@ -119,7 +119,7 @@ Build the review-only candidate during daemon provider reconciliation, not brows
 
 - current commission and failed predecessor identity;
 - direct successor run ID, attempt number, attempt key, owner state, provider revision, terminal state, and handoff identity;
-- branch, pinned commit if locally resolvable, and PR URL or local-commit outcome;
+- branch, durable attempt commit and its provenance, and PR URL or local-commit outcome;
 - validation status and reason.
 
 Before adoption, repeat every check server-side:

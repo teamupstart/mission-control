@@ -11,7 +11,7 @@ The combined result is deliberately stricter than either source plan:
 - Mission Control retains immutable commission and attempt authority.
 - ai-conductor remains the authority for Engineer worktree lifecycle, readiness, and failure evidence.
 - Every workspace-facing surface uses one structured workspace projection instead of choosing independently among `cwd`, a stale path, and a provider worktree.
-- A live worktree supports reads, writes, comments, file open, and shell launch. A retired worktree degrades to an exact, read-only Git branch view. A missing worktree with no valid ref exposes no filesystem action.
+- A live worktree supports reads, writes, comments, file open, and shell launch. A retired worktree degrades to an exact, read-only Git commit captured for that attempt. A missing worktree with no durable commit exposes no filesystem action.
 - Retry is one compare-and-swap transaction that reserves an attempt, creates or recovers the exact provider run, binds it, evicts the old host through `Registry.beginEviction`, and starts one fresh host.
 - A provider-side successor is never silently accepted. Exact lineage can be reviewed and explicitly adopted as a new immutable attempt.
 - Task attention and completion follow provider lifecycle facts, not SDK host idleness or repository heuristics alone.
@@ -87,7 +87,7 @@ type PipelineWorkspaceView = {
 };
 ```
 
-`path` records reported identity but is actionable only when availability is `available` and the daemon revalidates it at request time. `commit` is populated when a branch-ref fallback is resolved so each response is stable even if the branch later moves.
+`path` records reported identity but is actionable only when availability is `available` and the daemon revalidates it at request time. `commit` is a durable attempt field, not a per-request branch resolution. Mission Control updates the last validated commit while the live authoring worktree advances, then freezes it at handoff. Provider retirement evidence supplies the authoritative retained commit when available. A one-time legacy branch resolution may establish a missing attempt's commit only when none was captured, and records that weaker provenance. Every later Diff or Files request uses the stored SHA. If the object is unavailable, the workspace becomes explicit unavailable evidence rather than following a moved branch.
 
 Add an attempt origin to the durable attempt projection:
 
@@ -130,7 +130,7 @@ The capability matrix is:
 | `missing` with valid ref | Exact branch/commit diff | Read-only Git tree | Disabled | Disabled |
 | `pending` or no valid ref | Named empty state | Named empty state | Disabled | Disabled |
 
-The Git-ref adapter uses merge-base-aware diffing and immutable object reads such as `git ls-tree` and `git show`. It resolves the requested branch under the task repository, pins the commit for the response, rejects ambiguous or missing refs, and never returns a working-tree diff for a ref request.
+The Git-ref adapter uses merge-base-aware diffing and immutable object reads such as `git ls-tree` and `git show`. It reads the attempt's stored commit under the task repository, rejects missing objects or identity conflicts, and never re-resolves a moving branch or returns a working-tree diff for an immutable-evidence request.
 
 Engineer marker discovery is added to the existing provider state read, but discovery does not become a second workspace registry. It supplies reconciliation evidence that is reduced into the commission projection.
 
@@ -204,7 +204,7 @@ Estimated production change: 1,400 to 2,100 lines across Mission Control and ai-
 
 Repository: Mission Control
 
-- Persist `authoringBranch`, `planSlug`, attempt origin, and legacy-safe workspace identity.
+- Persist `authoringBranch`, `planSlug`, attempt origin, last validated evidence commit and provenance, and legacy-safe workspace identity.
 - Add the central resolver with current-event support and exact path revalidation.
 - Add merge-base-aware ref diff and read-only Git tree browsing for retired or missing worktrees.
 - Correct branch labels, Diff error headers, manual workflow checkout selection, and Files capability states.
@@ -268,7 +268,7 @@ Validation: concurrent retry race, response-loss recovery, stale revision, wrong
 
 - The same Pipeline task never displays a provider path with the managed host's unrelated branch.
 - A valid live worktree supports the full authorized surface set.
-- A retired worktree preserves exact read-only Diff and Files access through a pinned branch commit.
+- A retired worktree preserves exact read-only Diff and Files access through the attempt's durable evidence commit.
 - Missing or ambiguous workspace identity produces a named state, not a Git error and not a fallback to `cwd`.
 - Known readiness failures stop before model-backed authoring and name a safe remedy.
 - A failed commission raises `needs you` independent of host idle state.
@@ -285,7 +285,7 @@ Validation: concurrent retry race, response-loss recovery, stale revision, wrong
 
 | Risk | Mitigation |
 | --- | --- |
-| A branch moves between requests | Resolve it to a commit for each response and label the commit; never authorize writes from the ref view |
+| A branch moves between requests | Persist the attempt's evidence commit, freeze it at handoff or retirement, and never re-resolve the branch for later views |
 | Retention leaks worktrees | Provider-owned terminal cleanup plus bounded timeout and explicit retirement evidence |
 | Mixed versions create false confidence | Capability gates and explicit legacy/unknown states |
 | Retry creates duplicate provider work | Existing attempt-key idempotency plus commission CAS and inspect-on-response-loss |
@@ -299,7 +299,7 @@ Validation: concurrent retry race, response-loss recovery, stale revision, wrong
 - The final retention timeout. The recommendation is lifecycle-based retention with a bounded fallback timeout, but the operational duration needs provider-owner input.
 - Whether every supported Git remote can be probed without side effects. The implementation must define transport-specific checks and explicit inconclusive outcomes.
 - Whether historical external successors beyond a direct child should ever be adopted. This plan intentionally supports only an exact direct successor.
-- Whether existing local branches remain available after repository cleanup or garbage collection. The UI must tolerate a ref becoming unavailable.
+- Whether existing Git objects remain available after repository cleanup or garbage collection. The UI must expose unavailable evidence and never substitute a moved branch.
 - A data migration for operator state not present in the inspected tasks. Compatibility tests must cover representative older commission rows before rollout.
 
 ## Resolved operator decisions

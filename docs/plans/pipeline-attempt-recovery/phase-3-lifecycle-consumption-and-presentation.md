@@ -76,7 +76,7 @@ In `src/server/pipelines/conductor/engineer.ts`:
 In `src/server/pipelines/commissions.ts`:
 
 - Reduce readiness into a bounded current result attached to the active attempt.
-- Reduce explicit worktree retirement only when path, branch, plan slug, attempt, and provider revision match the active workspace identity.
+- Reduce explicit worktree retirement only when path, branch, plan slug, retained commit, attempt, and provider revision match the active workspace identity. Persist the provider commit when none exists; surface drift rather than overwrite a conflicting frozen commit.
 - Reduce typed terminal failure without discarding raw error evidence.
 - Preserve retired state through restart and replay.
 - Treat a contradictory event as mismatch or drift evidence rather than silently replacing identity.
@@ -243,5 +243,5 @@ Phase 4 must not change provider lifecycle semantics, bypass capability checks, 
 - Compatibility refinement: Phase 3 activates provider integration ownership on new initial creates; Phase 2 only supplies and enforces the provider side.
 - Compatibility refinement: pre-launch readiness occurs after exact provider run creation so its evidence has immutable run identity, but before managed host launch or model spend.
 - Scope boundary: Phase 3 may inspect exact correlation for a review-only candidate, but only Phase 4 can persist or adopt a new attempt.
-- Authorization audit: explicit `retired` and inferred `missing` both consume Phase 1 ref adapters and cannot enable writes.
+- Authorization audit: explicit `retired` and inferred `missing` both consume Phase 1 commit adapters and cannot enable writes or follow a branch after the attempt commit is frozen.
 - Final audit: Phase 4 consumes the current attempt, revision, capability, readiness, failure, and candidate projection as guarded inputs and does not redefine their meaning.

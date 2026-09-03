@@ -88,9 +88,9 @@ No phase requires inseparable pull requests in both repositories.
 
 - `Session.cwd` remains process identity.
 - The commission owns authoring branch and plan slug.
-- The central resolver returns availability, path, branch, pinned commit, attempt, provider revision, reason, and capabilities.
+- The central resolver returns availability, path, branch, the attempt's durable evidence commit and provenance, attempt, provider revision, reason, and capabilities.
 - `available` is the only state that authorizes writes, comments, shell launch, or external file open.
-- `retired` and `missing` may authorize read-only Git object access only after a ref resolves to a commit inside the task repository.
+- `retired` and `missing` may authorize read-only Git object access only through a commit persisted on the attempt and verified inside the task repository. Later requests never follow a moved branch.
 - Consumers must not bypass the resolver or silently fall back to host `cwd`.
 
 Phases 3 and 4 may extend reasons and actions but must not change these authorization rules.
@@ -142,7 +142,7 @@ Each phase runs its focused checks plus the repository gates in its phase file. 
 
 | Source requirement | Owning phase |
 | --- | --- |
-| Preserve branch and plan slug already emitted | 1 |
+| Preserve branch, plan slug, and durable attempt evidence commit | 1 |
 | One resolver and authorization policy | 1 |
 | Branch-ref Diff and read-only Files | 1 |
 | Correct header, workflow checkout, and credential delivery | 1 |
@@ -160,7 +160,7 @@ Every approved requirement is owned once. Later phases consume earlier contracts
 ## Final cross-phase audit
 
 - Phase 1 and Phase 2 touch different repositories and have no implementation dependency. They may merge in either order.
-- Phase 1's inferred `missing` state remains valid after Phase 2 introduces explicit `retired`; Phase 3 maps both into the same capability matrix without changing Phase 1 authorization.
+- Phase 1's inferred `missing` state remains valid after Phase 2 introduces explicit `retired`; Phase 3 maps both into the same capability matrix and reconciles provider retirement commit evidence without changing Phase 1 authorization.
 - Phase 2's additive events are safe for the current Mission Control parser, which retains unknown event kinds and ignores unknown fields on known kinds.
 - Phase 3 owns presentation and derived attention but not provider mutation or attempt creation.
 - Phase 4 consumes the provider and projection contracts; it does not introduce a new event channel, workspace registry, or teardown path.

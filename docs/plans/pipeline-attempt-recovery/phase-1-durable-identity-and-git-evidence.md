@@ -15,10 +15,10 @@ This phase delivers value with the current ai-conductor release. It does not req
 ## Scope
 
 - Preserve provider-emitted authoring branch and plan slug in the commission projection.
-- Add an attempt origin with a safe migration default.
+- Add attempt origin, durable evidence commit, and evidence provenance with safe migration defaults.
 - Introduce the browser-safe workspace view and one server-side resolver/capability policy.
 - Validate live paths at request time.
-- Add exact ref-backed Diff and read-only Files access after worktree loss.
+- Add exact commit-backed Diff and read-only Files access after worktree loss.
 - Correct branch labels, Diff error labels, and manual workflow evidence checkout selection.
 - Move the Pipeline caller credential out of Codex process arguments.
 - Add focused unit, route, migration, UI, and Playwright coverage.
@@ -48,7 +48,7 @@ This phase delivers value with the current ai-conductor release. It does not req
 
 In `src/shared/pipeline.ts`:
 
-- Add `PipelineAttemptOrigin = "mission_control" | "provider_reconciled"` and `origin` to `PipelineCommissionAttempt`.
+- Add `PipelineAttemptOrigin = "mission_control" | "provider_reconciled"`, `origin`, `evidenceCommit`, and bounded `evidenceCommitProvenance` to `PipelineCommissionAttempt`.
 - Add nullable `authoringBranch` and `planSlug` to `PipelineCommission`.
 - Add `PipelineWorkspaceAvailability`, bounded reason codes, capabilities, and `PipelineWorkspaceView` with authority, kind, availability, reported path, branch, pinned commit, plan slug, attempt, provider revision, and reason.
 - Keep the view browser-safe and free of `node:` dependencies.
@@ -71,11 +71,11 @@ In `src/server/pipelines/commissions.ts`:
 
 In `src/server/db.ts`:
 
-- Add an `origin` column to `pipeline_commission_attempts` beside the existing migration using `addColumn`.
-- Backfill or decode missing and null values as `mission_control`.
+- Add `origin`, `evidence_commit`, and `evidence_commit_provenance` columns to `pipeline_commission_attempts` beside the existing migration using `addColumn`.
+- Backfill or decode missing origin as `mission_control`; missing evidence commit and provenance remain null.
 - Update attempt inserts, selects, upserts, validation, and degraded-row reconstruction.
 - Allow absent nullable commission fields in old `state_json`, then normalize them in memory. Do not let an old row degrade to unsupported solely because it lacks the new fields.
-- Add an index only if a measured query requires one. Attempt origin is not a lookup key in this phase.
+- Add an index only if a measured query requires one. Origin and evidence commit are not lookup keys in this phase.
 
 ### 3. Build one daemon-owned workspace resolver
 
@@ -94,7 +94,9 @@ Rules:
 - Use provider attempt and revision from the commission, never SDK host branch state.
 - Treat a reported path as `available` only after resolving symlinks and proving it is the expected Git worktree for the task repository and branch.
 - Validate `.pipeline/engineer-run.json` when present as corroborating identity. Add its marker shape to the existing provider state reader without making discovery authoritative over the commission.
-- Resolve an authoring branch only within the task repository. Reject ambiguous revision syntax and pin it to a commit SHA.
+- While the authoring worktree is live, validate its branch and HEAD and durably advance the attempt's last validated evidence commit only when the new commit belongs to the same attempt and is a descendant of the prior validated commit.
+- Freeze the evidence commit at handoff. If a legacy attempt disappeared before any commit was captured, resolve its known branch once within the task repository, persist the resulting SHA with `legacy_branch_resolution` provenance, and never re-resolve it for later requests.
+- Reject ambiguous revision syntax, non-commit objects, history rewrites, or identity conflicts. Those create explicit drift or unavailable-evidence state.
 - Never return `session.cwd` as the Pipeline workspace fallback.
 - Revalidate before every operation that writes, opens a shell, or exposes a host path externally.
 
@@ -105,9 +107,9 @@ Update `Registry.workspaceRootFor` and session projection to delegate managed Pi
 In `src/server/diff.ts`:
 
 - Add a ref-scoped diff sibling to `computeSessionDiff` and `computeCommitDiff`.
-- Resolve source and head, compute their merge base, and diff only the pinned commits.
+- Load the stored attempt evidence commit, resolve the source, compute their merge base, and diff only those pinned commits.
 - Return the resolved head commit and an exact label such as `spec/name vs main`.
-- Fail closed for missing, ambiguous, unrelated, unborn, or garbage-collected refs. Never substitute uncommitted changes.
+- Fail closed for missing, ambiguous, unrelated, unborn, or garbage-collected objects. Never re-resolve the branch or substitute uncommitted changes.
 
 In a focused Git tree module used by `src/server/session-files.ts` or beside it:
 
@@ -149,21 +151,21 @@ Reuse existing secure descriptor and cleanup patterns where possible. Keep the l
 
 ## Data, API, migration, and compatibility
 
-- Database migration: additive nullable/defaulted `origin` column on `pipeline_commission_attempts`.
+- Database migration: additive nullable/defaulted `origin`, `evidence_commit`, and `evidence_commit_provenance` columns on `pipeline_commission_attempts`.
 - Commission `state_json`: additive optional fields with normalization of old rows.
 - Session wire contract: additive optional workspace view; mixed browser/server versions retain current `workspaceRoot` fallback for non-Pipeline sessions.
 - Diff and Files responses: additive discriminated scope/capability metadata. Preserve existing live response shapes where feasible to avoid broad client churn.
 - Unknown provider retirement remains represented as filesystem-observed `missing`, never falsely as provider-confirmed `retired`.
-- A moving branch is resolved to a commit for each response. No operation assumes the ref stayed fixed across requests.
+- A moving branch cannot change an existing fallback view. Every response uses the attempt's stored commit, and an unavailable object produces an explicit state.
 
 ## Tests and verification
 
 Add or extend focused tests:
 
-- `test/pipeline-commission.test.ts`: retain branch and plan slug, reject conflict, default and persist attempt origin.
-- `test/pipeline-migration.test.ts` and DB tests: old rows, new origin column, malformed origin, degraded projection safety.
+- `test/pipeline-commission.test.ts`: retain branch and plan slug, reject conflict, default and persist attempt origin, advance a live descendant commit, freeze at handoff, and reject a rewrite.
+- `test/pipeline-migration.test.ts` and DB tests: old rows, new attempt columns, malformed origin or provenance, null legacy evidence, and degraded projection safety.
 - registry and projection tests: Pipeline sessions never fall back to host `cwd`; ordinary sessions still do.
-- `test/diff.test.ts`: merge-base ref diff, pinned head, missing and ambiguous refs, unrelated history, unborn branch, garbage-collected commit, and no working-tree fallback.
+- `test/diff.test.ts`: merge-base commit diff, persisted head despite a moved branch, missing and ambiguous source, unrelated history, unborn branch, garbage-collected commit, and no working-tree fallback.
 - `test/session-files.test.ts`: Git tree list/read, binary and size handling, traversal rejection, and strict read-only behavior.
 - route tests: live, missing with ref, missing without ref, stale path, symlink escape, and every disabled mutation.
 - `test/workflow-per-repo-runs.test.ts`: Pipeline evidence uses the commissioned workspace or is withheld.
@@ -195,9 +197,9 @@ If Electron geometry changes, also run `npm run test:electron` through the repos
 ## Merge and exit criteria
 
 - All scoped checks pass and the Playwright spec covers the visible behavior.
-- A current provider event preserves path, branch, and plan slug through restart and SSE projection.
+- A current provider event preserves path, branch, plan slug, and the last validated attempt commit through restart and SSE projection.
 - The same Pipeline session cannot display a provider path with the host checkout branch.
-- Removed worktrees produce pinned read-only Diff and Files, not raw Git errors.
+- Removed worktrees produce read-only Diff and Files from the stored attempt commit, not a re-resolved branch or raw Git error.
 - Every mutation and host-opening route fails closed without an available revalidated worktree.
 - Existing non-Pipeline sessions retain their current workspace behavior.
 - Caller credentials are absent from process arguments and cleaned up with the launch/session lifecycle.
@@ -212,7 +214,8 @@ Phase 4 may write `provider_reconciled` origin and use the resolver during recov
 ## Cross-phase audit record
 
 - Initial audit: Phase 1 owns workspace identity and authorization. Phase 2 can merge before or after it because it changes only ai-conductor and emits additive evidence.
-- Compatibility correction: attempt origin requires a normalized table migration, not only a `state_json` field, because attempts are reloaded from `pipeline_commission_attempts`.
+- Compatibility correction: attempt origin and immutable evidence commit require normalized table migrations, not only `state_json` fields, because attempts are reloaded from `pipeline_commission_attempts`.
 - Compatibility correction: current Mission Control can store unknown provider event kinds, so Phase 1 does not need placeholder event parsing for Phase 2.
 - Later phases must preserve `missing` as filesystem-observed and reserve `retired` for explicit provider evidence.
 - Final audit: Phase 4 writes `provider_reconciled` only through the origin column and decoder established here; no later phase introduces a competing attempt identity store.
+- Inspector correction: commit identity is durable on the attempt and frozen at handoff or retirement; later ref-backed requests never follow a moved branch.

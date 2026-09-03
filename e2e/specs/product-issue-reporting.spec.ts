@@ -58,7 +58,7 @@ function labelsOf(record: GhRecord): string[] {
  * The dialog itself.
  *
  * Every field selector below is scoped to it rather than to the page, and that is not
- * fussiness: the fleet's own filter box is named "Filter sessions by title or status", so an
+ * fussiness: the fleet's own filter box is named for session filtering, so an
  * unscoped `name: "Title"` matches the page behind the modal too.
  */
 const form = (page: Page) => page.getByRole("dialog", { name: "Report product feedback" });

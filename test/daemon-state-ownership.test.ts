@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 const root = mkdtempSync(join(tmpdir(), "mission-daemon-owner-"));
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const children = new Set<ChildProcess>();
+// A source-loaded daemon can legitimately wait behind the full suite's eight workers. Keep
+// short waits for refusal/holder signals, but give successful process startup its own budget.
+const CHILD_START_TIMEOUT_MS = 60_000;
 
 // A direct single-file test does not run npm's build lifecycle. Compile the runtime artifact
 // this spec exercises so the focused command proves source checkout behavior on its own.
@@ -115,8 +118,9 @@ async function waitFor(
   daemon: RunningDaemon,
   predicate: (output: string) => boolean,
   description: string,
+  timeoutMs = 15_000,
 ): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate(daemon.output())) return;
     if (daemon.child.exitCode !== null || daemon.child.signalCode !== null) {
@@ -128,7 +132,12 @@ async function waitFor(
 }
 
 async function waitForListening(daemon: RunningDaemon): Promise<void> {
-  await waitFor(daemon, (output) => output.includes("[mission-control] listening on"), "daemon did not listen");
+  await waitFor(
+    daemon,
+    (output) => output.includes("[mission-control] listening on"),
+    "daemon did not listen",
+    CHILD_START_TIMEOUT_MS,
+  );
 }
 
 async function stopDaemon(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {

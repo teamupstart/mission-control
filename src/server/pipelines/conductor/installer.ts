@@ -318,6 +318,7 @@ export async function verifyConductorInstallerCheckout(
 /** Verify the bounded workspace catalog without walking another directory tree. */
 export async function conductorInstallerCandidates(
   repoRoots: readonly string[],
+  overrides: Partial<ConductorInstallerDeps> = {},
 ): Promise<PipelineInstallerCandidate[]> {
   const candidates: PipelineInstallerCandidate[] = [];
   const seenInputs = new Set<string>();
@@ -325,7 +326,7 @@ export async function conductorInstallerCandidates(
   for (const checkout of repoRoots.slice(0, MAX_REPO_ROOTS)) {
     if (seenInputs.has(checkout)) continue;
     seenInputs.add(checkout);
-    const result = await verifyConductorInstallerCheckout(checkout);
+    const result = await verifyConductorInstallerCheckout(checkout, overrides);
     if (!result.ok) continue;
     if (seenPhysical.has(result.candidate.checkout)) continue;
     seenPhysical.add(result.candidate.checkout);

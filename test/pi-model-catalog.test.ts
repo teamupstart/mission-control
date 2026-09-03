@@ -10,6 +10,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const {
   PI_MODEL_CATALOG_BOUNDS,
+  discoverConfiguredPiModels,
   discoverPiModels,
 } = await import("../src/server/harness/pi/model-catalog.ts");
 import type {
@@ -143,6 +144,50 @@ function depsFor(
     bounds: { ...PI_MODEL_CATALOG_BOUNDS, timeoutMs: 40, closeGraceMs: 2 },
   };
 }
+
+test("Pi catalog resolution preserves success and degrades every resolver failure", async (t) => {
+  const signal = new AbortController().signal;
+
+  await t.test("resolved executable reaches discovery", async () => {
+    const resolved: string[] = [];
+    const discovered: string[] = [];
+    const result = await discoverConfiguredPiModels("pi", {
+      signal,
+      resolve: async (configured) => {
+        resolved.push(configured);
+        return "/resolved/pi";
+      },
+      discover: async (executable, deps) => {
+        discovered.push(executable);
+        assert.equal(deps?.signal, signal);
+        return { ok: false, problem: "unavailable" };
+      },
+    });
+
+    assert.deepEqual(resolved, ["pi"]);
+    assert.deepEqual(discovered, ["/resolved/pi"]);
+    assert.deepEqual(result, { ok: false, problem: "unavailable" });
+  });
+
+  for (const [name, resolve] of [
+    ["missing executable", async () => null],
+    ["resolver rejection", async () => Promise.reject(new Error("broken login shell"))],
+  ] as const) {
+    await t.test(name, async () => {
+      let discoveryCalled = false;
+      const result = await discoverConfiguredPiModels("pi", {
+        resolve,
+        discover: async () => {
+          discoveryCalled = true;
+          return { ok: false, problem: "unavailable" };
+        },
+      });
+
+      assert.equal(discoveryCalled, false);
+      assert.deepEqual(result, { ok: false, problem: "process_failed" });
+    });
+  }
+});
 
 test("Pi discovery is one prompt-free, no-session RPC command with chunk-safe correlated framing", async () => {
   const line = response([

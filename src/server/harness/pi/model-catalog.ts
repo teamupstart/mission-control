@@ -13,6 +13,7 @@ import {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
 } from "../../agent-subprocess-env.ts";
+import { resolveBinPath } from "../../util/exec.ts";
 
 /** Exact isolation flags for the prompt-free, no-session Pi catalog probe. */
 export const PI_MODEL_CATALOG_ARGS = [
@@ -81,6 +82,15 @@ export interface PiModelCatalogDeps {
   signal?: AbortSignal;
 }
 
+export interface PiModelCatalogResolutionDeps {
+  resolve?: (executable: string) => Promise<string | null>;
+  discover?: (
+    executable: string,
+    deps?: PiModelCatalogDeps,
+  ) => Promise<ModelCatalogDiscoveryResult>;
+  signal?: AbortSignal;
+}
+
 export type PiModelCatalogBounds = {
   [K in keyof typeof PI_MODEL_CATALOG_BOUNDS]: number;
 };
@@ -89,6 +99,20 @@ const EXPECTED_COMMAND = "get_available_models";
 
 function failure(problem: HarnessModelCatalogProblem): ModelCatalogDiscoveryResult {
   return { ok: false, problem };
+}
+
+/** Resolve a configured Pi command exactly as launch does, while preserving fallback semantics. */
+export async function discoverConfiguredPiModels(
+  configuredExecutable: string,
+  deps: PiModelCatalogResolutionDeps = {},
+): Promise<ModelCatalogDiscoveryResult> {
+  try {
+    const executable = await (deps.resolve ?? resolveBinPath)(configuredExecutable);
+    if (!executable) return failure("process_failed");
+    return await (deps.discover ?? discoverPiModels)(executable, { signal: deps.signal });
+  } catch {
+    return failure("process_failed");
+  }
 }
 
 function record(value: unknown): Record<string, unknown> | null {

@@ -403,28 +403,34 @@ export function ScoutReader({
               </p>
             ) : null}
             {promptsOpen ? (
-              <ol className="scouts-prompt-list">
-                {detail.prompts.entries.map((entry, index) => (
-                  <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>
-                    <div className="scouts-prompt-entry-meta">
-                      <span className="scouts-prompt-label">
-                        {entry.kind === "initial" ? "Original request" : "Follow-up"}
-                      </span>
-                      {entry.kind === "follow_up" && entry.at ? (
-                        <time className="scouts-prompt-time" dateTime={entry.at}>
-                          {promptTimeLabel(entry.at)}
-                        </time>
-                      ) : null}
-                    </div>
-                    {/*
-                      Capped at eight lines and scrolled on its own. A scout's opening request
-                      is routinely a page of dispatch text, and letting it set this section's
-                      height pushed the report - the answer someone came for - off screen.
-                    */}
-                    <p className="scouts-prompt-text" tabIndex={0}>{entry.text}</p>
-                  </li>
-                ))}
-              </ol>
+              /*
+                The whole ledger is one bounded scroller, not one per prompt. A scout's
+                opening request is routinely a page of dispatch text and a dispatch carries
+                several prompts, so capping each body separately still let the section stack
+                its way over the report - the answer someone came for. Capping the ledger
+                bounds what the section can ever cost regardless of how many prompts it
+                holds, and leaves exactly one place to scroll. Focusable because a scroll
+                container a mouse can reach and a keyboard cannot is a trap.
+              */
+              <div className="scouts-prompt-scroll" tabIndex={0}>
+                <ol className="scouts-prompt-list">
+                  {detail.prompts.entries.map((entry, index) => (
+                    <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>
+                      <div className="scouts-prompt-entry-meta">
+                        <span className="scouts-prompt-label">
+                          {entry.kind === "initial" ? "Original request" : "Follow-up"}
+                        </span>
+                        {entry.kind === "follow_up" && entry.at ? (
+                          <time className="scouts-prompt-time" dateTime={entry.at}>
+                            {promptTimeLabel(entry.at)}
+                          </time>
+                        ) : null}
+                      </div>
+                      <p className="scouts-prompt-text">{entry.text}</p>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             ) : null}
           </section>
         ) : null}

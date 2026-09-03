@@ -30324,7 +30324,7 @@ body.foreman-sidecar-open .modal-backdrop {
    single rule echoes the evidence spine because both encode sequence, while the quiet
    labels keep the request subordinate to the scout's answer below. */
 .scouts-prompt-context {
-  /* Named because the bounded prompt body paints its own scroll shadows in it, and a shadow
+  /* Named because the bounded ledger paints its own scroll shadows in it, and a shadow
      that fades to a DIFFERENT colour than the surface behind it is a visible seam. */
   --prompt-surface: color-mix(in oklab, var(--panel-2) 34%, var(--panel));
   flex: none;
@@ -30375,9 +30375,53 @@ body.foreman-sidecar-open .modal-backdrop {
   text-transform: none;
   color: var(--dim);
 }
+/* The single bound on the ledger. Roughly seven body lines: enough to read the top of the
+   request and see that there is more, and little enough that the report keeps most of the
+   pane. The `vh` term shrinks it on a short window, where a fixed cap would be the whole
+   pane; the floor keeps it from collapsing to a sliver. A reader who wants the request in
+   full scrolls here, or folds the section away with the heading.
+
+   Bounding the ledger rather than each prompt body is deliberate. Each body used to carry
+   its own eight-line cap, and three prompts then stacked the section to about 400px of an
+   831px pane; bounding the ledger puts it at 190px of the same pane, measured in
+   `e2e/specs/scout-archive.spec.ts`. It also leaves ONE scroll container, so a wheel over
+   the request never has to guess which box it belongs to. The list keeps its own height
+   inside, which is what `.scouts-prompt-list::before` measures its spine against. */
+.scouts-prompt-scroll {
+  max-width: 78ch;
+  max-height: clamp(104px, 15vh, 156px);
+  /* The pair leaves the ledger exactly where it was while giving the scroll box 4px of clip
+     room on the left: a scroller clips ink at its padding edge, and the entry dots ring
+     themselves 3px past the spine. Without it every dot loses its left edge. */
+  margin-left: -4px;
+  padding-left: 4px;
+  padding-right: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.scouts-prompt-scroll:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; border-radius: 4px; }
+/* Scroll shadows: the two covers are pinned to the box and the two shadows to the content,
+   so each edge darkens only while there is text past it. A macOS overlay scrollbar appears
+   only while the wheel is moving, so without this a bounded ledger at rest looks complete. */
+.scouts-prompt-scroll {
+  background:
+    linear-gradient(var(--prompt-surface) 40%, transparent) center top,
+    linear-gradient(transparent, var(--prompt-surface) 60%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.45), transparent) center top,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.45), transparent) center bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 22px, 100% 22px, 100% 9px, 100% 9px;
+  background-attachment: local, local, scroll, scroll;
+}
+.scouts-prompt-scroll::-webkit-scrollbar { width: 8px; }
+.scouts-prompt-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 4px;
+}
+.scouts-prompt-scroll::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--fg) 38%, transparent); }
 .scouts-prompt-list {
   position: relative;
-  max-width: 78ch;
   margin: 0;
   padding: 0 0 0 15px;
   list-style: none;
@@ -30409,7 +30453,9 @@ body.foreman-sidecar-open .modal-backdrop {
   height: 7px;
   border-radius: 50%;
   background: var(--select);
-  box-shadow: 0 0 0 3px var(--panel);
+  /* The ring masks the spine behind the dot, so it has to be the surface it actually sits
+     on - this section's own, not the pane's. */
+  box-shadow: 0 0 0 3px var(--prompt-surface);
 }
 .scouts-prompt-entry-meta {
   display: flex;
@@ -30432,46 +30478,18 @@ body.foreman-sidecar-open .modal-backdrop {
   line-height: 1.4;
   color: var(--dim);
 }
-/* Eight lines, then this box scrolls instead of the pane. `line-height` is unitless, so
-   8 * 1.65em is exactly eight of these lines whatever the font size becomes, and the
-   padding is excluded from the cap by `content-box`. Focusable because a scroll container
-   a mouse can reach and a keyboard cannot is a trap for the longest prompts. */
+/* Full height, no scroller of its own. The prompt body flows and the ledger above bounds it,
+   so a long request costs scroll distance in one place instead of a nested box the wheel can
+   fall into. */
 .scouts-prompt-text {
   min-width: 0;
   margin: 0;
-  box-sizing: content-box;
-  max-height: calc(1.65em * 8);
-  padding-right: 8px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.scouts-prompt-text:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; border-radius: 4px; }
-/* Scroll shadows: the two covers are pinned to the box and the two shadows to the content,
-   so each edge darkens only while there is text past it. A macOS overlay scrollbar appears
-   only while the wheel is moving, so without this an eight-line box at rest looks like the
-   whole prompt. */
-.scouts-prompt-text {
-  background:
-    linear-gradient(var(--prompt-surface) 40%, transparent) center top,
-    linear-gradient(transparent, var(--prompt-surface) 60%) center bottom,
-    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.45), transparent) center top,
-    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.45), transparent) center bottom;
-  background-repeat: no-repeat;
-  background-size: 100% 22px, 100% 22px, 100% 9px, 100% 9px;
-  background-attachment: local, local, scroll, scroll;
-}
-.scouts-prompt-text::-webkit-scrollbar { width: 8px; }
-.scouts-prompt-text::-webkit-scrollbar-thumb {
-  background: color-mix(in oklab, var(--fg) 24%, transparent);
-  border-radius: 4px;
-}
-.scouts-prompt-text::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--fg) 38%, transparent); }
 .scouts-prompt-truncated {
   max-width: 78ch;
   margin: 0 0 8px;

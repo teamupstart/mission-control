@@ -652,12 +652,14 @@ test("Scouts arrows load adjacent reports and slash focuses its search", async (
   await captureShortcutEvidence(dashboard);
 });
 
-test("a long original request is capped at eight scrollable lines and collapses away", async ({
+test("a long prompt trail is bounded to one scrollable ledger and collapses away", async ({
   dashboard,
   daemon,
 }) => {
-  // Thirty numbered lines: an ordinary dispatch brief, and far more than this pane can spend
-  // on the question when the answer is what the reader came for.
+  // Thirty numbered lines and three prompts: an ordinary dispatch brief with a restart behind
+  // it, and far more than this pane can spend on the question when the answer is what the
+  // reader came for. Three, because the earlier per-prompt cap bounded each body and let the
+  // section stack anyway - the cap has to hold for the trail, not for one entry.
   const lines = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the original dispatch request.`);
   writeScoutBundle(join(daemon.home, "scouts"), {
     title: "Bounded prompt scout",
@@ -665,6 +667,11 @@ test("a long original request is capped at eight scrollable lines and collapses 
       entries: [
         { kind: "initial", text: lines.join("\n"), at: null },
         { kind: "follow_up", text: "One short follow-up.", at: "2026-08-14T15:18:00.000Z" },
+        {
+          kind: "follow_up",
+          text: "The last follow-up, only reachable by scrolling the ledger.",
+          at: "2026-08-14T15:19:00.000Z",
+        },
       ],
       truncated: false,
     },
@@ -680,32 +687,62 @@ test("a long original request is capped at eight scrollable lines and collapses 
   const originalRequest = promptContext.getByRole("listitem").nth(0).locator("p");
   await expect(originalRequest).toContainText("Line 1 of the original dispatch request.");
 
-  // Eight lines of its own line box, not thirty. Measured, because this is exactly the class
-  // of claim a markup assertion cannot make.
-  const box = await originalRequest.evaluate((el) => {
-    const line = Number.parseFloat(getComputedStyle(el).lineHeight);
-    return { client: el.clientHeight, scroll: el.scrollHeight, line };
+  // What the whole section costs the pane, measured, because this is exactly the class of
+  // claim a markup assertion cannot make. Three prompts, one of them thirty lines: under the
+  // old per-body cap this section stood at roughly 400px, about 45% of the reader.
+  const geometry = await promptContext.evaluate((section) => {
+    const readerPane = section.parentElement?.closest<HTMLElement>(".scouts-reader") ?? null;
+    const scrollers = Array.from(section.querySelectorAll<HTMLElement>("*")).filter(
+      (el) => el.scrollHeight > el.clientHeight + 1 && getComputedStyle(el).overflowY === "auto",
+    );
+    const bodies = Array.from(section.querySelectorAll<HTMLElement>(".scouts-prompt-text"));
+    return {
+      section: Math.round(section.getBoundingClientRect().height),
+      pane: Math.round((readerPane ?? document.body).getBoundingClientRect().height),
+      scrollerCount: scrollers.length,
+      scrollerClient: scrollers[0]?.clientHeight ?? 0,
+      scrollerScroll: scrollers[0]?.scrollHeight ?? 0,
+      bodyOverflow: bodies.map((el) => el.scrollHeight - el.clientHeight),
+    };
   });
-  expect(box.line, "the prompt body has a resolved line height").toBeGreaterThan(0);
-  expect(box.client, "eight lines is the cap").toBeLessThanOrEqual(Math.ceil(box.line * 8) + 2);
-  expect(box.client, "eight lines is also the floor for a prompt this long").toBeGreaterThanOrEqual(
-    Math.floor(box.line * 8) - 2,
+  // eslint-disable-next-line no-console
+  console.log(`MEASURED prompt context ${JSON.stringify(geometry)}`);
+
+  expect(geometry.pane, "the reader pane has a laid-out height").toBeGreaterThan(400);
+  expect(geometry.section, "the ledger is bounded to about half of what it used to cost")
+    .toBeLessThanOrEqual(230);
+  expect(geometry.section, "and is still tall enough to read the top of the request from")
+    .toBeGreaterThanOrEqual(140);
+  expect(
+    geometry.section / geometry.pane,
+    "so the report keeps the large majority of the pane",
+  ).toBeLessThan(0.3);
+
+  // One scroller for the trail, not one per prompt: a wheel over the request never has to
+  // guess which box it belongs to.
+  expect(geometry.scrollerCount, "exactly one scroll container in the section").toBe(1);
+  expect(geometry.scrollerScroll, "the rest of the trail is there, below the fold").toBeGreaterThan(
+    geometry.scrollerClient,
   );
-  expect(box.scroll, "the rest of the request is still there, below the fold").toBeGreaterThan(box.client);
+  for (const overflow of geometry.bodyOverflow) {
+    expect(overflow, "each prompt body flows at its natural height").toBeLessThanOrEqual(1);
+  }
 
   // The point of the cap: the report is on screen with the ledger open and untouched.
   const frame = dashboard.locator('iframe[title^="Report"]');
   await expect(frame).toBeInViewport();
   await capturePromptCapEvidence(dashboard, "01-prompt-capped-report-visible");
 
-  // It scrolls on its own, and the page does not move while it does.
+  // The last prompt is clipped by the bound, and scrolling the ledger - not the pane -
+  // brings it into view.
+  const lastPrompt = promptContext.getByRole("listitem").nth(2);
+  await expect(lastPrompt).not.toBeInViewport();
+
   const pageTop = await dashboard.evaluate(() => window.scrollY);
   await originalRequest.hover();
-  await dashboard.mouse.wheel(0, 400);
-  await expect
-    .poll(() => originalRequest.evaluate((el) => el.scrollTop), { timeout: 5_000 })
-    .toBeGreaterThan(0);
-  await expect(originalRequest).toContainText("Line 30 of the original dispatch request.");
+  await dashboard.mouse.wheel(0, 600);
+  await expect(lastPrompt).toBeInViewport();
+  await expect(lastPrompt).toContainText("only reachable by scrolling the ledger");
   expect(await dashboard.evaluate(() => window.scrollY), "the pane stays put").toBe(pageTop);
 
   await expect(frame).toBeInViewport();

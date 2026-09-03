@@ -64,9 +64,51 @@ the report for the findings and the plan for the proposal.
    code blocks, diagrams - scroll inside its own container so the page body never scrolls
    sideways.
 
+   **The preview is always dark. Author dark first and check it.** Mission Control renders
+   the report with `prefers-color-scheme: dark` whatever the operator's OS says, because the
+   dashboard sets `color-scheme: dark` on `:root` and Chromium propagates an embedder's used
+   colour scheme into a nested browsing context. Writing the report light-first, opening it
+   in a browser on a light-mode machine and shipping it means the only scheme anyone will
+   read it in is the one scheme nobody looked at.
+
+   **A token is a foreground or a surface, never both.** This is the rule that the dark path
+   punishes. `--ink` is a text colour; flipping it light for dark mode is correct. A rule
+   that borrowed it for `background` gets its surface repainted light while the hard-coded
+   light text on top of it stays put, and the panel becomes invisible at 1.07:1. Same for a
+   `--green` chip under a hard-coded `color: #fff`. If a rule pairs a literal colour with a
+   token, the token cannot be flipped by scheme without flipping its partner - so give the
+   surface its own token and move them together.
+
+   **Then run the check on your report before you hand it over.**
+
+   ```sh
+   node scripts/check-report-contrast.mjs docs/reports/<slug>/report.html
+   ```
+
+   It renders the file at both schemes and fails on text below 3:1. Two stages: the declared
+   CSS colours propose candidates, then the pixels actually painted confirm or discard each
+   one. Neither half is trustworthy alone - reading CSS cannot see SVG (text is
+   painted with `fill`, over a sibling `<rect>`, so a correct diagram scored 1.11:1 against
+   the wrong surface), and sampling pixels alone cannot tell invisible text from text that is
+   merely absent - inside a closed `<details>`, or below the fold. Text that is *meant* to be
+   unreadable, such as a specimen in a report about a contrast defect, opts out with
+   `data-contrast-exempt="<reason>"`, and the run prints how many texts it skipped.
+
+   It takes a path on purpose: it gates the report you just wrote. `--all` sweeps
+   `docs/reports/` when that is what you want, and does not come back clean - reports written
+   before this check existed carry their own findings.
+
 Two reports already in this repository were written this way and are the reference for
 layout, typography and inline-SVG charting: `docs/sqlite-database.html` and
 `docs/foreman-inspector-token-usage.html`. Read one before inventing a look.
+
+Copy their layout, not their colours - neither of them passes the contrast check today.
+`docs/sqlite-database.html` pins `color-scheme: light` with no dark block, and 13 of its
+texts sit below 3:1 in both schemes: nine section eyebrows at 1.54:1, three SVG labels
+painted at 1:1, and one inline `code` at 1.19:1. `docs/foreman-inspector-token-usage.html`
+is much closer - it is authored dark-first with a `prefers-color-scheme: light` override and
+is clean in dark - but one `.pill.on` reads 2.64:1 in light. Take the structure and the
+typographic scale from them; get your colour pairs from rule 7.
 
 Leave the file untracked unless the investigation is itself the deliverable being shipped.
 `docs/reports/` is not ignored, so an untracked report still lists in the Files tab; a

@@ -135,9 +135,15 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
 
 `ArtifactCard` owns:
 
-- **Disclosure state**, keyed by `sessionId` + `path` so a reader's choice survives re-renders
-  of the turn. Its **default depends on the context**: open in the uncapped reading surface
-  (the approved default), closed in the capped session-card log.
+- **Disclosure state, held OUTSIDE the transcript tree**, in a module-level map keyed by
+  `sessionId` + `path`. This is not a tidiness preference: switching to the Files tab unmounts
+  the transcript, and state inside `ArtifactCard` dies with it, so the card would come back at
+  its default. A React `key` distinguishes mounted instances; it does not preserve anything
+  across an unmount. Follow `src/web/lib/drafts.ts`, which is a module-level map for exactly
+  this reason and says so - the card hydrates from it on mount and writes through on toggle.
+  Drop a session's entries when its session is removed, alongside the existing draft cleanup.
+  Its **default, when the map has no entry**, depends on the context: open in the uncapped
+  reading surface (the approved default), closed in the capped session-card log.
   **Do not implement the capped case by leaving the card open and hiding the body in CSS.**
   That keeps `aria-expanded="true"` over content nobody can reach, which is a lie the
   screen-reader user pays for. Collapse it in state; let `aria-expanded` always describe a
@@ -149,11 +155,25 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
 - **Fetch on first expand**, via `fetchSessionFile(sessionId, path, signal)`, then
   `inlinePreviewStyles(text, path, (p) => read p through the same api)`. Abort on unmount and
   on path change. Re-fetch on **Refresh**.
-- **`srcDoc={htmlPreviewSource(text)}`** and `sandbox={HTML_PREVIEW_SANDBOX}`, imported as
-  constants. Do not build either string locally.
-- **Header**: disclosure button wrapping name and directory, byte size, **Refresh**, and
-  **Comment in Files**. Accessible names: the card is `Preview of <path>`; Refresh is
-  `Refresh preview of <path>`; the comment action is `Comment on <path> in Files`.
+- **Render the INLINED source, not the fetched source.** Keep the result of
+  `inlinePreviewStyles` - call it `previewText` - and pass *that* to `htmlPreviewSource`:
+  `srcDoc={htmlPreviewSource(previewText)}`, with `sandbox={HTML_PREVIEW_SANDBOX}`. Passing the
+  raw `text` instead would do the stylesheet work and then throw it away, and the symptom is
+  quiet: a checkout-local stylesheet silently fails to apply and the artifact renders unstyled
+  while everything else looks fine. `FileWorkspace` holds the same distinction in its own
+  `previewText`; the name is deliberately the same one.
+- Import `htmlPreviewSource` and `HTML_PREVIEW_SANDBOX` as constants. Do not build either
+  string locally.
+- **Header**: a **non-interactive** `header` element holding three siblings - the disclosure
+  `button` (which wraps the caret, the file name and the directory, and nothing else), the
+  byte size as a `span`, and then the **Refresh** and **Comment in Files** buttons.
+  **Never nest a control inside the disclosure button.** Interactive content inside a `button`
+  is invalid HTML, browsers reparent it, and the click and keyboard behavior of the inner
+  control fights the outer one. The mockup's markup is correct on this point - port its
+  structure, not a paraphrase of it.
+  Accessible names: the card is `Preview of <path>`; Refresh is `Refresh preview of <path>`;
+  the comment action is `Comment on <path> in Files`. The disclosure carries `aria-expanded`
+  and `aria-controls` pointing at the body.
 - **Refusal body**, one sentence plus one explanation, for each of: over
   `MAX_SESSION_PREVIEW_BYTES`, not decodable text, file gone, and containment refusal. The
   header keeps both actions in every refusal state.
@@ -267,8 +287,15 @@ label and placeholder.
    and assert the choice survived.
 5. Click **Comment in Files**; assert the Files tab is showing that file with **Preview**
    pressed and **Comment mode** pressed.
-6. Comment on a block from the preview and read the thread back in the rail.
-7. Assert a turn that names an `.html` path only mid-sentence has **no** card.
+6. Comment on a block of the **Files workspace preview** - the surface the hand-off landed on,
+   never the conversation card's own frame - and read the thread back in the rail.
+7. Assert the **conversation preview stays inert**: with comment mode armed in Files, clicking
+   a block inside the conversation card's frame opens no composer and creates no thread. This
+   is the negative half of the non-goal above, so write it the way a negative assertion has to
+   be written: read the thread count before the click, and confirm the assertion actually
+   fails if the conversation card is made to send `HTML_PREVIEW_COMMENT_MESSAGE`. An assertion
+   that passes because nothing was ever wired up proves nothing.
+8. Assert a turn that names an `.html` path only mid-sentence has **no** card.
 
 ### Commands
 
@@ -301,6 +328,11 @@ Look at the running app, not only the diff:
   not an open card whose body CSS hid.
 - A collapsed or off-screen card's frame holds no document, so opening a long session does not
   fetch and render every artifact in it.
+- A reader's collapse survives switching to the Files tab and back, which means it survives the
+  transcript unmounting.
+- An artifact whose page links a checkout-local stylesheet renders styled, proving the inlined
+  source reached `htmlPreviewSource`.
+- The header contains no nested interactive controls.
 - **Comment in Files** lands on the file, in Preview, with comment mode armed, from both a
   cold open and an already-open Files tab.
 - Every refusal state renders its own sentence, with both header actions intact - and a
@@ -359,6 +391,19 @@ preview.
   frame regardless of disclosure or viewport, so it never demonstrated the lazy-mount contract
   it was the reference for; the mockup now implements it and the contract is verified rather
   than asserted.
+- **2026-09-03, review round 5 reconciliation.** Four more comments, all four valid against
+  this file. Two were latent implementation bugs the prose would have caused: the fetch step
+  computed `inlinePreviewStyles` and the render step then named the raw `text`, so a literal
+  reading would inline stylesheets and discard them (a quiet failure - the artifact just
+  renders unstyled); and the disclosure state was specified inside `ArtifactCard`, which cannot
+  satisfy this file's own "survives a tab change" test, because switching to Files unmounts the
+  transcript. The state now lives in a module-level map following `drafts.ts`, which exists for
+  precisely that reason. One was an HTML-validity trap: the header was described in a way that
+  reads as nesting Refresh and Comment inside the disclosure button, which browsers reparent -
+  the mockup's markup was already correct, so the fix is to say so and point at it. One was an
+  ambiguity that contradicted a non-goal: the e2e step "comment on a block from the preview"
+  now names the Files workspace explicitly, and a new step asserts the conversation preview is
+  inert, written as a mutation-proved negative rather than an assertion that passes vacuously.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

@@ -86,8 +86,11 @@ One card per distinct HTML file a turn names, at the foot of the turn, after the
 after the tool chips.
 
 - **Header**: the file's basename in full weight, its directory muted, its byte size, a
-  **Refresh** control, and a **Comment in Files** link. The whole header is the disclosure
-  control, so clicking anywhere that is not a link toggles the body.
+  **Refresh** control, and a **Comment in Files** action. The disclosure is the name and
+  directory - a generous target, the part you are reading anyway - with the two actions
+  as siblings beside it rather than inside it. The header itself is not a control:
+  interactive content nested in a button is invalid HTML that browsers reparent, and the
+  inner control's clicks and keys then fight the outer one.
 - **Body**: an `iframe` with `sandbox={HTML_PREVIEW_SANDBOX}` and
   `srcDoc={htmlPreviewSource(text)}`, at a **fixed reserved height** with internal scroll.
 - **Accessible name**: `Preview of docs/reports/x/report.html`, matching what the Files tab

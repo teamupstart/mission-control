@@ -248,7 +248,7 @@
   <h3>The artifact card</h3>
   <p>One card per distinct HTML file a turn names, at the foot of the turn, after the prose and after the tool chips.</p>
   <ul>
-    <li><strong>Header</strong>: the file's basename in full weight, its directory muted, its byte size, a <strong>Refresh</strong> control, and a <strong>Comment in Files</strong> link. The whole header is the disclosure control, so clicking anywhere that is not a link toggles the body.</li>
+    <li><strong>Header</strong>: the file's basename in full weight, its directory muted, its byte size, a <strong>Refresh</strong> control, and a <strong>Comment in Files</strong> action. The disclosure is the name and directory - a generous target, the part you are reading anyway - with the two actions as siblings beside it rather than inside it. The header itself is not a control: interactive content nested in a button is invalid HTML that browsers reparent, and the inner control's clicks and keys then fight the outer one.</li>
     <li><strong>Body</strong>: an <code>iframe</code> with <code>sandbox={HTML_PREVIEW_SANDBOX}</code> and <code>srcDoc={htmlPreviewSource(text)}</code>, at a <strong>fixed reserved height</strong> with internal scroll.</li>
     <li><strong>Accessible name</strong>: <code>Preview of docs/reports/x/report.html</code>, matching what the Files tab already names its own preview frame, so one selector vocabulary covers both surfaces.</li>
     <li><strong>Refusals are stated, never blank.</strong> Over the 5 MiB <code>MAX_SESSION_PREVIEW_BYTES</code> cap, not valid UTF-8, deleted since the turn was written, or refused by the daemon's containment check: the body says which, and the header keeps its links.</li>

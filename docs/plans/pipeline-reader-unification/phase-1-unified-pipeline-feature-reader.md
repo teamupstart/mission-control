@@ -136,10 +136,21 @@ Selection precedence is unchanged: an addressed run still wins over a commission
 a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region to
 the pane; it never changes which feature is addressed.
 
-The phase meter stays out of scope and stays correct: `pipelineRunForCommission` returns
-`linkedRun` whenever a commission is linked, so handing it a resolved commission beside its own
-run yields the same run it yields today. No progress derivation is edited or read differently,
-which is what keeps decision 1 intact.
+The meter's **progress derivation** stays out of scope and stays identical:
+`pipelineRunForCommission` returns `linkedRun` whenever a commission is linked, so handing it a
+resolved commission beside its own run yields the same run it yields today. No progress
+derivation is edited or read differently, and `pipeline-run-model.ts` is not touched, which is
+what keeps decision 1 intact.
+
+The meter's **caption** does change, on exactly one path, and it is intended.
+`PipelinePhaseMeter.tsx:220` branches the caption on the `commission` prop: with one it uses
+`pipelineCommissionLine`, which for a linked run returns `pipelineEyebrow(linkedRun)`
+(`BUILD · Build · step 2 of 3`); with none it uses `view.caption`, the bare phase word (`BUILD`).
+A directly addressed run passes null today, so it shows the phase word, and once
+`activeCommission` resolves it will show the eyebrow. That is the same caption the board card,
+the console detail and the commission-selected path in this pane already show for a linked
+feature, so the change removes an inconsistency rather than introducing one. Do not "fix" it
+back to the bare phase word; assert it instead.
 
 ### 3. Replace the either/or
 
@@ -182,7 +193,11 @@ Per `AGENTS.md` this is a UI behavior change and requires Playwright coverage.
     proves `activeCommission` resolves;
   - a run with no commission renders with no Engineer regions and its own slug in the header,
     so the reverse lookup missing is distinguishable from it returning nothing;
-  - the handoff's implementation-run control navigates to the run address.
+  - the handoff's implementation-run control navigates to the run address;
+  - **the rail's new secondary run control** on a commission row with an observed linked run
+    opens that run. It is a new control, and `AGENTS.md` admits no exemption for one;
+  - **the direct-run meter caption** reads the eyebrow form (`BUILD · Build · step 2 of 3`)
+    rather than the bare phase word, which pins the one intended meter change below.
   Update the `Attempts` assertion at `:311` for the `Kickback attempts` rename.
 - `e2e/specs/pipeline-controls.spec.ts`: `Park` and the daemon consoles are reachable for a
   commission-selected feature, which today they are not.
@@ -218,6 +233,8 @@ already the tallest thing on the tab and no markup assertion can measure used he
 - Engineer attempts and specification handoff are collapsed by default once a run exists and
   expanded before handoff.
 - No file under `pipeline-run-model.ts` or `PipelinePhaseMeter.tsx` is modified.
+- The rail's new run control has its own Playwright case, and the direct-run meter caption is
+  asserted rather than left to chance.
 - `SessionTile.tsx`, `BoardView.tsx` and `ConsoleDetail.tsx` are unmodified, and the board card
   still draws its bar for a commission with no run and for a run with no commission.
 - The two attempts headings are distinguishable.
@@ -265,3 +282,16 @@ order.
   Confirmed the addition stays inside decision 1: `pipelineRunForCommission` returns `linkedRun`
   when a commission is linked, so the meter reads the same run either way and no progress
   derivation is touched.
+- 2026-09-03, round 3 review: three corrections. The claim that "the phase meter is unaffected"
+  was too broad - `PipelinePhaseMeter` branches its CAPTION on the `commission` prop, so
+  resolving `activeCommission` changes a directly addressed run's caption from the bare phase
+  word to the eyebrow. Kept the change and declared it intentional, because the board card, the
+  console detail and the commission-selected path already render the eyebrow for a linked
+  feature, so the direct run was the only surface disagreeing; added an assertion so it is
+  pinned. Added the missing Playwright case for the rail's new run control, which `AGENTS.md`
+  requires for any new control. Corrected the rendered flow diagram, which still showed only
+  `activeRun` and could have led an implementer straight back into the one-direction bug.
+- 2026-09-03, self-audit during round 3: `plan.md` was missing the decision 2 requirement block
+  that `plan.html` carried, because an earlier bulk edit used unasserted string replacements and
+  one silently no-opped. The render therefore stated a requirement its own source did not.
+  Restored in the markdown, which is the authoritative file. Every later edit asserts its match.

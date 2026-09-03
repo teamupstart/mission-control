@@ -283,10 +283,29 @@ behavior change in this plan: <code>activeRun</code> is what gives a commission-
 its ladder, verdicts and park / unpark / grant verbs, and <code>activeCommission</code> is what
 gives a run-selected feature its Engineer attempts and specification handoff.</p>
 <div class="callout">
-<p><strong>The phase meter is unaffected</strong>, which keeps decision 1 intact.
-<code>pipelineRunForCommission</code> returns <code>linkedRun</code> whenever a commission is
-linked, so passing a resolved commission alongside its own run yields exactly the run it yields
-today. No progress derivation is read differently and none is edited.</p>
+<p><strong>The meter's progress derivation is unaffected; its caption changes on one path,
+deliberately.</strong> That distinction is the whole of decision 1's boundary, so it is worth
+stating exactly rather than as "the meter is unchanged".</p>
+<ul>
+<li><strong>Derivation: identical.</strong> <code>pipelineRunForCommission</code> returns
+<code>linkedRun</code> whenever a commission is linked, so passing a resolved commission
+alongside its own run yields exactly the run it yields today. No progress derivation is edited or
+read differently, and <code>pipeline-run-model.ts</code> is not touched.</li>
+<li><strong>Caption: changes for a directly addressed run that has a commission.</strong>
+<code>PipelinePhaseMeter</code> branches its caption on the <code>commission</code> prop
+(<code>PipelinePhaseMeter.tsx:220</code>): with one it uses <code>pipelineCommissionLine</code>,
+which for a linked run returns <code>pipelineEyebrow(linkedRun)</code> such as
+<code>BUILD &middot; Build &middot; step 2 of 3</code>; without one it uses
+<code>view.caption</code>, the bare phase word <code>BUILD</code>. Today that path passes null,
+so it shows the phase word.</li>
+</ul>
+<p>This caption change is <strong>intended</strong>, because it removes an inconsistency rather
+than creating one. The board card (<code>BoardView.tsx:225</code>), the console detail
+(<code>ConsoleDetail.tsx:571</code>) and the commission-selected path in this same pane all
+already pass a commission beside its linked run, so all three already render the eyebrow. Only
+the directly addressed run in the Runs pane shows the bare phase word, and after this change it
+stops being the odd one out. A spec asserts the direct-run caption so the change is pinned rather
+than incidental.</p>
 </div>
 <p>Selection precedence is unchanged: an addressed run still wins over a commission's linked run,
 so a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region to
@@ -303,7 +322,7 @@ the run address directly, so the rail can still address either identity.</li>
 
 <h2>Flow change</h2>
 <figure>
-<svg viewBox="0 0 720 330" role="img" aria-label="Before and after of the pipeline reader selection flow">
+<svg viewBox="0 0 720 330" role="img" aria-label="Before and after of the pipeline reader selection flow, showing both activeRun and activeCommission resolution">
   <text class="svgttl" x="0" y="14">Before: an either/or over two identities</text>
 
   <rect class="box" x="0" y="28" width="104" height="38" rx="6"/>
@@ -340,9 +359,10 @@ the run address directly, so the rail can still address either identity.</li>
   <text class="svgtxt" x="20" y="278">Selection</text>
   <path class="arw" d="M104 273 L150 273" marker-end="url(#ar2)"/>
 
-  <rect class="box" x="152" y="252" width="150" height="42" rx="6"/>
-  <text class="svgtxt" x="164" y="270">Resolve activeRun</text>
-  <text class="svglbl" x="164" y="286">addressed ?? linkedRun</text>
+  <rect class="boxok" x="152" y="244" width="150" height="58" rx="6"/>
+  <text class="svgtxt" x="162" y="260">Resolve BOTH</text>
+  <text class="svglbl" x="162" y="276">activeRun: addressed, else linked</text>
+  <text class="svglbl" x="162" y="292">activeCommission: sel, else by run key</text>
 
   <path class="arw" d="M302 273 L348 273" marker-end="url(#ar2)"/>
   <rect class="boxok" x="350" y="248" width="150" height="50" rx="6"/>
@@ -355,8 +375,8 @@ the run address directly, so the rail can still address either identity.</li>
   <text class="svglbl" x="558" y="277">+ handoff + strip</text>
   <text class="svglbl" x="558" y="292">+ verdicts + verbs</text>
 
-  <path class="arw" d="M227 252 L227 232 L425 232 L425 248" stroke-dasharray="4 3" marker-end="url(#ar2)"/>
-  <text class="svglbl" x="300" y="228">usePipelineRunDetail(activeRun)</text>
+  <path class="arw" d="M227 244 L227 224 L425 224 L425 248" stroke-dasharray="4 3" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="292" y="220">usePipelineRunDetail(activeRun)</text>
 
   <defs>
     <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -364,7 +384,7 @@ the run address directly, so the rail can still address either identity.</li>
     </marker>
   </defs>
 </svg>
-<figcaption>The either/or becomes one composed reader over a single resolved run.</figcaption>
+<figcaption>The either/or becomes one composed reader over two resolved identities, so neither selection direction is blind to the other.</figcaption>
 </figure>
 
 <h2>Sequencing against Phase 3</h2>
@@ -389,7 +409,11 @@ AND a control verb in one pane;</li>
 assertion that would have caught <code>activeCommission</code> being missing;</li>
 <li>a run with no commission at all still renders, with no Engineer regions and the run's own
 identity in the header;</li>
-<li>the handoff's implementation-run control navigates to the run address.</li>
+<li>the handoff's implementation-run control navigates to the run address;</li>
+<li><strong>the rail's secondary run control</strong> on a commission row with an observed linked
+run opens that run, since it is a new control and every new control needs its own case;</li>
+<li><strong>the direct-run meter caption</strong> reads the eyebrow form rather than the bare
+phase word, pinning the intended caption change above.</li>
 </ul></li>
 <li><code>e2e/specs/pipeline-controls.spec.ts</code>: extend. Control verbs are reachable for a
 commission-selected feature, which today they are not.</li>

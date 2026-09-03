@@ -99,9 +99,15 @@ Nothing in this plan edits `SessionTile.tsx`, `BoardView.tsx`, `ConsoleDetail.ts
 `PipelinePhaseMeter.tsx`, `pipelineRunForCommission` or `pipelinePhaseMeter`. The board bar
 is untouched by construction, not by promise.
 
-What this plan DOES do for it is record the constraint where Phase 3 will read it, because
-segmentation is where the bar could regress: a segmented model that renders only the
-Engineer segment would blank the board bar the moment implementation begins.
+What this plan DOES do for it is hand Phase 3 a decided requirement, because segmentation is
+where the bar could regress: a segmented model that rendered only the Engineer segment would
+blank the board bar the moment implementation begins.
+
+**Requirement for Phase 3 (decision 2):** the board card draws ONE bar carrying BOTH segments,
+always present. At handoff the Engineer segment stays complete and visible and the
+implementation segment fills beside it. The bar is never retargeted to implementation alone and
+is never absent for a feature that has either kind of evidence. The board's axis is width, so
+this stays one row rather than two stacked mini-bars.
 
 ## Design
 
@@ -127,8 +133,7 @@ have evidence, in a fixed order, and never fewer than one:
 Because the composed reader always owns the header, `PipelineRunView` is mounted with its own
 header suppressed from this caller in every case, not only when a commission was selected.
 
-`PipelineRunView` is reused as-is. Its own header stays suppressed when a commission header is
-already above it, which is the only prop it gains.
+`PipelineRunView` is otherwise reused as-is, and `showHeader` is the only prop it gains.
 
 ### Two resolved identities, so neither direction is blind to the other
 
@@ -156,10 +161,28 @@ substantive behavior change in this plan: `activeRun` is what gives a commission
 feature its ladder, verdicts and park / unpark / grant verbs, and `activeCommission` is what
 gives a run-selected feature its Engineer attempts and specification handoff.
 
-**The phase meter is unaffected**, which keeps decision 1 intact. `pipelineRunForCommission`
-returns `linkedRun` whenever a commission is linked, so passing a resolved commission alongside
-its own run yields exactly the run it yields today. No progress derivation is read differently
-and none is edited.
+**The meter's progress derivation is unaffected; its caption changes on one path, deliberately.**
+That distinction is the whole of decision 1's boundary, so it is worth stating exactly rather
+than as "the meter is unchanged".
+
+- **Derivation: identical.** `pipelineRunForCommission` returns `linkedRun` whenever a commission
+  is linked, so passing a resolved commission alongside its own run yields exactly the run it
+  yields today. No progress derivation is edited or read differently, and
+  `pipeline-run-model.ts` is not touched.
+- **Caption: changes for a directly addressed run that has a commission.** `PipelinePhaseMeter`
+  branches its caption on the `commission` prop (`PipelinePhaseMeter.tsx:220`): with one it uses
+  `pipelineCommissionLine`, which for a linked run returns `pipelineEyebrow(linkedRun)` such as
+  `BUILD · Build · step 2 of 3`; without one it uses `view.caption`, the bare phase word `BUILD`.
+  Today that path passes null, so it shows the phase word.
+
+This caption change is **intended**, because it removes an inconsistency rather than creating
+one. The board card (`BoardView.tsx:225`), the console detail (`ConsoleDetail.tsx:571`) and the
+commission-selected path in this same pane all already pass a commission beside its linked run,
+so all three already render the eyebrow. Only the directly addressed run in the Runs pane shows
+the bare phase word, and after this change it stops being the odd one out. The fuller string is
+also strictly more informative, and it is drawn by a component this plan does not edit.
+
+A spec asserts the direct-run caption so the change is pinned rather than incidental.
 
 Selection precedence is unchanged: an addressed run still wins over a commission's linked run,
 so a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region
@@ -222,7 +245,11 @@ Behavior changes, so per `AGENTS.md` this needs a Playwright spec.
     would have caught `activeCommission` being missing;
   - a run with no commission at all still renders, with no Engineer regions and the run's own
     identity in the header;
-  - the handoff's implementation-run control navigates to the run address.
+  - the handoff's implementation-run control navigates to the run address;
+  - **the rail's secondary run control** on a commission row with an observed linked run opens
+    that run, since it is a new control and every new control needs its own case;
+  - **the direct-run meter caption** reads the eyebrow form rather than the bare phase word,
+    pinning the intended caption change above.
 - `e2e/specs/pipeline-controls.spec.ts`: extend. Control verbs are reachable for a
   commission-selected feature, which today they are not.
 - The same spec pins decision 3: before handoff the Engineer attempts region is expanded, and

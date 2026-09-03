@@ -9,6 +9,7 @@ const GH: SetupRowId = { source: "dependency", id: "gh-cli" };
 function view(attentionRowIds: SetupRowId[]): SetupChecksView {
   return {
     rows: [],
+    home: "/home/test",
     banner: {
       visible: true,
       attentionRowIds,

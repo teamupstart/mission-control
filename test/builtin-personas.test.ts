@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 
-// What is at stake: the five review roles ship WITH the application, which is a promise about
+// What is at stake: the six review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
 // generated module is the only copy that survives bundling and packaging, so a drifted or
 // hand-edited one is a build quietly reviewing with guidance nobody wrote. Second, that they
@@ -123,6 +123,32 @@ test("each built-in derives its identity from its document and declares itself b
     "Judge whether the submitted local change is safe, correct, and ready for its verified Pull Request action.",
   );
   assert.match(quality.guidanceMarkdown, /You have no repository tools and the pull request does not exist yet\./);
+  const design = BUILTIN_PERSONAS.find(
+    (persona) => persona.id === builtinPersonaId("code-design-reviewer"),
+  );
+  assert.ok(design, "Code Design Reviewer is present in the built-in catalog");
+  assert.equal(design.name, "Code Design Reviewer");
+  assert.equal(
+    design.description,
+    "Reviews the design of the change: whether its abstractions fit the problem, its "
+    + "responsibilities sit in one place, its dependencies point the right way, and its behavior "
+    + "is composed rather than inherited.",
+  );
+  // The anti-overreach rule that makes this role safe to put in a BLOCKING stage: it judges
+  // the change, not the architecture it landed in. Losing this line turns the flagship
+  // built-in's repair loop into an argument about pre-existing code the task never touched.
+  assert.match(
+    design.guidanceMarkdown,
+    /The finding must be in the submitted change, or in code this change directly extends\./,
+  );
+  // The other half of the same guarantee, and the one that is easy to lose to a rewrite of the
+  // requested-change section: `Author decision needed:` names a finding that already survived
+  // the anti-overreach rules, never a way past them. Without this line the role can turn a
+  // merely different but reasonable design into a blocking repair round by relabelling it.
+  assert.match(
+    design.guidanceMarkdown,
+    /That title is not a route around those rules\./,
+  );
 });
 
 test("the catalog carries built-ins with no row and no seeding step", () => {

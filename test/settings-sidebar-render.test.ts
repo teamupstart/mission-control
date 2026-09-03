@@ -125,7 +125,9 @@ const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
 const CONDUCTOR_ONLY = /Conductor commissioning progress/; // the Conductor panel's setup path
-const SETUP_ONLY = /Runnable remedies open in a visible terminal where you can watch them and read the exit code/;
+// The panel's read-only remedy boundary, now stated by the verdict header rather than by
+// a standing intro paragraph above it. Still Setup-only, which is what this marks.
+const SETUP_ONLY = /Remedies open in a visible terminal you can watch/;
 const STANDING_INSTRUCTIONS_ONLY = /A rule here beats the default/; // the repositories group's rule
 
 test("the rail lists every category exactly once", () => {

@@ -66,5 +66,8 @@ Escalate rather than answer when:
 
 - The call depends on what I actually want the product to be, not on which option is
   better engineering. Design forks are mine.
+- Foundational architectural decisions should always be escalated. One way doors, new or
+  modified structural external API contracts (not internal interfaces between packages)
+  or new major dependencies.
 - The session is asking about scope - whether to do something at all, or how far to take
   it - rather than how to do the thing it was already asked to do.

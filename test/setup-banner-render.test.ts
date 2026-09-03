@@ -16,6 +16,7 @@ test("first launch and broken-machine banners have distinct accessible summaries
     onDismiss,
     view: {
       rows: [],
+      home: "/home/test",
       banner: { visible: true, attentionRowIds: [], attentionCount: 0 },
     },
   }));
@@ -26,6 +27,7 @@ test("first launch and broken-machine banners have distinct accessible summaries
     onDismiss,
     view: {
       rows: [],
+      home: "/home/test",
       banner: {
         visible: true,
         attentionRowIds: [{ source: "dependency", id: "gh-cli" }],

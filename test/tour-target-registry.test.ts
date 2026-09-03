@@ -160,10 +160,12 @@ test("the Library and Setup tour targets are declared, namespaced, and their own
   // Every tour owns its targets, and no target belongs to two tours.
   const seeWork = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "see-work");
   const setup = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "setup");
+  // Setup reads one family at a time, so it names the rail and the selected pane rather than
+  // individual families - only one family's rows are mounted at once.
   assert.deepEqual(setup, [
     "setup:panel",
-    "setup:family-agents",
-    "setup:family-github",
+    "setup:rail",
+    "setup:pane",
     "setup:recheck",
   ]);
   assert.ok(setup.every((id) => tourTargetScope(id) === "page"));

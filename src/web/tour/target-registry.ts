@@ -68,10 +68,16 @@ export const TOUR_TARGET_NAMESPACES = {
      */
     "session-workflow-ladder": "run",
   },
+  /**
+   * Setup reads one family at a time through a rail, so there is no per-family target to
+   * name: only the selected family's rows are mounted. `rail` is the always-present list of
+   * families, and `pane` is whichever family is showing - a step that wants a particular
+   * one selects it in `prepare` and then spotlights `pane`.
+   */
   "setup": {
     "panel": "page",
-    "family-agents": "page",
-    "family-github": "page",
+    "rail": "page",
+    "pane": "page",
     "recheck": "page",
   },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;

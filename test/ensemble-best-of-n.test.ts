@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 
 import {
   BEST_OF_N_BUILTIN_RUBRIC,
+  BEST_OF_N_BUILTIN_RUBRIC_TEXT,
+  BEST_OF_N_BUILTIN_RUBRIC_V1,
+  BEST_OF_N_BUILTIN_RUBRIC_V1_TEXT,
   BEST_OF_N_DEFAULTS,
   BEST_OF_N_MAX_CANDIDATES,
   BEST_OF_N_MIN_CANDIDATES,
   BestOfNConfigSchema,
+  resolveBestOfNBuiltinRubric,
 } from "../src/shared/ensemble-strategies/best-of-n.ts";
 import { CompiledEnsemblePlanSchema } from "../src/shared/protocol.ts";
 import type { EnsembleReviewPersona } from "../src/shared/ensemble.ts";
@@ -206,6 +210,24 @@ test("with no Persona chosen, the built-in rubric is snapshotted into the plan",
   if (review.evaluator.kind !== "comparative_llm") return;
   assert.deepEqual(review.evaluator.guidance, { kind: "builtin", rubricId: BEST_OF_N_BUILTIN_RUBRIC });
   assert.equal(review.evaluator.anonymizeSubjects, true);
+});
+
+test("the current rubric judges the artifact and historical plans keep their original rubric", () => {
+  assert.equal(BEST_OF_N_BUILTIN_RUBRIC, "best_of_n_v2");
+  assert.match(BEST_OF_N_BUILTIN_RUBRIC_TEXT, /Judge only the quality of the submitted artifact/);
+  assert.match(BEST_OF_N_BUILTIN_RUBRIC_TEXT, /Author-reported claims are context only, never a scoring criterion/);
+  assert.match(BEST_OF_N_BUILTIN_RUBRIC_TEXT, /Ignore claims that are inaccurate, unsupported, or unverifiable/);
+  assert.doesNotMatch(BEST_OF_N_BUILTIN_RUBRIC_TEXT, /quality of any relevant checks the author reports/);
+
+  assert.deepEqual(resolveBestOfNBuiltinRubric(BEST_OF_N_BUILTIN_RUBRIC_V1), {
+    id: BEST_OF_N_BUILTIN_RUBRIC_V1,
+    text: BEST_OF_N_BUILTIN_RUBRIC_V1_TEXT,
+  });
+  assert.deepEqual(resolveBestOfNBuiltinRubric(BEST_OF_N_BUILTIN_RUBRIC), {
+    id: BEST_OF_N_BUILTIN_RUBRIC,
+    text: BEST_OF_N_BUILTIN_RUBRIC_TEXT,
+  });
+  assert.equal(resolveBestOfNBuiltinRubric("best_of_n_unknown"), null);
 });
 
 test("a chosen Persona is snapshotted whole into the plan, not just pinned by id", () => {

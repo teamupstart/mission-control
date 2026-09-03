@@ -6,6 +6,7 @@ import { setupInstallerShell } from "../../src/server/setup/install.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 
 test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
 
@@ -20,12 +21,14 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
   await page.setViewportSize({ width: 1440, height: 1200 });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-  const conductor = page.locator('[data-anchor="setup/dependency-ai-conductor"]');
+  await openSetupFamily(page, "pipelines");
+  const conductor = setupRow(page, "dependency-ai-conductor");
   await expect(conductor).toContainText("No verified local installer checkout was found");
   await expect(conductor.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
   await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
 
-  const wezterm = page.locator('[data-anchor="setup/dependency-wezterm"]');
+  await openSetupFamily(page, "terminals");
+  const wezterm = setupRow(page, "dependency-wezterm");
   await expect(wezterm).toContainText("brew install --cask wezterm");
   await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
   await wezterm.getByLabel("Terminal for WezTerm").selectOption("cmux");
@@ -72,6 +75,7 @@ test("Setup opens only the daemon-owned install command in the terminal the oper
     });
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup-phase-2/setup-install-terminal.png");
+    await openSetupFamily(page, "pipelines");
     await conductor.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: join(evidence, "setup-provider-no-candidate.png"),
@@ -99,7 +103,8 @@ test("Setup renders the terminal launcher's refusal sentence", async ({ page, da
   });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-  const wezterm = page.locator('[data-anchor="setup/dependency-wezterm"]');
+  await openSetupFamily(page, "terminals");
+  const wezterm = setupRow(page, "dependency-wezterm");
   await wezterm.getByLabel("Terminal for WezTerm").selectOption("cmux");
   await wezterm.getByRole("button", { name: "Run in a terminal" }).click();
   await expect(wezterm.getByRole("status")).toHaveText(
@@ -123,7 +128,8 @@ test.describe("with one verified local provider checkout", () => {
     const checkout = daemon.conductorCheckout!;
     await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-    const conductor = page.locator('[data-anchor="setup/dependency-ai-conductor"]');
+    await openSetupFamily(page, "pipelines");
+    const conductor = setupRow(page, "dependency-ai-conductor");
     await expect(conductor).toContainText("Verified checkout", { timeout: 20_000 });
     await expect(conductor).toContainText(checkout);
     await conductor.getByLabel("Terminal for ai-conductor").selectOption("cmux");

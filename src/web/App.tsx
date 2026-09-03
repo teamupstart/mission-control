@@ -1549,6 +1549,16 @@ export function App(): React.JSX.Element {
   }), [layout, navigate, requestWorkflowsTab]);
   const setupNavigation = useMemo<SetupTourNavigation>(() => ({
     showSetup: () => navigate({ page: "settings", category: "setup" }),
+    // The rail's own deep-link anchor, through the same settings-jump path the ⌘K palette
+    // and Shipping's warnings already use, rather than a second channel into one panel.
+    showSetupFamily: (family) => {
+      const moved = navigate({ page: "settings", category: "setup" });
+      setSettingsJump((previous) => ({
+        anchor: `setup/family-${family}`,
+        nonce: (previous?.nonce ?? 0) + 1,
+      }));
+      return moved;
+    },
   }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);

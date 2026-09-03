@@ -8,8 +8,17 @@ its full verification suite. For the contributor expectations and test policy, s
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
 agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions, and
-ai-conductor. Missing rows explain what capability is unavailable and provide a documentation
-link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
+ai-conductor.
+
+The panel opens with a verdict for the whole machine - whether it can run sessions, how many
+checks are ready, and whether any gap is a required one - above a rail of the five families.
+One family is read at a time: the rail carries each family's ready count and marks the ones
+with gaps, and the pane beside it holds that family's rows. It opens on the family holding a
+required gap, then any gap, and stays where you put it - a **Re-check** that repairs the
+family you are reading reports into that family rather than moving the rail. A satisfied row
+is one line: its name and the path or evidence Mission Control found, written relative to your
+home directory, with the absolute path on hover. Missing rows explain what capability is
+unavailable and provide a documentation link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
 choose an available backend and Mission Control opens a visible terminal running the catalog's
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the

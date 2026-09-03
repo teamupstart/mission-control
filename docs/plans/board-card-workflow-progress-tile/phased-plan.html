@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board card workflow progress tile - phased implementation</title>
+<style>
+:root {
+  --page: #ffffff; --ink: #1b1f24; --ink-2: #57606a; --rule: #d8dee4;
+  --code-bg: #f4f6f8; --accent: #0a58ca; --card: #fbfcfd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0d1117; --ink: #e6edf3; --ink-2: #9198a1; --rule: #30363d;
+    --code-bg: #161b22; --accent: #6ea8fe; --card: #11161d;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 54rem; margin: 0 auto; padding: 2.5rem 1.25rem 5rem;
+  background: var(--page); color: var(--ink);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overflow-wrap: break-word;
+}
+h1 { margin: 0 0 1.5rem; font-size: 2rem; line-height: 1.25; letter-spacing: -0.01em; }
+h2 { margin: 2.75rem 0 1rem; padding-bottom: 0.35rem; font-size: 1.35rem; border-bottom: 1px solid var(--rule); }
+h3 { margin: 2rem 0 0.6rem; font-size: 1.1rem; }
+p { margin: 0 0 1rem; }
+a { color: var(--accent); }
+a:hover { text-decoration: none; }
+ul { margin: 0 0 1rem; padding-left: 1.35rem; }
+li { margin: 0 0 0.4rem; }
+strong { font-weight: 650; }
+code {
+  padding: 0.12em 0.36em; border-radius: 4px; background: var(--code-bg);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 0.86em;
+}
+pre {
+  margin: 0; padding: 0.9rem 1rem; border: 1px solid var(--rule); border-radius: 8px;
+  background: var(--code-bg); font-size: 0.85rem; line-height: 1.5;
+}
+pre code { padding: 0; background: none; font-size: inherit; }
+/* Wide content scrolls inside its own box so the page body never scrolls sideways. */
+.scroll { max-width: 100%; margin: 0 0 1.25rem; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { padding: 0.5rem 0.7rem; border: 1px solid var(--rule); text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-weight: 650; }
+figure { margin: 1.5rem 0 2rem; }
+/* Breaks the prose column, capped at the viewport with a gutter. */
+figure.bleed {
+  width: calc(100vw - 2.5rem);
+  max-width: calc(100vw - 2.5rem);
+  margin-left: calc(50% - 50vw + 1.25rem);
+}
+.shot {
+  max-width: 100%; overflow-x: auto; border: 1px solid var(--rule);
+  border-radius: 8px; background: var(--card);
+}
+.shot img { display: block; width: auto; max-width: none; height: auto; }
+figcaption { margin-top: 0.55rem; color: var(--ink-2); font-size: 0.85rem; line-height: 1.5; }
+</style>
+</head><body>
+<h1>Board card workflow progress tile - phased implementation</h1>
+<p>Implementation index for <a href="plan.html">plan.md</a>. One phase, one merge unit, one task.</p>
+<h2>Source plan and incorporated decisions</h2>
+<p>Source of truth: <a href="plan.html"><code>docs/plans/board-card-workflow-progress-tile/plan.md</code></a>, rendered as <a href="plan.html"><code>plan.html</code></a>.</p>
+<p>Human selections submitted through the Mission Control dashboard on 2026-09-03, already written into the source plan and treated here as requirements rather than options:</p>
+<div class="scroll"><table><thead><tr><th>Decision</th><th>Adopted</th><th>Consequence for this plan</th></tr></thead><tbody><tr><td>Design</td><td><strong>Option B</strong> - stage track plus repair-round budget meter</td><td>Three rows under the existing header: stage track with count, caption, repair pips. The round counter leaves the header.</td></tr><tr><td>Setting mechanism</td><td><strong>New <code>DISPLAY_ITEMS</code> entry</strong></td><td>One registry line, absent from <code>UI_CONFIG_DEFAULTS.hiddenDisplayItems</code>, so it ships on. No new persisted field.</td></tr><tr><td>The 250px name/status collision</td><td><strong>Fix in the same change</strong></td><td>In scope, with width-dependent regression coverage.</td></tr><tr><td>Follow-up</td><td>Create a phased implementation plan</td><td>This document.</td></tr></tbody></table></div>
+<p>Options A and C were considered and are recorded as not-taken in the source plan.</p>
+<h2>What the repository said</h2>
+<p>Investigated before drawing any boundary. Five findings changed the plan; the first three are load-bearing, and the third corrected a design decision that would have shipped a false alarm.</p>
+<h3>1. The settings preview renders the placeholder, not the peek - verified</h3>
+<p><code>BoardCardPanel</code> mounts a real <code>SessionTile</code> with <code>workflowStageDetail="summary"</code> (<code>src/web/components/BoardCardPanel.tsx:147</code>). <code>WorkflowLadderPanel</code> maps that to <code>summaryOnly</code> and passes a <strong>null run id</strong> to <code>useWorkflowRunDetail</code>, so it fetches nothing and renders <code>WorkflowLadderPeekPlaceholder</code> (<code>src/web/workflows/WorkflowLadder.tsx:744</code>, <code>:777</code>).</p>
+<p>Confirmed by rendering the panel through the suite's own harness rather than by reading the code. The preview markup contains <code>is-placeholder</code> and <code>wf-tile-peek-round</code>, and contains <strong>no</strong> <code>wf-tile-peek-rung</code>:</p>
+<div class="scroll"><pre><code class="lang-">is-placeholder present: true
+wf-tile-peek-rung present: false
+wf-tile-peek-round present: true
+unavailable copy present: true</code></pre></div>
+<p>This matters because <code>test/board-card-items.test.ts:114</code> - "the panel's preview populates every item, so no checkbox looks broken" - asserts that unchecking <strong>each</strong> registry item changes the rendered panel markup. There is no stage data in the preview at all, so a stage bar alone could not satisfy it.</p>
+<p><strong>Option B satisfies it and the other two designs would not.</strong> The repair row reads <code>summary.round</code> and <code>summary.maxRepairRounds</code> (<code>src/shared/workflow.ts:3605</code>, <code>:3673</code>), both of which the placeholder already has and already prints as <code>R1 / 5</code>. Toggling the new item therefore changes the placeholder's own markup - the round leaves the header and the pip row appears - without any fabricated run detail. Options A and C would have needed a fixture <code>WorkflowRunDetail</code> carrying invented stages, personas and deliveries, which is exactly what <code>src/web/lib/board-card-preview.ts:175</code> argues against in its own comment.</p>
+<p>Consequence for the phase: <strong>the placeholder is variant-aware too</strong>, not just the peek. That is implementation scope, and it is the reason the fixture needs no new run detail.</p>
+<h3>2. <code>board-card-items.test.ts</code>'s default-state test needs its rationale corrected</h3>
+<p><code>test/board-card-items.test.ts:172</code> asserts <code>hiddenDisplayItems</code> defaults are exactly <code>["worktree"]</code> and then loops every item asserting it ships visible. A default-on <code>workflowProgressBar</code> passes both assertions mechanically.</p>
+<p>Its comment does not survive: <em>"Every other id names something a card already drew, so its absence from this list is what makes an upgrade move nothing on screen."</em> This item is default-on and <strong>does</strong> move something on screen for an existing operator - that is the requirement. The comment becomes false the moment the entry lands, so correcting it is part of this phase rather than a later tidy.</p>
+<h3>3. <code>R6 / 5</code> is the top of the legal range, not an overrun - the design was wrong</h3>
+<p>The plan as first written called <code>b5659b19</code>'s <code>R6 / 5</code> a "repair budget overrun" and proposed a red overflow pip appended past the meter. The repository says otherwise, and the correction is load-bearing because the original would have drawn an alarm on a healthy run.</p>
+<p><code>maxRepairRounds</code> counts <strong>repair</strong> rounds <em>after</em> the initial submission (<code>src/shared/workflow.ts:136</code>): "a new one is created while <code>round &lt;= maxRepairRounds</code>, so the highest round a run can reach is <code>maxRepairRounds + 1</code>". So the legal range is 1 to <code>maxRepairRounds + 1</code>, and R6 against a budget of 5 is the <strong>last round the run can afford</strong>, not an illegal state. <code>b5659b19</code> is sitting there with <code>status: "completed"</code> and a passed end - it used its whole budget and succeeded.</p>
+<p><code>round &gt; maxRepairRounds</code> is already a named inequality: <code>workflowRunGaveUp</code> (<code>src/shared/workflow.ts:1763</code>) reads exactly it for "another round is not affordable", and <code>grantRepairRounds</code> (<code>src/server/workflows/manager.ts:2494</code>) revives such a run by raising <code>maxRepairRounds</code> rather than by letting <code>round</code> exceed the range. The meter must reuse that inequality, not invent a third reading of the same two fields - and it needs no overflow case, because a granted budget grows the meter by a pip.</p>
+<p>Verified against the live population: across 31 runs the observed rounds are <code>{1:6, 2:15, 3:6, 4:2, 5:1, 6:1}</code> with <code>maxRepairRounds</code> uniformly 5, and <strong>zero</strong> runs above <code>maxRepairRounds + 1</code>.</p>
+<p>Consequences, all now in the source plan and this phase:</p>
+<ul><li>The pip count is <code>maxRepairRounds + 1</code>, not <code>maxRepairRounds</code>. Off by one in the first draft.</li><li>The last pip being current is danger-toned <strong>and</strong> accompanied by the words <code>no repairs left</code>. A lone red dot in a row of grey ones would read as a round that failed; what it means is that no further round is affordable.</li><li>No overflow pip, and no out-of-range branch to test.</li></ul>
+<h3>4. The segmented bar already exists and must not be forked</h3>
+<p><code>PipelinePhaseMeter</code> (<code>src/web/pipelines/PipelinePhaseMeter.tsx:206</code>) draws a segmented bar with <code>.tpm-seg</code> (<code>src/web/styles.css:27000</code>): neutral track, <code>min-width: 9px</code> hittability floor, <code>is-now</code> outline ring, <code>is-degraded</code> hatch, per-segment <code>flexGrow</code>, and an inner <code>&lt;i&gt;</code> at a rounded fill percentage. Every one of those decisions is argued in a comment and every one is a decision the workflow meter needs identically.</p>
+<p>Both meters can appear on the same card - <code>SessionTile.tsx:283</code> (<code>pipelinePhases</code>) and <code>:293</code> (<code>workflow</code>) are independent gates, not alternatives - so they must not merely look alike. They must be the same component. Extracting it is in scope.</p>
+<h3>5. The collision is real and width-dependent</h3>
+<p><code>.wf-tile-peek-title strong</code> is <code>flex: none</code> (<code>src/web/styles.css:26645</code>) and <code>.wf-tile-peek-state</code> is <code>flex: none; margin-left: auto</code> (<code>:26656</code>). Neither yields, so at a 250px column - <code>.board-col</code>'s own <code>min-width</code> (<code>:24868</code>) - the 8px gap collapses and "Intent Conformance Judge" runs into "Waiting". Invisible at 300px, which is why no existing test catches it.</p>
+<h2>Sizing and phase count</h2>
+<p>Estimated <strong>260 to 400 gross non-test implementation lines</strong>, assuming the shared segment bar is extracted rather than duplicated and that the CSS is written in the house style with its decisions commented (which is most of the variance):</p>
+<div class="scroll"><table><thead><tr><th>Area</th><th>Estimate</th></tr></thead><tbody><tr><td>Shared segment meter extracted from <code>PipelinePhaseMeter</code>, plus rewiring its one existing caller</td><td>60-90</td></tr><tr><td><code>WorkflowStageMeter</code> - stage track, count, caption, repair pips</td><td>80-110</td></tr><tr><td>Variant-aware placeholder (repair row from the summary alone)</td><td>20-30</td></tr><tr><td>Variant threaded through <code>WorkflowLadderPanel</code>, <code>SessionTile</code>, and the peek</td><td>20-30</td></tr><tr><td><code>styles.css</code> - meter, pips, and the collision fix</td><td>70-110</td></tr><tr><td><code>DISPLAY_ITEMS</code> entry and settings-search keywords</td><td>10-15</td></tr><tr><td><strong>Total</strong></td><td><strong>260-400</strong></td></tr></tbody></table></div>
+<p>Tests are excluded from the estimate and are implementation work inside the phase: unit coverage for the exported stage projection and the repair-pip model, the <code>board-card-items</code> additions and comment correction, a width-dependent regression for the collision, and the required Playwright spec.</p>
+<p><strong>One phase.</strong> Above the 200-line one-shot threshold the rubric still defaults to one phase, and neither exception applies here:</p>
+<ul><li>The only candidate boundary is "extract the shared segment bar" as its own merge unit. Rejected: it is ~75 lines, it is a deliberate no-behavior-change refactor, and it would land a shared component whose only caller is the one it already had. That is a preparation phase producing a near-dead surface, which the rubric names specifically.</li><li>The rest is one vertical slice. Splitting the registry entry from the component it governs would ship a checkbox with nothing behind it; splitting the placeholder from the peek would ship a setting that works on the board and does nothing in its own preview - and fail <code>board-card-items.test.ts</code> in between.</li><li>The collision fix belongs with the work that promotes the rung tile to a deliberate fallback view. On its own it is a five-line CSS change nobody would open a pull request for; here it is the reason the fallback is correct at every width the board allows.</li></ul>
+<p>So: no dependency graph, no concurrency groups, no cross-phase contracts. One task, gated on this planning session's pull request merging.</p>
+<h2>Phases</h2>
+<div class="scroll"><table><thead><tr><th>Phase</th><th>File</th><th>Outcome</th><th>Direct prerequisites</th><th>Repository</th></tr></thead><tbody><tr><td>1</td><td><a href="phase-1-workflow-progress-meter.md"><code>phase-1-workflow-progress-meter.md</code></a></td><td>The stage track and repair-budget meter ship as the default board card tile, with a checkbox returning today's rung tile, and the rung tile is correct at 250px</td><td>none (this planning session's PR)</td><td>source repository only</td></tr></tbody></table></div>
+<h2>Merge order</h2>
+<p>One pull request, after this planning session's artifact pull request merges.</p>
+<h2>Final verification strategy</h2>
+<p>Owned by Phase 1 and specified in its file. In summary: <code>npm run typecheck</code>, <code>npm run lint</code>, the targeted <code>node --test</code> files, <code>npm run build</code>, and <code>npm run test:e2e</code> for the required Playwright spec - the last two because a Board surface changed. Plus a visual check at both 250px and 300px board column widths, because the collision this change fixes is invisible at one of them and the height table in the source plan was measured at both.</p>
+</body></html>

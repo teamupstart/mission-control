@@ -31540,8 +31540,8 @@ body.foreman-sidecar-open .modal-backdrop {
    One family is read at a time through the rail, so the panel is a fixed frame rather than a
    stack that grows with the catalog - 1060px because the rail costs 208px and the rows still
    need the measure the old single column had. */
-.setup-panel {
-  max-width: 1060px !important;
+.settings-pane > .setup-panel {
+  max-width: 1060px;
 }
 
 .setup-row-title,

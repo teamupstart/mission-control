@@ -30,6 +30,7 @@ test("the rail selects one family at a time and unmounts the rest", async ({ pag
   // makes: five names always visible, one family's rows at a time.
   const rail = page.getByRole("navigation", { name: "Setup families" });
   await expect(rail).toBeVisible();
+  await expect(page.locator(".setup-panel")).toHaveCSS("max-width", "1060px");
   for (const family of FAMILIES) await expect(railItem(page, family)).toBeVisible();
 
   // GitHub holds the only required gap in this fixture, so that is where it opens.

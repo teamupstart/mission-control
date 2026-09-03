@@ -4,9 +4,9 @@
 
 Workflow versions using `criterion_mapped_v1` pause structurally incomplete evidence before any Persona attempt. The session receives one exact, repository-scoped repair packet. New evidence produces an immutable child segment in the same repair round, while an operator can continue the original immutable packet through an audited override. A new No-Mistakes Review version opts into this behavior.
 
-## Source requirements
+## Repository references
 
-Read before implementation:
+This phase is grounded in:
 
 - [`plan.md`](plan.md)
 - [`phased-plan.md`](phased-plan.md)
@@ -17,7 +17,7 @@ Read before implementation:
 - `docs/workflows.md`
 - `e2e/README.md`
 
-The Phase 1 pull request must already be merged. Confirm its final names and APIs before implementing this proposed route, and record justified deviations in the Phase 2 pull request.
+The merged Phase 1 result supplies the implementation base. Its final names and APIs take precedence over the proposed names here, with justified deviations recorded in the Phase 2 pull request.
 
 ## Entry criteria and dependencies
 
@@ -70,6 +70,12 @@ Append, without renaming or reordering existing values:
 - `overridden` to readiness status if Phase 1 did not already reserve it.
 
 Add exhaustive labels, state predicates, serializers, strict parsers, event projections, export readers, and browser mappings at the same time.
+
+### Replay-safe event persistence
+
+Add an optional bounded `eventId` to the shared workflow-event write contract and a nullable `event_id` column to persisted workflow events. Existing rows remain null. Enforce uniqueness for non-null IDs with a partial unique index.
+
+Readiness lifecycle writers provide a deterministic ID derived from the semantic transition and opaque submission correlation key. At `appendEvent`, resolve `eventId` before inserting: an identical event returns the existing row, while reuse with a different event kind, owner, or bounded payload is a corruption conflict. Other event kinds remain compatible by omitting the ID until their own contracts adopt it.
 
 ### Blocking decision
 
@@ -245,6 +251,7 @@ Follow actual ownership on the merged Phase 1 base and avoid unrelated edits.
 - Policy on plus gaps reaches the readiness wait state with zero node attempts.
 - Policy on plus absent coverage synthesizes `missing_coverage` and reaches the readiness wait state with zero node attempts.
 - Restart preserves the wait and recreates no duplicate delivery.
+- Replaying the same readiness transition writes one workflow-event row; reusing its event ID with different bounded content conflicts.
 - Delivery confirmation, refusal, uncertain send, retry, cancellation, and queue order use existing semantics.
 - A new applicable generation reserves one same-round child segment.
 - Unchanged or unrelated-repository evidence reserves nothing.

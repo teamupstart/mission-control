@@ -168,6 +168,7 @@ All exhaustive shared predicates, browser labels, SSE projections, serializers, 
 8. Extra evidence is allowed and displayed but does not satisfy an unrelated criterion.
 9. Ambiguous semantic matches and model-only proof-class suggestions produce warnings. Only missing claims, invalid links, scope conflicts, and roles required by the author's declared proof class hard-block.
 10. Compaction fallback or malformed model output yields `unavailable`, not a block.
+11. Readiness and Auditor events share one opaque submission correlation key, while deterministic event IDs are enforced once at the shared persistence boundary to make replay idempotent.
 
 ## Multi-repository behavior
 

@@ -4,9 +4,9 @@
 
 Operators can tell whether criterion-mapped preflight improves the first Test Evidence Auditor attempt without confusing intercepted packets with accepted packets. The existing Test evidence readiness Settings card reports preflight interceptions, same-round refinements, overrides, unavailable evaluations, and Auditor disagreement by workflow version and guidance digest.
 
-## Source requirements
+## Repository references
 
-Read before implementation:
+This phase is grounded in:
 
 - [`plan.md`](plan.md)
 - [`phased-plan.md`](phased-plan.md)
@@ -17,7 +17,7 @@ Read before implementation:
 - `docs/workflows.md`
 - `docs/agent-guides/change-contracts.md`
 
-The Phase 2 pull request must already be merged. Verify its final event and status names before adapting this proposed route.
+The merged Phase 2 result supplies the implementation base. Its final event and status names take precedence over the proposed names here.
 
 ## Entry criteria and dependencies
 
@@ -79,7 +79,7 @@ Keep `firstSubmission` unchanged on new and historical records. Lenient readers 
 Aggregate bounded Phase 2 events or add one bounded `evidence_readiness_evaluated` event per captured submission containing only:
 
 - A stable opaque submission correlation key shared with the corresponding audit event. Generate or derive it once from submission identity using the repository's bounded telemetry convention; do not expose an internal row ID.
-- A stable event ID for replay deduplication. Re-emission of the same semantic lifecycle transition must retain the same ID.
+- The stable deterministic event ID introduced at the Phase 2 persistence boundary. Re-emission of the same semantic lifecycle transition must retain the same ID.
 - Policy and evaluator version.
 - Readiness state.
 - Round and segment.
@@ -121,9 +121,11 @@ Historical records remain visible:
 
 ### Event writer
 
-Extend `testEvidenceAuditEvent` inputs with the store-derived first-attempt fact, the activated submission's readiness state, and the same opaque submission correlation key used by its readiness event. Keep the pure event construction content-free and bounded.
+Extend `testEvidenceAuditEvent` inputs with the store-derived first-attempt fact, the activated submission's readiness state, and the same opaque submission correlation key used by its readiness event. It must also derive the stable deterministic event ID required by the shared workflow-event write contract. Keep the pure event construction content-free and bounded.
 
 If first-attempt determination belongs in the engine or manager, pass a boolean into the writer. Do not make the pure formatter open the database.
+
+The Phase 2 event persistence migration remains the single uniqueness boundary. `appendEvent` returns the existing row only when a replayed ID has the same event kind, owner, and bounded payload; it rejects mismatched reuse. Do not add aggregate-only deduplication as a substitute for storage idempotency.
 
 ### Aggregate
 
@@ -184,6 +186,7 @@ Do not edit generated files or unrelated Settings surfaces.
 - Overlapping gap categories cannot exceed their own denominator semantics unexpectedly.
 - Legacy events without new fields remain readable and do not become false failures.
 - Replayed lifecycle events are deduplicated.
+- Calling the audit writer and persistence path twice for one semantic attempt produces one stored event; the same event ID with different bounded content is rejected.
 - Readiness and Auditor events join only through the stable opaque submission correlation key, and raw run/submission IDs are absent.
 - Re-emitting one semantic lifecycle transition preserves its event ID while a distinct transition receives a distinct ID.
 - Empty, malformed, and scan-truncated windows remain honest.

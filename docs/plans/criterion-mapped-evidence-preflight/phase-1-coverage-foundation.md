@@ -6,9 +6,9 @@ Authors can declare which evidence proves each material acceptance criterion, st
 
 This phase creates the durable contracts and one complete authoring-to-inspection slice that Phase 2 can safely enforce.
 
-## Source requirements
+## Repository references
 
-Read before implementation:
+This phase is grounded in:
 
 - [`plan.md`](plan.md)
 - [`phased-plan.md`](phased-plan.md)

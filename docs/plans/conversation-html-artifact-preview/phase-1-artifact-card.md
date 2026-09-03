@@ -151,10 +151,11 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   `.artifact-body` plus `srcdoc` removed from the frame. Removing the wrapper element would
   leave `aria-controls` pointing at nothing and the relationship unexposed.
 - **Lazy mount, and lazy UNMOUNT.** An `IntersectionObserver` with
-  `rootMargin: "600px 0px"`. A frame exists only while the card is open **and** near the
-  viewport; leaving either condition removes the document. The mockup demonstrates this rather
-  than describing it: a collapsed, not-yet-seen, or scrolled-away card's frame carries no
-  `srcdoc`.
+  `rootMargin: "600px 0px"`. A **document** exists only while the card is open **and** near
+  the viewport; leaving either condition removes it. What is removed is the `srcdoc`, not the
+  body wrapper and not the `iframe` element - see the `aria-controls` invariant below, which
+  this must not break. The mockup demonstrates this rather than describing it: a collapsed,
+  not-yet-seen, or scrolled-away card's frame carries no `srcdoc`.
   Two details here differ from `MermaidDiagram.tsx`, deliberately, and both were measured in
   the mockup rather than assumed:
   - **It does not `disconnect()` after the first intersection.** Mermaid does, so a diagram
@@ -326,11 +327,19 @@ label and placeholder.
    `frameLocator` and read the document's own heading. Do **not** use `contentDocument` - the
    sandbox has no `allow-same-origin`, so the page cannot read into the frame, though
    Playwright can over CDP.
-4. Collapse it; assert the body is gone and `aria-expanded="false"`; leave the tab and return
-   and assert the choice survived.
+4. Collapse it, and assert the three things collapse actually means, which are not the same
+   as "the body is gone":
+   - the body is **not visible** to the reader,
+   - its frame holds **no preview document**,
+   - and the body **wrapper is still in the DOM**, so the disclosure's `aria-controls` target
+     keeps resolving (step 10, and the component contract above).
+
+   Then `aria-expanded="false"`, and leave the tab and return and assert the choice survived.
+   An assertion that the wrapper is absent would contradict the invariant this card is built
+   on; what leaves is the document, never the element the control points at.
 5. **Re-expand the card**, and wait for its document, before the next step. Step 4 leaves it
-   collapsed, and a collapsed card holds no document at all - so a click aimed at its frame
-   would land on nothing. This step exists because leaving it out is the same ordering mistake
+   collapsed, and a collapsed card's frame holds no document - so a click aimed at it would
+   land on nothing. This step exists because leaving it out is the same ordering mistake
    twice.
 6. Assert the **conversation preview is inert** - and do it **here, before navigating**,
    while the conversation frame still exists. Step 4 established that leaving the tab unmounts
@@ -502,6 +511,14 @@ preview.
   name from the card's current path rather than capturing it once, because a drifted name
   fails as a *missing* control rather than as a wrong label. Fixed in the mockup and added as
   an exit criterion.
+- **2026-09-03, review round 10 reconciliation.** One comment, valid, and it caught two of
+  this file's own requirements contradicting each other: the spec's collapse step said to
+  assert "the body is gone" while the component contract and the last step require that same
+  wrapper to stay in the DOM for `aria-controls` to resolve. No implementation can satisfy both
+  as written. The collapse step now asserts the three things collapse actually means - body not
+  visible, frame holds no document, wrapper still present - and the contract above says
+  explicitly that what is removed is the `srcdoc` rather than the wrapper or the `iframe`.
+  "The body is gone" was loose shorthand that had propagated into a test requirement.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

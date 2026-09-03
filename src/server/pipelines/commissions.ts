@@ -469,7 +469,12 @@ function reduceKnownEvent(
       nextAttempt = {
         ...nextAttempt,
         state: "awaiting_spec_merge",
-        evidenceFrozenAt: Date.parse(event.ts),
+        // A null commit is not evidence and cannot be frozen: both the live validator and
+        // legacy branch fallback refuse to advance an already-frozen attempt. Leave the
+        // slot open until one of them has pinned the handoff commit.
+        evidenceFrozenAt: nextAttempt.evidenceCommit === null
+          ? nextAttempt.evidenceFrozenAt
+          : Date.parse(event.ts),
       };
       break;
     case "engineer_run_cancelled":

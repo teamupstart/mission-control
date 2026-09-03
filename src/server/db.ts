@@ -7764,10 +7764,11 @@ function fallbackCommission(row: {
   };
 }
 
-function commissionAttemptsById(): {
+function commissionAttemptsById(commissionId?: string): {
   attempts: Map<string, PipelineCommissionAttempt[]>;
   unsupported: Map<string, string>;
 } {
+  const filter = commissionId === undefined ? "" : "WHERE commission_id = ?";
   const rows = openDb()
     .prepare(
       `SELECT commission_id, attempt, origin, launch_key, engineer_run_id, previous_engineer_run_id,
@@ -7781,11 +7782,14 @@ function commissionAttemptsById(): {
                     PARTITION BY commission_id ORDER BY attempt DESC
                   ) AS retained_position
              FROM pipeline_commission_attempts
+             ${filter}
          )
         WHERE retained_position <= ?
         ORDER BY commission_id, attempt`,
     )
-    .all(MAX_PIPELINE_COMMISSION_ATTEMPTS) as unknown as Array<{
+    .all(...(commissionId === undefined
+      ? [MAX_PIPELINE_COMMISSION_ATTEMPTS]
+      : [commissionId, MAX_PIPELINE_COMMISSION_ATTEMPTS])) as unknown as Array<{
     commission_id: string;
     attempt: number;
     origin: string | null;
@@ -7846,68 +7850,70 @@ function commissionAttemptsById(): {
   return { attempts: out, unsupported };
 }
 
-/** Load every durable commission, degrading one malformed projection without taking down boot. */
-export function loadPipelineCommissions(): PipelineCommission[] {
-  const attemptState = commissionAttemptsById();
-  const rows = openDb()
-    .prepare(
-      `SELECT id, task_id, provider, repo_root, correlation_id, state_json, active_attempt,
-              run_slug, created_at, updated_at
-         FROM pipeline_commissions ORDER BY created_at, id`,
-    )
-    .all() as unknown as Array<{
-    id: string;
-    task_id: string;
-    provider: string;
-    repo_root: string;
-    correlation_id: string;
-    state_json: string;
-    active_attempt: number | null;
-    run_slug: string | null;
-    created_at: number;
-    updated_at: number;
-  }>;
-  const out: PipelineCommission[] = [];
-  let unsupported = 0;
-  for (const row of rows) {
-    if (!isPipelineProviderId(row.provider)) {
-      unsupported += 1;
-      continue;
-    }
-    const attemptRows = attemptState.attempts.get(row.id) ?? [];
-    const unsupportedAttempt = attemptState.unsupported.get(row.id);
-    if (unsupportedAttempt) {
-      unsupported += 1;
-      out.push(fallbackCommission(
-        row as typeof row & { provider: PipelineProviderId },
+type PipelineCommissionRow = {
+  id: string;
+  task_id: string;
+  provider: string;
+  repo_root: string;
+  correlation_id: string;
+  state_json: string;
+  active_attempt: number | null;
+  run_slug: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+function hydratePipelineCommission(
+  row: PipelineCommissionRow,
+  attemptState: ReturnType<typeof commissionAttemptsById>,
+): { commission: PipelineCommission | null; unsupported: boolean } {
+  if (!isPipelineProviderId(row.provider)) return { commission: null, unsupported: true };
+  const attemptRows = attemptState.attempts.get(row.id) ?? [];
+  const unsupportedAttempt = attemptState.unsupported.get(row.id);
+  if (unsupportedAttempt) {
+    return {
+      commission: fallbackCommission(
+        row as PipelineCommissionRow & { provider: PipelineProviderId },
         attemptRows,
         unsupportedAttempt,
-      ));
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.state_json);
-    } catch {
-      parsed = null;
-    }
-    if (!validCommissionProjection(parsed)) {
-      unsupported += 1;
-      out.push(fallbackCommission(row as typeof row & { provider: PipelineProviderId }, attemptRows, "stored commission projection is unreadable"));
-      continue;
-    }
-    if (
-      parsed.id !== row.id ||
-      parsed.taskId !== row.task_id ||
-      parsed.provider !== row.provider ||
-      parsed.repoRoot !== row.repo_root ||
-      parsed.correlationId !== row.correlation_id
-    ) {
-      unsupported += 1;
-      out.push(fallbackCommission(row as typeof row & { provider: PipelineProviderId }, attemptRows, "stored commission identity does not match its key columns"));
-      continue;
-    }
-    out.push({
+      ),
+      unsupported: true,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.state_json);
+  } catch {
+    parsed = null;
+  }
+  if (!validCommissionProjection(parsed)) {
+    return {
+      commission: fallbackCommission(
+        row as PipelineCommissionRow & { provider: PipelineProviderId },
+        attemptRows,
+        "stored commission projection is unreadable",
+      ),
+      unsupported: true,
+    };
+  }
+  if (
+    parsed.id !== row.id ||
+    parsed.taskId !== row.task_id ||
+    parsed.provider !== row.provider ||
+    parsed.repoRoot !== row.repo_root ||
+    parsed.correlationId !== row.correlation_id
+  ) {
+    return {
+      commission: fallbackCommission(
+        row as PipelineCommissionRow & { provider: PipelineProviderId },
+        attemptRows,
+        "stored commission identity does not match its key columns",
+      ),
+      unsupported: true,
+    };
+  }
+  return {
+    commission: {
       ...parsed,
       blocker: parsed.blocker ?? null,
       authoringBranch: parsed.authoringBranch ?? parsed.handoff?.branch ?? null,
@@ -7920,7 +7926,27 @@ export function loadPipelineCommissions(): PipelineCommission[] {
       linkedRun: row.run_slug
         ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
         : null,
-    });
+    },
+    unsupported: false,
+  };
+}
+
+/** Load every durable commission, degrading one malformed projection without taking down boot. */
+export function loadPipelineCommissions(): PipelineCommission[] {
+  const attemptState = commissionAttemptsById();
+  const rows = openDb()
+    .prepare(
+      `SELECT id, task_id, provider, repo_root, correlation_id, state_json, active_attempt,
+              run_slug, created_at, updated_at
+         FROM pipeline_commissions ORDER BY created_at, id`,
+    )
+    .all() as unknown as PipelineCommissionRow[];
+  const out: PipelineCommission[] = [];
+  let unsupported = 0;
+  for (const row of rows) {
+    const hydrated = hydratePipelineCommission(row, attemptState);
+    if (hydrated.unsupported) unsupported += 1;
+    if (hydrated.commission) out.push(hydrated.commission);
   }
   if (unsupported > 0) {
     console.warn(`[pipelines] found ${unsupported} unsupported commission row(s)`);
@@ -7929,7 +7955,15 @@ export function loadPipelineCommissions(): PipelineCommission[] {
 }
 
 export function getPipelineCommission(id: string): PipelineCommission | null {
-  return loadPipelineCommissions().find((commission) => commission.id === id) ?? null;
+  const row = openDb()
+    .prepare(
+      `SELECT id, task_id, provider, repo_root, correlation_id, state_json, active_attempt,
+              run_slug, created_at, updated_at
+         FROM pipeline_commissions WHERE id = ?`,
+    )
+    .get(id) as unknown as PipelineCommissionRow | undefined;
+  if (!row) return null;
+  return hydratePipelineCommission(row, commissionAttemptsById(id)).commission;
 }
 
 export function pipelineCommissionForEngineerRun(engineerRunId: string): PipelineCommission | null {

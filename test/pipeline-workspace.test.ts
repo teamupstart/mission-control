@@ -18,14 +18,15 @@ const { resolvePipelineWorkspace } = await import("../src/server/pipelines/works
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
+const gitBin = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 
 function git(repo: string, ...args: string[]): string {
-  return execFileSync("/usr/bin/git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  return execFileSync(gitBin, ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
 test("a registered live authoring worktree is valid without an optional marker", async () => {
   const repo = join(home, "repo");
-  const worktree = join(home, "engineer-worktree");
+  const worktree = join(repo, ".worktrees", "engineer-worktree");
   mkdirSync(repo, { recursive: true });
   git(repo, "init", "-q");
   git(repo, "branch", "-M", "main");
@@ -34,6 +35,7 @@ test("a registered live authoring worktree is valid without an optional marker",
   writeFileSync(join(repo, "base.txt"), "base\n");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "base");
+  mkdirSync(join(repo, ".worktrees"), { recursive: true });
   git(repo, "worktree", "add", "-qb", "spec/live-workspace", worktree);
   writeFileSync(join(worktree, "plan.md"), "truthful workspace\n");
   git(worktree, "add", "-A");
@@ -123,10 +125,83 @@ test("a registered live authoring worktree is valid without an optional marker",
   assert.equal(missing.view.capabilities.write, false);
 });
 
+test("only provider worktrees under the repository's canonical root receive live capabilities", async () => {
+  const repo = join(home, "identity-repo");
+  const canonical = join(repo, ".worktrees", "canonical");
+  const outside = join(home, "outside-linked-worktree");
+  mkdirSync(join(repo, ".worktrees"), { recursive: true });
+  git(repo, "init", "-q");
+  git(repo, "branch", "-M", "main");
+  git(repo, "config", "user.email", "test@example.com");
+  git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "base");
+  git(repo, "worktree", "add", "-qb", "spec/canonical", canonical);
+  git(repo, "worktree", "add", "-qb", "spec/outside", outside);
+
+  const commission = {
+    id: "identity",
+    taskId: "identity-task",
+    provider: "ai-conductor" as const,
+    repoRoot: repo,
+    correlationId: "identity",
+    lifecycle: "authoring" as const,
+    attempts: [{
+      attempt: 1,
+      origin: "mission_control" as const,
+      launchKey: "identity",
+      engineerRunId: null,
+      previousEngineerRunId: null,
+      providerRevision: 0,
+      state: "authoring" as const,
+      terminalReason: null,
+      evidenceCommit: null,
+      evidenceCommitProvenance: null,
+      evidenceFrozenAt: null,
+      updatedAt: 1,
+    }],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: repo,
+    authoringBranch: "main",
+    planSlug: "identity",
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  for (const [reportedPath, branch] of [[repo, "main"], [outside, "spec/outside"]] as const) {
+    const resolved = await resolvePipelineWorkspace({
+      task: { pipelineWorkspacePath: reportedPath },
+      commission: { ...commission, authoringWorktree: reportedPath, authoringBranch: branch },
+      linkedRun: null,
+    });
+    assert.equal(resolved.liveRoot, null);
+    assert.equal(resolved.view.reason, "identity_conflict");
+    assert.deepEqual(resolved.view.capabilities, {
+      diff: false,
+      files: false,
+      write: false,
+      comment: false,
+      shell: false,
+      externalOpen: false,
+      manualWorkflow: false,
+    });
+  }
+});
+
 test("Git validation yields to the event loop instead of blocking registry work", async () => {
   const repo = join(home, "slow-repo");
+  const worktree = join(repo, ".worktrees", "slow");
   const bin = join(home, "slow-bin");
-  mkdirSync(repo, { recursive: true });
+  mkdirSync(join(repo, ".worktrees"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   git(repo, "init", "-q");
   git(repo, "branch", "-M", "main");
@@ -135,8 +210,9 @@ test("Git validation yields to the event loop instead of blocking registry work"
   writeFileSync(join(repo, "base.txt"), "base\n");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "base");
+  git(repo, "worktree", "add", "-qb", "spec/slow", worktree);
   const slowGit = join(bin, "git");
-  writeFileSync(slowGit, '#!/bin/sh\n/bin/sleep 0.2\nexec /usr/bin/git "$@"\n');
+  writeFileSync(slowGit, `#!/bin/sh\nsleep 0.2\nexec ${JSON.stringify(gitBin)} "$@"\n`);
   chmodSync(slowGit, 0o700);
 
   const previousPath = process.env.PATH;
@@ -144,7 +220,7 @@ test("Git validation yields to the event loop instead of blocking registry work"
   let settled = false;
   try {
     const resolving = resolvePipelineWorkspace({
-      task: { pipelineWorkspacePath: repo },
+      task: { pipelineWorkspacePath: worktree },
       commission: {
         id: "slow",
         taskId: "slow-task",
@@ -172,8 +248,8 @@ test("Git validation yields to the event loop instead of blocking registry work"
         tier: null,
         track: null,
         project: null,
-        authoringWorktree: repo,
-        authoringBranch: "main",
+        authoringWorktree: worktree,
+        authoringBranch: "spec/slow",
         planSlug: "slow",
         handoff: null,
         linkedRun: null,

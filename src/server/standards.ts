@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, join, posix, resolve } from "node:path";
 import { MEMORY_INDEX_PATH } from "@shared/memory.ts";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
+import { run } from "./util/exec.ts";
 import { decodeUtf8Whole, utf8Bytes } from "./util/utf8.ts";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
@@ -208,47 +209,93 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
   return { docs, truncated: truncated || droppedPaths || droppedDirs };
 }
 
-function gitTreeDoc(
+interface GitTreeEntry {
+  mode: string;
+  oid: string;
+  size: number;
+}
+
+async function gitTreeEntries(
   repoRoot: string,
   commit: string,
-  filePath: string,
-): RepoDoc | null {
-  const entry = spawnSync(
-    "git",
-    ["-C", repoRoot, "ls-tree", "-z", commit, "--", filePath],
-    { encoding: "buffer", timeout: 15_000, maxBuffer: 256 * 1024 },
-  );
-  if (entry.status !== 0 || !Buffer.isBuffer(entry.stdout)) return null;
-  const match = entry.stdout.toString("utf8").match(/^(\d+) blob ([0-9a-f]+)\t/);
-  if (!match || match[1] === "120000" || !match[2]) return null;
-  const sizeResult = spawnSync(
-    "git",
-    ["-C", repoRoot, "cat-file", "-s", `${commit}:${filePath}`],
-    { encoding: "utf8", timeout: 15_000, maxBuffer: 4096 },
-  );
-  const size = Number(typeof sizeResult.stdout === "string" ? sizeResult.stdout.trim() : "");
-  if (sizeResult.status !== 0 || !Number.isSafeInteger(size) || size < 0) return null;
-  const content = spawnSync(
-    "git",
-    ["-C", repoRoot, "show", `${commit}:${filePath}`],
-    { encoding: "buffer", timeout: 15_000, maxBuffer: MAX_FILE_BYTES + 1 },
-  );
-  if (content.status !== 0 || !Buffer.isBuffer(content.stdout)) return null;
-  const bytes = content.stdout.subarray(0, MAX_FILE_BYTES);
-  return {
-    path: filePath,
-    realPath: `git:${commit}:${match[2]}`,
-    text: decodeUtf8Whole(bytes),
-    truncated: size > MAX_FILE_BYTES,
-  };
+): Promise<Map<string, GitTreeEntry> | null> {
+  // One tree walk replaces a synchronous process per possible standards path. The
+  // changed-path climb can deliberately produce thousands of candidates; almost all
+  // of them are absent, so asking Git once and indexing only matching blobs keeps the
+  // daemon responsive and makes missing documents free.
+  const result = await run("git", ["-C", repoRoot, "ls-tree", "-r", "-z", "--long", commit], {
+    timeoutMs: 15_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.code !== 0 || result.overflowed) return null;
+  const entries = new Map<string, GitTreeEntry>();
+  for (const raw of result.stdout.split("\0")) {
+    if (!raw) continue;
+    const match = raw.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t([\s\S]+)$/);
+    if (!match || !match[1] || !match[2] || !match[3] || !match[4]) continue;
+    const size = Number(match[3]);
+    if (!Number.isSafeInteger(size) || size < 0) continue;
+    entries.set(match[4], { mode: match[1], oid: match[2], size });
+  }
+  return entries;
+}
+
+function gitBlobPrefix(repoRoot: string, oid: string, limit: number): Promise<Buffer | null> {
+  return new Promise((resolveBlob) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn("git", ["-C", repoRoot, "cat-file", "blob", oid], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      resolveBlob(null);
+      return;
+    }
+    if (!child.stdout) {
+      child.kill();
+      resolveBlob(null);
+      return;
+    }
+    const stdout = child.stdout;
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let stoppedAtLimit = false;
+    let settled = false;
+    const finish = (value: Buffer | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveBlob(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, 15_000);
+    child.on("error", () => finish(null));
+    stdout.on("data", (chunk: Buffer) => {
+      const remaining = limit - bytes;
+      if (remaining > 0) {
+        const kept = chunk.subarray(0, remaining);
+        chunks.push(kept);
+        bytes += kept.length;
+      }
+      if (bytes >= limit && chunk.length > remaining) {
+        stoppedAtLimit = true;
+        child.kill();
+      }
+    });
+    child.on("close", (code) => {
+      finish(code === 0 || stoppedAtLimit ? Buffer.concat(chunks, bytes) : null);
+    });
+  });
 }
 
 /** Read the standards visible at one immutable Pipeline evidence commit. */
-export function readStandardsFromGitTree(
+export async function readStandardsFromGitTree(
   repoRoot: string,
   commit: string,
   changedPaths: string[],
-): StandardsBundle {
+): Promise<StandardsBundle> {
   if (!/^[0-9a-f]{40,64}$/i.test(commit)) return { docs: [], truncated: false };
   const wanted = [...ROOT_NAMES];
   const seenDirs = new Set<string>();
@@ -276,6 +323,9 @@ export function readStandardsFromGitTree(
   }
   wanted.push(...ROOT_EXTRA_PATHS);
 
+  const entries = await gitTreeEntries(repoRoot, commit);
+  if (!entries) return { docs: [], truncated: true };
+
   const requested = new Set<string>();
   const identity = new Set<string>();
   const docs: RepoDoc[] = [];
@@ -284,15 +334,26 @@ export function readStandardsFromGitTree(
   for (const filePath of wanted) {
     if (requested.has(filePath)) continue;
     requested.add(filePath);
-    const doc = gitTreeDoc(repoRoot, commit, filePath);
-    if (!doc || identity.has(doc.realPath)) continue;
-    identity.add(doc.realPath);
-    const bytes = utf8Bytes(doc.text);
-    if (total + bytes > MAX_TOTAL_BYTES) {
+    const entry = entries.get(filePath);
+    if (!entry || entry.mode === "120000" || identity.has(entry.oid)) continue;
+    identity.add(entry.oid);
+    const expectedBytes = Math.min(entry.size, MAX_FILE_BYTES);
+    if (total + expectedBytes > MAX_TOTAL_BYTES) {
       truncated = true;
       continue;
     }
-    total += bytes;
+    const content = await gitBlobPrefix(repoRoot, entry.oid, MAX_FILE_BYTES);
+    if (!content) {
+      truncated = true;
+      continue;
+    }
+    const doc: RepoDoc = {
+      path: filePath,
+      realPath: `git:${commit}:${entry.oid}`,
+      text: decodeUtf8Whole(content),
+      truncated: entry.size > MAX_FILE_BYTES,
+    };
+    total += utf8Bytes(doc.text);
     docs.push(doc);
   }
   return {

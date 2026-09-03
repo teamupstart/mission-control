@@ -2682,12 +2682,10 @@ export function buildApp(
   app.post("/api/file-comment-messages/:id", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
-    const existingMessage = registry.listFileCommentThreads().find((thread) =>
-      thread.messages.some((message) => message.id === c.req.param("id")),
-    );
-    if (existingMessage) {
+    const messageSession = fileComments!.messageSession(c.req.param("id"));
+    if (messageSession) {
       try {
-        await requireLiveWorkspace(existingMessage.sessionId);
+        await requireLiveWorkspace(messageSession);
       } catch (error) {
         return fileCommentFailure(c, error);
       }
@@ -3443,14 +3441,14 @@ export function buildApp(
       resolved.view.commit &&
       resolved.repoRoot
     ) {
-      return c.json(readStandardsFromGitTree(
+      return c.json(await readStandardsFromGitTree(
         resolved.repoRoot,
         resolved.view.commit,
         parsed.data.paths,
       ));
     }
     if (resolved.view?.authority === "provider" && resolved.root === null) {
-      return c.json({ docs: [], truncated: false });
+      return c.json({ docs: [], truncated: true });
     }
     const root = await repoRootOf(resolved.root);
     return c.json(readStandards(root, parsed.data.paths));

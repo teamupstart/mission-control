@@ -196,6 +196,31 @@ test("attempt origin and evidence advances persist with compare-and-swap and fre
   }), "frozen");
 });
 
+test("a handoff without a pinned commit leaves the evidence slot available", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_spec_handoff", 2, {
+    planSlug: "late-evidence",
+    branch: "spec/late-evidence",
+    prUrl: null,
+    outcome: "local_commit",
+    state: "awaiting_spec_merge",
+  })).outcome, "stored");
+
+  const attempt = getPipelineCommission("commission-task-1")?.attempts[0];
+  assert.equal(attempt?.evidenceCommit, null);
+  assert.equal(attempt?.evidenceFrozenAt, null);
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: "commission-task-1",
+    attempt: 1,
+    previousCommit: null,
+    commit: "4".repeat(40),
+    provenance: "legacy_branch_resolution",
+    frozenAt: 1_700_000_000_003,
+  }), "stored");
+});
+
 test("authoring branch and plan slug are stable within one attempt", () => {
   reset();
   commission();

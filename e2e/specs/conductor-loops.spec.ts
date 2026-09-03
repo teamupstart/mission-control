@@ -406,9 +406,21 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   );
   writeFileSync(join(authoring, "pipeline-change.html"), "<h1>Pipeline workspace</h1>\n");
   execFileSync("git", ["-C", authoring, "add", "pipeline-change.html"], { stdio: "pipe" });
-  execFileSync("git", ["-C", authoring, "commit", "-qm", "add pipeline workspace proof"], {
-    stdio: "pipe",
-  });
+  execFileSync(
+    "git",
+    [
+      "-C",
+      authoring,
+      "-c",
+      "user.name=Mission Control E2E",
+      "-c",
+      "user.email=mission-control-e2e@example.invalid",
+      "commit",
+      "-qm",
+      "add pipeline workspace proof",
+    ],
+    { stdio: "pipe" },
+  );
 
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   let callerCredential: string | null = null;
@@ -498,6 +510,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   ).toBeVisible();
   await expect(detail.getByRole("button", { name: "Editor" })).toBeDisabled();
   await expect(detail.getByRole("button", { name: "Comment mode" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Comments" })).toBeVisible();
   await expect(detail.getByRole("button", { name: "Open in" })).toBeDisabled();
   await shoot(dashboard, "11-retired-workspace-read-only-files", detail);
 });

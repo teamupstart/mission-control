@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import type {
   PipelineCommission,
@@ -219,15 +219,25 @@ async function validateLive(
   attempt: PipelineCommissionAttempt,
   reportedPath: string,
   expectedBranch: string | null,
-): Promise<{ root: string; branch: string; commit: string } | null> {
+): Promise<
+  | { ok: true; root: string; branch: string; commit: string }
+  | { ok: false; reason: "missing" | "invalid_worktree" | "identity_conflict" }
+> {
+  if (!isAbsolute(reportedPath)) return { ok: false, reason: "identity_conflict" };
   let root: string;
   let repoRoot: string;
+  let worktreesRoot: string;
   try {
     root = await realpath(reportedPath);
     repoRoot = await realpath(commission.repoRoot);
+    worktreesRoot = await realpath(join(repoRoot, ".worktrees"));
   } catch {
-    return null;
+    return { ok: false, reason: await pathEntryExists(reportedPath) ? "invalid_worktree" : "missing" };
   }
+  // Provider event paths and MCP-reported paths reach the same authority boundary. A
+  // matching Git common directory alone is insufficient: it would also accept the main
+  // checkout or an unrelated linked worktree and grant writes and shell access there.
+  if (dirname(root) !== worktreesRoot) return { ok: false, reason: "identity_conflict" };
   const [top, common, branch, head] = await Promise.all([
     git(root, ["rev-parse", "--show-toplevel"]),
     git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
@@ -236,13 +246,15 @@ async function validateLive(
   ]);
   try {
     if (
-      !top.ok || await realpath(top.stdout) !== root ||
-      !common.ok || await realpath(dirname(common.stdout)) !== repoRoot ||
-      !branch.ok || !head ||
+      !top.ok || !common.ok || !branch.ok || !head
+    ) return { ok: false, reason: "invalid_worktree" };
+    if (
+      await realpath(top.stdout) !== root ||
+      await realpath(dirname(common.stdout)) !== repoRoot ||
       (expectedBranch !== null && branch.stdout !== expectedBranch)
-    ) return null;
+    ) return { ok: false, reason: "identity_conflict" };
   } catch {
-    return null;
+    return { ok: false, reason: "invalid_worktree" };
   }
   const marker = await readEngineerRunMarkerAsync(root);
   if (marker) {
@@ -252,18 +264,18 @@ async function validateLive(
         await realpath(marker.repoRoot) !== repoRoot ||
         (commission.planSlug !== null && marker.planSlug !== commission.planSlug) ||
         (expectedBranch !== null && marker.branch !== expectedBranch)
-      ) return null;
+      ) return { ok: false, reason: "identity_conflict" };
     } catch {
-      return null;
+      return { ok: false, reason: "identity_conflict" };
     }
   }
   if (attempt.evidenceCommit && attempt.evidenceCommit !== head) {
-    if (attempt.evidenceFrozenAt !== null) return null;
+    if (attempt.evidenceFrozenAt !== null) return { ok: false, reason: "identity_conflict" };
     if (!(await git(repoRoot, ["merge-base", "--is-ancestor", attempt.evidenceCommit, head])).ok) {
-      return null;
+      return { ok: false, reason: "identity_conflict" };
     }
   }
-  return { root, branch: branch.stdout, commit: head };
+  return { ok: true, root, branch: branch.stdout, commit: head };
 }
 
 /** Resolve the only workspace identity a managed Pipeline session may expose or act on. */
@@ -308,6 +320,7 @@ export async function resolvePipelineWorkspace(input: {
   const kind = implementationPath ? "implementation" : "authoring";
   const reportedPath = implementationPath ?? authoringPath;
   const expectedBranch = kind === "authoring" ? commission.authoringBranch : null;
+  let liveFailure: "missing" | "invalid_worktree" | "identity_conflict" | null = null;
   if (reportedPath) {
     const validated = await validateLive(
       commission,
@@ -315,7 +328,7 @@ export async function resolvePipelineWorkspace(input: {
       reportedPath,
       expectedBranch,
     );
-    if (validated) {
+    if (validated.ok) {
       const recorded = await recordLiveCommit(commission, attempt, validated.commit);
       if (recorded) {
         commission = recorded;
@@ -335,6 +348,8 @@ export async function resolvePipelineWorkspace(input: {
       }
       commission = latest(commission);
       attempt = activeAttempt(commission) ?? attempt;
+    } else {
+      liveFailure = validated.reason;
     }
   }
 
@@ -363,11 +378,15 @@ export async function resolvePipelineWorkspace(input: {
       availability: "missing",
       reportedPath,
       branch: commission.authoringBranch,
-      reason: invalidExistingPath
+      reason: liveFailure === "identity_conflict"
         ? "identity_conflict"
-        : evidenceAvailable
-          ? "worktree_missing"
-          : "evidence_unavailable",
+        : invalidExistingPath
+          ? liveFailure === "invalid_worktree"
+            ? "invalid_worktree"
+            : "identity_conflict"
+          : evidenceAvailable
+            ? "worktree_missing"
+            : "evidence_unavailable",
       capabilities: evidenceAvailable ? READ_ONLY : NONE,
     }),
     liveRoot: null,

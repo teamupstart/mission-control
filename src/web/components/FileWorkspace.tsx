@@ -2227,30 +2227,32 @@ function FileWorkspaceBody({
             `.file-mode`, so styling by descendant of either would put this control's
             appearance on three surfaces that have no comments at all.
           */}
-      {buffer && !readOnlyWorkspace && (
+          {buffer && (
             <div className="file-comment-controls">
-              <Tooltip
-                label={commentable
-                  ? "Comment on a line: click a line number, or a block of the preview"
-                  : buffer.document.kind === "image"
-                  ? "An image has no lines to comment on"
-                  : "This file has no source to comment on"}
-              >
-                <button
-                  className={`file-comment-toggle${commentsActive ? " on" : ""}`}
-                  aria-label="Comment mode"
-                  aria-keyshortcuts={!extracted && commentable ? "m" : undefined}
-                  aria-pressed={commentsActive}
-                  disabled={!commentable}
-                  onClick={() => {
-                    if (commentsActive) setCommentMode(false);
-                    else enterCommentMode();
-                  }}
+              {!readOnlyWorkspace && (
+                <Tooltip
+                  label={commentable
+                    ? "Comment on a line: click a line number, or a block of the preview"
+                    : buffer.document.kind === "image"
+                    ? "An image has no lines to comment on"
+                    : "This file has no source to comment on"}
                 >
-                  Comment
-                  {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
-                </button>
-              </Tooltip>
+                  <button
+                    className={`file-comment-toggle${commentsActive ? " on" : ""}`}
+                    aria-label="Comment mode"
+                    aria-keyshortcuts={!extracted && commentable ? "m" : undefined}
+                    aria-pressed={commentsActive}
+                    disabled={!commentable}
+                    onClick={() => {
+                      if (commentsActive) setCommentMode(false);
+                      else enterCommentMode();
+                    }}
+                  >
+                    Comment
+                    {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip
                 label={showComments
                   ? "Hide every comment on this file"
@@ -2309,6 +2311,9 @@ function FileWorkspaceBody({
           )}
           <OpenInMenu
             disabled={!buffer || readOnlyWorkspace}
+            disabledReason={readOnlyWorkspace && buffer
+              ? "Pinned Pipeline evidence is read-only"
+              : undefined}
             busy={launching || pendingOpen !== null}
             onChoose={openIn}
           />

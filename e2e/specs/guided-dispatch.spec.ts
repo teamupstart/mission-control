@@ -856,7 +856,7 @@ test("backlog and dispatch submissions reset the guided workflow", async ({
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
   await expect(dialog).toBeVisible();
   await expect(repoAsk(dialog)).toBeVisible();
   await expect(repoField(dialog)).toHaveValue(daemon.repo);

@@ -230,5 +230,9 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   }
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
-  return { rows, banner: setupBannerView(rows, pruned.dismissal) };
+  return {
+    rows,
+    banner: setupBannerView(rows, pruned.dismissal),
+    home: deps.environment.homeDir,
+  };
 }

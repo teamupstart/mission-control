@@ -292,6 +292,30 @@ export interface SetupRowView {
 export interface SetupChecksView {
   rows: SetupRowView[];
   banner: SetupBannerView;
+  /**
+   * This machine's home directory, so the panel can render evidence relative to it.
+   *
+   * It travels on the wire because only the daemon can read it. Every path the panel shows
+   * begins with these same bytes, so at any width narrow enough to truncate the first thing
+   * lost is the only part that differs - the binary name. Sent as the home itself rather than
+   * as pre-shortened evidence, so a row can still show the absolute path on hover.
+   */
+  home: string;
+}
+
+/**
+ * `evidence` with this machine's home written as `~`.
+ *
+ * An exact prefix match on the daemon's own `homeDir`, not a `/Users/` pattern: this build
+ * runs on Linux too, and a regex over a path is how you end up rewriting `/var/Users/...`.
+ * The trailing separator check is what keeps a sibling directory out - `/home/jo` must not
+ * rewrite `/home/jordan/bin`. Anything not under the home is returned untouched.
+ */
+export function homeRelative(evidence: string, home: string): string {
+  if (!home || !evidence.startsWith(home)) return evidence;
+  const rest = evidence.slice(home.length);
+  if (rest === "") return "~";
+  return rest.startsWith("/") ? "~" + rest : evidence;
 }
 
 /** A server-issued binding between one checks observation and a later dismissal write. */

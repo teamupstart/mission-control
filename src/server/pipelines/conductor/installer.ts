@@ -21,6 +21,12 @@ const MAX_PACKAGE_BYTES = 64 * 1024;
 const MAX_VERSION_BYTES = 512;
 const MAX_NODE_VERSION_BYTES = 256;
 const MAX_NODE_EXEC_PATH_BYTES = 4096;
+// The full suite deliberately runs several subprocess-heavy files at once. Two seconds made
+// an otherwise healthy local Node process look absent on a loaded host, which turns a known
+// unsupported version into an unactionable "could not determine" result. This route is an
+// explicit installer check, so a bounded five-second probe is still responsive while leaving
+// enough room for the exact runtime process to start under contention.
+const NODE_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
@@ -69,14 +75,14 @@ const DEFAULT_RUNTIME_DEPS: ConductorInstallerRuntimeDeps = {
   nodeExecPath: (path) =>
     run("node", ["-p", "process.execPath"], {
       env: { ...process.env, PATH: path },
-      timeoutMs: 2_000,
+      timeoutMs: NODE_RUNTIME_PROBE_TIMEOUT_MS,
       maxBuffer: MAX_NODE_EXEC_PATH_BYTES,
     }),
   realpath,
   nodeVersion: (nodeBin, path) =>
     run(nodeBin, ["--version"], {
       env: { ...process.env, PATH: path },
-      timeoutMs: 2_000,
+      timeoutMs: NODE_RUNTIME_PROBE_TIMEOUT_MS,
       maxBuffer: MAX_NODE_VERSION_BYTES,
     }),
 };

@@ -147,19 +147,24 @@ test("pi resumes with --session, not the two flags beside it, and has no mode to
   assert.deepEqual([...HARNESSES.pi.resume!.argv("sess-3", "auto")], ["--session", "sess-3"]);
 });
 
-test("the composed argv leads with the harness binary", () => {
+test("the composed argv leads with the resolved harness binary", async () => {
   // One composer, so no caller pairs `resolveAgentBin` with a hand-written flag. The two
   // readers - the embedded handoff and the conversation pane's launcher - must spawn the
   // same command line, and they only do if neither builds it itself.
-  const argv = resumeArgvFor("claude", "agent-9", null);
-  assert.ok(argv);
-  assert.equal(argv.length, 3);
-  assert.match(argv[0]!, /claude/);
-  assert.deepEqual(argv.slice(1), ["--resume", "agent-9"]);
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  try {
+    const argv = await resumeArgvFor("claude", "agent-9", null);
+    assert.ok(argv);
+    assert.equal(argv.length, 3);
+    assert.equal(argv[0], process.execPath);
+    assert.deepEqual(argv.slice(1), ["--resume", "agent-9"]);
 
-  const withMode = resumeArgvFor("claude", "agent-9", "auto");
-  assert.ok(withMode);
-  assert.deepEqual(withMode.slice(1), ["--resume", "agent-9", "--permission-mode", "auto"]);
+    const withMode = await resumeArgvFor("claude", "agent-9", "auto");
+    assert.ok(withMode);
+    assert.deepEqual(withMode.slice(1), ["--resume", "agent-9", "--permission-mode", "auto"]);
+  } finally {
+    delete process.env.MISSION_CLAUDE_BIN;
+  }
 });
 
 test("both resume readers compose from the harness and pass the session's stored mode", () => {
@@ -176,6 +181,6 @@ test("both resume readers compose from the harness and pass the session's stored
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
   assert.match(
     routes,
-    /resumeArgvFor\(session\.agent, session\.agentSessionId!, session\.permissionMode\)/,
+    /resumeArgvFor\(\s*session\.agent,\s*session\.agentSessionId!,\s*session\.permissionMode,?\s*\)/,
   );
 });

@@ -246,9 +246,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";
+  const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
+  const daemonPathBin = join(home, "daemon-path-bin");
+  if (codexOnDaemonPathOnly) {
+    mkdirSync(daemonPathBin, { recursive: true });
+    copyFileSync(bins.codex, join(daemonPathBin, "codex"));
+    chmodSync(join(daemonPathBin, "codex"), 0o755);
+  }
   if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
     if (piOnLoginShellOnly) {
       mkdirSync(dirname(loginPiBin), { recursive: true });
@@ -337,12 +344,15 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // bin/install without placing a process wrapper in front of every unrelated fixture.
     PATH:
       conductorNodeVersion === undefined
-        ? (process.env.PATH ?? "")
+        ? [
+            ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
+            process.env.PATH ?? "",
+          ].filter(Boolean).join(delimiter)
         : `${join(home, "bin")}${delimiter}${process.env.PATH ?? ""}`,
     // Every agent the daemon can launch, redirected at a fake. Missing even one would
     // let a real CLI start and spend real tokens.
     MISSION_CLAUDE_BIN: bins.claude,
-    MISSION_CODEX_BIN: bins.codex,
+    MISSION_CODEX_BIN: codexOnDaemonPathOnly ? "codex" : bins.codex,
     MISSION_PI_BIN: bins.pi,
     // The one terminal backend this suite installs, so continue-in-terminal is drivable on
     // a machine with no terminal: cmux resolves through this env override, needs no

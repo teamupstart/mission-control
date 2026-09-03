@@ -66,7 +66,9 @@ Use stable result codes for stale guard, unsupported provider, readiness blocked
 
 Extend durable attempt state only if the current `reserved`, bound, and terminal states cannot represent crash recovery clearly. Prefer the current state model plus bounded recovery metadata over a parallel recovery table. Any added state is append-only and migrated beside the existing attempt schema.
 
-### 2. Add a database-first retry reservation
+### 2. Probe first, then add a database-first retry reservation
+
+Run the Phase 2 non-mutating environment probe before opening the reservation transaction. It accepts no predecessor run ID and appends no event. A blocked or inconclusive result that policy does not permit returns immediately, creates no attempt, and leaves no recovery reservation. Only a permitted probe result proceeds to the database compare-and-swap below.
 
 Create a DB operation under `BEGIN IMMEDIATE` that:
 
@@ -79,21 +81,22 @@ Create a DB operation under `BEGIN IMMEDIATE` that:
 
 Two concurrent requests must contend on this transaction and produce at most one inserted attempt. Do not use only in-memory locks or browser button disablement as the fence.
 
-Run the Phase 2 non-mutating environment probe before reservation. It accepts no predecessor run ID and appends no event, so a blocked result creates no attempt and never mutates the terminal predecessor. After the new provider run is created, record run-scoped readiness on that new run and revalidate it before host launch.
+After the new provider run is created, record run-scoped readiness on that new run and revalidate it before host launch.
 
 ### 3. Extract a restart-safe recovery service
 
 Create one service under `src/server/pipelines/` used by both the dedicated route and task re-dispatch. It advances a durable attempt through a saga whose steps are safe to resume:
 
-1. reserve or load the exact retry attempt from the database CAS;
-2. call provider `create` with commission owner, correlation, fresh launch key, and repository;
-3. if the response is lost or malformed, call `inspectCorrelation` and accept only the run with the exact launch key, attempt number, owner, repository, idea, and predecessor;
-4. bind that provider run to the reserved attempt before any host instruction;
-5. invoke provider readiness for the new run;
-6. obtain a Registry recovery-launch claim that fences one host for this task and attempt;
-7. retire the predecessor host through a narrow Registry method that delegates to `beginEviction` and preserves `session_remove` semantics;
-8. launch one fresh managed host with the new attempt identity and caller credential;
-9. persist a bounded failure or unknown outcome at the step where proof stops.
+1. run the non-mutating environment probe outside a database transaction and stop without reservation when policy does not permit the result;
+2. reserve or load the exact retry attempt from the database CAS only after preflight succeeds;
+3. call provider `create` with commission owner, correlation, fresh launch key, and repository;
+4. if the response is lost or malformed, call `inspectCorrelation` and accept only the run with the exact launch key, attempt number, owner, repository, idea, and predecessor;
+5. bind that provider run to the reserved attempt before any host instruction;
+6. invoke provider readiness for the new run;
+7. obtain a Registry recovery-launch claim that fences one host for this task and attempt;
+8. retire the predecessor host through a narrow Registry method that delegates to `beginEviction` and preserves `session_remove` semantics;
+9. launch one fresh managed host with the new attempt identity and caller credential;
+10. persist a bounded failure or unknown outcome at the step where proof stops.
 
 After daemon restart, a reserved or bound attempt resumes from durable identity. It does not append another attempt. A bound attempt with no live matching host may resume launch; a live matching host is returned idempotently.
 

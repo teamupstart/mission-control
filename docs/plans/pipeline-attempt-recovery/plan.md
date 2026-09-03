@@ -147,15 +147,15 @@ The provider owns classification because it owns the command and environment. Mi
 
 The readiness response must never echo credentials or unbounded command output. The Codex caller credential moves from process arguments to a restricted file-based handoff, matching the safer Claude pattern.
 
-### 5. Make recovery one daemon-owned transaction
+### 5. Make recovery one daemon-owned, restart-safe operation
 
 Add a commission recovery service used by a dedicated route and the existing re-dispatch path. The request includes commission ID, active attempt, provider run ID, and provider revision as compare-and-swap guards.
 
 For a retry, the service:
 
 1. verifies task ownership, terminal failure, retryability, no live recovery, and current provider revision;
-2. runs readiness and refuses before reservation if it is blocked;
-3. appends one new immutable attempt with a fresh opaque attempt key and direct predecessor;
+2. runs the non-mutating provider environment probe as a pre-transaction gate and returns a blocked result without creating an attempt;
+3. only after that probe succeeds, enters the compare-and-swap transaction and appends one new immutable attempt with a fresh opaque attempt key and direct predecessor;
 4. calls the existing idempotent provider `create`, then `inspectCorrelation` if the response is lost;
 5. binds the exact provider run before host instruction;
 6. evicts the predecessor host through `Registry.beginEviction` after duplicate launch is fenced;

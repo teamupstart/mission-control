@@ -426,6 +426,57 @@ label and placeholder.
 10. Assert a turn that names an `.html` path only mid-sentence has **no** card.
 11. Assert the disclosure's `aria-controls` target resolves both expanded and collapsed, so a
     collapse never breaks the control's relationship to its body.
+12. Assert **the reserved height holds**: with the card expanded, the frame arriving changes
+    neither the card's height nor the on-screen position of a turn below it. Read both before
+    the document mounts and after.
+13. Assert **the 600px margin pre-loads**: scroll the card to within 600px of the log but not
+    into view, and assert it already holds its document. This is the step that keeps the
+    observer's `root` on the transcript log - with the default root the margin is inert, so
+    nothing else in the suite would catch a simplification back to `root: null`.
+14. Assert **scrolling away releases both** the document and the fetched source, then that
+    returning restores them.
+15. Assert an artifact whose page links a **checkout-local stylesheet renders styled**, which
+    is what proves the inlined source reached `htmlPreviewSource` rather than the raw text.
+16. Assert a turn naming a **file that is not in the checkout** draws no card, and that a
+    card whose file has since been deleted shows its refusal sentence with both header
+    actions still present.
+
+### The other two layers, where they say something a browser cannot
+
+`AGENTS.md` asks for these alongside a Playwright spec rather than instead of it, and each
+covers one criterion the browser spec covers poorly:
+
+- **`renderToStaticMarkup`**, to pin the header's markup shape: a non-interactive `header`
+  with the disclosure button, the size, and the two actions as siblings, and **no interactive
+  element nested inside any button**. A browser assertion can check this too, but the markup
+  shape is exactly what this layer is for, and it costs milliseconds.
+- **A `node:test` case for refusal classification**, over the shape a session-file response
+  can take: over `MAX_SESSION_PREVIEW_BYTES`, undecodable, missing, containment-refused. This
+  belongs here rather than in the browser because building a 5 MiB fixture to exercise the
+  cap in Playwright is waste - the classification is a pure function of the response.
+
+### What proves each exit criterion
+
+Written out because a criterion with nothing behind it is a wish, and this plan has already
+shipped one: the already-open **Comment in Files** hand-off was required here and exercised
+nowhere until review found it.
+
+| Exit criterion | Proved by |
+| --- | --- |
+| Expanded 420px card, collapsible | e2e 2, 4 |
+| `aria-controls` resolves in both states; `aria-expanded` honest | e2e 11 |
+| No document *and* no source when ineligible | e2e 14 |
+| Collapse survives the Files tab and back | e2e 4 |
+| Inlined stylesheet renders styled | e2e 15 |
+| No nested interactive control in the header | `renderToStaticMarkup` |
+| Accessible names name their own artifact | every role/label selector in the spec |
+| **Comment in Files** from cold *and* warm | e2e 7, 8 |
+| Refusal sentences, and no cards without a listing | e2e 16, `node:test` classification, detection tests |
+| The 600px margin genuinely pre-loads | e2e 13 |
+| Mounting a document does not move the log | e2e 12 |
+| `htmlPreview.ts` unmodified, `PREVIEW_CSP` byte-identical | `test/html-preview.test.ts`, unchanged |
+| Detection rules | the twelve `node:test` cases above |
+| Reviewable green pull request | CI |
 
 ### Commands
 
@@ -639,6 +690,16 @@ preview.
   which is an ordinary thing for a reader to do. Added both warm cases - same file after
   turning comment mode off, and a different file selected - and made the per-nonce rule
   explicit in the arming order rather than leaving it implied by the word "nonce".
+- **2026-09-03, self-audit after round 15.** Round 15 found an exit criterion with no check
+  behind it, so I cross-checked all fourteen against the spec steps rather than wait to be
+  told again. Five more had nothing proving them: no-document-and-no-source when ineligible,
+  the inlined stylesheet actually reaching `htmlPreviewSource`, the 600px margin genuinely
+  pre-loading, the reserved height holding when a document mounts, and the refusal sentences.
+  Added e2e steps 12 to 16 for the ones that need a browser. Two do not: the header's markup
+  shape belongs in `renderToStaticMarkup`, and refusal classification is a pure function of a
+  response, so exercising the 5 MiB cap in Playwright would be waste - the phase file now
+  names both layers, which it had not before despite `AGENTS.md` asking for them. Added a
+  criterion-to-proof table so the next gap of this kind is visible rather than latent.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

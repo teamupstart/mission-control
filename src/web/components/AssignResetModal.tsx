@@ -71,7 +71,7 @@ export function AssignResetModal({
         </Tooltip>
       </header>
 
-      <div className="reset-body">
+      <div className="modal-bleed reset-body">
         <p className="reset-lead">
           <AgentDot agent={session.agent} />
           <span className="reset-name">{session.name || "(unnamed)"}</span>

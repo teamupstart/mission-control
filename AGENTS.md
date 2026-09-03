@@ -188,6 +188,34 @@ if (session.tmux || session.wezterm || session.runtime === "sdk") {
 }
 ```
 
+A modal's content inset belongs to the shell, never to its children. `.modal` declares
+`--modal-inset` once and applies it as `padding-inline`, so anything rendered into a modal at
+any depth clears the border without asking. A band that must reach the border - it draws a
+background, a divider, or its own scrollport - carries `.modal-bleed` and keeps its own
+padding; `.modal-head`, `.modal-body` and `.modal-foot` already do. Never re-declare the
+horizontal inset on a child, and never assume a wrapper supplies it.
+
+Correct:
+
+```tsx
+<Overlay className="modal si-session-modal" /* … */>
+  <h3>Standing instructions this session received</h3>
+  <div className="modal-bleed dispatch-body">{fields}</div>
+  <footer className="modal-foot">{actions}</footer>
+</Overlay>
+```
+
+Incorrect:
+
+```tsx
+// Flush against the border: the inset was opt-in per region, and `.modal-actions`
+// never had a CSS rule at all.
+<Overlay className="modal workflow-binding-dialog" /* … */>
+  <p>Bind an immutable version.</p>
+  <footer className="modal-actions">{actions}</footer>
+</Overlay>
+```
+
 Tests use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
 
 Browser end-to-end tests are the one exception, and they live apart: `e2e/` uses `@playwright/test` and runs under `npm run test:e2e`, never `npm test`. Everything in `test/` runs against `src/` and must pass on a fresh checkout; `e2e/` drives the BUILT dashboard served by the BUILT daemon, so it needs `npm run build` first. That is the same line `scripts/smoke-bundles.mjs` already draws.
@@ -242,6 +270,10 @@ Two standing constraints:
 - **Never add `data-testid`.** Select by role, label, or placeholder. The app has 229
   `aria-label`s and 155 `role`s already, and selecting through them keeps the accessible
   names honest.
+
+A spec that opens a new modal calls `expectContentClearsBorder` from
+`e2e/fixtures/modal-inset.ts`. It measures laid-out rectangles, which is the only layer that
+can see text printed onto a panel border.
 
 ## Boundaries
 

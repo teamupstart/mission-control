@@ -129,7 +129,7 @@ export function FilePicker({
 
       <div
         id="file-picker-results"
-        className="file-picker-results"
+        className="modal-bleed file-picker-results"
         role="listbox"
         aria-label="Matching files"
       >
@@ -158,7 +158,7 @@ export function FilePicker({
         )}
       </div>
 
-      <footer className="file-picker-foot">
+      <footer className="modal-bleed file-picker-foot">
         <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
         <span><kbd>↵</kbd> open</span>
         <span><kbd>esc</kbd> close</span>

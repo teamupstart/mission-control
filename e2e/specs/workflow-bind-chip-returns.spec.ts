@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * The `＋ workflow` chip comes back once a session's run has finished.
@@ -252,6 +253,9 @@ test("a COMPLETED run gives the bind chip back beside its outcome", async ({
   await dialog.getByRole("combobox", { name: "Published workflow" })
     .selectOption({ label: `${workflowName("done")} · v1` });
   await expect(dialog.getByRole("button", { name: "Submit bound version" })).toBeEnabled();
+  // Legibly, too. This dialog drops its prose and its fields straight into `.modal` and its
+  // footer carried the ruleless `.modal-actions`, so every line of it touched the border.
+  await expectContentClearsBorder(dialog);
   await shoot(dashboard, "bind-dialog-from-finished-run");
   await dashboard.keyboard.press("Escape");
   await expect(dialog).toBeHidden();

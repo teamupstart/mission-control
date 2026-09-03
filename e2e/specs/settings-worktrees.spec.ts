@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const EVIDENCE = artifactsDir("settings-worktrees");
 
@@ -116,6 +117,9 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   await expect(preview.getByText(lease.path)).toBeVisible();
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expect(preview.locator(":focus")).toBeVisible();
+  // Its Execute/Cancel footer used to carry `.modal-actions`, a class with no CSS rule, so
+  // both buttons rendered flush against the panel border.
+  await expectContentClearsBorder(preview);
   await shoot(dashboard, "02-actionable-return-preview");
   const staleFile = join(lease.path, "appeared-after-preview.txt");
   writeFileSync(staleFile, "state changed\n");

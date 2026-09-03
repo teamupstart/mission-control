@@ -5291,12 +5291,15 @@ body.is-pane-resizing {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* No `.modal-bleed`: the search box is the one band here that should NOT reach the border.
+   It takes the shell inset, which lines its left edge up with the header title above it -
+   the 12px it used to set itself left the two six pixels apart. */
 .file-picker-search {
   flex: none;
   display: flex;
   align-items: center;
   gap: 9px;
-  margin: 12px 12px 8px;
+  margin: 12px 0 8px;
   padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -5907,19 +5910,38 @@ a.btn {
   padding: 48px 20px;
   overflow: auto;
 }
+/* The content inset is the SHELL's, and it is declared exactly once.
+   This used to be the other way round: `.modal` carried no padding and every region wrapper
+   re-declared the same 18px, so a modal authored without one of those wrappers rendered its
+   text flush against the border - which is what `.si-session-modal`, `.workflow-binding-dialog`
+   and both `.modal-actions` footers did. Padding the shell inverts the failure: content is
+   inset at any depth by default, and only the bands that draw a background or a divider to
+   the border opt out. Forgetting to opt out costs an over-indented band, not unreadable text.
+   Horizontal only - vertical rhythm stays with the bands and the type, which never lost it. */
 .modal {
+  --modal-inset: 18px;
   width: min(940px, 100%);
+  padding-inline: var(--modal-inset);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   overflow: hidden;
 }
+/* The opt-out. `.modal-bleed` is the bare marker for a band that already owns its own
+   padding (`.dispatch-body`, `.file-picker-results`, …); the three shared regions cancel and
+   re-apply in one step. The `0px` fallback keeps a region used outside a modal unchanged. */
+.modal-head,
+.modal-body,
+.modal-foot,
+.modal-bleed {
+  margin-inline: calc(-1 * var(--modal-inset, 0px));
+}
 .modal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 14px var(--modal-inset, 18px);
   border-bottom: 1px solid var(--border-soft);
   background: var(--panel-2);
 }
@@ -5931,7 +5953,7 @@ a.btn {
   margin-right: 8px;
 }
 .modal-body {
-  padding: 8px 18px 18px;
+  padding: 8px var(--modal-inset, 18px) 18px;
   max-height: 74vh;
   overflow: auto;
 }
@@ -10170,7 +10192,7 @@ select:not([multiple]) option:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 18px;
+  padding: 14px var(--modal-inset, 18px);
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);
 }

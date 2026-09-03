@@ -2215,7 +2215,27 @@ function FileWorkspaceBody({
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
               <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} aria-label="Preview" aria-keyshortcuts={extracted ? undefined : "p"} aria-pressed={mode === "preview"} onClick={() => controller.setMode(session.id, "preview")}>Preview{!extracted && showKeybindingHints && <kbd className="kb-hint">p</kbd>}</button></Tooltip>
-              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} aria-label="Editor" aria-keyshortcuts={!extracted && buffer.document.editable ? "e" : undefined} aria-pressed={mode === "editor"} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor{!extracted && buffer.document.editable && showKeybindingHints && <kbd className="kb-hint">e</kbd>}</button></Tooltip>
+              <Tooltip label={readOnlyWorkspace
+                ? "Pinned Pipeline evidence is read-only"
+                : buffer.document.editable
+                ? "Edit this file's source"
+                : "This file is not editable"}
+              >
+                <button
+                  className={mode === "editor" ? "on" : ""}
+                  aria-label="Editor"
+                  aria-keyshortcuts={!extracted && buffer.document.editable && !readOnlyWorkspace
+                    ? "e"
+                    : undefined}
+                  aria-pressed={mode === "editor"}
+                  disabled={!buffer.document.editable || readOnlyWorkspace}
+                  onClick={() => controller.setMode(session.id, "editor")}
+                >
+                  Editor
+                  {!extracted && buffer.document.editable && !readOnlyWorkspace &&
+                    showKeybindingHints && <kbd className="kb-hint">e</kbd>}
+                </button>
+              </Tooltip>
             </div>
           )}
           {/*
@@ -2380,7 +2400,9 @@ function FileWorkspaceBody({
             <FileEditor
               path={buffer.document.path}
               value={buffer.text}
-              readOnly={!buffer.document.editable || buffer.saveState === "conflict"}
+              readOnly={
+                readOnlyWorkspace || !buffer.document.editable || buffer.saveState === "conflict"
+              }
               comments={editorComments}
               find={editorFind}
               scrollTo={scrollTo}

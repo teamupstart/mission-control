@@ -6560,6 +6560,7 @@ export class Registry extends EventEmitter {
       lifecycle: input.commission.lifecycle,
       attempt: input.commission.activeAttempt,
       engineerRunId: attempt?.engineerRunId ?? null,
+      providerRevision: attempt?.providerRevision ?? null,
       evidenceCommit: attempt?.evidenceCommit ?? null,
       evidenceFrozenAt: attempt?.evidenceFrozenAt ?? null,
       authoringWorktree: input.commission.authoringWorktree ?? input.task.pipelineWorkspacePath ?? null,

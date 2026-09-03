@@ -342,3 +342,80 @@ test("Git validation yields to the event loop instead of blocking registry work"
     process.env.PATH = previousPath;
   }
 });
+
+test("a newer provider revision supersedes an in-flight workspace projection", async () => {
+  const repo = join(home, "revision-race-repo");
+  const commission = {
+    id: "revision-race",
+    taskId: "revision-race-task",
+    provider: "ai-conductor" as const,
+    repoRoot: repo,
+    correlationId: "revision-race",
+    lifecycle: "authoring" as const,
+    attempts: [{
+      attempt: 1,
+      origin: "mission_control" as const,
+      launchKey: "revision-race",
+      engineerRunId: "engineer-revision-race",
+      previousEngineerRunId: null,
+      providerRevision: 2,
+      state: "authoring" as const,
+      terminalReason: null,
+      evidenceCommit: null,
+      evidenceCommitProvenance: null,
+      evidenceFrozenAt: null,
+      updatedAt: 2,
+    }],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const registry = new Registry();
+  const host = registry.registerSdkSession({
+    id: "sdk:revision-race",
+    agent: "codex",
+    name: "revision race",
+    cwd: repo,
+    agentSessionId: "revision-race",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  registry.upsertTask(mkTask({
+    id: commission.taskId,
+    kind: "pipeline",
+    agent: "codex",
+    repoRoot: repo,
+    status: "running",
+    sessionId: host.id,
+    pipelineCommissionId: commission.id,
+  }));
+  registry.initializePipelineCommissions([commission]);
+
+  const newer = {
+    ...commission,
+    attempts: commission.attempts.map((attempt) => ({
+      ...attempt,
+      providerRevision: 3,
+      updatedAt: 3,
+    })),
+    updatedAt: 3,
+  };
+  registry.upsertPipelineCommission(newer);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(registry.pipelineCommission(commission.id)?.attempts[0]?.providerRevision, 3);
+  assert.equal(registry.getSession(host.id)?.workspace?.providerRevision, 3);
+});

@@ -129,7 +129,7 @@
     <div class="card phase" data-phase="1">
       <h3><a href="phase-1-durable-identity-and-git-evidence.md">Durable identity and safe Git-ref evidence</a></h3>
       <p class="meta">Mission Control | Direct prerequisite: planning session</p>
-      <p>Preserve branch, plan identity, origin, and a durable attempt evidence commit; serialize predecessor-checked advancement with handoff freeze; add one workspace resolver, provide commit-backed Diff and read-only Files, align workflow and headers, and move caller credentials out of arguments.</p>
+      <p>Preserve branch, plan identity, origin, and a durable attempt evidence commit; serialize null-safe initialization and predecessor-checked advancement with handoff freeze; add one workspace resolver, provide commit-backed Diff and read-only Files, align workflow and headers, and move caller credentials out of arguments.</p>
     </div>
     <div class="card phase" data-phase="2">
       <h3><a href="phase-2-provider-lifecycle-and-ownership.md">Complete provider lifecycle and ownership</a></h3>
@@ -168,7 +168,7 @@
     <div class="grid two">
       <div class="card">
         <h3>Workspace</h3>
-        <ul><li><code>Session.cwd</code> remains process identity.</li><li>Only revalidated live worktrees authorize mutation.</li><li>Evidence advances only by predecessor-and-freeze CAS and freezes atomically with handoff.</li><li>Retired or missing worktrees use a durable attempt commit and never follow a moved branch.</li><li>No consumer falls back to host <code>cwd</code>.</li></ul>
+        <ul><li><code>Session.cwd</code> remains process identity.</li><li>Only revalidated live worktrees authorize mutation.</li><li>Evidence initializes by null-and-unfrozen CAS, later advances by predecessor-and-freeze CAS, and freezes atomically with handoff.</li><li>Retired or missing worktrees use a durable attempt commit and never follow a moved branch.</li><li>No consumer falls back to host <code>cwd</code>.</li></ul>
       </div>
       <div class="card">
         <h3>Provider</h3>

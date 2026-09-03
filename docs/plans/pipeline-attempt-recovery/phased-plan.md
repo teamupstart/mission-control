@@ -91,7 +91,7 @@ No phase requires inseparable pull requests in both repositories.
 - The central resolver returns availability, path, branch, the attempt's durable evidence commit, provenance, and freeze state, attempt, provider revision, reason, and capabilities.
 - `available` is the only state that authorizes writes, comments, shell launch, or external file open.
 - `retired` and `missing` may authorize read-only Git object access only through a commit persisted on the attempt and verified inside the task repository. Later requests never follow a moved branch.
-- Evidence advancement conditionally matches the validated predecessor and an unfrozen attempt. Handoff freezes evidence in the same serialized database transaction, so concurrent or stale writers cannot advance it afterward.
+- Evidence initialization conditionally matches a null commit and an unfrozen attempt. Later advancement conditionally matches the validated predecessor and an unfrozen attempt. Handoff freezes evidence in the same serialized database transaction, so concurrent or stale writers cannot advance it afterward.
 - Consumers must not bypass the resolver or silently fall back to host `cwd`.
 
 Phases 3 and 4 may extend reasons and actions but must not change these authorization rules.

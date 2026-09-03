@@ -13848,7 +13848,7 @@ select.ensemble-judge-persona {
   min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
-  /* Wraps rather than truncating. Four of the five shipped Personas have names long enough
+  /* Wraps rather than truncating. Most of the shipped Personas have names long enough
      to hit the ellipsis at this column width, and "Documentation Ste…" beside "Intent
      Conformanc…" is a shelf an operator cannot read. The tag beside it is `flex: none` and
      the row wraps, so a long name pushes the tag down instead of eating it. */

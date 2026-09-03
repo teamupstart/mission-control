@@ -90,7 +90,7 @@ rather than left as alternatives:</p>
 <tr><td>Gating</td><td><strong>Blocking, scoped to the submitted change</strong></td></tr>
 <tr><td>Principles beyond the requested core</td><td>Encapsulation (tell-don&rsquo;t-ask, Law of Demeter); illegal states unrepresentable; explicit dependencies over hidden global state</td></tr>
 <tr><td>Principles declined</td><td>YAGNI as a judged standard, coupling and layer direction, and naming at the seam</td></tr>
-<tr><td>Follow-up</td><td>Implemented directly rather than phased &mdash; one commit, one pull request</td></tr>
+<tr><td>Follow-up</td><td>Implemented directly rather than phased - one commit, one pull request</td></tr>
 </tbody>
 </table>
 </div>
@@ -119,7 +119,7 @@ operator already holds keeps running the graph it was bound to.</p>
   <li><strong>Code Quality Judge</strong> raises structure only <em>&ldquo;when it actively hides a defect&rdquo;</em>,
     and is otherwise told not to fail for <em>&ldquo;an equally valid alternative.&rdquo;</em></li>
 </ul>
-<p>So design is currently reviewed by nobody, and the fix is not to weaken either rule &mdash; it is a
+<p>So design is currently reviewed by nobody, and the fix is not to weaken either rule - it is a
 role whose subject <em>is</em> code shape, with its own discipline about when shape is a defect.</p>
 <div class="callout">
 <p>The risk of that role is the whole reason the gating decision above was taken explicitly: a
@@ -134,7 +134,7 @@ discipline. It states nothing about output format or the review contract, which 
 prompt already carries.</p>
 
 <h3>What it judges</h3>
-<p>The seams the change introduces or moves &mdash; where a responsibility lives, what depends on
+<p>The seams the change introduces or moves - where a responsibility lives, what depends on
 what, what a caller has to know to use the code correctly, and whether a new case extends an
 abstraction that already exists or grows a second one beside it.</p>
 <p>Design here is about cost, not taste: a problem belongs in the verdict when it can be named as
@@ -146,32 +146,32 @@ extension that cannot be made without reopening code that should have been close
 <p>One short subsection each, each phrased as the observable symptom rather than the principle&rsquo;s
 name, so the verdict cites code and not a label:</p>
 <ul>
-  <li><em>Appropriate abstraction</em> &mdash; at the level of the problem, hides what varies, leaks
+  <li><em>Appropriate abstraction</em> - at the level of the problem, hides what varies, leaks
     nothing callers must compensate for. The symptoms are a caller that has to know the mechanism
     to use the interface correctly, an abstraction bypassed for one of its own cases, and a third
     instance arriving with no seam to put it behind.</li>
-  <li><em>Single responsibility</em> &mdash; a unit changes for one reason. The symptom is two unrelated
+  <li><em>Single responsibility</em> - a unit changes for one reason. The symptom is two unrelated
     reasons to edit the same function, module, or record.</li>
-  <li><em>Open/closed</em> &mdash; the extension the change makes was possible without editing the thing
+  <li><em>Open/closed</em> - the extension the change makes was possible without editing the thing
     extended; or if it was not, the change added the seam rather than the fourth branch of a switch
     that keeps growing.</li>
-  <li><em>Interface segregation</em> &mdash; an implementation forced to satisfy members it has no
+  <li><em>Interface segregation</em> - an implementation forced to satisfy members it has no
     meaning for, a stub supplied only to fill a contract, a consumer handed a whole record to read
     one field.</li>
-  <li><em>Dependency inversion</em> &mdash; a high-level rule reaching directly for a concrete
+  <li><em>Dependency inversion</em> - a high-level rule reaching directly for a concrete
     backend, driver, transport, clock, or filesystem.</li>
-  <li><em>DRY</em> &mdash; one owner per fact, rule, or decision. Cited as the second copy that will drift,
+  <li><em>DRY</em> - one owner per fact, rule, or decision. Cited as the second copy that will drift,
     with the place the fact should live; and explicitly not as similar-looking code that means two
     different things.</li>
-  <li><em>Composition over inheritance</em> &mdash; a subclass that overrides to disable, a base
+  <li><em>Composition over inheritance</em> - a subclass that overrides to disable, a base
     class that grows a flag for one descendant, a hierarchy standing in for a runtime
     strategy.</li>
-  <li><em>Encapsulation</em> &mdash; a caller reaching through two objects to reach a third, or a
+  <li><em>Encapsulation</em> - a caller reaching through two objects to reach a third, or a
     decision made outside the unit that owns every fact it depends on.</li>
-  <li><em>Illegal states</em> &mdash; a validated shape re-checked defensively at every later use,
+  <li><em>Illegal states</em> - a validated shape re-checked defensively at every later use,
     legal field combinations documented in prose rather than expressed in the shape, a primitive
     carrying a meaning its type does not.</li>
-  <li><em>Explicit dependencies</em> &mdash; new module-level mutable state, an import-time side
+  <li><em>Explicit dependencies</em> - new module-level mutable state, an import-time side
     effect, a function reaching for ambient configuration its callers cannot see or
     substitute.</li>
 </ul>
@@ -181,8 +181,8 @@ name, so the verdict cites code and not a label:</p>
 <ul>
   <li>The finding must be in the submitted change, or in code the change directly extends.
     Pre-existing design is context, not a finding.</li>
-  <li>Name the concrete cost &mdash; the edit that will be missed, the fact that will drift, the caller
-    that will be broken &mdash; not the principle violated. A principle name with no cost is not a
+  <li>Name the concrete cost - the edit that will be missed, the fact that will drift, the caller
+    that will be broken - not the principle violated. A principle name with no cost is not a
     finding.</li>
   <li>Do not demand an abstraction for a single case. Two known cases plus a third arriving in this
     change is the bar; less than that is speculative generality, which is itself a finding in the
@@ -209,7 +209,7 @@ does.</p>
 through <code>npm run personas</code>. The slug is the durable half of that id and is
 append-only.</p>
 <p>A new node id <code>nmr-code-design</code> joins <code>NO_MISTAKES_REVIEW_NODES</code>, and
-<code>NO_MISTAKES_REVIEW_V7</code> is written out in full &mdash; the existing literals
+<code>NO_MISTAKES_REVIEW_V7</code> is written out in full - the existing literals
 are a changelog, not a DRY opportunity, and a shared stage array is one edit away from rewriting a
 graph that bindings are pinned to. Version 11 appends with <code>sourceDraftRevision: 10</code>, the
 unchanged <code>completionPolicy: { kind: "none" }</code>, <code>resumptionPolicy: "auto"</code>, and
@@ -313,7 +313,7 @@ did, and aggregate into the existing depth join, so a failing design review arri
 repair packet as a failing risk review rather than as a separate round. It adds one model call per
 review round.</p>
 <p>It sits there rather than ahead of the deep reviews because a design objection is not a cheap
-gate &mdash; it costs a model call to reach either way, and gating on it first would delay risk
+gate - it costs a model call to reach either way, and gating on it first would delay risk
 feedback on a change whose shape is merely arguable.</p>
 
 <h2>Touchpoints</h2>

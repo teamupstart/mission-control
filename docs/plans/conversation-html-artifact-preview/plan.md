@@ -91,11 +91,36 @@ after the tool chips.
 - **Refusals are stated, never blank.** Over the 5 MiB `MAX_SESSION_PREVIEW_BYTES` cap, not
   valid UTF-8, deleted since the turn was written, or refused by the daemon's containment
   check: the body says which, and the header keeps its links.
+- **"This checkout could not be listed" is its own refusal**, distinct from a missing file.
+  One live session answered `GET /api/sessions/:id/files` with
+  `500 could not list files in this checkout`, so no path in its turns resolves at all. A
+  card that reported "file not found" there would blame the artifact for a listing failure.
 
 ### Fixed height, and why not auto-fit
 
-The body reserves a fixed height - 420px, floored at 240px and capped at 60% of the
-transcript log's height on a short window - and scrolls internally.
+The body reserves **420px** in `.detail-conv` - the Console and Board reading surface - and
+scrolls internally.
+
+That number replaces an earlier rule in this plan that could not hold. It said "420px,
+floored at 240px and capped at 60% of the transcript log's height", written before the
+mockup measured the log. `.transcript-log` carries `max-height: 340px` in the app's base
+stylesheet, lifted only by `.detail-conv > .transcript .transcript-log { max-height: none }`.
+So in the capped context 60% of 340px is 204px, *below* the plan's own 240px floor: the two
+rules contradicted each other exactly where it mattered.
+
+The measured rule instead keys off the class that already draws the distinction:
+
+- **`.detail-conv` (Console, Board detail)** - the log is uncapped, so the card is expanded
+  with a 420px body. Measured: 420px body in a 749px log.
+- **The session-card log (capped at 340px)** - the card arrives as its **one-line header**
+  and reserves no frame at all. A 420px body there is taller than the entire visible log,
+  which puts the disclosure control out of reach of the content it controls; and shrinking it
+  to fit yields a ~200px thumbnail that eats 60% of a tile's conversation to show a page
+  header. The header, which says what the artifact is and carries both actions, is the honest
+  amount of a page to put in a tile.
+
+This keeps the approved "arrives expanded" decision where a reader is actually reading, and
+declines to swamp the surface where they are scanning.
 
 Auto-fitting to the document's own height is the obvious alternative and it is rejected.
 The dashboard has no origin inside the frame, so the only way to learn a document's height
@@ -111,6 +136,34 @@ scrolling past one never shifts the log. The frame itself mounts only when the c
 expanded **and** near the viewport, following `MermaidDiagram`'s `IntersectionObserver` with
 a `600px` root margin, so a long session with twenty artifacts costs twenty empty boxes and
 not twenty documents.
+
+The mockup measured that claim rather than restating it. Swapping the previewed document
+across four real artifacts whose own heights span 2,422px to 16,914px - a seven-fold range -
+left the card height, the log's scroll height, the reader's scroll position, and the on-screen
+position of a turn below the card **identical to the pixel** in all four cases.
+
+### The artifact decides its own colour scheme, and it will not match
+
+A `srcdoc` iframe inherits neither the dashboard's `color-scheme: dark` nor any scheme the
+parent would like to impose, and `color-scheme` does not move `prefers-color-scheme`. The app
+also never sets `nativeTheme.themeSource` - `src/main/window.ts` pins only the window's
+`backgroundColor: "#0e1116"` - so the media query follows the operator's OS in the packaged
+app exactly as it does in a browser tab.
+
+The consequence is specific and was seen rather than predicted: this plan's own `plan.html`,
+which is correctly `prefers-color-scheme`-aware, renders as a **bright white slab** in the
+middle of the dark log whenever macOS is in light mode. A dark-scheme artifact
+(`docs/archive/mockups/alert-panels.html`, body `rgb(10, 12, 15)`) is by contrast continuous
+with the app.
+
+Nothing in this feature can fix that, so the design absorbs it: the frame is inset 7px on a
+`--panel-2` mat with a 1px border and a 6px radius, so a light page reads as an embedded
+document rather than as a panel that lost its stylesheet. That is a mitigation and not a
+cure, and it is worth saying so plainly.
+
+Pinning `nativeTheme.themeSource = "dark"` in the main process would settle it for the whole
+app, previews included. That is an app-wide theming decision well outside this plan; it is in
+**Follow-up work** rather than here.
 
 ### Placement at the foot of the turn
 
@@ -197,6 +250,8 @@ sequenceDiagram
 
 ### Two preview frames, and keeping them apart
 
+The conversation frame is `.artifact-preview`, deliberately not `.html-preview`.
+
 `FileWorkspace`'s link-message handler finds its frame with
 `workspaceRef.current?.querySelector(".file-content .html-preview")` and then refuses any
 message whose `event.source` is not that frame's `contentWindow`. The conversation frame
@@ -238,6 +293,42 @@ rather than a second freshness model for the same bytes.
   session's own `cwd`, as `workspaceFileTarget` already requires. Scout reports keep their
   own archive surface.
 
+## Mockup
+
+The design was drawn over the **live** daemon rather than over fixtures, because a card drawn
+on invented data cannot show what a real 40 KB report does inside a real log.
+
+- **Live copy**: `.evidence/mockups/conversation-artifact-card/mockup.html` (gitignored - a
+  live board is operator data, so it is never committed). It renders a real idle codex
+  session, its 12 real turns, and the real turn ending
+  `Report: docs/reports/pipeline-plan-comparison/report.html`, with five real artifacts out of
+  live checkouts selectable in the card.
+- **Committed copy**: `mockup.html` beside this plan, with the same chrome, the same proposed
+  CSS and two small fixture artifacts. It links the app's real `src/web/styles.css` rather
+  than freezing a copy of it, so it cannot drift from the styles it is drawn against.
+
+Both carry the app's real preview boundary rather than an imitation: the CSP and all four
+hashed bridge scripts are lifted out of `src/web/lib/htmlPreview.ts` and checked by
+recomputing each script's SHA-256 against the policy's own hashes. The proposed CSS is one
+clearly marked block; everything else is the shipped stylesheet.
+
+What the mockup changed in this plan: the reserved-height rule (which was self-contradictory),
+the disclosure rule for the capped session-card log, the colour-scheme mat, the
+"could not be listed" refusal, and the `min-width` on the disclosure without which the header
+crushes its own directory instead of wrapping in a narrow column.
+
+## Follow-up work, out of scope here
+
+- **Pin the app's colour scheme.** `nativeTheme.themeSource = "dark"` in the main process
+  would make `prefers-color-scheme` inside every preview match the dashboard. It changes
+  theming for the whole app, so it is its own decision.
+- **`navigate-to` is a dead CSP directive.** `PREVIEW_CSP` ends with `navigate-to 'none'`,
+  and current Chromium logs `Unrecognized Content-Security-Policy directive 'navigate-to'`
+  for every preview it renders. The directive was never shipped by Chromium; the protection
+  it was meant to add comes from the sandbox and the link bridge instead. Pre-existing, not
+  introduced here, and worth removing or commenting so the console stops carrying a warning
+  nobody can act on.
+
 ## Surfaces this touches
 
 | Surface | Change |
@@ -259,7 +350,7 @@ rather than a second freshness model for the same bytes.
 | Tests | A `node:test` file for detection and the intent channel, plus one Playwright spec |
 | Delivery estimate | About 2 to 4 engineering days including visual verification in the packaged app |
 | Backend and persistence | None: no route, schema, migration, protocol, or SSE change |
-| Main uncertainty | Scroll stability in the transcript with cards expanding above the reader, and how a light-background artifact page reads inside a dark log |
+| Main uncertainty | Both original uncertainties are now settled by the mockup: scroll stability is measured, and a light artifact in a dark log is confirmed and mitigated. What remains is CodeMirror-free but real - honoring the comment-mode intent inside `FileWorkspace` without disturbing its existing arming race |
 
 ## Verification
 
@@ -267,7 +358,10 @@ rather than a second freshness model for the same bytes.
   card per distinct file, the three-card cap, extension filtering, membership deciding,
   `:line` suffixes stripped), and the request channel's arm-once-per-nonce behavior.
 - **`e2e/specs/conversation-html-artifact-preview.spec.ts`** for the feature, because it is a
-  UI change and there are no exemptions. A fake agent turn ends with
+  UI change and there are no exemptions. Assert *inside* the preview with Playwright's
+  `frameLocator`, not with `contentDocument`: the sandbox has no `allow-same-origin`, so the
+  frame is an opaque origin and the page cannot read into it - but Playwright reaches in over
+  CDP, which the mockup confirmed by reading the artifact's own `h1` through a live sandbox. A fake agent turn ends with
   `Report: docs/reports/x/report.html`; the spec asserts the card is present and named, that
   its body renders the page's own heading inside the frame, that collapsing hides the body
   and the choice survives a tab change, and that **Comment in Files** lands on the Files tab

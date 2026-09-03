@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: inline HTML artifact previews in the conversation</title>
+<link rel="stylesheet" href="../../../src/web/styles.css">
+<style>
+
+/* ============================================================================
+   PROPOSED - the only CSS on this page that is not the app's own styles.css.
+   Everything above this line is the shipped stylesheet, inlined verbatim.
+   ============================================================================ */
+
+.turn-artifacts { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 2px; }
+
+.artifact-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.artifact-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 8px 6px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid transparent;
+}
+.artifact-card.is-open .artifact-head { border-bottom-color: var(--border-soft); }
+
+/* The disclosure is the whole name area, so the click target is the thing you read
+   rather than a 12px caret beside it. */
+.artifact-disclose {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  /* `min-width` is the load-bearing half, and it has to live HERE rather than in a later
+     rule: with `min-width: 0` the disclosure SHRINKS instead of letting the actions wrap,
+     and the directory collapses to a single character - which is exactly how it looked in
+     the 320px rail this card was first drawn in. */
+  flex: 1 1 190px;
+  min-width: 150px;
+  padding: 3px 4px;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.artifact-disclose:hover { background: var(--panel-2); }
+.artifact-disclose:focus-visible { outline: 2px solid var(--agent-accent); outline-offset: 1px; }
+
+.artifact-caret {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-right: 1.6px solid var(--muted);
+  border-bottom: 1.6px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform .12s ease;
+}
+.artifact-card.is-open .artifact-caret { transform: rotate(45deg); }
+
+.artifact-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.artifact-dir {
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.artifact-size { flex: none; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.artifact-act {
+  flex: none;
+  padding: 3px 8px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.artifact-act:hover { color: var(--fg); border-color: var(--muted); }
+.artifact-act.is-primary { color: var(--fg); border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border)); }
+.artifact-act.is-primary:hover { background: color-mix(in srgb, var(--agent-accent) 18%, var(--panel-2)); }
+
+/* The reserved height. Present whether or not the frame has mounted, which is what keeps
+   expanding a card from shifting the log under the reader.
+   The MAT matters: an artifact page follows `prefers-color-scheme`, not the dashboard's
+   `color-scheme: dark`, because a srcdoc iframe inherits neither - so a correctly
+   dark-aware page renders LIGHT here whenever the OS is in light mode. Inset on a dark mat
+   with a border and a radius, a light page reads as an embedded document rather than as a
+   panel that lost its styling. */
+.artifact-body {
+  height: var(--artifact-height, 420px);
+  padding: 7px;
+  background: var(--panel-2);
+}
+.artifact-card:not(.is-open) .artifact-body { display: none; }
+.artifact-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* The capped session-card log is 340px tall (`.transcript-log { max-height: 340px }`), so a
+   420px body is taller than the whole visible log there - the disclosure scrolls out of
+   reach of the content it controls. `.detail-conv` is the app's own class for the
+   uncapped reading surface, and it is the one that earns an open frame. Everywhere else the
+   card arrives as its one-line header. */
+.artifact-card { --artifact-open: none; }
+.detail-conv .artifact-card.is-open .artifact-body { display: block; }
+.transcript-log .artifact-card.is-open .artifact-body { display: none; }
+.detail-conv .transcript-log .artifact-card.is-open .artifact-body { display: block; }
+
+.artifact-refusal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: auto;
+  padding: 14px 16px;
+  background: var(--panel-2);
+}
+.artifact-refusal p { margin: 0; color: var(--muted); font-size: 12px; }
+.artifact-refusal strong { color: var(--fg); }
+
+</style>
+<style>
+
+/* Mockup chrome only - not proposed for the app. */
+body.mock { margin: 0; background: var(--bg); color: var(--fg);
+  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.mock-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.mock-bar h1 { margin: 0; font-size: 13px; letter-spacing: .01em; }
+.mock-bar .mock-live { padding: 2px 7px; color: #0a0c0f; background: var(--idle);
+  border-radius: 999px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; }
+.mock-bar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+.mock-bar select, .mock-bar input[type=number] { padding: 3px 6px; color: var(--fg);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 11.5px; }
+.mock-note { padding: 10px 18px; color: var(--dim); background: var(--bg-2);
+  border-bottom: 1px solid var(--border-soft); font-size: 11.5px; }
+.mock-note code { color: var(--muted); }
+.mock-stage { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 0;
+  height: calc(100vh - 96px); min-height: 0; overflow: hidden; }
+/* `overflow: hidden` and the min-height chain are what make the log scroll INTERNALLY,
+   the way it does in the app. Without them the log grows to its content, the page scrolls
+   instead, and the one thing this mockup is meant to test - a card expanding inside a
+   scrolling log without shifting it - cannot happen at all. */
+.mock-pane { display: flex; flex-direction: column; min-width: 0; height: 100%;
+  min-height: 0; overflow: hidden; border-right: 1px solid var(--border); }
+/* `.detail-conv` is the app's own class for the Console/Board reading surface, and it is
+   what lifts `.transcript-log`'s 340px cap. Dropping it puts the log back in the capped
+   session-card context, which is the second place a card can appear. */
+.mock-pane .detail-conv { flex: 1; min-height: 0; }
+.mock-pane .mock-capped { display: flex; flex-direction: column; flex: 1; min-height: 0;
+  gap: 13px; padding: 16px 22px; }
+.mock-side { overflow: auto; padding: 16px; background: var(--bg-2); }
+.mock-side h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: .07em;
+  color: var(--dim); text-transform: uppercase; }
+.mock-side p { margin: 0 0 12px; color: var(--muted); font-size: 11.5px; }
+.mock-side .artifact-card { margin-bottom: 14px; }
+.mock-toast { position: fixed; right: 18px; bottom: 18px; max-width: 380px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--agent-accent); border-radius: 10px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.5); font-size: 12px; }
+.mock-toast[hidden] { display: none; }
+.mock-toast strong { display: block; margin-bottom: 4px; }
+.mock-toast span { color: var(--muted); }
+.transcript { height: 100%; }
+
+</style>
+</head>
+<body class="mock">
+<div class="mock-bar">
+  <h1>Artifact card in the conversation</h1>
+  <span class="mock-live">fixture data</span>
+  <label>Artifact
+    <select id="pick"><option value="docs/reports/sse-reconnect-audit/report.html" selected>report.html (2.5 KB, dark-aware)</option><option value="docs/plans/queue-drain-order/plan.html">plan.html (2.0 KB, dark-only)</option></select>
+  </label>
+  <label>Reserved height
+    <select id="height">
+      <option value="420">420px (proposed)</option>
+      <option value="300">300px</option>
+      <option value="560">560px</option>
+      <option value="240">240px (floor)</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="collapse"> Start collapsed</label>
+  <label>Context
+    <select id="context-pick">
+      <option value="detail">Console detail (log uncapped)</option>
+      <option value="card">Session card (log capped at 340px)</option>
+    </select>
+  </label>
+</div>
+<div class="mock-note">
+  Session <strong>Audit the SSE reconnect path</strong> (codex, idle) with its <strong>4 real turns</strong>.
+  The card is drawn on the one turn that presents an artifact path. The preview iframe carries the app's
+  real <code>htmlPreviewSource()</code> prefix - the same CSP and all four hashed bridge scripts, lifted from
+  <code>src/web/lib/htmlPreview.ts</code> and verified against the policy's own hashes - around real
+  checkout bytes. This copy carries a trimmed fixture artifact so it can live in the repository; the live copy renders the operator's own checkouts and is never committed.
+</div>
+<div class="mock-stage">
+  <div class="mock-pane">
+    <div class="detail-conv" id="context">
+      <div class="transcript" data-view="chat" style="--agent-accent: #10a37f">
+        <div class="transcript-log">
+      <article class="turn turn-user" aria-label="you" data-turn-id="fixture:1">
+        <div class="turn-role">you<span class="turn-time">7:53 am</span></div>
+        <div class="turn-text markdown"><p>Audit how the dashboard reconnects its event stream after a daemon restart. Write it up as a page rather than pasting it into chat.</p></div>
+      </article>
+      <article class="turn turn-assistant" aria-label="codex" data-turn-id="fixture:2">
+        <div class="turn-role">codex<span class="turn-time">7:55 am</span></div>
+        <div class="turn-text markdown"><p>Reading the three stream modules now, then I will write the page.</p></div>
+      </article>
+      <div class="turn turn-assistant turn-toolrun">
+        <div class="turn-role">codex executed</div>
+        <div class="tool-chips"><span class="tool-chip"><span class="tool-name">read</span><span class="tool-arg">src/web/useEventStream.ts</span></span><span class="tool-chip"><span class="tool-name">read</span><span class="tool-arg">src/server/sse.ts</span></span><span class="tool-chip"><span class="tool-name">grep</span><span class="tool-arg">setTimeout(.*reconnect</span></span></div>
+      </div>
+      <article class="turn turn-assistant" aria-label="codex" data-turn-id="fixture:4">
+        <div class="turn-role">codex<span class="turn-time">8:00 am</span></div>
+        <div class="turn-text markdown"><p>Every reconnect retries on a fixed one-second interval with no jitter, so a daemon restart brings every open tab back in lockstep. The page has the table and the two call sites.</p><p>Report: <a class="workspace-path" href="#" title="Open docs/reports/sse-reconnect-audit/report.html in this session's files">docs/reports/sse-reconnect-audit/report.html</a></p></div>
+      <div class="turn-artifacts">
+        <section class="artifact-card is-open" aria-label="Preview of docs/reports/sse-reconnect-audit/report.html" data-path="docs/reports/sse-reconnect-audit/report.html">
+          <header class="artifact-head">
+            <button type="button" class="artifact-disclose" aria-expanded="true" aria-controls="artifact-body-3">
+              <span class="artifact-caret" aria-hidden="true"></span>
+              <span class="artifact-name">report.html</span>
+              <span class="artifact-dir">docs/reports/sse-reconnect-audit/</span>
+            </button>
+            <span class="artifact-size">2.5 KB</span>
+            <button type="button" class="artifact-act" aria-label="Refresh preview of docs/reports/sse-reconnect-audit/report.html">Refresh</button>
+            <button type="button" class="artifact-act is-primary" aria-label="Comment on docs/reports/sse-reconnect-audit/report.html in Files">Comment in Files</button>
+          </header>
+          <div class="artifact-body" id="artifact-body-3">
+            <iframe class="artifact-preview" sandbox="allow-scripts" loading="lazy"
+                    title="Preview of docs/reports/sse-reconnect-audit/report.html" data-artifact="docs/reports/sse-reconnect-audit/report.html"></iframe>
+          </div>
+        </section>
+      </div>
+      </article></div>
+      </div>
+    </div>
+  </div>
+  <aside class="mock-side">
+    <h2>Refusal states</h2>
+    <p>Every one of these is a state the live fleet actually produced while this mockup was built.</p>
+    
+        <section class="artifact-card is-open" aria-label="Preview of docs/reports/ephemeral-deploy-roadblocks/report.html">
+          <header class="artifact-head">
+            <button type="button" class="artifact-disclose" aria-expanded="true">
+              <span class="artifact-caret" aria-hidden="true"></span>
+              <span class="artifact-name">report.html</span>
+              <span class="artifact-dir">docs/reports/ephemeral-deploy-roadblocks/</span>
+            </button>
+            <button type="button" class="artifact-act">Refresh</button>
+            <button type="button" class="artifact-act is-primary">Comment in Files</button>
+          </header>
+          <div class="artifact-body artifact-refusal"><p><strong>This checkout could not be listed.</strong></p><p>The daemon refused the file listing for this session, so no path in its turns resolves to a file. Live refusal: <code>500 could not list files in this checkout</code>.</p></div>
+        </section>
+        <section class="artifact-card is-open" aria-label="Preview of docs/reports/huge/report.html">
+          <header class="artifact-head">
+            <button type="button" class="artifact-disclose" aria-expanded="true">
+              <span class="artifact-caret" aria-hidden="true"></span>
+              <span class="artifact-name">report.html</span>
+              <span class="artifact-dir">docs/reports/huge/</span>
+            </button>
+            <button type="button" class="artifact-act">Refresh</button>
+            <button type="button" class="artifact-act is-primary">Comment in Files</button>
+          </header>
+          <div class="artifact-body artifact-refusal"><p><strong>Too large to preview.</strong></p><p>This file is over the 5 MiB preview cap (<code>MAX_SESSION_PREVIEW_BYTES</code>). Open it in Files to read it, or comment on it there.</p></div>
+        </section>
+        <section class="artifact-card is-open" aria-label="Preview of docs/plans/gone/plan.html">
+          <header class="artifact-head">
+            <button type="button" class="artifact-disclose" aria-expanded="true">
+              <span class="artifact-caret" aria-hidden="true"></span>
+              <span class="artifact-name">plan.html</span>
+              <span class="artifact-dir">docs/plans/gone/</span>
+            </button>
+            <button type="button" class="artifact-act">Refresh</button>
+            <button type="button" class="artifact-act is-primary">Comment in Files</button>
+          </header>
+          <div class="artifact-body artifact-refusal"><p><strong>This file is no longer in the checkout.</strong></p><p>It was named in this turn but has since been moved or deleted. The link and the comment action stay, so a stale card still says where it pointed.</p></div>
+        </section>
+    <h2>What the rule rejects</h2>
+    <p>A mission-control checkout holds <strong>292</strong> <code>.html</code> files. The approved rule draws a card only for a path the turn <em>presents</em>, so 291 of them stay silent - including a <code>docs/reports/&lt;slug&gt;/report.html</code> placeholder in a task prompt, which names no file and never resolves.</p>
+  </aside>
+</div>
+<div class="mock-toast" id="toast" hidden>
+  <strong>Comment in Files</strong>
+  <span>Mockup is read-only, so nothing was opened. In the app this selects the file, reveals the Files tab,
+  forces Preview, and arms comment mode - then every block in this page outlines on hover.</span>
+</div>
+<script>
+const ARTIFACTS = {"docs/reports/sse-reconnect-audit/report.html": {"prefix": "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; connect-src 'none'; script-src 'sha256-0rx/acSQDoPQ3ODCtWXGEXkbl+oeGSA2rro56BhxnEk=' 'sha256-E9uJHE7aVw0AWiMsFk0PxXrh8C4oaVMrpGEYB7ux98Y=' 'sha256-0DQ6IkD0vFcUQsY+X6LP861dP2RW9HXIVdbSAi5MkBk=' 'sha256-xbT72ApOO5Ajom0Ab8qjNon5oRoS7B4n0i8i9XDEvw8='; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; navigate-to 'none'\"><style>html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode .mission-comment-block{outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}.mission-comment-target{outline:2px solid #5dd6c0;outline-offset:3px;background:rgba(93,214,192,0.12)}<\/style><style>::highlight(mission-find){background-color:rgba(227,179,65,0.28);color:inherit}::highlight(mission-find-current){background-color:#e3b341;color:#10130a}<\/style><script>let missionKeyboard=false;let missionTarget=null;function missionJump(path){if(!Array.isArray(path))return;let node=document.body;for(const step of path){if(!step||!Number.isInteger(step.index)||typeof step.tag!==\"string\")return;const child=node.children.item(step.index);if(!child||child.tagName.toLowerCase()!==step.tag)return;node=child}if(missionTarget)missionTarget.classList.remove(\"mission-comment-target\");missionTarget=node;missionTarget.classList.add(\"mission-comment-target\");missionTarget.scrollIntoView({block:\"center\",behavior:\"smooth\"})}addEventListener(\"message\",event=>{if(event.source===parent){if(event.data?.type===\"mission:file-preview-scroll\"&&typeof event.data.top===\"number\"){scrollBy({top:event.data.top});return}if(event.data?.type===\"mission:file-preview-target\"){missionJump(event.data.path);return}if(event.data?.type===\"mission:file-preview-keyboard\")missionKeyboard=event.data.enabled===true}});document.addEventListener(\"keydown\",event=>{if(!missionKeyboard)return;const plain=!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const typing=event.target instanceof Element&&Boolean(event.target.closest(\"input,textarea,select\")||event.target instanceof HTMLElement&&event.target.isContentEditable);if(plain&&(event.key===\"u\"||event.key===\"d\")&&!typing){event.preventDefault();event.stopImmediatePropagation();scrollBy({top:(event.key===\"d\"?1:-1)*innerHeight});return}if(event.key===\"Tab\"){event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)parent.postMessage({type:\"mission:file-preview-keyboard\",action:\"exit\"},\"*\");return}if(event.key===\"Escape\"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:\"mission:file-preview-keyboard\",action:\"exit\"},\"*\")}},true)<\/script><script>let missionCommenting=false;let missionMarked=null;function missionBlock(node){let el=node instanceof Element?node:null;while(el&&el!==document.body){if(el.tagName.toLowerCase()===\"svg\")return el;if(el.namespaceURI!==\"http://www.w3.org/2000/svg\"){const shown=getComputedStyle(el).display;if(shown!==\"inline\"&&shown!==\"contents\"&&shown!==\"none\")return el}el=el.parentElement}return null}function missionMark(el){if(missionMarked===el)return;if(missionMarked)missionMarked.classList.remove(\"mission-comment-block\");missionMarked=el;if(el)el.classList.add(\"mission-comment-block\")}addEventListener(\"message\",event=>{if(event.source!==parent||event.data?.type!==\"mission:file-preview-comment\")return;missionCommenting=event.data.enabled===true;document.documentElement.classList.toggle(\"mission-comment-mode\",missionCommenting);if(!missionCommenting)missionMark(null)});document.addEventListener(\"mouseover\",event=>{if(!missionCommenting)return;missionMark(missionBlock(event.composedPath()[0]))},true);document.addEventListener(\"mouseout\",event=>{if(!event.relatedTarget)missionMark(null)},true);document.addEventListener(\"click\",event=>{if(!missionCommenting)return;event.preventDefault();event.stopImmediatePropagation();const block=missionBlock(event.composedPath()[0]);if(!block||!document.body.contains(block))return;const path=[];let node=block;while(node!==document.body){const owner=node.parentElement;if(!owner)return;path.unshift({index:[...owner.children].indexOf(node),tag:node.tagName.toLowerCase()});node=owner}parent.postMessage({type:\"mission:file-preview-block\",path},\"*\")},true);parent.postMessage({type:\"mission:file-preview-ready\"},\"*\")<\/script><script>document.addEventListener(\"click\",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest(\"a[href]\"):null;if(!anchor)return;const href=anchor.getAttribute(\"href\");if(!href)return;event.preventDefault();if(href.startsWith(\"#\")){const raw=href.slice(1);if(!raw){scrollTo({top:0});return}let id=raw;try{id=decodeURIComponent(raw)}catch{}(document.getElementById(id)||[...document.getElementsByName(id)].find(target=>target instanceof HTMLAnchorElement))?.scrollIntoView();return}parent.postMessage({type:\"mission:file-preview-link\",href},\"*\")},true)<\/script><script>const missionFindNonce=Math.random()+\"-\"+Date.now();let missionFindArmed=false;let missionFindQuery=\"\";let missionFindCase=false;let missionFindRanges=[];const missionFindSkip=[\"script\",\"style\",\"template\",\"title\",\"noscript\"];function missionFindCan(){return typeof CSS!==\"undefined\"&&Boolean(CSS.highlights)&&typeof Highlight===\"function\"}function missionFindSpace(el){const style=getComputedStyle(el);if(style.display===\"none\")return\"gone\";if(typeof el.checkVisibility===\"function\")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true,opacityProperty:true,checkOpacity:true,contentVisibilityAuto:true})?\"shown\":\"hidden\";return style.visibility===\"visible\"?\"shown\":\"hidden\"}function missionFindRuns(){const runs=[];let run=null;const add=(node,text)=>{if(!run){run={text:\"\",parts:[]};runs.push(run)}run.parts.push({node,at:run.text.length,to:run.text.length+text.length});run.text+=text};const cut=()=>{run=null};const walk=(holder,shown)=>{for(const node of holder.childNodes){if(node.nodeType===3){if(shown&&node.data)add(node,node.data);continue}if(node.nodeType!==1)continue;const tag=node.tagName.toLowerCase();if(missionFindSkip.includes(tag))continue;const space=missionFindSpace(node);if(space===\"gone\")continue;if(tag===\"br\"){cut();continue}const lit=space===\"shown\";const breaks=lit!==shown||missionBlock(node)===node;if(breaks)cut();walk(node,lit);if(breaks)cut()}};if(document.body)walk(document.body,missionFindSpace(document.body)===\"shown\");return runs}function missionFindHits(text,re){const out=[];re.lastIndex=0;let m;while((m=re.exec(text))!==null){if(m[0]===\"\"){re.lastIndex+=1;continue}out.push({at:m.index,to:m.index+m[0].length})}return out}function missionFindRange(run,at,to){const range=document.createRange();let open=false;for(const part of run.parts){if(!open&&part.to>at){range.setStart(part.node,at-part.at);open=true}if(open&&part.to>=to){range.setEnd(part.node,to-part.at);return range}}return null}function missionFindCollect(){if(!missionFindQuery)return[];const re=new RegExp(missionFindQuery.replace(/[.*+?^${}()|[\\]\\\\]/g,\"\\\\$&\"),missionFindCase?\"g\":\"gi\");const found=[];for(const run of missionFindRuns())for(const hit of missionFindHits(run.text,re)){const range=missionFindRange(run,hit.at,hit.to);if(range&&range.getClientRects().length)found.push(range)}return found}function missionFindRender(current){const rest=new Highlight();const one=new Highlight();for(let i=0;i!==missionFindRanges.length;i++){if(i===current)one.add(missionFindRanges[i]);else rest.add(missionFindRanges[i])}CSS.highlights.set(\"mission-find\",rest);CSS.highlights.set(\"mission-find-current\",one)}function missionFindShow(current){const range=missionFindRanges[current];if(!range)return;const holder=range.startContainer.parentElement;if(holder)holder.scrollIntoView({block:\"nearest\",behavior:\"instant\"});const box=range.getBoundingClientRect();if(!box.height&&!box.width)return;if(box.top>=0&&innerHeight>=box.bottom)return;scrollBy({top:box.top+box.height/2-innerHeight/2,behavior:\"instant\"})}addEventListener(\"message\",event=>{if(event.source!==parent||event.data?.type!==\"mission:file-preview-find\")return;missionFindArmed=true;missionFindQuery=typeof event.data.query===\"string\"?event.data.query:\"\";missionFindCase=event.data.caseSensitive===true;if(!missionFindCan())return;missionFindRanges=missionFindCollect();const count=missionFindRanges.length;const asked=Number.isInteger(event.data.index)?event.data.index:0;const current=count?Math.min(Math.max(asked,0),count-1):-1;missionFindRender(current);missionFindShow(current);parent.postMessage({type:\"mission:file-preview-find-result\",query:missionFindQuery,caseSensitive:missionFindCase,count,index:current,nonce:missionFindNonce},\"*\")});document.addEventListener(\"keydown\",event=>{if(!missionFindArmed)return;if(event.key!==\"f\"&&event.key!==\"F\")return;if(event.altKey||!event.metaKey&&!event.ctrlKey)return;event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:\"mission:file-preview-find-chord\"},\"*\")},true);parent.postMessage({type:\"mission:file-preview-find-ready\",highlight:missionFindCan(),nonce:missionFindNonce},\"*\")<\/script>", "text": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>SSE reconnect audit<\/title>\n<style>\n:root{color-scheme:light dark;--bg:#f5f7fb;--surface:#fff;--text:#18212d;--muted:#566579;\n--border:#cad4e1;--accent:#1769c2;--accent-soft:#e5f1ff}\n@media(prefers-color-scheme:dark){:root{--bg:#0a0d12;--surface:#121820;--text:#e6edf5;\n--muted:#9aa8ba;--border:#2a3543;--accent:#62adff;--accent-soft:#122943}}\nbody{margin:0;background:var(--bg);color:var(--text);\nfont:16px/1.6 Inter,ui-sans-serif,system-ui,sans-serif}\nmain{width:min(880px,calc(100% - 28px));margin:28px auto 60px;padding:34px 40px;\nbackground:var(--surface);border:1px solid var(--border);border-radius:16px}\nh1{margin:0 0 10px;font-size:2.2rem;letter-spacing:-.03em}\nh2{margin:32px 0 12px;font-size:1.3rem}\n.kicker{margin:0 0 6px;color:var(--muted);font:700 12px/1 Inter,sans-serif;\nletter-spacing:.14em;text-transform:uppercase}\n.finding{padding:16px 18px;border-left:4px solid var(--accent);background:var(--accent-soft);\nborder-radius:0 10px 10px 0}\ntable{width:100%;border-collapse:collapse;margin:14px 0;font-size:.93rem}\nth,td{padding:9px 11px;border:1px solid var(--border);text-align:left}\nth{background:var(--accent-soft);font-size:.78rem;letter-spacing:.04em;text-transform:uppercase}\ncode{font-family:ui-monospace,monospace;font-size:.9em;color:var(--accent)}\n<\/style><\/head><body><main>\n<p class=\"kicker\">Mission Control scout &middot; fixture<\/p>\n<h1>SSE reconnect audit<\/h1>\n<div class=\"finding\"><p><strong>Finding.<\/strong> Reconnects retry on a fixed 1s interval with\nno jitter, so every dashboard tab in the fleet retries in lockstep after a daemon restart.<\/p><\/div>\n<h2>Where the interval is set<\/h2>\n<table><thead><tr><th>Module<\/th><th>Interval<\/th><th>Jitter<\/th><\/tr><\/thead>\n<tbody>\n<tr><td><code>useEventStream.ts<\/code><\/td><td>1000 ms<\/td><td>none<\/td><\/tr>\n<tr><td><code>transcript-stream.ts<\/code><\/td><td>1000 ms<\/td><td>none<\/td><\/tr>\n<tr><td><code>sse.ts<\/code><\/td><td>server push only<\/td><td>n/a<\/td><\/tr>\n<\/tbody><\/table>\n<h2>What this fixture is for<\/h2>\n<p>This page exists so the committed mockup has something real-shaped to preview without\ncarrying an operator's checkout into the repository. The live mockup previews the real\n40&nbsp;KB reports out of the running fleet and is never committed.<\/p>\n<h2>Limits<\/h2>\n<p>Not measured: whether the lockstep retry actually costs the daemon anything at fleet\nsize. The audit read the code and did not run the fleet.<\/p>\n<\/main><\/body><\/html>", "size": 2566, "scheme": "dark-aware"}, "docs/plans/queue-drain-order/plan.html": {"prefix": "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; connect-src 'none'; script-src 'sha256-0rx/acSQDoPQ3ODCtWXGEXkbl+oeGSA2rro56BhxnEk=' 'sha256-E9uJHE7aVw0AWiMsFk0PxXrh8C4oaVMrpGEYB7ux98Y=' 'sha256-0DQ6IkD0vFcUQsY+X6LP861dP2RW9HXIVdbSAi5MkBk=' 'sha256-xbT72ApOO5Ajom0Ab8qjNon5oRoS7B4n0i8i9XDEvw8='; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; navigate-to 'none'\"><style>html.mission-comment-mode,html.mission-comment-mode *{cursor:crosshair}html.mission-comment-mode .mission-comment-block{outline:2px solid #6ea8fe;outline-offset:2px;background:rgba(110,168,254,0.12)}.mission-comment-target{outline:2px solid #5dd6c0;outline-offset:3px;background:rgba(93,214,192,0.12)}<\/style><style>::highlight(mission-find){background-color:rgba(227,179,65,0.28);color:inherit}::highlight(mission-find-current){background-color:#e3b341;color:#10130a}<\/style><script>let missionKeyboard=false;let missionTarget=null;function missionJump(path){if(!Array.isArray(path))return;let node=document.body;for(const step of path){if(!step||!Number.isInteger(step.index)||typeof step.tag!==\"string\")return;const child=node.children.item(step.index);if(!child||child.tagName.toLowerCase()!==step.tag)return;node=child}if(missionTarget)missionTarget.classList.remove(\"mission-comment-target\");missionTarget=node;missionTarget.classList.add(\"mission-comment-target\");missionTarget.scrollIntoView({block:\"center\",behavior:\"smooth\"})}addEventListener(\"message\",event=>{if(event.source===parent){if(event.data?.type===\"mission:file-preview-scroll\"&&typeof event.data.top===\"number\"){scrollBy({top:event.data.top});return}if(event.data?.type===\"mission:file-preview-target\"){missionJump(event.data.path);return}if(event.data?.type===\"mission:file-preview-keyboard\")missionKeyboard=event.data.enabled===true}});document.addEventListener(\"keydown\",event=>{if(!missionKeyboard)return;const plain=!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey;const typing=event.target instanceof Element&&Boolean(event.target.closest(\"input,textarea,select\")||event.target instanceof HTMLElement&&event.target.isContentEditable);if(plain&&(event.key===\"u\"||event.key===\"d\")&&!typing){event.preventDefault();event.stopImmediatePropagation();scrollBy({top:(event.key===\"d\"?1:-1)*innerHeight});return}if(event.key===\"Tab\"){event.preventDefault();event.stopImmediatePropagation();if(event.shiftKey)parent.postMessage({type:\"mission:file-preview-keyboard\",action:\"exit\"},\"*\");return}if(event.key===\"Escape\"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:\"mission:file-preview-keyboard\",action:\"exit\"},\"*\")}},true)<\/script><script>let missionCommenting=false;let missionMarked=null;function missionBlock(node){let el=node instanceof Element?node:null;while(el&&el!==document.body){if(el.tagName.toLowerCase()===\"svg\")return el;if(el.namespaceURI!==\"http://www.w3.org/2000/svg\"){const shown=getComputedStyle(el).display;if(shown!==\"inline\"&&shown!==\"contents\"&&shown!==\"none\")return el}el=el.parentElement}return null}function missionMark(el){if(missionMarked===el)return;if(missionMarked)missionMarked.classList.remove(\"mission-comment-block\");missionMarked=el;if(el)el.classList.add(\"mission-comment-block\")}addEventListener(\"message\",event=>{if(event.source!==parent||event.data?.type!==\"mission:file-preview-comment\")return;missionCommenting=event.data.enabled===true;document.documentElement.classList.toggle(\"mission-comment-mode\",missionCommenting);if(!missionCommenting)missionMark(null)});document.addEventListener(\"mouseover\",event=>{if(!missionCommenting)return;missionMark(missionBlock(event.composedPath()[0]))},true);document.addEventListener(\"mouseout\",event=>{if(!event.relatedTarget)missionMark(null)},true);document.addEventListener(\"click\",event=>{if(!missionCommenting)return;event.preventDefault();event.stopImmediatePropagation();const block=missionBlock(event.composedPath()[0]);if(!block||!document.body.contains(block))return;const path=[];let node=block;while(node!==document.body){const owner=node.parentElement;if(!owner)return;path.unshift({index:[...owner.children].indexOf(node),tag:node.tagName.toLowerCase()});node=owner}parent.postMessage({type:\"mission:file-preview-block\",path},\"*\")},true);parent.postMessage({type:\"mission:file-preview-ready\"},\"*\")<\/script><script>document.addEventListener(\"click\",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest(\"a[href]\"):null;if(!anchor)return;const href=anchor.getAttribute(\"href\");if(!href)return;event.preventDefault();if(href.startsWith(\"#\")){const raw=href.slice(1);if(!raw){scrollTo({top:0});return}let id=raw;try{id=decodeURIComponent(raw)}catch{}(document.getElementById(id)||[...document.getElementsByName(id)].find(target=>target instanceof HTMLAnchorElement))?.scrollIntoView();return}parent.postMessage({type:\"mission:file-preview-link\",href},\"*\")},true)<\/script><script>const missionFindNonce=Math.random()+\"-\"+Date.now();let missionFindArmed=false;let missionFindQuery=\"\";let missionFindCase=false;let missionFindRanges=[];const missionFindSkip=[\"script\",\"style\",\"template\",\"title\",\"noscript\"];function missionFindCan(){return typeof CSS!==\"undefined\"&&Boolean(CSS.highlights)&&typeof Highlight===\"function\"}function missionFindSpace(el){const style=getComputedStyle(el);if(style.display===\"none\")return\"gone\";if(typeof el.checkVisibility===\"function\")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true,opacityProperty:true,checkOpacity:true,contentVisibilityAuto:true})?\"shown\":\"hidden\";return style.visibility===\"visible\"?\"shown\":\"hidden\"}function missionFindRuns(){const runs=[];let run=null;const add=(node,text)=>{if(!run){run={text:\"\",parts:[]};runs.push(run)}run.parts.push({node,at:run.text.length,to:run.text.length+text.length});run.text+=text};const cut=()=>{run=null};const walk=(holder,shown)=>{for(const node of holder.childNodes){if(node.nodeType===3){if(shown&&node.data)add(node,node.data);continue}if(node.nodeType!==1)continue;const tag=node.tagName.toLowerCase();if(missionFindSkip.includes(tag))continue;const space=missionFindSpace(node);if(space===\"gone\")continue;if(tag===\"br\"){cut();continue}const lit=space===\"shown\";const breaks=lit!==shown||missionBlock(node)===node;if(breaks)cut();walk(node,lit);if(breaks)cut()}};if(document.body)walk(document.body,missionFindSpace(document.body)===\"shown\");return runs}function missionFindHits(text,re){const out=[];re.lastIndex=0;let m;while((m=re.exec(text))!==null){if(m[0]===\"\"){re.lastIndex+=1;continue}out.push({at:m.index,to:m.index+m[0].length})}return out}function missionFindRange(run,at,to){const range=document.createRange();let open=false;for(const part of run.parts){if(!open&&part.to>at){range.setStart(part.node,at-part.at);open=true}if(open&&part.to>=to){range.setEnd(part.node,to-part.at);return range}}return null}function missionFindCollect(){if(!missionFindQuery)return[];const re=new RegExp(missionFindQuery.replace(/[.*+?^${}()|[\\]\\\\]/g,\"\\\\$&\"),missionFindCase?\"g\":\"gi\");const found=[];for(const run of missionFindRuns())for(const hit of missionFindHits(run.text,re)){const range=missionFindRange(run,hit.at,hit.to);if(range&&range.getClientRects().length)found.push(range)}return found}function missionFindRender(current){const rest=new Highlight();const one=new Highlight();for(let i=0;i!==missionFindRanges.length;i++){if(i===current)one.add(missionFindRanges[i]);else rest.add(missionFindRanges[i])}CSS.highlights.set(\"mission-find\",rest);CSS.highlights.set(\"mission-find-current\",one)}function missionFindShow(current){const range=missionFindRanges[current];if(!range)return;const holder=range.startContainer.parentElement;if(holder)holder.scrollIntoView({block:\"nearest\",behavior:\"instant\"});const box=range.getBoundingClientRect();if(!box.height&&!box.width)return;if(box.top>=0&&innerHeight>=box.bottom)return;scrollBy({top:box.top+box.height/2-innerHeight/2,behavior:\"instant\"})}addEventListener(\"message\",event=>{if(event.source!==parent||event.data?.type!==\"mission:file-preview-find\")return;missionFindArmed=true;missionFindQuery=typeof event.data.query===\"string\"?event.data.query:\"\";missionFindCase=event.data.caseSensitive===true;if(!missionFindCan())return;missionFindRanges=missionFindCollect();const count=missionFindRanges.length;const asked=Number.isInteger(event.data.index)?event.data.index:0;const current=count?Math.min(Math.max(asked,0),count-1):-1;missionFindRender(current);missionFindShow(current);parent.postMessage({type:\"mission:file-preview-find-result\",query:missionFindQuery,caseSensitive:missionFindCase,count,index:current,nonce:missionFindNonce},\"*\")});document.addEventListener(\"keydown\",event=>{if(!missionFindArmed)return;if(event.key!==\"f\"&&event.key!==\"F\")return;if(event.altKey||!event.metaKey&&!event.ctrlKey)return;event.preventDefault();event.stopImmediatePropagation();parent.postMessage({type:\"mission:file-preview-find-chord\"},\"*\")},true);parent.postMessage({type:\"mission:file-preview-find-ready\",highlight:missionFindCan(),nonce:missionFindNonce},\"*\")<\/script>", "text": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Queue drain order<\/title>\n<style>\n:root{color-scheme:dark;--bg:#0a0c0f;--surface:#14181e;--text:#e7ebf1;--muted:#939eae;\n--border:#232a33;--accent:#4a9eff}\nbody{margin:0;background:var(--bg);color:var(--text);\nfont:15px/1.6 Inter,ui-sans-serif,system-ui,sans-serif}\nmain{width:min(860px,calc(100% - 24px));margin:26px auto 56px;padding:30px 34px;\nbackground:var(--surface);border:1px solid var(--border);border-radius:14px}\nh1{margin:0 0 8px;font-size:1.9rem;letter-spacing:-.03em}\nh2{margin:26px 0 10px;font-size:1.15rem}\np{color:#cfd6e0}\n.note{padding:13px 15px;color:var(--muted);border:1px solid var(--border);border-radius:9px}\nsvg{display:block;width:100%;height:auto;margin:16px 0}\ncode{font-family:ui-monospace,monospace;color:var(--accent)}\n<\/style><\/head><body><main>\n<h1>Queue drain order<\/h1>\n<p>A dark-scheme artifact, included so the committed mockup shows both cases: a page that\nmatches the dashboard, and one that does not.<\/p>\n<svg viewBox=\"0 0 640 120\" role=\"img\" aria-label=\"Queue drains oldest first into one turn\">\n<g fill=\"#171c23\" stroke=\"#232a33\" stroke-width=\"2\">\n<rect x=\"8\" y=\"34\" width=\"130\" height=\"52\" rx=\"9\"/>\n<rect x=\"188\" y=\"34\" width=\"130\" height=\"52\" rx=\"9\"/>\n<rect x=\"368\" y=\"34\" width=\"130\" height=\"52\" rx=\"9\"/>\n<rect x=\"528\" y=\"34\" width=\"104\" height=\"52\" rx=\"9\"/><\/g>\n<g fill=\"none\" stroke=\"#4a9eff\" stroke-width=\"2.5\">\n<path d=\"M138 60H184\"/><path d=\"M318 60H364\"/><path d=\"M498 60H524\"/><\/g>\n<g fill=\"#e7ebf1\" font-family=\"Inter,sans-serif\" font-size=\"13\" text-anchor=\"middle\">\n<text x=\"73\" y=\"65\">comment 1<\/text><text x=\"253\" y=\"65\">comment 2<\/text>\n<text x=\"433\" y=\"65\">comment 3<\/text><text x=\"580\" y=\"65\">one turn<\/text><\/g>\n<\/svg>\n<h2>Rule<\/h2>\n<div class=\"note\">Oldest first, one at a time, and the next is released only by an answer to\nthe last. A drain that sent all three would give the agent no way to say which it addressed.<\/div>\n<\/main><\/body><\/html>", "size": 2042, "scheme": "dark-only"}};
+const pick = document.getElementById("pick");
+const heightPick = document.getElementById("height");
+const collapse = document.getElementById("collapse");
+const toast = document.getElementById("toast");
+
+function mount() {
+  const chosen = pick.value;
+  const doc = ARTIFACTS[chosen];
+  for (const frame of document.querySelectorAll(".artifact-preview")) {
+    frame.srcdoc = doc.prefix + doc.text;
+    frame.title = "Preview of " + chosen;
+  }
+  for (const card of document.querySelectorAll(".mock-pane .artifact-card")) {
+    card.setAttribute("aria-label", "Preview of " + chosen);
+    card.querySelector(".artifact-name").textContent = chosen.split("/").pop();
+    card.querySelector(".artifact-dir").textContent = chosen.slice(0, chosen.lastIndexOf("/") + 1);
+    card.querySelector(".artifact-size").textContent = (doc.size / 1024).toFixed(1) + " KB";
+  }
+}
+
+function applyHeight() {
+  document.documentElement.style.setProperty("--artifact-height", heightPick.value + "px");
+}
+
+function applyCollapse() {
+  for (const card of document.querySelectorAll(".mock-pane .artifact-card")) {
+    card.classList.toggle("is-open", !collapse.checked);
+    const button = card.querySelector(".artifact-disclose");
+    if (button) button.setAttribute("aria-expanded", String(!collapse.checked));
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const disclose = event.target.closest(".artifact-disclose");
+  if (disclose) {
+    const card = disclose.closest(".artifact-card");
+    const open = !card.classList.contains("is-open");
+    card.classList.toggle("is-open", open);
+    disclose.setAttribute("aria-expanded", String(open));
+    return;
+  }
+  const act = event.target.closest(".artifact-act");
+  if (!act) return;
+  if (act.classList.contains("is-primary")) {
+    toast.hidden = false;
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => { toast.hidden = true; }, 5200);
+  } else {
+    mount();
+  }
+});
+
+const contextPick = document.getElementById("context-pick");
+function applyContext() {
+  const holder = document.getElementById("context");
+  const card = contextPick.value === "card";
+  holder.classList.toggle("detail-conv", !card);
+  holder.classList.toggle("mock-capped", card);
+}
+contextPick.addEventListener("change", applyContext);
+pick.addEventListener("change", mount);
+heightPick.addEventListener("change", applyHeight);
+collapse.addEventListener("change", applyCollapse);
+applyHeight();
+applyContext();
+mount();
+// The app opens a conversation at its tail; open this one at the turn the card is on.
+requestAnimationFrame(() => {
+  document.querySelector(".mock-pane .artifact-card")
+    ?.scrollIntoView({ block: "center" });
+});
+</script>
+</body>
+</html>

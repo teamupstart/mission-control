@@ -252,12 +252,29 @@
     <li><strong>Body</strong>: an <code>iframe</code> with <code>sandbox={HTML_PREVIEW_SANDBOX}</code> and <code>srcDoc={htmlPreviewSource(text)}</code>, at a <strong>fixed reserved height</strong> with internal scroll.</li>
     <li><strong>Accessible name</strong>: <code>Preview of docs/reports/x/report.html</code>, matching what the Files tab already names its own preview frame, so one selector vocabulary covers both surfaces.</li>
     <li><strong>Refusals are stated, never blank.</strong> Over the 5 MiB <code>MAX_SESSION_PREVIEW_BYTES</code> cap, not valid UTF-8, deleted since the turn was written, or refused by the daemon's containment check: the body says which, and the header keeps its links.</li>
+    <li><strong>"This checkout could not be listed" is its own refusal</strong>, distinct from a missing file. One live session answered <code>GET /api/sessions/:id/files</code> with <code>500 could not list files in this checkout</code>, so no path in its turns resolves at all. A card that reported "file not found" there would blame the artifact for a listing failure.</li>
   </ul>
 
   <h3>Fixed height, and why not auto-fit</h3>
-  <p>The body reserves a fixed height - 420px, floored at 240px and capped at 60% of the transcript log's height on a short window - and scrolls internally.</p>
+  <p>The body reserves <strong>420px</strong> in <code>.detail-conv</code> - the Console and Board reading surface - and scrolls internally.</p>
+  <div class="note">
+    <p>That number replaces an earlier rule in this plan that could not hold. It said "420px, floored at 240px and capped at 60% of the transcript log's height", written before the mockup measured the log. <code>.transcript-log</code> carries <code>max-height: 340px</code> in the app's base stylesheet, lifted only by <code>.detail-conv &gt; .transcript .transcript-log { max-height: none }</code>. So in the capped context 60% of 340px is 204px, <em>below</em> the plan's own 240px floor: the two rules contradicted each other exactly where it mattered.</p>
+  </div>
+  <p>The measured rule instead keys off the class that already draws the distinction:</p>
+  <ul>
+    <li><strong><code>.detail-conv</code> (Console, Board detail)</strong> - the log is uncapped, so the card is expanded with a 420px body. Measured: 420px body in a 749px log.</li>
+    <li><strong>The session-card log (capped at 340px)</strong> - the card arrives as its <strong>one-line header</strong> and reserves no frame at all. A 420px body there is taller than the entire visible log, which puts the disclosure control out of reach of the content it controls; and shrinking it to fit yields a ~200px thumbnail that eats 60% of a tile's conversation to show a page header. The header, which says what the artifact is and carries both actions, is the honest amount of a page to put in a tile.</li>
+  </ul>
+  <p>This keeps the approved "arrives expanded" decision where a reader is actually reading, and declines to swamp the surface where they are scanning.</p>
   <p>Auto-fitting to the document's own height is the obvious alternative and it is rejected. The dashboard has no origin inside the frame, so the only way to learn a document's height is a fifth bridge script posting it out. That means a new SHA-256 hash in <code>PREVIEW_CSP</code>, which is shared by the Files tab and by Scouts - a policy change on two surfaces that have not asked for one - in exchange for letting a single turn grow without bound in a log that auto-scrolls to its tail. A bounded window with a scrollbar is the honest shape for a page embedded in a conversation; the reader who wants the whole page has <strong>Comment in Files</strong> and the extracted Files window.</p>
   <p>Because the height is reserved whether or not the frame has mounted, expanding a card and scrolling past one never shifts the log. The frame itself mounts only when the card is expanded <strong>and</strong> near the viewport, following <code>MermaidDiagram</code>'s <code>IntersectionObserver</code> with a <code>600px</code> root margin, so a long session with twenty artifacts costs twenty empty boxes and not twenty documents.</p>
+  <p>The mockup measured that claim rather than restating it. Swapping the previewed document across four real artifacts whose own heights span 2,422px to 16,914px - a seven-fold range - left the card height, the log's scroll height, the reader's scroll position, and the on-screen position of a turn below the card <strong>identical to the pixel</strong> in all four cases.</p>
+
+  <h3>The artifact decides its own colour scheme, and it will not match</h3>
+  <p>A <code>srcdoc</code> iframe inherits neither the dashboard's <code>color-scheme: dark</code> nor any scheme the parent would like to impose, and <code>color-scheme</code> does not move <code>prefers-color-scheme</code>. The app also never sets <code>nativeTheme.themeSource</code> - <code>src/main/window.ts</code> pins only the window's <code>backgroundColor: "#0e1116"</code> - so the media query follows the operator's OS in the packaged app exactly as it does in a browser tab.</p>
+  <p>The consequence is specific and was seen rather than predicted: this plan's own <code>plan.html</code>, which is correctly <code>prefers-color-scheme</code>-aware, renders as a <strong>bright white slab</strong> in the middle of the dark log whenever macOS is in light mode. A dark-scheme artifact (<code>docs/archive/mockups/alert-panels.html</code>, body <code>rgb(10, 12, 15)</code>) is by contrast continuous with the app.</p>
+  <p>Nothing in this feature can fix that, so the design absorbs it: the frame is inset 7px on a <code>--panel-2</code> mat with a 1px border and a 6px radius, so a light page reads as an embedded document rather than as a panel that lost its stylesheet. That is a mitigation and not a cure, and it is worth saying so plainly.</p>
+  <p>Pinning <code>nativeTheme.themeSource = "dark"</code> in the main process would settle it for the whole app, previews included. That is an app-wide theming decision well outside this plan; it is in <strong>Follow-up work</strong> rather than here.</p>
 
   <h3>Placement at the foot of the turn</h3>
   <p>The card sits after the turn's prose rather than being spliced into it, and the reasons are concrete:</p>
@@ -319,6 +336,7 @@
   </figure>
 
   <h3>Two preview frames, and keeping them apart</h3>
+  <p>The conversation frame is <code>.artifact-preview</code>, deliberately not <code>.html-preview</code>.</p>
   <p><code>FileWorkspace</code>'s link-message handler finds its frame with <code>workspaceRef.current?.querySelector(".file-content .html-preview")</code> and then refuses any message whose <code>event.source</code> is not that frame's <code>contentWindow</code>. The conversation frame must be equally unmistakable: its own class, its own <code>event.source</code> identity check, and its own handler. Neither surface may act on the other's messages, and the existing scoping means the workspace already will not - the new code has to hold the same line.</p>
   <p>Inside the card, the link bridge behaves as it does in Files: a click on a relative link in the previewed document resolves through <code>workspaceAssetPath</code>, is probed against the checkout, and opens that sibling in the Files tab. A link the checkout has no file for does nothing, and the frame never navigates itself.</p>
   <p><code>inlinePreviewStyles</code> runs on the fetched text exactly as it does in Files, so a plan page that links a checkout-local stylesheet renders styled rather than bare.</p>
@@ -333,6 +351,21 @@
     <li><strong>No fifth bridge script, no CSP change, no <code>allow-same-origin</code>.</strong> <code>test/html-preview.test.ts</code> recomputes every script hash; it should pass untouched.</li>
     <li><strong>No new setting.</strong> Collapsing the card is the opt-out, and it is remembered for the session. Every other conversation switch (<code>richText</code>, <code>conversationView</code>) chooses how <em>turns</em> render; a per-artifact disclosure the reader already controls does not need a second one in Settings.</li>
     <li><strong>No cross-session or archived previews.</strong> A path is claimed only against the emitting session's own <code>cwd</code>, as <code>workspaceFileTarget</code> already requires. Scout reports keep their own archive surface.</li>
+  </ul>
+
+  <h2>Mockup</h2>
+  <p>The design was drawn over the <strong>live</strong> daemon rather than over fixtures, because a card drawn on invented data cannot show what a real 40 KB report does inside a real log.</p>
+  <ul>
+    <li><strong>Live copy</strong>: <code>.evidence/mockups/conversation-artifact-card/mockup.html</code> (gitignored - a live board is operator data, so it is never committed). It renders a real idle codex session, its 12 real turns, and the real turn ending <code>Report: docs/reports/pipeline-plan-comparison/report.html</code>, with five real artifacts out of live checkouts selectable in the card.</li>
+    <li><strong>Committed copy</strong>: <a href="mockup.html">mockup.html</a> beside this plan, with the same chrome, the same proposed CSS and two small fixture artifacts. It links the app's real <code>src/web/styles.css</code> rather than freezing a copy of it, so it cannot drift from the styles it is drawn against.</li>
+  </ul>
+  <p>Both carry the app's real preview boundary rather than an imitation: the CSP and all four hashed bridge scripts are lifted out of <code>src/web/lib/htmlPreview.ts</code> and checked by recomputing each script's SHA-256 against the policy's own hashes. The proposed CSS is one clearly marked block; everything else is the shipped stylesheet.</p>
+  <p>What the mockup changed in this plan: the reserved-height rule (which was self-contradictory), the disclosure rule for the capped session-card log, the colour-scheme mat, the "could not be listed" refusal, and the <code>min-width</code> on the disclosure without which the header crushes its own directory instead of wrapping in a narrow column.</p>
+
+  <h2>Follow-up work, out of scope here</h2>
+  <ul>
+    <li><strong>Pin the app's colour scheme.</strong> <code>nativeTheme.themeSource = "dark"</code> in the main process would make <code>prefers-color-scheme</code> inside every preview match the dashboard. It changes theming for the whole app, so it is its own decision.</li>
+    <li><strong><code>navigate-to</code> is a dead CSP directive.</strong> <code>PREVIEW_CSP</code> ends with <code>navigate-to 'none'</code>, and current Chromium logs <code>Unrecognized Content-Security-Policy directive 'navigate-to'</code> for every preview it renders. The directive was never shipped by Chromium; the protection it was meant to add comes from the sandbox and the link bridge instead. Pre-existing, not introduced here, and worth removing or commenting so the console stops carrying a warning nobody can act on.</li>
   </ul>
 
   <h2>Surfaces this touches</h2>
@@ -358,14 +391,14 @@
       <tr><td>Tests</td><td>A <code>node:test</code> file for detection and the intent channel, plus one Playwright spec</td></tr>
       <tr><td>Delivery estimate</td><td>About 2 to 4 engineering days including visual verification in the packaged app</td></tr>
       <tr><td>Backend and persistence</td><td>None: no route, schema, migration, protocol, or SSE change</td></tr>
-      <tr><td>Main uncertainty</td><td>Scroll stability in the transcript with cards expanding above the reader, and how a light-background artifact page reads inside a dark log</td></tr>
+      <tr><td>Main uncertainty</td><td>Both original uncertainties are now settled by the mockup: scroll stability is measured, and a light artifact in a dark log is confirmed and mitigated. What remains is CodeMirror-free but real - honoring the comment-mode intent inside <code>FileWorkspace</code> without disturbing its existing arming race</td></tr>
     </tbody>
   </table></div>
 
   <h2>Verification</h2>
   <ul>
     <li><strong><code>test/</code></strong> for what has no UI surface: detection over a turn's text and a listing (one card per distinct file, the three-card cap, extension filtering, membership deciding, <code>:line</code> suffixes stripped), and the request channel's arm-once-per-nonce behavior.</li>
-    <li><strong><code>e2e/specs/conversation-html-artifact-preview.spec.ts</code></strong> for the feature, because it is a UI change and there are no exemptions. A fake agent turn ends with <code>Report: docs/reports/x/report.html</code>; the spec asserts the card is present and named, that its body renders the page's own heading inside the frame, that collapsing hides the body and the choice survives a tab change, and that <strong>Comment in Files</strong> lands on the Files tab with the file selected, Preview pressed, and <strong>Comment mode</strong> pressed - then leaves a comment on a block and reads it back in the rail. Fake agents only, and selection by role, label, and placeholder, never <code>data-testid</code>.</li>
+    <li><strong><code>e2e/specs/conversation-html-artifact-preview.spec.ts</code></strong> for the feature, because it is a UI change and there are no exemptions. Assert <em>inside</em> the preview with Playwright's <code>frameLocator</code>, not with <code>contentDocument</code>: the sandbox has no <code>allow-same-origin</code>, so the frame is an opaque origin and the page cannot read into it - but Playwright reaches in over CDP, which the mockup confirmed by reading the artifact's own <code>h1</code> through a live sandbox. A fake agent turn ends with <code>Report: docs/reports/x/report.html</code>; the spec asserts the card is present and named, that its body renders the page's own heading inside the frame, that collapsing hides the body and the choice survives a tab change, and that <strong>Comment in Files</strong> lands on the Files tab with the file selected, Preview pressed, and <strong>Comment mode</strong> pressed - then leaves a comment on a block and reads it back in the rail. Fake agents only, and selection by role, label, and placeholder, never <code>data-testid</code>.</li>
     <li><strong>Electron geometry</strong> for the one thing a browser assertion cannot produce: that a card's reserved height does not clip the turn or overflow the log at the app's minimum window size.</li>
     <li><strong>Visual check in the packaged app</strong>, in both color schemes, on a real <code>plan.html</code> written by the skill.</li>
   </ul>

@@ -166,6 +166,15 @@ planning session's pull request merging.
 | --- | --- | --- | --- | --- |
 | 1 | [`phase-1-workflow-progress-meter.md`](phase-1-workflow-progress-meter.md) | The stage track and repair-budget meter ship as the default board card tile, with a checkbox returning today's rung tile, and the rung tile is correct at 250px | none (this planning session's PR) | source repository only |
 
+## Scheduled task
+
+| Phase | Task id | Direct prerequisites | Concurrency |
+| --- | --- | --- | --- |
+| 1 | `ff039ebc-2eb1-432f-abb0-4a413bb3cede` | this planning session's pull request | n/a - single task |
+
+Backlogged until the pull request carrying these artifacts merges, because the task names their
+paths rather than restating their content.
+
 ## Merge order
 
 One pull request, after this planning session's artifact pull request merges.

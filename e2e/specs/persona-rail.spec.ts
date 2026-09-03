@@ -10,7 +10,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * Four faults, and each one is a browser fact rather than a markup shape:
  *
- * - the rail listed every Persona flat, so the four that ship with the build read as things
+ * - the rail listed every Persona flat, so the ones that ship with the build read as things
  *   you wrote. It now groups them, and a row has to OPEN from either group;
  * - Save, Copy Markdown, Download .md and Duplicate were four equal-weight links beside
  *   Archive. One verb is promoted and the rest are behind a menu - and that menu is the
@@ -105,13 +105,13 @@ test("the rail separates what ships from what you wrote, and a Persona opens fro
   await expect(rail).toBeVisible();
 
   // Each head counts the rows drawn beneath it. `Yours 1` is the one an operator reads to
-  // learn that the other four were never theirs.
+  // learn that the rest were never theirs.
   await expect(rail.getByRole("heading", { name: new RegExp(`^Built-in\\s+${shippedCount}$`) }))
     .toBeVisible();
   await expect(rail.getByRole("heading", { name: /^Yours\s+1$/ })).toBeVisible();
 
   // The sub-label is the resolved runner and model - the fact that tells two reviewers
-  // apart - rather than the description, which on the shipped four restates the title.
+  // apart - rather than the description, which on the shipped roles restates the title.
   const mine = rail.getByRole("button", { name: /Rail reviewer/ });
   await expect(mine).toContainText(/\w+ · \S+/);
   await expect(mine).not.toContainText("Reads the diff and says whether it holds.");
@@ -236,8 +236,8 @@ test("a built-in promotes Duplicate and offers no Save at all", async ({ dashboa
   await expect(nameField(dashboard)).toHaveValue(shipped!.name);
 
   /*
-   * Save used to sit here first in the row, permanently disabled, on all four shipped
-   * Personas - which reads as "the thing you want, unavailable" when the thing you want is
+   * Save used to sit here first in the row, permanently disabled, on every shipped
+   * Persona - which reads as "the thing you want, unavailable" when the thing you want is
    * two controls to its right and perfectly available. There is no revision this editor
    * could write, so it does not offer one.
    */

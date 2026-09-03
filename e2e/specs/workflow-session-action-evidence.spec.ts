@@ -336,12 +336,14 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(dashboard.locator(".wf-state.builtin")).toBeVisible();
   await shoot(dashboard, "09-builtin-pull-request-action");
 
-  // 10. No-Mistakes Review v10, scrolled to where its new stage order lives.
+  // 10. The current No-Mistakes Review, scrolled to where its stage order lives.
   //
-  //     Code Risk Reviewer and Code Quality Judge share stage 3. Test Evidence Auditor and
-  //     Documentation Steward share stage 4, followed by Pull Request and End with no fixed
-  //     footer afterwards. GitHub Inspector remains available to observe the resulting pull
-  //     request, but v10 does not wait for that optional remote pass.
+  //     Code Risk Reviewer, Code Quality Judge and Code Design Reviewer share stage 3. Test
+  //     Evidence Auditor and Documentation Steward share stage 4, followed by Pull Request and
+  //     End with no fixed footer afterwards. GitHub Inspector remains available to observe the
+  //     resulting pull request, but the current version does not wait for that optional remote
+  //     pass. `code-design-reviewer.spec.ts` owns stage 3's membership; this step is here for
+  //     the stage ORDER and the overflow measurement around it.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
   const shipped = dashboard.locator(".wf-pipeline-strip");
@@ -354,6 +356,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(codeReview.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Code Risk Reviewer",
     "Code Quality Judge",
+    "Code Design Reviewer",
   ]);
   await expect(evidenceAndDocs.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
   await expect(evidenceAndDocs.locator(".wf-pipeline-reviewer-name")).toHaveText([
@@ -376,7 +379,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
     const stripRect = strip.getBoundingClientRect();
     return itemRect.left >= stripRect.left && itemRect.right <= stripRect.right;
   });
-  await shoot(dashboard, "10a-no-mistakes-v10-code-review-stage-3", {
+  await shoot(dashboard, "10a-no-mistakes-code-review-stage-3", {
     beforeEach: async () => {
       await codeReview.evaluate((element) => {
         const strip = element.closest(".wf-pipeline-strip");
@@ -389,7 +392,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
       }
     },
   });
-  await shoot(dashboard, "10b-no-mistakes-v10-stage-4-before-pull-request", {
+  await shoot(dashboard, "10b-no-mistakes-stage-4-before-pull-request", {
     beforeEach: async () => {
       await evidenceAndDocs.evaluate((element) => {
         const strip = element.closest(".wf-pipeline-strip");

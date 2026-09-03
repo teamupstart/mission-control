@@ -342,7 +342,7 @@ export function PersonaLibrary({
         className="persona-list-item"
         name={persona.name}
         // What actually tells two reviewers apart. The description used to sit here and, on
-        // the shipped four, it is the title again in a longer sentence.
+        // the shipped roles, it is the title again in a longer sentence.
         detail={personaRoutingLabel(persona)}
         /*
          * Two tags, and they are different KINDS of fact, which is why one is quiet and one
@@ -350,8 +350,8 @@ export function PersonaLibrary({
          * the `Built-in` head above it, and never a thing to act on. Drift says the file it
          * came from has moved on, which is a decision waiting for the operator.
          *
-         * The `Built-in` tag itself is gone: the group head says it once for four rows. A
-         * supplied Persona is still editable, so its tag gates nothing.
+         * The `Built-in` tag itself is gone: the group head says it once for every row it
+         * covers. A supplied Persona is still editable, so its tag gates nothing.
          */
         tags={[
           ...(catalog ? [{ label: catalog } as const] : []),

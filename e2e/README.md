@@ -501,6 +501,29 @@ are all things a route assertion can prove changed but only a capture shows a re
 
 Attach the generated frames to the pull request; they are never committed.
 
+### The shipped Code Design Reviewer
+
+`e2e/.artifacts/code-design-reviewer/` holds two frames from the run that asserts the sixth
+shipped review role. `01-builtin-code-design-reviewer.png` is the role open from the rail's
+`Built-in` group, read-only, with its guidance rendered in Preview so the anti-overreach rules
+are readable rather than merely present; `02-no-mistakes-stage-3-three-reviewers.png` is the
+shipped No-Mistakes Review's stage 3 carrying three reviewers, scrolled fully inside its strip.
+
+The second frame is the one an assertion can only approximate. A stage that gained a third
+member is still five stages and still passes a graph check while drawing a card that overflows
+its strip, and whether three reviewers read as one wave is a layout fact.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/code-design-reviewer.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### The Persona detail screen on the Rail direction
 
 `e2e/.artifacts/persona-rail/` holds five frames from the run that asserts the rebuilt Persona

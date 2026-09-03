@@ -212,7 +212,7 @@ test("published built-in snapshots compare shipped guidance instead of revision"
   assert.doesNotMatch(unavailableHtml, /outdated/);
 });
 
-test("the built-in Persona library displays Code Quality Judge", () => {
+test("the built-in Persona library rails every shipped role and opens the first", () => {
   const library = renderToStaticMarkup(createElement(PersonaLibrary, {
     personas: BUILTIN_PERSONAS.map((persona) => ({
       ...persona,
@@ -227,6 +227,17 @@ test("the built-in Persona library displays Code Quality Judge", () => {
     onLeave: () => {},
     onDirtyChange: () => {},
   }));
-  assert.match(library, />Code Quality Judge</);
-  assert.match(library, /Judge whether the submitted local change is safe, correct, and ready/);
+  // Every shipped role, named, rather than one of them: a built-in that ships without
+  // reaching the rail is invisible in the one surface that is supposed to list it, and
+  // naming a single role here made this assertion turn over every time the catalog gained
+  // one that sorts ahead of it.
+  for (const persona of BUILTIN_PERSONAS) {
+    assert.match(library, new RegExp(`>${persona.name}<`), `${persona.name} has no rail row`);
+  }
+  // The description belongs to the detail pane, and the pane opens on the first row with no
+  // gesture. Asserting THAT rather than a fixed name keeps the claim about the surface.
+  const first = [...BUILTIN_PERSONAS]
+    .sort((a, b) => a.name.localeCompare(b.name, "en-US"))[0]!;
+  assert.equal(first.name, "Code Design Reviewer");
+  assert.match(library, new RegExp(first.description.slice(0, 60).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

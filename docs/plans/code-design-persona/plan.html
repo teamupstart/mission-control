@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Code Design built-in Persona for No-Mistakes Review</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1b1b1a; --muted: #5d6060;
+    --line: #e2e2df; --accent: #3b6ea8; --accent-soft: #eaf1f8;
+    --code-bg: #f4f4f1; --warn-bg: #fdf5e6; --warn-line: #e0c893;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a; --panel: #1d2023; --ink: #e6e7e6; --muted: #9aa0a2;
+      --line: #2e3236; --accent: #7fb0e0; --accent-soft: #1e2733;
+      --code-bg: #23272b; --warn-bg: #2a2419; --warn-line: #5c4d2c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    overflow-x: hidden;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 2.5rem; font-size: 1.0625rem; }
+  h2 {
+    font-size: 1.3rem; letter-spacing: -0.01em; margin: 2.75rem 0 .75rem;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 1.0625rem; margin: 1.75rem 0 .5rem; }
+  p, ul, ol { margin: 0 0 1rem; }
+  ul, ol { padding-left: 1.35rem; }
+  li { margin: .3rem 0; }
+  li > ul { margin: .3rem 0; }
+  a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em; background: var(--code-bg); padding: .1em .35em; border-radius: 4px;
+  }
+  em { color: var(--ink); }
+  blockquote {
+    margin: 0 0 1rem; padding: .75rem 1rem; background: var(--accent-soft);
+    border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; color: var(--ink);
+  }
+  blockquote p:last-child { margin: 0; }
+  .callout {
+    background: var(--warn-bg); border: 1px solid var(--warn-line);
+    border-radius: 8px; padding: .9rem 1.1rem; margin: 0 0 1.25rem;
+  }
+  .callout p:last-child { margin: 0; }
+  .scroll { overflow-x: auto; margin: 0 0 1.25rem; border-radius: 8px; border: 1px solid var(--line); }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; font-size: .9375rem; background: var(--panel); }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  figure { margin: 1.5rem 0 1.75rem; }
+  figure .scroll { border: 1px solid var(--line); background: var(--panel); padding: 1rem 0; }
+  figcaption { color: var(--muted); font-size: .875rem; margin-top: .6rem; }
+  svg { display: block; margin: 0 auto; }
+  .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+  .box-new { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+  .join { fill: var(--code-bg); stroke: var(--line); stroke-width: 1.5; }
+  .lbl { fill: var(--ink); font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .lbl-sm { fill: var(--muted); font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .ttl { fill: var(--muted); font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .06em; }
+  .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .arrow-new { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .875rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>A Code Design built-in Persona for No-Mistakes Review</h1>
+<p class="sub">Plan &middot; <code>docs/plans/code-design-persona/plan.md</code></p>
+
+<h2>Decisions taken</h2>
+<p>Resolved in a dashboard plan review before implementation, and applied throughout this page
+rather than left as alternatives:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Adopted</th></tr></thead>
+<tbody>
+<tr><td>Name</td><td><strong>Code Design Reviewer</strong>, so the slug is the append-only <code>builtin:code-design-reviewer</code></td></tr>
+<tr><td>Placement</td><td><strong>Stage 3</strong>, beside Code Risk Reviewer and Code Quality Judge</td></tr>
+<tr><td>Gating</td><td><strong>Blocking, scoped to the submitted change</strong></td></tr>
+<tr><td>Principles beyond the requested core</td><td>Encapsulation (tell-don&rsquo;t-ask, Law of Demeter); illegal states unrepresentable; explicit dependencies over hidden global state</td></tr>
+<tr><td>Principles declined</td><td>YAGNI as a judged standard, coupling and layer direction, and naming at the seam</td></tr>
+<tr><td>Follow-up</td><td>Implemented directly rather than phased &mdash; one commit, one pull request</td></tr>
+</tbody>
+</table>
+</div>
+<p>Declining YAGNI as a <em>standard</em> does not make over-abstraction free: the anti-overreach
+rule forbidding a demanded abstraction for a single case stays, so the role cannot ask for a seam
+that is not yet earned. What it does not do is fail a change for having one.</p>
+
+<h2>What this adds</h2>
+<p>A sixth built-in review role, <strong>Code Design Reviewer</strong>, that judges
+whether the submitted change meets a minimum design standard: appropriate abstractions, SOLID
+(single responsibility, open/closed, interface segregation, dependency inversion), DRY, and
+composition over inheritance. Liskov substitution is deliberately excluded: it is a subtyping
+contract, and a role that argues for composition over inheritance has almost nothing to apply it
+to.</p>
+<p>It ships alongside Code Risk Reviewer and Code Quality Judge in <strong>No-Mistakes Review</strong>, as
+a new appended version 11. Versions 1 through 10 stay frozen and addressable, so every binding an
+operator already holds keeps running the graph it was bound to.</p>
+
+<h2>Why it is a separate role and not more prose in an existing one</h2>
+<p>The two roles it sits beside both refuse this work today, on purpose.</p>
+<ul>
+  <li><strong>Code Risk Reviewer</strong> says it outright: <em>&ldquo;Do not infer a systemic flaw from code
+    shape, duplication, or architectural preference alone&rdquo;</em> and <em>&ldquo;Do not demand a shared
+    abstraction, a redesign, or a refactor as the price of passing.&rdquo;</em> Those rules are what keep it
+    from becoming a taste gate, and they are marked non-softenable.</li>
+  <li><strong>Code Quality Judge</strong> raises structure only <em>&ldquo;when it actively hides a defect&rdquo;</em>,
+    and is otherwise told not to fail for <em>&ldquo;an equally valid alternative.&rdquo;</em></li>
+</ul>
+<p>So design is currently reviewed by nobody, and the fix is not to weaken either rule &mdash; it is a
+role whose subject <em>is</em> code shape, with its own discipline about when shape is a defect.</p>
+<div class="callout">
+<p>The risk of that role is the whole reason the gating decision above was taken explicitly: a
+design reviewer that gates on preference blocks correct work, and a repair loop that runs up to
+five rounds turns that into five rounds of argument.</p>
+</div>
+
+<h2>The document</h2>
+<p><code>personas/code-design-reviewer.md</code>, written in the register the other five use: what it
+judges, how it decides, anti-overreach rules, pass and fail conditions, requested-change
+discipline. It states nothing about output format or the review contract, which every Persona
+prompt already carries.</p>
+
+<h3>What it judges</h3>
+<p>The seams the change introduces or moves &mdash; where a responsibility lives, what depends on
+what, what a caller has to know to use the code correctly, and whether a new case extends an
+abstraction that already exists or grows a second one beside it.</p>
+<p>Design here is about cost, not taste: a problem belongs in the verdict when it can be named as
+an edit a future change will make in two places and miss in one, a fact that will drift out of
+agreement with its copy, a caller broken by a change the abstraction was supposed to hide, or an
+extension that cannot be made without reopening code that should have been closed.</p>
+
+<h3>The standards</h3>
+<p>One short subsection each, each phrased as the observable symptom rather than the principle&rsquo;s
+name, so the verdict cites code and not a label:</p>
+<ul>
+  <li><em>Appropriate abstraction</em> &mdash; at the level of the problem, hides what varies, leaks
+    nothing callers must compensate for. The symptoms are a caller that has to know the mechanism
+    to use the interface correctly, an abstraction bypassed for one of its own cases, and a third
+    instance arriving with no seam to put it behind.</li>
+  <li><em>Single responsibility</em> &mdash; a unit changes for one reason. The symptom is two unrelated
+    reasons to edit the same function, module, or record.</li>
+  <li><em>Open/closed</em> &mdash; the extension the change makes was possible without editing the thing
+    extended; or if it was not, the change added the seam rather than the fourth branch of a switch
+    that keeps growing.</li>
+  <li><em>Interface segregation</em> &mdash; an implementation forced to satisfy members it has no
+    meaning for, a stub supplied only to fill a contract, a consumer handed a whole record to read
+    one field.</li>
+  <li><em>Dependency inversion</em> &mdash; a high-level rule reaching directly for a concrete
+    backend, driver, transport, clock, or filesystem.</li>
+  <li><em>DRY</em> &mdash; one owner per fact, rule, or decision. Cited as the second copy that will drift,
+    with the place the fact should live; and explicitly not as similar-looking code that means two
+    different things.</li>
+  <li><em>Composition over inheritance</em> &mdash; a subclass that overrides to disable, a base
+    class that grows a flag for one descendant, a hierarchy standing in for a runtime
+    strategy.</li>
+  <li><em>Encapsulation</em> &mdash; a caller reaching through two objects to reach a third, or a
+    decision made outside the unit that owns every fact it depends on.</li>
+  <li><em>Illegal states</em> &mdash; a validated shape re-checked defensively at every later use,
+    legal field combinations documented in prose rather than expressed in the shape, a primitive
+    carrying a meaning its type does not.</li>
+  <li><em>Explicit dependencies</em> &mdash; new module-level mutable state, an import-time side
+    effect, a function reaching for ambient configuration its callers cannot see or
+    substitute.</li>
+</ul>
+
+<h3>Anti-overreach rules</h3>
+<p>Non-softenable, mirroring Code Risk Reviewer&rsquo;s:</p>
+<ul>
+  <li>The finding must be in the submitted change, or in code the change directly extends.
+    Pre-existing design is context, not a finding.</li>
+  <li>Name the concrete cost &mdash; the edit that will be missed, the fact that will drift, the caller
+    that will be broken &mdash; not the principle violated. A principle name with no cost is not a
+    finding.</li>
+  <li>Do not demand an abstraction for a single case. Two known cases plus a third arriving in this
+    change is the bar; less than that is speculative generality, which is itself a finding in the
+    other direction.</li>
+  <li>Do not require a repository-wide refactor, a redesign, or a pattern the repository does not
+    already use, as the price of passing. Where the durable fix is larger than the change, say so
+    and do not gate on it.</li>
+  <li>Never report style, formatting, naming preference, lint, types, or compilation. Other tooling
+    and other roles own those.</li>
+  <li>Do not restate a correctness, security, performance, test-coverage, or documentation finding
+    another role owns. If a design problem also causes a defect, judge the design and let them
+    judge the defect.</li>
+  <li>Where the repository&rsquo;s own standards state a placement or ownership rule, cite the standard.
+    Where they do not, an equally valid alternative shape is a pass.</li>
+</ul>
+<p><strong>Pass</strong> when nothing material survives those rules, saying which seams were examined.
+<strong>Fail</strong> with, per finding: the file and line, the quoted code, the concrete cost, and the
+smallest repair that resolves it inside the change&rsquo;s scope. A finding that challenges a deliberate
+author decision is titled <code>Author decision needed: ...</code>, as Code Risk Reviewer already
+does.</p>
+
+<h2>Wiring</h2>
+<p><code>personas/code-design-reviewer.md</code> compiles into <code>builtin:code-design-reviewer</code>
+through <code>npm run personas</code>. The slug is the durable half of that id and is
+append-only.</p>
+<p>A new node id <code>nmr-code-design</code> joins <code>NO_MISTAKES_REVIEW_NODES</code>, and
+<code>NO_MISTAKES_REVIEW_V7</code> is written out in full &mdash; the existing literals
+are a changelog, not a DRY opportunity, and a shared stage array is one edit away from rewriting a
+graph that bindings are pinned to. Version 11 appends with <code>sourceDraftRevision: 10</code>, the
+unchanged <code>completionPolicy: { kind: "none" }</code>, <code>resumptionPolicy: "auto"</code>, and
+version 10&rsquo;s binding defaults. Node positions come from <code>compileStages</code>, never typed by
+hand.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1000 400" width="1000" height="400" role="img"
+     aria-label="No-Mistakes Review stage order in version 10 and version 11. Version 11 adds a third parallel reviewer, Code Design, to stage 3 behind the same all-pass join.">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8f92"/>
+    </marker>
+    <marker id="an" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3b6ea8"/>
+    </marker>
+  </defs>
+
+  <!-- Version 10 -->
+  <text class="ttl" x="20" y="26">VERSION 10 (CURRENT)</text>
+  <rect class="box" x="20" y="52" width="118" height="34" rx="6"/>
+  <text class="lbl" x="79" y="73" text-anchor="middle">typecheck + test</text>
+  <rect class="box" x="176" y="52" width="130" height="34" rx="6"/>
+  <text class="lbl" x="241" y="73" text-anchor="middle">Intent Conformance</text>
+  <rect class="box" x="344" y="34" width="112" height="30" rx="6"/>
+  <text class="lbl" x="400" y="53" text-anchor="middle">Code Risk</text>
+  <rect class="box" x="344" y="74" width="112" height="30" rx="6"/>
+  <text class="lbl" x="400" y="93" text-anchor="middle">Code Quality</text>
+  <rect class="join" x="494" y="52" width="72" height="34" rx="17"/>
+  <text class="lbl-sm" x="530" y="73" text-anchor="middle">all-pass</text>
+  <rect class="box" x="604" y="34" width="112" height="30" rx="6"/>
+  <text class="lbl" x="660" y="53" text-anchor="middle">Test Evidence</text>
+  <rect class="box" x="604" y="74" width="112" height="30" rx="6"/>
+  <text class="lbl" x="660" y="93" text-anchor="middle">Documentation</text>
+  <rect class="join" x="754" y="52" width="72" height="34" rx="17"/>
+  <text class="lbl-sm" x="790" y="73" text-anchor="middle">all-pass</text>
+  <rect class="box" x="864" y="52" width="104" height="34" rx="6"/>
+  <text class="lbl" x="916" y="73" text-anchor="middle">Pull Request</text>
+
+  <path class="arrow" d="M138,69 H170" marker-end="url(#a)"/>
+  <path class="arrow" d="M306,69 H322 V49 H338" marker-end="url(#a)"/>
+  <path class="arrow" d="M306,69 H322 V89 H338" marker-end="url(#a)"/>
+  <path class="arrow" d="M456,49 H474 V69 H488" marker-end="url(#a)"/>
+  <path class="arrow" d="M456,89 H474 V69 H488" marker-end="url(#a)"/>
+  <path class="arrow" d="M566,69 H582 V49 H598" marker-end="url(#a)"/>
+  <path class="arrow" d="M566,69 H582 V89 H598" marker-end="url(#a)"/>
+  <path class="arrow" d="M716,49 H734 V69 H748" marker-end="url(#a)"/>
+  <path class="arrow" d="M716,89 H734 V69 H748" marker-end="url(#a)"/>
+  <path class="arrow" d="M826,69 H858" marker-end="url(#a)"/>
+
+  <line x1="20" y1="150" x2="980" y2="150" stroke="#8a8f92" stroke-width="1" stroke-dasharray="3 4" opacity="0.5"/>
+
+  <!-- Version 11 -->
+  <text class="ttl" x="20" y="196">VERSION 11 (PROPOSED)</text>
+  <rect class="box" x="20" y="242" width="118" height="34" rx="6"/>
+  <text class="lbl" x="79" y="263" text-anchor="middle">typecheck + test</text>
+  <rect class="box" x="176" y="242" width="130" height="34" rx="6"/>
+  <text class="lbl" x="241" y="263" text-anchor="middle">Intent Conformance</text>
+  <rect class="box" x="344" y="204" width="112" height="30" rx="6"/>
+  <text class="lbl" x="400" y="223" text-anchor="middle">Code Risk</text>
+  <rect class="box" x="344" y="244" width="112" height="30" rx="6"/>
+  <text class="lbl" x="400" y="263" text-anchor="middle">Code Quality</text>
+  <rect class="box-new" x="344" y="284" width="112" height="30" rx="6"/>
+  <text class="lbl" x="400" y="303" text-anchor="middle">Code Design</text>
+  <rect class="join" x="494" y="242" width="72" height="34" rx="17"/>
+  <text class="lbl-sm" x="530" y="263" text-anchor="middle">all-pass</text>
+  <rect class="box" x="604" y="224" width="112" height="30" rx="6"/>
+  <text class="lbl" x="660" y="243" text-anchor="middle">Test Evidence</text>
+  <rect class="box" x="604" y="264" width="112" height="30" rx="6"/>
+  <text class="lbl" x="660" y="283" text-anchor="middle">Documentation</text>
+  <rect class="join" x="754" y="242" width="72" height="34" rx="17"/>
+  <text class="lbl-sm" x="790" y="263" text-anchor="middle">all-pass</text>
+  <rect class="box" x="864" y="242" width="104" height="34" rx="6"/>
+  <text class="lbl" x="916" y="263" text-anchor="middle">Pull Request</text>
+
+  <path class="arrow" d="M138,259 H170" marker-end="url(#a)"/>
+  <path class="arrow" d="M306,259 H322 V219 H338" marker-end="url(#a)"/>
+  <path class="arrow" d="M306,259 H322 V259 H338" marker-end="url(#a)"/>
+  <path class="arrow-new" d="M306,259 H322 V299 H338" marker-end="url(#an)"/>
+  <path class="arrow" d="M456,219 H474 V259 H488" marker-end="url(#a)"/>
+  <path class="arrow" d="M456,259 H488" marker-end="url(#a)"/>
+  <path class="arrow-new" d="M456,299 H474 V259 H488" marker-end="url(#an)"/>
+  <path class="arrow" d="M566,259 H582 V239 H598" marker-end="url(#a)"/>
+  <path class="arrow" d="M566,259 H582 V279 H598" marker-end="url(#a)"/>
+  <path class="arrow" d="M716,239 H734 V259 H748" marker-end="url(#a)"/>
+  <path class="arrow" d="M716,279 H734 V259 H748" marker-end="url(#a)"/>
+  <path class="arrow" d="M826,259 H858" marker-end="url(#a)"/>
+
+  <text class="lbl-sm" x="20" y="360">Both all-pass joins route fail back to the session for a repair round. Unchanged.</text>
+</svg>
+</div>
+<figcaption>Stage order before and after. The only structural change is a third parallel reviewer
+in stage 3, behind the same all-pass join, so a failing design review arrives in the same repair
+packet as a failing risk review.</figcaption>
+</figure>
+
+<h2>Cost</h2>
+<p>Stage 3 adds no wall-clock stage: three reviewers run in parallel on one submission where two
+did, and aggregate into the existing depth join, so a failing design review arrives in the same
+repair packet as a failing risk review rather than as a separate round. It adds one model call per
+review round.</p>
+<p>It sits there rather than ahead of the deep reviews because a design objection is not a cheap
+gate &mdash; it costs a model call to reach either way, and gating on it first would delay risk
+feedback on a change whose shape is merely arguable.</p>
+
+<h2>Touchpoints</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>File</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><code>personas/code-design-reviewer.md</code></td><td>new document</td></tr>
+<tr><td><code>personas/README.md</code></td><td>five persona sources becomes six</td></tr>
+<tr><td><code>src/server/workflows/builtin-personas.generated.ts</code></td><td>regenerated by <code>npm run personas</code></td></tr>
+<tr><td><code>src/server/workflows/builtin-workflows.ts</code></td><td><code>nmr-code-design</code>, <code>NO_MISTAKES_REVIEW_V7</code>, version 11, description</td></tr>
+<tr><td><code>tours/library.md</code>, <code>src/web/tour/content.generated.ts</code></td><td>the No-Mistakes and binding stops name the stage members and the current version</td></tr>
+<tr><td><code>src/web/workflows/PersonaLibrary.tsx</code></td><td>two comments that counted the shipped roles, now count-agnostic</td></tr>
+<tr><td><code>docs/workflows.md</code></td><td>built-in Persona table, the compose paragraph, the stage description, the version history</td></tr>
+<tr><td><code>docs/inspector-and-shipping.md</code></td><td>the stage-3 sentence</td></tr>
+<tr><td><code>test/builtin-personas.test.ts</code></td><td>the role is in the catalog with its expected name, description, and scope rule</td></tr>
+<tr><td><code>test/builtin-personas-web.test.ts</code></td><td>the library rails every shipped role rather than one named one</td></tr>
+<tr><td><code>test/builtin-workflows.test.ts</code></td><td>version 11 nodes, shape, routes, snapshot freshness, and that appending it rewrote no earlier version</td></tr>
+<tr><td><code>test/workflows-http.test.ts</code>, <code>test/session-action-legacy-pr.test.ts</code></td><td>version-count, served-version and current-version assertions</td></tr>
+<tr><td><code>e2e/specs/code-design-reviewer.spec.ts</code></td><td>new spec: the read-only built-in carrying its scope rule, and stage 3&rsquo;s three members</td></tr>
+<tr><td><code>e2e/specs/workflow-session-action-evidence.spec.ts</code></td><td>stage 3&rsquo;s expected membership</td></tr>
+<tr><td><code>e2e/specs/persona-rail.spec.ts</code></td><td>four comments that counted the shipped roles</td></tr>
+<tr><td><code>e2e/README.md</code></td><td>the new spec&rsquo;s evidence section</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Verification</h2>
+<p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code> for the UI
+surface. The Persona rail and the No-Mistakes Review pipeline both change what a person sees, so
+the e2e spec is required rather than optional.</p>
+
+<footer>Rendered from <code>docs/plans/code-design-persona/plan.md</code>. Opens offline from
+<code>file://</code>; no external requests.</footer>
+
+</main>
+</body>
+</html>

@@ -80,6 +80,11 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { ConversationArtifacts } from "./ConversationArtifacts.tsx";
+import {
+  conversationArtifacts,
+  retainDiscoveredArtifacts,
+} from "../lib/conversationArtifacts.ts";
 
 /**
  * Reconnect backoff for the transcript stream, which this panel drives itself rather than
@@ -101,6 +106,7 @@ const RECONNECT_MAX_MS = 8000;
  * flash becomes invisible.
  */
 const TURN_FLASH_MS = 2000;
+const EMPTY_FILE_PATHS: ReadonlySet<string> = new Set();
 
 /**
  * Imperative surface the detail holds so the send shortcut can reach this panel's reply box.
@@ -152,6 +158,7 @@ export function TranscriptPanel({
   reviews = [],
   onReplyBox,
   onOpenFile,
+  onCommentInFiles,
   files,
   registerFind,
   resetNonce = 0,
@@ -216,6 +223,8 @@ export function TranscriptPanel({
   onReplyBox?: (present: boolean) => void;
   /** Claim links that resolve to a file in this transcript's session checkout. */
   onOpenFile?: WorkspaceLinkHandler;
+  /** Open one presented artifact in Files with comment mode armed. */
+  onCommentInFiles?: (path: string) => void;
   /**
    * The session files store, for the checkout listing that decides which bare paths in
    * the prose are real files. Only ever read through `useWorkspacePaths` below - this
@@ -246,6 +255,13 @@ export function TranscriptPanel({
     [],
   );
   const linkHandler = onOpenFile ? openFile : undefined;
+  const commentInFilesRef = useRef(onCommentInFiles);
+  commentInFilesRef.current = onCommentInFiles;
+  const commentInFiles = useCallback(
+    (path: string) => commentInFilesRef.current?.(path),
+    [],
+  );
+  const commentHandler = onCommentInFiles ? commentInFiles : undefined;
   // Hydrated from the history map rather than starting empty, so re-opening a session
   // you had scrolled back through shows that scroll-back immediately instead of blanking
   // to the stream's tail and making you find your place again.
@@ -942,10 +958,12 @@ export function TranscriptPanel({
                 <TerminalTurn
                   key={row.id}
                   m={row.message}
+                  sessionId={sessionId}
                   agentLabel={agentLabel}
                   cwd={promptCwd}
                   fullCwd={session.cwd}
                   onOpenFile={linkHandler}
+                  onCommentInFiles={commentHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                   flashed={row.id === flashedTurnId}
@@ -954,8 +972,10 @@ export function TranscriptPanel({
                 <Turn
                   key={row.id}
                   m={row.message}
+                  sessionId={sessionId}
                   agentLabel={agentLabel}
                   onOpenFile={linkHandler}
+                  onCommentInFiles={commentHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                   flashed={row.id === flashedTurnId}
@@ -1465,15 +1485,19 @@ export function PendingTurnView({
 
 function Turn({
   m,
+  sessionId,
   agentLabel,
   onOpenFile,
+  onCommentInFiles,
   filePaths,
   find,
   flashed,
 }: {
   m: TranscriptMessage;
+  sessionId: string;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
+  onCommentInFiles?: (path: string) => void;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
   /** The "Yours" rail just jumped here, so say so briefly. */
@@ -1499,6 +1523,15 @@ function Turn({
    * formatting.
    */
   const highlight = textHits.length > 0;
+  const artifacts = useMemo(
+    () => retainDiscoveredArtifacts(
+      sessionId,
+      m.id,
+      m.text,
+      conversationArtifacts(m.text, filePaths ?? EMPTY_FILE_PATHS),
+    ),
+    [filePaths, m.id, m.text, sessionId],
+  );
   return (
     // An `article`, matching what the terminal rendering has always drawn a turn as: one
     // turn is a self-contained composition, and having both renderings say so means a
@@ -1537,6 +1570,12 @@ function Turn({
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
+      <ConversationArtifacts
+        sessionId={sessionId}
+        artifacts={artifacts}
+        onOpenFile={onOpenFile}
+        onCommentInFiles={onCommentInFiles}
+      />
     </article>
   );
 }
@@ -1616,21 +1655,25 @@ function ToolRun({
  */
 function TerminalTurn({
   m,
+  sessionId,
   agentLabel,
   cwd,
   fullCwd,
   onOpenFile,
+  onCommentInFiles,
   filePaths,
   find,
   flashed,
 }: {
   m: TranscriptMessage;
+  sessionId: string;
   agentLabel: string;
   /** The prompt's working directory as it is DRAWN - `~/leaf`, or `~` with no checkout. */
   cwd: string;
   /** The whole path the leaf above stands for, for the tooltip. */
   fullCwd: string | null;
   onOpenFile?: WorkspaceLinkHandler;
+  onCommentInFiles?: (path: string) => void;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
   /** The "Yours" rail just jumped here, so say so briefly. */
@@ -1640,6 +1683,15 @@ function TerminalTurn({
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
   const who = turnWho(m, agentLabel);
   const currentKey = find?.currentKey ?? null;
+  const artifacts = useMemo(
+    () => retainDiscoveredArtifacts(
+      sessionId,
+      m.id,
+      m.text,
+      conversationArtifacts(m.text, filePaths ?? EMPTY_FILE_PATHS),
+    ),
+    [filePaths, m.id, m.text, sessionId],
+  );
   // Tagged in BOTH renderings, and with the same attribute: the terminal view is the
   // shipped default, so a rail that could only jump in chat mode would not work for most
   // readers most of the time.
@@ -1688,6 +1740,12 @@ function TerminalTurn({
           />
         )}
         {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
+        <ConversationArtifacts
+          sessionId={sessionId}
+          artifacts={artifacts}
+          onOpenFile={onOpenFile}
+          onCommentInFiles={onCommentInFiles}
+        />
       </article>
     );
   }
@@ -1723,6 +1781,12 @@ function TerminalTurn({
           `toolLineText`, and a call drawn as a chip here would be searched over text it
           does not show. */}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
+      <ConversationArtifacts
+        sessionId={sessionId}
+        artifacts={artifacts}
+        onOpenFile={onOpenFile}
+        onCommentInFiles={onCommentInFiles}
+      />
     </article>
   );
 }

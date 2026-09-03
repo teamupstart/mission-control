@@ -517,6 +517,11 @@ export function App(): React.JSX.Element {
     line: number;
     nonce: number;
   } | null>(null);
+  const [fileCommentRequest, setFileCommentRequest] = useState<{
+    sessionId: string;
+    path: string;
+    nonce: number;
+  } | null>(null);
   const [conversationTabRequest, setConversationTabRequest] = useState<{
     sessionId: string;
     nonce: number;
@@ -1604,6 +1609,15 @@ export function App(): React.JSX.Element {
     }
   }, [files.ensure, files.select, layout, requestFilesTab]);
 
+  const commentOnSessionPath = useCallback((sessionId: string, path: string): void => {
+    openSessionPath(sessionId, path);
+    setFileCommentRequest((request) => ({
+      sessionId,
+      path,
+      nonce: (request?.nonce ?? 0) + 1,
+    }));
+  }, [openSessionPath]);
+
   const openSessionFile = useCallback((
     sessionId: string,
     href: string,
@@ -2155,6 +2169,7 @@ export function App(): React.JSX.Element {
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
     onOpenFilePath: openSessionPath,
+    onCommentInFiles: commentOnSessionPath,
     fileTabRequest,
     diffTabRequest,
     conversationTabRequest,
@@ -2163,6 +2178,7 @@ export function App(): React.JSX.Element {
     fileCommentThreads,
     fileCommentReviews,
     fileLineRequest,
+    fileCommentRequest,
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
     onKill: setKillSessionId,
@@ -3627,6 +3643,7 @@ export function App(): React.JSX.Element {
             fileCommentThreads={fileCommentThreads}
             fileCommentReviews={fileCommentReviews}
             fileLineRequest={fileLineRequest}
+            fileCommentRequest={fileCommentRequest}
             onClose={closeFiles}
           />
         )}

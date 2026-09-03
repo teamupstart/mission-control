@@ -245,6 +245,8 @@ export interface FileWorkspaceProps {
   fileCommentReviews?: readonly FileCommentReview[];
   /** A source line the reader deep-linked to. See `FileEditor`'s `scrollTo` for the nonce. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
+  /** A rendered file that should enter comment mode once its buffer is available. */
+  fileCommentRequest?: { sessionId: string; path: string; nonce: number } | null;
   onExtract?: () => void;
   extracted?: boolean;
   isOverlayOpen?: () => boolean;
@@ -267,6 +269,7 @@ export function fileWorkspacePropsEqual(
     && previous.fileCommentThreads === next.fileCommentThreads
     && previous.fileCommentReviews === next.fileCommentReviews
     && previous.fileLineRequest === next.fileLineRequest
+    && previous.fileCommentRequest === next.fileCommentRequest
     && previous.onExtract === next.onExtract
     && previous.extracted === next.extracted
     && previous.isOverlayOpen === next.isOverlayOpen
@@ -279,6 +282,7 @@ function FileWorkspaceBody({
   fileCommentThreads = [],
   fileCommentReviews = [],
   fileLineRequest = null,
+  fileCommentRequest = null,
   onExtract,
   extracted = false,
   isOverlayOpen,
@@ -390,6 +394,29 @@ function FileWorkspaceBody({
     if (!commentable) return;
     setCommentMode(true);
   }, [commentable]);
+  const previewedCommentRequest = useRef<number | null>(null);
+  const honoredCommentRequest = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !fileCommentRequest
+      || fileCommentRequest.sessionId !== session.id
+      || fileCommentRequest.path !== selectedPath
+    ) return;
+    if (previewedCommentRequest.current !== fileCommentRequest.nonce) {
+      controller.setMode(session.id, "preview");
+      previewedCommentRequest.current = fileCommentRequest.nonce;
+    }
+    if (!commentable || honoredCommentRequest.current === fileCommentRequest.nonce) return;
+    enterCommentMode();
+    honoredCommentRequest.current = fileCommentRequest.nonce;
+  }, [
+    commentable,
+    controller.setMode,
+    enterCommentMode,
+    fileCommentRequest,
+    selectedPath,
+    session.id,
+  ]);
   useEffect(() => {
     if (extracted) return;
     function onKeyDown(event: KeyboardEvent): void {

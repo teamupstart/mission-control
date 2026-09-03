@@ -66,6 +66,9 @@ test("the rail reports no health for a family it has not read yet", () => {
   assert.doesNotMatch(loading, /setup-dot-ready/, "nothing has been established yet");
   assert.doesNotMatch(loading, /setup-dot-gap/);
   assert.match(loading, /Reading this machine/);
+  assert.match(loading, /setup-verdict-mark is-unknown/);
+  assert.doesNotMatch(loading, /0 of 0 ready/);
+  assert.doesNotMatch(loading, /setup-meter/);
   // A family that HAS been read says so, either way.
   const read = render([CLAUDE, CMUX, GH_CLI]);
   assert.match(read, /setup-dot-ready/);

@@ -6,6 +6,26 @@ import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-pa
 
 test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
 
+test("Setup keeps the machine verdict unknown until its first reading", async ({ page, daemon }) => {
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/setup/checks", async (route) => {
+    await gate;
+    await route.continue();
+  });
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  const verdict = page.locator(".setup-verdict");
+  await expect(verdict.getByRole("heading", { name: "Reading this machine..." })).toBeVisible();
+  await expect(verdict.locator(".setup-verdict-mark")).toHaveClass(/is-unknown/);
+  await expect(verdict.locator(".setup-verdict-mark")).toHaveText("…");
+  await expect(verdict).not.toContainText("0 of 0 ready");
+  await expect(verdict.getByRole("img", { name: "0 of 0 checks ready" })).toHaveCount(0);
+
+  release();
+  await expect(verdict.getByRole("heading", { name: /This machine/ })).toBeVisible();
+});
+
 test("Setup recovers when its inspection request is rejected", async ({ page, daemon }) => {
   await page.route("**/api/setup/checks", (route) => route.abort("connectionrefused"));
   await page.goto(`${daemon.baseURL}/#/settings/setup`);

@@ -506,18 +506,22 @@ function VerdictHeader({
   panelRef: (node: HTMLElement | null) => void;
 }): React.JSX.Element {
   const all = tally(rows);
-  const clean = all.requiredGaps === 0;
+  const read = rows.length > 0;
+  const clean = read && all.requiredGaps === 0;
   return (
     // Carries `setup/recheck`, which is what the command palette's "Machine setup checks"
     // entry deep-links to, and the tour's opening spotlight. Both used to sit on an intro
     // paragraph that this header replaced.
     <header className="setup-verdict" data-anchor="setup/recheck" ref={panelRef}>
-      <div className={`setup-verdict-mark is-${clean ? "ready" : "attention"}`} aria-hidden>
-        {clean ? "✓" : "!"}
+      <div
+        className={`setup-verdict-mark is-${read ? (clean ? "ready" : "attention") : "unknown"}`}
+        aria-hidden
+      >
+        {read ? (clean ? "✓" : "!") : "…"}
       </div>
       <div className="setup-verdict-body">
         <h3>
-          {rows.length === 0
+          {!read
             ? "Reading this machine..."
             : clean
               ? "This machine can run sessions."
@@ -526,22 +530,26 @@ function VerdictHeader({
         {/* One tick per check, in catalog order. The shape of the machine is readable before
             any word is, and amber-versus-red carries the only distinction that changes what
             you have to do about it. */}
-        <div className="setup-meter" role="img" aria-label={`${all.ready} of ${all.total} checks ready`}>
-          {rows.map((row) => {
-            const state = row.status.state === "satisfied"
-              ? "ready"
-              : row.requirement === "required" ? "required" : "gap";
-            return <span key={setupRowAnchor(row.rowId)} className={`setup-tick is-${state}`} />;
-          })}
-        </div>
-        <p className="setup-verdict-detail">
-          <strong>{all.ready} of {all.total} ready</strong>
-          {clean
-            ? all.gaps === 0
-              ? " · nothing is missing."
-              : ` · no required gaps. ${all.gaps} optional tool${all.gaps === 1 ? "" : "s"} would add capability.`
-            : ` · ${all.requiredGaps} required gap${all.requiredGaps === 1 ? "" : "s"} blocks work.`}
-        </p>
+        {read && (
+          <>
+            <div className="setup-meter" role="img" aria-label={`${all.ready} of ${all.total} checks ready`}>
+              {rows.map((row) => {
+                const state = row.status.state === "satisfied"
+                  ? "ready"
+                  : row.requirement === "required" ? "required" : "gap";
+                return <span key={setupRowAnchor(row.rowId)} className={`setup-tick is-${state}`} />;
+              })}
+            </div>
+            <p className="setup-verdict-detail">
+              <strong>{all.ready} of {all.total} ready</strong>
+              {clean
+                ? all.gaps === 0
+                  ? " · nothing is missing."
+                  : ` · no required gaps. ${all.gaps} optional tool${all.gaps === 1 ? "" : "s"} would add capability.`
+                : ` · ${all.requiredGaps} required gap${all.requiredGaps === 1 ? "" : "s"} blocks work.`}
+            </p>
+          </>
+        )}
       </div>
       <div className="setup-verdict-actions">
         <Tooltip label="Inspect this machine again">

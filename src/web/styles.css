@@ -31603,6 +31603,11 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--attention);
 }
 
+.setup-verdict-mark.is-unknown {
+  background: var(--panel-2);
+  color: var(--dim);
+}
+
 .setup-verdict-body {
   display: grid;
   gap: 7px;

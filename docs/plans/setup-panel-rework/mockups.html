@@ -307,13 +307,12 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
     <p>
       A frozen record, not a live view. The panels are drawn with the app's stylesheet as it
       was <em>before</em> the rework, so the "Today" tab is still the baseline B was chosen
-      against, and the snapshot is the one this machine returned on the day of the decision.
-      Nothing here re-reads either, so it will keep showing the comparison as it stood.
+      against. The committed page uses sanitized, representative setup values rather than an
+      operator snapshot. Nothing here re-reads machine state, so the comparison stays fixed.
       See <code>docs/plans/setup-panel-rework/plan.md</code> for what shipped.
     </p>
     <p>
-      Rendered over the live snapshot this machine returned from
-      <code>GET /api/setup/checks</code> - 13 real checks, 10 ready, 3 missing - using the
+      Rendered over a sanitized 13-check fixture - 10 ready and 3 missing - using the
       app's own <code>src/web/styles.css</code>. Pick a tab. The family rail in B and the
       tiles in D are live; buttons and selects are shown disabled because a static page
       cannot open a terminal.
@@ -327,7 +326,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
     <label for="opt-d">D &middot; Inventory grid</label>
   </div>
   <div class="opt-blurbs">
-    <p class="opt-blurb" data-opt="current">The panel as it ships now, drawn from the same live snapshot. 13 rows at equal weight, 1359px tall, and no verdict anywhere - the 3 gaps are found by scrolling past 10 rows that are fine.</p>
+    <p class="opt-blurb" data-opt="current">The panel as it ships now, drawn from the same sanitized fixture. 13 rows at equal weight, 1359px tall, and no verdict anywhere - the 3 gaps are found by scrolling past 10 rows that are fine.</p>
     <p class="opt-blurb" data-opt="a">One verdict above the fold. Ready tools shrink to a name and a path; gaps keep the full impact and remedy. Same families in the same order - 1131px, with the 10 ready rows down from 640px to 320px.</p>
     <p class="opt-blurb" data-opt="b">A rail of families beside one family's full detail. 541px and fixed - nothing scrolls, and which families have gaps stays visible from inside any of them. Costs you the whole-machine read and Cmd-F.</p>
     <p class="opt-blurb" data-opt="c">What needs doing, first, in requirement order, regardless of family. The complete inventory becomes a reference table below it. 1059px open.</p>
@@ -364,7 +363,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
             <span class="setup-status setup-status-satisfied">Ready</span>
             <span class="setup-requirement setup-requirement-recommended">recommended</span>
           </div>
-          <p class="setup-evidence">/Users/jordan.mance/.local/bin/claude</p>
+          <p class="setup-evidence">/Users/operator/.local/bin/claude</p>
         </div>
       </article>
       <article class="setup-row setup-row-satisfied">
@@ -374,7 +373,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
             <span class="setup-status setup-status-satisfied">Ready</span>
             <span class="setup-requirement setup-requirement-recommended">recommended</span>
           </div>
-          <p class="setup-evidence">/Users/jordan.mance/.local/bin/codex</p>
+          <p class="setup-evidence">/Users/operator/.local/bin/codex</p>
         </div>
       </article>
       <article class="setup-row setup-row-missing">
@@ -507,7 +506,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
             <span class="setup-status setup-status-satisfied">Ready</span>
             <span class="setup-requirement setup-requirement-optional">optional</span>
           </div>
-          <p class="setup-evidence">6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json</p>
+          <p class="setup-evidence">3 installed in /Users/operator/.claude/plugins/installed_plugins.json</p>
         </div>
       </article>
       <article class="setup-row setup-row-satisfied">
@@ -517,7 +516,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
             <span class="setup-status setup-status-satisfied">Ready</span>
             <span class="setup-requirement setup-requirement-optional">optional</span>
           </div>
-          <p class="setup-evidence">5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills</p>
+          <p class="setup-evidence">4 enabled across /Users/operator/.claude/skills, /Users/operator/.agents/skills, /Users/operator/.pi/agent/skills</p>
         </div>
       </article></div>
     </section>
@@ -534,7 +533,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
             <span class="setup-status setup-status-satisfied">Ready</span>
             <span class="setup-requirement setup-requirement-optional">optional</span>
           </div>
-          <p class="setup-evidence">/Users/jordan.mance/.local/bin/conduct-ts 0.104.0</p>
+          <p class="setup-evidence">/Users/operator/.local/bin/conduct-ts 0.100.0</p>
         </div>
       </article></div>
     </section>
@@ -572,12 +571,12 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
            <span class="mc-dot is-ready" aria-hidden="true"></span>
            <span class="mA-ready-name">Claude Code</span>
            
-           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</code>
+           <code class="mA-ready-evidence" title="/Users/operator/.local/bin/claude">~/.local/bin/claude</code>
          </div><div class="mA-ready">
            <span class="mc-dot is-ready" aria-hidden="true"></span>
            <span class="mA-ready-name">Codex CLI</span>
            
-           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</code>
+           <code class="mA-ready-evidence" title="/Users/operator/.local/bin/codex">~/.local/bin/codex</code>
          </div><article class="mA-gap">
            <div class="mA-gap-title"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>Pi</strong><span class="setup-status setup-status-missing">Missing</span><span class="mA-req is-recommended">recommended</span></div>
            <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p>
@@ -671,12 +670,12 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
            <span class="mc-dot is-ready" aria-hidden="true"></span>
            <span class="mA-ready-name">Claude Code plugins</span>
            
-           <code class="mA-ready-evidence" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</code>
+           <code class="mA-ready-evidence" title="3 installed in /Users/operator/.claude/plugins/installed_plugins.json">3 installed in ~/.claude/plugins/installed_plugins.json</code>
          </div><div class="mA-ready">
            <span class="mc-dot is-ready" aria-hidden="true"></span>
            <span class="mA-ready-name">Mission Control skills</span>
            
-           <code class="mA-ready-evidence" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
+           <code class="mA-ready-evidence" title="4 enabled across /Users/operator/.claude/skills, /Users/operator/.agents/skills, /Users/operator/.pi/agent/skills">4 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
          </div></div>
     </section>
     <section class="mA-family">
@@ -691,7 +690,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
            <span class="mc-dot is-ready" aria-hidden="true"></span>
            <span class="mA-ready-name">ai-conductor</span>
            
-           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</code>
+           <code class="mA-ready-evidence" title="/Users/operator/.local/bin/conduct-ts 0.100.0">~/.local/bin/conduct-ts 0.100.0</code>
          </div></div>
     </section></section>
       </div>
@@ -868,7 +867,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           
           
         </div>
-        <p class="setup-evidence">6 installed in ~/.claude/plugins/installed_plugins.json</p>
+        <p class="setup-evidence">3 installed in ~/.claude/plugins/installed_plugins.json</p>
       </article>
       <article class="mB-row is-ready">
         <div class="mB-row-title">
@@ -876,7 +875,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           
           
         </div>
-        <p class="setup-evidence">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p>
+        <p class="setup-evidence">4 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p>
       </article></div>
     </div>
     <div class="mB-pane" data-fam="pipelines">
@@ -888,7 +887,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           
           
         </div>
-        <p class="setup-evidence">~/.local/bin/conduct-ts 0.104.0</p>
+        <p class="setup-evidence">~/.local/bin/conduct-ts 0.100.0</p>
       </article></div>
     </div></div>
     </div>
@@ -968,11 +967,11 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
       <div class="mC-table"><h4 class="mC-table-family">Agent CLIs</h4>
       <div class="mC-table-row">
         <span class="mC-table-name">Claude Code</span>
-        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</code>
+        <code class="mC-table-evidence" title="/Users/operator/.local/bin/claude">~/.local/bin/claude</code>
       </div>
       <div class="mC-table-row">
         <span class="mC-table-name">Codex CLI</span>
-        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</code>
+        <code class="mC-table-evidence" title="/Users/operator/.local/bin/codex">~/.local/bin/codex</code>
       </div><h4 class="mC-table-family">Terminals</h4>
       <div class="mC-table-row">
         <span class="mC-table-name">tmux</span>
@@ -996,15 +995,15 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
       </div><h4 class="mC-table-family">Claude Code extensions</h4>
       <div class="mC-table-row">
         <span class="mC-table-name">Claude Code plugins</span>
-        <code class="mC-table-evidence" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</code>
+        <code class="mC-table-evidence" title="3 installed in /Users/operator/.claude/plugins/installed_plugins.json">3 installed in ~/.claude/plugins/installed_plugins.json</code>
       </div>
       <div class="mC-table-row">
         <span class="mC-table-name">Mission Control skills</span>
-        <code class="mC-table-evidence" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
+        <code class="mC-table-evidence" title="4 enabled across /Users/operator/.claude/skills, /Users/operator/.agents/skills, /Users/operator/.pi/agent/skills">4 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
       </div><h4 class="mC-table-family">Pipelines</h4>
       <div class="mC-table-row">
         <span class="mC-table-name">ai-conductor</span>
-        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</code>
+        <code class="mC-table-evidence" title="/Users/operator/.local/bin/conduct-ts 0.100.0">~/.local/bin/conduct-ts 0.100.0</code>
       </div></div>
     </details>
   </section>
@@ -1055,7 +1054,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           <span class="mD-tile-name">Claude Code</span>
           
         </div>
-        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</span>
+        <span class="mD-tile-line" title="/Users/operator/.local/bin/claude">~/.local/bin/claude</span>
       </label>
       <label class="mD-tile is-ready" for="dtile-dependency-codex-cli">
         <div class="mD-tile-top">
@@ -1063,7 +1062,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           <span class="mD-tile-name">Codex CLI</span>
           
         </div>
-        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</span>
+        <span class="mD-tile-line" title="/Users/operator/.local/bin/codex">~/.local/bin/codex</span>
       </label>
       <label class="mD-tile is-gap" for="dtile-dependency-pi-cli">
         <div class="mD-tile-top">
@@ -1147,7 +1146,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           <span class="mD-tile-name">Claude Code plugins</span>
           
         </div>
-        <span class="mD-tile-line" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</span>
+        <span class="mD-tile-line" title="3 installed in /Users/operator/.claude/plugins/installed_plugins.json">3 installed in ~/.claude/plugins/installed_plugins.json</span>
       </label>
       <label class="mD-tile is-ready" for="dtile-dependency-claude-skills">
         <div class="mD-tile-top">
@@ -1155,7 +1154,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           <span class="mD-tile-name">Mission Control skills</span>
           
         </div>
-        <span class="mD-tile-line" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</span>
+        <span class="mD-tile-line" title="4 enabled across /Users/operator/.claude/skills, /Users/operator/.agents/skills, /Users/operator/.pi/agent/skills">4 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</span>
       </label></div>
     </section>
     <section class="mD-band">
@@ -1167,7 +1166,7 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
           <span class="mD-tile-name">ai-conductor</span>
           
         </div>
-        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</span>
+        <span class="mD-tile-line" title="/Users/operator/.local/bin/conduct-ts 0.100.0">~/.local/bin/conduct-ts 0.100.0</span>
       </label></div>
     </section></div>
       <div class="mD-details">
@@ -1246,17 +1245,17 @@ select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible
     <aside class="mD-detail" data-row="dependency-claude-plugins">
       <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Claude Code plugins</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
       <p class="mD-detail-family">Claude Code extensions &middot; optional</p>
-      <p class="setup-evidence">6 installed in ~/.claude/plugins/installed_plugins.json</p><p class="mD-detail-enables">Without plugins, Claude sessions do not receive plugin-provided tools, hooks, or commands.</p>
+      <p class="setup-evidence">3 installed in ~/.claude/plugins/installed_plugins.json</p><p class="mD-detail-enables">Without plugins, Claude sessions do not receive plugin-provided tools, hooks, or commands.</p>
     </aside>
     <aside class="mD-detail" data-row="dependency-claude-skills">
       <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Mission Control skills</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
       <p class="mD-detail-family">Claude Code extensions &middot; optional</p>
-      <p class="setup-evidence">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p><p class="mD-detail-enables">Without them, sessions do not receive Mission Control's reusable workflow skills.</p>
+      <p class="setup-evidence">4 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p><p class="mD-detail-enables">Without them, sessions do not receive Mission Control's reusable workflow skills.</p>
     </aside>
     <aside class="mD-detail" data-row="dependency-ai-conductor">
       <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>ai-conductor</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
       <p class="mD-detail-family">Pipelines &middot; optional</p>
-      <p class="setup-evidence">~/.local/bin/conduct-ts 0.104.0</p><p class="mD-detail-enables">Without it, Mission Control cannot commission or observe gated ai-conductor runs.</p>
+      <p class="setup-evidence">~/.local/bin/conduct-ts 0.100.0</p><p class="mD-detail-enables">Without it, Mission Control cannot commission or observe gated ai-conductor runs.</p>
     </aside></div>
     </div>
   </section>

@@ -3,7 +3,7 @@
 > The Setup panel was a 1359px scroll of thirteen equal rows with no verdict. Ten of those
 > rows were fine and cost 640px saying so. This reworks it into a verdict plus a family rail.
 
-Four options were drawn over this machine's live snapshot and rendered in
+Four options were drawn over a sanitized, representative 13-check snapshot and rendered in
 [mockups.html](mockups.html), which is script-free so it opens rendered in the Files tab.
 
 ## The decision
@@ -22,24 +22,19 @@ rail, in exchange for a fixed 541px frame instead of a 1131px scroll.
 
 ### What mockups.html is
 
-**A frozen decision record, and there is no tooling in this repository that rebuilds it.**
+**A frozen, sanitized decision record, and there is no tooling in this repository that rebuilds it.**
 It sits alongside 102 other `docs/plans/*/plan.html` artifacts, none of which has a committed
 generator either; a self-contained authored page is the convention here.
 
-It was produced during the decision turn by a throwaway script that ran from a gitignored
-working directory, and that script is deliberately not committed, because it cannot be
-without breaking two of this repository's boundaries. It reads the live
-`GET /api/setup/checks` snapshot from the operator's own daemon - that is operator data, which
-never lands in the repository - and a pinned copy of the pre-rework `src/web/styles.css`, which
-would be an 892KB second source of truth for a file that already has one. Committing it would
-also make this the only built artifact in a directory of authored ones.
+The decision-turn prototype was produced by a throwaway script in a gitignored working
+directory. The committed page is an authored, sanitized version: it uses an operator placeholder
+and representative install counts and versions rather than the raw setup response or the
+operator's inventory. Its inlined pre-rework stylesheet preserves the baseline geometry without
+committing the 892KB stylesheet copy or a second build path.
 
-So treat the page as **read-only**. It is a photograph of four options and the machine they
-were drawn over on the day one was chosen, not a view that re-reads anything. Its "Today" tab
-still measures 980x1359px because the stylesheet it inlined predates the rework; that is the
-baseline B was chosen against, and it is the reason the page must not be regenerated against
-today's stylesheet even if someone rebuilds the script. If it ever needs to change, re-derive
-it rather than hand-patching it - a hand-edit is what once put an em dash into it.
+The page is a static record of the four options, not a view that re-reads machine state. Its
+"Today" tab still measures 980x1359px because the inlined stylesheet predates the rework; that
+is the baseline B was chosen against. There is no rebuild command in this repository.
 
 The page carries no JavaScript, because Mission Control renders HTML in a sandboxed iframe
 whose CSP blocks page scripts: every tab, the family rail in B, and the tile selection in D
@@ -47,18 +42,19 @@ are radio inputs plus `:checked ~` sibling selectors. That it carries no script,
 stylesheet, no fetched asset and no em dash, and that each control still switches with
 scripting disabled, was verified when the page was written, by the same throwaway script.
 Those properties are inherent to the file as committed rather than enforced by a check in
-this repository - anyone can confirm them by reading it or opening it with scripting off.
+this repository.
 
 ## What was wrong
 
-Measured in Chromium at 1440x1000, against a real 13-check snapshot (10 ready, 3 missing):
+Measured in Chromium at 1440x1000 with the 13-check layout represented in the sanitized
+mockup (10 ready, 3 missing):
 
 | | Height | Notes |
 |---|---|---|
 | Today | 1359px | 10 satisfied rows consume 640px; no verdict anywhere |
 | A - verdict first | 1131px | verdict + satisfied rows collapsed to one line |
 | **B - family rail** | **541px** | **fixed frame, one family at a time** |
-| C - triage | 1053px | gaps first, inventory as a reference table |
+| C - triage | 1059px | gaps first, inventory as a reference table |
 | D - inventory grid | 661px | all 13 as tiles, needs a 1180px pane |
 
 Each satisfied row carried a `READY` pill, a `RECOMMENDED` pill and a full

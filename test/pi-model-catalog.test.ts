@@ -148,6 +148,28 @@ function depsFor(
 test("Pi catalog resolution preserves success and degrades every resolver failure", async (t) => {
   const signal = new AbortController().signal;
 
+  await t.test("pre-aborted signal skips executable resolution and discovery", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let resolverCalled = false;
+    let discoveryCalled = false;
+    const result = await discoverConfiguredPiModels("pi", {
+      signal: controller.signal,
+      resolve: async () => {
+        resolverCalled = true;
+        return "/resolved/pi";
+      },
+      discover: async () => {
+        discoveryCalled = true;
+        return { ok: false, problem: "unavailable" };
+      },
+    });
+
+    assert.equal(resolverCalled, false);
+    assert.equal(discoveryCalled, false);
+    assert.deepEqual(result, { ok: false, problem: "process_failed" });
+  });
+
   await t.test("resolved executable reaches discovery", async () => {
     const resolved: string[] = [];
     const discovered: string[] = [];

@@ -106,6 +106,7 @@ export async function discoverConfiguredPiModels(
   configuredExecutable: string,
   deps: PiModelCatalogResolutionDeps = {},
 ): Promise<ModelCatalogDiscoveryResult> {
+  if (deps.signal?.aborted) return failure("process_failed");
   try {
     const executable = await (deps.resolve ?? resolveBinPath)(configuredExecutable);
     if (!executable) return failure("process_failed");

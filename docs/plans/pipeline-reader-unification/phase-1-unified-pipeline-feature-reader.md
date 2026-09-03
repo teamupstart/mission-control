@@ -21,7 +21,7 @@ The operator-visible change is that one selection now answers every question abo
 ## Scope
 
 - Add one reader component that composes the commission regions and the run regions.
-- Resolve one `activeRun` and route every run-derived value through it.
+- Resolve `activeRun` AND `activeCommission`, and route every derived value through them.
 - Suppress `PipelineRunView`'s own header when a commission header sits above it.
 - Collapse the two commission regions by default once a run exists.
 - Add a rail affordance from a commission to its observed linked run.
@@ -51,6 +51,17 @@ The operator-visible change is that one selection now answers every question abo
   missing ladder and verbs, not a styling gap.
 - `commissionRun` already exists at `PipelineRuns.tsx:76`, resolved from `commission.linkedRun`
   against the `runs` array via `pipelineRunKeyOf`. Reuse it; do not add a second lookup.
+- **The blindness is symmetric, and this is the easiest thing in this phase to get half right.**
+  `commission` (`PipelineRuns.tsx:73`) is null whenever a run is addressed: `openPipelineRun`
+  clears `selectedCommissionId`, so the first arm misses, and the second arm requires
+  `selected === null`, so it misses too. Resolving only `activeRun` therefore fixes the
+  commission-selected direction and leaves the run-selected direction exactly as broken as it
+  is today. Both identities must be resolved.
+- Reverse resolution is unambiguous rather than best-effort. The `idx_pipeline_commissions_run`
+  unique index (`src/server/db.ts:2914`) covers `(provider, repo_root, run_slug)` where the slug
+  is non-null, so a run has at most one commission. `pipelineCommissionForSession`
+  (`src/web/components/layouts/types.ts:272`) already performs this lookup by run key; follow it
+  rather than inventing a second matching rule.
 - `PipelineRunView` takes `actions` as a `ReactNode` slot
   (`src/web/pipelines/PipelineRunView.tsx:220`), so verbs are injected rather than mounted. It
   owns `<header className="pipelines-run-head">` at `:232`, carrying eyebrow, title and facts
@@ -81,26 +92,37 @@ The operator-visible change is that one selection now answers every question abo
 
 One component, six regions, rendered in fixed order, each gated on having evidence:
 
-1. Header. Eyebrow, title, caption from the commission when one exists, else from the run.
-2. `<PipelinePhaseMeter run={activeRun} commission={commission} />`. Unchanged props.
-3. Engineer attempts. When a commission exists.
-4. Specification handoff. When `commission.handoff` exists. The implementation-run line becomes
-   a button that calls the run-selection callback rather than printing the slug as text.
-5. `<PipelineRunView run={activeRun} detail={detail} actions={actions} showHeader={!commission} />`.
-   When `activeRun` is non-null.
+1. Header. Identity from `activeRun` when one exists - slug, group chip, tier - and from
+   `activeCommission` otherwise. This direction is deliberate: it keeps a run-addressed heading
+   reading the run's own slug instead of switching to a commission's `planSlug`, which the
+   existing specs assert (`e2e/specs/runs-pipelines-tab.spec.ts:289`).
+2. `PipelinePhaseMeter` with `activeRun` and `activeCommission`. Unchanged component.
+3. Engineer attempts. When `activeCommission` exists.
+4. Specification handoff. When `activeCommission.handoff` exists. The implementation-run line
+   becomes a button that calls the run-selection callback rather than printing the slug as text.
+5. `PipelineRunView` with `activeRun`, the fetched detail, the actions slot, and its own header
+   suppressed. When `activeRun` is non-null.
 6. Blockers and errors from both sources, deduplicated so one stop is stated once.
 
 Move the commission pane markup out of `PipelineRuns.tsx:240-280` into regions 1, 3, 4 and 6
-rather than rewriting it. Props: `commission`, `activeRun`, `detail`, `actions`, `onSelectRun`.
+rather than rewriting it. Props: `activeCommission`, `activeRun`, `detail`, `actions`,
+`onSelectRun`.
 
-Regions 3 and 4 wrap in `<details>` with `open={!activeRun}`, per decision 3: expanded while
-authoring is the live work, collapsed once implementation is, and always reachable.
+Regions 3 and 4 wrap in `<details>` with `open` set from the absence of `activeRun`, per
+decision 3: expanded while authoring is the live work, collapsed once implementation is, and
+always reachable.
 
-### 2. Resolve one run in `PipelineRuns.tsx`
+### 2. Resolve both identities in `PipelineRuns.tsx`
 
 ```ts
 const activeRun = run ?? commissionRun;
+const activeCommission = commission ?? commissionForRun(commissions, activeRun);
 ```
+
+`commissionForRun` matches `commission.linkedRun` against a run by `pipelineRunKeyOf` and
+returns null for a null run. Put it in `pipeline-run-model.ts`'s sibling position only if it
+needs a test of its own; a local helper in this component is acceptable, but it must not
+duplicate a matching rule that `types.ts:272` already states differently.
 
 Then reroute, keeping the existing comments' reasoning intact:
 
@@ -108,9 +130,16 @@ Then reroute, keeping the existing comments' reasoning intact:
   the same null fallbacks the current call uses for a missing run.
 - `daemon` looked up from `activeRun`'s repository rather than `run`'s.
 - `runVerbs`, `runActions`, `runConsoles` all keyed off `activeRun`.
+- Every commission region reads `activeCommission`, never the raw `commission`.
 
 Selection precedence is unchanged: an addressed run still wins over a commission's linked run, so
-a deep link keeps naming exactly one thing.
+a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region to
+the pane; it never changes which feature is addressed.
+
+The phase meter stays out of scope and stays correct: `pipelineRunForCommission` returns
+`linkedRun` whenever a commission is linked, so handing it a resolved commission beside its own
+run yields the same run it yields today. No progress derivation is edited or read differently,
+which is what keeps decision 1 intact.
 
 ### 3. Replace the either/or
 
@@ -144,11 +173,17 @@ migration. The tab and every route it calls already ship.
 
 Per `AGENTS.md` this is a UI behavior change and requires Playwright coverage.
 
-- `e2e/specs/runs-pipelines-tab.spec.ts`: a selected commission with an observed linked run shows
-  `Engineer attempts` AND the run strip (the `Pipeline for <slug>` group) AND `Gate verdicts` AND
-  a control verb, in one pane. Selecting the run directly shows the same regions. The handoff's
-  implementation-run control navigates to the run address. Update the `Attempts` assertion at
-  `:311` for the `Kickback attempts` rename.
+- `e2e/specs/runs-pipelines-tab.spec.ts`: cover BOTH directions, because one resolution fixes
+  only one of them and a spec that drives only the commission side would pass with
+  `activeCommission` missing entirely:
+  - a selected commission with an observed linked run shows `Engineer attempts` AND the run
+    strip (the `Pipeline for <slug>` group) AND `Gate verdicts` AND a control verb, in one pane;
+  - **selecting that same run directly shows the same regions**, which is the assertion that
+    proves `activeCommission` resolves;
+  - a run with no commission renders with no Engineer regions and its own slug in the header,
+    so the reverse lookup missing is distinguishable from it returning nothing;
+  - the handoff's implementation-run control navigates to the run address.
+  Update the `Attempts` assertion at `:311` for the `Kickback attempts` rename.
 - `e2e/specs/pipeline-controls.spec.ts`: `Park` and the daemon consoles are reachable for a
   commission-selected feature, which today they are not.
 - The same spec pins decision 3: before handoff `Engineer attempts` is expanded; once a linked
@@ -176,7 +211,10 @@ already the tallest thing on the tab and no markup assertion can measure used he
 - One reader draws a feature from either selection side; no path renders the old either/or.
 - A commission-selected feature with an observed linked run offers the step ladder, gate verdicts
   and the control verbs its state makes useful.
-- A run-selected feature shows Engineer attempts and specification handoff.
+- A run-selected feature shows Engineer attempts and specification handoff, resolved through
+  `activeCommission` rather than requiring the operator to have selected the commission.
+- A run with no commission renders without Engineer regions and keeps its own slug in the
+  header.
 - Engineer attempts and specification handoff are collapsed by default once a run exists and
   expanded before handoff.
 - No file under `pipeline-run-model.ts` or `PipelinePhaseMeter.tsx` is modified.
@@ -190,7 +228,8 @@ already the tallest thing on the tab and no markup assertion can measure used he
 Later work may rely on:
 
 - `PipelineFeatureReader` being the single reader for the Pipelines tab.
-- `activeRun` being the one resolved run every run-derived value in `PipelineRuns.tsx` reads.
+- `activeRun` being the one resolved run every run-derived value in `PipelineRuns.tsx` reads,
+  and `activeCommission` being the one resolved commission every commission region reads.
 - `PipelineRunView`'s `showHeader` prop existing and defaulting to `true`.
 
 **Requirement carried to `pipeline-attempt-recovery` Phase 3 (operator decision 2, 2026-09-03):**
@@ -215,3 +254,12 @@ order.
   non-goals and exit criteria were written to make that boundary checkable rather than implied.
 - 2026-09-03: the `Attempts` / `Engineer attempts` heading collision was found while resolving
   e2e selector seams and assigned here, since composing the two panes is what creates it.
+- 2026-09-03, round 1 review: the plan resolved only `activeRun`, which fixed the
+  commission-selected direction and left the run-selected direction as broken as before,
+  contradicting this phase's own outcome. `commission` is null whenever a run is addressed, so
+  the regions gated on it could never render that way. Added `activeCommission` with the reverse
+  lookup, pinned the header's identity to `activeRun` so a run-addressed heading does not start
+  reading a commission's `planSlug`, and required both directions in the spec rather than one.
+  Confirmed the addition stays inside decision 1: `pipelineRunForCommission` returns `linkedRun`
+  when a commission is linked, so the meter reads the same run either way and no progress
+  derivation is touched.

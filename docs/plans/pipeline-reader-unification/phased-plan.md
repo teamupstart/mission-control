@@ -34,6 +34,12 @@ Resolved on 2026-09-03. Requirements, not implementation-time choices.
   styling gap.
 - `commissionRun` already exists (`PipelineRuns.tsx:76`), resolved from `commission.linkedRun`
   against the `runs` array. The fix reuses it rather than adding a lookup.
+- The blindness is symmetric. `commission` (`PipelineRuns.tsx:73`) is null whenever a run is
+  addressed, because `openPipelineRun` clears `selectedCommissionId` and the fallback arm
+  requires `selected === null`. Resolving only a run therefore fixes one direction and leaves
+  the other untouched, so the phase resolves `activeCommission` as well. The reverse lookup is
+  unambiguous: `idx_pipeline_commissions_run` (`src/server/db.ts:2914`) is unique on
+  `(provider, repo_root, run_slug)` where the slug is non-null.
 - `PipelineRunView` already takes `actions` as a `ReactNode` slot
   (`src/web/pipelines/PipelineRunView.tsx:220`), so the verbs are injected rather than mounted.
   It owns its own `<header className="pipelines-run-head">` at `:232`, which is the only part

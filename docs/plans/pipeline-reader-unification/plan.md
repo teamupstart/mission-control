@@ -110,35 +110,60 @@ Engineer segment would blank the board bar the moment implementation begins.
 Replace the either/or with a single `<PipelineFeatureReader>` that renders whichever regions
 have evidence, in a fixed order, and never fewer than one:
 
-1. Header: eyebrow, title, caption. Sourced from the commission when there is one, else the run.
-2. Phase meter. Unchanged component, unchanged props.
-3. Engineer attempts. When a commission exists. Expanded before handoff; collapsed by default
-   once a run exists, per decision 3.
-4. Specification handoff. When `commission.handoff` exists, collapsed by default once a run
-   exists. The implementation-run line becomes a button that selects the run rather than plain
-   text.
+1. Header. Identity comes from `activeRun` when one exists - its slug, group chip and tier -
+   and from `activeCommission` otherwise. That direction matters: the run is the live work once
+   it exists, and it keeps a run-addressed heading reading the run's own slug rather than
+   switching to a commission's `planSlug`, which the existing specs assert.
+2. Phase meter. Unchanged component, `activeRun` and `activeCommission` as its props.
+3. Engineer attempts. When `activeCommission` exists. Expanded before handoff; collapsed by
+   default once a run exists, per decision 3.
+4. Specification handoff. When `activeCommission.handoff` exists, collapsed by default once a
+   run exists. The implementation-run line becomes a button that selects the run rather than
+   plain text.
 5. Run strip, gate verdicts and control verbs, by mounting the existing `PipelineRunView`.
-   When a run exists, whether it was addressed directly or reached through a commission.
+   When `activeRun` exists, whether it was addressed directly or reached through a commission.
 6. Blockers and errors, from both sources, deduplicated.
+
+Because the composed reader always owns the header, `PipelineRunView` is mounted with its own
+header suppressed from this caller in every case, not only when a commission was selected.
 
 `PipelineRunView` is reused as-is. Its own header stays suppressed when a commission header is
 already above it, which is the only prop it gains.
 
-### One resolved run, so the run-shaped wiring stops being commission-blind
+### Two resolved identities, so neither direction is blind to the other
 
-Today `run` is the addressed run only. Introduce one resolved value and feed everything from it:
+The either/or is not only in the markup. `run` is the addressed run only, and `commission`
+(`PipelineRuns.tsx:73`) resolves to null whenever a run is addressed, because
+`openPipelineRun` clears `selectedCommissionId` and the second arm requires `selected === null`.
+So each selection direction is blind to the other identity, and resolving only one of them
+fixes only one direction. Resolve both:
 
 ```ts
 const activeRun = addressedRun ?? commissionRun;
+const activeCommission = commission ?? commissionForRun(commissions, activeRun);
 ```
 
-and route `usePipelineRunDetail`, `daemon`, `runVerbs`, `runActions` and `runConsoles` through
-`activeRun` instead of `run`. That is what gives a commission-selected feature its ladder,
-its verdicts and its park / unpark / grant verbs, and it is the substantive behavior change in
-this plan.
+`commissionForRun` matches `commission.linkedRun` against a run by `pipelineRunKeyOf`, which is
+the same reverse lookup `pipelineCommissionForSession` already performs
+(`src/web/components/layouts/types.ts:272`). It is unambiguous rather than best-effort: the
+`idx_pipeline_commissions_run` unique index (`src/server/db.ts:2914`) is on
+`(provider, repo_root, run_slug)` where the slug is non-null, so a run has at most one
+commission.
+
+Then route `usePipelineRunDetail`, `daemon`, `runVerbs`, `runActions` and `runConsoles` through
+`activeRun`, and every commission region through `activeCommission`. Together those are the
+substantive behavior change in this plan: `activeRun` is what gives a commission-selected
+feature its ladder, verdicts and park / unpark / grant verbs, and `activeCommission` is what
+gives a run-selected feature its Engineer attempts and specification handoff.
+
+**The phase meter is unaffected**, which keeps decision 1 intact. `pipelineRunForCommission`
+returns `linkedRun` whenever a commission is linked, so passing a resolved commission alongside
+its own run yields exactly the run it yields today. No progress derivation is read differently
+and none is edited.
 
 Selection precedence is unchanged: an addressed run still wins over a commission's linked run,
-so a deep link keeps naming exactly one thing.
+so a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region
+to the pane; it never changes which feature is addressed.
 
 ### Rail
 
@@ -189,10 +214,15 @@ Recommended: land this **before** Phase 3, kept strictly presentational.
 
 Behavior changes, so per `AGENTS.md` this needs a Playwright spec.
 
-- `e2e/specs/runs-pipelines-tab.spec.ts`: extend. A selected commission with an observed
-  linked run shows Engineer attempts AND the run strip AND a control verb in one pane.
-  Selecting the run directly shows the same regions. The handoff's implementation-run control
-  navigates to the run address.
+- `e2e/specs/runs-pipelines-tab.spec.ts`: extend, and cover BOTH directions, since one
+  resolution fixes only one of them:
+  - a selected commission with an observed linked run shows Engineer attempts AND the run strip
+    AND a control verb in one pane;
+  - **selecting that same run directly shows the same regions**, which is the assertion that
+    would have caught `activeCommission` being missing;
+  - a run with no commission at all still renders, with no Engineer regions and the run's own
+    identity in the header;
+  - the handoff's implementation-run control navigates to the run address.
 - `e2e/specs/pipeline-controls.spec.ts`: extend. Control verbs are reachable for a
   commission-selected feature, which today they are not.
 - The same spec pins decision 3: before handoff the Engineer attempts region is expanded, and

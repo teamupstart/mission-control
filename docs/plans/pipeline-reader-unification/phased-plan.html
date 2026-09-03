@@ -99,6 +99,13 @@ are empty for it. This is the mechanical cause of the missing verbs, not a styli
 <li><code>commissionRun</code> already exists (<code>PipelineRuns.tsx:76</code>), resolved from
 <code>commission.linkedRun</code> against the <code>runs</code> array. The fix reuses it rather
 than adding a lookup.</li>
+<li>The blindness is symmetric. <code>commission</code> (<code>PipelineRuns.tsx:73</code>) is null
+whenever a run is addressed, because <code>openPipelineRun</code> clears
+<code>selectedCommissionId</code> and the fallback arm requires <code>selected === null</code>.
+Resolving only a run therefore fixes one direction and leaves the other untouched, so the phase
+resolves <code>activeCommission</code> as well. The reverse lookup is unambiguous:
+<code>idx_pipeline_commissions_run</code> (<code>src/server/db.ts:2914</code>) is unique on
+<code>(provider, repo_root, run_slug)</code> where the slug is non-null.</li>
 <li><code>PipelineRunView</code> already takes <code>actions</code> as a <code>ReactNode</code>
 slot (<code>src/web/pipelines/PipelineRunView.tsx:220</code>), so the verbs are injected rather
 than mounted. It owns its own header at <code>:232</code>, which is the only part that duplicates

@@ -241,31 +241,56 @@ part Phase 3 owns and this plan leaves alone.</figcaption>
 <p>Replace the either/or with a single <code>&lt;PipelineFeatureReader&gt;</code> that renders
 whichever regions have evidence, in a fixed order, and never fewer than one:</p>
 <ol>
-<li>Header: eyebrow, title, caption. Sourced from the commission when there is one, else the run.</li>
-<li>Phase meter. Unchanged component, unchanged props.</li>
-<li>Engineer attempts. When a commission exists. Expanded before handoff; collapsed by default
-once a run exists, per decision 3.</li>
-<li>Specification handoff. When <code>commission.handoff</code> exists, collapsed by default once a
-run exists. The implementation-run line becomes a button that selects the run rather than plain
-text.</li>
+<li>Header. Identity comes from <code>activeRun</code> when one exists - its slug, group chip and
+tier - and from <code>activeCommission</code> otherwise. That direction matters: the run is the
+live work once it exists, and it keeps a run-addressed heading reading the run's own slug rather
+than switching to a commission's <code>planSlug</code>, which the existing specs assert.</li>
+<li>Phase meter. Unchanged component, <code>activeRun</code> and <code>activeCommission</code> as
+its props.</li>
+<li>Engineer attempts. When <code>activeCommission</code> exists. Expanded before handoff;
+collapsed by default once a run exists, per decision 3.</li>
+<li>Specification handoff. When <code>activeCommission.handoff</code> exists, collapsed by default
+once a run exists. The implementation-run line becomes a button that selects the run rather than
+plain text.</li>
 <li>Run strip, gate verdicts and control verbs, by mounting the existing
-<code>PipelineRunView</code>. When a run exists, whether it was addressed directly or reached
-through a commission.</li>
+<code>PipelineRunView</code>. When <code>activeRun</code> exists, whether it was addressed
+directly or reached through a commission.</li>
 <li>Blockers and errors, from both sources, deduplicated.</li>
 </ol>
-<p><code>PipelineRunView</code> is reused as-is. Its own header stays suppressed when a commission
-header is already above it, which is the only prop it gains.</p>
+<p>Because the composed reader always owns the header, <code>PipelineRunView</code> is mounted with
+its own header suppressed from this caller in every case, not only when a commission was
+selected.</p>
 
-<h3>One resolved run, so the run-shaped wiring stops being commission-blind</h3>
-<p>Today <code>run</code> is the addressed run only. Introduce one resolved value and feed
-everything from it:</p>
-<pre><code>const activeRun = addressedRun ?? commissionRun;</code></pre>
-<p>and route <code>usePipelineRunDetail</code>, <code>daemon</code>, <code>runVerbs</code>,
-<code>runActions</code> and <code>runConsoles</code> through <code>activeRun</code> instead of
-<code>run</code>. That is what gives a commission-selected feature its ladder, its verdicts and
-its park / unpark / grant verbs, and it is the substantive behavior change in this plan.</p>
+<h3>Two resolved identities, so neither direction is blind to the other</h3>
+<p>The either/or is not only in the markup. <code>run</code> is the addressed run only, and
+<code>commission</code> (<code>PipelineRuns.tsx:73</code>) resolves to null whenever a run is
+addressed, because <code>openPipelineRun</code> clears <code>selectedCommissionId</code> and the
+second arm requires <code>selected === null</code>. So each selection direction is blind to the
+other identity, and resolving only one of them fixes only one direction. Resolve both:</p>
+<pre><code>const activeRun = addressedRun ?? commissionRun;
+const activeCommission = commission ?? commissionForRun(commissions, activeRun);</code></pre>
+<p><code>commissionForRun</code> matches <code>commission.linkedRun</code> against a run by
+<code>pipelineRunKeyOf</code>, which is the same reverse lookup
+<code>pipelineCommissionForSession</code> already performs
+(<code>src/web/components/layouts/types.ts:272</code>). It is unambiguous rather than
+best-effort: the <code>idx_pipeline_commissions_run</code> unique index
+(<code>src/server/db.ts:2914</code>) is on <code>(provider, repo_root, run_slug)</code> where the
+slug is non-null, so a run has at most one commission.</p>
+<p>Then route <code>usePipelineRunDetail</code>, <code>daemon</code>, <code>runVerbs</code>,
+<code>runActions</code> and <code>runConsoles</code> through <code>activeRun</code>, and every
+commission region through <code>activeCommission</code>. Together those are the substantive
+behavior change in this plan: <code>activeRun</code> is what gives a commission-selected feature
+its ladder, verdicts and park / unpark / grant verbs, and <code>activeCommission</code> is what
+gives a run-selected feature its Engineer attempts and specification handoff.</p>
+<div class="callout">
+<p><strong>The phase meter is unaffected</strong>, which keeps decision 1 intact.
+<code>pipelineRunForCommission</code> returns <code>linkedRun</code> whenever a commission is
+linked, so passing a resolved commission alongside its own run yields exactly the run it yields
+today. No progress derivation is read differently and none is edited.</p>
+</div>
 <p>Selection precedence is unchanged: an addressed run still wins over a commission's linked run,
-so a deep link keeps naming exactly one thing.</p>
+so a deep link keeps naming exactly one thing. Resolving a commission from a run adds a region to
+the pane; it never changes which feature is addressed.</p>
 
 <h3>Rail</h3>
 <p>Unchanged grouping. Two additions:</p>
@@ -355,10 +380,17 @@ not blocked behind that gate.</li>
 <h2>Tests</h2>
 <p>Behavior changes, so per <code>AGENTS.md</code> this needs a Playwright spec.</p>
 <ul>
-<li><code>e2e/specs/runs-pipelines-tab.spec.ts</code>: extend. A selected commission with an
-observed linked run shows Engineer attempts AND the run strip AND a control verb in one pane.
-Selecting the run directly shows the same regions. The handoff's implementation-run control
-navigates to the run address.</li>
+<li><code>e2e/specs/runs-pipelines-tab.spec.ts</code>: extend, and cover BOTH directions, since
+one resolution fixes only one of them:
+<ul>
+<li>a selected commission with an observed linked run shows Engineer attempts AND the run strip
+AND a control verb in one pane;</li>
+<li><strong>selecting that same run directly shows the same regions</strong>, which is the
+assertion that would have caught <code>activeCommission</code> being missing;</li>
+<li>a run with no commission at all still renders, with no Engineer regions and the run's own
+identity in the header;</li>
+<li>the handoff's implementation-run control navigates to the run address.</li>
+</ul></li>
 <li><code>e2e/specs/pipeline-controls.spec.ts</code>: extend. Control verbs are reachable for a
 commission-selected feature, which today they are not.</li>
 <li>The same spec pins decision 3: before handoff the Engineer attempts region is expanded, and once

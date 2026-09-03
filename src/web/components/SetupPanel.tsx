@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
+  homeRelative,
   setupRowAnchor,
   type SetupDependencyId,
+  type SetupFamilyId,
   type SetupRowView,
 } from "@shared/setup-catalog.ts";
 import type {
@@ -331,23 +333,55 @@ const STATUS_LABEL = {
   unknown: "Unknown",
 } as const;
 
-function SetupRow({ row }: { row: SetupRowView }): React.JSX.Element {
+/**
+ * Evidence, shortened to `~` where it sits under this machine's home.
+ *
+ * The tooltip carries the absolute path, and only when shortening actually hid something:
+ * a hover that repeats the text already on screen is worse than no hover at all.
+ */
+function Evidence({ evidence, home }: { evidence: string; home: string }): React.JSX.Element {
+  const shown = homeRelative(evidence, home);
+  const line = <p className="setup-evidence">{shown}</p>;
+  return shown === evidence ? line : <Tooltip label={evidence}>{line}</Tooltip>;
+}
+
+function SetupRow({ row, home }: { row: SetupRowView; home: string }): React.JSX.Element {
   const status = row.status;
+  const satisfied = status.state === "satisfied";
   return (
     <article className={`setup-row setup-row-${status.state}`} data-anchor={setupRowAnchor(row.rowId)}>
       <div className="setup-row-main">
         <div className="setup-row-title">
+          {/* Labelled, not decorative. Dropping the pill from a satisfied row left the dot as
+              the only thing saying so, and a dot conveys its meaning entirely through colour -
+              which is no meaning at all to a screen reader, and the one state with no pill,
+              no amber wash and no impact sentence to fall back on. */}
+          <span
+            className={`setup-dot setup-dot-${satisfied ? "ready" : "gap"}`}
+            role="img"
+            aria-label={STATUS_LABEL[status.state]}
+          />
           <strong>{row.label}</strong>
-          <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
-          <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
+          {/* A satisfied row states its status with the dot and its own colour. The pill is
+              kept for the states that need a word, and `required` is the only requirement
+              worth repeating on a row that is already fine - "recommended" on ten healthy
+              rows describes a decision made long ago and says nothing about now. */}
+          {!satisfied && (
+            <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
+          )}
+          {(!satisfied || row.requirement === "required") && (
+            <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
+          )}
         </div>
-        {status.state === "satisfied" ? (
-          <p className="setup-evidence">{status.evidence}</p>
+        {satisfied ? (
+          <Evidence evidence={status.evidence} home={home} />
         ) : (
           <>
             <p className="setup-impact">{row.enables}</p>
             {status.state !== "missing" && <p className="setup-why">{status.why}</p>}
-            {status.state !== "missing" && status.evidence && <p className="setup-evidence">{status.evidence}</p>}
+            {status.state !== "missing" && status.evidence && (
+              <Evidence evidence={status.evidence} home={home} />
+            )}
             <Remedy row={row} />
           </>
         )}
@@ -356,45 +390,301 @@ function SetupRow({ row }: { row: SetupRowView }): React.JSX.Element {
   );
 }
 
-export function SetupPanel({ state }: { state: SetupChecksState }): React.JSX.Element {
-  const panelTourRef = useTourTargetRef<HTMLElement>("setup:panel");
-  const agentsTourRef = useTourTargetRef<HTMLElement>("setup:family-agents");
-  const githubTourRef = useTourTargetRef<HTMLElement>("setup:family-github");
-  const recheckTourRef = useTourTargetRef<HTMLButtonElement>("setup:recheck");
-  const familyTourRefs: Partial<Record<(typeof SETUP_FAMILY_IDS)[number], (node: HTMLElement | null) => void>> = {
-    agents: agentsTourRef,
-    github: githubTourRef,
+/** The stable empty reading, so "no rows yet" keeps one identity across renders. */
+const NO_ROWS: readonly SetupRowView[] = [];
+
+/** How many of a family's checks are satisfied, and whether any gap is a required one. */
+interface FamilyTally {
+  ready: number;
+  total: number;
+  gaps: number;
+  requiredGaps: number;
+}
+
+function tally(rows: readonly SetupRowView[]): FamilyTally {
+  const gaps = rows.filter((row) => row.status.state !== "satisfied");
+  return {
+    ready: rows.length - gaps.length,
+    total: rows.length,
+    gaps: gaps.length,
+    requiredGaps: gaps.filter((row) => row.requirement === "required").length,
   };
+}
+
+/**
+ * Which family the rail opens on before the operator has chosen one.
+ *
+ * A required gap first, then any gap, then the catalog's first family. The panel exists to
+ * say what this machine cannot do, so opening on a family that is entirely fine buries the
+ * answer behind a click - and the Setup banner links straight here precisely when something
+ * required is unsatisfied.
+ */
+function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
+  const byFamily = SETUP_FAMILY_IDS.map((family) => ({
+    family,
+    tally: tally(rows.filter((row) => row.family === family)),
+  }));
   return (
-    <section className="settings-section setup-panel">
-      <div className="setup-intro" data-anchor="setup/recheck" ref={panelTourRef}>
-        <div>
-          <p className="settings-hint">See what Mission Control can use on this machine and what an incomplete setup prevents.</p>
-          <p className="setup-read-only">Commands stay copyable. Runnable remedies open in a visible terminal where you can watch them and read the exit code.</p>
+    byFamily.find((entry) => entry.tally.requiredGaps > 0)?.family
+    ?? byFamily.find((entry) => entry.tally.gaps > 0)?.family
+    ?? SETUP_FAMILY_IDS[0]
+  );
+}
+
+/**
+ * The family a deep-link anchor lands in, or null when it names nothing this build renders.
+ *
+ * Two anchor shapes reach here. `setup/family-<id>` is the rail item itself, which is what
+ * the guided tour and any "show me this family" caller asks for. Anything else is a row
+ * anchor from `setupRowAnchor`, and a row is only in the DOM while its family is selected -
+ * so a jump to one has to select that family first, or the page's flash observer waits for
+ * an element that will never mount and silently lights nothing.
+ */
+export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
+  const named = SETUP_FAMILY_IDS.find((family) => anchor === `setup/family-${family}`);
+  if (named) return named;
+  return rows.find((row) => setupRowAnchor(row.rowId) === anchor)?.family ?? null;
+}
+
+/** Which family the rail is showing, and which deep-link request settled it. */
+export interface SetupSelection {
+  chosen: SetupFamilyId | null;
+  seenRequest: number | null;
+}
+
+export interface SetupSelectionInput {
+  rows: readonly SetupRowView[];
+  jumpRequestId: number | null;
+  jumpFamily: SetupFamilyId | null;
+}
+
+/**
+ * The rail's next selection, or null when nothing should change.
+ *
+ * Pure, and separate from the effect that applies it, because the precedence here is the
+ * whole of the rail's behaviour and none of it is observable in markup: a deep link has to
+ * beat the opening default, the opening default has to be latched exactly once, and a request
+ * that arrives before the snapshot must not be consumed unresolved.
+ */
+export function nextSetupSelection(
+  current: SetupSelection,
+  input: SetupSelectionInput,
+): SetupSelection | null {
+  // Nothing to decide from. The request is deliberately left unconsumed: the panel starts
+  // fetching as it mounts, so a link from the command palette or Foreman routinely arrives
+  // before the rows that would resolve it.
+  if (input.rows.length === 0) return null;
+
+  const unseen = input.jumpRequestId !== current.seenRequest;
+  // A fresh deep link outranks the default and the operator's last click alike.
+  if (unseen && input.jumpFamily) {
+    return { chosen: input.jumpFamily, seenRequest: input.jumpRequestId };
+  }
+
+  // An unresolvable request is consumed rather than waited on, so a link to a row this build
+  // does not render cannot pin the rail forever.
+  const seenRequest = unseen ? input.jumpRequestId : current.seenRequest;
+  // Latched once. `defaultFamily` answers "where are the gaps", and that answer changes:
+  // re-deriving it would move the rail on the very Re-check that repaired the family being
+  // read, unmounting those rows to reward the operator for fixing something.
+  const chosen = current.chosen ?? defaultFamily(input.rows);
+  if (chosen === current.chosen && seenRequest === current.seenRequest) return null;
+  return { chosen, seenRequest };
+}
+
+function VerdictHeader({
+  rows,
+  loading,
+  onRefresh,
+  recheckRef,
+  panelRef,
+}: {
+  rows: readonly SetupRowView[];
+  loading: boolean;
+  onRefresh(): void;
+  recheckRef: (node: HTMLButtonElement | null) => void;
+  panelRef: (node: HTMLElement | null) => void;
+}): React.JSX.Element {
+  const all = tally(rows);
+  const clean = all.requiredGaps === 0;
+  return (
+    // Carries `setup/recheck`, which is what the command palette's "Machine setup checks"
+    // entry deep-links to, and the tour's opening spotlight. Both used to sit on an intro
+    // paragraph that this header replaced.
+    <header className="setup-verdict" data-anchor="setup/recheck" ref={panelRef}>
+      <div className={`setup-verdict-mark is-${clean ? "ready" : "attention"}`} aria-hidden>
+        {clean ? "✓" : "!"}
+      </div>
+      <div className="setup-verdict-body">
+        <h3>
+          {rows.length === 0
+            ? "Reading this machine..."
+            : clean
+              ? "This machine can run sessions."
+              : "This machine is missing something required."}
+        </h3>
+        {/* One tick per check, in catalog order. The shape of the machine is readable before
+            any word is, and amber-versus-red carries the only distinction that changes what
+            you have to do about it. */}
+        <div className="setup-meter" role="img" aria-label={`${all.ready} of ${all.total} checks ready`}>
+          {rows.map((row) => {
+            const state = row.status.state === "satisfied"
+              ? "ready"
+              : row.requirement === "required" ? "required" : "gap";
+            return <span key={setupRowAnchor(row.rowId)} className={`setup-tick is-${state}`} />;
+          })}
         </div>
+        <p className="setup-verdict-detail">
+          <strong>{all.ready} of {all.total} ready</strong>
+          {clean
+            ? all.gaps === 0
+              ? " · nothing is missing."
+              : ` · no required gaps. ${all.gaps} optional tool${all.gaps === 1 ? "" : "s"} would add capability.`
+            : ` · ${all.requiredGaps} required gap${all.requiredGaps === 1 ? "" : "s"} blocks work.`}
+        </p>
+      </div>
+      <div className="setup-verdict-actions">
         <Tooltip label="Inspect this machine again">
-          <button type="button" className="btn btn-ghost" disabled={state.loading} onClick={() => void state.refresh()} ref={recheckTourRef}>
-            {state.loading ? "Checking..." : "Re-check"}
+          <button type="button" className="btn btn-ghost" disabled={loading} onClick={onRefresh} ref={recheckRef}>
+            {loading ? "Checking..." : "Re-check"}
           </button>
         </Tooltip>
+        <p className="setup-verdict-note">Remedies open in a visible terminal you can watch.</p>
       </div>
+    </header>
+  );
+}
+
+export function SetupPanel({
+  state,
+  jumpAnchor = null,
+  jumpRequestId = null,
+}: {
+  state: SetupChecksState;
+  /** A deep link asking for one row or one family. See `familyForAnchor`. */
+  jumpAnchor?: string | null;
+  jumpRequestId?: number | null;
+}): React.JSX.Element {
+  const panelTourRef = useTourTargetRef<HTMLElement>("setup:panel");
+  const railTourRef = useTourTargetRef<HTMLElement>("setup:rail");
+  const paneTourRef = useTourTargetRef<HTMLElement>("setup:pane");
+  const recheckTourRef = useTourTargetRef<HTMLButtonElement>("setup:recheck");
+
+  // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
+  // and a new identity every render makes both of them run every render.
+  const rows = state.view?.rows ?? NO_ROWS;
+  const home = state.view?.home ?? "";
+
+  // Chosen, not derived on every read. `null` means "nobody has chosen", which is the only
+  // state `defaultFamily` may answer for: re-deriving on each snapshot would move the rail
+  // out from under the operator the moment a Re-check repaired the family they were reading.
+  const [chosen, setChosen] = useState<SetupFamilyId | null>(null);
+  const [seenRequest, setSeenRequest] = useState<number | null>(null);
+
+  // A deep link outranks the default and the operator's last click alike - it is a fresh,
+  // explicit request to look at one thing. Keyed on the request id so the same anchor asked
+  // for twice still moves the rail back after the operator has clicked elsewhere.
+  const jumpFamily = useMemo(
+    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows) : null),
+    [jumpAnchor, rows],
+  );
+
+  // Applied during render rather than only in the effect below, and both are needed.
+  //
+  // Render is what makes the FIRST paint already show the requested family: settling this in
+  // an effect alone renders the default family once and then swaps, which is a visible flash
+  // on every deep link and renders the wrong family entirely where effects do not run.
+  // The effect is what makes it STICK: the page clears the jump as soon as it has flashed the
+  // control, so a family held only by the live prop would snap back the moment it went away.
+  const unseenJump = jumpRequestId !== seenRequest ? jumpFamily : null;
+  const active = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows) : SETUP_FAMILY_IDS[0]);
+
+  // One effect applying one decision, because the jump and the opening default both write
+  // `chosen`: as two effects they fire in the same commit and the loser is decided by
+  // declaration order, which is how a deep link loses to the default it was overriding.
+  useEffect(() => {
+    const next = nextSetupSelection({ chosen, seenRequest }, { rows, jumpRequestId, jumpFamily });
+    if (!next) return;
+    setChosen(next.chosen);
+    setSeenRequest(next.seenRequest);
+  }, [rows, jumpFamily, jumpRequestId, seenRequest, chosen]);
+
+  const info = SETUP_FAMILY_INFO[active];
+  const activeRows = rows.filter((row) => row.family === active);
+
+  return (
+    <section className="settings-section setup-panel">
+      {/* No standing intro paragraph. It spent the top of the panel restating the question
+          ("see what Mission Control can use on this machine") that the verdict now answers
+          outright, and its read-only promise is the verdict's own note. */}
+      <VerdictHeader
+        rows={rows}
+        loading={state.loading}
+        onRefresh={() => void state.refresh()}
+        recheckRef={recheckTourRef}
+        panelRef={panelTourRef}
+      />
       {state.error && <p className="settings-error">{state.error}</p>}
-      {SETUP_FAMILY_IDS.map((family) => {
-        const info = SETUP_FAMILY_INFO[family];
-        const rows = state.view?.rows.filter((row) => row.family === family) ?? [];
-        return (
-          <section className="setup-family" id={`setup-family-${family}`} key={family} aria-labelledby={`setup-family-${family}-title`} ref={familyTourRefs[family]}>
-            <header className="setup-family-head">
-              <div>
-                <h3 id={`setup-family-${family}-title`}>{info.label}</h3>
-                <p>{info.description}</p>
-              </div>
-              {rows.length > 0 && <span>{rows.filter((row) => row.status.state === "satisfied").length}/{rows.length} ready</span>}
-            </header>
-            {rows.length > 0 ? <div className="setup-rows">{rows.map((row) => <SetupRow key={setupRowAnchor(row.rowId)} row={row} />)}</div> : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}
-          </section>
-        );
-      })}
+      <div className="setup-split">
+        <nav className="setup-rail" aria-label="Setup families" ref={railTourRef}>
+          {SETUP_FAMILY_IDS.map((family) => {
+            const familyRows = rows.filter((row) => row.family === family);
+            const counts = tally(familyRows);
+            const label = SETUP_FAMILY_INFO[family].label;
+            return (
+              <Tooltip key={family} label={SETUP_FAMILY_INFO[family].description}>
+                <button
+                  type="button"
+                  id={`setup-family-${family}`}
+                  data-anchor={`setup/family-${family}`}
+                  className={`setup-rail-item${family === active ? " is-active" : ""}`}
+                  aria-current={family === active ? "true" : undefined}
+                  // Spelt out, because the visible count is "2/5": a screen reader reading a
+                  // rail of five of those learns nothing, and the dot beside it is decorative.
+                  aria-label={familyRows.length > 0
+                    ? `${label}: ${counts.ready} of ${counts.total} ready`
+                    : label}
+                  onClick={() => setChosen(family)}
+                >
+                  {/* Only once there is a reading to report. With no rows every family has
+                      no gaps, which would draw five green dots while the machine is still
+                      being inspected - a clean bill of health nothing has established yet. */}
+                  {familyRows.length > 0 && (
+                    <span
+                      className={`setup-dot setup-dot-${counts.gaps > 0 ? "gap" : "ready"}`}
+                      aria-hidden
+                    />
+                  )}
+                  <span className="setup-rail-label">{label}</span>
+                  {familyRows.length > 0 && (
+                    <span className="setup-rail-count">{counts.ready}/{counts.total}</span>
+                  )}
+                </button>
+              </Tooltip>
+            );
+          })}
+        </nav>
+        <div
+          className="setup-pane"
+          id="setup-pane"
+          aria-labelledby={`setup-family-${active}-title`}
+          ref={paneTourRef}
+        >
+          <header className="setup-pane-head">
+            <h3 id={`setup-family-${active}-title`}>{info.label}</h3>
+            <p>{info.description}</p>
+          </header>
+          {activeRows.length > 0
+            ? (
+                <div className="setup-rows">
+                  {activeRows.map((row) => (
+                    <SetupRow key={setupRowAnchor(row.rowId)} row={row} home={home} />
+                  ))}
+                </div>
+              )
+            : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}
+        </div>
+      </div>
     </section>
   );
 }

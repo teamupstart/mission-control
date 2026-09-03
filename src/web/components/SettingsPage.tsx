@@ -553,7 +553,16 @@ export function SettingsPage({
         // stacking comment above exists to avoid.
         return <DispatchSettingsPanel />;
       case "setup":
-        return <SetupPanel state={setup} />;
+        // Handed the jump as well as the state: the panel shows one family at a time, so a
+        // link to a row in an unselected family has to move the rail before this page's
+        // flash observer can ever find that row in the DOM.
+        return (
+          <SetupPanel
+            state={setup}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
+          />
+        );
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":

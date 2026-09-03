@@ -5,6 +5,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { expectRowStatus, openSetupFamily } from "../fixtures/setup-panel.ts";
 
 const EVIDENCE = artifactsDir("guided-setup");
 const TOUR_COMMAND = /Start Set up this machine tour, command/;
@@ -43,11 +44,12 @@ test("a stale tab cannot dismiss a setup regression observed elsewhere", async (
   daemon.installFakeGh();
   const currentPage = await page.context().newPage();
   await currentPage.goto(`${daemon.baseURL}/#/settings/setup`);
-  await expect(currentPage.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+  await openSetupFamily(currentPage, "github");
+  await expectRowStatus(currentPage, "dependency-gh-cli", "Ready");
 
   daemon.removeFakeGh();
   await currentPage.getByRole("button", { name: "Re-check" }).click();
-  await expect(currentPage.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await expectRowStatus(currentPage, "dependency-gh-cli", "Missing");
 
   await staleBanner.getByRole("button", { name: "Dismiss setup reminder" }).click();
   await expect(staleBanner).toBeVisible();
@@ -66,13 +68,14 @@ test("a dismissal transport failure stays actionable without leaking into a late
   await expect(banner).toBeHidden();
 
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "github");
   daemon.installFakeGh();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+  await expectRowStatus(page, "dependency-gh-cli", "Ready");
 
   daemon.removeFakeGh();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await expectRowStatus(page, "dependency-gh-cli", "Missing");
   await expect(banner).toBeVisible();
 
   await daemon.crash();
@@ -84,12 +87,12 @@ test("a dismissal transport failure stays actionable without leaking into a late
   await daemon.restart();
   daemon.installFakeGh();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
+  await expectRowStatus(page, "dependency-gh-cli", "Ready");
   await expect(banner).toBeHidden();
 
   daemon.removeFakeGh();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await expectRowStatus(page, "dependency-gh-cli", "Missing");
   await expect(banner).toBeVisible();
   await expect(banner.getByRole("alert")).toHaveCount(0);
 });
@@ -110,7 +113,8 @@ test("the setup reminder is durable, detects a regression, and the tour stays re
   await banner.getByRole("link", { name: "Open Setup" }).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
   await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await openSetupFamily(page, "github");
+  await expectRowStatus(page, "dependency-gh-cli", "Missing");
 
   await page.getByRole("button", { name: "Dismiss setup reminder" }).click();
   await expect(banner).toBeHidden();
@@ -124,14 +128,15 @@ test("the setup reminder is durable, detects a regression, and the tour stays re
   await expect(banner).toBeHidden();
 
   daemon.installFakeGh();
+  await openSetupFamily(page, "github");
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Ready");
-  await expect(page.locator('[data-anchor="setup/dependency-gh-auth"]')).toContainText("Ready");
+  await expectRowStatus(page, "dependency-gh-cli", "Ready");
+  await expectRowStatus(page, "dependency-gh-auth", "Ready");
   await expect(banner).toBeHidden();
 
   daemon.removeFakeGh();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(page.locator('[data-anchor="setup/dependency-gh-cli"]')).toContainText("Missing");
+  await expectRowStatus(page, "dependency-gh-cli", "Missing");
   await expect(banner).toBeVisible();
 
   const beforeTour = appConfigSnapshot(daemon);
@@ -139,16 +144,29 @@ test("the setup reminder is durable, detects a regression, and the tour stays re
 
   let step = tourStep(page, "Setup in one place");
   await expect(step).toBeVisible();
-  await expect(page.locator(".setup-intro")).toHaveClass(/driver-active-element/);
+  await expect(page.locator(".setup-verdict")).toHaveClass(/driver-active-element/);
+  // The opening stop is the verdict, which is also where the panel now makes its
+  // read-only promise - there is no standing intro paragraph above it any more.
+  await expect(page.locator(".setup-verdict")).toContainText("visible terminal");
   await shoot(page, "setup-guided-tour");
 
   await step.getByRole("button", { name: "Next" }).click();
   step = tourStep(page, "Read by family");
   await expect(step).toBeVisible();
-  await expect(page.locator("#setup-family-agents")).toHaveClass(/driver-active-element/);
+  // Reading by family IS the rail now, so that is what this stop spotlights. Only the
+  // selected family's rows are mounted, so there is no per-family element to point at.
+  await expect(page.locator(".setup-rail")).toHaveClass(/driver-active-element/);
+
+  // The next two stops are about statuses and remedies, so they select GitHub - both of its
+  // rows are required, and gh is missing in this fixture. A stop that stayed on whatever the
+  // rail opened on could spotlight a family with no remedy to show.
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Trust each status");
+  await expect(step).toBeVisible();
+  await expect(page.locator("#setup-pane")).toHaveClass(/driver-active-element/);
+  await expect(page.locator("#setup-pane")).toContainText("GitHub CLI");
 
   for (const title of [
-    "Trust each status",
     "Follow a remedy",
     "Check again when ready",
     "You know where to return",

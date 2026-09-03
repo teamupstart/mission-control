@@ -38,9 +38,13 @@ test("both discovery surfaces use the Setup entry and its route", () => {
   assert.equal(entry.palette.title, "Start Set up this machine tour");
 });
 
-test("every targeted stop prepares the Setup route", () => {
+test("every targeted stop prepares the Setup route, and the row stops name their family", () => {
   let moves = 0;
-  const navigation: SetupTourNavigation = { showSetup: () => { moves += 1; return true; } };
+  const families: string[] = [];
+  const navigation: SetupTourNavigation = {
+    showSetup: () => { moves += 1; return true; },
+    showSetupFamily: (family) => { moves += 1; families.push(family); return true; },
+  };
   for (const stop of SETUP_TOUR.steps.filter((candidate) => candidate.targets.length > 0)) {
     assert.equal(stop.prepare?.({
       runtime: null,
@@ -51,5 +55,13 @@ test("every targeted stop prepares the Setup route", () => {
       element: null,
     }), true);
   }
-  assert.equal(moves, 5);
+  assert.equal(moves, 5, "every targeted stop puts the route on Setup");
+  // The panel shows one family at a time, so the two stops whose copy is about statuses and
+  // remedies have to select the family that has both. Leaving them on whatever the rail
+  // opened on is how they end up spotlighting a family with nothing to point at.
+  assert.deepEqual(families, ["github", "github"]);
+  const paneStops = SETUP_TOUR.steps
+    .filter((step) => step.targets.some((beat) => beat.target === "setup:pane"))
+    .map((step) => step.id);
+  assert.deepEqual(paneStops, ["statuses", "remedies"]);
 });

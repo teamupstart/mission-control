@@ -19,6 +19,7 @@ test("a successful setup read keeps its view and clears the error", async () => 
   const view: SetupChecksSnapshot = {
     snapshotToken: "00000000-0000-4000-8000-000000000000",
     rows: [],
+    home: "/home/test",
     banner: { visible: true, attentionRowIds: [], attentionCount: 0 },
   };
   assert.deepEqual(await readSetupChecks(async () => view), { view, error: null });

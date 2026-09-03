@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 
 test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
 
@@ -22,8 +23,9 @@ test("Setup clears stale results when a re-check is rejected", async ({ page, da
   });
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-  const claude = page.locator('[data-anchor="setup/dependency-claude-cli"]');
-  await expect(claude).toContainText("Ready");
+  await openSetupFamily(page, "agents");
+  const claude = setupRow(page, "dependency-claude-cli");
+  await expectRowStatus(page, "dependency-claude-cli", "Ready");
 
   rejectChecks = true;
   await page.getByRole("button", { name: "Re-check" }).click();
@@ -43,22 +45,32 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     "Inspects tools and configuration in your home directory without changing them.",
   );
 
-  const claude = page.locator('[data-anchor="setup/dependency-claude-cli"]');
+  await openSetupFamily(page, "agents");
+  const claude = setupRow(page, "dependency-claude-cli");
   await expect(claude).toContainText("Claude Code");
-  await expect(claude).toContainText("Ready");
-  await expect(claude).toContainText(daemon.home);
+  await expectRowStatus(page, "dependency-claude-cli", "Ready");
+  // The evidence is stated relative to this machine's home rather than repeating it. The
+  // absolute path stays reachable through the row's tooltip description.
+  const evidence = claude.locator(".setup-evidence");
+  await expect(evidence).toHaveText(/^~\//);
+  const describedBy = await evidence.getAttribute("aria-describedby");
+  expect(await page.locator(`#${describedBy}`).textContent()).toContain(daemon.home);
 
-  const conductor = page.locator('[data-anchor="setup/dependency-ai-conductor"]');
-  await expect(conductor).toContainText("Missing");
-  await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
-
-  const wezterm = page.locator('[data-anchor="setup/dependency-wezterm"]');
+  await openSetupFamily(page, "terminals");
+  const wezterm = setupRow(page, "dependency-wezterm");
   await expect(wezterm).toContainText("Missing");
   await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
 
+  await openSetupFamily(page, "pipelines");
+  const conductor = setupRow(page, "dependency-ai-conductor");
+  await expect(conductor).toContainText("Missing");
+  await expect(conductor.getByRole("link", { name: "Open Conductor settings" })).toBeVisible();
+
   daemon.installFakeConductor();
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(conductor).toContainText("Ready");
+  // Still on Pipelines: a Re-check reports into the family being read rather than moving the
+  // rail to wherever the gaps now are.
+  await expectRowStatus(page, "dependency-ai-conductor", "Ready");
   await expect(conductor).toContainText("installed-conductor/bin/conduct-ts");
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
@@ -81,9 +93,10 @@ test.describe("login-shell binaries", () => {
   test("Setup recognizes Pi installed by a login-shell version manager", async ({ page, daemon }) => {
     await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
-    const pi = page.locator('[data-anchor="setup/dependency-pi-cli"]');
+    await openSetupFamily(page, "agents");
+    const pi = setupRow(page, "dependency-pi-cli");
     await expect(pi).toContainText("Pi");
-    await expect(pi).toContainText("Ready");
+    await expectRowStatus(page, "dependency-pi-cli", "Ready");
     await expect(pi).toContainText("login-bin/pi");
     await expect(pi.getByText("Missing", { exact: true })).not.toBeVisible();
 

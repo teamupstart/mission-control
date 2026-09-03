@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup panel - four ways to rework it</title>
+<style>
+:root { color-scheme: dark; --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23; --border: #232a33; --border-soft: #1b2129; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798; --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149; --exited: #707a88; --neutral: #8b94a3; --select: #35c08a; --find: #e3b341; --purple: #a371f7; --foreman: var(--purple); --held: var(--purple); --syntax-type: #d97757; --pr-open: #3fb950; --pr-merged: var(--purple); --prio-low: var(--dim); --prio-med: var(--working); --prio-high: var(--attention); --prio-blocker: var(--danger); --cost: var(--purple); --board-col-wide: 520px; --radius: 13px; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28); --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+* { box-sizing: border-box; }
+html, body { margin: 0px; padding: 0px; }
+body { font-family: var(--sans); color: var(--fg); background: radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg); min-height: 100vh; -webkit-font-smoothing: antialiased; text-rendering: optimizelegibility; }
+@keyframes breathe { 
+  50% { opacity: 0.55; }
+}
+@keyframes ka-settle { 
+  50% { opacity: 0.45; }
+}
+@keyframes blink { 
+  50% { opacity: 0.25; }
+}
+@keyframes mode-spin { 
+  100% { transform: rotate(360deg); }
+}
+.btn { font-style: inherit; font-variant: inherit; font-stretch: inherit; line-height: inherit; font-family: inherit; font-optical-sizing: inherit; font-size-adjust: inherit; font-kerning: inherit; font-feature-settings: inherit; font-variation-settings: inherit; font-language-override: inherit; font-size: 12px; font-weight: 540; color: var(--fg); background: var(--panel-2); border: 1px solid color-mix(in oklab, var(--working) 28%, var(--border)); border-radius: 8px; padding: 5px 11px; cursor: pointer; transition: background 0.14s, border-color 0.14s, color 0.14s; }
+.btn:hover:not(:disabled) { color: var(--fg); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); background: color-mix(in oklab, var(--working) 14%, var(--panel-2)); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-ghost { color: var(--muted); background: transparent; border-color: transparent; }
+@keyframes turn-flash { 
+  0% { outline-color: color-mix(in oklab, var(--find) 85%, transparent); background-color: color-mix(in oklab, var(--find) 13%, transparent); }
+  100% { outline-color: transparent; background-color: transparent; }
+}
+@keyframes guided-pop { 
+  0% { opacity: 0; transform: translateY(-3px); }
+}
+@keyframes guided-pop-up { 
+  0% { opacity: 0; transform: translateY(3px); }
+}
+select:not([multiple]) { appearance: base-select; color-scheme: dark; font-style: inherit; font-variant: inherit; font-weight: inherit; font-stretch: inherit; line-height: inherit; font-family: inherit; font-optical-sizing: inherit; font-size-adjust: inherit; font-kerning: inherit; font-feature-settings: inherit; font-variation-settings: inherit; font-language-override: inherit; font-size: 12px; color: var(--fg); cursor: pointer; border: 1px solid var(--border); border-radius: 6px; padding: 6px 28px 6px 9px; background-color: var(--bg-2); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939eae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color 0.14s; }
+select:not([multiple]):focus { outline: none; border-color: color-mix(in oklab, var(--working) 50%, var(--border)); }
+select:not([multiple]):disabled { color: var(--dim); opacity: 0.6; cursor: default; }
+select:not([multiple]) option { color: var(--fg); background: var(--bg-2); border-radius: 4px; padding: 6px 8px; }
+select:not([multiple]) option:checked { color: var(--fg); background: color-mix(in oklab, var(--working) 24%, var(--bg-2)); }
+select:not([multiple]) option:hover, select:not([multiple]) option:focus-visible { color: var(--fg); background: color-mix(in oklab, var(--working) 15%, var(--bg-2)); }
+.btn-primary { color: rgb(255, 255, 255); background: color-mix(in oklab, var(--working) 82%, #1b2a44); border-color: color-mix(in oklab, var(--working) 70%, var(--border)); }
+.btn-primary:hover:not(:disabled) { background: var(--working) !important; color: rgb(255, 255, 255) !important; }
+.settings-scope { display: inline-flex; align-items: center; padding: 2px 7px; border: 1px solid var(--border); border-radius: 20px; font-family: var(--mono); font-size: 9px; font-weight: 640; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.settings-scope-home-read { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 40%, var(--border)); background: color-mix(in oklab, var(--idle) 9%, transparent); }
+.settings-panel-head { display: flex; align-items: center; gap: 12px; margin: 0px 0px 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); }
+.settings-panel-head h2 { margin: 0px; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.settings-panel-head .settings-scope { margin-left: auto; }
+.settings-pane { flex: 1 1 0%; min-width: 0px; padding: 18px 26px 60px; }
+.settings-pane > .settings-section { max-width: 900px; }
+@media (max-width: 760px){.settings-pane { padding: 16px; }}
+.settings-hint { margin: 16px 0px 0px; font-size: 11.5px; line-height: 1.5; color: var(--dim); }
+@keyframes settings-flash { 
+  0% { outline-color: var(--attention); background: color-mix(in oklab, var(--attention) 14%, transparent); }
+  100% { outline-color: transparent; background: transparent; }
+}
+.settings-section code { font-family: var(--mono); font-size: 11px; padding: 1px 4px; border-radius: 4px; background: var(--panel-2); color: var(--fg); overflow-wrap: anywhere; }
+@keyframes pend-breathe { 
+  50% { background: var(--working); }
+}
+@keyframes pend-shimmer { 
+  0% { background-position: 120% 0px; }
+  100% { background-position: -100% 0px; }
+}
+@keyframes fleet-spinner-spin { 
+  100% { transform: rotate(360deg); }
+}
+@keyframes line-flow { 
+  0% { left: 0px; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { left: calc(100% - 6px); opacity: 0; }
+}
+@keyframes tile-workflow-reveal { 
+  0% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0px); }
+}
+@keyframes activity-spin { 
+  100% { transform: rotate(360deg); }
+}
+.setup-panel { max-width: 980px !important; }
+.setup-intro, .setup-family-head, .setup-row-title, .setup-command { align-items: center; display: flex; }
+.setup-intro { gap: 20px; justify-content: space-between; margin-bottom: 22px; }
+.setup-intro .settings-hint, .setup-read-only, .setup-family-head p, .setup-impact, .setup-why, .setup-evidence, .setup-loading { margin: 0px; }
+.setup-read-only, .setup-family-head p, .setup-evidence, .setup-loading { color: var(--dim); font-size: 11px; }
+.setup-read-only { margin-top: 4px; }
+.setup-family + .setup-family { margin-top: 24px; }
+.setup-family-head { align-items: end; border-bottom: 1px solid var(--border-soft); gap: 16px; justify-content: space-between; padding: 0px 2px 8px; }
+.setup-family-head h3 { font-size: 13px; margin: 0px 0px 3px; }
+.setup-family-head > span { color: var(--dim); flex: 0 0 auto; font-family: var(--mono); font-size: 10px; }
+.setup-rows { border-bottom: 1px solid var(--border-soft); }
+.setup-row { border-top: 1px solid var(--border-soft); padding: 12px 3px; }
+.setup-rows .setup-row:first-child { border-top: 0px; }
+.setup-row-main { min-width: 0px; }
+.setup-row-title { gap: 8px; }
+.setup-row-title strong { font-size: 12.5px; font-weight: 620; }
+.setup-status, .setup-requirement { border: 1px solid var(--border); border-radius: 999px; font-family: var(--mono); font-size: 9px; letter-spacing: 0.025em; line-height: 1; padding: 3px 6px; text-transform: uppercase; }
+.setup-status-satisfied { background: color-mix(in oklab, var(--idle) 9%, transparent); border-color: color-mix(in oklab, var(--idle) 40%, var(--border)); color: var(--idle); }
+.setup-status-missing, .setup-status-needs-setup { background: color-mix(in oklab, var(--attention) 8%, transparent); border-color: color-mix(in oklab, var(--attention) 38%, var(--border)); color: var(--attention); }
+.setup-requirement { color: var(--dim); }
+.setup-requirement-required { border-color: color-mix(in oklab, var(--attention) 28%, var(--border)); }
+.setup-impact, .setup-why { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin-top: 6px; max-width: 760px; }
+.setup-evidence { font-family: var(--mono); margin-top: 5px; overflow-wrap: anywhere; }
+.setup-command { flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.setup-command code { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 5px; font-size: 11px; padding: 6px 8px; }
+.setup-command .btn, .setup-link { font-size: 11px; }
+.setup-remedy-actions { margin-top: 9px; }
+.setup-remedy-actions .setup-command { margin-top: 0px; }
+.setup-run-controls { align-items: end; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.setup-terminal-choice { color: var(--dim); display: grid; font-size: 10px; gap: 4px; }
+.setup-terminal-choice select { font-size: 11px; min-height: 28px; }
+.setup-terminal-choice select { max-width: 430px; }
+.setup-link { display: inline-block; margin-top: 9px; }
+@media (max-width: 620px){.setup-intro, .setup-family-head { align-items: flex-start; flex-direction: column; }}
+.mock-shell { max-width: 1400px; margin: 0px auto; padding: 22px 24px 80px; }
+.mock-bar { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); display: grid; gap: 12px; margin-bottom: 24px; padding: 14px 16px; }
+.mock-bar h1 { font-size: 14px; font-weight: 650; margin: 0px; }
+.mock-bar > p { color: var(--dim); font-size: 11px; margin: 0px; line-height: 1.5; }
+.mock-bar code { color: var(--muted); font-family: var(--mono); }
+.mock-decision { border-left: 2px solid var(--idle); padding-left: 10px; }
+.mock-decision strong { color: var(--idle); }
+.mock-decision em { color: var(--fg); font-style: normal; }
+.opt-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.opt-blurbs { margin-bottom: 22px; }
+.opt-tabs label { background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; color: var(--muted); cursor: pointer; font-size: 11.5px; font-weight: 560; padding: 6px 13px; }
+.opt-tabs label:hover { color: var(--fg); }
+.opt-blurb { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: 0px; max-width: 860px; }
+.mock-pane { border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--bg-2); }
+.mock-note { color: var(--dim); font-size: 10.5px; margin: 14px 0px 0px; }
+.mc-dot { border-radius: 50%; flex: 0 0 auto; height: 7px; width: 7px; }
+.mc-dot.is-ready { background: var(--idle); }
+.mc-dot.is-gap { background: var(--attention); }
+.mc-verdict { align-items: center; background: linear-gradient(180deg, color-mix(in oklab, var(--panel-2) 92%, transparent), var(--panel)); border: 1px solid var(--border); border-radius: var(--radius); display: flex; gap: 16px; margin-bottom: 24px; padding: 15px 17px; }
+.mc-verdict-mark { align-items: center; border: 1px solid var(--border); border-radius: 50%; display: flex; flex: 0 0 auto; font-size: 15px; font-weight: 700; height: 30px; justify-content: center; width: 30px; }
+.mc-verdict-mark.is-ready { background: color-mix(in oklab, var(--idle) 13%, transparent); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); color: var(--idle); }
+.mc-verdict-body { display: grid; gap: 7px; min-width: 0px; }
+.mc-verdict-body h3 { font-size: 13.5px; font-weight: 620; letter-spacing: -0.005em; margin: 0px; }
+.mc-meter { display: flex; gap: 3px; }
+.mc-tick { border-radius: 2px; height: 6px; width: 15px; }
+.mc-tick.is-ready { background: color-mix(in oklab, var(--idle) 78%, transparent); }
+.mc-tick.is-gap { background: color-mix(in oklab, var(--attention) 72%, transparent); }
+.mc-verdict-detail { color: var(--muted); font-size: 11.5px; margin: 0px; }
+.mc-verdict-detail strong { color: var(--fg); font-weight: 600; }
+.mc-verdict-actions { place-items: flex-end end; display: grid; gap: 6px; margin-left: auto; text-align: right; }
+.mc-verdict-actions .btn { font-size: 11px; }
+.mc-verdict-note { color: var(--dim); font-size: 10px; margin: 0px; max-width: 190px; }
+.mA-req { color: var(--dim); flex: 0 0 auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.03em; text-transform: uppercase; }
+.mA-req.is-required { color: var(--attention); font-weight: 600; }
+.mA-family + .mA-family { margin-top: 20px; }
+.mA-family-head { align-items: baseline; border-bottom: 1px solid var(--border-soft); display: flex; gap: 16px; justify-content: space-between; padding: 0px 2px 7px; }
+.mA-family-titles { min-width: 0px; }
+.mA-family-titles h3 { font-size: 12.5px; font-weight: 640; margin: 0px 0px 3px; }
+.mA-family-titles p { color: var(--dim); font-size: 11px; margin: 0px; }
+.mA-family-count { align-items: center; display: flex; flex: 0 0 auto; gap: 9px; }
+.mA-family-ready { color: var(--dim); font-family: var(--mono); font-size: 10px; }
+.mA-family-gap { background: color-mix(in oklab, var(--attention) 10%, transparent); border: 1px solid color-mix(in oklab, var(--attention) 36%, var(--border)); border-radius: 999px; color: var(--attention); font-family: var(--mono); font-size: 9px; letter-spacing: 0.025em; padding: 3px 7px; text-transform: uppercase; }
+.mA-rows { display: grid; }
+.mA-ready { align-items: center; border-bottom: 1px solid var(--border-soft); display: flex; gap: 10px; min-width: 0px; padding: 7px 14px; }
+.mA-ready-name { flex: 0 0 auto; font-size: 12px; font-weight: 560; }
+.setup-panel code.mA-ready-evidence { background: none; border: 0px; color: var(--dim); padding: 0px; font-family: var(--mono); font-size: 10.5px; margin-left: auto; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.mA-gap { background: color-mix(in oklab, var(--attention) 4%, transparent); border: 1px solid color-mix(in oklab, var(--attention) 26%, var(--border)); border-radius: 9px; margin: 8px 0px; padding: 11px 13px; }
+.mA-gap-title { align-items: center; display: flex; gap: 8px; }
+.mA-gap-title strong { font-size: 12.5px; font-weight: 620; }
+.mA-gap .setup-impact { margin-top: 5px; }
+.mB.setup-panel { max-width: 1060px !important; }
+.mB-split { display: grid; gap: 22px; grid-template-columns: 208px minmax(0px, 1fr); }
+.mB-rail { align-content: start; border-right: 1px solid var(--border-soft); display: grid; gap: 2px; padding-right: 12px; }
+.mB-rail-item { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--muted); cursor: pointer; display: flex; font-family: var(--sans); gap: 9px; padding: 8px 10px; text-align: left; width: 100%; }
+.mB-rail-item:hover { background: var(--panel-2); color: var(--fg); }
+.mB-rail-label { flex: 1 1 0%; font-size: 11.5px; font-weight: 560; min-width: 0px; }
+.mB-rail-count { color: var(--dim); flex: 0 0 auto; font-family: var(--mono); font-size: 10px; }
+.mB-pane { min-height: 430px; }
+.mB-pane-head { align-items: baseline; border-bottom: 1px solid var(--border-soft); display: flex; gap: 16px; justify-content: space-between; padding-bottom: 9px; }
+.mB-pane-head h3 { font-size: 13px; font-weight: 640; margin: 0px 0px 3px; }
+.mB-pane-head p { color: var(--dim); font-size: 11px; margin: 0px; max-width: 620px; }
+.mB-row { border-bottom: 1px solid var(--border-soft); padding: 11px 3px; }
+.mB-row-title { align-items: center; display: flex; gap: 8px; }
+.mB-row-title strong { font-size: 12.5px; font-weight: 620; }
+.mB-row.is-gap { background: color-mix(in oklab, var(--attention) 4%, transparent); }
+.mB-row .setup-evidence { margin-top: 4px; padding-left: 17px; }
+.mB-row .setup-impact, .mB-row .setup-remedy-actions { padding-left: 17px; }
+.mC-head { border-bottom: 1px solid var(--border-soft); margin-bottom: 12px; padding-bottom: 8px; }
+.mC-head h3 { font-size: 13px; font-weight: 640; margin: 0px 0px 3px; }
+.mC-head p { color: var(--dim); font-size: 11px; margin: 0px; }
+.mC-card { background: var(--panel-2); border-top-color: ; border-top-style: ; border-top-width: ; border-right-color: ; border-right-style: ; border-right-width: ; border-bottom-color: ; border-bottom-style: ; border-bottom-width: ; border-image-source: ; border-image-slice: ; border-image-width: ; border-image-outset: ; border-image-repeat: ; border-left: 2px solid var(--attention); border-radius: 9px; margin-bottom: 10px; padding: 12px 14px; }
+.mC-card.is-optional { border-left-color: color-mix(in oklab, var(--attention) 55%, var(--border)); }
+.mC-card-title { align-items: center; display: flex; gap: 9px; }
+.mC-card-title strong { font-size: 12.5px; font-weight: 620; }
+.mC-card-family { color: var(--dim); font-size: 10.5px; margin-left: auto; }
+.mC-card .setup-impact { margin-top: 5px; }
+.mC-ready { margin-top: 26px; }
+.mC-ready-summary { align-items: center; border-top: 1px solid var(--border-soft); cursor: pointer; display: flex; gap: 9px; list-style: none; padding: 11px 3px; }
+.mC-ready-summary::-webkit-details-marker { display: none; }
+.mC-ready-summary strong { font-size: 12.5px; font-weight: 620; }
+.mC-ready-hint { color: var(--dim); font-size: 11px; }
+.mC-ready-summary::after { color: var(--dim); content: "collapse"; font-family: var(--mono); font-size: 9.5px; margin-left: auto; text-transform: uppercase; }
+.mC-table { padding: 2px 3px 0px; }
+.mC-table-family { color: var(--dim); font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.05em; margin: 14px 0px 5px; text-transform: uppercase; }
+.mC-table-family:first-child { margin-top: 4px; }
+.mC-table-row { align-items: baseline; border-bottom: 1px solid var(--border-soft); display: grid; gap: 14px; grid-template-columns: 248px minmax(0px, 1fr); padding: 6px 0px; }
+.mC-table-name { font-size: 11.5px; font-weight: 550; }
+.setup-panel code.mC-table-evidence { background: none; border: 0px; color: var(--dim); padding: 0px; font-family: var(--mono); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mD.setup-panel { max-width: 1180px !important; }
+.mD-split { align-items: start; display: grid; gap: 20px; grid-template-columns: minmax(0px, 1fr) 330px; }
+.mD-band + .mD-band { margin-top: 16px; }
+.mD-band-head { align-items: baseline; border-bottom: 1px solid var(--border-soft); display: flex; gap: 10px; margin-bottom: 9px; padding-bottom: 6px; }
+.mD-band-head h4 { font-size: 11px; font-weight: 620; letter-spacing: 0.04em; margin: 0px; text-transform: uppercase; }
+.mD-band-count { color: var(--dim); font-family: var(--mono); font-size: 10px; margin-left: auto; }
+.mD-tiles { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); }
+.mD-tile { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; display: grid; font-family: var(--sans); gap: 5px; min-width: 0px; padding: 10px 11px; text-align: left; }
+.mD-tile:hover { border-color: color-mix(in oklab, var(--working) 42%, var(--border)); }
+.mD-tile.is-gap { background: color-mix(in oklab, var(--attention) 6%, var(--panel-2)); border-color: color-mix(in oklab, var(--attention) 32%, var(--border)); }
+.mD-tile-top { align-items: start; display: flex; gap: 7px; min-width: 0px; }
+.mD-tile-top .mc-dot { margin-top: 4px; }
+.mD-tile-top .mA-req { margin-top: 2px; }
+.mD-tile-name { -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--fg); display: -webkit-box; font-size: 11.5px; font-weight: 570; line-height: 1.3; overflow: hidden; }
+.mD-tile-line { color: var(--dim); font-family: var(--mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mD-detail { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 15px; position: sticky; top: 18px; }
+.mD-detail-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.mD-detail-head strong { font-size: 13px; font-weight: 640; }
+.mD-detail-family { color: var(--dim); font-size: 10.5px; margin: 6px 0px 0px; text-transform: capitalize; }
+.mD-detail-enables { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin: 8px 0px 0px; }
+.mD-detail .setup-terminal-choice select { max-width: 100%; }
+.mD-detail .setup-command code { overflow-wrap: anywhere; }
+.mD-detail .setup-command .btn { margin-left: auto; }
+.opt-state, .mB-state, .mD-state { position: absolute; opacity: 0; pointer-events: none; }
+.opt-view, .mB-pane, .mD-detail { display: none; }
+#opt-current:checked ~ .stage > .opt-view[data-opt="current"] { display: block; }
+#opt-a:checked ~ .stage > .opt-view[data-opt="a"] { display: block; }
+#opt-b:checked ~ .stage > .opt-view[data-opt="b"] { display: block; }
+#opt-c:checked ~ .stage > .opt-view[data-opt="c"] { display: block; }
+#opt-d:checked ~ .stage > .opt-view[data-opt="d"] { display: block; }
+#opt-current:checked ~ .opt-tabs label[for="opt-current"] { background: color-mix(in oklab, var(--working) 16%, transparent); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); color: var(--fg); }
+#opt-a:checked ~ .opt-tabs label[for="opt-a"] { background: color-mix(in oklab, var(--working) 16%, transparent); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); color: var(--fg); }
+#opt-b:checked ~ .opt-tabs label[for="opt-b"] { background: color-mix(in oklab, var(--working) 16%, transparent); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); color: var(--fg); }
+#opt-c:checked ~ .opt-tabs label[for="opt-c"] { background: color-mix(in oklab, var(--working) 16%, transparent); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); color: var(--fg); }
+#opt-d:checked ~ .opt-tabs label[for="opt-d"] { background: color-mix(in oklab, var(--working) 16%, transparent); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); color: var(--fg); }
+#opt-current:checked ~ .opt-blurbs .opt-blurb[data-opt="current"] { display: block; }
+#opt-a:checked ~ .opt-blurbs .opt-blurb[data-opt="a"] { display: block; }
+#opt-b:checked ~ .opt-blurbs .opt-blurb[data-opt="b"] { display: block; }
+#opt-c:checked ~ .opt-blurbs .opt-blurb[data-opt="c"] { display: block; }
+#opt-d:checked ~ .opt-blurbs .opt-blurb[data-opt="d"] { display: block; }
+.opt-blurb { display: none; }
+#bfam-agents:checked ~ .mB-split .mB-pane[data-fam="agents"] { display: block; }
+#bfam-terminals:checked ~ .mB-split .mB-pane[data-fam="terminals"] { display: block; }
+#bfam-github:checked ~ .mB-split .mB-pane[data-fam="github"] { display: block; }
+#bfam-extensions:checked ~ .mB-split .mB-pane[data-fam="extensions"] { display: block; }
+#bfam-pipelines:checked ~ .mB-split .mB-pane[data-fam="pipelines"] { display: block; }
+#bfam-agents:checked ~ .mB-split .mB-rail-item[for="bfam-agents"] { background: color-mix(in oklab, var(--working) 12%, var(--panel-2)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); color: var(--fg); }
+#bfam-terminals:checked ~ .mB-split .mB-rail-item[for="bfam-terminals"] { background: color-mix(in oklab, var(--working) 12%, var(--panel-2)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); color: var(--fg); }
+#bfam-github:checked ~ .mB-split .mB-rail-item[for="bfam-github"] { background: color-mix(in oklab, var(--working) 12%, var(--panel-2)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); color: var(--fg); }
+#bfam-extensions:checked ~ .mB-split .mB-rail-item[for="bfam-extensions"] { background: color-mix(in oklab, var(--working) 12%, var(--panel-2)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); color: var(--fg); }
+#bfam-pipelines:checked ~ .mB-split .mB-rail-item[for="bfam-pipelines"] { background: color-mix(in oklab, var(--working) 12%, var(--panel-2)); border-color: color-mix(in oklab, var(--working) 40%, var(--border)); color: var(--fg); }
+#dtile-dependency-claude-cli:checked ~ .mD-split .mD-detail[data-row="dependency-claude-cli"] { display: block; }
+#dtile-dependency-codex-cli:checked ~ .mD-split .mD-detail[data-row="dependency-codex-cli"] { display: block; }
+#dtile-dependency-pi-cli:checked ~ .mD-split .mD-detail[data-row="dependency-pi-cli"] { display: block; }
+#dtile-dependency-tmux:checked ~ .mD-split .mD-detail[data-row="dependency-tmux"] { display: block; }
+#dtile-dependency-cmux:checked ~ .mD-split .mD-detail[data-row="dependency-cmux"] { display: block; }
+#dtile-dependency-wezterm:checked ~ .mD-split .mD-detail[data-row="dependency-wezterm"] { display: block; }
+#dtile-dependency-ghostty:checked ~ .mD-split .mD-detail[data-row="dependency-ghostty"] { display: block; }
+#dtile-derived-terminal-pair:checked ~ .mD-split .mD-detail[data-row="derived-terminal-pair"] { display: block; }
+#dtile-dependency-gh-cli:checked ~ .mD-split .mD-detail[data-row="dependency-gh-cli"] { display: block; }
+#dtile-dependency-gh-auth:checked ~ .mD-split .mD-detail[data-row="dependency-gh-auth"] { display: block; }
+#dtile-dependency-claude-plugins:checked ~ .mD-split .mD-detail[data-row="dependency-claude-plugins"] { display: block; }
+#dtile-dependency-claude-skills:checked ~ .mD-split .mD-detail[data-row="dependency-claude-skills"] { display: block; }
+#dtile-dependency-ai-conductor:checked ~ .mD-split .mD-detail[data-row="dependency-ai-conductor"] { display: block; }
+#dtile-dependency-claude-cli:checked ~ .mD-split .mD-tile[for="dtile-dependency-claude-cli"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-codex-cli:checked ~ .mD-split .mD-tile[for="dtile-dependency-codex-cli"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-pi-cli:checked ~ .mD-split .mD-tile[for="dtile-dependency-pi-cli"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-tmux:checked ~ .mD-split .mD-tile[for="dtile-dependency-tmux"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-cmux:checked ~ .mD-split .mD-tile[for="dtile-dependency-cmux"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-wezterm:checked ~ .mD-split .mD-tile[for="dtile-dependency-wezterm"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-ghostty:checked ~ .mD-split .mD-tile[for="dtile-dependency-ghostty"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-derived-terminal-pair:checked ~ .mD-split .mD-tile[for="dtile-derived-terminal-pair"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-gh-cli:checked ~ .mD-split .mD-tile[for="dtile-dependency-gh-cli"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-gh-auth:checked ~ .mD-split .mD-tile[for="dtile-dependency-gh-auth"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-claude-plugins:checked ~ .mD-split .mD-tile[for="dtile-dependency-claude-plugins"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-claude-skills:checked ~ .mD-split .mD-tile[for="dtile-dependency-claude-skills"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+#dtile-dependency-ai-conductor:checked ~ .mD-split .mD-tile[for="dtile-dependency-ai-conductor"] { border-color: color-mix(in oklab, var(--working) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 42%, transparent); }
+.mB-rail-item, .mD-tile { cursor: pointer; }
+.mD-details { position: sticky; top: 18px; }
+</style>
+</head>
+<body>
+
+<div class="mock-shell">
+  <input type="radio" name="opt" id="opt-current" class="opt-state">
+  <input type="radio" name="opt" id="opt-a" class="opt-state" checked>
+  <input type="radio" name="opt" id="opt-b" class="opt-state">
+  <input type="radio" name="opt" id="opt-c" class="opt-state">
+  <input type="radio" name="opt" id="opt-d" class="opt-state">
+  <div class="mock-bar">
+    <h1>Settings &gt; Setup - four ways to rework the panel</h1>
+    <p class="mock-decision">
+      <strong>Chosen: B, the family rail.</strong>
+      Recorded through Mission Control's <code>request_plan_decisions</code> tool, which
+      blocked until the operator submitted. Two questions were put; the operator's answers
+      came back as <em>"Which direction should I implement?"</em> &rarr;
+      <strong>B - Family rail</strong>, and <em>"Should evidence paths render the home
+      directory as ~/?"</em> &rarr; <strong>Yes - show ~/.local/bin/claude</strong>.
+      Option A was the recommendation and was not chosen.
+    </p>
+    <p>
+      A frozen record, not a live view. The panels are drawn with the app's stylesheet as it
+      was <em>before</em> the rework, so the "Today" tab is still the baseline B was chosen
+      against, and the snapshot is the one this machine returned on the day of the decision.
+      Nothing here re-reads either, so it will keep showing the comparison as it stood.
+      See <code>docs/plans/setup-panel-rework/plan.md</code> for what shipped.
+    </p>
+    <p>
+      Rendered over the live snapshot this machine returned from
+      <code>GET /api/setup/checks</code> - 13 real checks, 10 ready, 3 missing - using the
+      app's own <code>src/web/styles.css</code>. Pick a tab. The family rail in B and the
+      tiles in D are live; buttons and selects are shown disabled because a static page
+      cannot open a terminal.
+    </p>
+  </div>
+  <div class="opt-tabs">
+    <label for="opt-current">Today</label>
+    <label for="opt-a">A &middot; Verdict first</label>
+    <label for="opt-b">B &middot; Family rail</label>
+    <label for="opt-c">C &middot; Triage</label>
+    <label for="opt-d">D &middot; Inventory grid</label>
+  </div>
+  <div class="opt-blurbs">
+    <p class="opt-blurb" data-opt="current">The panel as it ships now, drawn from the same live snapshot. 13 rows at equal weight, 1359px tall, and no verdict anywhere - the 3 gaps are found by scrolling past 10 rows that are fine.</p>
+    <p class="opt-blurb" data-opt="a">One verdict above the fold. Ready tools shrink to a name and a path; gaps keep the full impact and remedy. Same families in the same order - 1131px, with the 10 ready rows down from 640px to 320px.</p>
+    <p class="opt-blurb" data-opt="b">A rail of families beside one family's full detail. 541px and fixed - nothing scrolls, and which families have gaps stays visible from inside any of them. Costs you the whole-machine read and Cmd-F.</p>
+    <p class="opt-blurb" data-opt="c">What needs doing, first, in requirement order, regardless of family. The complete inventory becomes a reference table below it. 1059px open.</p>
+    <p class="opt-blurb" data-opt="d">All 13 checks on one screen at 661px. Selecting a tile opens its evidence or its remedy in the sticky pane beside the grid. Widest of the four at 1180px.</p>
+  </div>
+  <div class="stage">
+    
+    <section class="opt-view" data-opt="current">
+      <div class="settings-pane mock-pane">
+        <div class="settings-panel-head">
+          <h2>Setup</h2>
+          <span class="settings-scope settings-scope-home-read">Reads ~/</span>
+        </div>
+        
+  <section class="settings-section setup-panel">
+    <div class="setup-intro">
+      <div>
+        <p class="settings-hint">See what Mission Control can use on this machine and what an incomplete setup prevents.</p>
+        <p class="setup-read-only">Commands stay copyable. Runnable remedies open in a visible terminal where you can watch them and read the exit code.</p>
+      </div>
+      <button type="button" class="btn btn-ghost" disabled>Re-check</button>
+    </div>
+    
+    <section class="setup-family">
+      <header class="setup-family-head">
+        <div><h3>Agent CLIs</h3><p>Mission Control launches these programs to create and continue coding sessions.</p></div>
+        <span>2/3 ready</span>
+      </header>
+      <div class="setup-rows">
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Claude Code</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-recommended">recommended</span>
+          </div>
+          <p class="setup-evidence">/Users/jordan.mance/.local/bin/claude</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Codex CLI</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-recommended">recommended</span>
+          </div>
+          <p class="setup-evidence">/Users/jordan.mance/.local/bin/codex</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-missing">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Pi</strong>
+            <span class="setup-status setup-status-missing">Missing</span>
+            <span class="setup-requirement setup-requirement-recommended">recommended</span>
+          </div>
+          <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>npm install -g @earendil-works/pi-coding-agent</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Pi" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+        </div>
+      </article></div>
+    </section>
+    <section class="setup-family">
+      <header class="setup-family-head">
+        <div><h3>Terminals</h3><p>A usable terminal path needs a window, and detached sessions may also need a multiplexer.</p></div>
+        <span>3/5 ready</span>
+      </header>
+      <div class="setup-rows">
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>tmux</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-evidence">/opt/homebrew/bin/tmux</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-missing">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>cmux</strong>
+            <span class="setup-status setup-status-missing">Missing</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-impact">Adds visible, durable workspaces that need no second terminal to raise them.</p><div class="setup-remedy-actions"><a class="setup-link" href="https://cmux.com/docs/getting-started">Open cmux installation guide<span aria-hidden> &#8599;</span></a></div>
+        </div>
+      </article>
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>WezTerm</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-evidence">/opt/homebrew/bin/wezterm</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-missing">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Ghostty</strong>
+            <span class="setup-status setup-status-missing">Missing</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-impact">Adds native terminal windows that Mission Control can discover and focus on macOS.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>brew install --cask ghostty</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Ghostty" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+        </div>
+      </article>
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>A terminal window Mission Control can open</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-required">required</span>
+          </div>
+          <p class="setup-evidence">tmux: New session, raised in WezTerm.</p>
+        </div>
+      </article></div>
+    </section>
+    <section class="setup-family">
+      <header class="setup-family-head">
+        <div><h3>GitHub</h3><p>The GitHub CLI carries pull requests, reviews, issues, and repository reads.</p></div>
+        <span>2/2 ready</span>
+      </header>
+      <div class="setup-rows">
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>GitHub CLI</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-required">required</span>
+          </div>
+          <p class="setup-evidence">/opt/homebrew/bin/gh</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>GitHub authentication</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-required">required</span>
+          </div>
+          <p class="setup-evidence">Authenticated to github.com</p>
+        </div>
+      </article></div>
+    </section>
+    <section class="setup-family">
+      <header class="setup-family-head">
+        <div><h3>Claude Code extensions</h3><p>Plugins add external capabilities; Mission Control skills add reusable session workflows.</p></div>
+        <span>2/2 ready</span>
+      </header>
+      <div class="setup-rows">
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Claude Code plugins</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-evidence">6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json</p>
+        </div>
+      </article>
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>Mission Control skills</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-evidence">5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills</p>
+        </div>
+      </article></div>
+    </section>
+    <section class="setup-family">
+      <header class="setup-family-head">
+        <div><h3>Pipelines</h3><p>External SDLC engines can drive and report gated feature work.</p></div>
+        <span>1/1 ready</span>
+      </header>
+      <div class="setup-rows">
+      <article class="setup-row setup-row-satisfied">
+        <div class="setup-row-main">
+          <div class="setup-row-title">
+            <strong>ai-conductor</strong>
+            <span class="setup-status setup-status-satisfied">Ready</span>
+            <span class="setup-requirement setup-requirement-optional">optional</span>
+          </div>
+          <p class="setup-evidence">/Users/jordan.mance/.local/bin/conduct-ts 0.104.0</p>
+        </div>
+      </article></div>
+    </section>
+  </section>
+      </div>
+    </section>
+    <section class="opt-view" data-opt="a">
+      <div class="settings-pane mock-pane">
+        <div class="settings-panel-head">
+          <h2>Setup</h2>
+          <span class="settings-scope settings-scope-home-read">Reads ~/</span>
+        </div>
+        <section class="settings-section setup-panel mA">
+  <header class="mc-verdict">
+    <div class="mc-verdict-mark is-ready" aria-hidden="true">&#10003;</div>
+    <div class="mc-verdict-body">
+      <h3>This machine can run sessions.</h3>
+      <div class="mc-meter" role="img" aria-label="10 of 13 checks ready"><span class="mc-tick is-ready" title="Claude Code - Ready"></span><span class="mc-tick is-ready" title="Codex CLI - Ready"></span><span class="mc-tick is-gap" title="Pi - Missing"></span><span class="mc-tick is-ready" title="tmux - Ready"></span><span class="mc-tick is-gap" title="cmux - Missing"></span><span class="mc-tick is-ready" title="WezTerm - Ready"></span><span class="mc-tick is-gap" title="Ghostty - Missing"></span><span class="mc-tick is-ready" title="A terminal window Mission Control can open - Ready"></span><span class="mc-tick is-ready" title="GitHub CLI - Ready"></span><span class="mc-tick is-ready" title="GitHub authentication - Ready"></span><span class="mc-tick is-ready" title="Claude Code plugins - Ready"></span><span class="mc-tick is-ready" title="Mission Control skills - Ready"></span><span class="mc-tick is-ready" title="ai-conductor - Ready"></span></div>
+      <p class="mc-verdict-detail"><strong>10 of 13 ready</strong> &middot; no required gaps. 3 optional tools would add capability.</p>
+    </div>
+    <div class="mc-verdict-actions">
+      <button type="button" class="btn btn-ghost" disabled>Re-check</button>
+      <p class="mc-verdict-note">Remedies open in a visible terminal you can watch.</p>
+    </div>
+  </header>
+    <section class="mA-family">
+      <header class="mA-family-head">
+        <div class="mA-family-titles"><h3>Agent CLIs</h3><p>Mission Control launches these programs to create and continue coding sessions.</p></div>
+        <span class="mA-family-count">
+          <span class="mA-family-ready">2/3</span>
+          <span class="mA-family-gap">1 missing</span>
+        </span>
+      </header>
+      <div class="mA-rows"><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">Claude Code</span>
+           
+           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</code>
+         </div><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">Codex CLI</span>
+           
+           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</code>
+         </div><article class="mA-gap">
+           <div class="mA-gap-title"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>Pi</strong><span class="setup-status setup-status-missing">Missing</span><span class="mA-req is-recommended">recommended</span></div>
+           <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p>
+           <div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>npm install -g @earendil-works/pi-coding-agent</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Pi" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+         </article></div>
+    </section>
+    <section class="mA-family">
+      <header class="mA-family-head">
+        <div class="mA-family-titles"><h3>Terminals</h3><p>A usable terminal path needs a window, and detached sessions may also need a multiplexer.</p></div>
+        <span class="mA-family-count">
+          <span class="mA-family-ready">3/5</span>
+          <span class="mA-family-gap">2 missing</span>
+        </span>
+      </header>
+      <div class="mA-rows"><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">tmux</span>
+           
+           <code class="mA-ready-evidence" title="/opt/homebrew/bin/tmux">/opt/homebrew/bin/tmux</code>
+         </div><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">WezTerm</span>
+           
+           <code class="mA-ready-evidence" title="/opt/homebrew/bin/wezterm">/opt/homebrew/bin/wezterm</code>
+         </div><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">A terminal window Mission Control can open</span>
+           <span class="mA-req is-required">required</span>
+           <code class="mA-ready-evidence" title="tmux: New session, raised in WezTerm.">tmux: New session, raised in WezTerm.</code>
+         </div><article class="mA-gap">
+           <div class="mA-gap-title"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>cmux</strong><span class="setup-status setup-status-missing">Missing</span><span class="mA-req is-optional">optional</span></div>
+           <p class="setup-impact">Adds visible, durable workspaces that need no second terminal to raise them.</p>
+           <div class="setup-remedy-actions"><a class="setup-link" href="https://cmux.com/docs/getting-started">Open cmux installation guide<span aria-hidden> &#8599;</span></a></div>
+         </article><article class="mA-gap">
+           <div class="mA-gap-title"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>Ghostty</strong><span class="setup-status setup-status-missing">Missing</span><span class="mA-req is-optional">optional</span></div>
+           <p class="setup-impact">Adds native terminal windows that Mission Control can discover and focus on macOS.</p>
+           <div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>brew install --cask ghostty</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Ghostty" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+         </article></div>
+    </section>
+    <section class="mA-family">
+      <header class="mA-family-head">
+        <div class="mA-family-titles"><h3>GitHub</h3><p>The GitHub CLI carries pull requests, reviews, issues, and repository reads.</p></div>
+        <span class="mA-family-count">
+          <span class="mA-family-ready">2/2</span>
+          
+        </span>
+      </header>
+      <div class="mA-rows"><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">GitHub CLI</span>
+           <span class="mA-req is-required">required</span>
+           <code class="mA-ready-evidence" title="/opt/homebrew/bin/gh">/opt/homebrew/bin/gh</code>
+         </div><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">GitHub authentication</span>
+           <span class="mA-req is-required">required</span>
+           <code class="mA-ready-evidence" title="Authenticated to github.com">Authenticated to github.com</code>
+         </div></div>
+    </section>
+    <section class="mA-family">
+      <header class="mA-family-head">
+        <div class="mA-family-titles"><h3>Claude Code extensions</h3><p>Plugins add external capabilities; Mission Control skills add reusable session workflows.</p></div>
+        <span class="mA-family-count">
+          <span class="mA-family-ready">2/2</span>
+          
+        </span>
+      </header>
+      <div class="mA-rows"><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">Claude Code plugins</span>
+           
+           <code class="mA-ready-evidence" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</code>
+         </div><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">Mission Control skills</span>
+           
+           <code class="mA-ready-evidence" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
+         </div></div>
+    </section>
+    <section class="mA-family">
+      <header class="mA-family-head">
+        <div class="mA-family-titles"><h3>Pipelines</h3><p>External SDLC engines can drive and report gated feature work.</p></div>
+        <span class="mA-family-count">
+          <span class="mA-family-ready">1/1</span>
+          
+        </span>
+      </header>
+      <div class="mA-rows"><div class="mA-ready">
+           <span class="mc-dot is-ready" aria-hidden="true"></span>
+           <span class="mA-ready-name">ai-conductor</span>
+           
+           <code class="mA-ready-evidence" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</code>
+         </div></div>
+    </section></section>
+      </div>
+    </section>
+    <section class="opt-view" data-opt="b">
+      <div class="settings-pane mock-pane">
+        <div class="settings-panel-head">
+          <h2>Setup</h2>
+          <span class="settings-scope settings-scope-home-read">Reads ~/</span>
+        </div>
+        
+  <section class="settings-section setup-panel mB">
+    
+  <header class="mc-verdict">
+    <div class="mc-verdict-mark is-ready" aria-hidden="true">&#10003;</div>
+    <div class="mc-verdict-body">
+      <h3>This machine can run sessions.</h3>
+      <div class="mc-meter" role="img" aria-label="10 of 13 checks ready"><span class="mc-tick is-ready" title="Claude Code - Ready"></span><span class="mc-tick is-ready" title="Codex CLI - Ready"></span><span class="mc-tick is-gap" title="Pi - Missing"></span><span class="mc-tick is-ready" title="tmux - Ready"></span><span class="mc-tick is-gap" title="cmux - Missing"></span><span class="mc-tick is-ready" title="WezTerm - Ready"></span><span class="mc-tick is-gap" title="Ghostty - Missing"></span><span class="mc-tick is-ready" title="A terminal window Mission Control can open - Ready"></span><span class="mc-tick is-ready" title="GitHub CLI - Ready"></span><span class="mc-tick is-ready" title="GitHub authentication - Ready"></span><span class="mc-tick is-ready" title="Claude Code plugins - Ready"></span><span class="mc-tick is-ready" title="Mission Control skills - Ready"></span><span class="mc-tick is-ready" title="ai-conductor - Ready"></span></div>
+      <p class="mc-verdict-detail"><strong>10 of 13 ready</strong> &middot; no required gaps. 3 optional tools would add capability.</p>
+    </div>
+    <div class="mc-verdict-actions">
+      <button type="button" class="btn btn-ghost" disabled>Re-check</button>
+      <p class="mc-verdict-note">Remedies open in a visible terminal you can watch.</p>
+    </div>
+  </header>
+    <input type="radio" name="bfam" id="bfam-agents" class="mB-state" checked>
+    <input type="radio" name="bfam" id="bfam-terminals" class="mB-state">
+    <input type="radio" name="bfam" id="bfam-github" class="mB-state">
+    <input type="radio" name="bfam" id="bfam-extensions" class="mB-state">
+    <input type="radio" name="bfam" id="bfam-pipelines" class="mB-state">
+    <div class="mB-split">
+      <nav class="mB-rail" aria-label="Setup families"><label class="mB-rail-item" for="bfam-agents">
+      <span class="mc-dot is-gap" aria-hidden="true"></span>
+      <span class="mB-rail-label">Agent CLIs</span>
+      <span class="mB-rail-count">2/3</span>
+    </label><label class="mB-rail-item" for="bfam-terminals">
+      <span class="mc-dot is-gap" aria-hidden="true"></span>
+      <span class="mB-rail-label">Terminals</span>
+      <span class="mB-rail-count">3/5</span>
+    </label><label class="mB-rail-item" for="bfam-github">
+      <span class="mc-dot is-ready" aria-hidden="true"></span>
+      <span class="mB-rail-label">GitHub</span>
+      <span class="mB-rail-count">2/2</span>
+    </label><label class="mB-rail-item" for="bfam-extensions">
+      <span class="mc-dot is-ready" aria-hidden="true"></span>
+      <span class="mB-rail-label">Claude Code extensions</span>
+      <span class="mB-rail-count">2/2</span>
+    </label><label class="mB-rail-item" for="bfam-pipelines">
+      <span class="mc-dot is-ready" aria-hidden="true"></span>
+      <span class="mB-rail-label">Pipelines</span>
+      <span class="mB-rail-count">1/1</span>
+    </label></nav>
+      <div class="mB-panes">
+    <div class="mB-pane" data-fam="agents">
+      <header class="mB-pane-head"><div><h3>Agent CLIs</h3><p>Mission Control launches these programs to create and continue coding sessions.</p></div></header>
+      <div class="mB-rows">
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>Claude Code</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">~/.local/bin/claude</p>
+      </article>
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>Codex CLI</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">~/.local/bin/codex</p>
+      </article>
+      <article class="mB-row is-gap">
+        <div class="mB-row-title">
+          <span class="mc-dot is-gap" aria-hidden="true"></span><strong>Pi</strong>
+          <span class="setup-status setup-status-missing">Missing</span>
+          <span class="mA-req is-recommended">recommended</span>
+        </div>
+        <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>npm install -g @earendil-works/pi-coding-agent</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Pi" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+      </article></div>
+    </div>
+    <div class="mB-pane" data-fam="terminals">
+      <header class="mB-pane-head"><div><h3>Terminals</h3><p>A usable terminal path needs a window, and detached sessions may also need a multiplexer.</p></div></header>
+      <div class="mB-rows">
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>tmux</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">/opt/homebrew/bin/tmux</p>
+      </article>
+      <article class="mB-row is-gap">
+        <div class="mB-row-title">
+          <span class="mc-dot is-gap" aria-hidden="true"></span><strong>cmux</strong>
+          <span class="setup-status setup-status-missing">Missing</span>
+          <span class="mA-req is-optional">optional</span>
+        </div>
+        <p class="setup-impact">Adds visible, durable workspaces that need no second terminal to raise them.</p><div class="setup-remedy-actions"><a class="setup-link" href="https://cmux.com/docs/getting-started">Open cmux installation guide<span aria-hidden> &#8599;</span></a></div>
+      </article>
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>WezTerm</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">/opt/homebrew/bin/wezterm</p>
+      </article>
+      <article class="mB-row is-gap">
+        <div class="mB-row-title">
+          <span class="mc-dot is-gap" aria-hidden="true"></span><strong>Ghostty</strong>
+          <span class="setup-status setup-status-missing">Missing</span>
+          <span class="mA-req is-optional">optional</span>
+        </div>
+        <p class="setup-impact">Adds native terminal windows that Mission Control can discover and focus on macOS.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>brew install --cask ghostty</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Ghostty" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+      </article>
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>A terminal window Mission Control can open</strong>
+          
+          <span class="mA-req is-required">required</span>
+        </div>
+        <p class="setup-evidence">tmux: New session, raised in WezTerm.</p>
+      </article></div>
+    </div>
+    <div class="mB-pane" data-fam="github">
+      <header class="mB-pane-head"><div><h3>GitHub</h3><p>The GitHub CLI carries pull requests, reviews, issues, and repository reads.</p></div></header>
+      <div class="mB-rows">
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>GitHub CLI</strong>
+          
+          <span class="mA-req is-required">required</span>
+        </div>
+        <p class="setup-evidence">/opt/homebrew/bin/gh</p>
+      </article>
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>GitHub authentication</strong>
+          
+          <span class="mA-req is-required">required</span>
+        </div>
+        <p class="setup-evidence">Authenticated to github.com</p>
+      </article></div>
+    </div>
+    <div class="mB-pane" data-fam="extensions">
+      <header class="mB-pane-head"><div><h3>Claude Code extensions</h3><p>Plugins add external capabilities; Mission Control skills add reusable session workflows.</p></div></header>
+      <div class="mB-rows">
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>Claude Code plugins</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">6 installed in ~/.claude/plugins/installed_plugins.json</p>
+      </article>
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>Mission Control skills</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p>
+      </article></div>
+    </div>
+    <div class="mB-pane" data-fam="pipelines">
+      <header class="mB-pane-head"><div><h3>Pipelines</h3><p>External SDLC engines can drive and report gated feature work.</p></div></header>
+      <div class="mB-rows">
+      <article class="mB-row is-ready">
+        <div class="mB-row-title">
+          <span class="mc-dot is-ready" aria-hidden="true"></span><strong>ai-conductor</strong>
+          
+          
+        </div>
+        <p class="setup-evidence">~/.local/bin/conduct-ts 0.104.0</p>
+      </article></div>
+    </div></div>
+    </div>
+  </section>
+      </div>
+    </section>
+    <section class="opt-view" data-opt="c">
+      <div class="settings-pane mock-pane">
+        <div class="settings-panel-head">
+          <h2>Setup</h2>
+          <span class="settings-scope settings-scope-home-read">Reads ~/</span>
+        </div>
+        
+  <section class="settings-section setup-panel mC">
+    
+  <header class="mc-verdict">
+    <div class="mc-verdict-mark is-ready" aria-hidden="true">&#10003;</div>
+    <div class="mc-verdict-body">
+      <h3>This machine can run sessions.</h3>
+      <div class="mc-meter" role="img" aria-label="10 of 13 checks ready"><span class="mc-tick is-ready" title="Claude Code - Ready"></span><span class="mc-tick is-ready" title="Codex CLI - Ready"></span><span class="mc-tick is-gap" title="Pi - Missing"></span><span class="mc-tick is-ready" title="tmux - Ready"></span><span class="mc-tick is-gap" title="cmux - Missing"></span><span class="mc-tick is-ready" title="WezTerm - Ready"></span><span class="mc-tick is-gap" title="Ghostty - Missing"></span><span class="mc-tick is-ready" title="A terminal window Mission Control can open - Ready"></span><span class="mc-tick is-ready" title="GitHub CLI - Ready"></span><span class="mc-tick is-ready" title="GitHub authentication - Ready"></span><span class="mc-tick is-ready" title="Claude Code plugins - Ready"></span><span class="mc-tick is-ready" title="Mission Control skills - Ready"></span><span class="mc-tick is-ready" title="ai-conductor - Ready"></span></div>
+      <p class="mc-verdict-detail"><strong>10 of 13 ready</strong> &middot; no required gaps. 3 optional tools would add capability.</p>
+    </div>
+    <div class="mc-verdict-actions">
+      <button type="button" class="btn btn-ghost" disabled>Re-check</button>
+      <p class="mc-verdict-note">Remedies open in a visible terminal you can watch.</p>
+    </div>
+  </header>
+    <section class="mC-todo">
+      <header class="mC-head">
+        <h3>Needs setup (3)</h3>
+        <p>Ordered by what an incomplete setup costs you: required first.</p>
+      </header>
+      
+    <article class="mC-card is-recommended">
+      <div class="mC-card-title"><strong>Pi</strong><span class="mA-req is-recommended">recommended</span><span class="mC-card-family">Agent CLIs</span></div>
+      <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p>
+      <div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>npm install -g @earendil-works/pi-coding-agent</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Pi" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+    </article>
+    <article class="mC-card is-optional">
+      <div class="mC-card-title"><strong>cmux</strong><span class="mA-req is-optional">optional</span><span class="mC-card-family">Terminals</span></div>
+      <p class="setup-impact">Adds visible, durable workspaces that need no second terminal to raise them.</p>
+      <div class="setup-remedy-actions"><a class="setup-link" href="https://cmux.com/docs/getting-started">Open cmux installation guide<span aria-hidden> &#8599;</span></a></div>
+    </article>
+    <article class="mC-card is-optional">
+      <div class="mC-card-title"><strong>Ghostty</strong><span class="mA-req is-optional">optional</span><span class="mC-card-family">Terminals</span></div>
+      <p class="setup-impact">Adds native terminal windows that Mission Control can discover and focus on macOS.</p>
+      <div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>brew install --cask ghostty</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Ghostty" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+    </article>
+    </section>
+    <details class="mC-ready" open>
+      <summary class="mC-ready-summary">
+        <span class="mc-dot is-ready" aria-hidden="true"></span><strong>Ready (10)</strong>
+        <span class="mC-ready-hint">Everything Mission Control found, grouped by family</span>
+      </summary>
+      <div class="mC-table"><h4 class="mC-table-family">Agent CLIs</h4>
+      <div class="mC-table-row">
+        <span class="mC-table-name">Claude Code</span>
+        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</code>
+      </div>
+      <div class="mC-table-row">
+        <span class="mC-table-name">Codex CLI</span>
+        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</code>
+      </div><h4 class="mC-table-family">Terminals</h4>
+      <div class="mC-table-row">
+        <span class="mC-table-name">tmux</span>
+        <code class="mC-table-evidence" title="/opt/homebrew/bin/tmux">/opt/homebrew/bin/tmux</code>
+      </div>
+      <div class="mC-table-row">
+        <span class="mC-table-name">WezTerm</span>
+        <code class="mC-table-evidence" title="/opt/homebrew/bin/wezterm">/opt/homebrew/bin/wezterm</code>
+      </div>
+      <div class="mC-table-row">
+        <span class="mC-table-name">A terminal window Mission Control can open</span>
+        <code class="mC-table-evidence" title="tmux: New session, raised in WezTerm.">tmux: New session, raised in WezTerm.</code>
+      </div><h4 class="mC-table-family">GitHub</h4>
+      <div class="mC-table-row">
+        <span class="mC-table-name">GitHub CLI</span>
+        <code class="mC-table-evidence" title="/opt/homebrew/bin/gh">/opt/homebrew/bin/gh</code>
+      </div>
+      <div class="mC-table-row">
+        <span class="mC-table-name">GitHub authentication</span>
+        <code class="mC-table-evidence" title="Authenticated to github.com">Authenticated to github.com</code>
+      </div><h4 class="mC-table-family">Claude Code extensions</h4>
+      <div class="mC-table-row">
+        <span class="mC-table-name">Claude Code plugins</span>
+        <code class="mC-table-evidence" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</code>
+      </div>
+      <div class="mC-table-row">
+        <span class="mC-table-name">Mission Control skills</span>
+        <code class="mC-table-evidence" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</code>
+      </div><h4 class="mC-table-family">Pipelines</h4>
+      <div class="mC-table-row">
+        <span class="mC-table-name">ai-conductor</span>
+        <code class="mC-table-evidence" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</code>
+      </div></div>
+    </details>
+  </section>
+      </div>
+    </section>
+    <section class="opt-view" data-opt="d">
+      <div class="settings-pane mock-pane">
+        <div class="settings-panel-head">
+          <h2>Setup</h2>
+          <span class="settings-scope settings-scope-home-read">Reads ~/</span>
+        </div>
+        
+  <section class="settings-section setup-panel mD">
+    
+  <header class="mc-verdict">
+    <div class="mc-verdict-mark is-ready" aria-hidden="true">&#10003;</div>
+    <div class="mc-verdict-body">
+      <h3>This machine can run sessions.</h3>
+      <div class="mc-meter" role="img" aria-label="10 of 13 checks ready"><span class="mc-tick is-ready" title="Claude Code - Ready"></span><span class="mc-tick is-ready" title="Codex CLI - Ready"></span><span class="mc-tick is-gap" title="Pi - Missing"></span><span class="mc-tick is-ready" title="tmux - Ready"></span><span class="mc-tick is-gap" title="cmux - Missing"></span><span class="mc-tick is-ready" title="WezTerm - Ready"></span><span class="mc-tick is-gap" title="Ghostty - Missing"></span><span class="mc-tick is-ready" title="A terminal window Mission Control can open - Ready"></span><span class="mc-tick is-ready" title="GitHub CLI - Ready"></span><span class="mc-tick is-ready" title="GitHub authentication - Ready"></span><span class="mc-tick is-ready" title="Claude Code plugins - Ready"></span><span class="mc-tick is-ready" title="Mission Control skills - Ready"></span><span class="mc-tick is-ready" title="ai-conductor - Ready"></span></div>
+      <p class="mc-verdict-detail"><strong>10 of 13 ready</strong> &middot; no required gaps. 3 optional tools would add capability.</p>
+    </div>
+    <div class="mc-verdict-actions">
+      <button type="button" class="btn btn-ghost" disabled>Re-check</button>
+      <p class="mc-verdict-note">Remedies open in a visible terminal you can watch.</p>
+    </div>
+  </header>
+    <input type="radio" name="dtile" id="dtile-dependency-claude-cli" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-codex-cli" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-pi-cli" class="mD-state" checked>
+    <input type="radio" name="dtile" id="dtile-dependency-tmux" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-cmux" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-wezterm" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-ghostty" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-derived-terminal-pair" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-gh-cli" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-gh-auth" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-claude-plugins" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-claude-skills" class="mD-state">
+    <input type="radio" name="dtile" id="dtile-dependency-ai-conductor" class="mD-state">
+    <div class="mD-split">
+      <div class="mD-grid">
+    <section class="mD-band">
+      <div class="mD-band-head"><h4>Agent CLIs</h4><span class="mD-band-count">2/3</span></div>
+      <div class="mD-tiles">
+      <label class="mD-tile is-ready" for="dtile-dependency-claude-cli">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">Claude Code</span>
+          
+        </div>
+        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/claude">~/.local/bin/claude</span>
+      </label>
+      <label class="mD-tile is-ready" for="dtile-dependency-codex-cli">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">Codex CLI</span>
+          
+        </div>
+        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/codex">~/.local/bin/codex</span>
+      </label>
+      <label class="mD-tile is-gap" for="dtile-dependency-pi-cli">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-gap" aria-hidden="true"></span>
+          <span class="mD-tile-name">Pi</span>
+          
+        </div>
+        <span class="mD-tile-line">Missing</span>
+      </label></div>
+    </section>
+    <section class="mD-band">
+      <div class="mD-band-head"><h4>Terminals</h4><span class="mD-band-count">3/5</span></div>
+      <div class="mD-tiles">
+      <label class="mD-tile is-ready" for="dtile-dependency-tmux">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">tmux</span>
+          
+        </div>
+        <span class="mD-tile-line" title="/opt/homebrew/bin/tmux">/opt/homebrew/bin/tmux</span>
+      </label>
+      <label class="mD-tile is-gap" for="dtile-dependency-cmux">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-gap" aria-hidden="true"></span>
+          <span class="mD-tile-name">cmux</span>
+          
+        </div>
+        <span class="mD-tile-line">Missing</span>
+      </label>
+      <label class="mD-tile is-ready" for="dtile-dependency-wezterm">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">WezTerm</span>
+          
+        </div>
+        <span class="mD-tile-line" title="/opt/homebrew/bin/wezterm">/opt/homebrew/bin/wezterm</span>
+      </label>
+      <label class="mD-tile is-gap" for="dtile-dependency-ghostty">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-gap" aria-hidden="true"></span>
+          <span class="mD-tile-name">Ghostty</span>
+          
+        </div>
+        <span class="mD-tile-line">Missing</span>
+      </label>
+      <label class="mD-tile is-ready" for="dtile-derived-terminal-pair">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">A terminal window Mission Control can open</span>
+          <span class="mA-req is-required">req</span>
+        </div>
+        <span class="mD-tile-line" title="tmux: New session, raised in WezTerm.">tmux: New session, raised in WezTerm.</span>
+      </label></div>
+    </section>
+    <section class="mD-band">
+      <div class="mD-band-head"><h4>GitHub</h4><span class="mD-band-count">2/2</span></div>
+      <div class="mD-tiles">
+      <label class="mD-tile is-ready" for="dtile-dependency-gh-cli">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">GitHub CLI</span>
+          <span class="mA-req is-required">req</span>
+        </div>
+        <span class="mD-tile-line" title="/opt/homebrew/bin/gh">/opt/homebrew/bin/gh</span>
+      </label>
+      <label class="mD-tile is-ready" for="dtile-dependency-gh-auth">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">GitHub authentication</span>
+          <span class="mA-req is-required">req</span>
+        </div>
+        <span class="mD-tile-line" title="Authenticated to github.com">Authenticated to github.com</span>
+      </label></div>
+    </section>
+    <section class="mD-band">
+      <div class="mD-band-head"><h4>Claude Code extensions</h4><span class="mD-band-count">2/2</span></div>
+      <div class="mD-tiles">
+      <label class="mD-tile is-ready" for="dtile-dependency-claude-plugins">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">Claude Code plugins</span>
+          
+        </div>
+        <span class="mD-tile-line" title="6 installed in /Users/jordan.mance/.claude/plugins/installed_plugins.json">6 installed in ~/.claude/plugins/installed_plugins.json</span>
+      </label>
+      <label class="mD-tile is-ready" for="dtile-dependency-claude-skills">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">Mission Control skills</span>
+          
+        </div>
+        <span class="mD-tile-line" title="5 enabled across /Users/jordan.mance/.claude/skills, /Users/jordan.mance/.agents/skills, /Users/jordan.mance/.pi/agent/skills">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</span>
+      </label></div>
+    </section>
+    <section class="mD-band">
+      <div class="mD-band-head"><h4>Pipelines</h4><span class="mD-band-count">1/1</span></div>
+      <div class="mD-tiles">
+      <label class="mD-tile is-ready" for="dtile-dependency-ai-conductor">
+        <div class="mD-tile-top">
+          <span class="mc-dot is-ready" aria-hidden="true"></span>
+          <span class="mD-tile-name">ai-conductor</span>
+          
+        </div>
+        <span class="mD-tile-line" title="/Users/jordan.mance/.local/bin/conduct-ts 0.104.0">~/.local/bin/conduct-ts 0.104.0</span>
+      </label></div>
+    </section></div>
+      <div class="mD-details">
+    <aside class="mD-detail" data-row="dependency-claude-cli">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Claude Code</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Agent CLIs &middot; recommended</p>
+      <p class="setup-evidence">~/.local/bin/claude</p><p class="mD-detail-enables">Without it, Claude sessions and Claude-backed background jobs cannot launch.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-codex-cli">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Codex CLI</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Agent CLIs &middot; recommended</p>
+      <p class="setup-evidence">~/.local/bin/codex</p><p class="mD-detail-enables">Without it, Codex sessions and Codex-backed background jobs cannot launch.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-pi-cli">
+      <div class="mD-detail-head"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>Pi</strong><span class="setup-status setup-status-missing">Missing</span></div>
+      <p class="mD-detail-family">Agent CLIs &middot; recommended</p>
+      <p class="setup-impact">Without it, Pi sessions cannot launch or resume.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>npm install -g @earendil-works/pi-coding-agent</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Pi" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-tmux">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>tmux</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Terminals &middot; optional</p>
+      <p class="setup-evidence">/opt/homebrew/bin/tmux</p><p class="mD-detail-enables">Adds durable detached sessions, provided an installed emulator can raise them.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-cmux">
+      <div class="mD-detail-head"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>cmux</strong><span class="setup-status setup-status-missing">Missing</span></div>
+      <p class="mD-detail-family">Terminals &middot; optional</p>
+      <p class="setup-impact">Adds visible, durable workspaces that need no second terminal to raise them.</p><div class="setup-remedy-actions"><a class="setup-link" href="https://cmux.com/docs/getting-started">Open cmux installation guide<span aria-hidden> &#8599;</span></a></div>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-wezterm">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>WezTerm</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Terminals &middot; optional</p>
+      <p class="setup-evidence">/opt/homebrew/bin/wezterm</p><p class="mD-detail-enables">Adds scriptable terminal windows and can raise detached tmux sessions.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-ghostty">
+      <div class="mD-detail-head"><span class="mc-dot is-gap" aria-hidden="true"></span><strong>Ghostty</strong><span class="setup-status setup-status-missing">Missing</span></div>
+      <p class="mD-detail-family">Terminals &middot; optional</p>
+      <p class="setup-impact">Adds native terminal windows that Mission Control can discover and focus on macOS.</p><div class="setup-remedy-actions">
+  <div class="setup-command">
+    <code>brew install --cask ghostty</code>
+    <button type="button" class="btn btn-ghost" disabled title="Static page: use the interactive copy">Copy</button>
+  </div>
+  <div class="setup-run-controls">
+    <label class="setup-terminal-choice">
+      <span>Visible terminal</span>
+      <select aria-label="Terminal for Ghostty" disabled><option>tmux</option></select>
+    </label>
+    <button type="button" class="btn btn-primary" disabled>Run in a terminal</button>
+  </div></div>
+    </aside>
+    <aside class="mD-detail" data-row="derived-terminal-pair">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>A terminal window Mission Control can open</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Terminals &middot; required</p>
+      <p class="setup-evidence">tmux: New session, raised in WezTerm.</p><p class="mD-detail-enables">Without a usable backend, dispatches cannot open a visible terminal window on their checkout.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-gh-cli">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>GitHub CLI</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">GitHub &middot; required</p>
+      <p class="setup-evidence">/opt/homebrew/bin/gh</p><p class="mD-detail-enables">Without it, Mission Control cannot inspect, open, review, or merge GitHub work.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-gh-auth">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>GitHub authentication</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">GitHub &middot; required</p>
+      <p class="setup-evidence">Authenticated to github.com</p><p class="mD-detail-enables">Without a github.com login, GitHub operations fail even when the CLI is installed.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-claude-plugins">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Claude Code plugins</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Claude Code extensions &middot; optional</p>
+      <p class="setup-evidence">6 installed in ~/.claude/plugins/installed_plugins.json</p><p class="mD-detail-enables">Without plugins, Claude sessions do not receive plugin-provided tools, hooks, or commands.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-claude-skills">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>Mission Control skills</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Claude Code extensions &middot; optional</p>
+      <p class="setup-evidence">5 enabled across ~/.claude/skills, ~/.agents/skills, ~/.pi/agent/skills</p><p class="mD-detail-enables">Without them, sessions do not receive Mission Control's reusable workflow skills.</p>
+    </aside>
+    <aside class="mD-detail" data-row="dependency-ai-conductor">
+      <div class="mD-detail-head"><span class="mc-dot is-ready" aria-hidden="true"></span><strong>ai-conductor</strong><span class="setup-status setup-status-satisfied">Ready</span></div>
+      <p class="mD-detail-family">Pipelines &middot; optional</p>
+      <p class="setup-evidence">~/.local/bin/conduct-ts 0.104.0</p><p class="mD-detail-enables">Without it, Mission Control cannot commission or observe gated ai-conductor runs.</p>
+    </aside></div>
+    </div>
+  </section>
+      </div>
+    </section>
+  </div>
+  <p class="mock-note">No JavaScript on this page: every tab, rail and tile is a radio input and a CSS sibling selector, so it renders the same inside Mission Control's sandboxed iframe as it does in a browser.</p>
+</div>
+</body>
+</html>

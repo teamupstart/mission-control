@@ -234,6 +234,16 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   `previewText`; the name is deliberately the same one.
 - Import `htmlPreviewSource` and `HTML_PREVIEW_SANDBOX` as constants. Do not build either
   string locally.
+- **Do not put `loading="lazy"` on the frame.** The observer is the sole lifetime gate, and
+  the attribute would state a second one - browser-owned, viewport-based, with a margin the UA
+  chooses rather than the 600px this design picked. An implementer reading it would reasonably
+  conclude the timing is delegated, which is the opposite of the contract above.
+  It was measured rather than assumed before being removed: in a controlled probe, two frames
+  identical but for the attribute, both handed `srcdoc` while roughly 4,000px below the
+  viewport, **both rendered** - so today's Chromium does not defer a `srcdoc` navigation for
+  it. That is the argument for removing it, not against: the attribute is doing nothing
+  except claiming a second gate, and the preload assertion's meaning would quietly depend on
+  a UA heuristic staying that way.
 - **Header**: a **non-interactive** `header` element holding three siblings - the disclosure
   `button` (which wraps the caret, the file name and the directory, and nothing else), the
   byte size as a `span`, and then the **Refresh** and **Comment in Files** buttons.
@@ -722,6 +732,18 @@ preview.
   The design point is now stated too: a refusing card is still a card and carries the whole
   contract, since the reader can still collapse it and still wants to open it in Files, which
   is the state where that matters most.
+- **2026-09-03, review round 18 reconciliation.** One `major` comment, valid on its
+  conclusion, and I could not reproduce the mechanism it proposed - both worth recording. The
+  mockup's preview frame carried `loading="lazy"` alongside the explicit
+  `IntersectionObserver`, which is two stated lifetime gates for one frame. The comment's
+  hypothesis was that the attribute defers the `srcdoc` navigation, so a card could hold
+  `srcdoc` with its document still unloaded and the preload assertion would prove nothing. A
+  controlled probe says otherwise for this build: two frames identical but for the attribute,
+  both assigned `srcdoc` about 4,000px below the viewport, both rendered.
+  Removed anyway, and the measurement is the reason rather than a rebuttal. The attribute
+  achieves nothing here, it tells an implementer that timing is delegated to the browser when
+  the whole contract above says it is not, and leaving it would make the preload assertion's
+  meaning depend on a UA heuristic continuing to behave as it does today.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

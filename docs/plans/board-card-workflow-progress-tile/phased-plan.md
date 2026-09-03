@@ -35,7 +35,7 @@ Confirmed by rendering the panel through the suite's own harness rather than by 
 The preview markup contains `is-placeholder` and `wf-tile-peek-round`, and contains **no**
 `wf-tile-peek-rung`:
 
-```
+```text
 is-placeholder present: true
 wf-tile-peek-rung present: false
 wf-tile-peek-round present: true

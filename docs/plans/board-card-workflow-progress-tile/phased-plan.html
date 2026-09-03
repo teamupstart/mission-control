@@ -70,7 +70,7 @@ figcaption { margin-top: 0.55rem; color: var(--ink-2); font-size: 0.85rem; line-
 <h3>1. The settings preview renders the placeholder, not the peek - verified</h3>
 <p><code>BoardCardPanel</code> mounts a real <code>SessionTile</code> with <code>workflowStageDetail="summary"</code> (<code>src/web/components/BoardCardPanel.tsx:147</code>). <code>WorkflowLadderPanel</code> maps that to <code>summaryOnly</code> and passes a <strong>null run id</strong> to <code>useWorkflowRunDetail</code>, so it fetches nothing and renders <code>WorkflowLadderPeekPlaceholder</code> (<code>src/web/workflows/WorkflowLadder.tsx:744</code>, <code>:777</code>).</p>
 <p>Confirmed by rendering the panel through the suite's own harness rather than by reading the code. The preview markup contains <code>is-placeholder</code> and <code>wf-tile-peek-round</code>, and contains <strong>no</strong> <code>wf-tile-peek-rung</code>:</p>
-<div class="scroll"><pre><code class="lang-">is-placeholder present: true
+<div class="scroll"><pre><code class="lang-text">is-placeholder present: true
 wf-tile-peek-rung present: false
 wf-tile-peek-round present: true
 unavailable copy present: true</code></pre></div>

@@ -171,9 +171,15 @@ Two consequences of choosing the registry over a dedicated field, both accepted:
   `WorkflowLadderPanel`, and there is no second read of `hiddenDisplayItems` anywhere in the tile
   (`:114` pins that).
 - The panel's preview mounts a real `SessionTile` against `src/web/lib/board-card-preview.ts`, whose
-  `PREVIEW_WORKFLOW_RUN` is at `round: 1` with `workflowVersion: 4`. A round-1 run draws one spent
-  pip and nothing else, so the preview needs a round mid-budget for the repair row to show what it
-  does. `test/board-card-items.test.ts` already requires the fixture to populate every card item.
+  `PREVIEW_WORKFLOW_RUN` is at `round: 1` with `maxRepairRounds: 5`. Under the model above that
+  draws **no** spent pips, the first pip current, and five remaining - which is a legitimate state
+  and enough to satisfy `test/board-card-items.test.ts:114`, because it differs from the same
+  placeholder with the variant off.
+
+  It is a poor advertisement for the row, though: a reader sees no spent round and cannot tell the
+  three pip states apart. Raising the fixture to a mid-budget round shows all three at once. That is
+  a preview-quality improvement rather than a requirement - worth doing, and not load-bearing for
+  any test.
 
 ## Also in scope: the 250px collision
 

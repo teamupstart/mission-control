@@ -147,6 +147,14 @@ checkbox visibly do something there.
   the peek and the placeholder. `SessionWorkflowsPane` and the console keep today's rung - they are
   not board cards and have the room.
 - `src/web/lib/settings-search.ts:180`: add keywords for the new item so the palette finds it.
+- `src/web/lib/board-card-preview.ts`: raise `PREVIEW_WORKFLOW_RUN.round` from `1` to a mid-budget
+  value (3 against its `maxRepairRounds: 5`). At round 1 the repair row is legitimate but draws no
+  spent pip, so a reader cannot tell the three pip states apart; round 3 shows all three at once.
+
+  This is preview quality, **not** a test requirement - `test/board-card-items.test.ts:114` passes
+  at round 1, because the variant already changes the placeholder's markup. Changing `round` on the
+  existing summary is also not the same thing as adding a `WorkflowRunDetail`, which finding 1
+  forbids. Keep `workflowVersion` as it is.
 
 ### 6. Fix the 250px collision
 
@@ -174,6 +182,16 @@ New coverage, in `test/` unless stated:
 - `PipelinePhaseMeter` markup is unchanged by the extraction.
 - `board-card-items.test.ts`: passes with the new entry, including the preview-populates-every-item
   assertion. That one is the real gate on step 4.
+- **The non-stage early returns, with the variant enabled.** An uncertain repair delivery, a waiting
+  GitHub Inspector gate, and an `inspector_only` round must each still render the rung and **no**
+  meter. These are decisions inside the projection, not browser behavior, so they belong in `test/`
+  as unit cases over `workflowLadderPeekView` and `workflowLadderStages` - a case costs milliseconds
+  there, where driving three of them through a browser would cost minutes and prove the same thing.
+  Assert both directions: the rung view is returned, and the stage list the meter needs is absent.
+- **Accessible names, asserted rather than assumed.** The meter's tone, hatching and pips are
+  decoration, so a visually correct meter must not be able to pass while exposing unnamed elements.
+  Assert that each segment's accessible name carries its stage name and status label, and each pip's
+  carries its round. Do this in the Playwright spec, where the accessibility tree is real.
 - The collision, at width. `renderToStaticMarkup` cannot see it - it is a layout fact - so this
   needs the Electron geometry layer (`npm run test:electron`) or a Playwright assertion at a 250px
   column. Assert the two elements do not overlap.
@@ -234,6 +252,23 @@ Nothing depends on this phase - it is the only one. For whatever comes next:
   steps 3 and 4; the registry mechanism is step 5; the collision fix is step 6; the phased-plan
   follow-up is this document set. Every source-plan requirement is owned here, and no requirement is
   owned twice.
+- **2026-09-03, review round 1 (CodeRabbit on PR #873).** Four findings, all verified against the
+  repository before acting and all valid; none altered an approved decision.
+  - Two stated requirements had no verification behind them, which is the kind of gap that lets a
+    phase pass its own exit criteria while missing the point. Added the non-stage early-return cases
+    and the accessible-name assertions to **Tests and verification**. The early-return cases were
+    placed in `test/` rather than in Playwright as the review suggested: they are projection
+    decisions with no browser behavior, and `AGENTS.md` puts those in `test/` where a case costs
+    milliseconds.
+  - `plan.md` claimed "a round-1 run draws one spent pip", which **contradicted this plan's own
+    corrected pip model** - at round 1 nothing is spent and the first pip is current, as the
+    verification output in `phased-plan.md` finding 3 shows. Corrected, and the accompanying claim
+    that the preview "needs" a mid-budget round was downgraded to what it is: a preview-quality
+    improvement, not a test requirement. It was also a dangling requirement no step implemented, so
+    step 5 now carries it explicitly.
+  - One bare code fence in `phased-plan.md` gained a `text` language. The repository does not lint
+    Markdown, so this was CodeRabbit's own linter rather than a repository gate - fixed anyway
+    because it is correct and costs nothing.
 - **2026-09-03, plan correction folded in.** The source plan's original "repair budget overrun" red
   overflow pip was disproved by `src/shared/workflow.ts:136` and `workflowRunGaveUp`, and by the
   live population (zero runs above `maxRepairRounds + 1`). `plan.md` and the comparison renders were

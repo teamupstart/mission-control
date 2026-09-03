@@ -104,7 +104,27 @@ function toState(evt: HookIngest): HookReading {
     case "Stop":
       return { state: "idle", activity: "idle" };
     case "SubagentStop":
-      return { state: "working", activity: "subagent finished" };
+      // Name the role when the event carries one. A domain session dispatches ten
+      // different workers and the undifferentiated "subagent finished" was the same
+      // line for all of them, which is the one thing the operator most wants to know
+      // at that moment.
+      //
+      // The fallback is the common path, not a legacy shim. Claude Code declares
+      // `agent_type` REQUIRED on `SubagentStop` (identically in 2.1.257, .258 and
+      // .259), and it nonetheless arrives absent: measured on one machine over three
+      // hours, 10 of 11 `SubagentStop` events carried `agent_id` with no `agent_type`,
+      // and none of those ids were ever named by any other event either. `PreToolUse`
+      // and `PostToolUse` carry the role reliably by contrast, including `domain-manager`
+      // with no `agent_id` on the main thread of an `--agent` session.
+      //
+      // So this line is best-effort by design, and the attribution the change exists for
+      // does not rest on it: `registry.applyHook` stamps `role` onto EVERY event that
+      // names one, and the tool events are the ones that reliably do. Rendering
+      // "undefined finished" would be strictly worse than the line this replaced.
+      return {
+        state: "working",
+        activity: evt.agentType ? `${evt.agentType} finished` : "subagent finished",
+      };
     case "PreCompact":
       return { state: "working", activity: "compacting context" };
     case "SessionEnd":

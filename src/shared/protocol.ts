@@ -216,6 +216,19 @@ export const HookIngestSchema = z.object({
   // string on the wire - the registry normalizes it to a known PermissionMode - so a
   // mode a newer harness adds never fails hook ingest, it just doesn't render yet.
   permissionMode: z.string().optional(),
+  /**
+   * The acting agent's role name, on the events that carry one, verbatim from the
+   * harness. Free string rather than an enum: the set is whatever roles a user has
+   * defined in their own agent directory plus whatever their installed plugins ship,
+   * so an enum here would reject a role the daemon has simply never seen.
+   */
+  agentType: z.string().optional(),
+  /**
+   * The acting agent's instance id, present ONLY when a subagent fired the event.
+   * Its ABSENCE is the load-bearing half: it is what distinguishes the session's own
+   * main loop from a worker it spawned, and no other field on this wire does.
+   */
+  agentId: z.string().optional(),
   // A GitHub PR URL the hook sniffed out of a PostToolUse tool result (e.g. the
   // link `gh pr create` prints). Optimistically decorates the session's card;
   // the PR poller is the source of truth that later confirms or clears it.

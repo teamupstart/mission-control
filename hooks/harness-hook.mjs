@@ -91,6 +91,27 @@ function toIngest(payload, event) {
     // hook events. Undefined on events that omit it - the daemon keeps the last
     // known mode rather than clearing it.
     permissionMode: payload.permission_mode,
+    // WHICH agent fired this, on the events that name one. `agentId` is present ONLY
+    // for a subagent, which is what tells a worker's event apart from the session's
+    // own main loop: an `--agent` session's main thread carries `agentType` with no
+    // `agentId`, and an ordinary session carries neither.
+    //
+    // Both are read off every event rather than off a chosen few, because which events
+    // actually populate them is not what Claude Code's schema says. It declares
+    // `agent_type` required on `SubagentStop`, and measured live that field is usually
+    // missing there while `PreToolUse`/`PostToolUse` carry it reliably. Reading them
+    // everywhere costs nothing and does not encode that discrepancy into the bridge.
+    //
+    // The payload also has `agent_transcript_path` and `last_assistant_message`,
+    // deliberately not forwarded - the first is a path into a transcript the daemon
+    // already knows how to find, and the second is model output that has no business
+    // on this wire.
+    //
+    // A plugin's agent arrives namespaced (`pr-review-toolkit:code-reviewer`) and is
+    // sent verbatim: the namespace is the useful half when two marketplaces ship a
+    // role by the same name.
+    agentType: payload.agent_type,
+    agentId: payload.agent_id,
     // The scalar stays FIRST on the wire and keeps its exact meaning - the URL that
     // decorates this card - so a daemon that predates `prUrls` still reads what it always
     // did. `prUrls` is the whole set, and only the plural is fanned out to adoption.

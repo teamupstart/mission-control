@@ -2936,7 +2936,17 @@ export class Registry extends EventEmitter {
       this.resolveInspectionSummaries(next);
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
-      logEvent(next.id, ts, evt.event, { activity, state });
+      // `role` and `agentId` ride the payload rather than being folded into
+      // `activity`, because the reason to record them is arithmetic: "what did this
+      // domain spend per role" is a query over these rows, and parsing it back out of
+      // a display string is not a thing to build. Both are omitted when the event
+      // names no agent, which is every main-loop event, so the common row is unchanged.
+      logEvent(next.id, ts, evt.event, {
+        activity,
+        state,
+        ...(evt.agentType ? { role: evt.agentType } : {}),
+        ...(evt.agentId ? { agentId: evt.agentId } : {}),
+      });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
       // Last, deliberately. `upsertGoal` re-denormalizes and emits through
       // `syncSessionsForGoal`, so running it before the emit above would leave that emit

@@ -624,6 +624,20 @@ whose event vocabulary `event` is written in: a pane outlives the agent in it, s
 event is only ever applied to a session detail running the harness that sent it. It defaults to
 `claude` when absent, since a bridge installed by an older checkout predates any other.
 
+**Who acted, when the event says so.** The bridge also forwards `agentType` and `agentId`,
+which is what makes a delegating session legible: `agentId` is present only for a subagent,
+so its absence is what tells a worker's event apart from the session's own main loop. A
+session started with `--agent` reports `agentType` on its main thread with no `agentId`.
+The daemon writes both onto the `session_events` row as `role` and `agentId` rather than
+folding them into the activity string, because the reason to record them is arithmetic:
+"what did this session spend per role" is a query over those rows.
+
+Treat the role as best-effort per event rather than guaranteed. Claude Code declares
+`agent_type` required on `SubagentStop` and in practice usually omits it there, while
+`PreToolUse` and `PostToolUse` carry it reliably, so the tool events are what the
+attribution actually rests on. The activity line falls back to the undifferentiated
+`subagent finished` when no role is named.
+
 </details>
 
 ### Precise status for Codex (hooks that ride on the dispatch)

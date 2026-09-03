@@ -99,7 +99,6 @@
    with a border and a radius, a light page reads as an embedded document rather than as a
    panel that lost its styling. */
 .artifact-body {
-  height: var(--artifact-height, 420px);
   padding: 7px;
   background: var(--panel-2);
 }
@@ -114,14 +113,15 @@
 }
 
 /* The capped session-card log is 340px tall (`.transcript-log { max-height: 340px }`), so a
-   420px body is taller than the whole visible log there - the disclosure scrolls out of
-   reach of the content it controls. `.detail-conv` is the app's own class for the
-   uncapped reading surface, and it is the one that earns an open frame. Everywhere else the
-   card arrives as its one-line header. */
-.artifact-card { --artifact-open: none; }
-.detail-conv .artifact-card.is-open .artifact-body { display: block; }
-.transcript-log .artifact-card.is-open .artifact-body { display: none; }
-.detail-conv .transcript-log .artifact-card.is-open .artifact-body { display: block; }
+   420px body is taller than the whole visible log there. Two things follow, and only ONE of
+   them belongs in CSS.
+   In CSS: the reserved height is smaller in the capped context - 240px, which with the 38px
+   header fits inside 340px and leaves conversation visible.
+   NOT in CSS: whether the card starts open. That is state, set from the context when the card
+   mounts. Hiding an `is-open` card's body with a rule here would leave the disclosure
+   reporting `aria-expanded="true"` over content nobody can reach. */
+.artifact-body { height: var(--artifact-height-capped, 240px); }
+.detail-conv .artifact-body { height: var(--artifact-height, 420px); }
 
 .artifact-refusal {
   display: flex;
@@ -189,7 +189,7 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
   </label>
   <label>Reserved height
     <select id="height">
-      <option value="420">420px (proposed)</option>
+      <option value="420">420px (proposed, uncapped context)</option>
       <option value="300">300px</option>
       <option value="560">560px</option>
       <option value="240">240px (floor)</option>
@@ -308,18 +308,45 @@ const heightPick = document.getElementById("height");
 const collapse = document.getElementById("collapse");
 const toast = document.getElementById("toast");
 
+// A card is eligible for a document only when it is OPEN and near the viewport. This is the
+// plan's lazy-mount contract, implemented rather than described: the mockup is the reference an
+// implementer ports, so a mockup that eagerly loaded every frame would teach the wrong thing.
+const nearViewport = new WeakSet();
+const observer = new IntersectionObserver((entries) => {
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.isIntersecting && !nearViewport.has(entry.target)) {
+      nearViewport.add(entry.target);
+      changed = true;
+    }
+  }
+  if (changed) mount();
+}, { rootMargin: "600px 0px" });
+
+function observeCards() {
+  for (const card of document.querySelectorAll(".mock-pane .artifact-card")) observer.observe(card);
+}
+
 function mount() {
   const chosen = pick.value;
   const doc = ARTIFACTS[chosen];
-  for (const frame of document.querySelectorAll(".artifact-preview")) {
-    frame.srcdoc = doc.prefix + doc.text;
-    frame.title = "Preview of " + chosen;
-  }
   for (const card of document.querySelectorAll(".mock-pane .artifact-card")) {
     card.setAttribute("aria-label", "Preview of " + chosen);
     card.querySelector(".artifact-name").textContent = chosen.split("/").pop();
     card.querySelector(".artifact-dir").textContent = chosen.slice(0, chosen.lastIndexOf("/") + 1);
-    card.querySelector(".artifact-size").textContent = (doc.size / 1024).toFixed(1) + " KB";
+    const size = card.querySelector(".artifact-size");
+    if (size) size.textContent = (doc.size / 1024).toFixed(1) + " KB";
+    const frame = card.querySelector(".artifact-preview");
+    if (!frame) continue;
+    const eligible = card.classList.contains("is-open") && nearViewport.has(card);
+    if (!eligible) {
+      // Removed, not emptied: a collapsed card holds no document, which is the whole point.
+      frame.removeAttribute("srcdoc");
+      continue;
+    }
+    const wanted = doc.prefix + doc.text;
+    if (frame.srcdoc !== wanted) frame.srcdoc = wanted;
+    frame.title = "Preview of " + chosen;
   }
 }
 
@@ -333,6 +360,7 @@ function applyCollapse() {
     const button = card.querySelector(".artifact-disclose");
     if (button) button.setAttribute("aria-expanded", String(!collapse.checked));
   }
+  mount();
 }
 
 document.addEventListener("click", (event) => {
@@ -342,6 +370,7 @@ document.addEventListener("click", (event) => {
     const open = !card.classList.contains("is-open");
     card.classList.toggle("is-open", open);
     disclose.setAttribute("aria-expanded", String(open));
+    mount();
     return;
   }
   const act = event.target.closest(".artifact-act");
@@ -358,14 +387,20 @@ document.addEventListener("click", (event) => {
 const contextPick = document.getElementById("context-pick");
 function applyContext() {
   const holder = document.getElementById("context");
-  const card = contextPick.value === "card";
-  holder.classList.toggle("detail-conv", !card);
-  holder.classList.toggle("mock-capped", card);
+  const capped = contextPick.value === "card";
+  holder.classList.toggle("detail-conv", !capped);
+  holder.classList.toggle("mock-capped", capped);
+  // The capped context's default is COLLAPSED, and it is real collapse: the body is not
+  // rendered and `aria-expanded` says so. Anything else leaves the control describing content
+  // the reader cannot reach.
+  collapse.checked = capped;
+  applyCollapse();
 }
 contextPick.addEventListener("change", applyContext);
 pick.addEventListener("change", mount);
 heightPick.addEventListener("change", applyHeight);
 collapse.addEventListener("change", applyCollapse);
+observeCards();
 applyHeight();
 applyContext();
 mount();

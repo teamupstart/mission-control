@@ -172,7 +172,7 @@
       <li><strong>Only a path presented as an artifact gets a card</strong> - see <em>What qualifies as an artifact</em>. An <code>.html</code> file named in the middle of a sentence stays an ordinary link.</li>
       <li><strong>The hand-off arms comment mode in Files.</strong> The card does not become a comment-authoring surface of its own, so the comment bridge stays inert inside the conversation preview.</li>
       <li><strong>The card sits at the foot of the turn</strong>, not spliced into the prose.</li>
-      <li><strong>No phased implementation follow-up.</strong> This plan lands as the plan; no phase documents and no scheduled implementation tasks come out of this task.</li>
+      <li><strong>Phasing was declined at review, then asked for separately.</strong> The review's follow-up question was answered "Stop after this plan", so no phasing was produced at that point. The human then asked for mockups and a phased implementation in the same session, which is why <code>phased-plan.md</code>, <code>phase-1-artifact-card.md</code> and a scheduled Phase 1 task are part of this plan's directory after all. The declined answer is recorded here because it is what was submitted; the later request supersedes it.</li>
     </ul>
   </div>
 
@@ -263,8 +263,13 @@
   <p>The measured rule instead keys off the class that already draws the distinction:</p>
   <ul>
     <li><strong><code>.detail-conv</code> (Console, Board detail)</strong> - the log is uncapped, so the card is expanded with a 420px body. Measured: 420px body in a 749px log.</li>
-    <li><strong>The session-card log (capped at 340px)</strong> - the card arrives as its <strong>one-line header</strong> and reserves no frame at all. A 420px body there is taller than the entire visible log, which puts the disclosure control out of reach of the content it controls; and shrinking it to fit yields a ~200px thumbnail that eats 60% of a tile's conversation to show a page header. The header, which says what the artifact is and carries both actions, is the honest amount of a page to put in a tile.</li>
+    <li><strong>The session-card log (capped at 340px)</strong> - the card arrives <strong>collapsed</strong>, as its one-line header, and reserves no frame until the reader opens it. A 420px body there is taller than the entire visible log, which puts the disclosure control out of reach of the content it controls. The header, which says what the artifact is and carries both actions, is the honest default amount of a page to put in a tile.</li>
+    <li><strong>Opened deliberately in that capped log, the body is 240px</strong>, not 420px. With the 38px header that is 278px inside a 340px log, so the card and some conversation around it are visible at once.</li>
   </ul>
+  <p>Two contexts, two fixed heights, and no percentage arithmetic - so there is exactly one expected height per context for an implementation and a test to agree on.</p>
+  <div class="note">
+    <p><strong>The collapse is state, not styling.</strong> It would be easy to leave the card <code>is-open</code> in the capped context and hide the body with a CSS rule, and that is wrong: the disclosure would keep reporting <code>aria-expanded="true"</code> for content nobody can reach. The default disclosure state depends on the context; <code>aria-expanded</code> always describes a body that is really there.</p>
+  </div>
   <p>This keeps the approved "arrives expanded" decision where a reader is actually reading, and declines to swamp the surface where they are scanning.</p>
   <p>Auto-fitting to the document's own height is the obvious alternative and it is rejected. The dashboard has no origin inside the frame, so the only way to learn a document's height is a fifth bridge script posting it out. That means a new SHA-256 hash in <code>PREVIEW_CSP</code>, which is shared by the Files tab and by Scouts - a policy change on two surfaces that have not asked for one - in exchange for letting a single turn grow without bound in a log that auto-scrolls to its tail. A bounded window with a scrollbar is the honest shape for a page embedded in a conversation; the reader who wants the whole page has <strong>Comment in Files</strong> and the extracted Files window.</p>
   <p>Because the height is reserved whether or not the frame has mounted, expanding a card and scrolling past one never shifts the log. The frame itself mounts only when the card is expanded <strong>and</strong> near the viewport, following <code>MermaidDiagram</code>'s <code>IntersectionObserver</code> with a <code>600px</code> root margin, so a long session with twenty artifacts costs twenty empty boxes and not twenty documents.</p>

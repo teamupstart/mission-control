@@ -135,10 +135,17 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
 
 `ArtifactCard` owns:
 
-- **Disclosure state**, defaulting to open (approved). Hold it in this component, keyed by
-  `sessionId` + `path`, so a reader's collapse survives re-renders of the turn.
+- **Disclosure state**, keyed by `sessionId` + `path` so a reader's choice survives re-renders
+  of the turn. Its **default depends on the context**: open in the uncapped reading surface
+  (the approved default), closed in the capped session-card log.
+  **Do not implement the capped case by leaving the card open and hiding the body in CSS.**
+  That keeps `aria-expanded="true"` over content nobody can reach, which is a lie the
+  screen-reader user pays for. Collapse it in state; let `aria-expanded` always describe a
+  body that is really rendered.
 - **Lazy mount.** An `IntersectionObserver` with `rootMargin: "600px 0px"`, copied in shape
-  from `MermaidDiagram.tsx`. The frame mounts only when open **and** near the viewport.
+  from `MermaidDiagram.tsx`. The frame mounts only when open **and** near the viewport, and a
+  collapsed card holds no document at all. The mockup demonstrates this rather than describing
+  it: a collapsed or off-screen card's frame carries no `srcdoc`.
 - **Fetch on first expand**, via `fetchSessionFile(sessionId, path, signal)`, then
   `inlinePreviewStyles(text, path, (p) => read p through the same api)`. Abort on unmount and
   on path change. Re-fetch on **Refresh**.
@@ -210,9 +217,10 @@ Add the card styles. The mockup's `PROPOSED` block is the reference and is alrea
 against the app's tokens; port it rather than reinventing it. Two rules are load-bearing and
 were each found by measurement:
 
-- **Reserved height, context-dependent.** The body reserves `420px` and shows its frame only
-  inside `.detail-conv`; in the capped session-card log the card renders as its header alone.
-  A 420px body in a 340px log puts the disclosure out of reach of its own content.
+- **Reserved height, context-dependent, and no percentage arithmetic.** `420px` inside
+  `.detail-conv`; `240px` in the capped session-card log, where the card also starts collapsed
+  (240px + the 38px header fits inside 340px with conversation still visible). Two contexts,
+  two fixed numbers, one expected height each for a test to assert.
 - **`min-width` on the disclosure.** With `min-width: 0` the disclosure shrinks instead of
   letting the header wrap, and the directory collapses to one character in a narrow column.
   `flex: 1 1 190px; min-width: 150px` wraps instead. This must live *in* the base
@@ -288,8 +296,11 @@ Look at the running app, not only the diff:
 ## Merge and exit criteria
 
 - Every command above passes, including `test:e2e` with the new spec.
-- A turn presenting an artifact shows an expanded card in Console/Board detail, and a header
-  only in a session card.
+- A turn presenting an artifact shows an expanded 420px card in Console/Board detail, and a
+  collapsed header in a session card - collapsed in **state**, with `aria-expanded="false"`,
+  not an open card whose body CSS hid.
+- A collapsed or off-screen card's frame holds no document, so opening a long session does not
+  fetch and render every artifact in it.
 - **Comment in Files** lands on the file, in Preview, with comment mode armed, from both a
   cold open and an already-open Files tab.
 - Every refusal state renders its own sentence, with both header actions intact - and a
@@ -336,6 +347,18 @@ preview.
   not to add a shape-based fallback; and the detection fast path tested for `.htm`
   case-sensitively while the extension rule was case-insensitive, which would have dropped a
   listed `report.HTML`. Neither fix touches an approved decision or the plan's scope.
+- **2026-09-03, Inspector round 4 and CodeRabbit reconciliation.** Three more comments, all
+  three checked against the artifacts and all three valid. Inspector: the source plan's
+  approved-decisions list still recorded "no phased implementation follow-up" while this same
+  directory carries `phased-plan.md`, this file and a scheduled task - the decision now records
+  the submitted answer *and* the later request that superseded it, matching
+  `phased-plan.md`. CodeRabbit, and this one changed the design rather than the prose: the
+  capped context hid the card body with a CSS rule while the disclosure still reported
+  `aria-expanded="true"`, so the capped case is now a genuine collapsed **state** with its own
+  240px body when opened. CodeRabbit also caught that the mockup assigned `srcdoc` to every
+  frame regardless of disclosure or viewport, so it never demonstrated the lazy-mount contract
+  it was the reference for; the mockup now implements it and the contract is verified rather
+  than asserted.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

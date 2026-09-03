@@ -24,8 +24,12 @@ the resolved alternatives are gone from the sections below rather than left as c
 - **The hand-off arms comment mode in Files.** The card does not become a comment-authoring
   surface of its own, so the comment bridge stays inert inside the conversation preview.
 - **The card sits at the foot of the turn**, not spliced into the prose.
-- **No phased implementation follow-up.** This plan lands as the plan; no phase documents and
-  no scheduled implementation tasks come out of this task.
+- **Phasing was declined at review, then asked for separately.** The review's follow-up
+  question was answered "Stop after this plan", so no phasing was produced at that point. The
+  human then asked for mockups and a phased implementation in the same session, which is why
+  `phased-plan.md`, `phase-1-artifact-card.md` and a scheduled Phase 1 task are part of this
+  plan's directory after all. The declined answer is recorded here because it is what was
+  submitted; the later request supersedes it.
 
 ## The gap this closes
 
@@ -117,12 +121,22 @@ The measured rule instead keys off the class that already draws the distinction:
 
 - **`.detail-conv` (Console, Board detail)** - the log is uncapped, so the card is expanded
   with a 420px body. Measured: 420px body in a 749px log.
-- **The session-card log (capped at 340px)** - the card arrives as its **one-line header**
-  and reserves no frame at all. A 420px body there is taller than the entire visible log,
-  which puts the disclosure control out of reach of the content it controls; and shrinking it
-  to fit yields a ~200px thumbnail that eats 60% of a tile's conversation to show a page
-  header. The header, which says what the artifact is and carries both actions, is the honest
-  amount of a page to put in a tile.
+- **The session-card log (capped at 340px)** - the card arrives **collapsed**, as its
+  one-line header, and reserves no frame until the reader opens it. A 420px body there is
+  taller than the entire visible log, which puts the disclosure control out of reach of the
+  content it controls. The header, which says what the artifact is and carries both actions,
+  is the honest default amount of a page to put in a tile.
+- **Opened deliberately in that capped log, the body is 240px**, not 420px. With the 38px
+  header that is 278px inside a 340px log, so the card and some conversation around it are
+  visible at once.
+
+Two contexts, two fixed heights, and no percentage arithmetic - so there is exactly one
+expected height per context for an implementation and a test to agree on.
+
+**The collapse is state, not styling.** It would be easy to leave the card `is-open` in the
+capped context and hide the body with a CSS rule, and that is wrong: the disclosure would keep
+reporting `aria-expanded="true"` for content nobody can reach. The default disclosure state
+depends on the context; `aria-expanded` always describes a body that is really there.
 
 This keeps the approved "arrives expanded" decision where a reader is actually reading, and
 declines to swamp the surface where they are scanning.

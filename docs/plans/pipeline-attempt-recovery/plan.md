@@ -80,6 +80,8 @@ type PipelineWorkspaceView = {
   path: string | null;
   branch: string | null;
   commit: string | null;
+  commitProvenance: "live_validation" | "provider_retirement" | "legacy_branch_resolution" | null;
+  commitFrozenAt: string | null;
   planSlug: string | null;
   attempt: number;
   providerRevision: number;
@@ -87,7 +89,7 @@ type PipelineWorkspaceView = {
 };
 ```
 
-`path` records reported identity but is actionable only when availability is `available` and the daemon revalidates it at request time. `commit` is a durable attempt field, not a per-request branch resolution. Mission Control updates the last validated commit while the live authoring worktree advances, then freezes it at handoff. Provider retirement evidence supplies the authoritative retained commit when available. A one-time legacy branch resolution may establish a missing attempt's commit only when none was captured, and records that weaker provenance. Every later Diff or Files request uses the stored SHA. If the object is unavailable, the workspace becomes explicit unavailable evidence rather than following a moved branch.
+`path` records reported identity but is actionable only when availability is `available` and the daemon revalidates it at request time. `commit` is a durable attempt field, not a per-request branch resolution. Mission Control conditionally advances the last validated commit while the live authoring worktree advances, matching both the validated predecessor and an unfrozen attempt. Handoff freezes it in the same serialized database transaction, so stale validation cannot write afterward. Provider retirement evidence supplies the authoritative retained commit when available. A one-time legacy branch resolution may establish and freeze a missing attempt's commit only when none was captured, and records that weaker provenance. An available Diff or Files request uses the revalidated live root. Every retired or missing fallback request uses the stored SHA. If the object is unavailable, the workspace becomes explicit unavailable evidence rather than following a moved branch.
 
 Add an attempt origin to the durable attempt projection:
 
@@ -160,7 +162,7 @@ For a retry, the service:
 7. launches one fresh managed host attributed to the new attempt;
 8. leaves a durable unknown outcome if creation or binding cannot be proven.
 
-For an external successor, the service first creates a review-only candidate from `inspectCorrelation` and `replay`. Adoption is allowed only when repository, correlation, direct predecessor, monotonic attempt, event integrity, handoff identity, branch, PR repository, and absence of a competing retry all match. Adoption appends a new `provider_reconciled` attempt and replays the provider journal atomically. It never mutates attempt 1 and never fabricates a Mission Control reservation after the fact.
+For an external successor, the service first creates a review-only candidate from `inspectCorrelation` and `replay`. Adoption is allowed only when repository, correlation, direct predecessor, monotonic attempt, event integrity, handoff identity, branch, PR repository, durable commit and provenance across candidate, replay, and the Phase 1 adapter, and absence of a competing retry all match. Owner continuity is exact: an explicitly unowned predecessor accepts only an absent candidate owner, and every non-empty owner change requires recorded transfer evidence. Adoption appends a new `provider_reconciled` attempt and replays the provider journal atomically. It never mutates attempt 1 and never fabricates a Mission Control reservation after the fact.
 
 ### 6. Derive attention, task settlement, and progress from the same projection
 
@@ -204,7 +206,7 @@ Estimated production change: 1,400 to 2,100 lines across Mission Control and ai-
 
 Repository: Mission Control
 
-- Persist `authoringBranch`, `planSlug`, attempt origin, last validated evidence commit and provenance, and legacy-safe workspace identity.
+- Persist `authoringBranch`, `planSlug`, attempt origin, last validated evidence commit, provenance, freeze time, and legacy-safe workspace identity.
 - Add the central resolver with current-event support and exact path revalidation.
 - Add merge-base-aware ref diff and read-only Git tree browsing for retired or missing worktrees.
 - Correct branch labels, Diff error headers, manual workflow checkout selection, and Files capability states.
@@ -285,7 +287,7 @@ Validation: concurrent retry race, response-loss recovery, stale revision, wrong
 
 | Risk | Mitigation |
 | --- | --- |
-| A branch moves between requests | Persist the attempt's evidence commit, freeze it at handoff or retirement, and never re-resolve the branch for later views |
+| A branch moves or validation races with handoff | Persist the attempt's evidence commit with predecessor-and-freeze CAS, freeze it atomically with handoff, and never re-resolve the branch for later fallback views |
 | Retention leaks worktrees | Provider-owned terminal cleanup plus bounded timeout and explicit retirement evidence |
 | Mixed versions create false confidence | Capability gates and explicit legacy/unknown states |
 | Retry creates duplicate provider work | Existing attempt-key idempotency plus commission CAS and inspect-on-response-loss |

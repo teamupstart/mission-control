@@ -88,9 +88,10 @@ No phase requires inseparable pull requests in both repositories.
 
 - `Session.cwd` remains process identity.
 - The commission owns authoring branch and plan slug.
-- The central resolver returns availability, path, branch, the attempt's durable evidence commit and provenance, attempt, provider revision, reason, and capabilities.
+- The central resolver returns availability, path, branch, the attempt's durable evidence commit, provenance, and freeze state, attempt, provider revision, reason, and capabilities.
 - `available` is the only state that authorizes writes, comments, shell launch, or external file open.
 - `retired` and `missing` may authorize read-only Git object access only through a commit persisted on the attempt and verified inside the task repository. Later requests never follow a moved branch.
+- Evidence advancement conditionally matches the validated predecessor and an unfrozen attempt. Handoff freezes evidence in the same serialized database transaction, so concurrent or stale writers cannot advance it afterward.
 - Consumers must not bypass the resolver or silently fall back to host `cwd`.
 
 Phases 3 and 4 may extend reasons and actions but must not change these authorization rules.
@@ -102,7 +103,7 @@ Phases 3 and 4 may extend reasons and actions but must not change these authoriz
 - `engineer_worktree_retired` records exact worktree identity, cleanup reason, and the immutable attempt-specific commit SHA captured before cleanup.
 - `engineer_run_failed` keeps raw `error` and adds bounded optional typed recovery fields.
 - Mission Control integration ownership is opaque to ai-conductor except for equality and transfer validation.
-- Readiness and ownership are independent capabilities: available readiness is always enforced, while absent ownership disables automatic recovery.
+- Readiness and ownership are independent capabilities: a current `ready` result, or an explicitly permitted `inconclusive` result, is always enforced when readiness is supported, while absent ownership disables automatic recovery.
 - Current attempt-key idempotency, direct predecessor ordering, replay integrity, and keep-on-failure remain intact.
 - Worktree retention ends only on merge, close, cancel, or timeout, with the immutable attempt commit and retirement recorded before removal.
 
@@ -115,7 +116,10 @@ Phase 3 consumes this contract. Phase 4 relies on its readiness and ownership ca
 - Retry uses compare-and-swap over commission, active attempt, provider run, and provider revision.
 - Creation response loss uses existing attempt-key inspection before any new call.
 - Only one exact direct successor is eligible for adoption.
-- Candidate owner must equal predecessor owner unless the correlation is explicitly unowned or carries valid ownership-transfer evidence.
+- Candidate owner must equal predecessor owner.
+- An explicitly unowned predecessor may accept only an absent candidate owner.
+- Every non-empty owner change requires recorded ownership-transfer evidence.
+- Candidate durable commit and provenance must match the replayed direct-successor journal and the Phase 1 commit adapter before adoption CAS.
 - Branch and PR facts validate a candidate but never settle provider lifecycle alone.
 - Old managed hosts leave through `Registry.beginEviction`.
 

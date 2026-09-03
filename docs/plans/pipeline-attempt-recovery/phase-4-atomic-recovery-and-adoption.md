@@ -133,7 +133,8 @@ Before adoption, repeat every check server-side:
 7. the candidate is terminal or awaiting handoff in a state the commission reducer supports;
 8. worktree, branch, plan slug, and handoff identities do not conflict;
 9. a PR URL, when present, belongs to the task repository and its head branch matches the handoff;
-10. no Mission Control retry, different adopted attempt, or live recovery host now competes.
+10. the candidate's durable attempt commit and provenance exactly match both the replayed direct-successor journal and the Phase 1 commit adapter result; a changed candidate fails as `candidate_changed`, while a cross-source identity conflict fails as `lineage_mismatch`;
+11. no Mission Control retry, different adopted attempt, or live recovery host now competes.
 
 Repository branch and PR checks are validation evidence only. A missing branch or unavailable repository host may block adoption; it never causes provider state to be rewritten.
 
@@ -201,7 +202,7 @@ Add focused tests for the state machine and fault boundaries:
 - DB CAS: two concurrent retries, stale active attempt, stale provider revision, existing successor, wrong task, wrong run, and restart load.
 - recovery service: provider create success, response loss with exact recovery, collision, malformed correlation, bind failure, readiness block, eviction failure, host launch failure, daemon restart at every durable boundary, and idempotent resume.
 - Registry: predecessor host uses the existing eviction sequence and emits one `session_remove`; no second teardown path.
-- adoption: exact direct successor, grandchild, fork, skipped attempt, wrong predecessor, wrong repository, wrong idea, missing or mismatched owner, valid owner transfer, explicitly unowned lineage, discontinuous replay, oversized event, terminal mismatch, branch mismatch, PR repository mismatch, PR head mismatch, competing retry, partial replay resume, and repeated adoption request.
+- adoption: exact direct successor, grandchild, fork, skipped attempt, wrong predecessor, wrong repository, wrong idea, missing or mismatched owner, valid owner transfer, explicitly unowned lineage, discontinuous replay, oversized event, terminal mismatch, branch mismatch, durable-commit or provenance mismatch across candidate, replay, and adapter, PR repository mismatch, PR head mismatch, competing retry, partial replay resume, and repeated adoption request.
 - settlement: abandon, cancel, adopted handoff, done-write refusal, running drift, and implementation-complete success.
 - routes: authentication, Zod failures, 409 conflicts, 422 validation, outcome unknown, and bounded responses.
 - shared/UI models: primary next move, action enablement, separate attempt labels, and reconciled origin.
@@ -267,4 +268,4 @@ Any future support for deeper lineage requires a new explicit operator decision 
 - Adoption refinement: the attempt row is inserted before replay so existing ingest identity checks remain authoritative, and partial replay can resume by provider revision.
 - Settlement audit: adopted spec handoff clears divergence but does not mark implementation complete.
 - Final audit: every approved source requirement is owned by one phase; retry and adoption consume earlier contracts without weakening workspace authorization, provider ownership, or task-completion semantics.
-- CodeRabbit audit: retry preflight is non-mutating and adoption requires exact owner continuity or explicit transfer evidence.
+- CodeRabbit audit: retry preflight is non-mutating; adoption requires exact owner continuity or explicit transfer evidence and validates its durable commit and provenance against both replay and the Phase 1 adapter before CAS.

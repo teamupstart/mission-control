@@ -228,7 +228,7 @@
         <text class="t" x="740" y="334" text-anchor="middle">Unreserved direct successor</text><text class="s" x="740" y="357" text-anchor="middle">inspect and replay only</text><text class="s" x="740" y="377" text-anchor="middle">no active-state mutation</text>
         <path class="a" d="M620 348 H495"/>
         <rect class="review" x="250" y="302" rx="12" width="245" height="92"/>
-        <text class="t" x="372" y="334" text-anchor="middle">Explicit adoption review</text><text class="s" x="372" y="357" text-anchor="middle">direct lineage, repo, branch,</text><text class="s" x="372" y="377" text-anchor="middle">PR and no competing retry</text>
+        <text class="t" x="372" y="334" text-anchor="middle">Explicit adoption review</text><text class="s" x="372" y="357" text-anchor="middle">lineage, owner, commit, repo,</text><text class="s" x="372" y="377" text-anchor="middle">branch, PR and no rival retry</text>
         <path class="a" d="M372 302 V282 H780 V117"/>
       </svg>
     </div>
@@ -255,7 +255,7 @@
     <div class="grid three">
       <div class="card">
         <h3>Two readiness gates</h3>
-        <p>Mission Control performs a cheap provider probe before host launch. The canonical Engineer launcher records readiness from the actual host posture before accepting authoring transitions. Push authorization is checked again at handoff.</p>
+        <p>Mission Control performs a non-mutating provider probe before reservation. Authoring requires a current <code>ready</code> result or an explicitly permitted <code>inconclusive</code> result. Push authorization is checked again at handoff.</p>
       </div>
       <div class="card">
         <h3>Atomic retry</h3>
@@ -263,7 +263,7 @@
       </div>
       <div class="card">
         <h3>Explicit adoption</h3>
-        <p>A direct unreserved successor is review-only until repository, correlation, predecessor, events, branch, PR, and competing-retry checks all pass. Adoption appends a distinct <code>provider_reconciled</code> attempt.</p>
+        <p>A direct unreserved successor is review-only until lineage, owner, replay, durable commit and provenance, repository, branch, PR, and competing-retry checks all pass. Adoption appends a distinct <code>provider_reconciled</code> attempt.</p>
       </div>
     </div>
   </section>
@@ -273,7 +273,7 @@
     <h2>Four phases, each with a coherent owner and rollback boundary</h2>
     <div class="card phase" data-n="1">
       <h3>Durable identity and safe Git-ref evidence</h3>
-      <p><strong>Mission Control.</strong> Preserve branch, plan slug, and a durable attempt evidence commit; add the central resolver, commit-backed Diff and read-only Files, correct branch/header/workflow behavior, and move caller credentials out of process arguments. Useful with today's provider.</p>
+      <p><strong>Mission Control.</strong> Preserve branch, plan slug, and a durable attempt evidence commit; serialize predecessor-checked advancement with handoff freeze; add the central resolver, commit-backed Diff and read-only Files, correct branch/header/workflow behavior, and move caller credentials out of process arguments. Useful with today's provider.</p>
     </div>
     <div class="card phase" data-n="2">
       <h3>Complete provider lifecycle and ownership contract</h3>
@@ -298,6 +298,7 @@
         <ul>
           <li>Path and branch always describe the same provider attempt.</li>
           <li>Retirement preserves pinned read-only Diff and Files evidence.</li>
+          <li>Concurrent validation cannot advance evidence after handoff freeze.</li>
           <li>No missing workspace silently falls back to host <code>cwd</code>.</li>
           <li>Known readiness blockers stop before model-backed authoring.</li>
           <li>Commission failure raises <code>needs you</code> even when the host is idle.</li>
@@ -310,6 +311,7 @@
           <li>Response loss recovers exact identity or remains durably unknown.</li>
           <li>Attempt 1 remains immutable after retry or adoption.</li>
           <li>External work cannot affect the active attempt before explicit adoption.</li>
+          <li>Adoption matches durable commit and provenance across candidate, replay, and adapter.</li>
           <li>Task and commission contradictions become named status drift.</li>
           <li>No caller credential appears in process arguments.</li>
         </ul>
@@ -325,7 +327,7 @@
       <tbody>
         <tr><td>Retention timeout</td><td>Retain through review, then clean on merge, close, cancel, or a bounded provider-owned timeout. Final duration needs provider-owner input.</td></tr>
         <tr><td>Remote transport probes</td><td>Use transport-specific checks and an explicit inconclusive result. Never claim a read probe proves write authorization.</td></tr>
-        <tr><td>Moving refs or collected objects</td><td>Persist and freeze the attempt commit, never re-resolve the branch, and expose unavailable evidence if the object disappears.</td></tr>
+        <tr><td>Moving refs, concurrent validation, or collected objects</td><td>Advance with predecessor-and-freeze CAS, freeze atomically with handoff, never re-resolve the fallback branch, and expose unavailable evidence if the object disappears.</td></tr>
         <tr><td>Historical lineage deeper than one child</td><td>Do not adopt it automatically. This plan supports only one exact direct successor.</td></tr>
         <tr><td>Mixed provider versions</td><td>Capability-gate retry and ownership guarantees; preserve explicit legacy and unknown states.</td></tr>
       </tbody>

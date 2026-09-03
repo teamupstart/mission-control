@@ -51,7 +51,7 @@ export function EnsembleDeleteModal({
             </button>
           </Tooltip>
         </header>
-        <div className="ensemble-delete-body">
+        <div className="modal-bleed ensemble-delete-body">
           <p className="ensemble-delete-subject">
             <strong>{run.title}</strong>
           </p>

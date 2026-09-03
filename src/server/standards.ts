@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { dirname, join, posix, resolve } from "node:path";
 import { MEMORY_INDEX_PATH } from "@shared/memory.ts";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
-import { utf8Bytes } from "./util/utf8.ts";
+import { decodeUtf8Whole, utf8Bytes } from "./util/utf8.ts";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
 // against when it asks "was this actually finished, to this repo's bar?".
@@ -205,4 +206,97 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
     docs.push(doc);
   }
   return { docs, truncated: truncated || droppedPaths || droppedDirs };
+}
+
+function gitTreeDoc(
+  repoRoot: string,
+  commit: string,
+  filePath: string,
+): RepoDoc | null {
+  const entry = spawnSync(
+    "git",
+    ["-C", repoRoot, "ls-tree", "-z", commit, "--", filePath],
+    { encoding: "buffer", timeout: 15_000, maxBuffer: 256 * 1024 },
+  );
+  if (entry.status !== 0 || !Buffer.isBuffer(entry.stdout)) return null;
+  const match = entry.stdout.toString("utf8").match(/^(\d+) blob ([0-9a-f]+)\t/);
+  if (!match || match[1] === "120000" || !match[2]) return null;
+  const sizeResult = spawnSync(
+    "git",
+    ["-C", repoRoot, "cat-file", "-s", `${commit}:${filePath}`],
+    { encoding: "utf8", timeout: 15_000, maxBuffer: 4096 },
+  );
+  const size = Number(typeof sizeResult.stdout === "string" ? sizeResult.stdout.trim() : "");
+  if (sizeResult.status !== 0 || !Number.isSafeInteger(size) || size < 0) return null;
+  const content = spawnSync(
+    "git",
+    ["-C", repoRoot, "show", `${commit}:${filePath}`],
+    { encoding: "buffer", timeout: 15_000, maxBuffer: MAX_FILE_BYTES + 1 },
+  );
+  if (content.status !== 0 || !Buffer.isBuffer(content.stdout)) return null;
+  const bytes = content.stdout.subarray(0, MAX_FILE_BYTES);
+  return {
+    path: filePath,
+    realPath: `git:${commit}:${match[2]}`,
+    text: decodeUtf8Whole(bytes),
+    truncated: size > MAX_FILE_BYTES,
+  };
+}
+
+/** Read the standards visible at one immutable Pipeline evidence commit. */
+export function readStandardsFromGitTree(
+  repoRoot: string,
+  commit: string,
+  changedPaths: string[],
+): StandardsBundle {
+  if (!/^[0-9a-f]{40,64}$/i.test(commit)) return { docs: [], truncated: false };
+  const wanted = [...ROOT_NAMES];
+  const seenDirs = new Set<string>();
+  let droppedDirs = false;
+  const walk = changedPaths.slice(0, MAX_CHANGED_PATHS);
+  for (const rawPath of walk) {
+    if (
+      !rawPath ||
+      rawPath.includes("\0") ||
+      /[\r\n]/.test(rawPath) ||
+      rawPath.startsWith("/") ||
+      rawPath.split("/").some((part) => part === "..")
+    ) continue;
+    let dir = posix.dirname(posix.normalize(rawPath));
+    while (dir !== "." && dir !== "/") {
+      if (seenDirs.has(dir)) break;
+      if (seenDirs.size >= MAX_WALKED_DIRS) {
+        droppedDirs = true;
+        break;
+      }
+      seenDirs.add(dir);
+      for (const name of NESTED_NAMES) wanted.push(posix.join(dir, name));
+      dir = posix.dirname(dir);
+    }
+  }
+  wanted.push(...ROOT_EXTRA_PATHS);
+
+  const requested = new Set<string>();
+  const identity = new Set<string>();
+  const docs: RepoDoc[] = [];
+  let total = 0;
+  let truncated = false;
+  for (const filePath of wanted) {
+    if (requested.has(filePath)) continue;
+    requested.add(filePath);
+    const doc = gitTreeDoc(repoRoot, commit, filePath);
+    if (!doc || identity.has(doc.realPath)) continue;
+    identity.add(doc.realPath);
+    const bytes = utf8Bytes(doc.text);
+    if (total + bytes > MAX_TOTAL_BYTES) {
+      truncated = true;
+      continue;
+    }
+    total += bytes;
+    docs.push(doc);
+  }
+  return {
+    docs,
+    truncated: truncated || droppedDirs || changedPaths.length > MAX_CHANGED_PATHS,
+  };
 }

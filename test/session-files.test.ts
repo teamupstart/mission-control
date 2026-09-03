@@ -6,10 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   listSessionFiles,
+  listGitTreeFiles,
   MAX_SESSION_FILE_ENTRIES,
   MAX_SESSION_EDITOR_BYTES,
   MAX_SESSION_PREVIEW_BYTES,
   readFileWithinCap,
+  readGitTreeFile,
   readSessionFile,
   saveSessionFile,
   SessionFileError,
@@ -53,6 +55,36 @@ test("lists tracked and untracked non-ignored regular files deterministically", 
     { path: "a.txt" },
     { path: "z.txt" },
   ]);
+});
+
+test("pinned Git tree files stay exact, bounded, traversal-safe, and read-only", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  execFileSync("git", ["-C", dir, "config", "user.email", "t@test"]);
+  execFileSync("git", ["-C", dir, "config", "user.name", "t"]);
+  await writeFile(path.join(dir, "README.md"), "# Pinned\n");
+  await writeFile(path.join(dir, "binary.dat"), Buffer.from([65, 0, 66]));
+  await symlink("README.md", path.join(dir, "link.md"));
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "commit", "-qm", "pinned"]);
+  const commit = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  await writeFile(path.join(dir, "README.md"), "# Moving worktree\n");
+  await writeFile(path.join(dir, "later.txt"), "not in evidence\n");
+
+  assert.deepEqual(await listGitTreeFiles(dir, commit), [
+    { path: "binary.dat" },
+    { path: "README.md" },
+  ]);
+  const pinned = await readGitTreeFile(dir, commit, "README.md");
+  assert.equal(pinned.kind, "markdown");
+  assert.equal(pinned.editable, false);
+  assert.equal(pinned.text, "# Pinned\n");
+  assert.equal(pinned.error, "Read-only Pipeline evidence");
+  assert.equal((await readGitTreeFile(dir, commit, "binary.dat")).kind, "binary");
+  await assert.rejects(() => readGitTreeFile(dir, commit, "../README.md"), SessionFileError);
+  await assert.rejects(() => readGitTreeFile(dir, commit, "later.txt"), SessionFileError);
 });
 
 test("reads UTF-8 text by content and classifies HTML independently", async (t) => {

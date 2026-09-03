@@ -29,6 +29,7 @@ import type {
   PipelineProviderId,
   PipelineRun,
   PipelineRunLink,
+  PipelineWorkspaceView,
   SessionPipelineLink,
 } from "./pipeline.ts";
 // Type-only in the opposite direction from protocol.ts's runtime schema imports, so the wire
@@ -500,6 +501,8 @@ export interface Session {
    * Optional for mixed-version wire compatibility; consumers fall back to `cwd`.
    */
   workspaceRoot?: string | null;
+  /** Provider-authoritative workspace identity for a managed Pipeline session. */
+  workspace?: PipelineWorkspaceView | null;
   gitBranch: string | null;
   /**
    * The root of the checkout `cwd` sits in, resolved through symlinks. Null when

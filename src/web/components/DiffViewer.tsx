@@ -139,7 +139,11 @@ function DiffViewerContent({
           {/* A commit diff is ONE commit, so it must not borrow the range
               wording below: "<branch> vs <base>" would read as everything since
               that parent, which is the larger diff and the wrong one. */}
-          {commit ? (
+          {loading ? (
+            <span className="diff-sub mono">loading diff scope</span>
+          ) : diff && !diff.ok ? (
+            <span className="diff-sub mono">diff scope unavailable</span>
+          ) : commit ? (
             // Not `.branch`: that prepends a ⌥ branch glyph, and this is a commit.
             <span className="diff-sub mono">
               fix <span className="diff-sha">{diff?.headSha ?? commit}</span>

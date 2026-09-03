@@ -4547,6 +4547,15 @@ body.is-pane-resizing {
   flex-direction: column;
   container: file-main / inline-size;
 }
+.file-readonly-banner {
+  flex: none;
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--attention) 35%, var(--border));
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+  font: 11px var(--mono);
+}
 .file-toolbar {
   flex: none;
   min-height: 43px;

@@ -263,6 +263,7 @@ export function fileWorkspacePropsEqual(
 ): boolean {
   return previous.session.id === next.session.id
     && previous.session.name === next.session.name
+    && JSON.stringify(previous.session.workspace ?? null) === JSON.stringify(next.session.workspace ?? null)
     && previous.controller === next.controller
     && previous.fileCommentThreads === next.fileCommentThreads
     && previous.fileCommentReviews === next.fileCommentReviews
@@ -285,6 +286,8 @@ function FileWorkspaceBody({
   ref,
 }: FileWorkspaceProps): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
+  const readOnlyWorkspace = session.workspace?.authority === "provider"
+    && !session.workspace.capabilities.write;
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
@@ -316,7 +319,9 @@ function FileWorkspaceBody({
    * Deliberately its own predicate and not `previewable`, which answers a different
    * question and includes `image` - see `isCommentableDocument`.
    */
-  const commentable = buffer ? isCommentableDocument(buffer.document) : false;
+  const commentable = buffer
+    ? isCommentableDocument(buffer.document) && !readOnlyWorkspace
+    : false;
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const [showComments, setShowComments] = useState(false);
@@ -2190,6 +2195,11 @@ function FileWorkspaceBody({
       />
 
       <div className="file-main">
+        {readOnlyWorkspace && (
+          <p className="file-readonly-banner" role="status">
+            Read-only Pipeline evidence from {session.workspace?.commit?.slice(0, 12) ?? "an unavailable commit"}
+          </p>
+        )}
         <header className="file-toolbar">
           <Tooltip label={selectedPath ?? "No file open"}><span className="file-path mono">{selectedPath ?? "Select a file"}</span></Tooltip>
           {buffer && <span className="file-language">{buffer.document.language}</span>}
@@ -2217,7 +2227,7 @@ function FileWorkspaceBody({
             `.file-mode`, so styling by descendant of either would put this control's
             appearance on three surfaces that have no comments at all.
           */}
-          {buffer && (
+      {buffer && !readOnlyWorkspace && (
             <div className="file-comment-controls">
               <Tooltip
                 label={commentable
@@ -2297,7 +2307,11 @@ function FileWorkspaceBody({
               )}
             </div>
           )}
-          <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />
+          <OpenInMenu
+            disabled={!buffer || readOnlyWorkspace}
+            busy={launching || pendingOpen !== null}
+            onChoose={openIn}
+          />
           {!extracted && onExtract && (
             <Tooltip label="Extract to a movable window"><button className="icon-btn file-extract" onClick={() => { controller.flush(session.id); onExtract(); }} aria-label="Extract files window">↗</button></Tooltip>
           )}

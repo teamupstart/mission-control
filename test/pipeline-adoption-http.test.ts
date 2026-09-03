@@ -25,10 +25,10 @@ const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const {
-  PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } = await import("../src/shared/pipeline.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const { pipelineCredentialFromDescriptor } = await import("./helpers/pipeline-credential.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -197,7 +197,7 @@ test("the authenticated adoption route accepts its preallocated managed host bef
   const supervisor = {
     start: (input: Parameters<SdkSupervisor["start"]>[0]) => {
       preallocatedSessionId = input.sessionId!;
-      callerCredential = input.mcp?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      callerCredential = pipelineCredentialFromDescriptor(input.mcp);
       assert.ok(callerCredential);
       assert.equal(registry.getTask(task.id)?.sessionId, preallocatedSessionId);
       assert.equal(registry.getSession(preallocatedSessionId), undefined);

@@ -24,8 +24,10 @@ import {
   isPipelineProviderId,
   isPipelineStepState,
   MAX_PIPELINE_COMMISSION_ATTEMPTS,
+  PIPELINE_ATTEMPT_ORIGINS,
   PIPELINE_COMMISSION_ATTEMPT_STATES,
   PIPELINE_COMMISSION_LIFECYCLES,
+  PIPELINE_EVIDENCE_COMMIT_PROVENANCES,
   type PipelineCommission,
   type PipelineCommissionAttempt,
   type PipelineCommissionAttemptState,
@@ -2919,12 +2921,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS pipeline_commission_attempts (
       commission_id     TEXT NOT NULL,
       attempt           INTEGER NOT NULL CHECK (attempt > 0),
+      origin            TEXT,
       launch_key        TEXT NOT NULL,
       engineer_run_id   TEXT,
       previous_engineer_run_id TEXT,
       provider_revision INTEGER NOT NULL DEFAULT 0 CHECK (provider_revision >= 0),
       state             TEXT NOT NULL,
       terminal_reason   TEXT,
+      evidence_commit   TEXT,
+      evidence_commit_provenance TEXT,
+      evidence_frozen_at INTEGER,
       updated_at        INTEGER NOT NULL,
       PRIMARY KEY (commission_id, attempt),
       UNIQUE (commission_id, launch_key),
@@ -3705,6 +3711,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "pipeline_commission_id", "TEXT");
   addColumn(d, "pipeline_commission_attempts", "previous_engineer_run_id", "TEXT");
   addColumn(d, "pipeline_commission_attempts", "terminal_reason", "TEXT");
+  addColumn(d, "pipeline_commission_attempts", "origin", "TEXT");
+  addColumn(d, "pipeline_commission_attempts", "evidence_commit", "TEXT");
+  addColumn(d, "pipeline_commission_attempts", "evidence_commit_provenance", "TEXT");
+  addColumn(d, "pipeline_commission_attempts", "evidence_frozen_at", "INTEGER");
   // A provider-owned authoring checkout is visibility state, not a daemon-owned worktree.
   // Keeping it out of `worktree_path` prevents cleanup from reclaiming another tool's tree.
   addColumn(d, "tasks", "pipeline_workspace_path", "TEXT");
@@ -7629,6 +7639,9 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
         value !== null &&
         !Array.isArray(value) &&
         Number.isInteger(value.attempt) &&
+        (value.origin === undefined ||
+          (typeof value.origin === "string" &&
+            (PIPELINE_ATTEMPT_ORIGINS as readonly string[]).includes(value.origin))) &&
         typeof value.launchKey === "string" &&
         nullableString(value.engineerRunId) &&
         nullableString(value.previousEngineerRunId) &&
@@ -7636,6 +7649,16 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
         typeof value.state === "string" &&
         (PIPELINE_COMMISSION_ATTEMPT_STATES as readonly string[]).includes(value.state) &&
         nullableString(value.terminalReason) &&
+        (value.evidenceCommit === undefined || nullableString(value.evidenceCommit)) &&
+        (value.evidenceCommitProvenance === undefined ||
+          value.evidenceCommitProvenance === null ||
+          (typeof value.evidenceCommitProvenance === "string" &&
+            (PIPELINE_EVIDENCE_COMMIT_PROVENANCES as readonly string[]).includes(
+              value.evidenceCommitProvenance,
+            ))) &&
+        (value.evidenceFrozenAt === undefined ||
+          value.evidenceFrozenAt === null ||
+          typeof value.evidenceFrozenAt === "number") &&
         typeof value.updatedAt === "number",
     );
   const stepsValid =
@@ -7691,6 +7714,8 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     nullableString(row.track) &&
     nullableString(row.project) &&
     nullableString(row.authoringWorktree) &&
+    (row.authoringBranch === undefined || nullableString(row.authoringBranch)) &&
+    (row.planSlug === undefined || nullableString(row.planSlug)) &&
     handoffValid &&
     linkedRunValid &&
     blockerValid &&
@@ -7726,6 +7751,8 @@ function fallbackCommission(row: {
     track: null,
     project: null,
     authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
     handoff: null,
     linkedRun: row.run_slug
       ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
@@ -7737,14 +7764,19 @@ function fallbackCommission(row: {
   };
 }
 
-function commissionAttemptsById(): Map<string, PipelineCommissionAttempt[]> {
+function commissionAttemptsById(): {
+  attempts: Map<string, PipelineCommissionAttempt[]>;
+  unsupported: Map<string, string>;
+} {
   const rows = openDb()
     .prepare(
-      `SELECT commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
-              provider_revision, state, terminal_reason, updated_at
+      `SELECT commission_id, attempt, origin, launch_key, engineer_run_id, previous_engineer_run_id,
+              provider_revision, state, terminal_reason, evidence_commit,
+              evidence_commit_provenance, evidence_frozen_at, updated_at
          FROM (
-           SELECT commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
-                  provider_revision, state, terminal_reason, updated_at,
+           SELECT commission_id, attempt, origin, launch_key, engineer_run_id, previous_engineer_run_id,
+                  provider_revision, state, terminal_reason, evidence_commit,
+                  evidence_commit_provenance, evidence_frozen_at, updated_at,
                   ROW_NUMBER() OVER (
                     PARTITION BY commission_id ORDER BY attempt DESC
                   ) AS retained_position
@@ -7756,21 +7788,44 @@ function commissionAttemptsById(): Map<string, PipelineCommissionAttempt[]> {
     .all(MAX_PIPELINE_COMMISSION_ATTEMPTS) as unknown as Array<{
     commission_id: string;
     attempt: number;
+    origin: string | null;
     launch_key: string;
     engineer_run_id: string | null;
     previous_engineer_run_id: string | null;
     provider_revision: number;
     state: string;
     terminal_reason: string | null;
+    evidence_commit: string | null;
+    evidence_commit_provenance: string | null;
+    evidence_frozen_at: number | null;
     updated_at: number;
   }>;
   const out = new Map<string, PipelineCommissionAttempt[]>();
+  const unsupported = new Map<string, string>();
   for (const row of rows) {
+    const origin = row.origin ?? "mission_control";
+    if (!(PIPELINE_ATTEMPT_ORIGINS as readonly string[]).includes(origin)) {
+      unsupported.set(row.commission_id, `unsupported stored attempt origin ${origin}`);
+      continue;
+    }
+    if (
+      row.evidence_commit_provenance !== null &&
+      !(PIPELINE_EVIDENCE_COMMIT_PROVENANCES as readonly string[]).includes(
+        row.evidence_commit_provenance,
+      )
+    ) {
+      unsupported.set(
+        row.commission_id,
+        `unsupported stored evidence provenance ${row.evidence_commit_provenance}`,
+      );
+      continue;
+    }
     const state = (PIPELINE_COMMISSION_ATTEMPT_STATES as readonly string[]).includes(row.state)
       ? (row.state as PipelineCommissionAttemptState)
       : "failed";
     const attempt: PipelineCommissionAttempt = {
       attempt: row.attempt,
+      origin: origin as PipelineCommissionAttempt["origin"],
       launchKey: row.launch_key,
       engineerRunId: row.engineer_run_id,
       previousEngineerRunId: row.previous_engineer_run_id,
@@ -7778,18 +7833,22 @@ function commissionAttemptsById(): Map<string, PipelineCommissionAttempt[]> {
       state,
       terminalReason:
         state === row.state ? row.terminal_reason : `unsupported stored attempt state ${row.state}`,
+      evidenceCommit: row.evidence_commit,
+      evidenceCommitProvenance:
+        row.evidence_commit_provenance as PipelineCommissionAttempt["evidenceCommitProvenance"],
+      evidenceFrozenAt: row.evidence_frozen_at,
       updatedAt: row.updated_at,
     };
     const list = out.get(row.commission_id);
     if (list) list.push(attempt);
     else out.set(row.commission_id, [attempt]);
   }
-  return out;
+  return { attempts: out, unsupported };
 }
 
 /** Load every durable commission, degrading one malformed projection without taking down boot. */
 export function loadPipelineCommissions(): PipelineCommission[] {
-  const attempts = commissionAttemptsById();
+  const attemptState = commissionAttemptsById();
   const rows = openDb()
     .prepare(
       `SELECT id, task_id, provider, repo_root, correlation_id, state_json, active_attempt,
@@ -7815,7 +7874,17 @@ export function loadPipelineCommissions(): PipelineCommission[] {
       unsupported += 1;
       continue;
     }
-    const attemptRows = attempts.get(row.id) ?? [];
+    const attemptRows = attemptState.attempts.get(row.id) ?? [];
+    const unsupportedAttempt = attemptState.unsupported.get(row.id);
+    if (unsupportedAttempt) {
+      unsupported += 1;
+      out.push(fallbackCommission(
+        row as typeof row & { provider: PipelineProviderId },
+        attemptRows,
+        unsupportedAttempt,
+      ));
+      continue;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(row.state_json);
@@ -7841,6 +7910,8 @@ export function loadPipelineCommissions(): PipelineCommission[] {
     out.push({
       ...parsed,
       blocker: parsed.blocker ?? null,
+      authoringBranch: parsed.authoringBranch ?? parsed.handoff?.branch ?? null,
+      planSlug: parsed.planSlug ?? parsed.handoff?.planSlug ?? null,
       attempts: attemptRows.map((attempt) => {
         const projected = parsed.attempts.find((entry) => entry.attempt === attempt.attempt);
         return projected ? { ...projected, ...attempt } : attempt;
@@ -7903,18 +7974,23 @@ export function createPipelineCommissionRow(
     );
     d.prepare(
       `INSERT INTO pipeline_commission_attempts
-         (commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
-          provider_revision, state, terminal_reason, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (commission_id, attempt, origin, launch_key, engineer_run_id, previous_engineer_run_id,
+          provider_revision, state, terminal_reason, evidence_commit,
+          evidence_commit_provenance, evidence_frozen_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       commission.id,
       attempt.attempt,
+      attempt.origin,
       attempt.launchKey,
       attempt.engineerRunId,
       attempt.previousEngineerRunId,
       attempt.providerRevision,
       attempt.state,
       attempt.terminalReason,
+      attempt.evidenceCommit,
+      attempt.evidenceCommitProvenance,
+      attempt.evidenceFrozenAt,
       attempt.updatedAt,
     );
     d.prepare(
@@ -7942,25 +8018,34 @@ export function upsertPipelineCommissionAttempt(
   try {
     d.prepare(
       `INSERT INTO pipeline_commission_attempts
-         (commission_id, attempt, launch_key, engineer_run_id, previous_engineer_run_id,
-          provider_revision, state, terminal_reason, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (commission_id, attempt, origin, launch_key, engineer_run_id, previous_engineer_run_id,
+          provider_revision, state, terminal_reason, evidence_commit,
+          evidence_commit_provenance, evidence_frozen_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(commission_id, attempt) DO UPDATE SET
+         origin=excluded.origin,
          engineer_run_id=excluded.engineer_run_id,
          previous_engineer_run_id=excluded.previous_engineer_run_id,
          provider_revision=excluded.provider_revision,
          state=excluded.state,
          terminal_reason=excluded.terminal_reason,
+         evidence_commit=excluded.evidence_commit,
+         evidence_commit_provenance=excluded.evidence_commit_provenance,
+         evidence_frozen_at=excluded.evidence_frozen_at,
          updated_at=excluded.updated_at`,
     ).run(
       commission.id,
       attempt.attempt,
+      attempt.origin,
       attempt.launchKey,
       attempt.engineerRunId,
       attempt.previousEngineerRunId,
       attempt.providerRevision,
       attempt.state,
       attempt.terminalReason,
+      attempt.evidenceCommit,
+      attempt.evidenceCommitProvenance,
+      attempt.evidenceFrozenAt,
       attempt.updatedAt,
     );
     d.prepare(
@@ -7989,6 +8074,75 @@ export function upsertPipelineCommissionAttempt(
   }
 }
 
+export type PipelineEvidenceAdvance = "stored" | "stale" | "frozen";
+
+/**
+ * Advance one attempt's immutable Git evidence with predecessor-and-freeze compare-and-swap.
+ * Validation of repository identity and ancestry belongs to the workspace resolver; this
+ * function owns only the serialized database boundary.
+ */
+export function advancePipelineCommissionEvidence(input: {
+  commissionId: string;
+  attempt: number;
+  previousCommit: string | null;
+  commit: string;
+  provenance: PipelineCommissionAttempt["evidenceCommitProvenance"];
+  frozenAt?: number | null;
+}): PipelineEvidenceAdvance {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const current = d.prepare(
+      `SELECT evidence_commit, evidence_frozen_at
+         FROM pipeline_commission_attempts
+        WHERE commission_id = ? AND attempt = ?`,
+    ).get(input.commissionId, input.attempt) as {
+      evidence_commit: string | null;
+      evidence_frozen_at: number | null;
+    } | undefined;
+    if (!current || current.evidence_commit !== input.previousCommit) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return "stale";
+    }
+    if (current.evidence_frozen_at !== null) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return "frozen";
+    }
+    const changed = d.prepare(
+      `UPDATE pipeline_commission_attempts
+          SET evidence_commit = ?, evidence_commit_provenance = ?, evidence_frozen_at = ?
+        WHERE commission_id = ? AND attempt = ?
+          AND evidence_frozen_at IS NULL
+          AND ((?6 IS NULL AND evidence_commit IS NULL) OR evidence_commit = ?6)`,
+    ).run(
+      input.commit,
+      input.provenance,
+      input.frozenAt ?? null,
+      input.commissionId,
+      input.attempt,
+      input.previousCommit,
+    );
+    if (Number(changed.changes) !== 1) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return "stale";
+    }
+    const commission = getPipelineCommission(input.commissionId);
+    if (!commission) throw new Error(`pipeline commission ${input.commissionId} disappeared`);
+    d.prepare(`UPDATE pipeline_commissions SET state_json = ? WHERE id = ?`).run(
+      pipelineCommissionStateJson(commission),
+      input.commissionId,
+    );
+    if (ownsTransaction) d.exec("COMMIT");
+    return "stored";
+  } catch (error) {
+    if (ownsTransaction) {
+      try { d.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
+  }
+}
+
 export type PipelineCommissionEventCommit = "stored" | "duplicate" | "stale" | "conflict";
 
 /**
@@ -8008,9 +8162,16 @@ export function commitPipelineCommissionEvent(input: {
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
     const current = d.prepare(
-      `SELECT provider_revision FROM pipeline_commission_attempts
+      `SELECT provider_revision, evidence_commit, evidence_commit_provenance,
+              evidence_frozen_at
+         FROM pipeline_commission_attempts
         WHERE commission_id = ? AND attempt = ?`,
-    ).get(input.commission.id, input.attempt.attempt) as { provider_revision: number } | undefined;
+    ).get(input.commission.id, input.attempt.attempt) as {
+      provider_revision: number;
+      evidence_commit: string | null;
+      evidence_commit_provenance: PipelineCommissionAttempt["evidenceCommitProvenance"];
+      evidence_frozen_at: number | null;
+    } | undefined;
     if (!current) {
       if (ownsTransaction) d.exec("ROLLBACK");
       return "conflict";
@@ -8051,30 +8212,48 @@ export function commitPipelineCommissionEvent(input: {
       JSON.stringify(input.body),
       input.observedAt,
     );
+    const committedAttempt: PipelineCommissionAttempt = {
+      ...input.attempt,
+      evidenceCommit: current.evidence_commit ?? input.attempt.evidenceCommit,
+      evidenceCommitProvenance:
+        current.evidence_commit_provenance ?? input.attempt.evidenceCommitProvenance,
+      evidenceFrozenAt:
+        current.evidence_frozen_at ?? input.attempt.evidenceFrozenAt,
+    };
+    const committedCommission: PipelineCommission = {
+      ...input.commission,
+      attempts: input.commission.attempts.map((attempt) =>
+        attempt.attempt === committedAttempt.attempt ? committedAttempt : attempt,
+      ),
+    };
     d.prepare(
       `UPDATE pipeline_commission_attempts
           SET engineer_run_id = ?, previous_engineer_run_id = ?, provider_revision = ?,
-              state = ?, terminal_reason = ?, updated_at = ?
+              state = ?, terminal_reason = ?, evidence_commit = ?,
+              evidence_commit_provenance = ?, evidence_frozen_at = ?, updated_at = ?
         WHERE commission_id = ? AND attempt = ?`,
     ).run(
-      input.attempt.engineerRunId,
-      input.attempt.previousEngineerRunId,
-      input.attempt.providerRevision,
-      input.attempt.state,
-      input.attempt.terminalReason,
-      input.attempt.updatedAt,
+      committedAttempt.engineerRunId,
+      committedAttempt.previousEngineerRunId,
+      committedAttempt.providerRevision,
+      committedAttempt.state,
+      committedAttempt.terminalReason,
+      committedAttempt.evidenceCommit,
+      committedAttempt.evidenceCommitProvenance,
+      committedAttempt.evidenceFrozenAt,
+      committedAttempt.updatedAt,
       input.commission.id,
-      input.attempt.attempt,
+      committedAttempt.attempt,
     );
     d.prepare(
       `UPDATE pipeline_commissions
           SET state_json = ?, active_attempt = ?, run_slug = ?, updated_at = ? WHERE id = ?`,
     ).run(
-      pipelineCommissionStateJson(input.commission),
-      input.commission.activeAttempt,
-      input.commission.linkedRun?.slug ?? null,
-      input.commission.updatedAt,
-      input.commission.id,
+      pipelineCommissionStateJson(committedCommission),
+      committedCommission.activeAttempt,
+      committedCommission.linkedRun?.slug ?? null,
+      committedCommission.updatedAt,
+      committedCommission.id,
     );
     d.prepare(
       `UPDATE tasks SET pipeline_provider = ?, pipeline_slug = ? WHERE id = ?`,

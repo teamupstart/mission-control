@@ -487,16 +487,79 @@ export const PIPELINE_COMMISSION_ATTEMPT_STATES = [
 export type PipelineCommissionAttemptState =
   (typeof PIPELINE_COMMISSION_ATTEMPT_STATES)[number];
 
+/** Who reserved an immutable Engineer attempt. Append only: Phase 4 consumes both values. */
+export const PIPELINE_ATTEMPT_ORIGINS = ["mission_control", "provider_reconciled"] as const;
+export type PipelineAttemptOrigin = (typeof PIPELINE_ATTEMPT_ORIGINS)[number];
+
+/** How Mission Control learned the immutable commit retained for one attempt. */
+export const PIPELINE_EVIDENCE_COMMIT_PROVENANCES = [
+  "live_validation",
+  "provider_retirement",
+  "legacy_branch_resolution",
+] as const;
+export type PipelineEvidenceCommitProvenance =
+  (typeof PIPELINE_EVIDENCE_COMMIT_PROVENANCES)[number];
+
 /** One immutable Engineer attempt in a commission's ordered history. */
 export interface PipelineCommissionAttempt {
   attempt: number;
+  origin: PipelineAttemptOrigin;
   launchKey: string;
   engineerRunId: string | null;
   previousEngineerRunId: string | null;
   providerRevision: number;
   state: PipelineCommissionAttemptState;
   terminalReason: string | null;
+  evidenceCommit: string | null;
+  evidenceCommitProvenance: PipelineEvidenceCommitProvenance | null;
+  evidenceFrozenAt: number | null;
   updatedAt: number;
+}
+
+export const PIPELINE_WORKSPACE_AVAILABILITIES = [
+  "pending",
+  "available",
+  "retired",
+  "missing",
+] as const;
+export type PipelineWorkspaceAvailability =
+  (typeof PIPELINE_WORKSPACE_AVAILABILITIES)[number];
+
+export const PIPELINE_WORKSPACE_REASONS = [
+  "provider_pending",
+  "worktree_missing",
+  "invalid_worktree",
+  "identity_conflict",
+  "evidence_unavailable",
+  "unsupported_attempt",
+] as const;
+export type PipelineWorkspaceReason = (typeof PIPELINE_WORKSPACE_REASONS)[number];
+
+export interface PipelineWorkspaceCapabilities {
+  diff: boolean;
+  files: boolean;
+  write: boolean;
+  comment: boolean;
+  shell: boolean;
+  externalOpen: boolean;
+  manualWorkflow: boolean;
+}
+
+/** One browser-safe answer for every workspace-facing Pipeline surface. */
+export interface PipelineWorkspaceView {
+  authority: "provider";
+  kind: "authoring" | "implementation";
+  availability: PipelineWorkspaceAvailability;
+  reportedPath: string | null;
+  branch: string | null;
+  commit: string | null;
+  commitProvenance: PipelineEvidenceCommitProvenance | null;
+  commitFrozenAt: number | null;
+  planSlug: string | null;
+  attempt: number;
+  providerRevision: number;
+  reason: PipelineWorkspaceReason | null;
+  capabilities: PipelineWorkspaceCapabilities;
 }
 
 /** Provider-owned spec handoff identity, available before the authoring worktree is removed. */
@@ -531,6 +594,8 @@ export interface PipelineCommission {
   track: PipelineTrack | null;
   project: string | null;
   authoringWorktree: string | null;
+  authoringBranch: string | null;
+  planSlug: string | null;
   handoff: PipelineCommissionHandoff | null;
   linkedRun: PipelineRunLink | null;
   blocker: PipelineCommissionBlocker | null;
@@ -546,6 +611,10 @@ export function pipelineCommissionKey(id: PipelineCommissionId): string {
 
 /** Unforgeable bearer capability issued only to one managed Pipeline host's MCP child. */
 export const PIPELINE_CALLER_CREDENTIAL_ENV = "MISSION_PIPELINE_CALLER_CREDENTIAL";
+/** File-based replacement used by managed Pipeline hosts. */
+export const PIPELINE_CALLER_CREDENTIAL_FILE_ENV = "MISSION_PIPELINE_CALLER_CREDENTIAL_FILE";
+/** Managed caller capabilities expire even if a crash leaves their private file behind. */
+export const PIPELINE_CALLER_CREDENTIAL_TTL_MS = 24 * 60 * 60 * 1000;
 /** HTTP header carrying `PIPELINE_CALLER_CREDENTIAL_ENV` back to the daemon. */
 export const PIPELINE_CALLER_CREDENTIAL_HEADER = "x-mission-pipeline-caller";
 

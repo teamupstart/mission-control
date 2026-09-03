@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeSessionDiff } from "../src/server/diff.ts";
+import { computePinnedRefDiff, computeSessionDiff } from "../src/server/diff.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
 
 function mkRepo(): string {
@@ -51,6 +51,56 @@ test("computeSessionDiff captures committed, uncommitted, and untracked changes 
   assert.match(d.patch, /b\/added\.txt/); // committed new file
   assert.match(d.patch, /b\/scratch\.txt/); // untracked file
   assert.match(d.patch, /not tracked yet/);
+});
+
+test("computePinnedRefDiff stays on the stored commit after its branch and worktree move", async () => {
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], {
+    encoding: "utf8",
+    stdio: "pipe",
+  }).trim();
+  git("checkout", "-qb", "spec/durable");
+  writeFileSync(join(repo, "phase-one.txt"), "pinned evidence\n");
+  git("add", "-A");
+  git("commit", "-qm", "phase one");
+  const pinned = git("rev-parse", "HEAD");
+
+  writeFileSync(join(repo, "later.txt"), "moving branch state\n");
+  git("add", "-A");
+  git("commit", "-qm", "later branch commit");
+  writeFileSync(join(repo, "dirty.txt"), "uncommitted host state\n");
+
+  const diff = await computePinnedRefDiff(repo, pinned, "spec/durable");
+  assert.equal(diff.ok, true);
+  assert.equal(diff.base, "main");
+  assert.equal(diff.branch, "spec/durable");
+  assert.equal(diff.headSha, pinned.slice(0, 12));
+  assert.ok(diff.baseSha);
+  assert.match(diff.patch, /phase-one\.txt/);
+  assert.doesNotMatch(diff.patch, /later\.txt|dirty\.txt/);
+});
+
+test("computePinnedRefDiff fails closed for missing and unrelated commit evidence", async () => {
+  const repo = mkRepo();
+  const missing = await computePinnedRefDiff(repo, "0".repeat(40), "spec/gone");
+  assert.equal(missing.ok, false);
+  assert.match(missing.error ?? "", /evidence commit is unavailable/);
+  assert.equal(missing.patch, "");
+
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], {
+    encoding: "utf8",
+    stdio: "pipe",
+  }).trim();
+  git("checkout", "-q", "--orphan", "spec/unrelated");
+  git("rm", "-rqf", ".");
+  writeFileSync(join(repo, "orphan.txt"), "unrelated\n");
+  git("add", "-A");
+  git("commit", "-qm", "unrelated");
+  const unrelatedSha = git("rev-parse", "HEAD");
+  const unrelated = await computePinnedRefDiff(repo, unrelatedSha, "spec/unrelated");
+  assert.equal(unrelated.ok, false);
+  assert.match(unrelated.error ?? "", /no shared history/);
+  assert.equal(unrelated.patch, "");
 });
 
 test("computeSessionDiff degrades gracefully outside a repo / with no cwd", async () => {

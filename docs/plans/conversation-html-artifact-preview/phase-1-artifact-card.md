@@ -427,6 +427,16 @@ Look at the running app, not only the diff:
 - The header contains no nested interactive controls.
 - Every accessible name on a card names that card's own artifact, so a role/label selector
   finds the control belonging to the path it asked for.
+- **The 600px margin actually pre-loads.** A card scrolled to within 600px of the log but not
+  yet visible already holds its document. This is the assertion that keeps the observer's
+  `root` on the transcript log: with the default root the margin is inert (measured above), so
+  a well-meaning simplification back to `root: null` would make the frame mount exactly as the
+  card becomes visible, and nothing else in the suite would notice.
+- **Mounting the document does not move the log.** With a card expanded, the frame arriving
+  changes neither the card's height nor the on-screen position of a turn below it, because the
+  height is reserved by the disclosure state rather than by the content. Measured in the mockup
+  across documents from 2,422px to 16,914px tall; assert it here so a later change to the body
+  sizing cannot quietly reintroduce the jump.
 - **Comment in Files** lands on the file, in Preview, with comment mode armed, from both a
   cold open and an already-open Files tab.
 - Every refusal state renders its own sentence, with both header actions intact - and a
@@ -558,6 +568,13 @@ preview.
   retained source and the document as one rule; a bounded LRU was considered and rejected for
   introducing a second lifetime for the same bytes. Added an assertion, because this is the
   second consecutive round where a claim in this file outran what it specified.
+- **2026-09-03, self-audit after round 12.** Two consecutive rounds had found a claim in this
+  file outrunning its specification, so rather than wait for a third I walked every behavioural
+  claim here against the exit criteria and test list. Two were measured in the mockup and had
+  no assertion behind them: that the 600px margin genuinely pre-loads (the assertion that keeps
+  the observer's `root` on the log, since with the default root the margin is inert and nothing
+  else would catch a simplification back to it), and that mounting a document does not move the
+  log (the reserved-height claim). Both are now exit criteria. Everything else already had one.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

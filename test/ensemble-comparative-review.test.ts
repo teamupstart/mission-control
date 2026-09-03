@@ -484,6 +484,53 @@ test("an artifact with no comparable evidence is refused rather than ranked on m
   );
 });
 
+test("the v2 rubric refuses report-only submissions before asking the model", async () => {
+  const { store, gateway, engine, prompts } = harness({
+    capturedFilesChanged: 0,
+    materialize: () => ({
+      files: [],
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      patch: "",
+      truncated: false,
+      omittedBytes: 0,
+    }),
+  });
+  const run = makeRun(store, bestOfNPlan(2));
+  const status = await runToReview(engine, gateway, store, run.id);
+
+  assert.equal(status, "failed");
+  assert.equal(prompts.length, 0, "a report alone never reaches the v2 judge");
+});
+
+test("the historical v1 rubric still accepts a report-only submission", async () => {
+  const plan = bestOfNPlan(2);
+  const review = plan.stages.find((stage) => stage.driverKind === "review");
+  assert.ok(review && review.driverKind === "review");
+  assert.equal(review.evaluator.kind, "comparative_llm");
+  if (review.evaluator.kind !== "comparative_llm") throw new Error("unreachable");
+  review.evaluator.guidance = { kind: "builtin", rubricId: "best_of_n_v1" };
+
+  const { store, gateway, engine, prompts } = harness({
+    capturedFilesChanged: 0,
+    materialize: () => ({
+      files: [],
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      patch: "",
+      truncated: false,
+      omittedBytes: 0,
+    }),
+  });
+  const run = makeRun(store, plan);
+  const status = await runToReview(engine, gateway, store, run.id);
+
+  assert.equal(status, "awaiting_decision");
+  assert.equal(prompts.length, 1, "v1 keeps its frozen report-or-artifact eligibility rule");
+});
+
 test("runner/model resolution records the unknown-runner fallback visibly", async () => {
   const { store, gateway, engine } = harness({
     resolveExecution: () => ({ runnerId: "claude", modelId: "resolved-model", unknownRunner: "ollama" }),

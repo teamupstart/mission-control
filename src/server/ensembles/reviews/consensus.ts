@@ -169,6 +169,7 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
       text: CONSENSUS_BUILTIN_RUBRIC_TEXT,
       label: "the built-in guidance",
     },
+    evidenceRequirement: "artifact_or_report",
     buildPrompt: ({ guidance, intent, baseSha, subjects }) =>
       buildConsensusPrompt({
         guidanceLabel: guidance.label,

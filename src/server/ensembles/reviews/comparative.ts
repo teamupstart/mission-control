@@ -1,5 +1,6 @@
 import { type EnsembleJson, type EnsemblePayloadEnvelope } from "@shared/ensemble.ts";
 import {
+  BEST_OF_N_BUILTIN_RUBRIC,
   BEST_OF_N_COMPARISON_VERSION,
   BestOfNComparisonResultSchema,
   parseBestOfNComparison,
@@ -149,6 +150,8 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
     purpose: "comparative_review",
     label: "The comparison",
     builtinRubric: rubric === null ? null : { ...rubric, label: "the built-in rubric" },
+    evidenceRequirement:
+      rubric?.id === BEST_OF_N_BUILTIN_RUBRIC ? "artifact" : "artifact_or_report",
     buildPrompt: ({ guidance, intent, baseSha, subjects }) =>
       buildComparativePrompt({
         guidanceLabel: guidance.label,

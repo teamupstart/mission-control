@@ -80,6 +80,8 @@ export interface Reported {
   testEvidence: string | null;
 }
 
+export type EvidenceRequirement = "artifact" | "artifact_or_report";
+
 export function readReported(json: EnsembleJson): Reported {
   const object = json && typeof json === "object" && !Array.isArray(json) ? json : {};
   const summary = typeof object.summary === "string" ? object.summary : "";
@@ -125,8 +127,10 @@ function hasUsableEvidence(
   materialFilesChanged: number,
   observedFilesChanged: number,
   reported: Reported,
+  requirement: EvidenceRequirement,
 ): boolean {
-  return materialFilesChanged > 0 || observedFilesChanged > 0 || reported.summary.trim() !== "";
+  const hasArtifact = materialFilesChanged > 0 || observedFilesChanged > 0;
+  return hasArtifact || (requirement === "artifact_or_report" && reported.summary.trim() !== "");
 }
 
 export interface ResolvedGuidance {
@@ -200,6 +204,7 @@ export async function assembleEvidencePacket(
    * the longest-guidance judge's prompt exceed the ceiling the operator previewed.
    */
   guidance: ResolvedGuidance,
+  evidenceRequirement: EvidenceRequirement,
 ): Promise<
   | { ok: true; packet: EvidencePacket }
   | { ok: false; kind: "empty_evidence" | "infrastructure"; detail: string }
@@ -240,11 +245,19 @@ export async function assembleEvidencePacket(
     }
     const reported = readReported(subject.reported);
     const { observed, filesChanged: observedFilesChanged } = observedForPrompt(subject.observed);
-    if (!hasUsableEvidence(material.filesChanged, observedFilesChanged, reported)) {
+    if (!hasUsableEvidence(
+      material.filesChanged,
+      observedFilesChanged,
+      reported,
+      evidenceRequirement,
+    )) {
       return {
         ok: false,
         kind: "empty_evidence",
-        detail: `${label} produced no comparable evidence - no diff and no reported summary`,
+        detail:
+          evidenceRequirement === "artifact"
+            ? `${label} produced no comparable artifact evidence - no changed files`
+            : `${label} produced no comparable evidence - no diff and no reported summary`,
       };
     }
     if (material.truncated) evidenceTruncated = true;
@@ -293,6 +306,8 @@ export interface EvidenceReviewSpec<S extends ZodTypeAny> {
    * copy on the spec would be a field nothing reads and everything could disagree with.
    */
   builtinRubric: { id: string; text: string; label: string } | null;
+  /** Whether a report alone may make a submission eligible for this exact evaluator policy. */
+  evidenceRequirement: EvidenceRequirement;
   buildPrompt(input: {
     guidance: ResolvedGuidance;
     intent: string;
@@ -347,7 +362,7 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
     };
   }
 
-  const assembled = await assembleEvidencePacket(context, guidance);
+  const assembled = await assembleEvidencePacket(context, guidance, spec.evidenceRequirement);
   if (!assembled.ok) {
     return {
       ok: false,

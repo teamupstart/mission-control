@@ -357,7 +357,7 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
       evaluations: [],
     };
   }
-  const assembled = await assembleEvidencePacket(context, widest);
+  const assembled = await assembleEvidencePacket(context, widest, "artifact_or_report");
   if (!assembled.ok) {
     return { ok: false, kind: assembled.kind, detail: assembled.detail, evaluations: [] };
   }

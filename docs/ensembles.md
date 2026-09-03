@@ -67,7 +67,9 @@ a fallback winner. The built-in rubric scores only the submitted artifact's corr
 maintainability, repository fit, scope discipline, regression surface and security risk. A member's
 report is context only: the judge checks any load-bearing claim against the artifact and ignores
 claims it cannot establish, without rewarding or penalizing the thoroughness or accuracy of the
-report. The comparison shares the one daemon review-call ceiling with Workflow review,
+report. A v2 comparison refuses a report-only submission with no observed or materialized artifact
+changes before asking the judge. The comparison shares the one daemon review-call ceiling with
+Workflow review,
 resolves its runner and model per call (a judging Persona's own overrides, else the
 `ensemble-comparison` job model), records every call on a durable ledger, and recovers a call
 interrupted by a restart by retrying it against the exact same evidence. It **recommends** a winner;

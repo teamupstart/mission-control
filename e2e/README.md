@@ -503,22 +503,43 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### The shipped Code Design Reviewer
 
-`e2e/.artifacts/code-design-reviewer/` holds two frames from the run that asserts the sixth
+`e2e/.artifacts/code-design-reviewer/` holds one frame from the run that asserts the sixth
 shipped review role. `01-builtin-code-design-reviewer.png` is the role open from the rail's
-`Built-in` group, read-only, with its guidance rendered in Preview so the anti-overreach rules
-are readable rather than merely present; `02-no-mistakes-stage-3-three-reviewers.png` is the
-shipped No-Mistakes Review's stage 3 carrying three reviewers, scrolled fully inside its strip.
+`Built-in` group, read-only, with its guidance rendered in Preview so the two anti-overreach
+rules that keep it out of a repair-loop argument are readable rather than merely present.
 
-The second frame is the one an assertion can only approximate. A stage that gained a third
-member is still five stages and still passes a graph check while drawing a card that overflows
-its strip, and whether three reviewers read as one wave is a layout fact.
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/code-design-reviewer.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frame to the pull request; it is never committed.
+
+### The shipped No-Mistakes Review's stage layout
+
+`e2e/.artifacts/no-mistakes-review-stages/` holds two frames of the built-in's current stage
+order: `stage-3-code-review.png` is the parallel code-review wave, and
+`stage-4-before-pull-request.png` is the evidence and documentation wave immediately ahead of
+the verified Pull Request action.
+
+Stage 3 is the frame an assertion can only approximate. A stage that gained a third member is
+still five stages and still passes every membership check while drawing a card that overflows
+its strip, and whether three reviewers read as one wave is a layout fact. The spec asserts the
+containment; the frame is what shows a reader the result.
+
+This spec is also the one place that owns stage membership. A version that appends a stage or a
+member updates it here, and nowhere else.
 
 Regenerate them with:
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
-  e2e/specs/code-design-reviewer.spec.ts \
+  e2e/specs/no-mistakes-review-stages.spec.ts \
   --workers=1 --reporter=list
 ```
 

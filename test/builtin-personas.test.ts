@@ -141,6 +141,14 @@ test("each built-in derives its identity from its document and declares itself b
     design.guidanceMarkdown,
     /The finding must be in the submitted change, or in code this change directly extends\./,
   );
+  // The other half of the same guarantee, and the one that is easy to lose to a rewrite of the
+  // requested-change section: `Author decision needed:` names a finding that already survived
+  // the anti-overreach rules, never a way past them. Without this line the role can turn a
+  // merely different but reasonable design into a blocking repair round by relabelling it.
+  assert.match(
+    design.guidanceMarkdown,
+    /That title is not a route around those rules\./,
+  );
 });
 
 test("the catalog carries built-ins with no row and no seeding step", () => {

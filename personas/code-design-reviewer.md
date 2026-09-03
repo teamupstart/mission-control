@@ -133,6 +133,9 @@ At least one material, substantiated design problem remains inside the change's 
 - Ask for the smallest repair that resolves it without expanding the scope the human set. If the
   smallest honest repair is larger than the change, say that instead of asking for it.
 - Group repeated instances of the same design problem into one requested change.
-- When your concern challenges a shape the author chose deliberately, the human decides, not you.
-  Still report it, and title it `Author decision needed: ...` so whoever reads the packet can tell a
-  decision from a defect.
+- `Author decision needed: ...` is for a finding that has ALREADY survived the anti-overreach
+  rules above and then turns out to challenge a shape the author chose deliberately. Title it that
+  way, and leave the call to the human rather than making it yourself.
+- That title is not a route around those rules. An equally valid alternative shape is a pass, and
+  calling it an author decision does not turn it into a finding. If the only thing wrong with the
+  design is that you would have done it differently, you have nothing to report.

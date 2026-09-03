@@ -124,7 +124,7 @@ test("the built Board is usable while a persisted SDK driver restores", async ({
   const filterEmpty = dashboard.locator(".empty");
   await expect(filterEmpty.getByText('Nothing matches "no restoring row matches this"')).toBeVisible();
   await expect(filterEmpty).toContainText(
-    "No session row or backlog task matches that title or status.",
+    "No session row or backlog task matches that search.",
   );
   await expect(filterEmpty).toContainText("to see all 1 session row.");
 

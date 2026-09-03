@@ -91,6 +91,7 @@ import {
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import { matchesSessionFilter } from "./lib/fleet-filter.ts";
 import type { BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
@@ -1713,8 +1714,8 @@ export function App(): React.JSX.Element {
     [workflowBindingSummaries, sessions],
   );
 
-  // Nav-bar filter: live substring match over each card's title, status, and agent. Empty
-  // filter shows everything.
+  // Nav-bar filter: live substring match over each card's title, status, agent, and visible
+  // pull-request label. Empty filter shows everything.
   //
   // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
   // and anchors the cluster at its first member, so a filter that hides that member has to be
@@ -1733,7 +1734,7 @@ export function App(): React.JSX.Element {
   const groupByRepo = useUiConfig().groupBoardByRepo;
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
+    const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
     return orderSessions(matched, heldIds, groupByRepo);
   }, [sessions, filter, heldIds, groupByRepo]);
   const visible = fleet.sessions;
@@ -3142,7 +3143,7 @@ export function App(): React.JSX.Element {
               className="filter-input"
               type="text"
               placeholder={`Filter (${formatChord(bindings.filter)})`}
-              aria-label="Filter sessions by title or status"
+              aria-label="Filter sessions by title, status, agent, or PR number"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               onKeyDown={(e) => {
@@ -3730,8 +3731,8 @@ export function App(): React.JSX.Element {
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
-              No {layout === "board" ? "session row or backlog task" : "session"} matches that title
-              or status.{" "}
+              No {layout === "board" ? "session row or backlog task" : "session"} matches that
+              search.{" "}
               <Tooltip label="Clear the filter">
                 <button className="link-btn" onClick={() => setFilter("")}>
                   Clear the filter
@@ -3933,20 +3934,7 @@ export function App(): React.JSX.Element {
   );
 }
 
-/**
- * True when a session matches the nav-bar filter. Matches on the session title,
- * its human status *label* ("running", "needs input", "working", …), and the
- * agent type - so typing "codex", "idle", or a repo name all narrow the fleet.
- * Deliberately uses the display label, not the raw `state`: a passively-discovered
- * session's raw state is "working" even though its badge reads "running", so
- * matching raw state would make "working" hit every alive session.
- */
-function matchesFilter(s: Session, q: string): boolean {
-  const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
-  return haystack.includes(q);
-}
-
-/** The restoring-row counterpart of `matchesFilter`, with its only truthful state label. */
+/** The restoring-row counterpart of `matchesSessionFilter`, with its only truthful state label. */
 function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
   const haystack = `${session.name} restoring ${session.agent ?? ""}`.toLowerCase();
   return haystack.includes(q);
@@ -3954,12 +3942,12 @@ function matchesRestoringFilter(session: RestoringSession, q: string): boolean {
 
 /**
  * True when a backlog task matches the nav-bar filter - the task-shaped counterpart of
- * `matchesFilter`, matching the same three things a session does (title, status, agent)
+ * `matchesSessionFilter`, matching the same three core things a session does (title, status, agent)
  * so one query reads the board across both.
  *
  * `status` is the literal here, not a display label, and that is not the inconsistency
  * it looks like: a backlog task's status IS "backlog", the word already on the column
- * header, whereas a session's raw state lies (see `matchesFilter`). Labels join the
+ * header, whereas a session's raw state lies (see `matchesSessionFilter`). Labels join the
  * haystack because they exist to be searched - they are the operator's own tags, and a
  * filter that could not see them would make them decorative.
  */

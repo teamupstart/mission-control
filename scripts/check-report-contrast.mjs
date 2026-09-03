@@ -25,8 +25,12 @@
 // own rect throws it out if what actually got painted is fine.
 //
 // Usage:
-//   node scripts/check-report-contrast.mjs                       # docs/reports/*/report.html
-//   node scripts/check-report-contrast.mjs path/to/page.html ...
+//   node scripts/check-report-contrast.mjs docs/reports/<slug>/report.html   # one report
+//   node scripts/check-report-contrast.mjs a.html b.html                     # several
+//   node scripts/check-report-contrast.mjs --all                             # sweep the tree
+//
+// A path is required: this gates the report you just wrote. `--all` is the tree-wide sweep and
+// does not come back clean, because reports written before this check carry their own findings.
 
 import { existsSync, readFileSync } from "node:fs";
 import { glob } from "node:fs/promises";
@@ -38,6 +42,11 @@ import { chromium } from "playwright";
 const MIN_RATIO = 3;
 const BUCKETS = 32;
 const VIEWPORT = { width: 1400, height: 900 };
+/** Scroll-stop overlap, so no text rect falls in the seam between two stops unmeasured. */
+const SCROLL_OVERLAP = 300;
+
+/** Identity of one text rect: same node, same position, stable across scroll stops. */
+const keyOf = (box) => `${box.kind}|${box.label}|${box.text}|${box.docX},${box.docY}`;
 
 /**
  * A report that is ABOUT a contrast defect has to be able to show one. Any element carrying
@@ -70,13 +79,24 @@ const collect = (minRatio) => {
   };
   const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 
-  /** Nearest ancestor that actually paints a flat colour, the way the compositor sees it. */
+  /**
+   * Nearest ancestor that paints a colour this stage can reason about, or null for "unknown".
+   *
+   * Only a FULLY opaque surface counts. A translucent one composites with whatever is behind
+   * it, so its unblended RGB is not what gets painted - `#777` text over `rgba(255,255,255,.6)`
+   * on black computes as 4.48:1 against white but paints near 1.57:1. Since a passing declared
+   * ratio is what skips the pixel pass, trusting a translucent surface here turns into a
+   * silent miss. Returning null sends it to the pixels instead, which is the whole point of
+   * having a second stage.
+   */
   const backdrop = (el) => {
     let node = el;
     while (node) {
       const style = getComputedStyle(node);
       if (style.backgroundImage && style.backgroundImage !== "none") return null; // gradient
-      if (alpha(style.backgroundColor) > 0.5) return parse(style.backgroundColor);
+      const a = alpha(style.backgroundColor);
+      if (a >= 0.999) return parse(style.backgroundColor);
+      if (a > 0) return null; // translucent: composited, so declared colours cannot be trusted
       node = node.parentElement;
     }
     return null;
@@ -92,6 +112,12 @@ const collect = (minRatio) => {
       ...meta,
       x: Math.round(rect.x), y: Math.round(rect.y),
       w: Math.round(rect.width), h: Math.round(rect.height),
+      // Document coordinates identify this specific rect across scroll stops. Two nodes can
+      // share a tag, a class list and the same leading text while sitting on different
+      // surfaces, so a key without a position collapses them and lets a readable one hide an
+      // unreadable one.
+      docX: Math.round(rect.x + window.scrollX),
+      docY: Math.round(rect.y + window.scrollY),
     });
   };
 
@@ -242,7 +268,24 @@ for (const target of [...targets].sort()) {
 
   for (const scheme of ["light", "dark"]) {
     const page = await browser.newPage({ colorScheme: scheme, viewport: VIEWPORT });
+    // A report is required to be self-contained, but this check must not be the thing that
+    // proves it by fetching. `setContent` will happily resolve an absolute subresource URL, so
+    // block the network before any bytes render and let only inline data:/blob: through - the
+    // same posture the Files preview enforces with `default-src 'none'`.
+    let blocked = 0;
+    await page.route("**/*", (route) => {
+      const url = route.request().url();
+      if (url.startsWith("data:") || url.startsWith("blob:") || url === "about:blank") {
+        return route.continue();
+      }
+      blocked++;
+      return route.abort();
+    });
     await page.setContent(html, { waitUntil: "load" });
+    if (blocked > 0) {
+      console.log(`     note: blocked ${blocked} network request${blocked === 1 ? "" : "s"} `
+        + "- a self-contained report should make none");
+    }
     // `scroll-behavior: smooth` makes scrollTo animate, which would read boxes and pixels
     // from two different offsets.
     await page.addStyleTag({ content: "*{scroll-behavior:auto !important}" });
@@ -250,7 +293,13 @@ for (const target of [...targets].sort()) {
     const seen = new Map();
     let exempted = 0;
     const height = await page.evaluate(() => document.documentElement.scrollHeight);
-    for (let top = 0; top < Math.max(height, 1); top += VIEWPORT.height) {
+    // Overlap the stops. A candidate is only sampled when its rect sits fully inside the
+    // viewport, so stepping by exactly one viewport height means a rect straddling the seam is
+    // rejected above the fold at one stop and below it at the next, and is never measured at
+    // all. The overlap has to exceed the tallest text rect a report can produce - a clamped
+    // display heading runs well past 100px.
+    const proposed = new Set();
+    for (let top = 0; top < Math.max(height, 1); top += VIEWPORT.height - SCROLL_OVERLAP) {
       const landed = await page.evaluate((y) => {
         window.scrollTo({ top: y, left: 0, behavior: "instant" });
         return window.scrollY;
@@ -259,13 +308,16 @@ for (const target of [...targets].sort()) {
 
       const { boxes: all, exempt } = await page.evaluate(collect, MIN_RATIO);
       exempted = Math.max(exempted, exempt);
-      const fresh = all.filter((b) => !seen.has(b.kind + "|" + b.label + "|" + b.text));
+      for (const box of all) proposed.add(keyOf(box));
+      const fresh = all.filter((b) => !seen.has(keyOf(b)));
       if (fresh.length === 0) continue;
       const shot = (await page.screenshot()).toString("base64");
       const rows = await page.evaluate(confirm, { b64: shot, list: fresh, buckets: BUCKETS });
       for (const row of rows) {
-        const key = row.kind + "|" + row.label + "|" + row.text;
-        if (!seen.has(key)) seen.set(key, row);
+        const key = keyOf(row);
+        // Keep the worst reading for a rect rather than whichever stop reached it first.
+        const prior = seen.get(key);
+        if (!prior || row.measured < prior.measured) seen.set(key, row);
       }
     }
     await page.close();
@@ -274,12 +326,19 @@ for (const target of [...targets].sort()) {
     const bad = [...seen.values()]
       .filter((r) => r.measured < MIN_RATIO)
       .sort((a, b) => a.measured - b.measured);
+    // A candidate CSS flagged that the pixels never got to rule on is not a pass. Say so
+    // rather than letting it disappear into the difference between two counts.
+    const unmeasured = [...proposed].filter((key) => !seen.has(key));
     console.log(`${bad.length === 0 ? "ok  " : "FAIL"} ${shown} [${scheme}] `
-      + `${seen.size} candidate${seen.size === 1 ? "" : "s"}, ${bad.length} confirmed below ${MIN_RATIO}:1`
+      + `${proposed.size} candidate${proposed.size === 1 ? "" : "s"}, ${bad.length} confirmed below ${MIN_RATIO}:1`
+      + (unmeasured.length ? `, ${unmeasured.length} unmeasured` : "")
       + (exempted ? `, ${exempted} exempt via ${EXEMPT}` : ""));
     for (const r of bad.slice(0, 8)) {
       const note = r.declared === null ? "" : ` declared ${r.declared}:1`;
       console.log(`       ${r.measured}:1  ${r.kind}  ${r.label}${note}  "${r.text}"`);
+    }
+    for (const key of unmeasured.slice(0, 4)) {
+      console.log(`       unmeasured  ${key.split("|").slice(0, 3).join("  ")}`);
     }
     failures += bad.length;
   }

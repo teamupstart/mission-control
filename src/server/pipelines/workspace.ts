@@ -49,7 +49,8 @@ export function projectPipelineWorkspace(input: {
   commission: PipelineCommission;
   linkedRun: PipelineRun | null;
 }): PipelineWorkspaceResolution {
-  const attempt = activeAttempt(input.commission) ?? {
+  const active = activeAttempt(input.commission);
+  const attempt = active ?? {
     attempt: input.commission.activeAttempt ?? 0,
     origin: "mission_control" as const,
     launchKey: "",
@@ -66,6 +67,20 @@ export function projectPipelineWorkspace(input: {
   const implementationPath = input.linkedRun?.worktree ?? null;
   const reportedPath = implementationPath ?? input.commission.authoringWorktree ??
     input.task.pipelineWorkspacePath ?? null;
+  if (!active || input.commission.lifecycle === "unsupported") {
+    return {
+      view: view(input.commission, attempt, {
+        kind: implementationPath ? "implementation" : "authoring",
+        availability: "missing",
+        reportedPath,
+        branch: implementationPath ? null : input.commission.authoringBranch,
+        reason: active ? "identity_conflict" : "unsupported_attempt",
+        capabilities: NONE,
+      }),
+      liveRoot: null,
+      commission: input.commission,
+    };
+  }
   return {
     view: view(input.commission, attempt, {
       kind: implementationPath ? "implementation" : "authoring",
@@ -320,6 +335,21 @@ export async function resolvePipelineWorkspace(input: {
   const kind = implementationPath ? "implementation" : "authoring";
   const reportedPath = implementationPath ?? authoringPath;
   const expectedBranch = kind === "authoring" ? commission.authoringBranch : null;
+  if (commission.lifecycle === "unsupported") {
+    const evidenceAvailable = await objectExists(commission.repoRoot, attempt.evidenceCommit);
+    return {
+      view: view(commission, attempt, {
+        kind,
+        availability: "missing",
+        reportedPath,
+        branch: expectedBranch,
+        reason: "identity_conflict",
+        capabilities: evidenceAvailable ? READ_ONLY : NONE,
+      }),
+      liveRoot: null,
+      commission,
+    };
+  }
   let liveFailure: "missing" | "invalid_worktree" | "identity_conflict" | null = null;
   if (reportedPath) {
     const validated = await validateLive(

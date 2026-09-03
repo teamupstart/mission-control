@@ -4,17 +4,21 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-workspace-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
 const {
   applyEngineerEvent,
   bindPipelineCommissionAttempt,
   createPipelineCommission,
 } = await import("../src/server/pipelines/commissions.ts");
-const { resolvePipelineWorkspace } = await import("../src/server/pipelines/workspace.ts");
+const { projectPipelineWorkspace, resolvePipelineWorkspace } = await import(
+  "../src/server/pipelines/workspace.ts"
+);
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -112,6 +116,77 @@ test("a registered live authoring worktree is valid without an optional marker",
   assert.equal(live.view.branch, "spec/live-workspace");
   assert.equal(live.view.capabilities.write, true);
   assert.equal(live.view.commit, git(worktree, "rev-parse", "HEAD"));
+
+  const unsupportedCommission = {
+    ...live.commission,
+    lifecycle: "unsupported" as const,
+    error: "provider workspace identity changed within one attempt",
+  };
+  const projectedUnsupported = projectPipelineWorkspace({
+    task: { pipelineWorkspacePath: worktree },
+    commission: unsupportedCommission,
+    linkedRun: null,
+  });
+  assert.equal(projectedUnsupported.liveRoot, null);
+  assert.equal(projectedUnsupported.view.reason, "identity_conflict");
+  assert.deepEqual(projectedUnsupported.view.capabilities, {
+    diff: false,
+    files: false,
+    write: false,
+    comment: false,
+    shell: false,
+    externalOpen: false,
+    manualWorkflow: false,
+  });
+
+  const unsupported = await resolvePipelineWorkspace({
+    task: { pipelineWorkspacePath: worktree },
+    commission: unsupportedCommission,
+    linkedRun: null,
+  });
+  assert.equal(unsupported.liveRoot, null);
+  assert.equal(unsupported.view.availability, "missing");
+  assert.equal(unsupported.view.reason, "identity_conflict");
+  assert.deepEqual(unsupported.view.capabilities, {
+    diff: true,
+    files: true,
+    write: false,
+    comment: false,
+    shell: false,
+    externalOpen: false,
+    manualWorkflow: false,
+  });
+
+  const registry = new Registry();
+  const host = registry.registerSdkSession({
+    id: "sdk:unsupported-workspace",
+    agent: "codex",
+    name: "unsupported workspace",
+    cwd: repo,
+    agentSessionId: "unsupported-workspace",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  registry.upsertTask(mkTask({
+    id: "task-live",
+    kind: "pipeline",
+    agent: "codex",
+    repoRoot: repo,
+    status: "running",
+    sessionId: host.id,
+    pipelineCommissionId: live.commission.id,
+    pipelineWorkspacePath: worktree,
+  }));
+  registry.initializePipelineCommissions([live.commission]);
+  await registry.resolveSessionWorkspace(host.id);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, realpathSync(worktree));
+  assert.equal(registry.getSession(host.id)?.workspace?.capabilities.write, true);
+
+  registry.upsertPipelineCommission(unsupportedCommission);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, null);
+  assert.equal(registry.getSession(host.id)?.workspace?.reason, "identity_conflict");
+  assert.equal(registry.getSession(host.id)?.workspace?.capabilities.write, false);
 
   git(repo, "worktree", "remove", "--force", worktree);
   const missing = await resolvePipelineWorkspace({

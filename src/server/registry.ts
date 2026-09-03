@@ -6498,7 +6498,7 @@ export class Registry extends EventEmitter {
       (current.kind === "implementation" ||
         projected.view.branch === null ||
         current.branch === projected.view.branch);
-    if (sameIdentity) {
+    if (sameIdentity && projected.view.reason === "provider_pending") {
       if (
         current.availability === "pending" &&
         this.pipelineWorkspaceResolvedKeys.get(sessionId) !== refreshKey
@@ -6557,6 +6557,7 @@ export class Registry extends EventEmitter {
     );
     return JSON.stringify({
       taskId: input.task.id,
+      lifecycle: input.commission.lifecycle,
       attempt: input.commission.activeAttempt,
       engineerRunId: attempt?.engineerRunId ?? null,
       evidenceCommit: attempt?.evidenceCommit ?? null,

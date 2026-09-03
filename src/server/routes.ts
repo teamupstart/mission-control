@@ -3003,7 +3003,17 @@ export function buildApp(
         );
       }
       if (action === "handoff") {
-        const handedOff = await handoffSession(session, backend);
+        let workspaceRoot: string;
+        try {
+          workspaceRoot = await requireLiveWorkspace(session.id);
+        } catch (error) {
+          const known = error instanceof SessionFileError ? error : null;
+          return c.json(
+            { ok: false, error: known?.message ?? "Pipeline workspace is unavailable" },
+            409,
+          );
+        }
+        const handedOff = await handoffSession({ ...session, cwd: workspaceRoot }, backend);
         const body = handedOff.ok
           ? {
               ok: true,
@@ -3017,6 +3027,16 @@ export function buildApp(
       }
       if (action !== "resume") {
         return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+      }
+      let workspaceRoot: string;
+      try {
+        workspaceRoot = await requireLiveWorkspace(session.id);
+      } catch (error) {
+        const known = error instanceof SessionFileError ? error : null;
+        return c.json(
+          { ok: false, error: known?.message ?? "Pipeline workspace is unavailable" },
+          409,
+        );
       }
       if (agentResumeClaims.has(session.id)) {
         return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
@@ -3048,7 +3068,7 @@ export function buildApp(
       try {
         result = await terminalLauncher(backend, {
           name: session.name,
-          cwd: session.cwd!,
+          cwd: workspaceRoot,
           argv,
         });
       } catch (error) {

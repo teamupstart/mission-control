@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Inline HTML artifact previews in the conversation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #edf2f8;
+      --text: #18212d;
+      --muted: #566579;
+      --border: #cad4e1;
+      --accent: #1769c2;
+      --accent-soft: #e5f1ff;
+      --good: #157454;
+      --warn: #9a5b00;
+      --danger: #b42318;
+      --shadow: 0 18px 50px rgba(34, 50, 71, .11);
+      --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0d12;
+        --surface: #121820;
+        --surface-2: #0d131b;
+        --text: #e6edf5;
+        --muted: #9aa8ba;
+        --border: #2a3543;
+        --accent: #62adff;
+        --accent-soft: #122943;
+        --good: #57c69d;
+        --warn: #f0ad4e;
+        --danger: #ff7b72;
+        --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 31rem),
+        var(--bg);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+    }
+    main {
+      width: min(1080px, calc(100% - 32px));
+      margin: 38px auto 72px;
+      padding: clamp(24px, 5vw, 62px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    h1, h2, h3 { line-height: 1.2; text-wrap: balance; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.15rem); letter-spacing: -.045em; }
+    h2 { margin: 48px 0 16px; padding-top: 8px; font-size: 1.55rem; letter-spacing: -.018em; }
+    h3 { margin: 31px 0 11px; font-size: 1.12rem; }
+    p { margin: 0 0 16px; max-width: 84ch; }
+    ul, ol { margin: 0 0 18px; padding-left: 1.45rem; }
+    li { margin: 6px 0; }
+    strong { color: var(--text); }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin: 0 0 32px;
+      padding: 13px 16px;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      font-size: .91rem;
+    }
+    .lede {
+      padding: 20px 22px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 12px 12px 0;
+    }
+    .lede p:last-child { margin-bottom: 0; }
+    .table-wrap, .code-wrap { max-width: 100%; overflow-x: auto; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; margin: 12px 0 20px; font-size: .93rem; }
+    th, td { padding: 11px 13px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-2); font-size: .82rem; letter-spacing: .035em; text-transform: uppercase; }
+    code { font-family: var(--mono); font-size: .9em; color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
+    pre {
+      min-width: max-content;
+      margin: 0 0 18px;
+      padding: 15px 17px;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: .88rem/1.55 var(--mono);
+    }
+    pre code { color: var(--text); }
+    .diagram {
+      margin: 22px 0 25px;
+      padding: 18px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; min-width: 900px; width: 100%; height: auto; }
+    .diagram figcaption { margin-top: 12px; color: var(--muted); font-size: .9rem; }
+    .note {
+      margin: 22px 0;
+      padding: 15px 17px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-2);
+    }
+    .note p:last-child { margin-bottom: 0; }
+    .decision {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+      border-radius: 13px;
+      background: var(--accent-soft);
+    }
+    .decision ul { margin-bottom: 0; }
+    .svg-box { fill: var(--surface); stroke: var(--border); stroke-width: 2; }
+    .svg-box-accent { fill: var(--accent-soft); stroke: color-mix(in srgb, var(--accent) 60%, var(--border)); stroke-width: 2; }
+    .svg-flow { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+    .svg-label { fill: var(--text); font: 500 14px var(--sans); }
+    .svg-small { fill: var(--muted); font: 500 12.5px var(--sans); }
+    .svg-row { fill: var(--muted); font: 700 12.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; }
+    @media (max-width: 680px) {
+      main { width: min(100% - 18px, 1080px); margin-top: 10px; padding: 22px 17px 36px; border-radius: 14px; }
+      h2 { margin-top: 38px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Inline HTML artifact previews in the conversation</h1>
+    <div class="meta">
+      <span><strong>Status:</strong> Approved</span>
+      <span><strong>Date:</strong> 2026-09-03</span>
+      <span><strong>Area:</strong> Mission Control web dashboard</span>
+      <span><strong>Source:</strong> <a href="plan.md">plan.md</a></span>
+    </div>
+  </header>
+
+  <h2>Recommendation</h2>
+  <div class="lede">
+    <p>When a turn names an HTML file that exists in the emitting session's checkout, render an <strong>artifact card</strong> at the foot of that turn: a collapsible disclosure whose body is the same sandboxed preview the Files tab already renders, and whose header carries a <strong>Comment in Files</strong> link that opens that file in Files, in Preview mode, with comment mode already armed.</p>
+    <p>Nothing about the preview boundary changes. The card reuses <code>htmlPreviewSource()</code> and <code>HTML_PREVIEW_SANDBOX</code> verbatim, arms none of the four hashed bridges, and adds no fifth script. The whole feature is web-side: no route, no schema, no migration, no server event.</p>
+  </div>
+
+  <h2>Approved decisions</h2>
+  <div class="decision">
+    <p>Submitted in the Mission Control review on 2026-09-03. Every recommendation was taken, and the resolved alternatives are gone from the sections below rather than left as choices.</p>
+    <ul>
+      <li><strong>A card arrives expanded and is collapsible.</strong> The page is visible without a click, which is what an inline preview means; the reserved height keeps that free of layout shift.</li>
+      <li><strong>Only a path presented as an artifact gets a card</strong> - see <em>What qualifies as an artifact</em>. An <code>.html</code> file named in the middle of a sentence stays an ordinary link.</li>
+      <li><strong>The hand-off arms comment mode in Files.</strong> The card does not become a comment-authoring surface of its own, so the comment bridge stays inert inside the conversation preview.</li>
+      <li><strong>The card sits at the foot of the turn</strong>, not spliced into the prose.</li>
+      <li><strong>Phasing was declined at review, then asked for separately.</strong> The review's follow-up question was answered "Stop after this plan", so no phasing was produced at that point. The human then asked for mockups and a phased implementation in the same session, which is why <code>phased-plan.md</code>, <code>phase-1-artifact-card.md</code> and a scheduled Phase 1 task are part of this plan's directory after all. The declined answer is recorded here because it is what was submitted; the later request supersedes it.</li>
+    </ul>
+  </div>
+
+  <h2>The gap this closes</h2>
+  <p>Three skills in this repository write self-contained HTML into the checkout and then hand back a path:</p>
+  <ul>
+    <li><code>skills/html-plans/SKILL.md</code> writes <code>docs/plans/&lt;name&gt;/plan.html</code> and says to link it explicitly, because "writing the file is not showing it".</li>
+    <li><code>skills/html-report/SKILL.md</code> writes <code>docs/reports/&lt;slug&gt;/report.html</code> and mandates the literal closing line <code>Report: docs/reports/&lt;slug&gt;/report.html</code>.</li>
+    <li><code>skills/phased-plan/SKILL.md</code> writes <code>phased-plan.html</code> beside a plan.</li>
+  </ul>
+  <p>The dashboard already meets them halfway. <code>rehypeWorkspacePaths</code> turns a bare path in the prose into an anchor when the checkout listing has a file by that name, and clicking it runs <code>openSessionPath</code>, which selects the file, requests the Files tab, and - because <code>pathDefaultsToPreview</code> claims <code>.html</code> - renders it rather than showing its source.</p>
+  <p>What is missing is everything before the click. The page is invisible in the log: a reader scrolling a session sees one more line of prose ending in a path and has no way to tell a two-paragraph note from a full audit without leaving the conversation. And commenting on it is four steps after that - open Files, find the file, confirm Preview, press <strong>Comment</strong> - so the artifact that was written to be reviewed is the one thing in the session that takes the most work to review.</p>
+
+  <h2>Flow, before and after</h2>
+  <figure class="diagram" aria-labelledby="d1-title d1-desc">
+    <svg viewBox="0 0 1100 420" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title id="d1-title">How an HTML artifact reaches a reader, today and with the artifact card</title>
+      <desc id="d1-desc">Today a turn's path becomes a link, and the reader clicks through to the Files tab, presses Comment, and then clicks a block. With the artifact card, the page is previewed in the log and Comment in Files lands in Files with comment mode already armed, one click before the block.</desc>
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+
+      <text class="svg-row" x="30" y="32">Today</text>
+      <g>
+        <rect class="svg-box" x="30" y="60" width="170" height="76" rx="13"/>
+        <rect class="svg-box" x="240" y="60" width="180" height="76" rx="13"/>
+        <rect class="svg-box" x="460" y="60" width="170" height="76" rx="13"/>
+        <rect class="svg-box" x="670" y="60" width="160" height="76" rx="13"/>
+        <rect class="svg-box" x="870" y="60" width="200" height="76" rx="13"/>
+      </g>
+      <g class="svg-flow" marker-end="url(#a1)">
+        <path d="M200 98H236"/>
+        <path d="M420 98H456"/>
+        <path d="M630 98H666"/>
+        <path d="M830 98H866"/>
+      </g>
+      <g class="svg-label" text-anchor="middle">
+        <text x="115" y="92">Turn names</text><text x="115" y="112">the path</text>
+        <text x="330" y="92">Path becomes</text><text x="330" y="112">a link</text>
+        <text x="545" y="92">Files tab,</text><text x="545" y="112">Preview</text>
+        <text x="750" y="92">Press</text><text x="750" y="112">Comment</text>
+        <text x="970" y="92">Click a block,</text><text x="970" y="112">compose</text>
+      </g>
+      <text class="svg-small" x="438" y="82" text-anchor="middle">click</text>
+      <text class="svg-small" x="30" y="166">Four moves after the reader leaves the conversation, with nothing seen before the first one.</text>
+
+      <text class="svg-row" x="30" y="222">With the artifact card</text>
+      <g>
+        <rect class="svg-box" x="30" y="250" width="150" height="86" rx="13"/>
+        <rect class="svg-box-accent" x="215" y="250" width="205" height="86" rx="13"/>
+        <rect class="svg-box-accent" x="570" y="250" width="210" height="86" rx="13"/>
+        <rect class="svg-box" x="815" y="250" width="180" height="86" rx="13"/>
+      </g>
+      <g class="svg-flow" marker-end="url(#a1)">
+        <path d="M180 293H211"/>
+        <path d="M420 293H566"/>
+        <path d="M780 293H811"/>
+      </g>
+      <g class="svg-label" text-anchor="middle">
+        <text x="105" y="286">Turn names</text><text x="105" y="306">the path</text>
+        <text x="318" y="286">Artifact card: the page</text><text x="318" y="306">previewed in the log</text>
+        <text x="675" y="286">Files tab, Preview,</text><text x="675" y="306">comment mode armed</text>
+        <text x="905" y="286">Click a block,</text><text x="905" y="306">compose</text>
+      </g>
+      <text class="svg-small" x="493" y="277" text-anchor="middle">Comment in Files</text>
+      <text class="svg-small" x="30" y="366">The page is legible without leaving the log, and the comment path is one click.</text>
+    </svg>
+    <figcaption>The link and the Files tab do not change. The card is added in front of them, and one intent channel collapses "press Comment" into the click that gets you there.</figcaption>
+  </figure>
+
+  <h2>What lands</h2>
+
+  <h3>The artifact card</h3>
+  <p>One card per distinct HTML file a turn names, at the foot of the turn, after the prose and after the tool chips.</p>
+  <ul>
+    <li><strong>Header</strong>: the file's basename in full weight, its directory muted, its byte size, a <strong>Refresh</strong> control, and a <strong>Comment in Files</strong> action. The disclosure is the name and directory - a generous target, the part you are reading anyway - with the two actions as siblings beside it rather than inside it. The header itself is not a control: interactive content nested in a button is invalid HTML that browsers reparent, and the inner control's clicks and keys then fight the outer one.</li>
+    <li><strong>Body</strong>: an <code>iframe</code> with <code>sandbox={HTML_PREVIEW_SANDBOX}</code> and <code>srcDoc={htmlPreviewSource(text)}</code>, at a <strong>fixed reserved height</strong> with internal scroll.</li>
+    <li><strong>Accessible name</strong>: <code>Preview of docs/reports/x/report.html</code>, matching what the Files tab already names its own preview frame, so one selector vocabulary covers both surfaces.</li>
+    <li><strong>Refusals are stated, never blank.</strong> Over the 5 MiB <code>MAX_SESSION_PREVIEW_BYTES</code> cap, not valid UTF-8, deleted since the turn was written, or refused by the daemon's containment check: the body says which, and the header keeps its links.</li>
+    <li><strong>A failed checkout listing produces no cards at all, and that is correct.</strong> One live session answered <code>GET /api/sessions/:id/files</code> with <code>500 could not list files in this checkout</code>. Because membership in the listing is what makes a path an artifact, an unavailable listing means no candidate is ever confirmed - so there is no card on which to report the failure, and inventing one would mean detecting artifacts by shape and weakening the membership boundary this design rests on. The session degrades exactly as <code>rehypeWorkspacePaths</code> already does with an empty listing: the path stays plain text, and the Files tab is still reachable. Cards appear on the render after a listing arrives.</li>
+  </ul>
+
+  <h3>Fixed height, and why not auto-fit</h3>
+  <p>The body reserves a fixed <strong>420px</strong> and scrolls internally. One number, everywhere, because the transcript has exactly one host.</p>
+  <div class="note">
+    <p>That replaces an earlier rule in this plan that could not hold - "420px, floored at 240px and capped at 60% of the transcript log's height" - and then a second one that was designing for a host the app does not have. Both are worth recording, because the second mistake was mine and it survived two rounds of review before the code contradicted it.</p>
+    <p><code>.transcript-log</code> does carry <code>max-height: 340px</code> in the base stylesheet, lifted by <code>.detail-conv &gt; .transcript .transcript-log { max-height: none }</code>. So a <em>capped</em> log would make 60% of its height 204px, under the plan's own 240px floor - the two rules contradicted each other, which is why the percentage went away.</p>
+    <p>But <strong>there is no capped host.</strong> <code>className="transcript"</code> appears once in the codebase, in <code>TranscriptPanel</code>; <code>TranscriptPanel</code> is rendered once, in <code>layouts/ConsoleDetail.tsx</code>; and that render is always inside <code>&lt;div className="detail-conv"&gt;</code>. So the base 340px cap never applies to a mounted transcript at all. It is almost certainly a leftover from the Cards layout that no longer exists, which <code>docs/plans/html-viewer/plan.md</code> still describes.</p>
+  </div>
+  <p>A mockup context switcher offering a "session card" log was therefore modelling a surface that does not exist, and the 240px second height, the context-dependent default and the collapse-versus-CSS question it raised were all scope for nobody. All three are gone.</p>
+  <p>What remains is the approved decision unqualified: the card arrives <strong>expanded</strong>, with a 420px body, and the reader may collapse it. <code>aria-expanded</code> always describes a body that is really rendered, and the body wrapper stays in the DOM when collapsed so the disclosure's <code>aria-controls</code> keeps resolving - only the previewed document is dropped.</p>
+  <p><strong>If the transcript ever gains a second host, the 340px cap becomes live</strong> and this decision has to be revisited. That is a note for whoever adds one, not scope here.</p>
+
+  <h3>The artifact decides its own colour scheme, and it will not match</h3>
+  <p>A <code>srcdoc</code> iframe inherits neither the dashboard's <code>color-scheme: dark</code> nor any scheme the parent would like to impose, and <code>color-scheme</code> does not move <code>prefers-color-scheme</code>. The app also never sets <code>nativeTheme.themeSource</code> - <code>src/main/window.ts</code> pins only the window's <code>backgroundColor: "#0e1116"</code> - so the media query follows the operator's OS in the packaged app exactly as it does in a browser tab.</p>
+  <p>The consequence is specific and was seen rather than predicted: this plan's own <code>plan.html</code>, which is correctly <code>prefers-color-scheme</code>-aware, renders as a <strong>bright white slab</strong> in the middle of the dark log whenever macOS is in light mode. A dark-scheme artifact (<code>docs/archive/mockups/alert-panels.html</code>, body <code>rgb(10, 12, 15)</code>) is by contrast continuous with the app.</p>
+  <p>Nothing in this feature can fix that, so the design absorbs it: the frame is inset 7px on a <code>--panel-2</code> mat with a 1px border and a 6px radius, so a light page reads as an embedded document rather than as a panel that lost its stylesheet. That is a mitigation and not a cure, and it is worth saying so plainly.</p>
+  <p>Pinning <code>nativeTheme.themeSource = "dark"</code> in the main process would settle it for the whole app, previews included. That is an app-wide theming decision well outside this plan; it is in <strong>Follow-up work</strong> rather than here.</p>
+
+  <h3>Placement at the foot of the turn</h3>
+  <p>The card sits after the turn's prose rather than being spliced into it, and the reasons are concrete:</p>
+  <ul>
+    <li><strong>One card per file, not per mention.</strong> A message that says <code>plan.html</code> in a sentence and again in its closing line is one artifact, and a per-link preview would draw it twice.</li>
+    <li><strong>No new markdown plugin, and no new component identity.</strong> <code>Markdown.tsx</code> documents at length why a <code>components</code> map that closes over a handler is a bug: a changed element type unmounts the subtree, and the transcript re-renders on every SSE frame. A block-replacing renderer inside the prose has to be threaded through that memo; a sibling of <code>TurnProse</code> does not.</li>
+    <li><strong>It works with rich text off.</strong> <code>richText</code> gates markdown parsing, and with it off <code>TurnProse</code> renders raw text and no anchors exist at all. Detection runs on the turn's text with <code>matchCheckoutPaths</code>, so the card appears in the Terminal conversation view and in the chat view alike.</li>
+  </ul>
+
+  <h3>What qualifies as an artifact</h3>
+  <p>Detection reuses the machinery the transcript already runs. <code>useWorkspacePaths</code> has warmed the checkout listing for any session with a <code>cwd</code>, and <code>matchCheckoutPaths(text, paths)</code> finds the path-shaped tokens the listing actually has a file for. Membership decides, so a path this checkout does not have never becomes a card, and no card ever has to un-render.</p>
+  <p>On top of that: the extension is <code>.html</code> or <code>.htm</code>, the file is claimed by <code>workspaceFileTarget</code> against the session's <code>cwd</code>, and at most <strong>three</strong> cards are drawn per turn - the fourth and beyond stay as ordinary links.</p>
+  <p>One further test, and it is what keeps the card off an incidental mention: the turn has to <strong>present</strong> the path as an artifact. Two forms qualify, and they are the two the skills already mandate:</p>
+  <ul>
+    <li>the path is the whole line, or the line is a short <code>Label:</code> prefix and the path (<code>Report: docs/reports/x/report.html</code>);</li>
+    <li>the path is the destination of a Markdown link, in either CommonMark form - <code>[the plan](docs/plans/x/plan.html)</code> or <code>[the plan](&lt;docs/plans/x/plan.html&gt;)</code>. The bracketed form matters rather than being pedantry: it is the only way to link a path containing a space, and <code>matchCheckoutPaths</code> supports multi-word paths deliberately.</li>
+  </ul>
+  <p>A turn that says it edited <code>src/web/index.html</code> mid-sentence therefore gets a link and no card. That rule lives in the detection module beside the extension and cap tests, so the whole answer to "why is there a card here" is one function.</p>
+
+  <h3>Jumping to Files to comment</h3>
+  <p><strong>Comment in Files</strong> adds one intent channel, shaped exactly like the <code>fileLineRequest</code> that already exists beside it in <code>App.tsx</code>:</p>
+  <div class="code-wrap"><pre><code>const [fileCommentRequest, setFileCommentRequest] = useState&lt;{
+  sessionId: string;
+  path: string;
+  nonce: number;
+} | null&gt;(null);</code></pre></div>
+  <p>A nonce for <code>fileLineRequest</code>'s reason: asking to comment on the same file twice is an ordinary thing to do, and a bare path would fire only on a change. <code>openSessionPath</code> already selects the file, sets the session, opens the board's detail layer, and requests the Files tab; this rides beside it. <code>FileWorkspace</code> matches the request against its own session and selected path, forces <code>mode</code> to <code>preview</code>, and calls the <code>enterCommentMode()</code> it already has - the same function its <strong>Comment</strong> toggle calls.</p>
+  <p>The reader therefore lands in Files, on that file, rendered, with each block outlined on hover and a click opening the composer. That is the surface <code>docs/plans/files-line-comments/phase-5-preview-surfaces.md</code> already shipped; this plan only removes the four steps in front of it.</p>
+
+  <figure class="diagram" aria-labelledby="d2-title d2-desc">
+    <svg viewBox="0 0 1100 300" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title id="d2-title">The comment hand-off from the artifact card to the daemon</title>
+      <desc id="d2-desc">The artifact card calls openSessionPath together with a new fileCommentRequest channel. App selects the file and requests the Files tab; the Files workspace forces Preview mode and arms comment mode, reads the file from the daemon, and posts the clicked block back as an anchored comment thread.</desc>
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <g>
+        <rect class="svg-box-accent" x="30" y="70" width="180" height="96" rx="13"/>
+        <rect class="svg-box" x="300" y="70" width="230" height="96" rx="13"/>
+        <rect class="svg-box" x="590" y="70" width="220" height="96" rx="13"/>
+        <rect class="svg-box" x="870" y="70" width="200" height="96" rx="13"/>
+      </g>
+      <g class="svg-flow" marker-end="url(#a2)">
+        <path d="M210 118H296"/>
+        <path d="M530 118H586"/>
+        <path d="M810 118H866"/>
+        <path d="M965 166C965 226 722 236 702 172"/>
+      </g>
+      <g class="svg-label" text-anchor="middle">
+        <text x="120" y="105">Artifact card</text><text x="120" y="125">in the turn</text><text class="svg-small" x="120" y="145">TranscriptPanel</text>
+        <text x="415" y="105">App intent channels</text><text class="svg-small" x="415" y="126">openSessionPath +</text><text class="svg-small" x="415" y="144">fileCommentRequest</text>
+        <text x="700" y="105">Files workspace</text><text x="700" y="125">Preview + comment</text><text class="svg-small" x="700" y="145">FileWorkspace</text>
+        <text x="970" y="105">Daemon</text><text x="970" y="125">session file,</text><text x="970" y="145">comment thread</text>
+      </g>
+      <text class="svg-small" x="253" y="108" text-anchor="middle">one click</text>
+      <text class="svg-small" x="840" y="253" text-anchor="middle">text and revision, then the thread anchored to source lines</text>
+    </svg>
+    <figcaption>Only the middle box is new, and only by one field: every other arrow here is a call the dashboard already makes when a transcript link is clicked.</figcaption>
+  </figure>
+
+  <h3>Two preview frames, and keeping them apart</h3>
+  <p>The conversation frame is <code>.artifact-preview</code>, deliberately not <code>.html-preview</code>.</p>
+  <p><code>FileWorkspace</code>'s link-message handler finds its frame with <code>workspaceRef.current?.querySelector(".file-content .html-preview")</code> and then refuses any message whose <code>event.source</code> is not that frame's <code>contentWindow</code>. The conversation frame must be equally unmistakable: its own class, its own <code>event.source</code> identity check, and its own handler. Neither surface may act on the other's messages, and the existing scoping means the workspace already will not - the new code has to hold the same line.</p>
+  <p>Inside the card, the link bridge behaves as it does in Files: a click on a relative link in the previewed document resolves through <code>workspaceAssetPath</code>, is probed against the checkout, and opens that sibling in the Files tab. A link the checkout has no file for does nothing, and the frame never navigates itself.</p>
+  <p><code>inlinePreviewStyles</code> runs on the fetched text exactly as it does in Files, so a plan page that links a checkout-local stylesheet renders styled rather than bare.</p>
+
+  <h3>Freshness</h3>
+  <p>The card fetches through <code>fetchSessionFile</code> when it becomes eligible - open and near the viewport - and again when <strong>Refresh</strong> is pressed. There is no file-watch event for session files, and the Files tab has a refresh button for the same reason, so a card whose artifact the agent has since rewritten shows what it last read.</p>
+  <p>Because eligibility also governs the retained source, scrolling away from a card and back re-reads the file. That is deliberate rather than incidental: holding every seen artifact's bytes for the life of the session view is unbounded growth from nothing but reading, and a returning card showing current bytes is the better of the two behaviours anyway.</p>
+
+  <h2>Non-goals</h2>
+  <ul>
+    <li><strong>No editing from the conversation.</strong> The card is a reader. Editing stays in Files, where autosave, revisions, and conflict recovery live.</li>
+    <li><strong>No markdown or image cards.</strong> <code>pathDefaultsToPreview</code> also claims <code>.md</code> and images, and both are plausible later. Markdown in particular is close to free - the shared renderer is already inert - but a markdown artifact reads as prose in the turn that wrote it, and the ask here is the HTML page that does not.</li>
+    <li><strong>No fifth bridge script, no CSP change, no <code>allow-same-origin</code>.</strong> <code>test/html-preview.test.ts</code> recomputes every script hash; it should pass untouched.</li>
+    <li><strong>No new setting.</strong> Collapsing the card is the opt-out, and it is remembered for the session. Every other conversation switch (<code>richText</code>, <code>conversationView</code>) chooses how <em>turns</em> render; a per-artifact disclosure the reader already controls does not need a second one in Settings.</li>
+    <li><strong>No cross-session or archived previews.</strong> A path is claimed only against the emitting session's own <code>cwd</code>, as <code>workspaceFileTarget</code> already requires. Scout reports keep their own archive surface.</li>
+  </ul>
+
+  <h2>Mockup</h2>
+  <p>The design was drawn over the <strong>live</strong> daemon rather than over fixtures, because a card drawn on invented data cannot show what a real 40 KB report does inside a real log.</p>
+  <ul>
+    <li><strong>Live copy</strong>: <code>.evidence/mockups/conversation-artifact-card/mockup.html</code> (gitignored - a live board is operator data, so it is never committed). It renders a real idle codex session, its 12 real turns, and the real turn ending <code>Report: docs/reports/pipeline-plan-comparison/report.html</code>, with five real artifacts out of live checkouts selectable in the card.</li>
+    <li><strong>Committed copy</strong>: <a href="mockup.html">mockup.html</a> beside this plan, with the same chrome, the same proposed CSS and two small fixture artifacts. It links the app's real <code>src/web/styles.css</code> rather than freezing a copy of it, so it cannot drift from the styles it is drawn against.</li>
+  </ul>
+  <p>Both carry the app's real preview boundary rather than an imitation: the CSP and all four hashed bridge scripts are lifted out of <code>src/web/lib/htmlPreview.ts</code> and checked by recomputing each script's SHA-256 against the policy's own hashes. The proposed CSS is one clearly marked block; everything else is the shipped stylesheet.</p>
+  <p>What the mockup changed in this plan: the reserved-height rule (which was self-contradictory), the colour-scheme mat, the <code>min-width</code> on the disclosure without which the header crushes its own directory instead of wrapping in a narrow column, and the lazy-mount contract, which the mockup first described and now demonstrates. Its own "could not be listed" panel is what exposed the contradiction that removed that state from the design: a listing failure leaves nothing to draw a card on.</p>
+  <p>It also produced one wrong turn worth recording. Its context switcher offered a capped "session card" log, which no host in the app produces, and the design grew a second reserved height and a context-dependent default to serve it before the code was checked. Inventing a surface is a real hazard of a mockup built beside the app rather than inside it.</p>
+
+  <h2>Follow-up work, out of scope here</h2>
+  <ul>
+    <li><strong>Pin the app's colour scheme.</strong> <code>nativeTheme.themeSource = "dark"</code> in the main process would make <code>prefers-color-scheme</code> inside every preview match the dashboard. It changes theming for the whole app, so it is its own decision.</li>
+    <li><strong><code>navigate-to</code> is a dead CSP directive.</strong> <code>PREVIEW_CSP</code> ends with <code>navigate-to 'none'</code>, and current Chromium logs <code>Unrecognized Content-Security-Policy directive 'navigate-to'</code> for every preview it renders. The directive was never shipped by Chromium; the protection it was meant to add comes from the sandbox and the link bridge instead. Pre-existing, not introduced here, and worth removing or commenting so the console stops carrying a warning nobody can act on.</li>
+  </ul>
+
+  <h2>Surfaces this touches</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Surface</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/web/components/TranscriptPanel.tsx</code></td><td>Render the artifact strip in <code>Turn</code> and in the PTY turn, beside <code>TurnProse</code></td></tr>
+      <tr><td><code>src/web/components/ConversationArtifacts.tsx</code> (new)</td><td>The card: disclosure, lazy frame, refusals, header links</td></tr>
+      <tr><td><code>src/web/lib/conversationArtifacts.ts</code> (new)</td><td>Pure detection: turn text plus checkout listing to a capped, deduplicated artifact list</td></tr>
+      <tr><td><code>src/web/App.tsx</code></td><td>The <code>fileCommentRequest</code> channel, and passing it down with <code>fileLineRequest</code></td></tr>
+      <tr><td><code>src/web/components/layouts/types.ts</code>, <code>ConsoleDetail.tsx</code></td><td>Thread the new request through the view contract</td></tr>
+      <tr><td><code>src/web/components/FileWorkspace.tsx</code></td><td>Honor the request: force Preview, <code>enterCommentMode()</code></td></tr>
+      <tr><td><code>src/web/styles.css</code></td><td>Card, header, reserved-height body</td></tr>
+      <tr><td><code>src/web/lib/htmlPreview.ts</code></td><td>Read-only. Reused as is</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Scope and effort</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Area</th><th>Expected scope</th></tr></thead>
+    <tbody>
+      <tr><td>Production code</td><td>About 300 to 450 non-test lines, all under <code>src/web/</code></td></tr>
+      <tr><td>Tests</td><td>A <code>node:test</code> file for detection and the intent channel, plus one Playwright spec</td></tr>
+      <tr><td>Delivery estimate</td><td>About 2 to 4 engineering days including visual verification in the packaged app</td></tr>
+      <tr><td>Backend and persistence</td><td>None: no route, schema, migration, protocol, or SSE change</td></tr>
+      <tr><td>Main uncertainty</td><td>Both original uncertainties are now settled by the mockup: scroll stability is measured, and a light artifact in a dark log is confirmed and mitigated. What remains is CodeMirror-free but real - honoring the comment-mode intent inside <code>FileWorkspace</code> without disturbing its existing arming race</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Verification</h2>
+  <ul>
+    <li><strong><code>test/</code></strong> for what has no UI surface: detection over a turn's text and a listing (one card per distinct file, the three-card cap, extension filtering, membership deciding, <code>:line</code> suffixes stripped), and the request channel's arm-once-per-nonce behavior.</li>
+    <li><strong><code>e2e/specs/conversation-html-artifact-preview.spec.ts</code></strong> for the feature, because it is a UI change and there are no exemptions. Assert <em>inside</em> the preview with Playwright's <code>frameLocator</code>, not with <code>contentDocument</code>: the sandbox has no <code>allow-same-origin</code>, so the frame is an opaque origin and the page cannot read into it - but Playwright reaches in over CDP, which the mockup confirmed by reading the artifact's own <code>h1</code> through a live sandbox. A fake agent turn ends with <code>Report: docs/reports/x/report.html</code>; the spec asserts the card is present and named, that its body renders the page's own heading inside the frame, that collapsing hides the body and the choice survives a tab change, and that <strong>Comment in Files</strong> lands on the Files tab with the file selected, Preview pressed, and <strong>Comment mode</strong> pressed - then leaves a comment on a block and reads it back in the rail. Fake agents only, and selection by role, label, and placeholder, never <code>data-testid</code>.</li>
+    <li><strong>Electron geometry</strong> for the one thing a browser assertion cannot produce: that a card's reserved height does not clip the turn or overflow the log at the app's minimum window size.</li>
+    <li><strong>Visual check in the packaged app</strong>, in both color schemes, on a real <code>plan.html</code> written by the skill.</li>
+  </ul>
+
+  <h2>Sources read</h2>
+  <ul class="sources">
+    <li><code>src/web/lib/htmlPreview.ts</code> - the one sandboxed preview boundary, its four hashed bridges, and <code>PREVIEW_CSP</code>.</li>
+    <li><code>src/web/components/FileWorkspace.tsx</code> - the preview frame, the <strong>Comment mode</strong> toggle, <code>enterCommentMode()</code>, and the link-message handler's frame identity check.</li>
+    <li><code>src/web/components/TranscriptPanel.tsx</code> and <code>src/web/components/Markdown.tsx</code> - the turn, <code>TurnProse</code>, <code>richText</code>, and the memo contract the renderer rests on.</li>
+    <li><code>src/web/lib/workspaceLinks.ts</code>, <code>src/web/lib/rehypeWorkspacePaths.ts</code>, <code>src/web/lib/sessionFiles.ts</code> - path claiming, listing-decided markup, and <code>useWorkspacePaths</code>.</li>
+    <li><code>src/web/App.tsx</code> - <code>openSessionPath</code>, <code>requestFilesTab</code>, and the <code>fileLineRequest</code> channel this one is shaped after.</li>
+    <li><code>src/server/session-files.ts</code> - <code>MAX_SESSION_PREVIEW_BYTES</code> and the containment rules the card inherits.</li>
+    <li><code>docs/plans/html-viewer/plan.md</code> and <code>docs/plans/files-line-comments/</code> - the shipped Files workspace and the preview-surface commenting this plan hands off to.</li>
+    <li><code>skills/html-plans/SKILL.md</code>, <code>skills/html-report/SKILL.md</code>, <code>skills/phased-plan/SKILL.md</code> - the artifacts and the closing-path convention that make detection reliable.</li>
+  </ul>
+</main>
+</body>
+</html>

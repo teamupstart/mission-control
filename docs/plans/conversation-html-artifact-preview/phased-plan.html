@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Phased implementation - inline HTML artifact previews in the conversation</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #edf2f8;
+      --text: #18212d;
+      --muted: #566579;
+      --border: #cad4e1;
+      --accent: #1769c2;
+      --accent-soft: #e5f1ff;
+      --good: #157454;
+      --warn: #9a5b00;
+      --danger: #b42318;
+      --shadow: 0 18px 50px rgba(34, 50, 71, .11);
+      --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0d12;
+        --surface: #121820;
+        --surface-2: #0d131b;
+        --text: #e6edf5;
+        --muted: #9aa8ba;
+        --border: #2a3543;
+        --accent: #62adff;
+        --accent-soft: #122943;
+        --good: #57c69d;
+        --warn: #f0ad4e;
+        --danger: #ff7b72;
+        --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 31rem),
+        var(--bg);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+    }
+    main {
+      width: min(1080px, calc(100% - 32px));
+      margin: 38px auto 72px;
+      padding: clamp(24px, 5vw, 62px);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    h1, h2, h3 { line-height: 1.2; text-wrap: balance; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.15rem); letter-spacing: -.045em; }
+    h2 { margin: 48px 0 16px; padding-top: 8px; font-size: 1.55rem; letter-spacing: -.018em; }
+    h3 { margin: 31px 0 11px; font-size: 1.12rem; }
+    p { margin: 0 0 16px; max-width: 84ch; }
+    ul, ol { margin: 0 0 18px; padding-left: 1.45rem; }
+    li { margin: 6px 0; }
+    strong { color: var(--text); }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin: 0 0 32px;
+      padding: 13px 16px;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      font-size: .91rem;
+    }
+    .lede {
+      padding: 20px 22px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 12px 12px 0;
+    }
+    .lede p:last-child { margin-bottom: 0; }
+    .table-wrap, .code-wrap { max-width: 100%; overflow-x: auto; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; margin: 12px 0 20px; font-size: .93rem; }
+    th, td { padding: 11px 13px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-2); font-size: .82rem; letter-spacing: .035em; text-transform: uppercase; }
+    code { font-family: var(--mono); font-size: .9em; color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
+    pre {
+      min-width: max-content;
+      margin: 0 0 18px;
+      padding: 15px 17px;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: .88rem/1.55 var(--mono);
+    }
+    pre code { color: var(--text); }
+    .diagram {
+      margin: 22px 0 25px;
+      padding: 18px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; min-width: 900px; width: 100%; height: auto; }
+    .diagram figcaption { margin-top: 12px; color: var(--muted); font-size: .9rem; }
+    .note {
+      margin: 22px 0;
+      padding: 15px 17px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-2);
+    }
+    .note p:last-child { margin-bottom: 0; }
+    .decision {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+      border-radius: 13px;
+      background: var(--accent-soft);
+    }
+    .decision ul { margin-bottom: 0; }
+    .svg-box { fill: var(--surface); stroke: var(--border); stroke-width: 2; }
+    .svg-box-accent { fill: var(--accent-soft); stroke: color-mix(in srgb, var(--accent) 60%, var(--border)); stroke-width: 2; }
+    .svg-flow { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+    .svg-label { fill: var(--text); font: 500 14px var(--sans); }
+    .svg-small { fill: var(--muted); font: 500 12.5px var(--sans); }
+    .svg-row { fill: var(--muted); font: 700 12.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; }
+    @media (max-width: 680px) {
+      main { width: min(100% - 18px, 1080px); margin-top: 10px; padding: 22px 17px 36px; border-radius: 14px; }
+      h2 { margin-top: 38px; }
+    }
+  </style>
+  <style>
+    .lede-sub { margin: 0 0 14px; color: var(--muted); font-size: 1.15rem; }
+    /* The phase table has five columns; without this the narrow first header breaks
+       mid-word into "PHAS E". The wrapper already scrolls, so nowrap costs nothing. */
+    th { white-space: nowrap; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Phased implementation</h1>
+    <p class="lede-sub">Inline HTML artifact previews in the conversation</p>
+    <div class="meta">
+      <span><strong>Phases:</strong> 1</span>
+      <span><strong>Date:</strong> 2026-09-03</span>
+      <span><strong>Repository:</strong> mission-control</span>
+      <span><strong>Source:</strong> <a href="plan.md">plan.md</a> / <a href="plan.html">plan.html</a></span>
+      <span><strong>Index source:</strong> <a href="phased-plan.md">phased-plan.md</a></span>
+      <span><strong>Mockup:</strong> <a href="mockup.html">mockup.html</a></span>
+    </div>
+  </header>
+
+  <h2>Incorporated human decisions</h2>
+  <p>Submitted through <code>request_plan_decisions</code> on 2026-09-03. These are requirements here, not open questions, and the source plan has already been rewritten to remove the alternatives.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Decision</th><th>Selected</th></tr></thead>
+    <tbody>
+      <tr><td>How a card arrives</td><td><strong>Expanded, collapsible</strong></td></tr>
+      <tr><td>Which HTML files qualify</td><td><strong>Only a path the turn presents as an artifact</strong></td></tr>
+      <tr><td>Comment hand-off depth</td><td><strong>Open Files with comment mode armed</strong> (not the block-carry variant)</td></tr>
+      <tr><td>Placement</td><td><strong>At the foot of the turn</strong></td></tr>
+      <tr><td>Phased follow-up</td><td>Declined at review; the human asked for phasing separately afterwards</td></tr>
+    </tbody>
+  </table></div>
+  <p>Two design rules were then settled by the live mockup rather than by the review, and they are requirements too: the reserved height is a single <strong>420px</strong> - the transcript has exactly one host, so there is no second context and no second number - and the frame is <strong>inset on a dark mat</strong> because an artifact keeps its own colour scheme. An intermediate draft specified a 240px height for a capped "session card" log; no host in the app produces one, and that scope is deleted. See the source plan under <em>Fixed height, and why not auto-fit</em>.</p>
+
+  <h2>Sizing and phase count</h2>
+  <p><strong>Estimate: 345 to 465 non-test implementation lines</strong> (the rows below, summed), all under <code>src/web/</code>, distributed as:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Area</th><th>Lines</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/web/lib/conversationArtifacts.ts</code> (new, pure detection)</td><td>70 - 90</td></tr>
+      <tr><td><code>src/web/components/ConversationArtifacts.tsx</code> (new, the card)</td><td>150 - 200</td></tr>
+      <tr><td><code>src/web/styles.css</code> (card, header, reserved-height body, mat)</td><td>55 - 75</td></tr>
+      <tr><td><code>src/web/components/TranscriptPanel.tsx</code> (two render sites)</td><td>20 - 30</td></tr>
+      <tr><td><code>src/web/App.tsx</code> (<code>fileCommentRequest</code> channel)</td><td>20 - 30</td></tr>
+      <tr><td><code>src/web/components/FileWorkspace.tsx</code> (honor the request)</td><td>20 - 30</td></tr>
+      <tr><td><code>layouts/types.ts</code>, <code>layouts/ConsoleDetail.tsx</code> (thread it)</td><td>8 - 12</td></tr>
+    </tbody>
+  </table></div>
+  <p>Assumptions behind the estimate: no server route, schema, migration, protocol or SSE change; <code>htmlPreviewSource</code>, <code>HTML_PREVIEW_SANDBOX</code>, <code>inlinePreviewStyles</code>, <code>fetchSessionFile</code>, <code>matchCheckoutPaths</code> and <code>useWorkspacePaths</code> are all reused as they stand; and the two existing intent channels (<code>fileTabRequest</code>, <code>fileLineRequest</code>) are copied in shape rather than redesigned.</p>
+
+  <div class="decision">
+    <p><strong>This is one phase, and one task.</strong> The estimate is above the 200-line one-shot threshold, so the rubric's default applies: still one phase unless a merge boundary materially reduces risk. It does not here, and the obvious candidate boundary actively hurts:</p>
+    <ul>
+      <li>The only tempting split is <em>card and preview</em> / <em>comment hand-off</em>. But the <strong>Comment in Files</strong> control lives in the card's own header, so a first phase would have to ship that header with a different action (plain "Open in Files") and a second phase would rewrite it. That is a temporary surface replaced by the next merge - the dead-surface case the rubric names - and it also splits one approved decision across two reviews.</li>
+      <li>A layer split (detection / component / intent channel) is an application-layer boundary, which the rubric explicitly rejects as a phase boundary on its own. All of it is one vertical slice inside one directory.</li>
+      <li>Nothing here is concurrent. Every file in the list is consumed by the card or consumes it, so two agents would contend on <code>TranscriptPanel.tsx</code> and the card component immediately.</li>
+      <li>The risky part is small and localized: honoring the comment intent inside <code>FileWorkspace</code> without disturbing its documented arming race. That is roughly 30 lines and one effect, well within a single reviewable pull request, and it is easier to review <em>beside</em> the card that triggers it than in a pull request of its own with no caller.</li>
+    </ul>
+    <p>Complexity is real but bounded: no persistence, no migration, no concurrency, and every security-relevant decision is inherited rather than made. The test surface is one <code>node:test</code> file plus one Playwright spec.</p>
+  </div>
+
+  <h2>Phase table</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Phase</th><th>Name</th><th>File</th><th>Depends on</th><th>Repository</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Artifact card in the conversation</td>
+        <td><a href="phase-1-artifact-card.md">phase-1-artifact-card.md</a></td>
+        <td>This planning session's pull request</td>
+        <td><code>mission-control</code> (default)</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h2>Dependency graph</h2>
+  <figure class="diagram" aria-labelledby="dg-title dg-desc">
+    <svg viewBox="0 0 1000 130" role="img" xmlns="http://www.w3.org/2000/svg">
+      <title id="dg-title">The publication gate releasing the single phase task</title>
+      <desc id="dg-desc">The planning pull request, carrying the plan, the mockup and the phase artifacts, is the only prerequisite of Phase 1. Phase 1 stays backlogged until that pull request merges.</desc>
+      <defs>
+        <marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <rect class="svg-box" x="20" y="26" width="380" height="78" rx="13"/>
+      <rect class="svg-box-accent" x="560" y="26" width="420" height="78" rx="13"/>
+      <path class="svg-flow" marker-end="url(#dg-arrow)" d="M400 65H556"/>
+      <g class="svg-label" text-anchor="middle">
+        <text x="210" y="58">Planning pull request</text>
+        <text class="svg-small" x="210" y="80">plan, mockup, phased index, phase file</text>
+        <text x="770" y="58">Phase 1: Artifact card in the conversation</text>
+        <text class="svg-small" x="770" y="80">backlogged until the artifacts reach the default branch</text>
+      </g>
+      <text class="svg-small" x="478" y="52" text-anchor="middle">merge</text>
+    </svg>
+    <figcaption>One edge, and it is the publication gate. A phase task carries paths rather than content, so it must not run before those paths resolve on the default branch.</figcaption>
+  </figure>
+  <p><strong>Concurrency groups:</strong> none. One phase.</p>
+  <p><strong>Merge order:</strong> planning pull request, then Phase 1.</p>
+
+  <h2>Repository analysis</h2>
+  <p>Every file in the estimate is in <code>mission-control</code>, which is also where the plan lives, so the task omits <code>repository</code> and <code>additionalRepositories</code> and inherits the current-repository default. No sibling repository is touched, so no phase opens more than one pull request.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <p>With one phase there is no inter-phase contract to hold. What the phase must not break is the set of <strong>existing</strong> contracts it borrows, and those are listed as inherited constraints in the phase file rather than invented here:</p>
+  <ul>
+    <li><code>src/web/lib/htmlPreview.ts</code> is read-only. No fifth bridge script, no CSP change, no <code>allow-same-origin</code>. <code>test/html-preview.test.ts</code> must pass untouched.</li>
+    <li>The conversation frame is <code>.artifact-preview</code>; <code>.html-preview</code> stays the Files workspace's alone, and each surface's <code>message</code> handler checks its own frame's <code>event.source</code>.</li>
+    <li><code>Markdown.tsx</code> gains no new prop and no new <code>components</code> entry. The card is a sibling of <code>TurnProse</code>, so the renderer's memo contract is untouched.</li>
+    <li>The new intent channel is shaped like <code>fileLineRequest</code>: session id, path, and a nonce.</li>
+  </ul>
+
+  <h2>Final verification strategy</h2>
+  <p>Owned by the phase, run before its pull request is opened:</p>
+  <ul>
+    <li><code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+    <li><code>npm test</code>, including <code>test/html-preview.test.ts</code> unchanged and the new detection tests.</li>
+    <li><code>npm run build</code> and <code>npm run smoke</code>, because a runtime surface changed.</li>
+    <li><code>npm run test:e2e</code> with the new spec, because a UI surface changed and there are no exemptions.</li>
+    <li>A look at the running app in both OS colour schemes, on a real skill-written <code>plan.html</code>, in the Console reading surface, which is the only place the transcript is mounted.</li>
+  </ul>
+</main>
+</body>
+</html>

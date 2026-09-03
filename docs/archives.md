@@ -600,8 +600,9 @@ Two different things can be wrong with a key, and they are answered differently:
   metadata as described above; it does not rewrite portable evidence. The reader then shows the
   ordered **Prompt context** before the report: **Original request**, then each human
   **Follow-up** with its recorded delivery time. Prompt text is escaped plain text outside the
-  report iframe. Each prompt shows at most eight lines and scrolls on its own past that, so a
-  page-long dispatch brief cannot push the report down the pane; the **Prompt context**
+  report iframe. The whole ledger is bounded to roughly seven lines of the pane and scrolls
+  as one past that, so neither a page-long dispatch brief nor a long trail of follow-ups can
+  push the report down the pane; the **Prompt context**
   heading is a disclosure that folds the whole ledger away and back, open on arrival and per
   archive. When capture omitted older or oversized prompt text, the reader says the
   trail is incomplete. A bundle from before prompt trails keeps its stored question visible

@@ -286,7 +286,7 @@
   <p>One further test, and it is what keeps the card off an incidental mention: the turn has to <strong>present</strong> the path as an artifact. Two forms qualify, and they are the two the skills already mandate:</p>
   <ul>
     <li>the path is the whole line, or the line is a short <code>Label:</code> prefix and the path (<code>Report: docs/reports/x/report.html</code>);</li>
-    <li>the path is the href of a Markdown link (<code>[the plan](docs/plans/x/plan.html)</code>).</li>
+    <li>the path is the destination of a Markdown link, in either CommonMark form - <code>[the plan](docs/plans/x/plan.html)</code> or <code>[the plan](&lt;docs/plans/x/plan.html&gt;)</code>. The bracketed form matters rather than being pedantry: it is the only way to link a path containing a space, and <code>matchCheckoutPaths</code> supports multi-word paths deliberately.</li>
   </ul>
   <p>A turn that says it edited <code>src/web/index.html</code> mid-sentence therefore gets a link and no card. That rule lives in the detection module beside the extension and cap tests, so the whole answer to "why is there a card here" is one function.</p>
 

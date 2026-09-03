@@ -217,7 +217,10 @@ already mandate:
 
 - the path is the whole line, or the line is a short `Label:` prefix and the path
   (`Report: docs/reports/x/report.html`);
-- the path is the href of a Markdown link (`[the plan](docs/plans/x/plan.html)`).
+- the path is the destination of a Markdown link, in either CommonMark form -
+  `[the plan](docs/plans/x/plan.html)` or `[the plan](<docs/plans/x/plan.html>)`. The
+  bracketed form matters rather than being pedantry: it is the only way to link a path
+  containing a space, and `matchCheckoutPaths` supports multi-word paths deliberately.
 
 A turn that says it edited `src/web/index.html` mid-sentence therefore gets a link and no
 card. That rule lives in the detection module beside the extension and cap tests, so the

@@ -116,7 +116,22 @@ Rules, in order:
      `Label:` prefix and the path. Match a leading label conservatively (letters and spaces,
      bounded length, then a colon) so `Report: docs/reports/x/report.html` qualifies and a
      sentence that happens to end in a path does not.
-   - **Markdown link href.** `](<path>)`, so `[the plan](docs/plans/x/plan.html)` qualifies.
+   - **Markdown link destination.** Accept **both** CommonMark destination forms, because
+     both occur:
+     - the bare form, `[the plan](docs/plans/x/plan.html)`;
+     - the angle-bracketed form, `[the plan](<docs/plans/x/plan.html>)`, which is **required**
+       when the path contains a space.
+
+     The space case is not hypothetical here: `matchCheckoutPaths` deliberately supports
+     multi-word paths - it computes a `maxWordSpan` over the listing and joins consecutive
+     words to match one - so a checkout really can hold `docs/reports/my notes/report.html`,
+     and a Markdown link to it can only be written with the angle brackets. A detector that
+     accepts one form silently drops half the links it was written for.
+
+     Strip the brackets before the listing lookup; the path is what is inside them. An
+     earlier draft of this file wrote this rule as the pattern `](<path>)`, meaning `<path>`
+     as a placeholder - it reads as requiring literal angle brackets, which is exactly the
+     wrong half. Hence the two forms spelled out rather than a pattern.
 3. Keep only `.html` / `.htm` (case-insensitive).
 4. Strip any `:line[:column]` suffix, reusing the same grammar `workspaceLinks.ts` uses
    rather than a second regex.
@@ -229,6 +244,11 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   Accessible names: the card is `Preview of <path>`; Refresh is `Refresh preview of <path>`;
   the comment action is `Comment on <path> in Files`. The disclosure carries `aria-expanded`
   and `aria-controls` pointing at the body.
+  In all three, `<path>` is a **placeholder** for the checkout-relative path substituted in,
+  not literal text - so the card for `docs/reports/x/report.html` is named
+  `Preview of docs/reports/x/report.html`. Spelled out because the Playwright spec selects on
+  these exact strings, and because a placeholder in this file has already been read once as a
+  literal pattern (see the link-destination rule and the round 13 audit note).
   **Derive all three names from the card's current path**, never from a value captured once.
   They are what the Playwright spec selects by, so a name that has drifted from its artifact
   both misannounces the target to a screen reader and silently breaks a role/label selector -
@@ -320,7 +340,12 @@ Cover the detection rules, which is where the behavior actually lives:
 
 - `Report: docs/reports/x/report.html` on its own line qualifies.
 - A bare path on its own line qualifies.
-- A Markdown link href qualifies.
+- A Markdown link destination qualifies in the **bare** form,
+  `[the plan](docs/plans/x/plan.html)`.
+- A Markdown link destination qualifies in the **angle-bracketed** form,
+  `[the plan](<docs/plans/x/plan.html>)`, with the brackets stripped before the lookup.
+- A listed path **containing a space** qualifies through the angle-bracketed form, which is
+  the only way to write a link to it - and pins that `maxWordSpan` support is actually used.
 - The same path named twice yields **one** artifact.
 - A path named only mid-sentence does **not** qualify.
 - `docs/reports/<slug>/report.html` - a placeholder in a real task prompt - resolves to
@@ -575,6 +600,18 @@ preview.
   the observer's `root` on the log, since with the default root the margin is inert and nothing
   else would catch a simplification back to it), and that mounting a document does not move the
   log (the reserved-height claim). Both are now exit criteria. Everything else already had one.
+- **2026-09-03, review round 13 reconciliation.** One `major` comment, valid, and it is the
+  same failure mode as the last three rounds in a new place. The link rule was written as the
+  pattern `](<path>)` with `<path>` intended as a placeholder, exactly as `<path>` is used in
+  the accessible names above - but inside a backticked *pattern* it reads as requiring literal
+  angle brackets, which is a real CommonMark destination form, so an implementer could
+  reasonably have built the opposite of what was meant.
+  Checking the merits made it substantive rather than cosmetic: CommonMark has two destination
+  forms, the spec named at most one under either reading, and the angle form is **required**
+  when a path contains a space. That case is live here because `matchCheckoutPaths` computes a
+  `maxWordSpan` over the listing and joins consecutive words specifically to match multi-word
+  paths - so the checkout can hold one, and a link to it can only be angle-bracketed. Both
+  forms are now spelled out, with three tests including the space case.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

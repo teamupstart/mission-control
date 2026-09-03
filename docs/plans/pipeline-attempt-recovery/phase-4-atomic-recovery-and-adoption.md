@@ -79,7 +79,7 @@ Create a DB operation under `BEGIN IMMEDIATE` that:
 
 Two concurrent requests must contend on this transaction and produce at most one inserted attempt. Do not use only in-memory locks or browser button disablement as the fence.
 
-Run the Phase 2 non-mutating environment probe before reservation. It accepts no predecessor run ID and appends no event, so a blocked result creates no attempt and terminal-run immutability is preserved. After the new provider run is created, record run-scoped readiness on that new run and revalidate it before host launch.
+Run the Phase 2 non-mutating environment probe before reservation. It accepts no predecessor run ID and appends no event, so a blocked result creates no attempt and never mutates the terminal predecessor. After the new provider run is created, record run-scoped readiness on that new run and revalidate it before host launch.
 
 ### 3. Extract a restart-safe recovery service
 

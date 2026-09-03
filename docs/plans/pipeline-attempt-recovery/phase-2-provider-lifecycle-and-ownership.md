@@ -20,7 +20,7 @@ The contract is additive and remains usable by the current Mission Control build
 - Add feature capabilities for readiness, retirement, retained review worktrees, and owned attempts.
 - Enforce readiness as a machine transition gate before authoring.
 - Retain authoring worktrees until PR merge, PR close, task cancel, or a bounded timeout.
-- Record retirement before cleanup and make cleanup idempotent.
+- Record logical retirement before physical cleanup and make cleanup idempotent.
 - Carry optional integration ownership across correlation lineage and reject accidental owner loss or change.
 - Add explicit ownership transfer for an intentional provider-side successor.
 - Update canonical provider documentation and tests.
@@ -33,7 +33,7 @@ The contract is additive and remains usable by the current Mission Control build
 - Do not infer task completion or adoption decisions.
 - Do not make a read-only remote probe claim that branch push authorization is proven.
 - Do not auto-merge a specification pull request.
-- Do not alter immutable terminal attempts or reopen a predecessor.
+- Do not alter a terminal run's outcome or reopen a predecessor. The one allowed post-terminal retirement event may only revoke workspace authorization and record cleanup identity.
 
 ## Repository findings and inherited contracts
 
@@ -87,7 +87,8 @@ In `src/conductor/src/engine/engineer/run-store.ts`:
 - Keep attempt numbering, direct predecessor identity, terminal-state requirements, and attempt-key collision checks unchanged.
 - Reduce new events deterministically and reject duplicate or contradictory retirement transitions.
 - Require a successful or explicitly permitted inconclusive readiness event before `run_started` and every authoring step transition. A blocked result cannot enter authoring.
-- Keep terminal runs immutable.
+- Keep terminal outcomes immutable. Permit exactly one `engineer_worktree_retired` event after a successful handoff or terminal cancellation when a retained worktree still exists. It advances the journal revision and retirement projection only; it cannot change terminal status, handoff, attempt identity, owner, predecessor, or any prior event.
+- Define `engineer_worktree_retired` as logical retirement and authorization revocation, not proof that filesystem deletion has completed. Live reduction and replay apply the same narrow allowlist, and every other post-terminal run event remains rejected.
 
 The provider should not add a generic `checking` run state unless it improves the transition model. A `created` run with readiness projection is sufficient if every authoring transition validates it.
 
@@ -137,12 +138,14 @@ Add a lifecycle-owned cleanup reconciler invoked from the existing daemon/Engine
 
 For `local_commit`, retain until cancel, explicit cleanup, or timeout because there is no PR terminal signal.
 
-Before removal:
+Before physical removal:
 
 1. resolve and validate the exact repository, worktree, branch, marker, run ID, and retained commit;
-2. append `engineer_worktree_retired` durably;
+2. append the single metadata-only `engineer_worktree_retired` event durably, thereby revoking further workspace use while preserving the terminal outcome;
 3. remove that exact worktree through the existing guarded helper;
-4. on removal failure, retain actionable error evidence and permit idempotent retry without appending a contradictory second retirement.
+4. on removal failure, retain actionable cleanup error evidence in lifecycle-owned metadata and permit idempotent physical-cleanup retry without appending a contradictory second retirement.
+
+After restart, a logically retired worktree that still exists is cleanup debt, never an available workspace. A retired worktree that is already absent needs no second event. The cleanup reconciler must use the persisted retirement identity and exact path for either case.
 
 Do not bulk-delete, glob, or infer cleanup from directory age alone.
 
@@ -158,11 +161,13 @@ Extend `engineer run-create` with optional integration ownership:
 Add one explicit ownership-release or transfer command:
 
 - requires exact correlation, repository, active terminal run, current owner, and expected revision;
-- records an auditable lifecycle transition or ownership record on the existing spine;
+- records an auditable correlation-ownership record in the existing run-store persistence; it is not a second post-terminal run event;
 - issues or records a single-use transfer state for the next direct successor;
 - cannot alter an existing run's attempt identity or journal.
 
 This is operational fencing against accidental split authority, not a security boundary against the same local user. Keep the contract simple and idempotent.
+
+If explicit cleanup targets a non-terminal run, require the existing cancellation transition first. Logical retirement remains terminal-only.
 
 ### 6. Classify failures at the command boundary
 
@@ -187,6 +192,7 @@ Use the same classifier for readiness and handoff failures so the operator recei
 
 - Run metadata and snapshots: additive optional owner, readiness, retention, and retirement fields with legacy defaults.
 - Event journal: additive v1 kinds and optional terminal-failure fields. Existing revisions remain unchanged.
+- Post-terminal journal rule: `engineer_worktree_retired` is the sole metadata-only exception, may append once for a retained terminal worktree, and leaves the terminal outcome unchanged under live reduction and replay.
 - Correlation index: preserve current shape unless owner lookup demonstrably requires an additive field; snapshots remain the source for run owner.
 - Capability response: additive independent feature flags so Mission Control can gate each guarantee.
 - Existing Mission Control safely stores unknown v1 kinds and reads raw `error`; no coupled consumer merge is required.
@@ -198,10 +204,10 @@ Use the same classifier for readiness and handoff failures so the operator recei
 The implementation agent must follow ai-conductor's current repository instructions and HARNESS-directed workflow. At minimum, add or extend:
 
 - `src/conductor/test/engineer-lifecycle-cli.test.ts`: capabilities, readiness command, bounded JSON, owner flags, and compatibility.
-- `src/conductor/test/engine/engineer/engineer-lifecycle-store.test.ts`: event reduction, transition gate, legacy replay, owner inheritance, mismatch refusal, transfer, retirement idempotency, and immutable terminal history.
+- `src/conductor/test/engine/engineer/engineer-lifecycle-store.test.ts`: event reduction, transition gate, legacy replay, owner inheritance, mismatch refusal, transfer, retirement idempotency, one allowed post-terminal retirement, rejection of every other post-terminal event, and immutable terminal outcome.
 - `src/conductor/test/engineer/engineer-cli*` suites: parse and reject unknown or incomplete flags.
 - `src/conductor/test/engine/engineer/handoff-step.test.ts` and lifecycle tests: readiness before push, typed failures, handoff persisted before retention, and no immediate cleanup.
-- worktree acceptance tests: retained after PR open, removed on merge/close/cancel/timeout, exact identity validation, local-commit retention, and removal failure recovery.
+- worktree acceptance tests: retained after PR open, logically retired before physical removal on merge/close/cancel/timeout, exact identity validation, local-commit retention, cleanup failure and restart recovery, and no workspace reauthorization after a failed removal.
 - integration emission tests: new events travel through `ConductorEventEmitter`, persistence, replay, and snapshot without a parallel channel.
 - faithful fake Git, GitHub, tool, clock, and process adapters. Default tests make no real network or model calls.
 
@@ -221,7 +227,7 @@ Also run any build, typecheck, packaging, or generated-output verification requi
 - The non-mutating readiness probe creates no run, attempt, event, or provider index; the run-scoped command records evidence only on a non-terminal exact run.
 - No authoring transition can occur after a blocked readiness result or without required readiness evidence.
 - Successful handoff retains the exact worktree and records its deadline.
-- Merge, close, cancel, timeout, and explicit cleanup each retire only the exact validated worktree and emit retirement evidence before removal.
+- Merge, close, cancel, timeout, and explicit cleanup each logically retire only the exact validated worktree, emit the sole permitted metadata-only post-terminal event before physical removal, and never change the terminal outcome.
 - Unreserved successors of owned correlations fail without partial durable state.
 - Explicit transfer is exact, auditable, one-use, and cannot reopen or rewrite an attempt.
 - Handoff failure keeps the worktree as before.
@@ -241,4 +247,5 @@ Phase 4 may rely on owned correlations refusing accidental unreserved successors
 - Contract refinement: retirement evidence is written before cleanup; `missing` remains a consumer-observed state and is not emitted by the provider.
 - Retention decision is settled: immediate successful-handoff cleanup must be removed, not preserved as an optional default.
 - Final audit: Phase 3 activates owner identity on new Mission Control creates, while Phase 4 reuses the same owner on retries. Historical adoption does not fabricate provider ownership.
-- CodeRabbit audit: pre-reservation readiness and run-scoped readiness are separate commands over one checker, preserving terminal-run immutability.
+- CodeRabbit audit: pre-reservation readiness and run-scoped readiness are separate commands over one checker, preserving terminal outcome immutability.
+- Inspector audit: retirement is one allowlisted metadata-only post-terminal event that revokes workspace authorization before physical cleanup; replay preserves the terminal outcome and rejects every other post-terminal event.

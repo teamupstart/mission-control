@@ -134,7 +134,7 @@
     <div class="card phase" data-phase="2">
       <h3><a href="phase-2-provider-lifecycle-and-ownership.md">Complete provider lifecycle and ownership</a></h3>
       <p class="meta">ai-conductor, Mission Control context-only | Direct prerequisite: planning session</p>
-      <p>Add readiness, typed failure, retirement, retained review worktrees, capabilities, and owned-correlation fencing on the existing event spine. This can execute concurrently with Phase 1.</p>
+      <p>Add readiness, typed failure, retained review worktrees, capabilities, and owned-correlation fencing on the existing event spine. Logical retirement is the sole metadata-only post-terminal event and revokes workspace use without changing terminal outcome. This can execute concurrently with Phase 1.</p>
     </div>
     <div class="card phase" data-phase="3">
       <h3><a href="phase-3-lifecycle-consumption-and-presentation.md">Lifecycle consumption and unified presentation</a></h3>
@@ -172,7 +172,7 @@
       </div>
       <div class="card">
         <h3>Provider</h3>
-        <ul><li>One additive Engineer event spine.</li><li>Authoring requires current <code>ready</code> or explicitly permitted <code>inconclusive</code> readiness.</li><li>Readiness and retirement are provider evidence.</li><li>Current attempt ordering and replay remain intact.</li><li>Owned correlations reject accidental owner loss.</li></ul>
+        <ul><li>One additive Engineer event spine.</li><li>Authoring requires current <code>ready</code> or explicitly permitted <code>inconclusive</code> readiness.</li><li>Logical retirement is the sole metadata-only post-terminal event and never changes terminal outcome.</li><li>Current attempt ordering and replay remain intact.</li><li>Owned correlations reject accidental owner loss.</li></ul>
       </div>
       <div class="card">
         <h3>Recovery</h3>

@@ -101,11 +101,12 @@ Phases 3 and 4 may extend reasons and actions but must not change these authoriz
 - New events extend the existing Engineer v1 event spine and carry the existing base identity and monotonic revision.
 - A non-mutating readiness probe can block before reservation; `engineer_readiness_checked` records bounded machine evidence only on the exact new run before authoring.
 - `engineer_worktree_retired` records exact worktree identity, cleanup reason, and the immutable attempt-specific commit SHA captured before cleanup.
+- Retirement is the sole metadata-only post-terminal Engineer event. It revokes workspace authorization before physical deletion, advances only revision and retirement projection, and cannot change the terminal outcome; replay enforces the same allowlist.
 - `engineer_run_failed` keeps raw `error` and adds bounded optional typed recovery fields.
 - Mission Control integration ownership is opaque to ai-conductor except for equality and transfer validation.
 - Readiness and ownership are independent capabilities: a current `ready` result, or an explicitly permitted `inconclusive` result, is always enforced when readiness is supported, while absent ownership disables automatic recovery.
 - Current attempt-key idempotency, direct predecessor ordering, replay integrity, and keep-on-failure remain intact.
-- Worktree retention ends only on merge, close, cancel, or timeout, with the immutable attempt commit and retirement recorded before removal.
+- Worktree retention ends only on merge, close, cancel, or timeout, with the immutable attempt commit and logical retirement recorded before physical removal. Failed deletion remains cleanup debt and never reauthorizes the path.
 
 Phase 3 consumes this contract. Phase 4 relies on its readiness and ownership capabilities.
 

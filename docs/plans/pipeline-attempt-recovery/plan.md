@@ -104,11 +104,11 @@ Legacy rows with absent or null origin decode as `origin: "mission_control"`, wi
 Extend the existing Engineer event spine with additive evidence:
 
 - `engineer_readiness_checked`: tool availability, remote reachability, credential posture, status, stable reason code, and whether write authorization remains unproven.
-- `engineer_worktree_retired`: exact path, branch, plan slug, reason, and the immutable attempt-specific commit SHA captured before cleanup.
+- `engineer_worktree_retired`: exact path, branch, plan slug, reason, and the immutable attempt-specific commit SHA captured before cleanup. This is the sole metadata-only event permitted after terminal handoff: it revokes workspace authorization and advances retirement projection without changing the terminal outcome.
 - `engineer_run_failed`: retain raw `error`, with optional structured `class`, `code`, `summary`, `retryable`, `remedy`, and bounded diagnostic.
 - An integration-owner field on run creation, with the Mission Control commission and reserved attempt identity represented as opaque values.
 
-Recommended retention policy: keep the authoring worktree through specification review and retire it on PR merge, PR close, task cancellation, or a bounded retention timeout. ai-conductor remains cleanup owner and emits the immutable attempt commit before removal. Commit-backed fallback is still required because retention is finite and worktrees can disappear unexpectedly.
+Recommended retention policy: keep the authoring worktree through specification review and retire it on PR merge, PR close, task cancellation, or a bounded retention timeout. ai-conductor remains cleanup owner, captures the immutable attempt commit, and emits logical retirement before physical removal. A failed deletion remains cleanup debt and never reauthorizes the retired path. Commit-backed fallback is still required because retention is finite and worktrees can disappear unexpectedly.
 
 For Mission Control-owned correlations, ai-conductor rejects an unreserved successor unless an explicit ownership-transfer token is supplied. This prevents recurrence while preserving a reviewed adoption path for existing divergence.
 

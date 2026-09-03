@@ -77,6 +77,7 @@ In `src/server/pipelines/commissions.ts`:
 
 - Reduce readiness into a bounded current result attached to the active attempt.
 - Reduce explicit worktree retirement only when path, branch, plan slug, retained commit, attempt, and provider revision match the active workspace identity. Persist the provider commit when none exists; surface drift rather than overwrite a conflicting frozen commit.
+- Accept the provider's single metadata-only retirement revision after terminal handoff without reopening or changing the terminal commission outcome. Live ingest and replay must produce the same retirement projection.
 - Reduce typed terminal failure without discarding raw error evidence.
 - Preserve retired state through restart and replay.
 - Treat a contradictory event as mismatch or drift evidence rather than silently replacing identity.

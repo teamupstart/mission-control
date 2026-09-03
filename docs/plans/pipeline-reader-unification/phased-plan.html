@@ -236,13 +236,21 @@ present.</p>
 </div>
 
 <h2>Cross-phase contracts</h2>
-<p>Single phase, so there are no inter-phase contracts. The two outward contracts are:</p>
+<p>Single phase, so there are no contracts BETWEEN phases of this plan. There are three outward
+contracts, and the third is an obligation on another effort rather than on this one:</p>
 <ul>
-<li><strong>Owned here:</strong> the composed reader and <code>activeRun</code> resolution in
-<code>PipelineRuns.tsx</code>.</li>
+<li><strong>Owned here:</strong> the composed reader, and the <code>activeRun</code> /
+<code>activeCommission</code> resolution in <code>PipelineRuns.tsx</code>.</li>
 <li><strong>Not owned here, must not be changed:</strong> every progress derivation in
 <code>pipeline-run-model.ts</code>, the <code>PipelinePhaseMeter</code> component and its three
 call sites.</li>
+<li><strong>Binding on <code>pipeline-attempt-recovery</code> Phase 3 (decision 2):</strong> its
+segmented progress model must keep the board session card drawing ONE bar carrying BOTH segments,
+always present, never retargeted to implementation alone and never absent for a feature with
+either kind of evidence. This is a <strong>behavioral</strong> contract, so the disjoint file sets
+above do not discharge it: they remove the merge conflict, not the obligation.
+<code>e2e/specs/conductor-planning-continuity.spec.ts</code> is the guard, and the phase file's
+downstream handoff is where Phase 3's implementer will read it.</li>
 </ul>
 
 <h2>Final verification strategy</h2>

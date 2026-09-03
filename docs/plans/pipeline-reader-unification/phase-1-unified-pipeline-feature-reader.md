@@ -248,8 +248,10 @@ order.
 - 2026-09-03: single-phase plan, so no inter-phase reconciliation applies. Audited against the
   live `pipeline-attempt-recovery` graph instead. Confirmed disjoint file sets: this phase edits
   `PipelineRuns.tsx`, `PipelineRunView.tsx`, `styles.css` and adds `PipelineFeatureReader.tsx`;
-  that effort's Phase 3 step 6 edits `pipeline-run-model.ts`. No shared file, no shared contract,
-  no ordering requirement in either direction.
+  that effort's Phase 3 step 6 edits `pipeline-run-model.ts`. No shared **implementation file**
+  and no ordering requirement in either direction. There IS one shared contract, and it is
+  behavioral rather than structural: decision 2 binds Phase 3 to keep the board card's
+  two-segment bar. Disjoint file sets remove the merge conflict, not that obligation.
 - 2026-09-03: operator decision 1 removed progress-derivation work from this phase's scope. The
   non-goals and exit criteria were written to make that boundary checkable rather than implied.
 - 2026-09-03: the `Attempts` / `Engineer attempts` heading collision was found while resolving

@@ -131,11 +131,20 @@ segmented model must keep the board card drawing one bar with both segments, alw
 
 ## Cross-phase contracts
 
-Single phase, so there are no inter-phase contracts. The two outward contracts are:
+Single phase, so there are no contracts BETWEEN phases of this plan. There are three outward
+contracts, and the third is an obligation on another effort rather than on this one:
 
-- **Owned here:** the composed reader and `activeRun` resolution in `PipelineRuns.tsx`.
+- **Owned here:** the composed reader, and the `activeRun` / `activeCommission` resolution in
+  `PipelineRuns.tsx`.
 - **Not owned here, must not be changed:** every progress derivation in
   `pipeline-run-model.ts`, the `PipelinePhaseMeter` component and its three call sites.
+- **Binding on `pipeline-attempt-recovery` Phase 3 (decision 2):** its segmented progress model
+  must keep the board session card drawing ONE bar carrying BOTH segments, always present, never
+  retargeted to implementation alone and never absent for a feature with either kind of evidence.
+  This is a **behavioral** contract, so the disjoint file sets below do not discharge it: they
+  remove the merge conflict, not the obligation. `e2e/specs/conductor-planning-continuity.spec.ts`
+  is the guard, and the phase file's downstream handoff is where Phase 3's implementer will read
+  it.
 
 ## Final verification strategy
 

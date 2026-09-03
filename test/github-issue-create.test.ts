@@ -11,29 +11,115 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
     ...stubRun({ stdout: "https://github.com/acme/issues/issues/1\n", stderr: "", code: 1 }),
     outcomeUnknown: true,
   };
-  assert.deepEqual(githubIssueCreateOutcome(killed), {
+  assert.deepEqual(githubIssueCreateOutcome(killed, "acme/issues"), {
     kind: "unknown",
     reason: "process",
   });
 
   assert.deepEqual(
-    githubIssueCreateOutcome(stubRun({ stdout: "", stderr: "label missing\nmore", code: 1 })),
+    githubIssueCreateOutcome(
+      stubRun({ stdout: "", stderr: "label missing\nmore", code: 1 }),
+      "acme/issues",
+    ),
     { kind: "refused", detail: "label missing" },
   );
 
   assert.deepEqual(
-    githubIssueCreateOutcome(stubRun({
-      stdout:
-        "https://github.com/acme/issues/issues/1\n" +
-        "https://github.com/acme/issues/issues/2\n",
-      stderr: "",
-      code: 0,
-    })),
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.com/acme/issues/issues/3\n",
+        stderr: "failed to upload second.png\nmore",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    {
+      kind: "created",
+      url: "https://github.com/acme/issues/issues/3",
+      warning: "failed to upload second.png",
+    },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout:
+          "https://github.com/acme/issues/issues/1\n" +
+          "https://github.com/acme/issues/issues/2\n",
+        stderr: "",
+        code: 0,
+      }),
+      "ACME/Issues",
+    ),
     { kind: "created", url: "https://github.com/acme/issues/issues/2" },
   );
 
   assert.deepEqual(
-    githubIssueCreateOutcome(stubRun({ stdout: "created\n", stderr: "", code: 0 })),
+    githubIssueCreateOutcome(
+      stubRun({ stdout: "created\n", stderr: "", code: 0 }),
+      "acme/issues",
+    ),
     { kind: "unknown", reason: "missing-url" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://cli.github.com/manual/gh_issue_create\n",
+        stderr: "request failed",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.com/other/repository/issues/3\n",
+        stderr: "request failed",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "",
+        stderr: "https://github.com/acme/issues/issues/3\nfailed to upload",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "https://github.com/acme/issues/issues/3" },
+  );
+});
+
+// Captured from released gh 2.99.0 against disposable public issue #5 on 2026-09-03.
+// The first image uploaded, the second disappeared after argument validation, and gh created
+// the issue with the successful image before reporting the second upload failure.
+test("released gh 2.99 partial output identifies the created issue for its target", () => {
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.com/mancej-cyc/mission-control-issues/issues/5\n",
+        stderr:
+          "failed to upload /private/tmp/second.png: open /private/tmp/second.png: " +
+          "no such file or directory\n",
+        code: 1,
+      }),
+      "mancej-cyc/mission-control-issues",
+    ),
+    {
+      kind: "created",
+      url: "https://github.com/mancej-cyc/mission-control-issues/issues/5",
+      warning:
+        "failed to upload /private/tmp/second.png: open /private/tmp/second.png: " +
+        "no such file or directory",
+    },
   );
 });

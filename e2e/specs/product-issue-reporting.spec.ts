@@ -509,46 +509,114 @@ test("a forged confirmation is refused by the daemon and reaches no gh", async (
 });
 
 /**
- * Screenshots are drawn and inert, and the DOM's `disabled` is not what makes that true.
- *
- * The gesture under test is the one someone actually performs - ⌃⇧⌘4 then paste into the
- * details box - and the claim is that no local path can reach `gh` through it. The server
- * gate is the boundary; this proves the browser never even builds the attempt.
+ * A screenshot goes through the real browser upload route and reaches gh only as a
+ * daemon-resolved path. The browser request carries the opaque upload id, never that path.
  */
-test("the screenshot region explains itself and cannot upload", async ({
+test("the screenshot input uploads and publishes through one first-party attach argument", async ({
   dashboard,
   daemon,
 }) => {
+  const previewAttachmentIds: string[][] = [];
+  await dashboard.route("**/api/product-issues/preview", async (route) => {
+    const request = JSON.parse(route.request().postData() ?? "{}") as {
+      attachmentUploadIds?: string[];
+    };
+    previewAttachmentIds.push(request.attachmentUploadIds ?? []);
+    await route.continue();
+  });
+
   await openFromTopbar(dashboard);
   const dialog = form(dashboard);
   await expect(
-    dialog.getByText("Screenshot upload is waiting for first-party GitHub CLI support"),
+    dialog.getByText(/Choose, paste, or drop up to 5 PNG/),
   ).toBeVisible();
-  await expect(dialog.getByRole("link", { name: "cli/cli#13256" })).toBeVisible();
-  await expect(dialog.getByLabel("Add screenshots")).toBeDisabled();
+  await expect(dialog.getByLabel("Add screenshots")).toBeEnabled();
+  await dialog.getByLabel("Add screenshots").setInputFiles(
+    join(process.cwd(), "build", "trayTemplate.png"),
+  );
+  await expect(dialog.getByRole("button", { name: "Remove trayTemplate.png" })).toBeVisible();
 
-  // Paste a real image file onto the details box. The enabled hook would upload it.
-  await dialog.getByRole("textbox", { name: "Details", exact: true }).click();
-  await dashboard.evaluate(() => {
-    const area = document.querySelector<HTMLTextAreaElement>(".feedback-field textarea");
-    const transfer = new DataTransfer();
-    transfer.items.add(
-      new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "shot.png", { type: "image/png" }),
-    );
-    area?.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }),
-    );
-  });
-  await expect(dialog.getByRole("button", { name: /^Remove / })).toHaveCount(0);
+  await fill(dashboard, "Bug", "Something visual went wrong", "The screenshot shows the state.");
+  await expect.poll(() => previewAttachmentIds.at(-1)?.length ?? 0).toBe(1);
+  const uploadId = previewAttachmentIds.at(-1)![0]!;
+  expect(uploadId).toMatch(/^[A-Za-z0-9._-]+\.png$/);
 
-  await fill(dashboard, "Bug", "Something visual went wrong", "Described in words instead.");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "product-issue-attachments");
+    mkdirSync(evidenceDir, { recursive: true });
+    await dialog.getByRole("region", { name: "Screenshots" }).scrollIntoViewIfNeeded();
+    await dialog.screenshot({ path: join(evidenceDir, "screenshot-ready-to-publish.png") });
+  }
+
   await publish(dashboard);
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
 
   await expect.poll(() => productCreates(daemon).length).toBe(1);
   const record = productCreates(daemon)[0]!;
-  expect(record.argv).not.toContain("--attach");
-  expect(record.argv.join(" ")).not.toContain("shot.png");
+  const attachmentPaths = record.argv.filter((_value, index) => record.argv[index - 1] === "--attach");
+  expect(attachmentPaths).toHaveLength(1);
+  expect(attachmentPaths[0]).toContain(`${daemon.home}/uploads/`);
+  expect(attachmentPaths[0]).toContain(uploadId);
+  expect(record.argv).not.toContain(uploadId);
+});
+
+test("gh older than 2.99 keeps text reports available but disables screenshots", async ({
+  dashboard,
+  daemon,
+}) => {
+  script(daemon, { preflight: "gh-version", issueCreate: "created" });
+  await openFromTopbar(dashboard);
+  const dialog = form(dashboard);
+  await expect(dialog.getByText(/Screenshot upload requires GitHub CLI 2\.99\.0 or newer/)).toBeVisible();
+  await expect(dialog.getByText(/still submit a text-only report/)).toBeVisible();
+  await expect(dialog.getByLabel("Add screenshots")).toBeDisabled();
+
+  await fill(dashboard, "Documentation", "Text report on older gh", "No screenshot is needed.");
+  await publish(dashboard);
+  await expect(dialog.getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  await expect.poll(() => productCreates(daemon).length).toBe(1);
+  expect(productCreates(daemon)[0]!.argv).not.toContain("--attach");
+});
+
+test("a partial upload is reported as a created issue with a screenshot warning", async ({
+  dashboard,
+  daemon,
+}) => {
+  script(daemon, { preflight: "ok", issueCreate: "partial" });
+  await openFromTopbar(dashboard);
+  const dialog = form(dashboard);
+  await expect(dialog.getByLabel("Add screenshots")).toBeEnabled();
+  await dialog.getByLabel("Add screenshots").setInputFiles(
+    join(process.cwd(), "build", "trayTemplate.png"),
+  );
+  await expect(dialog.getByRole("button", { name: "Remove trayTemplate.png" })).toBeVisible();
+  await fill(dashboard, "Bug", "One screenshot failed", "The issue still exists.");
+  await publish(dashboard);
+
+  await expect(dialog.getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  await expect(dialog.getByText(/one or more screenshots were not attached/)).toBeVisible();
+  await expect.poll(() => productCreates(daemon).length).toBe(1);
+});
+
+test("an attachment failure without the target issue URL blocks a duplicate retry", async ({
+  dashboard,
+  daemon,
+}) => {
+  script(daemon, { preflight: "ok", issueCreate: "partial-no-url" });
+  await openFromTopbar(dashboard);
+  const dialog = form(dashboard);
+  await expect(dialog.getByLabel("Add screenshots")).toBeEnabled();
+  await dialog.getByLabel("Add screenshots").setInputFiles(
+    join(process.cwd(), "build", "trayTemplate.png"),
+  );
+  await expect(dialog.getByRole("button", { name: "Remove trayTemplate.png" })).toBeVisible();
+  await fill(dashboard, "Bug", "Attachment outcome is uncertain", "Do not file this twice.");
+  await publish(dashboard);
+
+  await expect(dialog.getByRole("alert")).toContainText(/issue may exist/i);
+  await expect(dialog.getByText(/check GitHub before retrying/i)).toBeVisible();
+  await expect(submit(dashboard)).toBeDisabled();
+  await expect.poll(() => productCreates(daemon).length).toBe(1);
 });
 
 /**

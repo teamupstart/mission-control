@@ -1599,9 +1599,12 @@ The MCP tools are:
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
   and safe environment summary. The only publishing choice is **Submit public issue**; Dismiss
-  and any non-human or malformed answer publish nothing. Reports are text-only in this release,
-  so `attachmentUploadIds` must be empty. Success returns the exact issue URL, a CLI refusal says
-  retrying is safe, and an unknown outcome says to check GitHub before trying again
+  and any non-human or malformed answer publish nothing. `attachmentUploadIds` may contain up to
+  five unique daemon-issued image locators, never filesystem paths; screenshots require `gh`
+  2.99.0 or newer. Success returns the exact issue URL. A non-zero attachment result that prints
+  an issue URL matching the fixed target repository is a created issue with a warning. An
+  attachment failure without that matching URL is unknown and blocks retry; only a text-only
+  refusal without a URL says retrying is safe
 - `report_status(activity)` - update the session's activity line
 - `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
   left on a file, in the thread it was written in (non-blocking). `commentId` is the handle

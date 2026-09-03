@@ -533,8 +533,8 @@ server.registerTool(
     description:
       "Prepare a public GitHub issue about Mission Control only after the user explicitly " +
       "asked you to report it. Mission Control shows the exact public content in the dashboard " +
-      "and BLOCKS until the human selects Submit public issue or dismisses it. Screenshots are " +
-      "unavailable until stable first-party GitHub CLI attachment support ships.",
+      "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
+      "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
     inputSchema: {
       type: z.enum(PRODUCT_ISSUE_TYPES).describe("The user-selected product report type"),
       title: z
@@ -560,9 +560,9 @@ server.registerTool(
         .describe("Public report details, including reproduction or desired outcome"),
       attachmentUploadIds: z
         .array(z.string().min(1).max(PRODUCT_ISSUE_LIMITS.attachmentUploadIdChars))
-        .max(0)
+        .max(PRODUCT_ISSUE_LIMITS.attachmentCount)
         .default([])
-        .describe("Screenshots are unavailable in this release; this list must be empty"),
+        .describe("Optional daemon-issued screenshot upload ids; never pass filesystem paths"),
     },
   },
   async ({ type, title, details, attachmentUploadIds }, extra) => {

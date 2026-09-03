@@ -30,6 +30,7 @@ const {
   PRODUCT_ISSUE_BODY_MARKER,
   PRODUCT_ISSUE_CLIENT_ENV,
   PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_MINIMUM_GH_VERSION,
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_SOURCE_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
@@ -47,6 +48,7 @@ const {
   productIssueCreateArgs,
   productIssueLabels,
   renderProductIssueBody,
+  supportsProductIssueAttachments,
 } = await import("../src/server/product-issues.ts");
 const {
   UPLOADS_DIR,
@@ -97,6 +99,7 @@ test("the append-only vocabulary, maps, and bounded schemas agree", () => {
   assert.equal(PRODUCT_ISSUE_SOURCE_LABELS.dashboard, "source:dashboard");
   assert.equal(PRODUCT_ISSUE_SOURCE_LABELS.agent, "source:agent");
   assert.equal(PRODUCT_ISSUE_CLIENT_ENV, "MISSION_PRODUCT_ISSUE_CLIENT");
+  assert.equal(PRODUCT_ISSUE_MINIMUM_GH_VERSION, "2.99.0");
   assert.equal(productIssueClientFromEnvironment("electron"), "electron");
   assert.equal(productIssueClientFromEnvironment("browser"), "browser");
   assert.equal(productIssueClientFromEnvironment("forged"), "browser");
@@ -139,6 +142,15 @@ test("the append-only vocabulary, maps, and bounded schemas agree", () => {
     }).success,
     false,
   );
+});
+
+test("attachment support accepts stable gh 2.99.0 and newer, but not previews or older releases", () => {
+  assert.equal(supportsProductIssueAttachments("gh version 2.99.0 (2026-09-01)\n"), true);
+  assert.equal(supportsProductIssueAttachments("gh version 2.100.0 (2026-09-08)\n"), true);
+  assert.equal(supportsProductIssueAttachments("gh version 3.0.0 (2027-01-01)\n"), true);
+  assert.equal(supportsProductIssueAttachments("gh version 2.98.0 (2026-08-20)\n"), false);
+  assert.equal(supportsProductIssueAttachments("gh version 2.99.0-attach-preview\n"), false);
+  assert.equal(supportsProductIssueAttachments("unreadable\n"), false);
 });
 
 test("target configuration accepts only exact owner/name and defaults safely", () => {
@@ -445,6 +457,38 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
   });
 });
 
+test("preflight enables attachments only for stable gh 2.99.0 or newer", async (t) => {
+  for (const [version, enabled] of [
+    ["2.99.0", true],
+    ["2.98.0", false],
+  ] as const) {
+    await t.test(version, async () => {
+      const service = new ProductIssueService({
+        consent: CONSENTS,
+        target,
+        attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: () => null },
+        runner: async (_bin, args) => {
+          if (args[0] === "--version") {
+            return stubRun({ stdout: `gh version ${version} (test)\n`, stderr: "", code: 0 });
+          }
+          if (args[0] === "api") {
+            return stubRun({
+              stdout: JSON.stringify([PRODUCT_ISSUE_REQUIRED_LABELS.map((name) => ({ name }))]),
+              stderr: "",
+              code: 0,
+            });
+          }
+          return stubRun({ stdout: "ok\n", stderr: "", code: 0 });
+        },
+      });
+      const result = await service.preflight();
+      assert.equal(result.ready, true);
+      assert.equal(result.attachments.enabled, enabled);
+      if (!enabled) assert.match(result.attachments.reason ?? "", /2\.99\.0 or newer/);
+    });
+  }
+});
+
 const pngHead = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
 
 function raster(name: string, bytes = pngHead.byteLength): SavedUpload {
@@ -458,7 +502,7 @@ function raster(name: string, bytes = pngHead.byteLength): SavedUpload {
 test("the injected attachment capability re-resolves, sniffs, bounds, and isolates argv", async (t) => {
   mkdirSync(UPLOADS_DIR, { recursive: true });
 
-  await t.test("valid uploads become repeated anticipated attach pairs", async () => {
+  await t.test("valid uploads become repeated first-party attach pairs", async () => {
     const first = saveImageUpload(pngHead, "first.png");
     const second = saveImageUpload(pngHead, "second.png");
     let argv: string[] = [];
@@ -467,6 +511,9 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          return stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 });
+        }
         argv = args;
         return stubRun({
           stdout: "https://github.com/acme/public-issues/issues/55\n",
@@ -484,17 +531,107 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     );
   });
 
+  await t.test("an older gh release cannot receive attachment argv", async () => {
+    const upload = saveImageUpload(pngHead, "old-gh.png");
+    let issueCreates = 0;
+    const service = new ProductIssueService({
+      consent: CONSENTS,
+      target,
+      attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
+      runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          return stubRun({ stdout: "gh version 2.98.0 (test)\n", stderr: "", code: 0 });
+        }
+        issueCreates++;
+        return stubRun({ stdout: "", stderr: "", code: 0 });
+      },
+    });
+    const input = request({ attachmentUploadIds: [upload.uploadId] });
+    assert.equal(service.preview("dashboard", input).outcome, "preview");
+    const result = await service.submit("dashboard", input);
+    assert.equal(result.outcome, "configuration");
+    assert.match(result.outcome === "configuration" ? result.message : "", /2\.99\.0 or newer/);
+    assert.equal(issueCreates, 0);
+  });
+
+  await t.test("a partial upload is created once and returns a warning", async () => {
+    const upload = saveImageUpload(pngHead, "partial.png");
+    let issueCreates = 0;
+    const service = new ProductIssueService({
+      consent: CONSENTS,
+      target,
+      attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
+      runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          return stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 });
+        }
+        issueCreates++;
+        return stubRun({
+          stdout: "https://github.com/acme/public-issues/issues/56\n",
+          stderr: "failed to upload partial.png",
+          code: 1,
+        });
+      },
+    });
+    const input = request({ attachmentUploadIds: [upload.uploadId] });
+    assert.equal(service.preview("dashboard", input).outcome, "preview");
+    const result = await service.submit("dashboard", input);
+    assert.deepEqual(result, {
+      outcome: "created",
+      issueUrl: "https://github.com/acme/public-issues/issues/56",
+      target: "acme/public-issues",
+      warning:
+        "The issue was created, but GitHub CLI reported that one or more screenshots were " +
+        "not attached: failed to upload partial.png",
+    });
+    assert.equal(issueCreates, 1);
+    assert.equal((await service.submit("dashboard", input)).outcome, "unknown");
+    assert.equal(issueCreates, 1);
+  });
+
+  await t.test("an attachment failure without the target URL blocks retry", async () => {
+    const upload = saveImageUpload(pngHead, "partial-no-url.png");
+    let issueCreates = 0;
+    const service = new ProductIssueService({
+      consent: CONSENTS,
+      target,
+      attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
+      runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          return stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 });
+        }
+        issueCreates++;
+        return stubRun({
+          stdout: "https://cli.github.com/manual/gh_issue_create\n",
+          stderr: "attachment publication failed",
+          code: 1,
+        });
+      },
+    });
+    const input = request({ attachmentUploadIds: [upload.uploadId] });
+    assert.equal(service.preview("dashboard", input).outcome, "preview");
+    const result = await service.submit("dashboard", input);
+    assert.equal(result.outcome, "unknown");
+    assert.match(result.outcome === "unknown" ? result.message : "", /issue may exist/);
+    assert.equal(issueCreates, 1);
+    assert.equal((await service.submit("dashboard", input)).outcome, "unknown");
+    assert.equal(issueCreates, 1);
+  });
+
   async function attachmentRefusal(
     ids: string[],
     resolveUpload: (id: string, now: number) => SavedUpload | null,
   ): Promise<string> {
-    let runs = 0;
+    let issueCreates = 0;
     const service = new ProductIssueService({
       consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload },
-      runner: async () => {
-        runs++;
+      runner: async (_bin, args) => {
+        if (args[0] === "--version") {
+          return stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 });
+        }
+        issueCreates++;
         return stubRun({ stdout: "", stderr: "", code: 0 });
       },
     });
@@ -502,7 +639,7 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     const preview = service.preview("dashboard", input);
     if (preview.outcome !== "preview") return preview.message;
     const result = await service.submit("dashboard", input);
-    assert.equal(runs, 0, "attachment validation must finish before gh starts");
+    assert.equal(issueCreates, 0, "attachment validation must finish before issue creation");
     assert.equal(result.outcome, "refused");
     return result.outcome === "refused" ? result.message : "";
   }

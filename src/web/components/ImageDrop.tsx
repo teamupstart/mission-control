@@ -86,11 +86,14 @@ export function useImageDrop({
   attachments,
   onChange,
   disabled = false,
+  maxAttachments = Number.POSITIVE_INFINITY,
   windowTarget = false,
 }: {
   attachments: PendingAttachment[];
   onChange: (next: PendingAttachment[]) => void;
   disabled?: boolean;
+  /** Optional surface-specific cap. Extra files are not uploaded. */
+  maxAttachments?: number;
   /** Let a transient mode accept the same drop anywhere in the browser window. */
   windowTarget?: boolean;
 }): ImageDrop {
@@ -116,7 +119,8 @@ export function useImageDrop({
       // Anything that isn't an image is someone dragging a stray file across the
       // window, not an attachment they meant - the daemon sniffs the bytes too, but
       // there's no reason to make the round-trip to learn that.
-      const images = files.filter((f) => f.type.startsWith("image/"));
+      const room = Math.max(0, maxAttachments - listRef.current.length);
+      const images = files.filter((f) => f.type.startsWith("image/")).slice(0, room);
       if (disabled || images.length === 0) return;
       const added = images.map<PendingAttachment>((file) => ({
         id: `att-${++seq}`,
@@ -142,7 +146,7 @@ export function useImageDrop({
         });
       });
     },
-    [disabled, onChange, patch],
+    [disabled, maxAttachments, onChange, patch],
   );
 
   const remove = useCallback(

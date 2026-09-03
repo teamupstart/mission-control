@@ -82,8 +82,11 @@ repository, which no request can name, and by `gh auth`, which the operator owns
 The agent path is separate and stricter - it is token-guarded, neither preview mints a grant, there
 is no MCP confirming route at all, and its authorization is the human-submitted `input` review.
 
-Screenshots stay unavailable in the browser, and the disabled markup is not the boundary - the
-server's attachment gate is.
+Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
+resolves every locator again immediately before publication, refuses symlinks and paths outside
+its upload store, re-sniffs the bytes, and enforces five-image, 10 MB per-image, and 25 MB aggregate
+limits before constructing one repeated `--attach <absolute path>` pair per image. The shipped
+adapter accepts PNG, JPEG, GIF, and WebP only, even though GitHub CLI also supports video and SVG.
 
 The daemon owns the destination, the fixed type and triage labels, and the dashboard or agent
 source label. Requests cannot supply routing metadata. The destination defaults to
@@ -95,23 +98,18 @@ tokens, account data, or other process environment for a report.
 
 Issue creation uses the installed `gh` binary and its existing authentication. Mission Control
 stores no GitHub token and sends the body on standard input instead of the process argument list.
-The production attachment capability has no operator override and rejects every non-empty upload
-list before starting `gh`. The anticipated image adapter exists only behind an injected test
-capability until stable first-party CLI attachment support is released and verified. A CLI refusal
-is safe to retry after correction; a timeout, signal, or success response without an issue URL is
-reported as unknown and blocks another submission for that report opening.
+Screenshot publication requires stable GitHub CLI 2.99.0 or newer. Older versions keep text-only
+reports available and cannot receive attachment arguments. A non-zero CLI result without an issue
+URL is safe to retry after correction for a text-only report. Released GitHub CLI 2.99 was verified
+to return non-zero after a partial upload while printing the created issue URL on stdout and the
+upload error on stderr. Mission Control accepts that URL only when its issue path matches the fixed
+target repository, reports the issue as created with a warning, and never invites a duplicate
+retry. A timeout, signal, attachment failure without a matching target issue URL, or success
+response without that URL is reported as unknown and blocks another submission for that opening.
 
-Enabling screenshots is a separate, evidence-gated piece of work and is **not** something a
-report submission can bring about. A recurring Mission Control mission checks weekly, at 09:00
-Monday `America/New_York`, whether the GitHub CLI has actually shipped attachment support: it
-requires a **stable** release plus the official manual documenting the final argument, not merely
-a closed upstream issue, and it records its evidence and mutates nothing when any of that fails.
-When the checks do pass it files one deterministically-titled follow-up task, treating an already
-active task or an open pull request for that title as a no-op so a weekly cadence cannot produce a
-weekly duplicate, and it archives itself only after that task completes and its pull request
-merges. Reporting a product issue creates none of this - not the public repository, not its eight
-labels, not the [task source](dispatch-and-backlog.md#sweeping-the-public-product-feedback-tracker)
-that sweeps it, and not this monitor. Each is an operator setup step.
+Reporting a product issue creates no repository, labels, schedule, or task source. Those remain
+operator setup steps. The upstream attachment monitor remains enabled until this implementation's
+pull request has merged; only a later checker may then archive its history.
 
 [Archives](archives.md) are local files under `~/.mission-control/archives`, and
 Mission Control never sends one anywhere. Three properties keep them from becoming a way in.

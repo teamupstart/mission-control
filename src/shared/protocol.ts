@@ -705,6 +705,7 @@ export const ProductIssueSubmitResultSchema = z.discriminatedUnion("outcome", [
     outcome: z.literal("created"),
     issueUrl: z.string().url(),
     target: z.string().min(1),
+    warning: z.string().min(1).max(2_000).optional(),
   }),
   ProductIssueRefusedResultSchema,
   ProductIssueConfigurationResultSchema,

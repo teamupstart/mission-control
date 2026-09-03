@@ -92,8 +92,8 @@ export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
  * a spec should be able to set one without disturbing the other.
  */
 export interface FakeGhProductScript {
-  preflight: "ok" | "gh-unavailable" | "gh-auth" | "repository" | "labels";
-  issueCreate: "created" | "refused" | "unknown";
+  preflight: "ok" | "gh-unavailable" | "gh-version" | "gh-auth" | "repository" | "labels";
+  issueCreate: "created" | "partial" | "partial-no-url" | "refused" | "unknown";
   /** The labels `repos/<target>/labels` reports. Defaults to the full required set. */
   labels?: readonly string[];
 }
@@ -283,7 +283,11 @@ function preflightRefusal(stage) {
 }
 if (argv[0] === "--version") {
   preflightRefusal("gh-unavailable");
-  process.stdout.write("gh version 0.0.0-fake\\n");
+  process.stdout.write(
+    product.preflight === "gh-version"
+      ? "gh version 2.98.0 (fake)\\n"
+      : "gh version 2.99.0 (fake)\\n",
+  );
 } else if (command.startsWith("auth status")) {
   preflightRefusal("gh-auth");
   process.stdout.write("Logged in to github.com as fake\\n");
@@ -307,6 +311,13 @@ if (argv[0] === "--version") {
   } else if (product.issueCreate === "unknown") {
     // The shape the daemon must treat as "may have happened": exit 0, no URL.
     process.stdout.write("\\n");
+  } else if (product.issueCreate === "partial") {
+    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stderr.write("failed to upload second.png: request failed\\n");
+    process.exit(1);
+  } else if (product.issueCreate === "partial-no-url") {
+    process.stderr.write("attachment publication failed before gh returned the issue URL\\n");
+    process.exit(1);
   } else {
     process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
   }

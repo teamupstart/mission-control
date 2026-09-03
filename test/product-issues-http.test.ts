@@ -849,7 +849,7 @@ test("production attachment and demo-mode gates run before the subprocess", asyn
 test("read-only preflight is exposed without creating or editing GitHub state", async () => {
   const args: string[][] = [];
   const responses = [
-    stubRun({ stdout: "gh version 2\n", stderr: "", code: 0 }),
+    stubRun({ stdout: "gh version 2.99.0 (test)\n", stderr: "", code: 0 }),
     stubRun({ stdout: "authenticated\n", stderr: "", code: 0 }),
     stubRun({ stdout: "acme/public-issues\n", stderr: "", code: 0 }),
     stubRun({

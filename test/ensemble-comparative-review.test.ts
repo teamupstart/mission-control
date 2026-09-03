@@ -316,6 +316,26 @@ test("the comparison prompt carries no harness, model, ordinal, ref, or worktree
   for (const artifact of store.listArtifacts(run.id)) {
     assert.equal(prompt.includes(artifact.id), false, "the artifact id (and thus the ref) never leaks");
   }
+  assert.match(prompt, /Judge only the quality of the submitted artifact/);
+  assert.match(prompt, /Author-reported claims are context only, never a scoring criterion/);
+  assert.doesNotMatch(prompt, /quality of any relevant checks the author reports/);
+});
+
+test("a run compiled with the historical v1 rubric is reviewed with v1 rather than substituted", async () => {
+  const plan = bestOfNPlan(2);
+  const review = plan.stages.find((stage) => stage.driverKind === "review");
+  assert.ok(review && review.driverKind === "review");
+  assert.equal(review.evaluator.kind, "comparative_llm");
+  if (review.evaluator.kind !== "comparative_llm") throw new Error("unreachable");
+  review.evaluator.guidance = { kind: "builtin", rubricId: "best_of_n_v1" };
+
+  const { store, gateway, engine, prompts } = harness();
+  const run = makeRun(store, plan);
+  await runToReview(engine, gateway, store, run.id);
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /quality of any relevant checks the author reports having run/);
+  assert.doesNotMatch(prompts[0]!, /Judge only the quality of the submitted artifact/);
 });
 
 test("prompt-injection in a summary, a file path, a diff, and Persona guidance stays fenced data", async () => {
@@ -918,7 +938,7 @@ test("with no Persona chosen, the built-in rubric id is snapshotted into the run
   const manager = managerWith(null);
   const result = manager.create({ ...personaCreate("sk-builtin", {}), strategyConfig: { members: [{}, {}] } });
   assert.ok(result.ok);
-  if (result.ok) assert.deepEqual(reviewGuidance(result.run), { kind: "builtin", rubricId: "best_of_n_v1" });
+  if (result.ok) assert.deepEqual(reviewGuidance(result.run), { kind: "builtin", rubricId: "best_of_n_v2" });
 });
 
 test("a chosen Persona is snapshotted whole - name, guidance and overrides - into the run", () => {

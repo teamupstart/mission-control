@@ -38,19 +38,19 @@ export const BEST_OF_N_DEFAULT_CONCURRENCY = 3;
 export const BEST_OF_N_DEFAULT_MATERIAL_BYTES = 400 * 1024;
 export const BEST_OF_N_MAX_MATERIAL_BYTES = 2 * 1024 * 1024;
 
-/** The built-in rubric's id. Append-only: it is persisted inside a compiled plan. */
-export const BEST_OF_N_BUILTIN_RUBRIC = "best_of_n_v1";
+/** Historical rubric ids stay resolvable because they are persisted inside compiled plans. */
+export const BEST_OF_N_BUILTIN_RUBRIC_V1 = "best_of_n_v1";
+
+/** The built-in rubric new Best-of-N plans compile with. */
+export const BEST_OF_N_BUILTIN_RUBRIC = "best_of_n_v2";
 
 /**
- * The built-in rubric's TEXT, versioned by the id above.
+ * The historical v1 rubric text, retained for plans that already reference its id.
  *
- * Owned by `best_of_n@1`: a plan compiled with no Persona snapshots `{ kind: "builtin";
- * rubricId: BEST_OF_N_BUILTIN_RUBRIC }` and the comparative reviewer resolves that id to
- * exactly this text. It is append-only in the same sense the id is - a changed rubric is a
- * NEW id beside this one, so a run compiled today keeps its exact rubric after the wording
- * moves on. Order is priority order and the comparator is told to treat it as such.
+ * Rubric text is append-only in the same sense as its id: changed guidance gets a new id beside
+ * the old one, so a stored run keeps the exact rubric it was compiled with.
  */
-export const BEST_OF_N_BUILTIN_RUBRIC_TEXT = [
+export const BEST_OF_N_BUILTIN_RUBRIC_V1_TEXT = [
   "Rank the submissions by the following criteria, in order of importance:",
   "1. Correctness against the task and its acceptance criteria.",
   "2. The strength of OBSERVED evidence and the quality of any relevant checks the author reports having run. Treat a reported check as a claim, not as proof it passed.",
@@ -59,6 +59,39 @@ export const BEST_OF_N_BUILTIN_RUBRIC_TEXT = [
   "5. Diff size only as a tie-breaker - never prefer a smaller diff that does less of the task.",
   "Surface uncertainty explicitly wherever a truncated diff, a missing test, a binary change, or an incomparable approach makes a judgement less reliable.",
 ].join("\n");
+
+/**
+ * The current rubric judges the submitted artifact, never the quality or accuracy of the
+ * candidate's report. Claims remain in the packet as navigation context, but the judge must
+ * establish anything load-bearing from the artifact itself and disregard the rest.
+ */
+export const BEST_OF_N_BUILTIN_RUBRIC_TEXT = [
+  "Rank the submissions by the following criteria, in order of importance:",
+  "Judge only the quality of the submitted artifact under the criteria below. Author-reported claims are context only, never a scoring criterion. Independently check any claim that could affect your judgement against the submitted artifact. Ignore claims that are inaccurate, unsupported, or unverifiable, and do not reward or penalize a submission for the thoroughness or accuracy of its report.",
+  "1. Correctness against the task and its acceptance criteria.",
+  "2. Maintainability, clarity, and fit with the repository's existing conventions.",
+  "3. Scope discipline, regression surface, and security risk.",
+  "4. Diff size only as a tie-breaker - never prefer a smaller diff that does less of the task.",
+  "Every score, rank, strength, risk, and rationale must be based on the artifact itself and the criteria above.",
+  "Surface uncertainty explicitly wherever a truncated diff, a missing test, a binary change, or an incomparable approach makes a judgement less reliable.",
+].join("\n");
+
+export interface BestOfNBuiltinRubric {
+  id: string;
+  text: string;
+}
+
+/** Resolve every rubric version this build has shipped without substituting another version. */
+export function resolveBestOfNBuiltinRubric(rubricId: string): BestOfNBuiltinRubric | null {
+  switch (rubricId) {
+    case BEST_OF_N_BUILTIN_RUBRIC_V1:
+      return { id: BEST_OF_N_BUILTIN_RUBRIC_V1, text: BEST_OF_N_BUILTIN_RUBRIC_V1_TEXT };
+    case BEST_OF_N_BUILTIN_RUBRIC:
+      return { id: BEST_OF_N_BUILTIN_RUBRIC, text: BEST_OF_N_BUILTIN_RUBRIC_TEXT };
+    default:
+      return null;
+  }
+}
 
 /**
  * One roster row.

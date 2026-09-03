@@ -79,7 +79,7 @@ Create a DB operation under `BEGIN IMMEDIATE` that:
 
 Two concurrent requests must contend on this transaction and produce at most one inserted attempt. Do not use only in-memory locks or browser button disablement as the fence.
 
-Run provider readiness before reservation when it can be tied safely to the failed run and environment. Repeat or revalidate it for the new run before host launch. A blocked check creates no attempt.
+Run the Phase 2 non-mutating environment probe before reservation. It accepts no predecessor run ID and appends no event, so a blocked result creates no attempt and terminal-run immutability is preserved. After the new provider run is created, record run-scoped readiness on that new run and revalidate it before host launch.
 
 ### 3. Extract a restart-safe recovery service
 
@@ -128,11 +128,12 @@ Before adoption, repeat every check server-side:
 2. provider capability and correlation inspection succeed;
 3. exactly one next run exists and it is the direct child at `activeAttempt + 1`;
 4. repository, correlation, idea, predecessor, and attempt sequence match;
-5. replay from revision 0 is contiguous, bounded, internally consistent, and reaches the inspected revision;
-6. the candidate is terminal or awaiting handoff in a state the commission reducer supports;
-7. worktree, branch, plan slug, and handoff identities do not conflict;
-8. a PR URL, when present, belongs to the task repository and its head branch matches the handoff;
-9. no Mission Control retry, different adopted attempt, or live recovery host now competes.
+5. candidate integration owner equals the predecessor owner; an absent candidate owner is allowed only when the predecessor correlation is explicitly unowned, and a valid recorded ownership transfer is required for any owner change;
+6. replay from revision 0 is contiguous, bounded, internally consistent, and reaches the inspected revision;
+7. the candidate is terminal or awaiting handoff in a state the commission reducer supports;
+8. worktree, branch, plan slug, and handoff identities do not conflict;
+9. a PR URL, when present, belongs to the task repository and its head branch matches the handoff;
+10. no Mission Control retry, different adopted attempt, or live recovery host now competes.
 
 Repository branch and PR checks are validation evidence only. A missing branch or unavailable repository host may block adoption; it never causes provider state to be rewritten.
 
@@ -200,7 +201,7 @@ Add focused tests for the state machine and fault boundaries:
 - DB CAS: two concurrent retries, stale active attempt, stale provider revision, existing successor, wrong task, wrong run, and restart load.
 - recovery service: provider create success, response loss with exact recovery, collision, malformed correlation, bind failure, readiness block, eviction failure, host launch failure, daemon restart at every durable boundary, and idempotent resume.
 - Registry: predecessor host uses the existing eviction sequence and emits one `session_remove`; no second teardown path.
-- adoption: exact direct successor, grandchild, fork, skipped attempt, wrong predecessor, wrong repository, wrong idea, discontinuous replay, oversized event, terminal mismatch, branch mismatch, PR repository mismatch, PR head mismatch, competing retry, partial replay resume, and repeated adoption request.
+- adoption: exact direct successor, grandchild, fork, skipped attempt, wrong predecessor, wrong repository, wrong idea, missing or mismatched owner, valid owner transfer, explicitly unowned lineage, discontinuous replay, oversized event, terminal mismatch, branch mismatch, PR repository mismatch, PR head mismatch, competing retry, partial replay resume, and repeated adoption request.
 - settlement: abandon, cancel, adopted handoff, done-write refusal, running drift, and implementation-complete success.
 - routes: authentication, Zod failures, 409 conflicts, 422 validation, outcome unknown, and bounded responses.
 - shared/UI models: primary next move, action enablement, separate attempt labels, and reconciled origin.
@@ -266,3 +267,4 @@ Any future support for deeper lineage requires a new explicit operator decision 
 - Adoption refinement: the attempt row is inserted before replay so existing ingest identity checks remain authoritative, and partial replay can resume by provider revision.
 - Settlement audit: adopted spec handoff clears divergence but does not mark implementation complete.
 - Final audit: every approved source requirement is owned by one phase; retry and adoption consume earlier contracts without weakening workspace authorization, provider ownership, or task-completion semantics.
+- CodeRabbit audit: retry preflight is non-mutating and adoption requires exact owner continuity or explicit transfer evidence.

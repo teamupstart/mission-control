@@ -95,18 +95,18 @@ Add an attempt origin to the durable attempt projection:
 type PipelineAttemptOrigin = "mission_control" | "provider_reconciled";
 ```
 
-Legacy rows decode with `origin: "mission_control"`, nullable new identity fields, and an explicit legacy workspace state. Do not rename or reorder append-only event IDs.
+Legacy rows with absent or null origin decode as `origin: "mission_control"`, with nullable new identity fields and an explicit legacy workspace state. Unknown non-null origin values degrade the commission to a named unsupported state and are never coerced. Do not rename or reorder append-only event IDs.
 
 ### 2. Make ai-conductor lifecycle evidence complete
 
 Extend the existing Engineer event spine with additive evidence:
 
 - `engineer_readiness_checked`: tool availability, remote reachability, credential posture, status, stable reason code, and whether write authorization remains unproven.
-- `engineer_worktree_retired`: exact path, branch, plan slug, reason, and whether the branch commit remains reachable.
+- `engineer_worktree_retired`: exact path, branch, plan slug, reason, and the immutable attempt-specific commit SHA captured before cleanup.
 - `engineer_run_failed`: retain raw `error`, with optional structured `class`, `code`, `summary`, `retryable`, `remedy`, and bounded diagnostic.
 - An integration-owner field on run creation, with the Mission Control commission and reserved attempt identity represented as opaque values.
 
-Recommended retention policy: keep the authoring worktree through specification review and retire it on PR merge, PR close, task cancellation, or a bounded retention timeout. ai-conductor remains cleanup owner and emits retirement evidence before removal. Branch-ref fallback is still required because retention is finite and worktrees can disappear unexpectedly.
+Recommended retention policy: keep the authoring worktree through specification review and retire it on PR merge, PR close, task cancellation, or a bounded retention timeout. ai-conductor remains cleanup owner and emits the immutable attempt commit before removal. Commit-backed fallback is still required because retention is finite and worktrees can disappear unexpectedly.
 
 For Mission Control-owned correlations, ai-conductor rejects an unreserved successor unless an explicit ownership-transfer token is supplied. This prevents recurrence while preserving a reviewed adoption path for existing divergence.
 
@@ -138,8 +138,8 @@ Engineer marker discovery is added to the existing provider state read, but disc
 
 The two source plans each cover only part of readiness. Use both boundaries:
 
-1. Before host launch, Mission Control asks the provider for a non-mutating environment probe. This catches provider version, missing tools, remote resolution, and plainly unavailable authentication without spending model tokens.
-2. Before authoring transitions begin, the canonical Engineer launcher records a provider readiness event from the actual host posture. No authoring step is accepted until that event says ready. The exact push-level check repeats before handoff because branch write authorization cannot be proven safely by a read probe.
+1. Before provider-run reservation or host launch, Mission Control asks the provider for a non-mutating environment probe. This catches provider version, missing tools, remote resolution, and plainly unavailable authentication without spending model tokens or appending to a terminal run.
+2. After an exact run exists and before authoring transitions begin, the canonical Engineer launcher records a provider readiness event on that new run from the actual host posture. No authoring step is accepted until that event says ready. The exact push-level check repeats before handoff because branch write authorization cannot be proven safely by a read probe.
 
 The provider owns classification because it owns the command and environment. Mission Control maps stable reason and remedy codes to copy and actions. Inconclusive authorization is shown as inconclusive, never as success.
 

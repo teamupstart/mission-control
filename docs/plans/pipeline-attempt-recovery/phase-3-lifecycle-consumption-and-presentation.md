@@ -104,7 +104,7 @@ In the Pipeline dispatch path in `src/server/dispatcher.ts`:
 
 Add a recheck route/action that repeats readiness for the same created attempt. It must not append an attempt, mutate predecessor identity, or launch a host. A successful recheck may enable a separate initial-start action if no host ever launched; keep that path distinct from Phase 4 retry of a terminal failed attempt.
 
-When the provider lacks readiness or ownership capabilities, retain current initial dispatch behavior but mark the guarantee as legacy. Do not expose automatic retry later for such a commission.
+Apply each capability independently. When readiness is present, enforce it even if ownership is absent. When readiness is absent, retain current initial dispatch behavior and mark only readiness as legacy. When ownership is absent, do not attach an owner and disable automatic retry later, but never bypass a readiness gate the provider does support.
 
 ### 4. Derive one Pipeline attention and task-drift model
 
@@ -241,6 +241,7 @@ Phase 4 must not change provider lifecycle semantics, bypass capability checks, 
 
 - Initial audit: Phase 3 depends directly on both Phase 1 and Phase 2 and is not safe to start with either missing.
 - Compatibility refinement: Phase 3 activates provider integration ownership on new initial creates; Phase 2 only supplies and enforces the provider side.
+- Compatibility refinement: readiness and ownership are independent feature gates. Available readiness is always enforced; absent ownership disables automatic recovery without weakening readiness.
 - Compatibility refinement: pre-launch readiness occurs after exact provider run creation so its evidence has immutable run identity, but before managed host launch or model spend.
 - Scope boundary: Phase 3 may inspect exact correlation for a review-only candidate, but only Phase 4 can persist or adopt a new attempt.
 - Authorization audit: explicit `retired` and inferred `missing` both consume Phase 1 commit adapters and cannot enable writes or follow a branch after the attempt commit is frozen.

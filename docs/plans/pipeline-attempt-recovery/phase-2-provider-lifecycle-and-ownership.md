@@ -102,7 +102,12 @@ Add an Engineer CLI command and reusable service that checks, with injected proc
 - `gh` authentication when a GitHub handoff is expected;
 - whether push authorization remains unproven until handoff.
 
-The command accepts the exact run ID and repository identity, writes one readiness event through the run store, and returns bounded JSON. It must be safe for Mission Control to call before host launch and safe for the host launcher to call again inside its actual sandbox and environment.
+Expose two explicit uses of the same injected checker:
+
+- a non-mutating repository/environment probe that accepts no run ID, writes no journal event, and can block retry before an attempt is reserved;
+- a run-scoped readiness command that accepts the exact new run ID, writes one readiness event through the run store, and returns bounded JSON.
+
+Both return the same bounded classification. The run-scoped command is safe for Mission Control to call after initial run creation and for the host launcher to call again inside its actual sandbox and environment. It never appends readiness to a terminal predecessor.
 
 Mechanically gate authoring:
 
@@ -213,6 +218,7 @@ Also run any build, typecheck, packaging, or generated-output verification requi
 - Mandatory provider validation passes.
 - Current journals replay byte-for-byte into compatible legacy snapshots.
 - New event kinds and fields are bounded, persisted through the existing event spine, and replay identically to live reduction.
+- The non-mutating readiness probe creates no run, attempt, event, or provider index; the run-scoped command records evidence only on a non-terminal exact run.
 - No authoring transition can occur after a blocked readiness result or without required readiness evidence.
 - Successful handoff retains the exact worktree and records its deadline.
 - Merge, close, cancel, timeout, and explicit cleanup each retire only the exact validated worktree and emit retirement evidence before removal.
@@ -235,3 +241,4 @@ Phase 4 may rely on owned correlations refusing accidental unreserved successors
 - Contract refinement: retirement evidence is written before cleanup; `missing` remains a consumer-observed state and is not emitted by the provider.
 - Retention decision is settled: immediate successful-handoff cleanup must be removed, not preserved as an optional default.
 - Final audit: Phase 3 activates owner identity on new Mission Control creates, while Phase 4 reuses the same owner on retries. Historical adoption does not fabricate provider ownership.
+- CodeRabbit audit: pre-reservation readiness and run-scoped readiness are separate commands over one checker, preserving terminal-run immutability.

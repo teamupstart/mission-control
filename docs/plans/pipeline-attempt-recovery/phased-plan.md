@@ -98,12 +98,13 @@ Phases 3 and 4 may extend reasons and actions but must not change these authoriz
 ### Provider lifecycle contract owned by Phase 2
 
 - New events extend the existing Engineer v1 event spine and carry the existing base identity and monotonic revision.
-- `engineer_readiness_checked` records bounded machine evidence before authoring.
-- `engineer_worktree_retired` records exact worktree identity and cleanup reason.
+- A non-mutating readiness probe can block before reservation; `engineer_readiness_checked` records bounded machine evidence only on the exact new run before authoring.
+- `engineer_worktree_retired` records exact worktree identity, cleanup reason, and the immutable attempt-specific commit SHA captured before cleanup.
 - `engineer_run_failed` keeps raw `error` and adds bounded optional typed recovery fields.
 - Mission Control integration ownership is opaque to ai-conductor except for equality and transfer validation.
+- Readiness and ownership are independent capabilities: available readiness is always enforced, while absent ownership disables automatic recovery.
 - Current attempt-key idempotency, direct predecessor ordering, replay integrity, and keep-on-failure remain intact.
-- Worktree retention ends only on merge, close, cancel, or timeout, with retirement recorded before removal.
+- Worktree retention ends only on merge, close, cancel, or timeout, with the immutable attempt commit and retirement recorded before removal.
 
 Phase 3 consumes this contract. Phase 4 relies on its readiness and ownership capabilities.
 
@@ -114,6 +115,7 @@ Phase 3 consumes this contract. Phase 4 relies on its readiness and ownership ca
 - Retry uses compare-and-swap over commission, active attempt, provider run, and provider revision.
 - Creation response loss uses existing attempt-key inspection before any new call.
 - Only one exact direct successor is eligible for adoption.
+- Candidate owner must equal predecessor owner unless the correlation is explicitly unowned or carries valid ownership-transfer evidence.
 - Branch and PR facts validate a candidate but never settle provider lifecycle alone.
 - Old managed hosts leave through `Registry.beginEviction`.
 

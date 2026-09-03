@@ -72,7 +72,8 @@ In `src/server/pipelines/commissions.ts`:
 In `src/server/db.ts`:
 
 - Add `origin`, `evidence_commit`, and `evidence_commit_provenance` columns to `pipeline_commission_attempts` beside the existing migration using `addColumn`.
-- Backfill or decode missing origin as `mission_control`; missing evidence commit and provenance remain null.
+- Backfill or decode missing or null origin as `mission_control`; missing evidence commit and provenance remain null.
+- Treat an unknown non-null origin or provenance as an unsupported attempt projection with a bounded named reason. Degrade the owning commission to its existing `unsupported` lifecycle rather than coercing the value to `mission_control` or dropping the attempt.
 - Update attempt inserts, selects, upserts, validation, and degraded-row reconstruction.
 - Allow absent nullable commission fields in old `state_json`, then normalize them in memory. Do not let an old row degrade to unsupported solely because it lacks the new fields.
 - Add an index only if a measured query requires one. Origin and evidence commit are not lookup keys in this phase.
@@ -92,8 +93,9 @@ Resolution order:
 Rules:
 
 - Use provider attempt and revision from the commission, never SDK host branch state.
-- Treat a reported path as `available` only after resolving symlinks and proving it is the expected Git worktree for the task repository and branch.
-- Validate `.pipeline/engineer-run.json` when present as corroborating identity. Add its marker shape to the existing provider state reader without making discovery authoritative over the commission.
+- Treat a reported path as `available` only after resolving symlinks and proving it is the expected registered Git worktree for the task repository and branch.
+- Require `.pipeline/engineer-run.json`, when the provider contract says it should exist, to match the active engineer run ID, repository, plan slug, and branch. A reused path, stale marker, mismatched registration, regressed provider revision, or HEAD outside the recorded attempt lineage cannot authorize writes, shell, or external open.
+- Add the marker shape to the existing provider state reader as corroborating identity without making discovery authoritative over the commission.
 - While the authoring worktree is live, validate its branch and HEAD and durably advance the attempt's last validated evidence commit only when the new commit belongs to the same attempt and is a descendant of the prior validated commit.
 - Freeze the evidence commit at handoff. If a legacy attempt disappeared before any commit was captured, resolve its known branch once within the task repository, persist the resulting SHA with `legacy_branch_resolution` provenance, and never re-resolve it for later requests.
 - Reject ambiguous revision syntax, non-commit objects, history rewrites, or identity conflicts. Those create explicit drift or unavailable-evidence state.
@@ -107,8 +109,8 @@ Update `Registry.workspaceRootFor` and session projection to delegate managed Pi
 In `src/server/diff.ts`:
 
 - Add a ref-scoped diff sibling to `computeSessionDiff` and `computeCommitDiff`.
-- Load the stored attempt evidence commit, resolve the source, compute their merge base, and diff only those pinned commits.
-- Return the resolved head commit and an exact label such as `spec/name vs main`.
+- Load the stored attempt evidence commit, resolve the source to its own SHA, compute their merge base, and diff only those pinned endpoints.
+- Return both resolved endpoint identities through the existing `baseSha` and `headSha` response contract, plus an exact human label such as `spec/name vs main`.
 - Fail closed for missing, ambiguous, unrelated, unborn, or garbage-collected objects. Never re-resolve the branch or substitute uncommitted changes.
 
 In a focused Git tree module used by `src/server/session-files.ts` or beside it:
@@ -145,6 +147,7 @@ Replace Codex inline environment serialization for `MISSION_PIPELINE_CALLER_CRED
 - unpredictable launch-specific name;
 - passed as a path, not a secret value, in arguments;
 - removed on failed launch and normal session eviction;
+- bounded expiry independent of file mode, plus daemon-start reconciliation that removes expired or unowned launch files left by `SIGKILL`, host restart, or a crashed prior daemon;
 - no secret in logs, errors, snapshots, or test output.
 
 Reuse existing secure descriptor and cleanup patterns where possible. Keep the loopback bearer and caller validation semantics unchanged.
@@ -165,12 +168,12 @@ Add or extend focused tests:
 - `test/pipeline-commission.test.ts`: retain branch and plan slug, reject conflict, default and persist attempt origin, advance a live descendant commit, freeze at handoff, and reject a rewrite.
 - `test/pipeline-migration.test.ts` and DB tests: old rows, new attempt columns, malformed origin or provenance, null legacy evidence, and degraded projection safety.
 - registry and projection tests: Pipeline sessions never fall back to host `cwd`; ordinary sessions still do.
-- `test/diff.test.ts`: merge-base commit diff, persisted head despite a moved branch, missing and ambiguous source, unrelated history, unborn branch, garbage-collected commit, and no working-tree fallback.
+- `test/diff.test.ts`: merge-base commit diff, returned `baseSha` and `headSha`, persisted head despite a moved branch, source ref movement between requests, missing and ambiguous source, unrelated history, unborn branch, garbage-collected commit, and no working-tree fallback.
 - `test/session-files.test.ts`: Git tree list/read, binary and size handling, traversal rejection, and strict read-only behavior.
-- route tests: live, missing with ref, missing without ref, stale path, symlink escape, and every disabled mutation.
+- route tests: live, missing with commit, missing without commit, stale HEAD, reused path, mismatched marker or registration, symlink escape, and every disabled mutation.
 - `test/workflow-per-repo-runs.test.ts`: Pipeline evidence uses the commissioned workspace or is withheld.
 - `test/conductor-engineer-provider.test.ts` or provider-state tests: Engineer marker discovery is corroboration only.
-- `test/conductor-plugin.test.ts` and MCP launch tests: caller credential absent from argv, file permissions, cleanup, and no secret in failure output.
+- `test/conductor-plugin.test.ts` and MCP launch tests: caller credential absent from argv, file permissions, normal cleanup, expired and unowned startup cleanup after abnormal termination, bounded expiry, and no secret in failure output.
 
 Add Playwright coverage in `e2e/` against built assets and fake agents:
 
@@ -219,3 +222,4 @@ Phase 4 may write `provider_reconciled` origin and use the resolver during recov
 - Later phases must preserve `missing` as filesystem-observed and reserve `retired` for explicit provider evidence.
 - Final audit: Phase 4 writes `provider_reconciled` only through the origin column and decoder established here; no later phase introduces a competing attempt identity store.
 - Inspector correction: commit identity is durable on the attempt and frozen at handoff or retirement; later ref-backed requests never follow a moved branch.
+- CodeRabbit audit: unknown non-null attempt origins degrade explicitly; available-path authorization rejects stale or reused identities; ref diffs return both endpoint SHAs; credential files have startup reconciliation and bounded expiry.

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Criterion-mapped evidence preflight: phased implementation</title>
+  <style>
+    :root { color-scheme:dark; --bg:#07111d; --panel:#0d1b2a; --card:#0a1928; --ink:#edf5ff; --muted:#9fb3c8; --line:#28465f; --cyan:#4ed8d0; --blue:#7caaff; --green:#79e5a2; --amber:#ffca70; --purple:#c49aff; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; max-width:100%; overflow-x:hidden; }
+    body { background:radial-gradient(circle at 18% 0,#153557 0,transparent 34rem),var(--bg); color:var(--ink); font:16px/1.58 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1180px,calc(100% - 40px)); margin:auto; padding:64px 0 90px; }
+    h1,h2,h3 { line-height:1.13; letter-spacing:-.025em; }
+    h1 { font-size:clamp(2.5rem,6vw,5rem); max-width:1000px; margin:12px 0 18px; }
+    h2 { font-size:2rem; margin:0 0 18px; }
+    h3 { color:var(--cyan); margin:0 0 8px; font-size:1.15rem; }
+    p { margin:0 0 14px; }
+    a { color:var(--cyan); }
+    code { color:#bcd8ff; background:#071421; padding:.12rem .35rem; border-radius:5px; }
+    .eyebrow { color:var(--cyan); font-size:.76rem; font-weight:850; letter-spacing:.14em; text-transform:uppercase; }
+    .lede { max-width:900px; color:#c9d9e9; font-size:1.22rem; }
+    .pillrow { display:flex; flex-wrap:wrap; gap:9px; margin:28px 0 52px; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:7px 12px; color:var(--muted); background:#0a1725cc; font-size:.88rem; }
+    section { margin-top:62px; }
+    .panel { background:linear-gradient(145deg,#10253add,#0b1827ed); border:1px solid var(--line); border-radius:18px; padding:28px; box-shadow:0 24px 70px #0005; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
+    .card p,.muted { color:var(--muted); }
+    .num { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; background:var(--cyan); color:#06131d; font-weight:900; margin-bottom:13px; }
+    .phase1 { border-top:4px solid var(--cyan); }.phase2 { border-top:4px solid var(--amber); }.phase3 { border-top:4px solid var(--purple); }
+    .estimate { font-size:3.25rem; font-weight:900; color:var(--amber); line-height:1; margin:7px 0 12px; }
+    .flow { overflow-x:auto; }
+    svg { display:block; min-width:920px; width:100%; height:auto; }
+    .node { fill:#0a1928; stroke:#315875; stroke-width:2; }.n1{stroke:var(--cyan)}.n2{stroke:var(--amber)}.n3{stroke:var(--purple)}
+    .label { fill:var(--ink); font:700 16px Inter,system-ui,sans-serif; }.sub{fill:var(--muted);font:12px Inter,system-ui,sans-serif}.arrow{fill:none;stroke:#7694ae;stroke-width:2;marker-end:url(#arrow)}
+    table { border-collapse:collapse; width:100%; min-width:850px; }
+    th,td { border-bottom:1px solid var(--line); padding:13px 14px; text-align:left; vertical-align:top; }
+    th { color:var(--cyan); background:#071522; } td { background:#0a1928aa; }
+    .scroll { overflow-x:auto; border-radius:12px; }
+    ul { padding-left:21px; } li { margin:7px 0; }
+    .callout { border-left:4px solid var(--green); background:#0b251a; color:#c2f7d4; padding:18px 20px; border-radius:0 12px 12px 0; }
+    footer { margin-top:70px; border-top:1px solid var(--line); padding-top:24px; color:var(--muted); }
+    @media (prefers-color-scheme: light) {
+      :root{color-scheme:light;--bg:#f4f8fc;--panel:#fff;--card:#fff;--ink:#10243a;--muted:#536b82;--line:#bfd1e0;--cyan:#087f7b;--blue:#2868c7;--green:#177b43;--amber:#9a5b00;--purple:#7049a8}
+      body{background:radial-gradient(circle at 18% 0,#dbeaf8 0,transparent 34rem),var(--bg)} .lede{color:#405a73}.pill{background:#fff}.panel{background:linear-gradient(145deg,#ffffffed,#edf5fbe8);box-shadow:0 24px 70px #38566c1c}.node{fill:#fff}.label{fill:var(--ink)}code{color:#174f97;background:#e6f0fa}th{background:#e7f1f8}td{background:#f8fbfd}.callout{background:#e4f7eb;color:#16572f}
+    }
+    @media (max-width:850px) {main{width:min(100% - 24px,1180px);padding-top:38px}.grid{grid-template-columns:1fr}.panel{padding:20px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Scheduled implementation design</div>
+  <h1>Criterion-mapped evidence preflight</h1>
+  <p class="lede">Three merge-aware phases move from explicit evidence coverage, through safe pre-activation enforcement, to honest first-Auditor outcome measurement.</p>
+  <div class="pillrow"><span class="pill">3 serial phases</span><span class="pill">1 repository</span><span class="pill">Existing Workflow context model</span><span class="pill">No Auditor weakening</span><span class="pill">Versioned opt-in</span></div>
+
+  <section class="grid">
+    <article class="card phase1"><div class="num">1</div><h3><a href="phase-1-coverage-foundation.md">Coverage foundation</a></h3><p>Ship authoring, storage, compaction, reconciliation, and read-only readiness inspection while enforcement stays off.</p><strong>1,300-2,000 production lines</strong></article>
+    <article class="card phase2"><div class="num">2</div><h3><a href="phase-2-enforced-preflight.md">Enforced preflight</a></h3><p>Add the wait state, repair delivery, same-round refinement, operator override, and built-in opt-in.</p><strong>1,100-1,800 production lines</strong></article>
+    <article class="card phase3"><div class="num">3</div><h3><a href="phase-3-outcome-analytics.md">Outcome analytics</a></h3><p>Measure first Auditor attempt acceptance, interception, override, and preflight/Auditor disagreement.</p><strong>600-900 production lines</strong></article>
+  </section>
+
+  <section class="panel">
+    <h2>Dependency and merge flow</h2>
+    <div class="flow">
+      <svg viewBox="0 0 1080 250" role="img" aria-labelledby="graph-title graph-desc">
+        <title id="graph-title">Three serial implementation phases</title><desc id="graph-desc">The planning pull request releases Phase 1, which releases Phase 2, which releases Phase 3.</desc>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8z" fill="#7694ae"/></marker></defs>
+        <rect class="node" x="20" y="80" rx="13" width="190" height="90"/><text class="label" x="115" y="113" text-anchor="middle">Planning PR</text><text class="sub" x="115" y="137" text-anchor="middle">publishes every path</text>
+        <rect class="node n1" x="280" y="60" rx="13" width="210" height="130"/><text class="label" x="385" y="103" text-anchor="middle">Phase 1</text><text class="sub" x="385" y="130" text-anchor="middle">coverage foundation</text><text class="sub" x="385" y="151" text-anchor="middle">non-blocking</text>
+        <rect class="node n2" x="560" y="60" rx="13" width="210" height="130"/><text class="label" x="665" y="103" text-anchor="middle">Phase 2</text><text class="sub" x="665" y="130" text-anchor="middle">enforced preflight</text><text class="sub" x="665" y="151" text-anchor="middle">repair + override</text>
+        <rect class="node n3" x="840" y="60" rx="13" width="210" height="130"/><text class="label" x="945" y="103" text-anchor="middle">Phase 3</text><text class="sub" x="945" y="130" text-anchor="middle">outcome analytics</text><text class="sub" x="945" y="151" text-anchor="middle">honest denominators</text>
+        <path class="arrow" d="M210 125H280"/><path class="arrow" d="M490 125H560"/><path class="arrow" d="M770 125H840"/>
+      </svg>
+    </div>
+    <div class="callout"><strong>No concurrent group:</strong> each phase consumes durable contracts or lifecycle facts owned by the phase before it. Serial merge order prevents competing schema and state-machine definitions.</div>
+  </section>
+
+  <section class="grid">
+    <article class="panel"><div class="eyebrow">Total estimate</div><div class="estimate">3,000-4,700</div><p class="muted">Non-test production lines across shared contracts, migrations, server lifecycle, browser UI, and telemetry.</p></article>
+    <article class="panel"><h2>Why not one phase?</h2><p class="muted">One review would mix atomic evidence storage, structured-model evolution, new concurrent wait states, operator escape paths, built-in workflow versioning, and metric denominator changes.</p></article>
+    <article class="panel"><h2>Why not two?</h2><p class="muted">Keeping analytics out of the enforcement pull request makes the state-machine change reviewable and lets outcome measurement consume its final durable events.</p></article>
+  </section>
+
+  <section class="panel">
+    <h2>Repository corrections incorporated</h2>
+    <div class="scroll"><table><thead><tr><th>Original assumption</th><th>Verified repository fact</th><th>Plan decision</th></tr></thead><tbody>
+      <tr><td>A new classifier model may be needed.</td><td><code>workflow-context</code> is already configurable and records its resolved provider/model.</td><td>Extend that job and add no Settings row.</td></tr>
+      <tr><td>Context compaction understands the diff.</td><td>The current prompt sees goal and human decisions only.</td><td>Add bounded changed paths, clipped diff summary, captions, and claims.</td></tr>
+      <tr><td>Evidence refinement needs a new parent field.</td><td><code>parent_submission_id</code> already owns segment lineage.</td><td>Reuse it and add a refinement reason.</td></tr>
+      <tr><td>Model classification can select proof requirements.</td><td>That could demand screenshots for non-UI work.</td><td>Author class selects hard roles; model-only disagreement warns.</td></tr>
+      <tr><td>All activation guards are interchangeable.</td><td>SessionAction completion must commit before its child can wait.</td><td>Run the action guard before readiness enforcement.</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Cross-phase contracts</h2>
+    <div class="grid">
+      <article class="card"><h3>Evidence identity</h3><p>Claims and links use caller-stable IDs. Staging generation, reservation, repository scope, and immutable submission capture stay atomic.</p></article>
+      <article class="card"><h3>Classification authority</h3><p>Canonical criteria come from Workflow context, stable IDs come from the daemon, hard proof roles come from the author, and semantic sufficiency stays with the Auditor.</p></article>
+      <article class="card"><h3>Lifecycle accounting</h3><p>Persona rejection advances a round. Preflight repair advances a segment with <code>evidence_preflight</code> lineage and spends no repair budget.</p></article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Final verification bar</h2>
+    <ul><li>Focused tests always include <code>test/setup-state.mjs</code>.</li><li>Typecheck, lint, eight-worker unit suite, build, and smoke pass.</li><li>Built-dashboard Playwright proves non-UI authoring, missing visual proof, preflight wait, same-round repair, override, and analytics.</li><li>Exact command output and rendered screenshots are registered through Mission Control and remain gitignored.</li><li>Historical workflow versions and telemetry records remain readable.</li></ul>
+  </section>
+
+  <footer><a href="plan.html">Root plan</a> · <a href="phased-plan.md">Detailed phased source</a> · <a href="phase-1-coverage-foundation.md">Phase 1</a> · <a href="phase-2-enforced-preflight.md">Phase 2</a> · <a href="phase-3-outcome-analytics.md">Phase 3</a></footer>
+</main>
+</body>
+</html>

@@ -130,7 +130,7 @@
   </section>
 
   <section class="split">
-    <article class="panel"><h2>Safe by construction</h2><ul><li>Coverage links resolve only inside the same frozen submission.</li><li>Repository scope is checked deterministically.</li><li>Canonical IDs are daemon-derived, never model-supplied.</li><li>Model-only proof-class disagreements warn rather than hard-block.</li><li>Compaction failure proceeds as <code>unavailable</code> and cannot deadlock a run.</li><li>Overrides require a durable reason and leave every gap visible.</li><li>Historical and custom workflows stay off until an immutable version opts in.</li></ul></article>
+    <article class="panel"><h2>Safe by construction</h2><ul><li>Coverage links resolve only inside the same frozen submission.</li><li>Repository scope is checked deterministically.</li><li>Canonical IDs are daemon-derived, never model-supplied.</li><li>Model-only proof-class disagreements warn rather than hard-block.</li><li>Compaction failure proceeds as <code>unavailable</code> and cannot deadlock a run.</li><li>Absent coverage becomes <code>missing_coverage</code> under an enforcing policy.</li><li>Overrides require a durable reason and leave every gap visible.</li><li>Historical and custom workflows stay off until an immutable version opts in.</li></ul></article>
     <article class="panel"><h2>Intentionally excluded</h2><ul><li>No automated command execution.</li><li>No semantic pass from the preflight.</li><li>No PR or CI evidence import.</li><li>No arbitrary file attachment.</li><li>No evidence artifacts committed.</li><li>No repair-round charge for preflight corrections.</li></ul></article>
   </section>
 
@@ -143,7 +143,7 @@
         <article class="card"><h3>Immutable review packet</h3><p>Submission coverage and readiness records freeze canonical criteria, mappings, deterministic gaps, and policy version. Existing <code>parent_submission_id</code> carries refinement lineage with a new reason.</p></article>
         <article class="card"><h3>Audited exception</h3><p>An append-only override record stores actor, reason, request ID, and timestamp without rewriting the immutable evidence packet.</p></article>
       </div>
-      <p class="muted">Incomplete packets enter <code>waiting_for_evidence_readiness</code> and prepare one idempotent <code>evidence_readiness</code> delivery. Agent repair creates a same-round evidence-refinement segment; operator override activates the same immutable submission.</p>
+      <p class="muted">Incomplete packets enter <code>waiting_for_evidence_readiness</code> and prepare one idempotent <code>evidence_readiness</code> delivery. Replay keys resolve before mutable-state checks and must match their original target and payload. Agent repair creates a same-round evidence-refinement segment; operator override activates the same immutable submission.</p>
     </div>
   </section>
 

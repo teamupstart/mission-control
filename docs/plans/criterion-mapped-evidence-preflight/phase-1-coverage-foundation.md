@@ -172,7 +172,7 @@ Use a unique key on `(note_key, client_criterion_id)` and reservation indexes ma
 
 Add `workflow_submission_evidence_coverage` keyed by submission plus client criterion ID. Freeze criterion, proof class, repository scope, links, generation, and timestamps. Link resolution happens against evidence reserved for the same submission.
 
-Add a nullable bounded `readiness_json` column to `workflow_submissions`. Null means a historical submission or a submission with no coverage to evaluate; it does not mean ready. Coverage supplied while enforcement policy is `off` still produces an advisory readiness result.
+Add a nullable bounded `readiness_json` column to `workflow_submissions`. Null means a historical submission or a submission captured under policy `off` with no coverage to evaluate; it does not mean ready. Coverage supplied while enforcement policy is `off` still produces an advisory readiness result. Phase 2 must never interpret null as ready under `criterion_mapped_v1`: absent coverage under that policy becomes a deterministic `missing_coverage` gap before activation.
 
 ### Workflow policy columns
 
@@ -239,7 +239,7 @@ Widen the existing session and binding evidence list responses to include staged
 
 ### Capture
 
-Reserve coverage in the same transaction as evidence. After safe item capture, freeze coverage links, compact context, evaluate supplied coverage, and store the bounded result before setting the submission runnable. In this phase, policy `off` means the result is advisory; no result affects activation. A submission with no coverage retains null readiness for backward-compatible cost and display behavior.
+Reserve coverage in the same transaction as evidence. After safe item capture, freeze coverage links, compact context, evaluate supplied coverage, and store the bounded result before setting the submission runnable. In this phase, policy `off` means the result is advisory; no result affects activation. A submission with no coverage retains null readiness for backward-compatible cost and display behavior only while the pinned policy is `off`. Phase 2 owns synthesizing `missing_coverage` before enforcing `criterion_mapped_v1`.
 
 ## Dashboard work
 
@@ -300,6 +300,7 @@ Treat this as an inventory, not authorization to edit unrelated code. Follow act
 - The same configured Workflow context runner/model is recorded after the schema expansion.
 - Model disagreement creates a warning, never a visual requirement.
 - Compaction fallback produces `unavailable` without preventing activation.
+- Null readiness is never treated as ready; the Phase 2 enforcement contract converts absent coverage under `criterion_mapped_v1` into `missing_coverage`.
 
 ### Database and evidence lifecycle
 

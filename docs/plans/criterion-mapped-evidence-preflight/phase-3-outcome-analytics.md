@@ -78,6 +78,8 @@ Keep `firstSubmission` unchanged on new and historical records. Lenient readers 
 
 Aggregate bounded Phase 2 events or add one bounded `evidence_readiness_evaluated` event per captured submission containing only:
 
+- A stable opaque submission correlation key shared with the corresponding audit event. Generate or derive it once from submission identity using the repository's bounded telemetry convention; do not expose an internal row ID.
+- A stable event ID for replay deduplication. Re-emission of the same semantic lifecycle transition must retain the same ID.
 - Policy and evaluator version.
 - Readiness state.
 - Round and segment.
@@ -119,7 +121,7 @@ Historical records remain visible:
 
 ### Event writer
 
-Extend `testEvidenceAuditEvent` inputs with the store-derived first-attempt fact and the activated submission's readiness state. Keep the pure event construction content-free and bounded.
+Extend `testEvidenceAuditEvent` inputs with the store-derived first-attempt fact, the activated submission's readiness state, and the same opaque submission correlation key used by its readiness event. Keep the pure event construction content-free and bounded.
 
 If first-attempt determination belongs in the engine or manager, pass a boolean into the writer. Do not make the pure formatter open the database.
 
@@ -128,8 +130,8 @@ If first-attempt determination belongs in the engine or manager, pass a boolean 
 Extend the lenient audit schema with optional new fields, then update `aggregateTestEvidenceAudit` to:
 
 - Track known and unknown first-Auditor records separately.
-- Join or fold readiness lifecycle events by run/submission identity without retaining content.
-- Avoid double counting replayed/idempotent events.
+- Join or fold readiness lifecycle events by the opaque submission correlation key without retaining content or raw run/submission IDs.
+- Deduplicate replayed/idempotent lifecycle events by stable event ID before computing counts or rates.
 - Preserve the 2,000-event scan cap and report truncation.
 - Keep category arrays deduplicated per event.
 - Return zero counts with null rates when denominators are empty.
@@ -182,6 +184,8 @@ Do not edit generated files or unrelated Settings surfaces.
 - Overlapping gap categories cannot exceed their own denominator semantics unexpectedly.
 - Legacy events without new fields remain readable and do not become false failures.
 - Replayed lifecycle events are deduplicated.
+- Readiness and Auditor events join only through the stable opaque submission correlation key, and raw run/submission IDs are absent.
+- Re-emitting one semantic lifecycle transition preserves its event ID while a distinct transition receives a distinct ID.
 - Empty, malformed, and scan-truncated windows remain honest.
 - Workflow version, guidance digest, and evaluator version slices sort deterministically.
 

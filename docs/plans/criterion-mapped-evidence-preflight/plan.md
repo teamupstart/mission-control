@@ -127,7 +127,7 @@ Add an immutable `evidenceReadinessPolicy` to `WorkflowDefinition` and `Workflow
 type WorkflowEvidenceReadinessPolicy = "off" | "criterion_mapped_v1";
 ```
 
-New and custom workflows default to `off`. Publish a new No-Mistakes Review version with `criterion_mapped_v1`; versions 1 through 11 remain byte-for-byte behaviorally unchanged. The run pins the policy from its workflow version.
+New and custom workflows default to `off`. Publish a new No-Mistakes Review version with `criterion_mapped_v1`; versions 1 through 11 remain byte-for-byte behaviorally unchanged. The run pins the policy from its workflow version. Under the enforcing policy, absent coverage deterministically produces `missing_coverage`; null readiness is never treated as ready.
 
 ### Mutable staging
 

@@ -103,7 +103,9 @@ There are no concurrent implementation groups. Each phase consumes durable contr
 
 ### Stable identifiers
 
-- Enforcement policy: `off | criterion_mapped_v1`. Coverage supplied under `off` is still evaluated and displayed, but never pauses activation.
+- Enforcement policy: `off | criterion_mapped_v1`. Coverage supplied under `off` is still evaluated and displayed, but never pauses activation. Under `criterion_mapped_v1`, absent coverage becomes a deterministic `missing_coverage` gap; null readiness never activates.
+- Idempotency: resolve replay keys and verify their immutable target/payload before mutable-state validation for refinements and overrides.
+- Analytics identity: correlate readiness and Auditor events with one bounded opaque submission key and deduplicate lifecycle replays with a stable event ID; never emit raw internal IDs.
 - Proof classes: `focused_execution`, `integration`, `visual`, `performance`, `rendered_artifact`, `state_confirmation`.
 - Proof roles: `execution`, `rendered_output`, `baseline_measurement`, `result_measurement`, `deliverable`, `state_snapshot`.
 - Readiness states: `not_evaluated`, `ready`, `gaps`, `unavailable`, `overridden`.

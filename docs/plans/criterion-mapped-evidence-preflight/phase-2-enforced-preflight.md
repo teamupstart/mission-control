@@ -79,6 +79,7 @@ After context compaction and deterministic readiness evaluation:
 - `unavailable`: record the fail-open reason and proceed to activation.
 - `gaps` with policy `off`: proceed to activation with advisory gaps.
 - `gaps` with policy `criterion_mapped_v1`: persist both run and submission as `waiting_for_evidence_readiness`, append a bounded event, publish run state, and schedule one readiness delivery.
+- Null readiness with policy `criterion_mapped_v1`: synthesize a deterministic `missing_coverage` gap, persist the result, and follow the same waiting path. Null is never an activation-ready result for an enforcing policy.
 - `overridden`: proceed to activation with the override record visible.
 
 Do not create queued node attempts until activation. A blocked preflight therefore has zero Persona or Check attempts.
@@ -130,7 +131,7 @@ Add a store method dedicated to evidence refinement. In one transaction it:
 7. Reserves the current applicable evidence and coverage group.
 8. Moves the run into capture without incrementing the Persona repair round.
 
-The operation is idempotent by trigger/request key and refuses competing refinements rather than creating sibling segments.
+The operation is idempotent by trigger/request key and refuses competing refinements rather than creating sibling segments. Resolve an existing trigger/request key before checking mutable run or submission state. Return its existing refinement only when the target run, waiting submission, repository scope, requested generation, and manual retry intent match; reject key reuse with a different payload. Only a new key proceeds to current-state validation and reservation.
 
 ### Resumption observer
 
@@ -174,7 +175,7 @@ Add an authenticated dashboard route equivalent to:
 POST /api/workflow-runs/:runId/submissions/:submissionId/evidence-readiness/override
 ```
 
-The body contains `requestId` and `reason`. The server verifies run/submission ownership, pinned policy, current waiting state, latest-segment identity, and nonterminal binding before recording the override and activating that exact submission.
+The body contains `requestId` and `reason`. Resolve `requestId` before validating mutable workflow state. Return the existing override when its run, submission, and normalized reason match exactly; reject reuse with a different target or reason. Only a new request verifies run/submission ownership, pinned policy, current waiting state, latest-segment identity, and nonterminal binding before recording the override and activating that exact submission.
 
 Do not expose override through the agent MCP tool. It is an operator exception, not an author evidence claim.
 
@@ -242,6 +243,7 @@ Follow actual ownership on the merged Phase 1 base and avoid unrelated edits.
 - Policy on plus ready activates exactly once.
 - Policy on plus unavailable activates exactly once.
 - Policy on plus gaps reaches the readiness wait state with zero node attempts.
+- Policy on plus absent coverage synthesizes `missing_coverage` and reaches the readiness wait state with zero node attempts.
 - Restart preserves the wait and recreates no duplicate delivery.
 - Delivery confirmation, refusal, uncertain send, retry, cancellation, and queue order use existing semantics.
 - A new applicable generation reserves one same-round child segment.
@@ -258,6 +260,7 @@ Follow actual ownership on the merged Phase 1 base and avoid unrelated edits.
 - Override activates the same immutable submission without changing evidence or gaps.
 - Agent MCP cannot invoke override.
 - Restart after override does not return the run to readiness wait.
+- Replaying an override or manual refinement after state changes returns the prior result only for an identical target and payload; mismatched key reuse conflicts.
 
 ### Multi-repository tests
 

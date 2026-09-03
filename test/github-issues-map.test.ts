@@ -276,6 +276,7 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   const r = pushResultFrom(
     stubRun({ stdout: "https://github.com/acme/widgets/issues/42\n", stderr: "", code: 0 }),
     ctx,
+    "acme/widgets",
   );
   assert.equal(r.error, null);
   assert.equal(r.outcomeUnknown, false);
@@ -299,6 +300,7 @@ test("progress chatter above the URL is not mistaken for it", () => {
       code: 0,
     }),
     ctx,
+    "acme/widgets",
   );
   assert.equal(r.ref!.url, "https://github.com/acme/widgets/issues/9");
 });
@@ -310,6 +312,7 @@ test("a non-zero gh exit is a refusal that names itself, and is retry-safe", () 
   const r = pushResultFrom(
     stubRun({ stdout: "", stderr: "could not add label: 'triage' not found\n", code: 1 }),
     ctx,
+    "acme/widgets",
   );
   assert.equal(r.ref, null);
   assert.match(r.error!, /gh issue create failed: could not add label: 'triage' not found/);
@@ -323,6 +326,7 @@ test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () =>
   const r = pushResultFrom(
     { stdout: "", stderr: "timed out", code: null, outcomeUnknown: true, overflowed: false },
     ctx,
+    "acme/widgets",
   );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
@@ -334,7 +338,11 @@ test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () =>
 // the issue almost certainly EXISTS - we simply cannot name it. That is worse than a
 // failure, not better, so it may not be success and may not be a retryable refusal.
 test("exit 0 with no URL is an unknown outcome - the issue exists and cannot be identified", () => {
-  const r = pushResultFrom(stubRun({ stdout: "done\n", stderr: "", code: 0 }), ctx);
+  const r = pushResultFrom(
+    stubRun({ stdout: "done\n", stderr: "", code: 0 }),
+    ctx,
+    "acme/widgets",
+  );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
   assert.match(r.error!, /check GitHub before retrying/);
@@ -354,6 +362,7 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
         overflowed: false,
       },
       ctx,
+      "acme/widgets",
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
     assert.equal(r.ref, null);

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline Attempt Recovery and Workspace Fidelity</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #5a667b;
+      --line: #d8dee8;
+      --blue: #175cd3;
+      --blue-soft: #eaf2ff;
+      --green: #067647;
+      --green-soft: #e7f8ef;
+      --amber: #a15c00;
+      --amber-soft: #fff3dd;
+      --red: #b42318;
+      --red-soft: #feeceb;
+      --shadow: 0 14px 36px rgba(21, 35, 61, .08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1420;
+        --panel: #151f2e;
+        --ink: #ecf1f8;
+        --muted: #a9b5c6;
+        --line: #2d3b50;
+        --blue: #8bb8ff;
+        --blue-soft: #183353;
+        --green: #75d6a5;
+        --green-soft: #12392b;
+        --amber: #ffc56b;
+        --amber-soft: #453218;
+        --red: #ff9c96;
+        --red-soft: #482522;
+        --shadow: 0 14px 36px rgba(0, 0, 0, .25);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--blue-soft) 75%, transparent), transparent 28rem),
+        var(--bg);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1160px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 64px; }
+    .hero, section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    .hero { padding: clamp(24px, 5vw, 54px); min-height: 560px; display: grid; align-content: center; }
+    section { margin-top: 22px; padding: 28px; }
+    .eyebrow { margin: 0 0 12px; color: var(--blue); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: 12px; }
+    h1 { margin: 0; max-width: 920px; font-size: clamp(37px, 7vw, 70px); line-height: 1.02; letter-spacing: -.04em; }
+    h2 { margin: 0 0 16px; font-size: 27px; letter-spacing: -.02em; }
+    h3 { margin: 22px 0 8px; font-size: 18px; }
+    p { margin: 8px 0 14px; }
+    .question { margin-top: 25px; max-width: 900px; color: var(--muted); font-size: 18px; }
+    .finding {
+      margin-top: 28px;
+      max-width: 980px;
+      padding: 22px 24px;
+      border-left: 5px solid var(--green);
+      border-radius: 12px;
+      background: var(--green-soft);
+      font-size: clamp(18px, 2.5vw, 24px);
+      font-weight: 720;
+      line-height: 1.35;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 24px; }
+    .chip { padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 13px; background: var(--panel); }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: color-mix(in srgb, var(--panel) 94%, var(--blue-soft)); }
+    .card h3 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .lead { font-size: 17px; color: var(--muted); max-width: 900px; }
+    .good { color: var(--green); }
+    .warn { color: var(--amber); }
+    .bad { color: var(--red); }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { padding: 12px 11px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    tr:last-child td { border-bottom: 0; }
+    code { padding: .12em .35em; border-radius: 5px; background: color-mix(in srgb, var(--blue-soft) 75%, var(--panel)); font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    ul, ol { margin: 8px 0 14px; padding-left: 22px; }
+    li + li { margin-top: 6px; }
+    .flow { overflow-x: auto; padding: 8px 0 0; }
+    svg { display: block; min-width: 930px; width: 100%; height: auto; }
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--muted); font-size: 13px; margin-top: 12px; }
+    .dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; }
+    .matrix td:first-child { font-weight: 750; white-space: nowrap; }
+    .yes { color: var(--green); font-weight: 700; }
+    .no { color: var(--red); font-weight: 700; }
+    .phase { position: relative; padding-left: 54px; }
+    .phase::before { content: attr(data-n); position: absolute; left: 15px; top: 16px; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--blue); color: var(--panel); font-weight: 800; }
+    .phase + .phase { margin-top: 12px; }
+    .source { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .decision { background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); }
+    footer { color: var(--muted); text-align: center; padding: 28px 0 0; font-size: 13px; }
+    @media (max-width: 780px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      section { padding: 21px; }
+      .hero { min-height: auto; }
+      table { display: block; overflow-x: auto; }
+    }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --ink: #111827; --muted: #4b5563; --line: #d1d5db; --shadow: none; }
+      body { background: #fff; font-size: 11px; }
+      main { width: 100%; padding: 0; }
+      .hero, section { box-shadow: none; break-inside: avoid; margin-top: 12px; padding: 18px; }
+      .hero { min-height: auto; }
+      h1 { font-size: 38px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <article class="hero">
+    <p class="eyebrow">Approved consolidated plan</p>
+    <h1>Pipeline Attempt Recovery and Workspace Fidelity</h1>
+    <p class="question"><strong>Question:</strong> Review both plans, consider the advantages of both sides, and develop a more robust plan from the evidence discovered so far.</p>
+    <div class="finding">Select the lifecycle-first plan as the governing architecture, then add the fidelity plan's branch-backed evidence, readiness gates, UI corrections, and concrete sequencing. The result preserves attempt authority while keeping the task useful after a worktree disappears.</div>
+    <div class="chips">
+      <span class="chip">Cross-repository contract</span>
+      <span class="chip">Immutable attempts</span>
+      <span class="chip">Read-only Git fallback</span>
+      <span class="chip">Typed readiness</span>
+      <span class="chip">Explicit adoption</span>
+      <span class="chip">4 merge-safe phases</span>
+    </div>
+  </article>
+
+  <section>
+    <p class="eyebrow">What each side gets right</p>
+    <h2>One provides the authority model; the other makes it operational</h2>
+    <div class="grid two">
+      <div class="card">
+        <h3 class="good">Pipeline Workspace and Recovery</h3>
+        <ul>
+          <li>Treats workspace, failure, retry, attention, and lineage as one lifecycle.</li>
+          <li>Preserves immutable attempt history and requires explicit successor adoption.</li>
+          <li>Places failure classification and worktree retirement with the provider that owns them.</li>
+          <li>Requires a fresh host and a fenced daemon transaction for every retry.</li>
+        </ul>
+        <p><strong>Main gap:</strong> it misses current implementation facts and several concrete UI, Git fallback, credential, and delivery details.</p>
+      </div>
+      <div class="card">
+        <h3 class="good">Pipeline task fidelity</h3>
+        <ul>
+          <li>Grounds the problem in the actual failed task and current source behavior.</li>
+          <li>Correctly notices that branch and plan slug already exist but are discarded.</li>
+          <li>Adds branch-ref diff, readiness checks, progress correction, workflow fidelity, and credential hardening.</li>
+          <li>Proposes independently testable delivery phases.</li>
+        </ul>
+        <p><strong>Main gap:</strong> resilience inside Mission Control alone cannot create trustworthy retirement evidence, exact same-posture readiness, or a safe retry and lineage authority boundary.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Corrections from current evidence</p>
+    <h2>Two facts change the combined design</h2>
+    <div class="grid two">
+      <div class="card">
+        <h3>Identity already exists at the provider boundary</h3>
+        <p><code>engineer_worktree_created</code> already carries path, branch, and plan slug. The commission reducer keeps only the path. The first move is preservation, not a provider schema change.</p>
+      </div>
+      <div class="card">
+        <h3>The successful result is a successor attempt</h3>
+        <p>The inspected correlation contains failed attempt 1 and settled attempt 2 with PR #15. Branch and PR existence corroborate attempt 2, but must not mutate attempt 1 or bypass lineage validation.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Architecture</p>
+    <h2>One identity spine, one workspace resolver, two evidence modes</h2>
+    <p class="lead">The plan separates process location from task workspace authority. A provider worktree is interactive only while the daemon can revalidate it. After retirement, the same task remains inspectable through an immutable Git commit, but every mutating or host-opening action is disabled.</p>
+    <div class="flow">
+      <svg viewBox="0 0 1100 465" role="img" aria-labelledby="flowTitle flowDesc">
+        <title id="flowTitle">Pipeline recovery data and request flow</title>
+        <desc id="flowDesc">Operator recovery moves through Mission Control guards and provider readiness into an immutable attempt, provider lifecycle events, workspace capabilities, and task presentation. Unreserved successors go through review before adoption.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7b91"/></marker>
+          <style>
+            .box{fill:#ffffff;stroke:#b9c5d6;stroke-width:2}.provider{fill:#eaf2ff;stroke:#175cd3;stroke-width:2}.state{fill:#e7f8ef;stroke:#067647;stroke-width:2}.review{fill:#fff3dd;stroke:#a15c00;stroke-width:2}.t{fill:#172033;font:600 15px system-ui}.s{fill:#5a667b;font:13px system-ui}.a{stroke:#6b7b91;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke-dasharray:7 6}
+            @media(prefers-color-scheme:dark){.box{fill:#151f2e;stroke:#52647d}.provider{fill:#183353;stroke:#8bb8ff}.state{fill:#12392b;stroke:#75d6a5}.review{fill:#453218;stroke:#ffc56b}.t{fill:#ecf1f8}.s{fill:#a9b5c6}}
+          </style>
+        </defs>
+        <rect class="box" x="20" y="45" rx="12" width="165" height="72"/>
+        <text class="t" x="102" y="75" text-anchor="middle">Operator action</text><text class="s" x="102" y="98" text-anchor="middle">retry or review</text>
+        <path class="a" d="M185 81 H235"/>
+        <rect class="box" x="235" y="32" rx="12" width="190" height="98"/>
+        <text class="t" x="330" y="64" text-anchor="middle">Recovery service</text><text class="s" x="330" y="87" text-anchor="middle">CAS, task owner, lineage</text><text class="s" x="330" y="107" text-anchor="middle">and capability guards</text>
+        <path class="a" d="M425 81 H475"/>
+        <rect class="provider" x="475" y="45" rx="12" width="170" height="72"/>
+        <text class="t" x="560" y="75" text-anchor="middle">Provider readiness</text><text class="s" x="560" y="98" text-anchor="middle">typed machine evidence</text>
+        <path class="a" d="M645 81 H695"/>
+        <rect class="state" x="695" y="45" rx="12" width="170" height="72"/>
+        <text class="t" x="780" y="75" text-anchor="middle">Immutable attempt</text><text class="s" x="780" y="98" text-anchor="middle">reserved and bound</text>
+        <path class="a" d="M865 81 H915"/>
+        <rect class="provider" x="915" y="32" rx="12" width="165" height="98"/>
+        <text class="t" x="997" y="64" text-anchor="middle">Engineer events</text><text class="s" x="997" y="87" text-anchor="middle">workspace, failure,</text><text class="s" x="997" y="107" text-anchor="middle">retirement, handoff</text>
+
+        <path class="a" d="M997 130 V190 H815"/>
+        <rect class="state" x="635" y="170" rx="12" width="180" height="82"/>
+        <text class="t" x="725" y="200" text-anchor="middle">Commission reducer</text><text class="s" x="725" y="223" text-anchor="middle">one durable projection</text>
+        <path class="a" d="M635 211 H565"/>
+        <rect class="state" x="350" y="163" rx="12" width="215" height="96"/>
+        <text class="t" x="457" y="194" text-anchor="middle">Workspace view</text><text class="s" x="457" y="217" text-anchor="middle">availability, branch, stored commit,</text><text class="s" x="457" y="238" text-anchor="middle">attempt and capabilities</text>
+        <path class="a" d="M350 211 H280"/>
+        <rect class="box" x="20" y="163" rx="12" width="260" height="96"/>
+        <text class="t" x="150" y="194" text-anchor="middle">Task surfaces</text><text class="s" x="150" y="217" text-anchor="middle">Diff, Files, branch, workflow,</text><text class="s" x="150" y="238" text-anchor="middle">shell, attention and progress</text>
+
+        <path class="a dash" d="M997 130 V330 H860"/>
+        <rect class="review" x="620" y="302" rx="12" width="240" height="92"/>
+        <text class="t" x="740" y="334" text-anchor="middle">Unreserved direct successor</text><text class="s" x="740" y="357" text-anchor="middle">inspect and replay only</text><text class="s" x="740" y="377" text-anchor="middle">no active-state mutation</text>
+        <path class="a" d="M620 348 H495"/>
+        <rect class="review" x="250" y="302" rx="12" width="245" height="92"/>
+        <text class="t" x="372" y="334" text-anchor="middle">Explicit adoption review</text><text class="s" x="372" y="357" text-anchor="middle">lineage, owner, commit, repo,</text><text class="s" x="372" y="377" text-anchor="middle">branch, PR and no rival retry</text>
+        <path class="a" d="M372 302 V282 H780 V117"/>
+      </svg>
+    </div>
+    <div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Provider-owned evidence</span><span><i class="dot" style="background:var(--green)"></i>Mission Control durable state</span><span><i class="dot" style="background:var(--amber)"></i>Operator-reviewed divergence</span></div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Workspace behavior</p>
+    <h2>Capabilities follow evidence quality</h2>
+    <table class="matrix">
+      <thead><tr><th>State</th><th>Diff</th><th>Files</th><th>Writes and comments</th><th>Shell and external open</th></tr></thead>
+      <tbody>
+        <tr><td>Available</td><td class="yes">Live worktree</td><td class="yes">Live tree</td><td class="yes">Allowed after revalidation</td><td class="yes">Allowed after revalidation</td></tr>
+        <tr><td>Retired</td><td class="yes">Stored attempt commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+        <tr><td>Missing with stored commit</td><td class="yes">Stored attempt commit</td><td class="yes">Read-only Git tree</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+        <tr><td>Pending or unavailable object</td><td>Named empty state</td><td>Named empty state</td><td class="no">Disabled</td><td class="no">Disabled</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <p class="eyebrow">Recovery semantics</p>
+    <h2>Failure, retry, and divergence become one guarded system</h2>
+    <div class="grid three">
+      <div class="card">
+        <h3>Two readiness gates</h3>
+        <p>Mission Control performs a non-mutating provider probe before reservation. Authoring requires a current <code>ready</code> result or an explicitly permitted <code>inconclusive</code> result. Push authorization is checked again at handoff.</p>
+      </div>
+      <div class="card">
+        <h3>Atomic retry</h3>
+        <p>A commission, attempt, provider run, revision, and host are fenced together. Existing idempotent create and inspect behavior handles response loss. The predecessor host exits only through <code>Registry.beginEviction</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Explicit adoption</h3>
+        <p>A direct unreserved successor is review-only until lineage, owner, replay, durable commit and provenance, repository, branch, PR, and competing-retry checks all pass. Adoption appends a distinct <code>provider_reconciled</code> attempt.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Merge-safe sequence</p>
+    <h2>Four phases, each with a coherent owner and rollback boundary</h2>
+    <div class="card phase" data-n="1">
+      <h3>Durable identity and safe Git-ref evidence</h3>
+      <p><strong>Mission Control.</strong> Preserve branch, plan slug, and a durable attempt evidence commit; serialize null-safe initialization and predecessor-checked advancement with handoff freeze; add the central resolver, commit-backed Diff and read-only Files, correct branch/header/workflow behavior, and move caller credentials out of process arguments. Useful with today's provider.</p>
+    </div>
+    <div class="card phase" data-n="2">
+      <h3>Complete provider lifecycle and ownership contract</h3>
+      <p><strong>ai-conductor.</strong> Add readiness, typed failure, bounded retention, and integration ownership to the existing event spine. Logical retirement is the sole metadata-only post-terminal event: it revokes workspace use before deletion without changing the terminal outcome.</p>
+    </div>
+    <div class="card phase" data-n="3">
+      <h3>Consume lifecycle evidence and unify presentation</h3>
+      <p><strong>Mission Control, depends on 1 and 2.</strong> Reduce new events, apply one authorization matrix everywhere, and add typed remedies, commission attention, status drift, and segmented progress.</p>
+    </div>
+    <div class="card phase" data-n="4">
+      <h3>Atomic retry and explicit successor adoption</h3>
+      <p><strong>Mission Control, depends on 3.</strong> Run non-mutating provider preflight before reservation, then add the CAS recovery service, new-host retry, exact adoption, task consistency guards, and explicit abandon or cancel settlement.</p>
+    </div>
+    <p class="lead"><strong>Estimated production scope:</strong> 1,400 to 2,100 lines across both repositories, excluding tests and generated artifacts.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Acceptance</p>
+    <h2>The plan is done when contradictions become impossible or explicit</h2>
+    <div class="grid two">
+      <div>
+        <ul>
+          <li>Path and branch always describe the same provider attempt.</li>
+          <li>Retirement preserves pinned read-only Diff and Files evidence.</li>
+          <li>Concurrent validation cannot advance evidence after handoff freeze.</li>
+          <li>No missing workspace silently falls back to host <code>cwd</code>.</li>
+          <li>Known readiness blockers stop before model-backed authoring.</li>
+          <li>Commission failure raises <code>needs you</code> even when the host is idle.</li>
+          <li>Engineer progress reaches 100 percent at Engineer handoff.</li>
+        </ul>
+      </div>
+      <div>
+        <ul>
+          <li>Concurrent retries create at most one attempt and one new host.</li>
+          <li>Response loss recovers exact identity or remains durably unknown.</li>
+          <li>Attempt 1 remains immutable after retry or adoption.</li>
+          <li>External work cannot affect the active attempt before explicit adoption.</li>
+          <li>Adoption matches durable commit and provenance across candidate, replay, and adapter.</li>
+          <li>Task and commission contradictions become named status drift.</li>
+          <li>No caller credential appears in process arguments.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Risks and limits</p>
+    <h2>What still needs implementation-level proof</h2>
+    <table>
+      <thead><tr><th>Open boundary</th><th>Plan treatment</th></tr></thead>
+      <tbody>
+        <tr><td>Retention timeout</td><td>Retain through review, then clean on merge, close, cancel, or a bounded provider-owned timeout. Final duration needs provider-owner input.</td></tr>
+        <tr><td>Remote transport probes</td><td>Use transport-specific checks and an explicit inconclusive result. Never claim a read probe proves write authorization.</td></tr>
+        <tr><td>Moving refs, concurrent validation, or collected objects</td><td>Advance with predecessor-and-freeze CAS, freeze atomically with handoff, never re-resolve the fallback branch, and expose unavailable evidence if the object disappears.</td></tr>
+        <tr><td>Historical lineage deeper than one child</td><td>Do not adopt it automatically. This plan supports only one exact direct successor.</td></tr>
+        <tr><td>Mixed provider versions</td><td>Capability-gate retry and ownership guarantees; preserve explicit legacy and unknown states.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <p class="eyebrow">Evidence map</p>
+    <h2>Current source seams inspected</h2>
+    <div class="grid two source">
+      <div>
+        <p><code>src/shared/pipeline.ts:390</code> - creation already includes branch and plan slug</p>
+        <p><code>src/server/pipelines/commissions.ts:362</code> - reducer discards them</p>
+        <p><code>src/server/registry.ts:6440</code> - path-only workspace resolution</p>
+        <p><code>src/server/pipelines/conductor/state.ts:539</code> - Engineer marker discovery gap</p>
+        <p><code>src/server/dispatcher.ts:950</code> - idempotent create and correlation inspection seam</p>
+        <p><code>src/server/pipelines/conductor/engineer.ts</code> - create, inspect, replay, cancel</p>
+      </div>
+      <div>
+        <p><code>src/web/pipelines/pipeline-run-model.ts:624</code> - synthetic halt and denominator</p>
+        <p><code>src/web/lib/attention.ts:293</code> - commission attention gap</p>
+        <p><code>src/server/workflows/context.ts:405</code> - host-checkout workflow evidence</p>
+        <p><code>src/web/components/DiffViewer.tsx:157</code> - false error header scope</p>
+        <p><code>ai-conductor src/conductor/src/engine/engineer/run-store.ts:203</code> - attempt identity and ordering</p>
+        <p><code>ai-conductor skills/engineer/SKILL.md:247</code> - immediate successful-handoff cleanup</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="decision">
+    <p class="eyebrow">Resolved decisions</p>
+    <h2>Proceed with the strict recovery model</h2>
+    <ol>
+      <li>Retain authoring worktrees through specification review, with merge, close, cancel, and bounded timeout cleanup.</li>
+      <li>Permit adoption only for one exact direct provider successor.</li>
+      <li>After accepting the plan, generate and schedule the detailed four-phase implementation package.</li>
+    </ol>
+  </section>
+
+  <footer>Authoritative source: <code>docs/plans/pipeline-attempt-recovery/plan.md</code></footer>
+</main>
+</body>
+</html>

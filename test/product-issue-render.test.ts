@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -25,9 +26,8 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
  * The end-to-end journey in `e2e/specs/product-issue-reporting.spec.ts` is the authority on
  * whether the thing WORKS - a click reaching a route reaching `gh`. What is pinned here is
  * narrower and complements it: that the dialog cannot draw a repository, a label set or a
- * body it invented, and that the screenshot region is inert and SAYS so rather than merely
- * looking dim. Both are properties of one render, so a case costs a millisecond here and a
- * browser boot there.
+ * body it invented, and that the screenshot region exposes a real bounded image input. Both
+ * are properties of one render, so a case costs a millisecond here and a browser boot there.
  *
  * `createElement` rather than JSX because the runner's glob only matches `.test.ts`.
  */
@@ -36,8 +36,8 @@ const PREFLIGHT_READY: ProductIssuePreflight = {
   ready: true,
   target: "acme/public-issues",
   attachments: {
-    enabled: false,
-    reason: "Screenshot upload is waiting for first-party GitHub CLI support",
+    enabled: true,
+    reason: null,
   },
   problems: [],
 };
@@ -101,6 +101,19 @@ function draw(overrides: Partial<ProductIssueModalProps> = {}): string {
   return renderToStaticMarkup(withOverlayHost(createElement(ProductIssueModal, props)));
 }
 
+test("abandoned renders cannot replace the attachment cleanup refs", () => {
+  const source = readFileSync(
+    new URL("../src/web/components/ProductIssueModal.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /^  (?:draftRef|clearOnNextOpen)\.current =/m);
+  assert.match(source, /useEffect\(\(\) => \{\n    draftRef\.current = draft;\n  \}, \[draft\]\);/);
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\n    clearOnNextOpen\.current = createdUrl !== null;\n  \}, \[createdUrl\]\);/,
+  );
+});
+
 test("all five approved report types are offered, in the contract's order", () => {
   const html = draw();
   const order = PRODUCT_ISSUE_TYPES.map((type) => PRODUCT_ISSUE_TYPE_UI[type].label);
@@ -160,15 +173,47 @@ test("a preview for different words than are in the box is not shown as this dra
   assert.match(html, /<button type="submit"[^>]*disabled=""/);
 });
 
-test("the screenshot region names its upstream blocker and cannot be used", () => {
+test("the screenshot region offers the bounded first-party attachment input", () => {
   const html = draw();
-  assert.match(html, /Screenshot upload is waiting for first-party GitHub CLI support/);
-  assert.match(html, /cli\/cli#13256/);
-  assert.match(html, /https:\/\/github\.com\/cli\/cli\/issues\/13256/);
-  // Disabled in the markup AND carrying its own sentence: a dim box with no words reads as
-  // a rendering fault, and `cursor: not-allowed` is invisible to anyone not holding a mouse.
+  assert.match(html, /Choose, paste, or drop up to 5 PNG/);
+  assert.match(html, /Each can be at most 10 MB and together at most 25 MB/);
+  assert.match(html, /<input type="file"[^>]*multiple=""/);
+  assert.doesNotMatch(html, /<input type="file"[^>]*disabled=""/);
+  assert.doesNotMatch(html, /is-unavailable/);
+});
+
+test("an older GitHub CLI leaves text reports available and explains the screenshot gate", () => {
+  const html = draw({
+    preflight: {
+      ...PREFLIGHT_READY,
+      attachments: {
+        enabled: false,
+        reason: "Screenshot upload requires GitHub CLI 2.99.0 or newer",
+      },
+    },
+  });
+  assert.match(html, /GitHub CLI 2\.99\.0 or newer/);
+  assert.match(html, /You can still submit a text-only report/);
   assert.match(html, /<input type="file"[^>]*disabled=""/);
   assert.match(html, /is-unavailable/);
+});
+
+test("an unavailable preflight does not claim that text-only submission is available", () => {
+  const checking = draw({ preflight: null, preview: null });
+  assert.match(checking, /Checking GitHub CLI screenshot support/);
+  assert.doesNotMatch(checking, /still submit a text-only report/);
+
+  const blocked = draw({
+    preflight: {
+      ready: false,
+      target: "acme/public-issues",
+      attachments: PREFLIGHT_READY.attachments,
+      problems: [{ code: "gh-auth", message: "GitHub CLI is not authenticated" }],
+    },
+    preview: null,
+  });
+  assert.match(blocked, /GitHub CLI is not authenticated/);
+  assert.doesNotMatch(blocked, /still submit a text-only report/);
 });
 
 test("submit is closed until the draft validates, preflight is ready and a preview matches", () => {

@@ -17,6 +17,7 @@ import {
 } from "../lib/api.ts";
 import {
   AttachmentStrip,
+  revokeAttachments,
   useImageDrop,
   type PendingAttachment,
 } from "./ImageDrop.tsx";
@@ -61,15 +62,10 @@ import { Tooltip } from "./Tooltip.tsx";
  * creation reset it. That retention is the whole reason the state lives in `ProductIssueLayer`
  * rather than in the modal - see there.
  *
- * Screenshots are drawn, and are inert. The GitHub CLI has no first-party attachment flag yet
- * (cli/cli#13256), so the daemon's attachment capability is off and refuses a non-empty list
- * outright. The region is mounted with the real `useImageDrop`, disabled, so paste, drop and
- * file selection all fall through as no-ops - and the day the CLI ships, the change is one
- * capability flag and this copy, not a placeholder swapped for a real component.
+ * Screenshots use the same daemon-owned upload path as the other compose surfaces. Only opaque
+ * upload ids cross the report contract; the daemon resolves, contains, bounds, and sniffs each
+ * image again immediately before handing its absolute path to GitHub CLI 2.99 or newer.
  */
-
-/** The GitHub issue that has to land upstream before screenshots can work. */
-export const PRODUCT_ISSUE_ATTACHMENT_ISSUE_URL = "https://github.com/cli/cli/issues/13256";
 
 /**
  * How each report type reads to a person, and what a good report of that type contains.
@@ -121,11 +117,7 @@ export interface ProductIssueDraftState {
   type: ProductIssueType;
   title: string;
   details: string;
-  /**
-   * Always empty in production. Present so the enablement follow-up flips a capability
-   * rather than inventing a field - and so the request built from this draft has the same
-   * shape either way.
-   */
+  /** Local upload rows. The wire request contains only their daemon-issued ids. */
   attachments: PendingAttachment[];
 }
 
@@ -249,16 +241,19 @@ export function ProductIssueModal({
   onClear,
   onClose,
 }: ProductIssueModalProps): React.JSX.Element {
-  const attachmentsEnabled = preflight?.attachments.enabled ?? false;
+  const attachmentsEnabled = preflight?.ready === true && preflight.attachments.enabled;
   const attachmentReason =
-    preflight?.attachments.reason ?? "Screenshot upload is waiting for first-party GitHub CLI support";
-  // Mounted with the REAL hook, disabled. Not a styled div pretending: paste, drop and
-  // selection are refused by the same code path that will accept them once the capability
-  // is on, so nothing here has to be re-derived when it is.
+    preflight?.attachments.reason ??
+    preflight?.problems[0]?.message ??
+    "Checking GitHub CLI screenshot support";
+  const textOnlyAvailable = preflight?.ready === true && !preflight.attachments.enabled;
+  const attachmentLimitReached = draft.attachments.length >= PRODUCT_ISSUE_LIMITS.attachmentCount;
+  const attachmentIntakeDisabled = !attachmentsEnabled || submitting || attachmentLimitReached;
   const drop = useImageDrop({
     attachments: draft.attachments,
     onChange: (attachments) => onDraftChange({ ...draft, attachments }),
-    disabled: !attachmentsEnabled,
+    disabled: attachmentIntakeDisabled,
+    maxAttachments: PRODUCT_ISSUE_LIMITS.attachmentCount,
   });
 
   const draftProblem = productIssueDraftProblem(draft);
@@ -419,18 +414,21 @@ export function ProductIssueModal({
           >
             <h3>Screenshots</h3>
             <p className="feedback-shots-reason">
-              {attachmentReason}.{" "}
-              <Tooltip label="Open the upstream GitHub CLI issue this waits on">
-                <a href={PRODUCT_ISSUE_ATTACHMENT_ISSUE_URL} target="_blank" rel="noreferrer">
-                  cli/cli#13256
-                </a>
-              </Tooltip>{" "}
-              tracks it upstream. Describe what you saw in Details instead.
+              {attachmentsEnabled
+                ? `Choose, paste, or drop up to ${PRODUCT_ISSUE_LIMITS.attachmentCount} PNG, ` +
+                  `JPEG, GIF, or WebP images. Each can be at most ` +
+                  `${PRODUCT_ISSUE_LIMITS.attachmentBytes / 1024 / 1024} MB and together at most ` +
+                  `${PRODUCT_ISSUE_LIMITS.attachmentAggregateBytes / 1024 / 1024} MB.`
+                : textOnlyAvailable
+                  ? `${attachmentReason}. You can still submit a text-only report.`
+                  : attachmentReason}
             </p>
             <Tooltip
               label={
-                attachmentsEnabled
+                attachmentsEnabled && !attachmentLimitReached
                   ? "Choose screenshots to attach"
+                  : attachmentLimitReached
+                    ? `Remove a screenshot before adding more than ${PRODUCT_ISSUE_LIMITS.attachmentCount}`
                   : `${attachmentReason} - this control does nothing yet`
               }
             >
@@ -438,7 +436,7 @@ export function ProductIssueModal({
                 type="file"
                 accept="image/*"
                 multiple
-                disabled={!attachmentsEnabled}
+                disabled={attachmentIntakeDisabled}
                 aria-label="Add screenshots"
                 onChange={(e) => drop.addFiles(Array.from(e.target.files ?? []))}
               />
@@ -448,6 +446,7 @@ export function ProductIssueModal({
               onRemove={drop.remove}
               removeContext="this report"
             />
+            {drop.dropping && <div className="drop-veil">Drop screenshots to attach</div>}
           </section>
 
           {/* The trusted preview. Fetched, never composed here. */}
@@ -506,6 +505,11 @@ export function ProductIssueModal({
                   {created.issueUrl}
                 </a>
               </Tooltip>
+            </p>
+          )}
+          {created?.warning && (
+            <p className="feedback-created-warning" role="status">
+              {created.warning}
             </p>
           )}
           {result && result.outcome !== "created" && (
@@ -646,10 +650,15 @@ export function ProductIssueLayer({
    * the draft.
    */
   const requestIdRef = useRef<string>(newRequestId());
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   /** Ignore a preflight or preview reply that a newer opening or keystroke has outrun. */
   const generationRef = useRef(0);
 
   const resetDraft = useCallback(() => {
+    revokeAttachments(draftRef.current.attachments);
     requestIdRef.current = newRequestId();
     generationRef.current++;
     setDraft(EMPTY_PRODUCT_ISSUE_DRAFT);
@@ -660,12 +669,16 @@ export function ProductIssueLayer({
     setRetryAllowed(true);
   }, []);
 
+  useEffect(() => () => revokeAttachments(draftRef.current.attachments), []);
+
   // A confirmed creation is the one automatic reset: those words are filed, and the next
   // opening starting on top of them would be a second report of the same thing. Everything
   // else - a refusal, an unknown outcome, an ordinary close - keeps them.
   const createdUrl = result?.outcome === "created" ? result.issueUrl : null;
   const clearOnNextOpen = useRef(false);
-  clearOnNextOpen.current = createdUrl !== null;
+  useEffect(() => {
+    clearOnNextOpen.current = createdUrl !== null;
+  }, [createdUrl]);
 
   useEffect(() => {
     if (!open) return;

@@ -43,6 +43,7 @@ export function formatProductIssueReview(preview: ProductIssuePreview): string {
     `- Repository: ${preview.target}`,
     `- Labels: ${preview.labels.join(", ")}`,
     `- Title: ${preview.draft.title}`,
+    `- Screenshots: ${preview.draft.attachmentUploadIds.length}`,
     "",
     preview.body,
   ].join("\n");
@@ -67,7 +68,9 @@ function submitResult(result: ProductIssueSubmitResult): ProductIssueMcpResult {
   switch (result.outcome) {
     case "created":
       return {
-        text: `Product issue created: ${result.issueUrl}`,
+        text:
+          `Product issue created: ${result.issueUrl}` +
+          (result.warning ? `\nWarning: ${result.warning}` : ""),
         isError: false,
       };
     case "refused":

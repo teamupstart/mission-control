@@ -18,6 +18,7 @@ import {
   PRODUCT_ISSUE_BODY_MARKER,
   PRODUCT_ISSUE_CONFIRMATION_TTL_MS,
   PRODUCT_ISSUE_LIMITS,
+  PRODUCT_ISSUE_MINIMUM_GH_VERSION,
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_SOURCE_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
@@ -42,7 +43,12 @@ import {
   type ProductIssueConsentPort,
 } from "./product-issue-consent.ts";
 import { githubIssueCreateOutcome } from "./github/issue-create.ts";
-import { detectImageExt, type SavedUpload } from "./uploads.ts";
+import {
+  detectImageExt,
+  resolveImageUpload,
+  UPLOADS_DIR,
+  type SavedUpload,
+} from "./uploads.ts";
 import { run, type RunResult } from "./util/exec.ts";
 
 const ISSUE_CREATE_TIMEOUT_MS = 20_000;
@@ -51,6 +57,8 @@ const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_OPEN_REQUESTS = 512;
 const ATTACHMENTS_DISABLED_REASON =
   "Screenshot upload is waiting for first-party GitHub CLI support";
+const ATTACHMENTS_VERSION_REASON =
+  `Screenshot upload requires GitHub CLI ${PRODUCT_ISSUE_MINIMUM_GH_VERSION} or newer`;
 
 export type ProductIssueRunner = (
   bin: string,
@@ -70,6 +78,26 @@ export type ProductIssueAttachmentCapability =
 export const PRODUCT_ISSUE_ATTACHMENTS_DISABLED: ProductIssueAttachmentCapability = {
   enabled: false,
 };
+
+/** Shipped production capability. Locators still resolve through the daemon-owned upload store. */
+export const PRODUCT_ISSUE_ATTACHMENTS_ENABLED: ProductIssueAttachmentCapability = {
+  enabled: true,
+  uploadRoot: UPLOADS_DIR,
+  resolveUpload: resolveImageUpload,
+};
+
+/** Parse only stable `gh version X.Y.Z` output and compare numeric components. */
+export function supportsProductIssueAttachments(versionOutput: string): boolean {
+  const match = /^gh version (\d+)\.(\d+)\.(\d+)(?:\s|$)/m.exec(versionOutput);
+  if (!match) return false;
+  const installed = match.slice(1, 4).map(Number);
+  const minimum = PRODUCT_ISSUE_MINIMUM_GH_VERSION.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index++) {
+    if (installed[index]! > minimum[index]!) return true;
+    if (installed[index]! < minimum[index]!) return false;
+  }
+  return true;
+}
 
 export interface ProductIssueServiceOptions {
   runner?: ProductIssueRunner;
@@ -215,11 +243,11 @@ export function productIssueCreateArgs(
 }
 
 /**
- * The isolated anticipated attachment adapter. It remains unreachable from production.
+ * The first-party GitHub CLI attachment adapter.
  * Every locator is resolved again, contained by realpath, size-checked, and byte-sniffed
  * immediately before its absolute path becomes one repeated `--attach` pair.
  */
-export function anticipatedProductIssueAttachmentArgs(
+export function productIssueAttachmentArgs(
   capability: Extract<ProductIssueAttachmentCapability, { enabled: true }>,
   uploadIds: readonly string[],
   now: number,
@@ -327,7 +355,7 @@ export class ProductIssueService {
 
   async preflight(): Promise<ProductIssuePreflight> {
     const target = this.target();
-    const attachments = this.attachmentState();
+    let attachments = this.attachmentState();
     if (!target.ok) {
       return {
         ready: false,
@@ -369,7 +397,11 @@ export class ProductIssueService {
         version.outcomeUnknown
           ? "The GitHub CLI availability check did not report back; try again"
           : "GitHub CLI is unavailable; install gh and run `gh auth login`",
+        attachments,
       );
+    }
+    if (this.attachments.enabled && !supportsProductIssueAttachments(version.stdout)) {
+      attachments = { enabled: false, reason: ATTACHMENTS_VERSION_REASON };
     }
 
     const auth = await this.runner(ghBin(), ["auth", "status"], {
@@ -382,6 +414,7 @@ export class ProductIssueService {
         auth.outcomeUnknown
           ? "GitHub authentication could not be checked; try again"
           : "GitHub CLI is not authenticated; run `gh auth login`",
+        attachments,
       );
     }
 
@@ -397,6 +430,7 @@ export class ProductIssueService {
         repository.outcomeUnknown
           ? `The target repository ${target.repo} could not be checked; try again`
           : `GitHub CLI cannot reach ${target.repo}; verify that the repository exists and is accessible`,
+        attachments,
       );
     }
 
@@ -417,6 +451,7 @@ export class ProductIssueService {
         labels.outcomeUnknown
           ? `Labels in ${target.repo} could not be checked; try again`
           : `GitHub CLI could not list labels in ${target.repo}`,
+        attachments,
       );
     }
     let names: Set<string>;
@@ -437,6 +472,7 @@ export class ProductIssueService {
         target.repo,
         "labels",
         `GitHub CLI returned an unreadable label list for ${target.repo}`,
+        attachments,
       );
     }
     const missing = PRODUCT_ISSUE_REQUIRED_LABELS.filter((label) => !names.has(label));
@@ -445,6 +481,7 @@ export class ProductIssueService {
         target.repo,
         "labels",
         `Create the missing labels in ${target.repo}: ${missing.join(", ")}`,
+        attachments,
       );
     }
     return { ready: true, target: target.repo, attachments, problems: [] };
@@ -660,14 +697,44 @@ export class ProductIssueService {
       }
     }
 
+    // Reserve the opening before the read-only version probe yields. Without this, two
+    // attachment submissions can both pass the guard above and both reach issue creation.
+    // Pre-publication refusals release the reservation; from the create call onward it is
+    // retained unless gh proves that nothing was published.
+    this.claims.set(request.requestId, {
+      state: "in-flight",
+      expiresAt: now + REQUEST_TTL_MS,
+    });
+
     let attachmentArgs: string[] = [];
     if (this.attachments.enabled && request.attachmentUploadIds.length > 0) {
-      const resolved = anticipatedProductIssueAttachmentArgs(
+      let version: RunResult;
+      try {
+        version = await this.runner(ghBin(), ["--version"], {
+          timeoutMs: PREFLIGHT_TIMEOUT_MS,
+        });
+      } catch (error) {
+        this.claims.delete(request.requestId);
+        throw error;
+      }
+      if (
+        version.outcomeUnknown ||
+        version.code !== 0 ||
+        !supportsProductIssueAttachments(version.stdout)
+      ) {
+        this.claims.delete(request.requestId);
+        return configuration(`${ATTACHMENTS_VERSION_REASON}; nothing was published`);
+      }
+
+      const resolved = productIssueAttachmentArgs(
         this.attachments,
         request.attachmentUploadIds,
         now,
       );
-      if (!resolved.ok) return refused(`${resolved.error}; nothing was published`);
+      if (!resolved.ok) {
+        this.claims.delete(request.requestId);
+        return refused(`${resolved.error}; nothing was published`);
+      }
       attachmentArgs = resolved.args;
     }
 
@@ -675,11 +742,6 @@ export class ProductIssueService {
     const environment = this.environment(request);
     const body = renderProductIssueBody(draft, environment);
     const labels = productIssueLabels(request.type, source);
-    this.claims.set(request.requestId, {
-      state: "in-flight",
-      expiresAt: now + REQUEST_TTL_MS,
-    });
-
     let result: RunResult;
     try {
       result = await this.runner(
@@ -698,7 +760,7 @@ export class ProductIssueService {
       );
     }
 
-    const outcome = githubIssueCreateOutcome(result);
+    const outcome = githubIssueCreateOutcome(result, target.repo);
     switch (outcome.kind) {
       case "created":
         this.claims.set(request.requestId, {
@@ -706,8 +768,31 @@ export class ProductIssueService {
           expiresAt: this.now() + REQUEST_TTL_MS,
         });
         this.retireConfirmation(request.requestId);
-        return { outcome: "created", issueUrl: outcome.url, target: target.repo };
+        return {
+          outcome: "created",
+          issueUrl: outcome.url,
+          target: target.repo,
+          ...(outcome.partialFailure
+            ? {
+                warning: attachmentArgs.length > 0
+                  ? `The issue was created, but GitHub CLI reported that one or more ` +
+                    `screenshots were not attached.`
+                  : `The issue was created, but GitHub CLI also reported an error.`,
+              }
+            : {}),
+        };
       case "refused":
+        if (attachmentArgs.length > 0) {
+          this.claims.set(request.requestId, {
+            state: "terminal",
+            expiresAt: this.now() + REQUEST_TTL_MS,
+          });
+          this.retireConfirmation(request.requestId);
+          return unknown(
+            "GitHub CLI failed during attachment publication without returning the target " +
+              "issue URL; the issue may exist, so check GitHub before retrying",
+          );
+        }
         this.claims.delete(request.requestId);
         return refused(
           `GitHub CLI refused the issue${outcome.detail ? `: ${outcome.detail}` : ""}`,
@@ -742,11 +827,12 @@ export class ProductIssueService {
     target: string,
     code: ProductIssuePreflight["problems"][number]["code"],
     message: string,
+    attachments: ProductIssueAttachmentState = this.attachmentState(),
   ): ProductIssuePreflight {
     return {
       ready: false,
       target,
-      attachments: this.attachmentState(),
+      attachments,
       problems: [{ code, message }],
     };
   }

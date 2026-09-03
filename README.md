@@ -305,17 +305,18 @@ that row. Turn **Allow backlog autopilot** on for a source whose upstream is alr
 and every later sweep of it files ready-to-schedule tasks instead. See
 [task sources](docs/dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog).
 
-## Report a public product issue through an agent
+## Report a public product issue
 
-When you explicitly ask an agent to report a Mission Control product issue, the bundled Mission
-MCP server prepares the exact GitHub title, labels, body, and safe environment summary. Mission
-Control then opens that public preview in the dashboard and blocks publication until you select
-**Submit public issue**. Dismissing the review publishes nothing.
+Open **Report product feedback** from the topbar or command palette, or explicitly ask an agent to
+report a Mission Control product issue. Both paths prepare the exact GitHub title, labels, body,
+safe environment summary, and optional screenshots for review. Dashboard reports require two
+deliberate presses and native confirmation. Agent reports block until you select **Submit public
+issue**. Dismissing either confirmation publishes nothing.
 
-Reports are text-only in this release and use your installed, authenticated GitHub CLI. Screenshot
-upload remains disabled until the upstream CLI attachment contract ships and is verified. There is
-not yet a direct dashboard Feedback form or dashboard mutation endpoint; that confirmation-bound
-user-facing path is a separate follow-up.
+Reports use your installed, authenticated GitHub CLI. Screenshot attachments require `gh` 2.99.0
+or newer and accept up to five PNG, JPEG, GIF, or WebP images through Mission Control's bounded
+upload store. An older CLI keeps text-only reports available and explains why screenshot input is
+disabled.
 
 See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
 [security boundaries](docs/security.md#public-product-issue-reporting).

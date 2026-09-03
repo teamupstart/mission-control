@@ -252,12 +252,13 @@ problem rather than a bug should not cost you the paragraph that made that clear
 first thing in the dialog and never scrolls away. Do not paste credentials, customer data,
 file paths, or anything out of a private repository.
 
-Before the button lights up, the dialog shows you exactly what will be published: the target
-repository, the title, the three labels, the environment line, and the rendered issue body.
-None of that is composed in your browser - it is fetched from Mission Control, which is also
-the only thing that chooses it. The browser sends a type, a title and details, and nothing
-else. See [Public product issue reporting](security.md#public-product-issue-reporting) for
-what the environment line may contain and what it never contains.
+Before the button lights up, the dialog shows you the target repository, title, three labels,
+environment line, rendered issue body, and the screenshot chips selected for the report. Routing
+and public text are not composed in your browser - they are fetched from Mission Control, which is
+also the only thing that chooses them. The browser sends reporter content and opaque daemon-issued
+screenshot locators, never repository metadata or filesystem paths. See
+[Public product issue reporting](security.md#public-product-issue-reporting) for what the
+environment line and image locators may contain and what they never contain.
 
 **Publishing takes two presses and a system dialog.** **Report publicly** does not publish. It
 asks Mission Control to confirm, and Mission Control puts a system dialog in front of you naming
@@ -274,10 +275,12 @@ body is still on screen, so you can file it yourself. See
 [Public product issue reporting](security.md#public-product-issue-reporting) for why the
 confirmation cannot live in the browser.
 
-**Screenshots are visibly unavailable.** The region is there, and it explains why: the GitHub
-CLI has no first-party attachment support yet, and [cli/cli#13256](https://github.com/cli/cli/issues/13256)
-tracks it upstream. Paste, drag-and-drop and file selection are all inert until that lands.
-Describe what you saw in Details instead.
+**Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
+WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with
+one repeated `--attach` argument per image. On an older CLI the screenshot input is disabled with
+an upgrade explanation, while text-only reports continue to work. If some images upload and one
+later upload fails, the issue still exists; the result links to it and warns that screenshots are
+missing instead of offering a retry that would create a duplicate.
 
 Your draft **survives closing the dialog**. Close it to go and re-read the thing you are
 reporting and the words are still there when you come back. Two things clear it: **Clear**,

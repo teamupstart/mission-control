@@ -31,6 +31,8 @@ import { FAKE_GH_ISSUE_ID, FAKE_GH_ISSUE_URL } from "../fixtures/fake-agents.ts"
  */
 
 const EVIDENCE = artifactsDir("push-task-to-github");
+const OTHER_REPO_ISSUE_URL = "https://github.com/acme/other-repo/issues/123";
+const OTHER_REPO_ISSUE_ID = "acme/other-repo#123";
 
 /** The labels the seeded source sweeps on, and therefore the labels the issue must carry. */
 const LABELS = ["mission", "triage"];
@@ -258,7 +260,10 @@ test("the picker decides which source files the issue, not just which name is sh
   );
   await dialog.getByRole("button", { name: "Create GitHub issue" }).click();
   expect((await pushed).status(), "the daemon accepted the push").toBe(200);
-  await expect(dialog.getByRole("link", { name: FAKE_GH_ISSUE_ID })).toBeVisible();
+  await expect(dialog.getByRole("link", { name: OTHER_REPO_ISSUE_ID })).toHaveAttribute(
+    "href",
+    OTHER_REPO_ISSUE_URL,
+  );
 
   // What `gh` was handed, in full: the SECOND source's repo and labels, and one issue only.
   await expect

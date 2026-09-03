@@ -92,8 +92,8 @@ export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
  * a spec should be able to set one without disturbing the other.
  */
 export interface FakeGhProductScript {
-  preflight: "ok" | "gh-unavailable" | "gh-auth" | "repository" | "labels";
-  issueCreate: "created" | "refused" | "unknown";
+  preflight: "ok" | "gh-unavailable" | "gh-version" | "gh-auth" | "repository" | "labels";
+  issueCreate: "created" | "partial" | "partial-no-url" | "refused" | "unknown";
   /** The labels `repos/<target>/labels` reports. Defaults to the full required set. */
   labels?: readonly string[];
 }
@@ -283,7 +283,11 @@ function preflightRefusal(stage) {
 }
 if (argv[0] === "--version") {
   preflightRefusal("gh-unavailable");
-  process.stdout.write("gh version 0.0.0-fake\\n");
+  process.stdout.write(
+    product.preflight === "gh-version"
+      ? "gh version 2.98.0 (fake)\\n"
+      : "gh version 2.99.0 (fake)\\n",
+  );
 } else if (command.startsWith("auth status")) {
   preflightRefusal("gh-auth");
   process.stdout.write("Logged in to github.com as fake\\n");
@@ -307,12 +311,25 @@ if (argv[0] === "--version") {
   } else if (product.issueCreate === "unknown") {
     // The shape the daemon must treat as "may have happened": exit 0, no URL.
     process.stdout.write("\\n");
+  } else if (product.issueCreate === "partial") {
+    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stderr.write("failed to upload second.png: request failed\\n");
+    process.exit(1);
+  } else if (product.issueCreate === "partial-no-url") {
+    process.stderr.write("attachment publication failed before gh returned the issue URL\\n");
+    process.exit(1);
   } else {
     process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
   }
 } else if (command.startsWith("issue create")) {
-  // What the real gh prints on success: the URL of the issue, and nothing else.
-  process.stdout.write("${FAKE_GH_ISSUE_URL}\\n");
+  // What the real gh prints on success: the URL of the issue in the requested repository,
+  // and nothing else. An omitted --repo means gh derives the repository from the cwd; the
+  // fake's seeded checkout represents acme/demo-repo.
+  const repoIndex = argv.indexOf("--repo");
+  const requested = repoIndex >= 0 ? argv[repoIndex + 1] : "acme/demo-repo";
+  const parts = requested.split("/");
+  const host = parts.length === 3 ? parts.shift() : "github.com";
+  process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/123\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);

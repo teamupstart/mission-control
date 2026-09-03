@@ -284,17 +284,24 @@ export function ghIssueCreateArgs(cfg: GithubIssuesConfig, draft: PushDraft): st
  *
  *  1. The child never reported its own exit (`outcomeUnknown`) - our timeout, the OOM
  *     killer, a signal. GitHub may well have taken the request first. Unknown.
- *  2. A non-zero exit `gh` itself reported. It ran and refused: nothing was created, so a
- *     retry is safe. This is where a nonexistent `--label` surfaces, loudly.
- *  3. Exit 0 with a URL on stdout. The one success, and the URL is the identity - read
+ *  2. A URL for the target repository on stdout proves creation. This includes gh 2.99's
+ *     non-zero partial-attachment outcome; task-source pushes do not attach files, but the
+ *     shared classifier must preserve the external side effect if one is reported.
+ *  3. A non-zero exit without that URL is a refusal, so a retry is safe. This is where a
+ *     nonexistent `--label` surfaces, loudly.
+ *  4. Exit 0 with a matching URL on stdout. The URL is the identity - read
  *     through `externalIdFor`, the same function the sweep uses, so an issue pushed today
  *     and swept tomorrow has one id and is not filed twice.
- *  4. Exit 0 with nothing that looks like a URL. `gh` says it worked, so the issue almost
+ *  5. Exit 0 with no matching issue URL. `gh` says it worked, so the issue almost
  *     certainly exists, but we cannot name it - which is a worse position than a failure,
  *     not a better one. Unknown, never success and never a retryable refusal.
  */
-export function pushResultFrom(res: RunResult, ctx: PushContext): PushResult {
-  const outcome = githubIssueCreateOutcome(res);
+export function pushResultFrom(
+  res: RunResult,
+  ctx: PushContext,
+  expectedRepo: string,
+): PushResult {
+  const outcome = githubIssueCreateOutcome(res, expectedRepo);
   switch (outcome.kind) {
     case "created":
       return {
@@ -347,7 +354,7 @@ async function push(
     cwd: ctx.repoRoot,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  return pushResultFrom(res, ctx);
+  return pushResultFrom(res, ctx, cfg.repo);
 }
 
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {

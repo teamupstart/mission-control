@@ -89,7 +89,7 @@ import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
-  PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+  PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
   ProductIssueService,
 } from "./product-issues.ts";
 import { SettingsBackupService } from "./settings-backups/service.ts";
@@ -521,10 +521,10 @@ registry.setKeepAwakeStatus(keepAwake.status());
 // deliberately not persisted and is shared by every dashboard request through the route.
 const modelCatalogs = new HarnessModelCatalogService();
 
-// The only external writer for public product reports. Production attachment execution is
-// deliberately impossible until the upstream-release follow-up replaces this capability.
+// The only external writer for public product reports. Screenshot locators resolve through
+// the daemon-owned upload store and require a stable gh release with first-party attachments.
 const productIssues = new ProductIssueService({
-  attachments: PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
+  attachments: PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
 });
 
 // Line comments in the Files workspace. Constructed here rather than inside `buildApp`

@@ -284,13 +284,15 @@ export interface EvidenceReviewSpec<S extends ZodTypeAny> {
   /** How a failure names this evaluator in operator-facing text, e.g. "The comparison". */
   label: string;
   /**
-   * The one builtin rubric this evaluator owns, and how the prompt names it.
+   * The exact builtin rubric this attempt may use, and how the prompt names it. Null means the
+   * compiled id is not one this driver ships, so builtin guidance fails closed below. Persona
+   * guidance does not use this value.
    *
    * The ledger's `llmPurpose` is deliberately NOT here: the driver already declares it
    * (`ReviewDriver.llmPurpose`) because the engine reads it before the driver runs, and a second
    * copy on the spec would be a field nothing reads and everything could disagree with.
    */
-  builtinRubric: { id: string; text: string; label: string };
+  builtinRubric: { id: string; text: string; label: string } | null;
   buildPrompt(input: {
     guidance: ResolvedGuidance;
     intent: string;

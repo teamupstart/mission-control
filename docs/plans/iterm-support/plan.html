@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Full iTerm Support Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f5f8;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #172033;
+      --muted: #5e6b82;
+      --line: #d8deea;
+      --accent: #0a67c7;
+      --accent-soft: #e7f2ff;
+      --good: #16734a;
+      --warn: #965f00;
+      --shadow: 0 18px 45px rgba(35, 52, 79, 0.09);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10141c;
+        --panel: #171d28;
+        --panel-soft: #1d2532;
+        --text: #edf2fa;
+        --muted: #aeb9ca;
+        --line: #303a4b;
+        --accent: #78b7ff;
+        --accent-soft: #172d47;
+        --good: #67d6a3;
+        --warn: #f0c36b;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.3);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-wrap: anywhere;
+    }
+    a { color: var(--accent); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { font-size: 0.92em; }
+    .shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 32px auto 64px;
+    }
+    .hero, .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      padding: clamp(28px, 5vw, 54px);
+      background: linear-gradient(145deg, var(--panel), var(--accent-soft));
+    }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 0; font-size: clamp(2.15rem, 6vw, 4.4rem); letter-spacing: -0.045em; }
+    h2 { margin: 0 0 18px; font-size: clamp(1.5rem, 3vw, 2.1rem); }
+    h3 { margin: 30px 0 10px; font-size: 1.15rem; }
+    p { margin: 0 0 16px; }
+    .lede { max-width: 840px; margin: 18px 0 0; color: var(--muted); font-size: 1.1rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+    .chip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; background: var(--panel); font-size: 0.86rem; font-weight: 700; }
+    .toc { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 18px 0 0; padding: 0; list-style: none; }
+    .toc a { text-decoration: none; font-weight: 650; }
+    .section { margin-top: 22px; padding: clamp(24px, 4vw, 42px); }
+    .muted { color: var(--muted); }
+    .callout { border-left: 4px solid var(--accent); background: var(--panel-soft); padding: 16px 18px; border-radius: 8px; }
+    .decision { border-left-color: var(--good); }
+    .risk { border-left-color: var(--warn); }
+    .table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; background: var(--panel); }
+    th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--panel-soft); font-size: 0.85rem; letter-spacing: 0.02em; }
+    tr:last-child td { border-bottom: 0; }
+    ol, ul { padding-left: 1.35rem; }
+    li + li { margin-top: 7px; }
+    .steps { counter-reset: plan-step; list-style: none; padding: 0; }
+    .steps > li { position: relative; margin: 14px 0; padding: 18px 18px 18px 60px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); }
+    .steps > li::before { counter-increment: plan-step; content: counter(plan-step); position: absolute; left: 18px; top: 17px; width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--accent); font-weight: 800; }
+    .flow { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-soft); padding: 18px; }
+    .flow svg { display: block; min-width: 970px; width: 100%; height: auto; }
+    .flow text { fill: var(--text); font: 600 15px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .flow .node { fill: var(--panel); stroke: var(--line); stroke-width: 2; rx: 12; }
+    .flow .accent-node { fill: var(--accent-soft); stroke: var(--accent); }
+    .flow .arrow { stroke: var(--muted); stroke-width: 2.2; fill: none; marker-end: url(#arrowhead); }
+    pre { max-width: 100%; overflow-x: auto; padding: 16px; border-radius: 10px; background: var(--panel-soft); border: 1px solid var(--line); }
+    .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); }
+    .card h3 { margin-top: 0; }
+    .footer { margin-top: 24px; color: var(--muted); text-align: center; font-size: 0.88rem; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 20px, 1180px); margin-top: 10px; }
+      .hero, .section { border-radius: 13px; }
+      .two-col { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">Mission Control plan</p>
+      <h1>Full iTerm Support</h1>
+      <p class="lede">Make iTerm2 a first-class terminal emulator through the existing registry, with discovery, input, capture, focus, launch, rename, tmux composition, hook binding, setup, documentation, and end-to-end coverage.</p>
+      <div class="chips" aria-label="Plan summary">
+        <span class="chip">Backend ID: iterm</span>
+        <span class="chip">Display: iTerm2</span>
+        <span class="chip">No database migration</span>
+        <span class="chip">AppleScript adapter</span>
+      </div>
+      <nav aria-label="Plan sections">
+        <ul class="toc">
+          <li><a href="#outcome">Outcome</a></li>
+          <li><a href="#contract">Capability contract</a></li>
+          <li><a href="#design">Adopted design</a></li>
+          <li><a href="#work">Implementation work</a></li>
+          <li><a href="#verification">Verification</a></li>
+          <li><a href="#decisions">Decisions</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <section class="section" id="outcome">
+      <h2>Outcome</h2>
+      <p>Mission Control will treat iTerm2 as a first-class terminal emulator under the existing terminal registry. An operator using iTerm2 will be able to discover and name sessions, send prompts and key input, capture visible terminal content, focus an existing pane, open a worktree in a new iTerm2 window, rename the containing tab, and compose those behaviors with tmux.</p>
+      <div class="callout decision"><strong>Compatibility promise:</strong> setup and launch surfaces consume the shared registry. Existing WezTerm, Ghostty, and tmux preference and behavior remain unchanged.</div>
+    </section>
+
+    <section class="section" id="contract">
+      <h2>Capability Contract</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Capability</th><th>Required iTerm2 behavior</th><th>Acceptance boundary</th></tr></thead>
+          <tbody>
+            <tr><td>Availability</td><td>Detect the standard application or <code>ITERM_BIN</code>; do not start iTerm2 during discovery.</td><td>A closed iTerm2 remains closed after checks and enumeration.</td></tr>
+            <tr><td>Discovery</td><td>Enumerate windows, tabs, and sessions with stable identity, TTY, titles, active state, and best-effort working directory.</td><td>Windows, tabs, and splits stay distinct and correlate by TTY.</td></tr>
+            <tr><td>Naming</td><td>Use the tab title as the emulator-provided session name.</td><td>Rename is visible in iTerm2 and in the next enumeration.</td></tr>
+            <tr><td>Text and keys</td><td>Send literal text and the full shared key vocabulary.</td><td>PTY-level tests and a live shell receive the intended bytes.</td></tr>
+            <tr><td>Prompt paste</td><td>Use bracketed paste semantics for multi-line prompts.</td><td>Prompt injection avoids unsafe per-line execution.</td></tr>
+            <tr><td>Capture</td><td>Return visible session contents.</td><td>Capture failure does not break discovery.</td></tr>
+            <tr><td>Focus</td><td>Select the exact session, tab, and window, then activate iTerm2.</td><td>No action relies on a mutable tab index as its durable key.</td></tr>
+            <tr><td>Spawn</td><td>Open a new iTerm2 window in the requested worktree and run requested argv.</td><td>Working directory, argv, target, and title are correct.</td></tr>
+            <tr><td>tmux composition</td><td>Join iTerm2 sessions to tmux clients by TTY.</td><td>Existing clients focus and fallback attach opens a new iTerm2 window.</td></tr>
+            <tr><td>Hook binding</td><td>Capture <code>ITERM_SESSION_ID</code> and bind events to the matching session.</td><td>Hooks target the intended pane without leaking identity to child agents.</td></tr>
+            <tr><td>Setup and UI</td><td>Expose status, remedy, and launch target through shared registries.</td><td>Browser tests cover setup and launch.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="evidence">
+      <h2>Evidence and Constraints</h2>
+      <ul>
+        <li>The existing emulator contract already models list, write, capture, focus, spawn, and retitle. Routes, actions, and UI derive from the registry.</li>
+        <li>The installed iTerm2 3.6.11 scripting dictionary exposes windows, tabs, sessions, session unique IDs, TTYs, visible contents, writable tab titles, selection, text input, and new-window commands.</li>
+        <li><a href="https://iterm2.com/documentation-scripting.html">Official scripting documentation</a> confirms the object hierarchy. AppleScript is in maintenance mode, but unlike the Python API it needs no helper package, WebSocket connection, or separate API service.</li>
+        <li>AppleScript can launch an application, so the adapter must use the existing host-process gate before passive enumeration.</li>
+        <li>iTerm2 exports <code>ITERM_SESSION_ID</code>. Mission Control must capture that additive hook field and scrub it from daemon-owned agent children.</li>
+        <li>Terminal and setup IDs are append-only persisted contracts. <code>iterm</code> is appended; UI grouping must not reorder the source tuple.</li>
+        <li>The daemon keeps ownership of fixed installation commands and terminal actions. The browser sends only dependency and backend IDs.</li>
+      </ul>
+      <p class="muted">Additional references: <a href="https://iterm2.com/documentation-session-title.html">session titles</a> and the <a href="https://formulae.brew.sh/cask/iterm2">Homebrew iTerm2 cask</a>.</p>
+    </section>
+
+    <section class="section" id="design">
+      <h2>Adopted Design</h2>
+      <div class="two-col">
+        <article class="card">
+          <h3>Registry and availability</h3>
+          <p>Append <code>iterm</code>, register one emulator implementation, resolve <code>ITERM_BIN</code>, and declare the <code>iTerm2</code> host process. Existing fallback order remains WezTerm, Ghostty, then iTerm2.</p>
+        </article>
+        <article class="card">
+          <h3>Adapter and targeting</h3>
+          <p>Address every mutation by session unique ID, correlate by TTY, use the tab title for naming, and treat working directory as best effort. Send scripts and prompt payloads through <code>osascript</code> standard input.</p>
+        </article>
+        <article class="card">
+          <h3>Hook identity</h3>
+          <p>Add <code>itermSession</code> to the optional terminal environment schema, bind it after existing tmux and WezTerm precedence, and scrub inherited identity from SDK, one-shot, and headless launches.</p>
+        </article>
+        <article class="card">
+          <h3>Setup and user surfaces</h3>
+          <p>Append the setup record, add the fixed remedy <code>brew install --cask iterm2</code>, and let existing registry-driven settings and launch controls render the new backend.</p>
+        </article>
+      </div>
+
+      <h3>Runtime flow</h3>
+      <div class="flow" role="img" aria-label="iTerm2 runtime flow from UI and hooks through the terminal registry and AppleScript adapter to normalized panes">
+        <svg viewBox="0 0 1080 430" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="currentColor"/></marker>
+          </defs>
+          <rect class="node" x="20" y="45" width="190" height="62"/>
+          <text x="115" y="70" text-anchor="middle"><tspan x="115">Setup, launch, and</tspan><tspan x="115" dy="21">session actions</tspan></text>
+          <rect class="node" x="20" y="235" width="190" height="62"/>
+          <text x="115" y="260" text-anchor="middle"><tspan x="115">Terminal hooks with</tspan><tspan x="115" dy="21">ITERM_SESSION_ID</tspan></text>
+          <rect class="node" x="265" y="45" width="180" height="62"/>
+          <text x="355" y="82" text-anchor="middle">Existing typed routes</text>
+          <rect class="node" x="265" y="235" width="180" height="62"/>
+          <text x="355" y="260" text-anchor="middle"><tspan x="355">Terminal env schema</tspan><tspan x="355" dy="21">and pane binding</tspan></text>
+          <rect class="node accent-node" x="500" y="140" width="180" height="70"/>
+          <text x="590" y="181" text-anchor="middle">Terminal registry</text>
+          <rect class="node accent-node" x="735" y="45" width="160" height="62"/>
+          <text x="815" y="82" text-anchor="middle">iTerm2 adapter</text>
+          <rect class="node" x="735" y="140" width="160" height="62"/>
+          <text x="815" y="166" text-anchor="middle"><tspan x="815">Host-process</tspan><tspan x="815" dy="21">gate</tspan></text>
+          <rect class="node" x="735" y="235" width="160" height="62"/>
+          <text x="815" y="260" text-anchor="middle"><tspan x="815">AppleScript over</tspan><tspan x="815" dy="21">osascript stdin</tspan></text>
+          <rect class="node" x="920" y="235" width="140" height="62"/>
+          <text x="990" y="260" text-anchor="middle"><tspan x="990">iTerm2 windows,</tspan><tspan x="990" dy="21">tabs, sessions</tspan></text>
+          <rect class="node" x="735" y="340" width="160" height="62"/>
+          <text x="815" y="366" text-anchor="middle"><tspan x="815">Normalized panes</tspan><tspan x="815" dy="21">and TTY correlation</tspan></text>
+          <path class="arrow" d="M210 76 H265"/>
+          <path class="arrow" d="M210 266 H265"/>
+          <path class="arrow" d="M445 76 C480 76 475 160 500 166"/>
+          <path class="arrow" d="M445 266 C480 266 475 190 500 184"/>
+          <path class="arrow" d="M680 163 C710 150 705 82 735 76"/>
+          <path class="arrow" d="M815 107 V140"/>
+          <path class="arrow" d="M815 202 V235"/>
+          <path class="arrow" d="M895 266 H920"/>
+          <path class="arrow" d="M990 297 C990 345 930 371 895 371"/>
+          <path class="arrow" d="M735 371 C650 371 650 230 610 210"/>
+        </svg>
+      </div>
+
+      <h3>Capability implementation</h3>
+      <ol>
+        <li>Enumerate all windows, tabs, and sessions in one delimiter-safe AppleScript response.</li>
+        <li>Implement literal text, the shared key vocabulary, and bracketed paste wrappers.</li>
+        <li>Capture visible contents and isolate capture failure from discovery.</li>
+        <li>Select the exact session, containing tab, and window before activating iTerm2.</li>
+        <li>Create a new window with safely quoted working directory and argv, then return its target.</li>
+        <li>Retitle the tab containing the selected session and confirm it through enumeration.</li>
+      </ol>
+    </section>
+
+    <section class="section" id="work">
+      <h2>Implementation Work</h2>
+      <ol class="steps">
+        <li><strong>Extend stable contracts and registries.</strong> Append IDs, register setup and terminal implementations, widen host-gate documentation, and update exhaustive fakes and tests.</li>
+        <li><strong>Implement and harden the adapter.</strong> Add binary resolution, AppleScript helpers, safe parsing, stable targeting, complete capabilities, timeouts, and local failure behavior.</li>
+        <li><strong>Complete session binding.</strong> Capture and normalize <code>ITERM_SESSION_ID</code>, preserve tmux precedence, scrub daemon-owned child environments, and cover fixtures.</li>
+        <li><strong>Expose setup and launch behavior.</strong> Add the optional check and remedy, retain registry-derived UI, and cover setup and launch with Playwright.</li>
+        <li><strong>Document support and permissions.</strong> Add <code>ITERM_BIN</code>, support details, Automation permission recovery, and passive-versus-explicit launch behavior.</li>
+      </ol>
+    </section>
+
+    <section class="section" id="failures">
+      <h2>Failure and Compatibility Behavior</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Condition</th><th>Required behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Not installed</td><td>Setup reports Missing and the backend is absent from available targets.</td></tr>
+            <tr><td>Installed but closed</td><td>Passive checks do not launch it; explicit launch may start it.</td></tr>
+            <tr><td>Automation denied</td><td>iTerm2 actions fail with actionable diagnostics while other terminals continue working.</td></tr>
+            <tr><td>Stale session</td><td>The action fails for that target and never falls back to another session.</td></tr>
+            <tr><td>No shell working directory</td><td>The pane remains available with a null working directory.</td></tr>
+            <tr><td>Malformed adapter output</td><td>Invalid records are rejected and other terminal discovery survives.</td></tr>
+            <tr><td>Existing configuration</td><td>No migration is needed and existing backend priority stays unchanged.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="verification">
+      <h2>Verification</h2>
+      <h3>Automated</h3>
+      <ol>
+        <li>Adapter tests cover parsing, quoting, target traversal, keys, bracketed paste, capture, focus, spawn, retitle, timeouts, stale targets, and nonzero exits.</li>
+        <li>Enumeration and correlation tests cover the non-running host gate, exact TTY joins, active selection, and failure isolation.</li>
+        <li>Hook and environment tests cover identity capture, tmux precedence, normalization, and SDK/headless scrubbing.</li>
+        <li>Setup, probe, registry, target, and route tests cover the new append-only entries.</li>
+        <li>Playwright covers the visible setup row and an iTerm2 launch selection, including route payload and feedback.</li>
+        <li>Run focused tests, typecheck, lint, full unit tests, build, smoke, and the browser suite.</li>
+      </ol>
+      <h3>Live macOS acceptance</h3>
+      <ol>
+        <li>Confirm passive discovery does not launch a closed iTerm2.</li>
+        <li>Exercise Automation approval, denial, retry, and revoked permission.</li>
+        <li>Enumerate multiple windows, tabs, and splits, then verify identity, titles, TTYs, active state, and working directories.</li>
+        <li>Verify keys, long and multi-line paste, exact PTY bytes, capture, precise focus, retitle, and worktree spawn.</li>
+        <li>Verify tmux raise and fallback attach inside iTerm2.</li>
+        <li>Repeat critical flows from the packaged Electron app. Expand entitlements or release scope only if this proves a concrete requirement.</li>
+      </ol>
+    </section>
+
+    <section class="section" id="scope">
+      <h2>Scope Boundaries</h2>
+      <div class="two-col">
+        <article class="card">
+          <h3>Included</h3>
+          <ul>
+            <li>Discovery, input, capture, naming, launch, and focus</li>
+            <li>Hook binding and environment hygiene</li>
+            <li>Setup, documentation, browser coverage, and packaged validation</li>
+            <li>Small shared refactors needed to keep quoting and grouping single-sourced</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Excluded</h3>
+          <ul>
+            <li>Profile management, badges, triggers, or Python API plugins</li>
+            <li>Default-terminal changes, migrations, flags, or helper services</li>
+            <li>A new browser-side vendor branch</li>
+            <li>Release, signing, deployment, or CI changes without separately reviewed evidence</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="decisions">
+      <h2>Decisions Recorded</h2>
+      <ul>
+        <li>Use backend ID <code>iterm</code> and display label <code>iTerm2</code>.</li>
+        <li>Use built-in AppleScript behind the existing adapter contract, not the Python API.</li>
+        <li>Implement all iTerm2-supported capabilities, including capture and retitle.</li>
+        <li>Address sessions by unique ID, correlate by TTY, and keep working directory best effort.</li>
+        <li>Use a new iTerm2 window for the existing emulator spawn contract.</li>
+        <li>Append iTerm2 after WezTerm and Ghostty to preserve automatic priority.</li>
+        <li>Include hook identity propagation and environment scrubbing in full support.</li>
+        <li>Land one compatible feature change with no persisted-data migration.</li>
+        <li>Human review on 2026-09-03 approved this root plan as written and selected phased implementation planning.</li>
+      </ul>
+      <div class="callout"><strong>Open decisions:</strong> none remain. Human review confirmed the scope and acceptance bar and selected phased implementation planning.</div>
+    </section>
+
+    <p class="footer">Rendered from <code>docs/plans/iterm-support/plan.md</code> for Mission Control review.</p>
+  </main>
+</body>
+</html>

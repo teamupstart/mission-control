@@ -276,6 +276,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   documentation: "nmr-documentation",
   depth: "nmr-depth-join",
   quality: "nmr-code-quality-judge",
+  design: "nmr-code-design",
   evidenceDocumentation: "nmr-evidence-documentation-join",
   pullRequest: "nmr-pull-request",
   end: "nmr-end",
@@ -541,6 +542,62 @@ const NO_MISTAKES_REVIEW_V6: StagePipeline = {
 };
 
 /**
+ * Version 11: code design joins risk and quality in the same parallel code-review stage.
+ *
+ * Written out in full so version 10 remains immutable, for the reason every literal above is.
+ *
+ * Code Design Reviewer is a third member of the existing stage 3 rather than a stage of its own,
+ * so the version costs one model call per round and no extra wall-clock stage: the three judge the
+ * same submission and aggregate at the same depth join, which means a design finding reaches the
+ * session in the SAME repair packet as a risk finding instead of as a second round arguing about
+ * the same code. It sits here and not ahead of the deep reviews because a design objection is not
+ * a cheap gate - it costs a model call to reach either way, and gating on it first would delay
+ * risk feedback on a change whose shape is merely arguable.
+ *
+ * The role's guidance is scoped to the submitted change and forbids demanding a redesign as the
+ * price of passing, which is what makes it safe to put in a blocking stage of the flagship
+ * built-in rather than in an advisory position outside it.
+ */
+const NO_MISTAKES_REVIEW_V7: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.design, "code-design-reviewer"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.evidenceDocumentation,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+/**
  * The binding posture shipped before Foreman Complete became the application default.
  *
  * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
@@ -577,11 +634,12 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "Typecheck and test, then five built-in review roles: Intent Conformance first; Code Risk, "
-      + "and Code Quality in parallel; then Test Evidence and Documentation in parallel. Configured "
-      + "checks run for real, while unconfigured slots skip and pass. Every failure returns to the "
-      + "session for repair. The current version finishes both review stages before opening and "
-      + "verifying the pull request, then completes without requiring the optional GitHub Inspector gate.",
+      "Typecheck and test, then six built-in review roles: Intent Conformance first; Code Risk, "
+      + "Code Quality and Code Design in parallel; then Test Evidence and Documentation in "
+      + "parallel. Configured checks run for real, while unconfigured slots skip and pass. Every "
+      + "failure returns to the session for repair. The current version finishes both review "
+      + "stages before opening and verifying the pull request, then completes without requiring "
+      + "the optional GitHub Inspector gate.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -721,6 +779,18 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         resumptionPolicy: "auto",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 9,
+      },
+      {
+        // Version 11: Code Design Reviewer joins stage 3's parallel code review.
+        //
+        // Nothing else moves. Stage 4, the verified Pull Request action, the local completion
+        // posture and the binding defaults are all version 10's, so the only difference an
+        // operator rebinding from 10 to 11 gets is a third judgment on the same submission.
+        pipeline: NO_MISTAKES_REVIEW_V7,
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 10,
       },
     ],
   }),

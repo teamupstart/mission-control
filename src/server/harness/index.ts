@@ -35,7 +35,7 @@ import { piTranscript } from "./pi/transcript.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
 import { piControl } from "./pi/control.ts";
-import { discoverPiModels } from "./pi/model-catalog.ts";
+import { discoverConfiguredPiModels } from "./pi/model-catalog.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -196,7 +196,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // as dispatch, without making the Pi adapter import this registry back.
     models: {
       shipped: MODEL_CATALOG.pi,
-      discover: (signal) => discoverPiModels(resolveAgentBin("pi"), { signal }),
+      discover: (signal) => discoverConfiguredPiModels(resolveAgentBin("pi"), { signal }),
     },
     tui: null,
     control: piControl,

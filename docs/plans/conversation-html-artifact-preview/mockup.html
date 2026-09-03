@@ -308,23 +308,45 @@ const heightPick = document.getElementById("height");
 const collapse = document.getElementById("collapse");
 const toast = document.getElementById("toast");
 
-// A card is eligible for a document only when it is OPEN and near the viewport. This is the
+// A card is eligible for a document only while it is OPEN and near the viewport. This is the
 // plan's lazy-mount contract, implemented rather than described: the mockup is the reference an
 // implementer ports, so a mockup that eagerly loaded every frame would teach the wrong thing.
+//
+// Eligibility is REVOKED on exit, not just granted on entry. An artifact card holds a whole
+// HTML document rather than a few hundred bytes of diagram source, and the three-per-turn cap
+// bounds cards per TURN and not per session - so a long session read top to bottom would
+// otherwise accumulate parsed documents without limit. The 600px margin gives about 1200px of
+// travel between load and unload, and the text is already held in memory, so re-entry is a
+// re-parse rather than another fetch.
+//
+// The `root` is the SCROLLING LOG, not the viewport, and that is load-bearing rather than
+// tidy. `rootMargin` expands only the root's own bounds; clipping by an intermediate scroll
+// container is applied without it. With the default root the log clips the card away before
+// the margin can see it, so the 600px pre-load silently does nothing and the frame mounts at
+// the moment it becomes visible - which is the flash the margin exists to prevent.
 const nearViewport = new WeakSet();
-const observer = new IntersectionObserver((entries) => {
-  let changed = false;
-  for (const entry of entries) {
-    if (entry.isIntersecting && !nearViewport.has(entry.target)) {
-      nearViewport.add(entry.target);
-      changed = true;
-    }
-  }
-  if (changed) mount();
-}, { rootMargin: "600px 0px" });
+let observer = null;
 
 function observeCards() {
-  for (const card of document.querySelectorAll(".mock-pane .artifact-card")) observer.observe(card);
+  const cards = [...document.querySelectorAll(".mock-pane .artifact-card")];
+  if (!cards.length) return;
+  const root = cards[0].closest(".transcript-log") ?? null;
+  if (observer) observer.disconnect();
+  observer = new IntersectionObserver((entries) => {
+    let changed = false;
+    for (const entry of entries) {
+      const seen = nearViewport.has(entry.target);
+      if (entry.isIntersecting && !seen) {
+        nearViewport.add(entry.target);
+        changed = true;
+      } else if (!entry.isIntersecting && seen) {
+        nearViewport.delete(entry.target);
+        changed = true;
+      }
+    }
+    if (changed) mount();
+  }, { root, rootMargin: "600px 0px" });
+  for (const card of cards) observer.observe(card);
 }
 
 function mount() {

@@ -148,10 +148,42 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   That keeps `aria-expanded="true"` over content nobody can reach, which is a lie the
   screen-reader user pays for. Collapse it in state; let `aria-expanded` always describe a
   body that is really rendered.
-- **Lazy mount.** An `IntersectionObserver` with `rootMargin: "600px 0px"`, copied in shape
-  from `MermaidDiagram.tsx`. The frame mounts only when open **and** near the viewport, and a
-  collapsed card holds no document at all. The mockup demonstrates this rather than describing
-  it: a collapsed or off-screen card's frame carries no `srcdoc`.
+- **Lazy mount, and lazy UNMOUNT.** An `IntersectionObserver` with
+  `rootMargin: "600px 0px"`. A frame exists only while the card is open **and** near the
+  viewport; leaving either condition removes the document. The mockup demonstrates this rather
+  than describing it: a collapsed, not-yet-seen, or scrolled-away card's frame carries no
+  `srcdoc`.
+  Two details here differ from `MermaidDiagram.tsx`, deliberately, and both were measured in
+  the mockup rather than assumed:
+  - **It does not `disconnect()` after the first intersection.** Mermaid does, so a diagram
+    once seen is never unloaded - correct for a few hundred bytes of inline SVG, wrong for a
+    whole HTML document. The three-card cap bounds cards per *turn*, not per session, so a long
+    session read end to end would accumulate parsed documents without limit. Revoking on exit
+    bounds it to what is on screen; the 600px margin gives roughly 1200px of travel between
+    load and unload, and the fetched text stays in memory, so re-entry is a re-parse and not
+    another request.
+  - **The `root` is the transcript log, not the viewport.** `rootMargin` expands only the
+    root's own bounds, while clipping by an intermediate scroll container is applied without
+    it. With the default root the log clips the card away before the margin can see it, so the
+    600px pre-load silently does nothing and the frame mounts exactly as it becomes visible -
+    the flash the margin exists to prevent. Pass the scrolling `.transcript-log` as `root`,
+    falling back to the viewport when it cannot be found.
+
+    Measured in the mockup at four distances, all inside the 600px margin, with the card
+    scrolled below the log's bottom edge:
+
+    | Card is this far outside the log | Default (viewport) root | Log as root |
+    | --- | --- | --- |
+    | 53px | not intersecting | intersecting |
+    | 153px | not intersecting | intersecting |
+    | 253px | not intersecting | intersecting |
+    | 353px | not intersecting | intersecting |
+
+    The default root never once reported an intersection, so the margin is entirely inert
+    there. Note that `MermaidDiagram.tsx` uses the same default-root shape inside the Files
+    preview, which is also a scroll container, so its own 600px margin is likely inert for the
+    same reason - unverified in that pane, and out of scope here, but do not treat its shape as
+    proof the default root works.
 - **Fetch on first expand**, via `fetchSessionFile(sessionId, path, signal)`, then
   `inlinePreviewStyles(text, path, (p) => read p through the same api)`. Abort on unmount and
   on path change. Re-fetch on **Refresh**.
@@ -326,8 +358,8 @@ Look at the running app, not only the diff:
 - A turn presenting an artifact shows an expanded 420px card in Console/Board detail, and a
   collapsed header in a session card - collapsed in **state**, with `aria-expanded="false"`,
   not an open card whose body CSS hid.
-- A collapsed or off-screen card's frame holds no document, so opening a long session does not
-  fetch and render every artifact in it.
+- A collapsed, not-yet-seen, or scrolled-away card's frame holds no document, so neither
+  opening a long session nor reading through one accumulates rendered artifacts.
 - A reader's collapse survives switching to the Files tab and back, which means it survives the
   transcript unmounting.
 - An artifact whose page links a checkout-local stylesheet renders styled, proving the inlined
@@ -404,6 +436,20 @@ preview.
   ambiguity that contradicted a non-goal: the e2e step "comment on a block from the preview"
   now names the Files workspace explicitly, and a new step asserts the conversation preview is
   inert, written as a mutation-proved negative rather than an assertion that passes vacuously.
+- **2026-09-03, review round 6 reconciliation.** One comment, valid, and it exposed a
+  disagreement between this file and the mockup: the file promised that an **off-screen** card
+  carries no document, while the mockup only ever granted eligibility and never revoked it, so
+  a card once seen kept its document for the life of the page. I had earlier defended that as
+  deliberate on the grounds that `MermaidDiagram.tsx` behaves the same way; that was the wrong
+  inheritance. A Mermaid fence is a few hundred bytes of inline SVG and the cap here bounds
+  cards per turn rather than per session, so "never unload" is unbounded for this surface in a
+  way it is not for a diagram. The mockup now revokes on exit and the divergence from Mermaid
+  is written down so it is not copied back.
+  Implementing it surfaced a second defect in this file's own instruction, which had said to
+  copy Mermaid's observer shape: `rootMargin` expands only the root's bounds, and clipping by
+  an intermediate scroll container ignores it - so with the default root the transcript log
+  clips a card away before the 600px margin can act, and the pre-load does nothing. The
+  observer now takes the scrolling log as its `root`.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

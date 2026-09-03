@@ -322,8 +322,14 @@ if (argv[0] === "--version") {
     process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
   }
 } else if (command.startsWith("issue create")) {
-  // What the real gh prints on success: the URL of the issue, and nothing else.
-  process.stdout.write("${FAKE_GH_ISSUE_URL}\\n");
+  // What the real gh prints on success: the URL of the issue in the requested repository,
+  // and nothing else. An omitted --repo means gh derives the repository from the cwd; the
+  // fake's seeded checkout represents acme/demo-repo.
+  const repoIndex = argv.indexOf("--repo");
+  const requested = repoIndex >= 0 ? argv[repoIndex + 1] : "acme/demo-repo";
+  const parts = requested.split("/");
+  const host = parts.length === 3 ? parts.shift() : "github.com";
+  process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/123\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);

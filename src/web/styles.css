@@ -31097,7 +31097,7 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 .feedback-created-warning {
   margin: 0;
-  color: var(--warn);
+  color: var(--attention);
   font-size: 12px;
   line-height: 1.45;
 }

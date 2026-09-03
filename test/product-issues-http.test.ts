@@ -327,7 +327,7 @@ test("a confirmation is refused once the daemon's own derivation has moved", asy
     runner: async () => {
       calls++;
       return stubRun({
-        stdout: "https://github.com/acme/public-issues/issues/99\n",
+        stdout: `https://github.com/${repo}/issues/99\n`,
         stderr: "",
         code: 0,
       });

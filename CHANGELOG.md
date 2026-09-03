@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/teamupstart/mission-control/compare/v1.3.4...v1.4.0) (2026-09-03)
+
+
+### Features
+
+* **product-issues:** attach images with GitHub CLI ([#862](https://github.com/teamupstart/mission-control/issues/862)) ([ee03032](https://github.com/teamupstart/mission-control/commit/ee03032f7e0f6d682483cba4370e0a4430ad3ba1))
+
+
+### Bug Fixes
+
+* **updater:** stop auto-upgrade demanding authorization it never needed ([#858](https://github.com/teamupstart/mission-control/issues/858)) ([48e0473](https://github.com/teamupstart/mission-control/commit/48e0473b7cecf9e9a741fff36243717261cee62c))
+
 ## [1.3.4](https://github.com/teamupstart/mission-control/compare/v1.3.3...v1.3.4) (2026-09-01)
 
 

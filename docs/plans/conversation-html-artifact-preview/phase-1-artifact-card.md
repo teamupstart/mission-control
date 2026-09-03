@@ -25,7 +25,9 @@ four steps between "an agent wrote a page" and "I can comment on it" collapse to
 1. Detect artifact paths a turn presents, from the turn text plus the checkout listing.
 2. Render the card at the foot of the turn, in both the chat and terminal renderings.
 3. Preview the file in the app's existing sandbox at the reserved height, lazily.
-4. Refusal states, including "this checkout could not be listed".
+4. Refusal states for a file that cannot be previewed - too large, not text, gone, or
+   refused by containment. A session with no checkout listing is not one of these; it
+   renders no cards at all, for the reason given under step 2.
 5. The **Comment in Files** intent channel, end to end.
 6. Styles, in `src/web/styles.css`.
 7. Tests: one `node:test` file for detection, one Playwright spec for the feature.
@@ -105,7 +107,9 @@ export function conversationArtifacts(
 
 Rules, in order:
 
-1. Return `[]` fast when `paths.size === 0` or the text holds no `.htm` substring.
+1. Return `[]` fast when `paths.size === 0`, or when the text holds no `.htm` substring
+   **case-insensitively** - a listed `report.HTML` must survive the fast path to reach the
+   extension test below, which is itself case-insensitive.
 2. Find candidates two ways, and **only** these two - this is the approved "presented as an
    artifact" rule:
    - **Own line, optional short label.** A line whose only content is the path, or a
@@ -144,9 +148,14 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   **Comment in Files**. Accessible names: the card is `Preview of <path>`; Refresh is
   `Refresh preview of <path>`; the comment action is `Comment on <path> in Files`.
 - **Refusal body**, one sentence plus one explanation, for each of: over
-  `MAX_SESSION_PREVIEW_BYTES`, not decodable text, file gone, containment refusal, and
-  **listing refusal** (the daemon answered the file listing with an error, so no path in this
-  session resolves). The header keeps both actions in every refusal state.
+  `MAX_SESSION_PREVIEW_BYTES`, not decodable text, file gone, and containment refusal. The
+  header keeps both actions in every refusal state.
+- **There is deliberately no "could not be listed" card.** Membership in the checkout listing
+  is what makes a path an artifact, so an unavailable listing confirms no candidate and leaves
+  nothing to draw a card on. Do not add a shape-based fallback to manufacture one: that
+  weakens the membership boundary the whole detection rule rests on. A session whose listing
+  fails shows plain text and reaches its files through the Files tab, exactly as
+  `rehypeWorkspacePaths` already behaves with an empty listing.
 - **Its own `message` listener** for `HTML_PREVIEW_LINK_MESSAGE`, which must compare
   `event.source` against *this card's* frame `contentWindow` before acting, then resolve the
   href with `workspaceAssetPath`, probe it, and open it in Files. A card must never act on the
@@ -226,6 +235,10 @@ Cover the detection rules, which is where the behavior actually lives:
   nothing and yields no artifact.
 - A `.md`, `.png` or extensionless path never qualifies.
 - A path absent from the listing never qualifies, even in a qualifying position.
+- A listed `report.HTML` **does** qualify, so the case-insensitive fast path is pinned
+  rather than assumed.
+- An empty listing yields `[]` for text that would otherwise qualify, which is the
+  listing-failure behavior stated above.
 - A `:42` suffix is stripped before the listing lookup.
 - More than three qualifying artifacts yields exactly three, in first-appearance order.
 
@@ -279,7 +292,8 @@ Look at the running app, not only the diff:
   only in a session card.
 - **Comment in Files** lands on the file, in Preview, with comment mode armed, from both a
   cold open and an already-open Files tab.
-- Every refusal state renders its own sentence, with both header actions intact.
+- Every refusal state renders its own sentence, with both header actions intact - and a
+  session with no checkout listing renders no cards rather than an empty one.
 - `src/web/lib/htmlPreview.ts` is unmodified, and `PREVIEW_CSP` is byte-identical.
 - One reviewable pull request in `mission-control`, green, with the evidence attached rather
   than committed.
@@ -312,6 +326,16 @@ preview.
   before this file was written rather than carried into it: the self-contradictory reserved
   height (a 240px floor under a 204px cap in the capped log), the missing colour-scheme
   finding, and the missing listing-refusal state. This file inherits the corrected versions.
+- **2026-09-03, Inspector round 1-3 reconciliation.** Three comments on the artifacts, all
+  three verified against the repository rather than taken on faith. The short-pane height rule
+  (`minor`) was already corrected by the mockup's measurements before the comment landed. Two
+  were real defects and are fixed here: the promised "could not be listed" refusal card was
+  **unreachable by construction**, because detection only emits a card after
+  `matchCheckoutPaths` confirms membership, so a failed listing leaves nothing to draw on - the
+  state is removed and the honest degradation is stated instead, with an explicit instruction
+  not to add a shape-based fallback; and the detection fast path tested for `.htm`
+  case-sensitively while the extension rule was case-insensitive, which would have dropped a
+  listed `report.HTML`. Neither fix touches an approved decision or the plan's scope.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

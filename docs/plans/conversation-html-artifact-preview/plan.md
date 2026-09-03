@@ -91,10 +91,15 @@ after the tool chips.
 - **Refusals are stated, never blank.** Over the 5 MiB `MAX_SESSION_PREVIEW_BYTES` cap, not
   valid UTF-8, deleted since the turn was written, or refused by the daemon's containment
   check: the body says which, and the header keeps its links.
-- **"This checkout could not be listed" is its own refusal**, distinct from a missing file.
-  One live session answered `GET /api/sessions/:id/files` with
-  `500 could not list files in this checkout`, so no path in its turns resolves at all. A
-  card that reported "file not found" there would blame the artifact for a listing failure.
+- **A failed checkout listing produces no cards at all, and that is correct.** One live
+  session answered `GET /api/sessions/:id/files` with
+  `500 could not list files in this checkout`. Because membership in the listing is what
+  makes a path an artifact, an unavailable listing means no candidate is ever confirmed - so
+  there is no card on which to report the failure, and inventing one would mean detecting
+  artifacts by shape and weakening the membership boundary this design rests on. The session
+  degrades exactly as `rehypeWorkspacePaths` already does with an empty listing: the path
+  stays plain text, and the Files tab is still reachable. Cards appear on the render after a
+  listing arrives.
 
 ### Fixed height, and why not auto-fit
 
@@ -313,9 +318,11 @@ recomputing each script's SHA-256 against the policy's own hashes. The proposed 
 clearly marked block; everything else is the shipped stylesheet.
 
 What the mockup changed in this plan: the reserved-height rule (which was self-contradictory),
-the disclosure rule for the capped session-card log, the colour-scheme mat, the
-"could not be listed" refusal, and the `min-width` on the disclosure without which the header
-crushes its own directory instead of wrapping in a narrow column.
+the disclosure rule for the capped session-card log, the colour-scheme mat, and the
+`min-width` on the disclosure without which the header crushes its own directory instead of
+wrapping in a narrow column. The mockup's own "could not be listed" panel is what exposed the
+contradiction that removed that state from the design: a listing failure leaves nothing to
+draw a card on.
 
 ## Follow-up work, out of scope here
 

@@ -112,16 +112,12 @@
   border-radius: 6px;
 }
 
-/* The capped session-card log is 340px tall (`.transcript-log { max-height: 340px }`), so a
-   420px body is taller than the whole visible log there. Two things follow, and only ONE of
-   them belongs in CSS.
-   In CSS: the reserved height is smaller in the capped context - 240px, which with the 38px
-   header fits inside 340px and leaves conversation visible.
-   NOT in CSS: whether the card starts open. That is state, set from the context when the card
-   mounts. Hiding an `is-open` card's body with a rule here would leave the disclosure
-   reporting `aria-expanded="true"` over content nobody can reach. */
-.artifact-body { height: var(--artifact-height-capped, 240px); }
-.detail-conv .artifact-body { height: var(--artifact-height, 420px); }
+/* One reserved height, because the transcript has one host: `TranscriptPanel` is rendered
+   only by `layouts/ConsoleDetail.tsx`, always inside `.detail-conv`, which is the selector
+   that lifts `.transcript-log`'s base `max-height: 340px`. An earlier draft of this mockup
+   offered a capped "session card" context and a second 240px height for it; no host in the
+   app produces one, so both are gone. */
+.artifact-body { height: var(--artifact-height, 420px); }
 
 .artifact-refusal {
   display: flex;
@@ -159,12 +155,10 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
    scrolling log without shifting it - cannot happen at all. */
 .mock-pane { display: flex; flex-direction: column; min-width: 0; height: 100%;
   min-height: 0; overflow: hidden; border-right: 1px solid var(--border); }
-/* `.detail-conv` is the app's own class for the Console/Board reading surface, and it is
-   what lifts `.transcript-log`'s 340px cap. Dropping it puts the log back in the capped
-   session-card context, which is the second place a card can appear. */
+/* `.detail-conv` is the app's own class for the Console/Board reading surface - the only
+   place the transcript is ever mounted - and it is what lifts `.transcript-log`'s 340px cap. */
 .mock-pane .detail-conv { flex: 1; min-height: 0; }
-.mock-pane .mock-capped { display: flex; flex-direction: column; flex: 1; min-height: 0;
-  gap: 13px; padding: 16px 22px; }
+
 .mock-side { overflow: auto; padding: 16px; background: var(--bg-2); }
 .mock-side h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: .07em;
   color: var(--dim); text-transform: uppercase; }
@@ -196,15 +190,11 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
     </select>
   </label>
   <label><input type="checkbox" id="collapse"> Start collapsed</label>
-  <label>Context
-    <select id="context-pick">
-      <option value="detail">Console detail (log uncapped)</option>
-      <option value="card">Session card (log capped at 340px)</option>
-    </select>
-  </label>
+
 </div>
 <div class="mock-note">
-  Session <strong>Audit the SSE reconnect path</strong> (codex, idle) with its <strong>4 real turns</strong>.
+  Session <strong>Audit the SSE reconnect path</strong> (codex, idle) with its <strong>4 real turns</strong>,
+  in <code>.detail-conv</code> - the app's only transcript host.
   The card is drawn on the one turn that presents an artifact path. The preview iframe carries the app's
   real <code>htmlPreviewSource()</code> prefix - the same CSP and all four hashed bridge scripts, lifted from
   <code>src/web/lib/htmlPreview.ts</code> and verified against the policy's own hashes - around real
@@ -254,20 +244,8 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
   </div>
   <aside class="mock-side">
     <h2>Refusal states</h2>
-    <p>Every one of these is a state the live fleet actually produced while this mockup was built.</p>
+    <p>A file that cannot be previewed says so, and keeps both header actions.</p>
     
-        <section class="artifact-card is-open" aria-label="Preview of docs/reports/ephemeral-deploy-roadblocks/report.html">
-          <header class="artifact-head">
-            <button type="button" class="artifact-disclose" aria-expanded="true">
-              <span class="artifact-caret" aria-hidden="true"></span>
-              <span class="artifact-name">report.html</span>
-              <span class="artifact-dir">docs/reports/ephemeral-deploy-roadblocks/</span>
-            </button>
-            <button type="button" class="artifact-act">Refresh</button>
-            <button type="button" class="artifact-act is-primary">Comment in Files</button>
-          </header>
-          <div class="artifact-body artifact-refusal"><p><strong>This checkout could not be listed.</strong></p><p>The daemon refused the file listing for this session, so no path in its turns resolves to a file. Live refusal: <code>500 could not list files in this checkout</code>.</p></div>
-        </section>
         <section class="artifact-card is-open" aria-label="Preview of docs/reports/huge/report.html">
           <header class="artifact-head">
             <button type="button" class="artifact-disclose" aria-expanded="true">
@@ -292,6 +270,14 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
           </header>
           <div class="artifact-body artifact-refusal"><p><strong>This file is no longer in the checkout.</strong></p><p>It was named in this turn but has since been moved or deleted. The link and the comment action stay, so a stale card still says where it pointed.</p></div>
         </section>
+    <h2>Not a card at all</h2>
+    <p>A session whose checkout <strong>cannot be listed</strong> gets no card. One live session
+    really did answer <code>GET /api/sessions/:id/files</code> with
+    <code>500 could not list files in this checkout</code>, and this rail used to show a
+    "could not be listed" panel for it - but membership in the listing is what makes a path an
+    artifact, so a failed listing confirms nothing and leaves nothing to draw a card on. The
+    path stays plain text and the Files tab is still reachable, exactly as
+    <code>rehypeWorkspacePaths</code> already behaves with an empty listing.</p>
     <h2>What the rule rejects</h2>
     <p>A mission-control checkout holds <strong>292</strong> <code>.html</code> files. The approved rule draws a card only for a path the turn <em>presents</em>, so 291 of them stay silent - including a <code>docs/reports/&lt;slug&gt;/report.html</code> placeholder in a task prompt, which names no file and never resolves.</p>
   </aside>
@@ -406,25 +392,11 @@ document.addEventListener("click", (event) => {
   }
 });
 
-const contextPick = document.getElementById("context-pick");
-function applyContext() {
-  const holder = document.getElementById("context");
-  const capped = contextPick.value === "card";
-  holder.classList.toggle("detail-conv", !capped);
-  holder.classList.toggle("mock-capped", capped);
-  // The capped context's default is COLLAPSED, and it is real collapse: the body is not
-  // rendered and `aria-expanded` says so. Anything else leaves the control describing content
-  // the reader cannot reach.
-  collapse.checked = capped;
-  applyCollapse();
-}
-contextPick.addEventListener("change", applyContext);
 pick.addEventListener("change", mount);
 heightPick.addEventListener("change", applyHeight);
 collapse.addEventListener("change", applyCollapse);
 observeCards();
 applyHeight();
-applyContext();
 mount();
 // The app opens a conversation at its tail; open this one at the turn the card is on.
 requestAnimationFrame(() => {

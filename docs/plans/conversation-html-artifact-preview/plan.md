@@ -110,39 +110,35 @@ after the tool chips.
 
 ### Fixed height, and why not auto-fit
 
-The body reserves **420px** in `.detail-conv` - the Console and Board reading surface - and
-scrolls internally.
+The body reserves a fixed **420px** and scrolls internally. One number, everywhere, because
+the transcript has exactly one host.
 
-That number replaces an earlier rule in this plan that could not hold. It said "420px,
-floored at 240px and capped at 60% of the transcript log's height", written before the
-mockup measured the log. `.transcript-log` carries `max-height: 340px` in the app's base
-stylesheet, lifted only by `.detail-conv > .transcript .transcript-log { max-height: none }`.
-So in the capped context 60% of 340px is 204px, *below* the plan's own 240px floor: the two
-rules contradicted each other exactly where it mattered.
+That replaces an earlier rule in this plan that could not hold - "420px, floored at 240px and
+capped at 60% of the transcript log's height" - and then a second one that was designing for
+a host the app does not have. Both are worth recording, because the second mistake was mine
+and it survived two rounds of review before the code contradicted it:
 
-The measured rule instead keys off the class that already draws the distinction:
+- `.transcript-log` does carry `max-height: 340px` in the base stylesheet, lifted by
+  `.detail-conv > .transcript .transcript-log { max-height: none }`. So a *capped* log would
+  make 60% of its height 204px, under the plan's own 240px floor - the two rules contradicted
+  each other, which is why the percentage went away.
+- But **there is no capped host.** `className="transcript"` appears once in the codebase, in
+  `TranscriptPanel`; `TranscriptPanel` is rendered once, in `layouts/ConsoleDetail.tsx`; and
+  that render is always inside `<div className="detail-conv">`. So the base 340px cap never
+  applies to a mounted transcript at all. It is almost certainly a leftover from the Cards
+  layout that no longer exists, which `docs/plans/html-viewer/plan.md` still describes.
 
-- **`.detail-conv` (Console, Board detail)** - the log is uncapped, so the card is expanded
-  with a 420px body. Measured: 420px body in a 749px log.
-- **The session-card log (capped at 340px)** - the card arrives **collapsed**, as its
-  one-line header, and reserves no frame until the reader opens it. A 420px body there is
-  taller than the entire visible log, which puts the disclosure control out of reach of the
-  content it controls. The header, which says what the artifact is and carries both actions,
-  is the honest default amount of a page to put in a tile.
-- **Opened deliberately in that capped log, the body is 240px**, not 420px. With the 38px
-  header that is 278px inside a 340px log, so the card and some conversation around it are
-  visible at once.
+A mockup context switcher offering a "session card" log was therefore modelling a surface
+that does not exist, and the 240px second height, the context-dependent default and the
+collapse-versus-CSS question it raised were all scope for nobody. All three are gone.
 
-Two contexts, two fixed heights, and no percentage arithmetic - so there is exactly one
-expected height per context for an implementation and a test to agree on.
+What remains is the approved decision unqualified: the card arrives **expanded**, with a
+420px body, and the reader may collapse it. `aria-expanded` always describes a body that is
+really rendered, and the body wrapper stays in the DOM when collapsed so the disclosure's
+`aria-controls` keeps resolving - only the previewed document is dropped.
 
-**The collapse is state, not styling.** It would be easy to leave the card `is-open` in the
-capped context and hide the body with a CSS rule, and that is wrong: the disclosure would keep
-reporting `aria-expanded="true"` for content nobody can reach. The default disclosure state
-depends on the context; `aria-expanded` always describes a body that is really there.
-
-This keeps the approved "arrives expanded" decision where a reader is actually reading, and
-declines to swamp the surface where they are scanning.
+**If the transcript ever gains a second host, the 340px cap becomes live** and this decision
+has to be revisited. That is a note for whoever adds one, not scope here.
 
 Auto-fitting to the document's own height is the obvious alternative and it is rejected.
 The dashboard has no origin inside the frame, so the only way to learn a document's height
@@ -335,11 +331,16 @@ recomputing each script's SHA-256 against the policy's own hashes. The proposed 
 clearly marked block; everything else is the shipped stylesheet.
 
 What the mockup changed in this plan: the reserved-height rule (which was self-contradictory),
-the disclosure rule for the capped session-card log, the colour-scheme mat, and the
-`min-width` on the disclosure without which the header crushes its own directory instead of
-wrapping in a narrow column. The mockup's own "could not be listed" panel is what exposed the
-contradiction that removed that state from the design: a listing failure leaves nothing to
-draw a card on.
+the colour-scheme mat, the `min-width` on the disclosure without which the header crushes its
+own directory instead of wrapping in a narrow column, and the lazy-mount contract, which the
+mockup first described and now demonstrates. Its own "could not be listed" panel is what
+exposed the contradiction that removed that state from the design: a listing failure leaves
+nothing to draw a card on.
+
+It also produced one wrong turn worth recording. Its context switcher offered a capped
+"session card" log, which no host in the app produces, and the design grew a second reserved
+height and a context-dependent default to serve it before the code was checked. Inventing a
+surface is a real hazard of a mockup built beside the app rather than inside it.
 
 ## Follow-up work, out of scope here
 

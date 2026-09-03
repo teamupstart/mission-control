@@ -142,12 +142,14 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   across an unmount. Follow `src/web/lib/drafts.ts`, which is a module-level map for exactly
   this reason and says so - the card hydrates from it on mount and writes through on toggle.
   Drop a session's entries when its session is removed, alongside the existing draft cleanup.
-  Its **default, when the map has no entry**, depends on the context: open in the uncapped
-  reading surface (the approved default), closed in the capped session-card log.
-  **Do not implement the capped case by leaving the card open and hiding the body in CSS.**
-  That keeps `aria-expanded="true"` over content nobody can reach, which is a lie the
-  screen-reader user pays for. Collapse it in state; let `aria-expanded` always describe a
-  body that is really rendered.
+  Its **default, when the map has no entry, is open** - the approved decision, unqualified.
+  There is no host-context prop and no second default, because there is no second host; see
+  *Reserved height* below.
+- **`aria-expanded` must always describe a body that is really rendered**, and the body
+  wrapper must stay in the DOM when collapsed so the disclosure's `aria-controls` keeps
+  resolving. Collapse drops the previewed **document**, not the wrapper: `display: none` on
+  `.artifact-body` plus `srcdoc` removed from the frame. Removing the wrapper element would
+  leave `aria-controls` pointing at nothing and the relationship unexposed.
 - **Lazy mount, and lazy UNMOUNT.** An `IntersectionObserver` with
   `rootMargin: "600px 0px"`. A frame exists only while the card is open **and** near the
   viewport; leaving either condition removes the document. The mockup demonstrates this rather
@@ -269,10 +271,15 @@ Add the card styles. The mockup's `PROPOSED` block is the reference and is alrea
 against the app's tokens; port it rather than reinventing it. Two rules are load-bearing and
 were each found by measurement:
 
-- **Reserved height, context-dependent, and no percentage arithmetic.** `420px` inside
-  `.detail-conv`; `240px` in the capped session-card log, where the card also starts collapsed
-  (240px + the 38px header fits inside 340px with conversation still visible). Two contexts,
-  two fixed numbers, one expected height each for a test to assert.
+- **One reserved height: `420px`.** Not context-dependent, because the transcript has one
+  host. `className="transcript"` appears once in the codebase (in `TranscriptPanel`),
+  `TranscriptPanel` is rendered once (in `layouts/ConsoleDetail.tsx`), and that render is
+  always inside `<div className="detail-conv">` - which is the selector that lifts
+  `.transcript-log`'s base `max-height: 340px`. So the capped log never applies to a mounted
+  transcript. An earlier draft of this plan specified a second 240px height and a
+  context-dependent default for a "session card" log; no host produces one, and that scope is
+  deleted. If a second host is ever added, the 340px cap becomes live and this needs
+  revisiting.
 - **`min-width` on the disclosure.** With `min-width: 0` the disclosure shrinks instead of
   letting the header wrap, and the directory collapses to one character in a narrow column.
   `flex: 1 1 190px; min-width: 150px` wraps instead. This must live *in* the base
@@ -317,17 +324,27 @@ label and placeholder.
    Playwright can over CDP.
 4. Collapse it; assert the body is gone and `aria-expanded="false"`; leave the tab and return
    and assert the choice survived.
-5. Click **Comment in Files**; assert the Files tab is showing that file with **Preview**
+5. **Re-expand the card**, and wait for its document, before the next step. Step 4 leaves it
+   collapsed, and a collapsed card holds no document at all - so a click aimed at its frame
+   would land on nothing. This step exists because leaving it out is the same ordering mistake
+   twice.
+6. Assert the **conversation preview is inert** - and do it **here, before navigating**,
+   while the conversation frame still exists. Step 4 established that leaving the tab unmounts
+   the transcript, so an assertion about the card's own frame cannot run from the Files tab at
+   all. Click a block inside the conversation card's frame and assert no composer opens and no
+   thread is created.
+   Write it the way a negative assertion has to be written: read the thread count first, and
+   confirm the assertion actually **fails** if the card is made to send
+   `HTML_PREVIEW_COMMENT_MESSAGE`. One that passes because nothing was ever wired up proves
+   nothing. Note that inertness here is unconditional - the card never sends the message, so
+   no Files state is needed to make this meaningful.
+7. Click **Comment in Files**; assert the Files tab is showing that file with **Preview**
    pressed and **Comment mode** pressed.
-6. Comment on a block of the **Files workspace preview** - the surface the hand-off landed on,
-   never the conversation card's own frame - and read the thread back in the rail.
-7. Assert the **conversation preview stays inert**: with comment mode armed in Files, clicking
-   a block inside the conversation card's frame opens no composer and creates no thread. This
-   is the negative half of the non-goal above, so write it the way a negative assertion has to
-   be written: read the thread count before the click, and confirm the assertion actually
-   fails if the conversation card is made to send `HTML_PREVIEW_COMMENT_MESSAGE`. An assertion
-   that passes because nothing was ever wired up proves nothing.
-8. Assert a turn that names an `.html` path only mid-sentence has **no** card.
+8. Comment on a block of the **Files workspace preview** - the surface the hand-off landed on
+   - and read the thread back in the rail.
+9. Assert a turn that names an `.html` path only mid-sentence has **no** card.
+10. Assert the disclosure's `aria-controls` target resolves both expanded and collapsed, so a
+    collapse never breaks the control's relationship to its body.
 
 ### Commands
 
@@ -355,9 +372,10 @@ Look at the running app, not only the diff:
 ## Merge and exit criteria
 
 - Every command above passes, including `test:e2e` with the new spec.
-- A turn presenting an artifact shows an expanded 420px card in Console/Board detail, and a
-  collapsed header in a session card - collapsed in **state**, with `aria-expanded="false"`,
-  not an open card whose body CSS hid.
+- A turn presenting an artifact shows an expanded 420px card in Console/Board detail, and the
+  reader can collapse it.
+- The disclosure's `aria-controls` target resolves in **both** states, and `aria-expanded`
+  never claims a body that is not rendered.
 - A collapsed, not-yet-seen, or scrolled-away card's frame holds no document, so neither
   opening a long session nor reading through one accumulates rendered artifacts.
 - A reader's collapse survives switching to the Files tab and back, which means it survives the
@@ -450,6 +468,25 @@ preview.
   an intermediate scroll container ignores it - so with the default root the transcript log
   clips a card away before the 600px margin can act, and the pre-load does nothing. The
   observer now takes the scrolling log as its `root`.
+- **2026-09-03, review round 7 reconciliation.** Four comments, all valid, and one of them
+  cost this plan a whole invented branch. Asked to thread a host-context prop so the card
+  could pick its default, I checked what the hosts actually are: `className="transcript"`
+  appears once in the codebase, `TranscriptPanel` is rendered once, and that render is always
+  inside `.detail-conv` - the very selector that lifts the base 340px log cap. **There is no
+  capped host.** The mockup's "session card" context switcher was a surface I invented, and
+  the 240px second height, the context-dependent default and the collapse-versus-CSS argument
+  were all scope for nobody; two review rounds elaborated that branch before the code was
+  consulted. All of it is deleted, which also removes the need for the prop.
+  The remaining three: the mockup still rendered the "could not be listed" panel this plan had
+  already established cannot exist, so the reference UI contradicted the contract - removed.
+  The e2e sequence clicked the conversation frame after a step that unmounts it, which is
+  simply unexecutable - the inertness assertion now runs before navigation, where that frame
+  exists, and it no longer depends on Files being armed because the card's inertness is
+  unconditional. Rewriting it exposed the same mistake a second time, one step earlier: the
+  preceding step leaves the card collapsed, and a collapsed card holds no document, so the
+  click would still have landed on nothing. An explicit re-expand step now sits between them. And the collapse must keep the body wrapper in the DOM so `aria-controls`
+  still resolves; the mockup already did this (verified in both states), so the fix is to state
+  the invariant and assert it.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

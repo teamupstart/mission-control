@@ -256,6 +256,11 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
 - **Refusal body**, one sentence plus one explanation, for each of: over
   `MAX_SESSION_PREVIEW_BYTES`, not decodable text, file gone, and containment refusal. The
   header keeps both actions in every refusal state.
+  **A refusing card is still a card and carries the whole contract**: its disclosure needs
+  `aria-controls` pointing at a body that has an `id`, and its Refresh and Comment actions
+  need accessible names identifying their own artifact. Nothing about the contract is
+  conditional on there being a document to show - the reader can still collapse it, and still
+  wants to open it in Files, which is the state where that matters most.
 - **There is deliberately no "could not be listed" card.** Membership in the checkout listing
   is what makes a path an artifact, so an unavailable listing confirms no candidate and leaves
   nothing to draw a card on. Do not add a shape-based fallback to manufacture one: that
@@ -469,6 +474,7 @@ nowhere until review found it.
 | Collapse survives the Files tab and back | e2e 4 |
 | Inlined stylesheet renders styled | e2e 15 |
 | No nested interactive control in the header | `renderToStaticMarkup` |
+| Every card holds the contract, **refusing ones included** | `renderToStaticMarkup` over each refusal state |
 | Accessible names name their own artifact | every role/label selector in the spec |
 | **Comment in Files** from cold *and* warm | e2e 7, 8 |
 | Refusal sentences, and no cards without a listing | e2e 16, `node:test` classification, detection tests |
@@ -518,6 +524,8 @@ Look at the running app, not only the diff:
 - An artifact whose page links a checkout-local stylesheet renders styled, proving the inlined
   source reached `htmlPreviewSource`.
 - The header contains no nested interactive controls.
+- **Every** card satisfies the disclosure and naming contract, including the ones showing a
+  refusal rather than a document.
 - Every accessible name on a card names that card's own artifact, so a role/label selector
   finds the control belonging to the path it asked for.
 - **The 600px margin actually pre-loads.** A card scrolled to within 600px of the log but not
@@ -700,6 +708,20 @@ preview.
   response, so exercising the 5 MiB cap in Playwright would be waste - the phase file now
   names both layers, which it had not before despite `AGENTS.md` asking for them. Added a
   criterion-to-proof table so the next gap of this kind is visible rather than latent.
+- **2026-09-03, review round 17 reconciliation.** One comment, valid: the mockup's refusal
+  cards reported `aria-expanded="true"` with no `aria-controls` and no `id` on their bodies, so
+  the reference UI broke the contract this very file establishes. Fixing it found the same gap
+  in their two action buttons, which also carried no accessible names - the round 9 finding
+  again, in the cards that round had not looked at.
+  The reason both survived is worth recording, because it is about my checking rather than the
+  markup: my `aria-controls` assertion read `.mock-pane .artifact-card`, the first card, so the
+  rail's refusal cards were never examined. The check now walks **every** card on the page and
+  was confirmed to fail on the committed file before the fix - two cards, "no aria-controls;
+  2/2 actions unlabelled" - and to pass after. A narrowly scoped assertion is indistinguishable
+  from a passing one.
+  The design point is now stated too: a refusing card is still a card and carries the whole
+  contract, since the reader can still collapse it and still wants to open it in Files, which
+  is the state where that matters most.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

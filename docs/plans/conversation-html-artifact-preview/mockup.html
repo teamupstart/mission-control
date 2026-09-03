@@ -252,27 +252,27 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
     
         <section class="artifact-card is-open" aria-label="Preview of docs/reports/huge/report.html">
           <header class="artifact-head">
-            <button type="button" class="artifact-disclose" aria-expanded="true">
+            <button type="button" class="artifact-disclose" aria-expanded="true" aria-controls="refusal-body-1">
               <span class="artifact-caret" aria-hidden="true"></span>
               <span class="artifact-name">report.html</span>
               <span class="artifact-dir">docs/reports/huge/</span>
             </button>
-            <button type="button" class="artifact-act">Refresh</button>
-            <button type="button" class="artifact-act is-primary">Comment in Files</button>
+            <button type="button" class="artifact-act" aria-label="Refresh preview of docs/reports/huge/report.html">Refresh</button>
+            <button type="button" class="artifact-act is-primary" aria-label="Comment on docs/reports/huge/report.html in Files">Comment in Files</button>
           </header>
-          <div class="artifact-body artifact-refusal"><p><strong>Too large to preview.</strong></p><p>This file is over the 5 MiB preview cap (<code>MAX_SESSION_PREVIEW_BYTES</code>). Open it in Files to read it, or comment on it there.</p></div>
+          <div class="artifact-body artifact-refusal" id="refusal-body-1"><p><strong>Too large to preview.</strong></p><p>This file is over the 5 MiB preview cap (<code>MAX_SESSION_PREVIEW_BYTES</code>). Open it in Files to read it, or comment on it there.</p></div>
         </section>
         <section class="artifact-card is-open" aria-label="Preview of docs/plans/gone/plan.html">
           <header class="artifact-head">
-            <button type="button" class="artifact-disclose" aria-expanded="true">
+            <button type="button" class="artifact-disclose" aria-expanded="true" aria-controls="refusal-body-2">
               <span class="artifact-caret" aria-hidden="true"></span>
               <span class="artifact-name">plan.html</span>
               <span class="artifact-dir">docs/plans/gone/</span>
             </button>
-            <button type="button" class="artifact-act">Refresh</button>
-            <button type="button" class="artifact-act is-primary">Comment in Files</button>
+            <button type="button" class="artifact-act" aria-label="Refresh preview of docs/plans/gone/plan.html">Refresh</button>
+            <button type="button" class="artifact-act is-primary" aria-label="Comment on docs/plans/gone/plan.html in Files">Comment in Files</button>
           </header>
-          <div class="artifact-body artifact-refusal"><p><strong>This file is no longer in the checkout.</strong></p><p>It was named in this turn but has since been moved or deleted. The link and the comment action stay, so a stale card still says where it pointed.</p></div>
+          <div class="artifact-body artifact-refusal" id="refusal-body-2"><p><strong>This file is no longer in the checkout.</strong></p><p>It was named in this turn but has since been moved or deleted. The link and the comment action stay, so a stale card still says where it pointed.</p></div>
         </section>
     <h2>Not a card at all</h2>
     <p>A session whose checkout <strong>cannot be listed</strong> gets no card. One live session

@@ -305,6 +305,10 @@ Track the last honored nonce in a ref, and let the effect run again as the buffe
   not need a buffer.
 - Arm comment mode only once `commentable` is true, then record the nonce as honored so a
   later render does not re-arm after the reader has deliberately turned it off.
+- **Honored is per NONCE, never per path.** Recording "this path has been handled" would make
+  the second **Comment in Files** on the same file a no-op - and that is an ordinary thing to
+  do: arrive, turn comment mode off, read on, come back and ask again. The nonce is what
+  distinguishes a fresh request from a re-render, which is why it exists.
 - Depend on the request, `selectedPath`, `commentable` and `enterCommentMode`.
 
 Do not reach past `enterCommentMode` to `setCommentMode` - the `commentable` gate is the
@@ -383,7 +387,7 @@ label and placeholder.
    - the body is **not visible** to the reader,
    - its frame holds **no preview document**,
    - and the body **wrapper is still in the DOM**, so the disclosure's `aria-controls` target
-     keeps resolving (step 10, and the component contract above).
+     keeps resolving (step 11, and the component contract above).
 
    Then `aria-expanded="false"`, and leave the tab and return and assert the choice survived.
    An assertion that the wrapper is absent would contradict the invariant this card is built
@@ -403,11 +407,24 @@ label and placeholder.
    nothing. Note that inertness here is unconditional - the card never sends the message, so
    no Files state is needed to make this meaningful.
 7. Click **Comment in Files**; assert the Files tab is showing that file with **Preview**
-   pressed and **Comment mode** pressed.
-8. Comment on a block of the **Files workspace preview** - the surface the hand-off landed on
+   pressed and **Comment mode** pressed. This is the **cold** hand-off: no buffer yet, so the
+   effect has to wait for `commentable` before arming.
+8. Cover the **warm** hand-off too, because it takes a different path through that effect and
+   the exit criteria require both. With Files already open on that file and its buffer loaded,
+   `commentable` is true when the request arrives, so the arming is immediate rather than
+   deferred. Two cases, and the first is the one a nonce bug hides in:
+   - **Same file, comment mode turned off.** Turn **Comment mode** off in Files, return to
+     the conversation, and click **Comment in Files** again on the same card. Assert
+     **Preview** and **Comment mode** are armed *again*. An implementation that recorded
+     "this path was handled" instead of "this nonce was handled" passes step 7 and fails
+     here, which is exactly why this step exists.
+   - **A different file selected.** With Files open on some other file, click **Comment in
+     Files** on the card. Assert the selection moves to the card's path and arms there,
+     proving the `path === selectedPath` guard releases rather than blocks.
+9. Comment on a block of the **Files workspace preview** - the surface the hand-off landed on
    - and read the thread back in the rail.
-9. Assert a turn that names an `.html` path only mid-sentence has **no** card.
-10. Assert the disclosure's `aria-controls` target resolves both expanded and collapsed, so a
+10. Assert a turn that names an `.html` path only mid-sentence has **no** card.
+11. Assert the disclosure's `aria-controls` target resolves both expanded and collapsed, so a
     collapse never breaks the control's relationship to its body.
 
 ### Commands
@@ -612,6 +629,16 @@ preview.
   `maxWordSpan` over the listing and joins consecutive words specifically to match multi-word
   paths - so the checkout can hold one, and a link to it can only be angle-bracketed. Both
   forms are now spelled out, with three tests including the space case.
+- **2026-09-03, review round 15 reconciliation.** One comment, valid: a test-coverage gap on
+  a behaviour the exit criteria already required. The spec exercised **Comment in Files** only
+  from the conversation with Files closed - the cold path, where the effect must wait for
+  `commentable` - while the criteria require the already-open case too, which arms immediately
+  and therefore takes a different route through the same effect. The specific bug this hides is
+  worth naming: an implementation that records "this path was handled" rather than "this nonce
+  was handled" passes the cold test and silently ignores every later request for the same file,
+  which is an ordinary thing for a reader to do. Added both warm cases - same file after
+  turning comment mode off, and a different file selected - and made the per-nonce rule
+  explicit in the arming order rather than leaving it implied by the word "nonce".
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

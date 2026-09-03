@@ -1,10 +1,9 @@
 import { type EnsembleJson, type EnsemblePayloadEnvelope } from "@shared/ensemble.ts";
 import {
-  BEST_OF_N_BUILTIN_RUBRIC,
-  BEST_OF_N_BUILTIN_RUBRIC_TEXT,
   BEST_OF_N_COMPARISON_VERSION,
   BestOfNComparisonResultSchema,
   parseBestOfNComparison,
+  resolveBestOfNBuiltinRubric,
   type BestOfNComparison,
   type BestOfNComparisonResult,
   type BestOfNScorecard,
@@ -142,15 +141,14 @@ function validate(
 }
 
 async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
+  const rubric = context.policy.kind === "comparative_llm" && context.policy.guidance.kind === "builtin"
+    ? resolveBestOfNBuiltinRubric(context.policy.guidance.rubricId)
+    : null;
   return runEvidenceReview(context, {
     evaluatorKind: "comparative_llm",
     purpose: "comparative_review",
     label: "The comparison",
-    builtinRubric: {
-      id: BEST_OF_N_BUILTIN_RUBRIC,
-      text: BEST_OF_N_BUILTIN_RUBRIC_TEXT,
-      label: "the built-in rubric",
-    },
+    builtinRubric: rubric === null ? null : { ...rubric, label: "the built-in rubric" },
     buildPrompt: ({ guidance, intent, baseSha, subjects }) =>
       buildComparativePrompt({
         guidanceLabel: guidance.label,

@@ -151,10 +151,10 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
   `.artifact-body` plus `srcdoc` removed from the frame. Removing the wrapper element would
   leave `aria-controls` pointing at nothing and the relationship unexposed.
 - **Lazy mount, and lazy UNMOUNT.** An `IntersectionObserver` with
-  `rootMargin: "600px 0px"`. A **document** exists only while the card is open **and** near
-  the viewport; leaving either condition removes it. What is removed is the `srcdoc`, not the
-  body wrapper and not the `iframe` element - see the `aria-controls` invariant below, which
-  this must not break. The mockup demonstrates this rather than describing it: a collapsed,
+  `rootMargin: "600px 0px"`. A **document and its fetched source** exist only while the card
+  is open **and** near the viewport; leaving either condition releases both. What is removed
+  is the `srcdoc` and the retained text - not the body wrapper and not the `iframe` element,
+  see the `aria-controls` invariant below, which this must not break. The mockup demonstrates this rather than describing it: a collapsed,
   not-yet-seen, or scrolled-away card's frame carries no `srcdoc`.
   Two details here differ from `MermaidDiagram.tsx`, deliberately, and both were measured in
   the mockup rather than assumed:
@@ -187,9 +187,29 @@ drift this repository's `rehypeWorkspacePaths` notes warn about.
     preview, which is also a scroll container, so its own 600px margin is likely inert for the
     same reason - unverified in that pane, and out of scope here, but do not treat its shape as
     proof the default root works.
-- **Fetch on first expand**, via `fetchSessionFile(sessionId, path, signal)`, then
-  `inlinePreviewStyles(text, path, (p) => read p through the same api)`. Abort on unmount and
-  on path change. Re-fetch on **Refresh**.
+- **Fetch while ELIGIBLE, and drop the source when eligibility ends.** Same rule as the
+  document, not a second lifetime: fetch via `fetchSessionFile(sessionId, path, signal)` then
+  `inlinePreviewStyles(...)` when the card first becomes open-and-near, and **release the
+  retained text** when it stops being open-and-near. Abort in flight on unmount, on path
+  change, and on losing eligibility. Re-fetch on **Refresh**, and on becoming eligible again.
+
+  Removing only the `srcdoc` is not enough, and the earlier draft of this file was wrong to
+  claim revoking on exit "bounds it to what is on screen". The transcript does not virtualize
+  - `TranscriptPanel` renders every row of its window - so every card stays **mounted** with
+  its component state intact. A card that arrives expanded (the default) fetches as you scroll
+  past it, and would then hold its fetched, style-inlined string for as long as the session
+  view is open. At up to `MAX_SESSION_PREVIEW_BYTES` (5 MiB) per artifact across a 60-turn
+  default window that scroll-back extends, that is unbounded growth from nothing but reading.
+
+  With the fix the bound is *cards currently eligible* rather than *cards ever seen*.
+
+  **Rejected alternative: a bounded LRU cache of preview text.** It would avoid re-reading on
+  scroll-back, but it needs a size policy (entries? bytes?), an eviction order, and its own
+  tests, and it introduces a second lifetime for the same bytes - which is the thing this
+  card has already been bitten by. One eligibility rule for the fetch, the retained source
+  and the rendered document is the simpler contract. The cost is honest: scrolling back to a
+  card re-reads its file. That is a loopback read of a local file behind roughly 1200px of
+  hysteresis, and it makes a returning card show current bytes rather than stale ones.
 - **Render the INLINED source, not the fetched source.** Keep the result of
   `inlinePreviewStyles` - call it `previewText` - and pass *that* to `htmlPreviewSource`:
   `srcDoc={htmlPreviewSource(previewText)}`, with `sandbox={HTML_PREVIEW_SANDBOX}`. Passing the
@@ -311,6 +331,12 @@ Cover the detection rules, which is where the behavior actually lives:
   rather than assumed.
 - An empty listing yields `[]` for text that would otherwise qualify, which is the
   listing-failure behavior stated above.
+
+Memory is a behavioral contract here, not a footnote, so assert it rather than trusting it:
+a card that has lost eligibility must expose neither a document nor retained source. Whatever
+holds the fetched text (component state or a store) must be observably empty for that card -
+if the design makes that unobservable from a test, that is a reason to change the design, not
+to skip the assertion.
 - A `:42` suffix is stripped before the listing lookup.
 - More than three qualifying artifacts yields exactly three, in first-appearance order.
 
@@ -390,8 +416,10 @@ Look at the running app, not only the diff:
   reader can collapse it.
 - The disclosure's `aria-controls` target resolves in **both** states, and `aria-expanded`
   never claims a body that is not rendered.
-- A collapsed, not-yet-seen, or scrolled-away card's frame holds no document, so neither
-  opening a long session nor reading through one accumulates rendered artifacts.
+- A collapsed, not-yet-seen, or scrolled-away card holds **neither a rendered document nor a
+  fetched source**, so neither opening a long session nor reading end to end accumulates
+  artifact bytes. The retained total is bounded by the cards currently eligible, not by the
+  cards ever seen.
 - A reader's collapse survives switching to the Files tab and back, which means it survives the
   transcript unmounting.
 - An artifact whose page links a checkout-local stylesheet renders styled, proving the inlined
@@ -519,6 +547,17 @@ preview.
   visible, frame holds no document, wrapper still present - and the contract above says
   explicitly that what is removed is the `srcdoc` rather than the wrapper or the `iframe`.
   "The body is gone" was loose shorthand that had propagated into a test requirement.
+- **2026-09-03, review round 12 reconciliation.** One `major` comment, valid, and it caught
+  the previous round's fix being only half of one. Revoking `srcdoc` on exit frees the rendered
+  document but not the fetched, style-inlined **string**, which the card keeps in component
+  state - and `TranscriptPanel` does not virtualize (`rows.map` renders every row of its
+  window), so every card stays mounted and every string survives. Since cards arrive expanded
+  by default, simply reading a long session would fetch and retain up to 5 MiB per artifact
+  across a 60-turn window that scroll-back extends. The claim that revoking on exit "bounds it
+  to what is on screen" was therefore wrong as written. Eligibility now governs the fetch, the
+  retained source and the document as one rule; a bounded LRU was considered and rejected for
+  introducing a second lifetime for the same bytes. Added an assertion, because this is the
+  second consecutive round where a claim in this file outran what it specified.
 - **2026-09-03, stale-reference check.** `docs/plans/html-viewer/plan.md` describes a Cards
   layout that no longer exists; recorded here as a stale reference so this phase does not
   implement a third host for the card.

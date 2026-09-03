@@ -287,11 +287,16 @@ that links a checkout-local stylesheet renders styled rather than bare.
 
 ### Freshness
 
-The card fetches through `fetchSessionFile` when it is first expanded, and again when
-**Refresh** is pressed. There is no file-watch event for session files - the Files tab has a
-refresh button for the same reason - so a card whose artifact the agent has since rewritten
-shows what it read. That is the same contract the Files tab has, stated in the same place,
-rather than a second freshness model for the same bytes.
+The card fetches through `fetchSessionFile` when it becomes eligible - open and near the
+viewport - and again when **Refresh** is pressed. There is no file-watch event for session
+files, and the Files tab has a refresh button for the same reason, so a card whose artifact
+the agent has since rewritten shows what it last read.
+
+Because eligibility also governs the retained source (see *Fixed height* above and the phase
+file), scrolling away from a card and back re-reads the file. That is deliberate rather than
+incidental: holding every seen artifact's bytes for the life of the session view is unbounded
+growth from nothing but reading, and a returning card showing current bytes is the better of
+the two behaviours anyway.
 
 ## Non-goals
 

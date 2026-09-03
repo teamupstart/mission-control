@@ -195,6 +195,10 @@ body.mock { margin: 0; background: var(--bg); color: var(--fg);
 <div class="mock-note">
   Session <strong>Audit the SSE reconnect path</strong> (codex, idle) with its <strong>4 real turns</strong>,
   in <code>.detail-conv</code> - the app's only transcript host.
+  <strong>What this page cannot show:</strong> it preloads every artifact so the picker can switch
+  between them, so it demonstrates when a <em>document</em> is mounted and released but not the
+  fetch lifetime. In the app the fetched source is released with the document on the same
+  eligibility rule - the phase file specifies that, and it is asserted there rather than here.
   The card is drawn on the one turn that presents an artifact path. The preview iframe carries the app's
   real <code>htmlPreviewSource()</code> prefix - the same CSP and all four hashed bridge scripts, lifted from
   <code>src/web/lib/htmlPreview.ts</code> and verified against the policy's own hashes - around real

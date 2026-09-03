@@ -338,7 +338,8 @@
   <p><code>inlinePreviewStyles</code> runs on the fetched text exactly as it does in Files, so a plan page that links a checkout-local stylesheet renders styled rather than bare.</p>
 
   <h3>Freshness</h3>
-  <p>The card fetches through <code>fetchSessionFile</code> when it is first expanded, and again when <strong>Refresh</strong> is pressed. There is no file-watch event for session files - the Files tab has a refresh button for the same reason - so a card whose artifact the agent has since rewritten shows what it read. That is the same contract the Files tab has, stated in the same place, rather than a second freshness model for the same bytes.</p>
+  <p>The card fetches through <code>fetchSessionFile</code> when it becomes eligible - open and near the viewport - and again when <strong>Refresh</strong> is pressed. There is no file-watch event for session files, and the Files tab has a refresh button for the same reason, so a card whose artifact the agent has since rewritten shows what it last read.</p>
+  <p>Because eligibility also governs the retained source, scrolling away from a card and back re-reads the file. That is deliberate rather than incidental: holding every seen artifact's bytes for the life of the session view is unbounded growth from nothing but reading, and a returning card showing current bytes is the better of the two behaviours anyway.</p>
 
   <h2>Non-goals</h2>
   <ul>

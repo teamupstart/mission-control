@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline reader unification - Phased Implementation Plan</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1d21; --muted:#5c6672; --rule:#e2e6ea;
+  --card:#f7f9fb; --code-bg:#f2f4f7; --accent:#1f6feb; --warn:#9a6700; --warn-bg:#fff8e5;
+  --ok:#1a7f37; --bad:#b42318; --svg-box:#ffffff; --svg-stroke:#8b96a3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1215; --fg:#e6e9ed; --muted:#9aa5b1; --rule:#262c33;
+    --card:#161b21; --code-bg:#11151a; --accent:#6fa8ff; --warn:#e3b341; --warn-bg:#241d09;
+    --ok:#3fb950; --bad:#f85149; --svg-box:#161b21; --svg-stroke:#5c6672;
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0 auto; padding:2.5rem 1.5rem 5rem; max-width:52rem;
+  background:var(--bg); color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  overflow-x:hidden;
+}
+h1{font-size:1.85rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.02em}
+h2{font-size:1.28rem; margin:2.5rem 0 .7rem; padding-bottom:.3rem; border-bottom:1px solid var(--rule)}
+h3{font-size:1.02rem; margin:1.7rem 0 .5rem}
+.lede{color:var(--muted); font-size:1.05rem; margin:0 0 1.4rem}
+code{background:var(--code-bg); padding:.12em .35em; border-radius:4px; font-size:.88em;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code-bg); border:1px solid var(--rule); border-radius:8px;
+  padding:.9rem 1rem; overflow-x:auto; max-width:100%}
+pre code{background:none; padding:0; font-size:.85rem; line-height:1.55}
+blockquote{margin:1rem 0; padding:.6rem 1rem; border-left:3px solid var(--accent);
+  background:var(--card); color:var(--muted)}
+.tablewrap{overflow-x:auto; margin:1rem 0; border:1px solid var(--rule); border-radius:8px}
+table{border-collapse:collapse; width:100%; min-width:32rem; font-size:.92rem}
+th,td{text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--rule); vertical-align:top}
+th{background:var(--card); font-weight:600}
+tr:last-child td{border-bottom:none}
+.callout{background:var(--warn-bg); border:1px solid var(--warn); border-radius:8px;
+  padding:.9rem 1.1rem; margin:1.4rem 0}
+.callout strong{color:var(--warn)}
+.card{background:var(--card); border:1px solid var(--rule); border-radius:8px; padding:.2rem 1.1rem; margin:1.2rem 0}
+figure{margin:1.6rem 0}
+figure svg{display:block; width:100%; height:auto; max-width:100%}
+figcaption{color:var(--muted); font-size:.85rem; margin-top:.5rem; text-align:center}
+.pill{display:inline-block; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+  padding:.15em .5em; border-radius:999px; border:1px solid var(--rule); color:var(--muted); background:var(--card)}
+ul,ol{padding-left:1.4rem}
+li{margin:.3rem 0}
+.svgtxt{font:12px ui-monospace,SFMono-Regular,Menlo,monospace; fill:var(--fg)}
+.svgttl{font:600 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:var(--fg)}
+.svglbl{font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:var(--muted)}
+.box{fill:var(--svg-box); stroke:var(--svg-stroke); stroke-width:1.2}
+.boxok{fill:var(--svg-box); stroke:var(--ok); stroke-width:1.5}
+.boxbad{fill:var(--svg-box); stroke:var(--bad); stroke-width:1.5}
+.arw{stroke:var(--svg-stroke); stroke-width:1.3; fill:none}
+.status{color:var(--ok); font-weight:600}
+</style>
+</head>
+<body>
+
+<span class="pill">Phased plan &middot; docs/plans/pipeline-reader-unification/phased-plan.md</span>
+<h1>Pipeline reader unification</h1>
+<p class="lede">Phased implementation plan. <span class="status">Status: approved for scheduling.</span>
+Source plan: <code>docs/plans/pipeline-reader-unification/plan.md</code>.</p>
+
+<h2>Outcome</h2>
+<p>The Pipelines tab draws ONE reader for a feature, whichever side of the specification handoff it
+is on. A commission-selected feature gains the run's step ladder, gate verdicts and control verbs;
+a run-selected feature gains the Engineer attempts and specification handoff. The board session
+card's progress bar is unchanged.</p>
+
+<h2>Incorporated operator decisions</h2>
+<p>Resolved on 2026-09-03. Requirements, not implementation-time choices.</p>
+<ol>
+<li><strong>Leave the phase meter to Phase 3.</strong> This work stays presentational and edits no
+progress derivation. No change to <code>pipelineRunForCommission</code>,
+<code>pipelinePhaseMeter</code>, <code>pipelineStrip</code> or <code>PipelinePhaseMeter</code>.</li>
+<li><strong>The board session card draws one bar with both segments, always present.</strong> A
+requirement handed to <code>pipeline-attempt-recovery</code> Phase 3, recorded here and in the
+phase file's downstream handoff because Phase 3 owns the segmentation that could blank it.</li>
+<li><strong>After handoff the unified reader keeps Engineer attempts and specification handoff,
+collapsed by default.</strong></li>
+</ol>
+
+<h2>Investigated findings and plan corrections</h2>
+<ul>
+<li><code>src/web/pipelines/PipelineRuns.tsx:239</code> is the either/or:
+<code>commission ? ... : run ? ... :</code>. The commission arm and the
+<code>PipelineRunView</code> arm are mutually exclusive today.</li>
+<li><code>runActions</code>, <code>runConsoles</code>, <code>runVerbs</code>, <code>daemon</code>
+and <code>usePipelineRunDetail</code> are all computed from the <em>addressed</em> run
+(<code>PipelineRuns.tsx:70-115</code>). A selected commission never sets one, so those five values
+are empty for it. This is the mechanical cause of the missing verbs, not a styling gap.</li>
+<li><code>commissionRun</code> already exists (<code>PipelineRuns.tsx:76</code>), resolved from
+<code>commission.linkedRun</code> against the <code>runs</code> array. The fix reuses it rather
+than adding a lookup.</li>
+<li><code>PipelineRunView</code> already takes <code>actions</code> as a <code>ReactNode</code>
+slot (<code>src/web/pipelines/PipelineRunView.tsx:220</code>), so the verbs are injected rather
+than mounted. It owns its own header at <code>:232</code>, which is the only part that duplicates
+a commission header above it.</li>
+<li><code>src/web/pipelines/PipelineLadder.tsx:158</code> establishes the repository's disclosure
+idiom: a native <code>&lt;details&gt;</code> rather than a button plus state, with the reason
+recorded in-file. Decision 3 reuses it instead of introducing a second collapse mechanism.</li>
+<li>The board card needs no edit. <code>BoardView.tsx:225</code> already resolves
+<code>pipelineRun</code> to <code>commission.linkedRun</code> when a commission exists and falls
+back to the session's own correlation, and passes <code>pipelineCommission</code> alongside.
+<code>SessionTile.tsx:284</code> gates on
+<code>shown("pipelinePhases") &amp;&amp; ((session.pipeline &amp;&amp; pipelineRun) || pipelineCommission)</code>.</li>
+<li><code>openPipelineRun</code> (<code>src/web/App.tsx:1409</code>) already clears the commission
+selection, so selecting a run needs no new state. Only the reverse direction is missing an
+affordance.</li>
+<li><code>test/pipeline-runs-view.test.ts:143</code> asserts <code>step 2 of 3</code> for a
+commission with a linked run. That assertion is a consequence of
+<code>pipelineRunForCommission</code> returning <code>linkedRun</code> wholesale, which decision 1
+leaves to Phase 3. It stays green and untouched here.</li>
+</ul>
+
+<h2>Sizing and phase-count rationale</h2>
+<p>Estimated production implementation: <strong>240 to 300 gross non-test lines</strong>, of which
+roughly 60 are the existing commission pane markup moving out of <code>PipelineRuns.tsx</code>.</p>
+<p>Assumptions:</p>
+<ul>
+<li>One new reader component composing six regions; the commission pane markup relocates into it.</li>
+<li><code>activeRun</code> resolution plus rerouting five derived values in <code>PipelineRuns.tsx</code>.</li>
+<li>One suppression prop on <code>PipelineRunView</code>.</li>
+<li>Two <code>&lt;details&gt;</code> disclosures and one rail affordance.</li>
+<li>Around 35 lines of CSS.</li>
+<li>Tests, fixtures and documentation excluded from the estimate.</li>
+</ul>
+
+<div class="card">
+<p><strong>One phase, one task.</strong> The estimate is above the 200-line single-task threshold,
+so the default still applies and no additional phase is justified:</p>
+<ul>
+<li>This is one vertical UI slice. The reader component, the <code>activeRun</code> rerouting and
+the disclosures are the same behavior; none of them is independently useful.</li>
+<li>Every candidate split leaves a dead surface. A reader component that nothing mounts is
+unreachable code. <code>activeRun</code> rerouting without the composed reader changes which verbs
+a pane offers without giving that pane anywhere to draw the run it now addresses.</li>
+<li>There is no compatibility or migration boundary to protect. No schema, no persisted state, no
+wire contract, no generated artifact. Browser-only, behind one already-shipped tab.</li>
+<li>One merge boundary is the useful one, because the Playwright spec that proves the outcome has
+to drive the composed reader end to end. Split in two, neither half could carry that spec.</li>
+</ul>
+</div>
+
+<h2>Phase table</h2>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Phase</th><th>Name</th><th>Repository</th><th>Direct prerequisites</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Unified pipeline feature reader</td><td>mission-control (source repo)</td><td>planning session only</td></tr>
+</tbody>
+</table>
+</div>
+<p>Detailed phase file:
+<code>docs/plans/pipeline-reader-unification/phase-1-unified-pipeline-feature-reader.md</code>.</p>
+
+<h2>Dependency graph</h2>
+<pre><code>flowchart LR
+  P[Planning artifacts merged] --&gt; A[Phase 1: Unified pipeline feature reader]</code></pre>
+
+<h2>Concurrency and merge order</h2>
+<p>One phase, so no concurrency to arrange. The single task is gated on this planning session's
+pull request merging, which publishes the paths its intent names.</p>
+
+<h2>Relationship to pipeline-attempt-recovery</h2>
+<p>That effort is live in the backlog and its Phase 3 owns the progress semantics this plan
+deliberately excludes.</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Task</th><th>Phase</th><th>Status</th><th>Overlap with this plan</th></tr></thead>
+<tbody>
+<tr><td><code>204cb4ba</code></td><td>1: Durable identity and Git-ref evidence</td><td>running</td><td>none</td></tr>
+<tr><td><code>2ec4d2ba</code></td><td>2: Provider lifecycle and ownership</td><td>running (ai-conductor)</td><td>none</td></tr>
+<tr><td><code>225bc5c3</code></td><td>3: Lifecycle consumption and presentation</td><td>backlog</td><td>owns the phase meter; see below</td></tr>
+<tr><td><code>164a3269</code></td><td>4: Atomic recovery and adoption</td><td>backlog</td><td>none</td></tr>
+</tbody>
+</table>
+</div>
+
+<figure>
+<svg viewBox="0 0 720 236" role="img" aria-label="Disjoint file sets between this phase and pipeline-attempt-recovery Phase 3">
+  <text class="svgttl" x="0" y="14">Disjoint file sets, so the two merge in either order</text>
+
+  <rect class="boxok" x="0" y="32" width="330" height="104" rx="6"/>
+  <text class="svgtxt" x="14" y="54">This phase</text>
+  <text class="svglbl" x="14" y="74">PipelineRuns.tsx</text>
+  <text class="svglbl" x="14" y="90">PipelineRunView.tsx</text>
+  <text class="svglbl" x="14" y="106">PipelineFeatureReader.tsx (new)</text>
+  <text class="svglbl" x="14" y="122">styles.css</text>
+
+  <rect class="boxbad" x="390" y="32" width="330" height="104" rx="6"/>
+  <text class="svgtxt" x="404" y="54">pipeline-attempt-recovery Phase 3</text>
+  <text class="svglbl" x="404" y="74">pipeline-run-model.ts</text>
+  <text class="svglbl" x="404" y="90">shared/pipeline.ts</text>
+  <text class="svglbl" x="404" y="106">server/pipelines/commissions.ts</text>
+  <text class="svglbl" x="404" y="122">web/lib/attention.ts</text>
+
+  <line x1="360" y1="32" x2="360" y2="136" stroke="var(--rule)" stroke-width="1" stroke-dasharray="4 3"/>
+  <text class="svglbl" x="336" y="150">no shared file</text>
+
+  <rect class="box" x="0" y="172" width="720" height="52" rx="6"/>
+  <text class="svgtxt" x="14" y="193">Decision 2 crosses the line as a REQUIREMENT, not a code dependency</text>
+  <text class="svglbl" x="14" y="212">board card keeps one bar with both segments, always present; guarded by conductor-planning-continuity.spec.ts</text>
+</svg>
+<figcaption>The only thing crossing between the two efforts is a recorded requirement.</figcaption>
+</figure>
+
+<p><strong>File sets are disjoint.</strong> This phase edits <code>PipelineRuns.tsx</code>,
+<code>PipelineRunView.tsx</code>, <code>styles.css</code> and adds one component. Phase 3's step 6
+edits <code>src/web/pipelines/pipeline-run-model.ts</code>. Neither touches the other's files, so
+the two can merge in either order.</p>
+
+<p><strong>Recommended order is this phase first</strong>, so Phase 3 inherits one reader to verify
+rather than two panes. Phase 3 is gated on two running phases, one of them in another repository,
+so this work is not blocked behind that gate.</p>
+
+<div class="callout">
+<p><strong>Decision 2 is a requirement on Phase 3</strong>, carried in this phase's downstream
+handoff: its segmented model must keep the board card drawing one bar with both segments, always
+present.</p>
+</div>
+
+<h2>Cross-phase contracts</h2>
+<p>Single phase, so there are no inter-phase contracts. The two outward contracts are:</p>
+<ul>
+<li><strong>Owned here:</strong> the composed reader and <code>activeRun</code> resolution in
+<code>PipelineRuns.tsx</code>.</li>
+<li><strong>Not owned here, must not be changed:</strong> every progress derivation in
+<code>pipeline-run-model.ts</code>, the <code>PipelinePhaseMeter</code> component and its three
+call sites.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, <code>npm run smoke</code>, <code>npm run test:e2e</code>. Electron
+geometry coverage if the composed pane clips. The existing board-card and console meter assertions
+in <code>e2e/specs/conductor-planning-continuity.spec.ts</code> must stay green unchanged, since
+they are the regression guard for decision 2's surface.</p>
+
+</body>
+</html>

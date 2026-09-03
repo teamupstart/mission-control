@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline reader unification</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1d21; --muted:#5c6672; --rule:#e2e6ea;
+  --card:#f7f9fb; --code-bg:#f2f4f7; --accent:#1f6feb; --warn:#9a6700; --warn-bg:#fff8e5;
+  --ok:#1a7f37; --bad:#b42318; --svg-box:#ffffff; --svg-stroke:#8b96a3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1215; --fg:#e6e9ed; --muted:#9aa5b1; --rule:#262c33;
+    --card:#161b21; --code-bg:#11151a; --accent:#6fa8ff; --warn:#e3b341; --warn-bg:#241d09;
+    --ok:#3fb950; --bad:#f85149; --svg-box:#161b21; --svg-stroke:#5c6672;
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0 auto; padding:2.5rem 1.5rem 5rem; max-width:52rem;
+  background:var(--bg); color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  overflow-x:hidden;
+}
+h1{font-size:1.9rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.02em}
+h2{font-size:1.3rem; margin:2.6rem 0 .7rem; padding-bottom:.3rem; border-bottom:1px solid var(--rule)}
+h3{font-size:1.05rem; margin:1.8rem 0 .5rem}
+p,li{color:var(--fg)}
+.lede{color:var(--muted); font-size:1.05rem; margin:0 0 1.5rem}
+code{background:var(--code-bg); padding:.12em .35em; border-radius:4px; font-size:.88em;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code-bg); border:1px solid var(--rule); border-radius:8px;
+  padding:.9rem 1rem; overflow-x:auto; max-width:100%}
+pre code{background:none; padding:0; font-size:.85rem; line-height:1.55}
+blockquote{margin:1rem 0; padding:.6rem 1rem; border-left:3px solid var(--accent);
+  background:var(--card); color:var(--muted)}
+blockquote p{margin:.3rem 0}
+.tablewrap{overflow-x:auto; margin:1rem 0; border:1px solid var(--rule); border-radius:8px}
+table{border-collapse:collapse; width:100%; min-width:34rem; font-size:.92rem}
+th,td{text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--rule); vertical-align:top}
+th{background:var(--card); font-weight:600}
+tr:last-child td{border-bottom:none}
+.callout{background:var(--warn-bg); border:1px solid var(--warn); border-radius:8px;
+  padding:.9rem 1.1rem; margin:1.4rem 0}
+.callout strong{color:var(--warn)}
+.card{background:var(--card); border:1px solid var(--rule); border-radius:8px; padding:.2rem 1.1rem; margin:1.2rem 0}
+figure{margin:1.6rem 0}
+figure svg{display:block; width:100%; height:auto; max-width:100%}
+figcaption{color:var(--muted); font-size:.85rem; margin-top:.5rem; text-align:center}
+.pill{display:inline-block; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+  padding:.15em .5em; border-radius:999px; border:1px solid var(--rule); color:var(--muted); background:var(--card)}
+ul,ol{padding-left:1.4rem}
+li{margin:.3rem 0}
+.svgtxt{font:12px ui-monospace,SFMono-Regular,Menlo,monospace; fill:var(--fg)}
+.svgttl{font:600 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:var(--fg)}
+.svglbl{font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; fill:var(--muted)}
+.box{fill:var(--svg-box); stroke:var(--svg-stroke); stroke-width:1.2}
+.boxok{fill:var(--svg-box); stroke:var(--ok); stroke-width:1.5}
+.boxbad{fill:var(--svg-box); stroke:var(--bad); stroke-width:1.5}
+.arw{stroke:var(--svg-stroke); stroke-width:1.3; fill:none}
+</style>
+</head>
+<body>
+
+<span class="pill">Plan &middot; docs/plans/pipeline-reader-unification/plan.md</span>
+<h1>Pipeline reader unification</h1>
+<p class="lede">Make the Pipelines tab draw ONE reader for a feature, whichever side of the
+specification handoff it is on, and leave the phase meter's progress semantics to the
+already-approved <code>pipeline-attempt-recovery</code> Phase 3.</p>
+
+<p class="lede" style="margin-bottom:.8rem"><strong>Status:</strong> decisions resolved by the
+operator on 2026-09-03. They are requirements below, not implementation-time choices.</p>
+
+<h2>Incorporated operator decisions</h2>
+<ol>
+<li><strong>Leave the phase meter to Phase 3.</strong> This plan stays presentational and edits no
+progress derivation, so it cannot conflict with <code>pipeline-attempt-recovery</code> Phase 3
+step 6.</li>
+<li><strong>The board session card draws one bar with both segments, always present.</strong>
+Phase 3's segmented model must keep the Engineer segment complete and visible while the
+implementation segment fills beside it. The bar is never retargeted and never absent. Recorded
+here because Phase 3 owns the segmentation that could otherwise blank it.</li>
+<li><strong>After handoff the unified reader keeps the commission's Engineer attempts and
+specification handoff, collapsed by default.</strong></li>
+</ol>
+
+<h2>Why</h2>
+<p><code>src/web/pipelines/PipelineRuns.tsx:239</code> picks one of three readers and never composes two:</p>
+<pre><code>commission ? &lt;commission pane&gt;   // header, meter, Engineer attempts, handoff
+: run       ? &lt;PipelineRunView&gt;  // strip, gate verdicts, control verbs
+:             &lt;empty state&gt;</code></pre>
+
+<p>The two describe <strong>one 22-step sequence split by who owns the files</strong>, not two
+sequences. <code>ENGINEER_STEP_NAMES</code> (<code>src/shared/pipeline.ts:328</code>) is the
+leading prefix of the run's own step table <code>AI_CONDUCTOR_STEPS</code>
+(<code>src/shared/pipeline.ts:1034</code>): <code>worktree</code>, <code>memory</code>,
+<code>explore</code>, <code>complexity</code>, <code>prd</code>,
+<code>architecture_diagram</code>, <code>architecture_review</code>, <code>stories</code>,
+<code>conflict_check</code>, <code>plan</code>, <code>coherence_check</code> appear in both.
+Ten step names coincide.</p>
+
+<p>Three consequences an operator meets today:</p>
+<ul>
+<li><strong>Facts are unreachable from the side you are on.</strong> A selected commission offers
+no step ladder, no gate verdicts and no control verbs, because <code>runActions</code>,
+<code>daemon</code> and <code>usePipelineRunDetail</code> are all computed from the
+<em>addressed</em> run and a selected commission never sets one. A selected run offers no
+Engineer attempts and no spec handoff.</li>
+<li><strong>There is no click-through between them.</strong> The commission pane prints
+<code>commission.linkedRun.slug</code> as plain text (<code>PipelineRuns.tsx:274</code>), so a
+commission whose implementation run exists is a dead end.</li>
+<li><strong>The pane changes shape mid-feature.</strong> The same work is described by different
+furniture before and after handoff, which is what makes one thing read as two.</li>
+</ul>
+
+<h2>What this plan does NOT do</h2>
+<div class="callout">
+<p><strong>The phase meter's progress semantics are out of scope.</strong> They are already
+owned, planned and operator-approved.</p>
+</div>
+
+<p><code>docs/plans/pipeline-attempt-recovery/plan.md:41</code> names the exact defect:</p>
+<blockquote><p><code>src/web/pipelines/pipeline-run-model.ts:624</code> synthesizes a commission
+run with an unclassified halt and a denominator that includes work outside Engineer's scope.</p></blockquote>
+
+<p><code>docs/plans/pipeline-attempt-recovery/phased-plan.md:179</code> names the resolution:</p>
+<blockquote><p>Progress is segmented instead of using one misleading denominator. During
+Engineer, show the Engineer/DECIDE segment only. After handoff, show that segment complete and
+the implementation segment gated on specification merge.</p></blockquote>
+
+<p><code>phase-3-lifecycle-consumption-and-presentation.md</code> step 6 carries it, and its exit
+criterion is "Engineer progress completes at handoff without counting BUILD or SHIP steps".</p>
+
+<p>That plan was approved for scheduling on 2026-09-03 and is live in the backlog as
+<code>225bc5c3</code> (Phase 3), gated on <code>204cb4ba</code> (Phase 1, running) and
+<code>2ec4d2ba</code> (Phase 2, running, ai-conductor). <strong>The approved answer is to SEGMENT
+the two progress records.</strong> An earlier suggestion in this session to UNION them onto one
+22-wide meter is superseded and is not proposed here.</p>
+
+<p>Per decision 1 this plan is deliberately narrow: the reader composition that no phase owns. It
+touches no progress derivation, which also means it cannot conflict with Phase 3 in
+<code>pipeline-run-model.ts</code>.</p>
+
+<h2>Hard constraint: the board card keeps its bar</h2>
+<p><strong>The board session-card progress bar must survive for BOTH a commission and a run.</strong>
+This is an operator requirement on this work and on Phase 3's segmentation.</p>
+
+<p>The good news is that this plan requires no change to it whatsoever. All three meter surfaces
+already hand both halves to one component:</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Surface</th><th>Call site</th><th>Props today</th></tr></thead>
+<tbody>
+<tr><td>Board session card</td><td><code>src/web/components/layouts/SessionTile.tsx:285</code></td><td><code>run</code> = commission's linked run, else session's run; <code>commission</code></td></tr>
+<tr><td>Console detail</td><td><code>src/web/components/layouts/ConsoleDetail.tsx:571</code></td><td><code>run</code> = commission's linked run; <code>commission</code></td></tr>
+<tr><td>Runs Pipelines pane</td><td><code>src/web/pipelines/PipelineRuns.tsx:248</code></td><td><code>run</code> = commission's linked run; <code>commission</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p><code>BoardView.tsx:225</code> already resolves <code>pipelineRun</code> to
+<code>commission.linkedRun</code> when a commission exists and falls back to the session's own
+correlation, and passes <code>pipelineCommission</code> alongside.
+<code>SessionTile.tsx:284</code> gates on
+<code>shown("pipelinePhases") &amp;&amp; ((session.pipeline &amp;&amp; pipelineRun) || pipelineCommission)</code>,
+so it draws for a commission with no run and for a run with no commission.</p>
+
+<div class="card">
+<p>Nothing in this plan edits <code>SessionTile.tsx</code>, <code>BoardView.tsx</code>,
+<code>ConsoleDetail.tsx</code>, <code>PipelinePhaseMeter.tsx</code>,
+<code>pipelineRunForCommission</code> or <code>pipelinePhaseMeter</code>. The board bar is
+untouched by construction, not by promise.</p>
+</div>
+
+<p>What this plan DOES do for it is hand Phase 3 a decided requirement, because segmentation is
+where the bar could regress: a segmented model that rendered only the Engineer segment would
+blank the board bar the moment implementation begins.</p>
+
+<div class="callout">
+<p><strong>Requirement for Phase 3 (decision 2):</strong> the board card draws ONE bar carrying
+BOTH segments, always present. At handoff the Engineer segment stays complete and visible and the
+implementation segment fills beside it. The bar is never retargeted to implementation alone and is
+never absent for a feature that has either kind of evidence. The board's axis is width, so this
+stays one row rather than two stacked mini-bars.</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 720 250" role="img" aria-label="Evidence sources feeding one phase meter component used by three surfaces, with the board card unchanged">
+  <text class="svgttl" x="0" y="14">Evidence ownership, and the three surfaces that already compose both</text>
+
+  <rect class="boxok" x="0" y="34" width="180" height="52" rx="6"/>
+  <text class="svgtxt" x="12" y="55">Commission</text>
+  <text class="svglbl" x="12" y="72">Mission Control owns</text>
+
+  <rect class="boxok" x="0" y="106" width="180" height="52" rx="6"/>
+  <text class="svgtxt" x="12" y="127">Run</text>
+  <text class="svglbl" x="12" y="144">ai-conductor owns</text>
+
+  <path class="arw" d="M180 60 L268 88" marker-end="url(#ar1)"/>
+  <path class="arw" d="M180 132 L268 104" marker-end="url(#ar1)"/>
+
+  <rect class="box" x="270" y="72" width="164" height="48" rx="6"/>
+  <text class="svgtxt" x="282" y="92">PipelinePhaseMeter</text>
+  <text class="svglbl" x="282" y="109">run + commission props</text>
+
+  <path class="arw" d="M434 96 L520 52" marker-end="url(#ar1)"/>
+  <path class="arw" d="M434 96 L520 96" marker-end="url(#ar1)"/>
+  <path class="arw" d="M434 96 L520 140" marker-end="url(#ar1)"/>
+
+  <rect class="boxok" x="522" y="30" width="196" height="44" rx="6"/>
+  <text class="svgtxt" x="534" y="49">Board session card</text>
+  <text class="svglbl" x="534" y="65">unchanged by this plan</text>
+
+  <rect class="box" x="522" y="76" width="196" height="40" rx="6"/>
+  <text class="svgtxt" x="534" y="101">Console detail</text>
+
+  <rect class="box" x="522" y="120" width="196" height="40" rx="6"/>
+  <text class="svgtxt" x="534" y="145">Runs Pipelines pane</text>
+
+  <rect class="boxbad" x="270" y="180" width="448" height="52" rx="6"/>
+  <text class="svgtxt" x="282" y="201">Progress semantics: Phase 3 of pipeline-attempt-recovery</text>
+  <text class="svglbl" x="282" y="219">segmented denominator, out of scope here</text>
+  <path class="arw" d="M352 120 L352 180" stroke-dasharray="4 3" marker-end="url(#ar1)"/>
+
+  <defs>
+    <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--svg-stroke)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>One meter component, three surfaces, both evidence sources. The dashed edge is the
+part Phase 3 owns and this plan leaves alone.</figcaption>
+</figure>
+
+<h2>Design</h2>
+
+<h3>One reader, composed from what exists</h3>
+<p>Replace the either/or with a single <code>&lt;PipelineFeatureReader&gt;</code> that renders
+whichever regions have evidence, in a fixed order, and never fewer than one:</p>
+<ol>
+<li>Header: eyebrow, title, caption. Sourced from the commission when there is one, else the run.</li>
+<li>Phase meter. Unchanged component, unchanged props.</li>
+<li>Engineer attempts. When a commission exists. Expanded before handoff; collapsed by default
+once a run exists, per decision 3.</li>
+<li>Specification handoff. When <code>commission.handoff</code> exists, collapsed by default once a
+run exists. The implementation-run line becomes a button that selects the run rather than plain
+text.</li>
+<li>Run strip, gate verdicts and control verbs, by mounting the existing
+<code>PipelineRunView</code>. When a run exists, whether it was addressed directly or reached
+through a commission.</li>
+<li>Blockers and errors, from both sources, deduplicated.</li>
+</ol>
+<p><code>PipelineRunView</code> is reused as-is. Its own header stays suppressed when a commission
+header is already above it, which is the only prop it gains.</p>
+
+<h3>One resolved run, so the run-shaped wiring stops being commission-blind</h3>
+<p>Today <code>run</code> is the addressed run only. Introduce one resolved value and feed
+everything from it:</p>
+<pre><code>const activeRun = addressedRun ?? commissionRun;</code></pre>
+<p>and route <code>usePipelineRunDetail</code>, <code>daemon</code>, <code>runVerbs</code>,
+<code>runActions</code> and <code>runConsoles</code> through <code>activeRun</code> instead of
+<code>run</code>. That is what gives a commission-selected feature its ladder, its verdicts and
+its park / unpark / grant verbs, and it is the substantive behavior change in this plan.</p>
+<p>Selection precedence is unchanged: an addressed run still wins over a commission's linked run,
+so a deep link keeps naming exactly one thing.</p>
+
+<h3>Rail</h3>
+<p>Unchanged grouping. Two additions:</p>
+<ul>
+<li>A commission row whose <code>linkedRun</code> is observed gets a secondary affordance opening
+the run address directly, so the rail can still address either identity.</li>
+<li>Selecting a run continues to clear the commission selection through the existing
+<code>openPipelineRun</code> (<code>src/web/App.tsx:1409</code>). No new state.</li>
+</ul>
+
+<h2>Flow change</h2>
+<figure>
+<svg viewBox="0 0 720 330" role="img" aria-label="Before and after of the pipeline reader selection flow">
+  <text class="svgttl" x="0" y="14">Before: an either/or over two identities</text>
+
+  <rect class="box" x="0" y="28" width="104" height="38" rx="6"/>
+  <text class="svgtxt" x="20" y="52">Selection</text>
+  <path class="arw" d="M104 47 L150 47" marker-end="url(#ar2)"/>
+
+  <rect class="box" x="152" y="28" width="112" height="38" rx="6"/>
+  <text class="svgtxt" x="176" y="52">commission?</text>
+
+  <path class="arw" d="M264 40 L330 30" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="284" y="26">yes</text>
+  <rect class="boxbad" x="332" y="10" width="388" height="38" rx="6"/>
+  <text class="svgtxt" x="344" y="34">Commission pane: meter, attempts, handoff</text>
+
+  <path class="arw" d="M208 66 L208 96" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="214" y="86">no</text>
+  <rect class="box" x="152" y="98" width="112" height="38" rx="6"/>
+  <text class="svgtxt" x="192" y="122">run?</text>
+
+  <path class="arw" d="M264 110 L330 96" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="284" y="94">yes</text>
+  <rect class="boxbad" x="332" y="76" width="388" height="38" rx="6"/>
+  <text class="svgtxt" x="344" y="100">PipelineRunView: strip, verdicts, verbs</text>
+
+  <path class="arw" d="M208 136 L208 162" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="214" y="154">no</text>
+  <rect class="box" x="152" y="164" width="112" height="34" rx="6"/>
+  <text class="svgtxt" x="180" y="186">Empty</text>
+
+  <line x1="0" y1="218" x2="720" y2="218" stroke="var(--rule)" stroke-width="1"/>
+  <text class="svgttl" x="0" y="240">After: one reader composes regions from whichever evidence exists</text>
+
+  <rect class="box" x="0" y="254" width="104" height="38" rx="6"/>
+  <text class="svgtxt" x="20" y="278">Selection</text>
+  <path class="arw" d="M104 273 L150 273" marker-end="url(#ar2)"/>
+
+  <rect class="box" x="152" y="252" width="150" height="42" rx="6"/>
+  <text class="svgtxt" x="164" y="270">Resolve activeRun</text>
+  <text class="svglbl" x="164" y="286">addressed ?? linkedRun</text>
+
+  <path class="arw" d="M302 273 L348 273" marker-end="url(#ar2)"/>
+  <rect class="boxok" x="350" y="248" width="150" height="50" rx="6"/>
+  <text class="svgtxt" x="362" y="268">PipelineFeature</text>
+  <text class="svgtxt" x="362" y="286">Reader</text>
+
+  <path class="arw" d="M500 273 L546 273" marker-end="url(#ar2)"/>
+  <rect class="box" x="548" y="244" width="172" height="58" rx="6"/>
+  <text class="svglbl" x="558" y="262">header + meter + attempts</text>
+  <text class="svglbl" x="558" y="277">+ handoff + strip</text>
+  <text class="svglbl" x="558" y="292">+ verdicts + verbs</text>
+
+  <path class="arw" d="M227 252 L227 232 L425 232 L425 248" stroke-dasharray="4 3" marker-end="url(#ar2)"/>
+  <text class="svglbl" x="300" y="228">usePipelineRunDetail(activeRun)</text>
+
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--svg-stroke)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>The either/or becomes one composed reader over a single resolved run.</figcaption>
+</figure>
+
+<h2>Sequencing against Phase 3</h2>
+<p>Recommended: land this <strong>before</strong> Phase 3, kept strictly presentational.</p>
+<ul>
+<li>It edits <code>PipelineRuns.tsx</code> and adds one component. Phase 3's step 6 edits
+<code>pipeline-run-model.ts</code>. Disjoint files, no conflict.</li>
+<li>Phase 3 then inherits one reader to verify rather than two, which shrinks its step 7.</li>
+<li>Phase 3 is gated on two running phases and one of them is in another repository, so this is
+not blocked behind that gate.</li>
+</ul>
+
+<h2>Tests</h2>
+<p>Behavior changes, so per <code>AGENTS.md</code> this needs a Playwright spec.</p>
+<ul>
+<li><code>e2e/specs/runs-pipelines-tab.spec.ts</code>: extend. A selected commission with an
+observed linked run shows Engineer attempts AND the run strip AND a control verb in one pane.
+Selecting the run directly shows the same regions. The handoff's implementation-run control
+navigates to the run address.</li>
+<li><code>e2e/specs/pipeline-controls.spec.ts</code>: extend. Control verbs are reachable for a
+commission-selected feature, which today they are not.</li>
+<li>The same spec pins decision 3: before handoff the Engineer attempts region is expanded, and once
+a linked run is observed it is collapsed but still reachable by its disclosure control.</li>
+<li><code>e2e/specs/conductor-planning-continuity.spec.ts</code>: keep the existing board-card and
+console meter assertions green, unchanged. They are the regression guard for the board bar.</li>
+<li><code>test/pipeline-runs-view.test.ts</code>: extend for the composed reader's region presence.
+<code>pipelineRunForCommission</code> assertions stay as they are, including the
+<code>step 2 of 3</code> case at <code>:143</code>, because this plan does not change that
+derivation. Phase 3 owns updating it.</li>
+<li><code>test/pipeline-phase-meter.test.ts</code>: untouched.</li>
+</ul>
+<p>Definition of done: <code>npm run typecheck</code>, <code>npm run lint</code>,
+<code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>,
+<code>npm run test:e2e</code>.</p>
+
+<h2>Documentation</h2>
+<ul>
+<li><code>docs/pipelines.md</code>: describe one reader and the commission-to-run relationship.
+Leave the "Provider evidence is the source of truth" paragraph at <code>:34</code> alone; Phase 3
+revises it.</li>
+<li>No change to <code>docs/ui.md</code> unless the rail affordance needs naming.</li>
+</ul>
+
+<h2>Risks</h2>
+<ul>
+<li><strong>Reader height.</strong> Composing regions makes the pane taller and
+<code>PipelineRunView</code> is already the tallest thing on the tab. Decision 3's collapsed
+default bounds this, since the two commission regions stop contributing height once implementation
+is the live work. If the composed pane still clips, add Electron geometry coverage per
+<code>AGENTS.md</code> rather than only asserting markup.</li>
+<li><strong>Phase 3 drift.</strong> If Phase 3 lands first, this plan's <code>activeRun</code>
+change still applies but the reader must be re-read against whatever segmented meter it
+introduces.</li>
+<li><strong>Double-stated halts.</strong> A commission blocker and a run halt can describe one
+stop. The reader deduplicates; the spec should pin that it says it once.</li>
+</ul>
+
+</body>
+</html>

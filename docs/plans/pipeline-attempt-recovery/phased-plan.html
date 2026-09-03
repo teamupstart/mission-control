@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipeline Attempt Recovery - Phased Implementation Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f5f8; --panel: #fff; --ink: #172033; --muted: #5b687c;
+      --line: #d9e0e9; --blue: #175cd3; --blue-soft: #eaf2ff;
+      --green: #067647; --green-soft: #e7f8ef; --amber: #a15c00; --amber-soft: #fff3dd;
+      --shadow: 0 12px 34px rgba(23, 32, 51, .08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1420; --panel: #151f2e; --ink: #edf2f8; --muted: #a9b5c6;
+        --line: #2e3c50; --blue: #8bb8ff; --blue-soft: #183353;
+        --green: #75d6a5; --green-soft: #12392b; --amber: #ffc56b; --amber-soft: #453218;
+        --shadow: 0 12px 34px rgba(0,0,0,.28);
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(1160px, calc(100% - 30px)); margin: auto; padding: 28px 0 60px; }
+    .hero, section { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+    .hero { min-height: 520px; padding: clamp(26px, 5vw, 54px); display: grid; align-content: center; background: linear-gradient(135deg, var(--panel), color-mix(in srgb, var(--blue-soft) 55%, var(--panel))); }
+    section { margin-top: 20px; padding: 28px; }
+    .eyebrow { color: var(--blue); font-weight: 800; font-size: 12px; text-transform: uppercase; letter-spacing: .12em; margin: 0 0 12px; }
+    h1 { margin: 0; max-width: 900px; font-size: clamp(38px, 7vw, 67px); line-height: 1.03; letter-spacing: -.04em; }
+    h2 { margin: 0 0 14px; font-size: 28px; letter-spacing: -.02em; }
+    h3 { margin: 0 0 7px; font-size: 18px; }
+    p { margin: 7px 0 13px; }
+    .lead { color: var(--muted); font-size: 18px; max-width: 900px; }
+    .result { margin-top: 25px; padding: 20px 22px; border-left: 5px solid var(--green); background: var(--green-soft); border-radius: 11px; font-size: 21px; font-weight: 720; max-width: 980px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+    .chip { padding: 7px 11px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); font-size: 13px; }
+    .grid { display: grid; gap: 15px; }
+    .two { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .card { border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: color-mix(in srgb, var(--panel) 94%, var(--blue-soft)); }
+    .decision { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 30%, var(--line)); }
+    .phase { position: relative; padding-left: 58px; }
+    .phase::before { content: attr(data-phase); position: absolute; left: 17px; top: 18px; width: 29px; height: 29px; border-radius: 50%; display: grid; place-items: center; color: var(--panel); background: var(--blue); font-weight: 800; }
+    .phase + .phase { margin-top: 12px; }
+    .meta { color: var(--muted); font-size: 13px; }
+    ul, ol { margin: 8px 0 13px; padding-left: 22px; }
+    li + li { margin-top: 6px; }
+    code { padding: .12em .35em; border-radius: 5px; background: var(--blue-soft); font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { padding: 12px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+    .flow { overflow-x: auto; }
+    svg { width: 100%; min-width: 850px; height: auto; display: block; }
+    .audit { border-left: 5px solid var(--amber); background: var(--amber-soft); }
+    footer { text-align: center; color: var(--muted); font-size: 13px; padding-top: 26px; }
+    @media (max-width: 760px) { .two { grid-template-columns: 1fr; } section { padding: 21px; } .hero { min-height: auto; } table { display: block; overflow-x: auto; } }
+    @media print { :root { color-scheme: light; --bg:#fff; --panel:#fff; --ink:#111827; --muted:#4b5563; --line:#d1d5db; --shadow:none; } main{width:100%;padding:0}.hero,section{box-shadow:none;break-inside:avoid;margin-top:12px;padding:18px}.hero{min-height:auto}h1{font-size:38px} }
+  </style>
+</head>
+<body>
+<main>
+  <article class="hero">
+    <p class="eyebrow">Approved implementation sequence</p>
+    <h1>Pipeline Attempt Recovery and Workspace Fidelity</h1>
+    <p class="lead">A dependency-aware package for implementing the approved cross-repository recovery model in Mission Control and ai-conductor.</p>
+    <div class="result">Four phases are the fewest safe merge units: two independent foundations can run in parallel, one phase unifies their behavior, and one final phase owns concurrency-sensitive recovery.</div>
+    <div class="chips">
+      <span class="chip">1,400 to 2,100 production lines</span>
+      <span class="chip">2 repositories</span>
+      <span class="chip">4 phases</span>
+      <span class="chip">1 concurrency group</span>
+      <span class="chip">Provider-first compatibility</span>
+    </div>
+  </article>
+
+  <section>
+    <p class="eyebrow">Settled requirements</p>
+    <h2>Operator decisions incorporated</h2>
+    <div class="grid two">
+      <div class="card decision">
+        <h3>Retain through specification review</h3>
+        <p>ai-conductor keeps the authoring worktree until PR merge, PR close, task cancel, or a bounded timeout. Mission Control retains pinned read-only Git evidence after cleanup.</p>
+      </div>
+      <div class="card decision">
+        <h3>Adopt only one exact direct successor</h3>
+        <p>Mission Control may adopt an unreserved direct child only after exact lineage, repository, replay, branch, PR, and competing-retry validation. There is no automatic or deep-history adoption.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Dependency graph</p>
+    <h2>Parallel foundations, convergent consumer, guarded recovery</h2>
+    <div class="flow">
+      <svg viewBox="0 0 1000 390" role="img" aria-labelledby="graphTitle graphDesc">
+        <title id="graphTitle">Four-phase dependency graph</title>
+        <desc id="graphDesc">The merged planning pull request releases Phase 1 and Phase 2 concurrently. Both feed Phase 3, which then feeds Phase 4.</desc>
+        <defs>
+          <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#6b7b91"/></marker>
+          <style>
+            .b{fill:#fff;stroke:#b9c5d6;stroke-width:2}.m{fill:#eaf2ff;stroke:#175cd3;stroke-width:2}.p{fill:#fff3dd;stroke:#a15c00;stroke-width:2}.g{fill:#e7f8ef;stroke:#067647;stroke-width:2}.t{fill:#172033;font:700 15px system-ui}.s{fill:#5a667b;font:13px system-ui}.l{stroke:#6b7b91;stroke-width:2.5;fill:none;marker-end:url(#a)}
+            @media(prefers-color-scheme:dark){.b{fill:#151f2e;stroke:#52647d}.m{fill:#183353;stroke:#8bb8ff}.p{fill:#453218;stroke:#ffc56b}.g{fill:#12392b;stroke:#75d6a5}.t{fill:#edf2f8}.s{fill:#a9b5c6}}
+          </style>
+        </defs>
+        <rect class="b" x="35" y="140" width="175" height="86" rx="13"/>
+        <text class="t" x="122" y="174" text-anchor="middle">Planning PR merged</text><text class="s" x="122" y="198" text-anchor="middle">publishes every path</text>
+        <path class="l" d="M210 165 H275 V95 H325"/>
+        <path class="l" d="M210 200 H275 V275 H325"/>
+        <rect class="m" x="325" y="48" width="240" height="96" rx="13"/>
+        <text class="t" x="445" y="80" text-anchor="middle">Phase 1: Mission Control</text><text class="s" x="445" y="104" text-anchor="middle">identity and Git-ref evidence</text><text class="s" x="445" y="124" text-anchor="middle">independently useful</text>
+        <rect class="p" x="325" y="228" width="240" height="96" rx="13"/>
+        <text class="t" x="445" y="260" text-anchor="middle">Phase 2: ai-conductor</text><text class="s" x="445" y="284" text-anchor="middle">lifecycle and ownership</text><text class="s" x="445" y="304" text-anchor="middle">additive provider contract</text>
+        <path class="l" d="M565 95 H625 V165 H665"/>
+        <path class="l" d="M565 275 H625 V205 H665"/>
+        <rect class="g" x="665" y="132" width="260" height="106" rx="13"/>
+        <text class="t" x="795" y="166" text-anchor="middle">Phase 3: Mission Control</text><text class="s" x="795" y="190" text-anchor="middle">consume lifecycle and unify</text><text class="s" x="795" y="210" text-anchor="middle">attention, state, and progress</text>
+        <path class="l" d="M795 238 V288"/>
+        <rect class="g" x="665" y="288" width="260" height="82" rx="13"/>
+        <text class="t" x="795" y="320" text-anchor="middle">Phase 4: Mission Control</text><text class="s" x="795" y="344" text-anchor="middle">atomic retry and adoption</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Phase plans</p>
+    <h2>Each pull request leaves an operable repository</h2>
+    <div class="card phase" data-phase="1">
+      <h3><a href="phase-1-durable-identity-and-git-evidence.md">Durable identity and safe Git-ref evidence</a></h3>
+      <p class="meta">Mission Control | Direct prerequisite: planning session</p>
+      <p>Preserve branch and plan identity, migrate attempt origin, add one workspace resolver, provide pinned ref Diff and read-only Files, align workflow and headers, and move caller credentials out of arguments.</p>
+    </div>
+    <div class="card phase" data-phase="2">
+      <h3><a href="phase-2-provider-lifecycle-and-ownership.md">Complete provider lifecycle and ownership</a></h3>
+      <p class="meta">ai-conductor, Mission Control context-only | Direct prerequisite: planning session</p>
+      <p>Add readiness, typed failure, retirement, retained review worktrees, capabilities, and owned-correlation fencing on the existing event spine. This can execute concurrently with Phase 1.</p>
+    </div>
+    <div class="card phase" data-phase="3">
+      <h3><a href="phase-3-lifecycle-consumption-and-presentation.md">Lifecycle consumption and unified presentation</a></h3>
+      <p class="meta">Mission Control | Direct prerequisites: Phases 1 and 2</p>
+      <p>Consume provider evidence, activate ownership, block initial model launch on known readiness failure, unify attention and task drift, and segment Engineer progress.</p>
+    </div>
+    <div class="card phase" data-phase="4">
+      <h3><a href="phase-4-atomic-recovery-and-adoption.md">Atomic recovery and direct-successor adoption</a></h3>
+      <p class="meta">Mission Control | Direct prerequisite: Phase 3</p>
+      <p>Add database CAS reservation, restart-safe recovery, Registry-owned old-host eviction, fresh-host retry, exact adoption, and explicit task settlement.</p>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Why four</p>
+    <h2>Every boundary reduces a different implementation risk</h2>
+    <table>
+      <thead><tr><th>Boundary</th><th>Reason not to combine</th></tr></thead>
+      <tbody>
+        <tr><td>Phase 1 vs 2</td><td>They are independently operable in different repositories. Combining them would widen review and remove safe parallelism.</td></tr>
+        <tr><td>Phase 2 vs 3</td><td>Current Mission Control safely retains unknown provider events, so provider-first delivery is a clean compatibility gate.</td></tr>
+        <tr><td>Phase 3 vs 4</td><td>Projection and UI migration are broad; retry and adoption are concurrency-sensitive. Separate state-machine reviews are safer.</td></tr>
+        <tr><td>Inside Phase 1</td><td>Splitting schema, Diff, Files, workflow, or credentials would leave contradictory or dead intermediate surfaces.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <p class="eyebrow">Cross-phase contracts</p>
+    <h2>Authority stays in one place at every layer</h2>
+    <div class="grid two">
+      <div class="card">
+        <h3>Workspace</h3>
+        <ul><li><code>Session.cwd</code> remains process identity.</li><li>Only revalidated live worktrees authorize mutation.</li><li>Retired or missing worktrees are pinned read-only Git objects.</li><li>No consumer falls back to host <code>cwd</code>.</li></ul>
+      </div>
+      <div class="card">
+        <h3>Provider</h3>
+        <ul><li>One additive Engineer event spine.</li><li>Readiness and retirement are provider evidence.</li><li>Current attempt ordering and replay remain intact.</li><li>Owned correlations reject accidental owner loss.</li></ul>
+      </div>
+      <div class="card">
+        <h3>Recovery</h3>
+        <ul><li>Retries and adoptions append immutable attempts.</li><li>Database CAS fences identity before external calls.</li><li>Response loss uses exact inspect before another create.</li><li>Old hosts leave through Registry eviction.</li></ul>
+      </div>
+      <div class="card">
+        <h3>Settlement</h3>
+        <ul><li>Provider lifecycle governs commission state.</li><li>Branch and PR facts validate but never rewrite it.</li><li>SDK idle is secondary evidence.</li><li>Spec handoff does not mean implementation complete.</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="audit">
+    <p class="eyebrow">Compatibility audit</p>
+    <h2>The graph is merge-safe</h2>
+    <ul>
+      <li>Phases 1 and 2 touch different repositories and may merge in either order.</li>
+      <li>Current Mission Control retains unknown v1 provider kinds and preserves raw error on extended known failures.</li>
+      <li>Phase 3 distinguishes provider-confirmed retirement from filesystem-observed missing state without changing authorization.</li>
+      <li>Phase 4 inserts an attempt before replay, so existing ingest identity checks stay authoritative and partial replay can resume.</li>
+      <li>No phase depends on later cleanup to restore an operable repository.</li>
+    </ul>
+  </section>
+
+  <section>
+    <p class="eyebrow">Verification</p>
+    <h2>Full behavior, mixed versions, and fault boundaries</h2>
+    <div class="grid two">
+      <div>
+        <h3>Mission Control</h3>
+        <p><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Add Electron geometry coverage where panels can clip.</p>
+      </div>
+      <div>
+        <h3>ai-conductor</h3>
+        <p>Focused Engineer lifecycle, readiness, retention, ownership, and replay tests, then the repository-required <code>test/test_harness_integrity.sh</code> and current HARNESS gates.</p>
+      </div>
+    </div>
+    <p>Cross-cutting proof includes mixed provider versions, live versus replay equivalence, concurrent retries, response loss, daemon restart at every durable boundary, invalid successor lineage, and every user-visible recovery path against fake agents.</p>
+  </section>
+
+  <footer>Authoritative index: <code>docs/plans/pipeline-attempt-recovery/phased-plan.md</code> | Source design: <a href="plan.html">plan.html</a></footer>
+</main>
+</body>
+</html>

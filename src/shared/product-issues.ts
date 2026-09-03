@@ -44,6 +44,9 @@ export const PRODUCT_ISSUE_REQUIRED_LABELS = [
 export const PRODUCT_ISSUE_CLIENTS = ["browser", "electron"] as const;
 export type ProductIssueClient = (typeof PRODUCT_ISSUE_CLIENTS)[number];
 
+/** First stable GitHub CLI release with first-party `gh issue create --attach`. */
+export const PRODUCT_ISSUE_MINIMUM_GH_VERSION = "2.99.0";
+
 /** Trusted launch context passed from the daemon to its bundled MCP child. */
 export const PRODUCT_ISSUE_CLIENT_ENV = "MISSION_PRODUCT_ISSUE_CLIENT";
 
@@ -140,6 +143,8 @@ export type ProductIssueSubmitResult =
       outcome: "created";
       issueUrl: string;
       target: string;
+      /** Present when gh created the issue but returned non-zero after a partial upload. */
+      warning?: string;
     }
   | {
       outcome: "refused";

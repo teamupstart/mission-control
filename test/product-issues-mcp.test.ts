@@ -7,22 +7,23 @@ import {
   reportProductIssueWithConfirmation,
   type ProductIssueMcpDependencies,
 } from "../src/mcp/product-issues.ts";
+import type { ProductIssueDraft } from "../src/shared/product-issues.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 
 const REQUEST_ID = "3a0a8d96-56c7-4c39-9768-c35633d96889";
-const DRAFT = {
+const DRAFT: ProductIssueDraft = {
   type: "bug" as const,
   title: "The task board loses focus",
   details: "Selecting the next card should preserve keyboard focus.",
   attachmentUploadIds: [],
 };
 
-function preview() {
+function preview(draft = DRAFT) {
   return {
     outcome: "preview" as const,
     requestId: REQUEST_ID,
     draftIdentity: "a".repeat(64),
-    draft: DRAFT,
+    draft,
     target: "mancej/mission-controller-control-issues",
     labels: ["bug", "status:needs-triage", "source:agent"],
     environment: {
@@ -34,7 +35,7 @@ function preview() {
     body: [
       "## Details",
       "",
-      DRAFT.details,
+      draft.details,
       "",
       "## Environment",
       "",
@@ -79,12 +80,13 @@ function dependencies(
     reviews: Array<Parameters<ProductIssueMcpDependencies["createReview"]>[0]>;
     submissions: unknown[];
   },
+  expectedDraft = DRAFT,
 ): ProductIssueMcpDependencies {
   return {
     requestId: () => REQUEST_ID,
     preview: async (request) => {
-      assert.deepEqual(request, { ...DRAFT, requestId: REQUEST_ID, client: "browser" });
-      return { status: 200, body: preview() };
+      assert.deepEqual(request, { ...expectedDraft, requestId: REQUEST_ID, client: "browser" });
+      return { status: 200, body: preview(expectedDraft) };
     },
     submit: async (request) => {
       observed.submissions.push(request);
@@ -129,11 +131,49 @@ test("the exact human submit selection publishes the original bounded draft", as
   assert.equal(observed.reviews.length, 1);
   assert.match(observed.reviews[0]!.body, /This report will be public on GitHub/);
   assert.match(observed.reviews[0]!.body, /source:agent/);
+  assert.match(observed.reviews[0]!.body, /Screenshots: 0/);
   assert.deepEqual(observed.reviews[0]!.decisions, [{
     id: PRODUCT_ISSUE_REVIEW_DECISION_ID,
     question: "Publish this public issue to mancej/mission-controller-control-issues?",
     options: [{ id: PRODUCT_ISSUE_REVIEW_OPTION_ID, label: "Submit public issue" }],
   }]);
+});
+
+test("MCP attachment ids survive review and a created warning remains non-error", async () => {
+  const withScreenshot = { ...DRAFT, attachmentUploadIds: ["upload-1.png"] };
+  const observed = {
+    reviews: [] as Array<Parameters<ProductIssueMcpDependencies["createReview"]>[0]>,
+    submissions: [] as unknown[],
+  };
+  const deps = dependencies(review({}), observed, withScreenshot);
+  deps.submit = async (request) => {
+    observed.submissions.push(request);
+    return {
+      status: 201,
+      body: {
+        outcome: "created",
+        issueUrl: "https://github.com/mancej/mission-controller-control-issues/issues/13",
+        target: "mancej/mission-controller-control-issues",
+        warning: "The issue was created, but one screenshot was not attached",
+      },
+    };
+  };
+
+  const result = await reportProductIssueWithConfirmation(
+    withScreenshot,
+    "browser",
+    deps,
+  );
+
+  assert.equal(result.isError, false);
+  assert.match(result.text, /issues\/13/);
+  assert.match(result.text, /Warning:.*one screenshot was not attached/);
+  assert.match(observed.reviews[0]!.body, /Screenshots: 1/);
+  assert.deepEqual(observed.submissions[0], {
+    ...withScreenshot,
+    requestId: REQUEST_ID,
+    client: "browser",
+  });
 });
 
 test("dismiss and orphan settle without calling the mutation route", async (t) => {

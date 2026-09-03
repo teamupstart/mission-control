@@ -38,8 +38,7 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
  *  2. Neither the page nor the dialog scrolls SIDEWAYS when the daemon supplies a long
  *     repository name and a wide Markdown body - both unbounded strings that arrive from a
  *     response rather than from this repository.
- *  3. The disabled screenshot region is actually drawn. A zero-height inert box reads as a
- *     rendering fault rather than as the deliberate "waiting for upstream" it is.
+ *  3. The screenshot region is actually drawn. A zero-height image input is unusable.
  *
  * createElement, not JSX, because the runner's glob only matches .test.ts.
  */
@@ -71,8 +70,8 @@ const PREFLIGHT: ProductIssuePreflight = {
   ready: true,
   target: "acme/public-issues",
   attachments: {
-    enabled: false,
-    reason: "Screenshot upload is waiting for first-party GitHub CLI support",
+    enabled: true,
+    reason: null,
   },
   problems: [],
 };

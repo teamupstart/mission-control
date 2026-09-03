@@ -186,7 +186,7 @@ test("create_task publishes bounded repository selectors and never falls back to
   assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
 });
 
-test("product issue registration requires public confirmation and empty attachments", () => {
+test("product issue registration requires public confirmation and bounded attachment ids", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const start = source.indexOf('server.registerTool(\n  "report_product_issue"');
   const end = source.indexOf('server.registerTool(\n  "report_status"', start);
@@ -195,8 +195,10 @@ test("product issue registration requires public confirmation and empty attachme
   assert.match(registration, /only after the user explicitly/);
   assert.match(registration, /public GitHub issue/);
   assert.match(registration, /Submit public issue/);
-  assert.match(registration, /Screenshots are unavailable/);
-  assert.match(registration, /\.max\(0\)/);
+  assert.match(registration, /Optional screenshot/);
+  assert.match(registration, /PRODUCT_ISSUE_LIMITS\.attachmentCount/);
+  assert.match(registration, /never pass filesystem paths/);
+  assert.doesNotMatch(registration, /\.max\(0\)/);
   assert.match(registration, /new TextEncoder\(\)\.encode\(value\)\.byteLength/);
   assert.match(registration, /PRODUCT_ISSUE_CLIENT/);
   assert.doesNotMatch(

@@ -31039,11 +31039,10 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
-/* The screenshot region, drawn as the affordance it will become and inert as the one it
-   is. The copy carries the refusal, not the colour: a dimmed box with no sentence reads
-   as a rendering fault, and `not-allowed` alone is invisible to anyone not holding a
-   mouse. */
+/* The screenshot region is a real paste, drop, and file input surface. When the installed
+   GitHub CLI is too old, copy carries the refusal instead of relying on colour alone. */
 .feedback-shots {
+  position: relative;
   display: grid;
   gap: 6px;
   padding: 12px;
@@ -31095,6 +31094,12 @@ body.foreman-sidecar-open .modal-backdrop {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--dim);
+}
+.feedback-created-warning {
+  margin: 0;
+  color: var(--attention);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .feedback-preview {
   display: grid;

@@ -36,7 +36,7 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
     {
       kind: "created",
       url: "https://github.com/acme/issues/issues/3",
-      warning: "failed to upload second.png",
+      partialFailure: true,
     },
   );
 
@@ -72,6 +72,42 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
       "acme/issues",
     ),
     { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://other-host.example/acme/issues/issues/3\n",
+        stderr: "request failed",
+        code: 1,
+      }),
+      "acme/issues",
+    ),
+    { kind: "refused", detail: "request failed" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.example.com/acme/issues/issues/3\n",
+        stderr: "",
+        code: 0,
+      }),
+      "github.example.com/acme/issues",
+    ),
+    { kind: "created", url: "https://github.example.com/acme/issues/issues/3" },
+  );
+
+  assert.deepEqual(
+    githubIssueCreateOutcome(
+      stubRun({
+        stdout: "https://github.com/acme/from-cwd/issues/3\n",
+        stderr: "",
+        code: 0,
+      }),
+      "",
+    ),
+    { kind: "created", url: "https://github.com/acme/from-cwd/issues/3" },
   );
 
   assert.deepEqual(
@@ -117,9 +153,7 @@ test("released gh 2.99 partial output identifies the created issue for its targe
     {
       kind: "created",
       url: "https://github.com/mancej-cyc/mission-control-issues/issues/5",
-      warning:
-        "failed to upload /private/tmp/second.png: open /private/tmp/second.png: " +
-        "no such file or directory",
+      partialFailure: true,
     },
   );
 });

@@ -568,7 +568,7 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
         issueCreates++;
         return stubRun({
           stdout: "https://github.com/acme/public-issues/issues/56\n",
-          stderr: "failed to upload partial.png",
+          stderr: "failed to upload /private/tmp/mission-control/uploads/partial.png",
           code: 1,
         });
       },
@@ -582,8 +582,12 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
       target: "acme/public-issues",
       warning:
         "The issue was created, but GitHub CLI reported that one or more screenshots were " +
-        "not attached: failed to upload partial.png",
+        "not attached.",
     });
+    assert.doesNotMatch(
+      result.outcome === "created" ? result.warning ?? "" : "",
+      /private\/tmp|partial\.png/,
+    );
     assert.equal(issueCreates, 1);
     assert.equal((await service.submit("dashboard", input)).outcome, "unknown");
     assert.equal(issueCreates, 1);

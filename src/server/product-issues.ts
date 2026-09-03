@@ -758,12 +758,12 @@ export class ProductIssueService {
           outcome: "created",
           issueUrl: outcome.url,
           target: target.repo,
-          ...(outcome.warning
+          ...(outcome.partialFailure
             ? {
                 warning: attachmentArgs.length > 0
                   ? `The issue was created, but GitHub CLI reported that one or more ` +
-                    `screenshots were not attached: ${outcome.warning}`
-                  : `The issue was created, but GitHub CLI also reported: ${outcome.warning}`,
+                    `screenshots were not attached.`
+                  : `The issue was created, but GitHub CLI also reported an error.`,
               }
             : {}),
         };

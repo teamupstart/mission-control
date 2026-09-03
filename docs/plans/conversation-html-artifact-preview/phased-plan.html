@@ -179,16 +179,16 @@
       <tr><td>Phased follow-up</td><td>Declined at review; the human asked for phasing separately afterwards</td></tr>
     </tbody>
   </table></div>
-  <p>Two design rules were then settled by the live mockup rather than by the review, and they are requirements too: the reserved height is <strong>420px in <code>.detail-conv</code> and header-only in the capped session-card log</strong>, and the frame is <strong>inset on a dark mat</strong> because an artifact keeps its own colour scheme.</p>
+  <p>Two design rules were then settled by the live mockup rather than by the review, and they are requirements too: the reserved height is a single <strong>420px</strong> - the transcript has exactly one host, so there is no second context and no second number - and the frame is <strong>inset on a dark mat</strong> because an artifact keeps its own colour scheme. An intermediate draft specified a 240px height for a capped "session card" log; no host in the app produces one, and that scope is deleted. See the source plan under <em>Fixed height, and why not auto-fit</em>.</p>
 
   <h2>Sizing and phase count</h2>
-  <p><strong>Estimate: 375 to 435 non-test implementation lines</strong>, all under <code>src/web/</code>, distributed as:</p>
+  <p><strong>Estimate: 345 to 465 non-test implementation lines</strong> (the rows below, summed), all under <code>src/web/</code>, distributed as:</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Area</th><th>Lines</th></tr></thead>
     <tbody>
       <tr><td><code>src/web/lib/conversationArtifacts.ts</code> (new, pure detection)</td><td>70 - 90</td></tr>
       <tr><td><code>src/web/components/ConversationArtifacts.tsx</code> (new, the card)</td><td>150 - 200</td></tr>
-      <tr><td><code>src/web/styles.css</code> (card, header, mat, context rule)</td><td>60 - 80</td></tr>
+      <tr><td><code>src/web/styles.css</code> (card, header, reserved-height body, mat)</td><td>55 - 75</td></tr>
       <tr><td><code>src/web/components/TranscriptPanel.tsx</code> (two render sites)</td><td>20 - 30</td></tr>
       <tr><td><code>src/web/App.tsx</code> (<code>fileCommentRequest</code> channel)</td><td>20 - 30</td></tr>
       <tr><td><code>src/web/components/FileWorkspace.tsx</code> (honor the request)</td><td>20 - 30</td></tr>
@@ -265,7 +265,7 @@
     <li><code>npm test</code>, including <code>test/html-preview.test.ts</code> unchanged and the new detection tests.</li>
     <li><code>npm run build</code> and <code>npm run smoke</code>, because a runtime surface changed.</li>
     <li><code>npm run test:e2e</code> with the new spec, because a UI surface changed and there are no exemptions.</li>
-    <li>A look at the running app in both OS colour schemes, on a real skill-written <code>plan.html</code>, in the Console reading surface and in a Board session card.</li>
+    <li>A look at the running app in both OS colour schemes, on a real skill-written <code>plan.html</code>, in the Console reading surface, which is the only place the transcript is mounted.</li>
   </ul>
 </main>
 </body>

@@ -366,7 +366,8 @@ Look at the running app, not only the diff:
 
 - Both OS colour schemes, on a real skill-written `plan.html`, so the light-artifact case is
   seen rather than trusted.
-- The Console reading surface and a Board session card, so the context rule is seen.
+- The Console reading surface, which is the only place the transcript is mounted, so
+  the single 420px reserved height is seen in the one host that has it.
 - A narrow window, so the header wraps instead of crushing the directory.
 
 ## Merge and exit criteria

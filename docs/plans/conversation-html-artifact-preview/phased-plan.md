@@ -17,19 +17,21 @@ open questions, and the source plan has already been rewritten to remove the alt
 | Phased follow-up | Declined at review; the human asked for phasing separately afterwards |
 
 Two design rules were then settled by the live mockup rather than by the review, and they are
-requirements too: the reserved height is **420px in `.detail-conv` and header-only in the
-capped session-card log**, and the frame is **inset on a dark mat** because an artifact keeps
-its own colour scheme.
+requirements too: the reserved height is a single **420px** - the transcript has exactly one
+host, so there is no second context and no second number - and the frame is **inset on a dark
+mat** because an artifact keeps its own colour scheme. An intermediate draft specified a
+240px height for a capped "session card" log; no host in the app produces one, and that scope
+is deleted. See the source plan under *Fixed height, and why not auto-fit*.
 
 ## Sizing and phase count
 
-**Estimate: 375 to 435 non-test implementation lines**, all under `src/web/`, distributed as:
+**Estimate: 345 to 465 non-test implementation lines** (the rows below, summed), all under `src/web/`, distributed as:
 
 | Area | Lines |
 | --- | --- |
 | `src/web/lib/conversationArtifacts.ts` (new, pure detection) | 70 - 90 |
 | `src/web/components/ConversationArtifacts.tsx` (new, the card) | 150 - 200 |
-| `src/web/styles.css` (card, header, mat, context rule) | 60 - 80 |
+| `src/web/styles.css` (card, header, reserved-height body, mat) | 55 - 75 |
 | `src/web/components/TranscriptPanel.tsx` (two render sites) | 20 - 30 |
 | `src/web/App.tsx` (`fileCommentRequest` channel) | 20 - 30 |
 | `src/web/components/FileWorkspace.tsx` (honor the request) | 20 - 30 |
@@ -115,4 +117,4 @@ Owned by the phase, run before its pull request is opened:
 - `npm run test:e2e` with the new spec, because a UI surface changed and there are no
   exemptions.
 - A look at the running app in both OS colour schemes, on a real skill-written `plan.html`,
-  in the Console reading surface and in a Board session card.
+  in the Console reading surface, which is the only place the transcript is mounted.

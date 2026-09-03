@@ -151,6 +151,7 @@ test("the composed argv leads with the resolved harness binary", async () => {
   // One composer, so no caller pairs `resolveAgentBin` with a hand-written flag. The two
   // readers - the embedded handoff and the conversation pane's launcher - must spawn the
   // same command line, and they only do if neither builds it itself.
+  const previousClaudeBin = process.env.MISSION_CLAUDE_BIN;
   process.env.MISSION_CLAUDE_BIN = process.execPath;
   try {
     const argv = await resumeArgvFor("claude", "agent-9", null);
@@ -163,7 +164,8 @@ test("the composed argv leads with the resolved harness binary", async () => {
     assert.ok(withMode);
     assert.deepEqual(withMode.slice(1), ["--resume", "agent-9", "--permission-mode", "auto"]);
   } finally {
-    delete process.env.MISSION_CLAUDE_BIN;
+    if (previousClaudeBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = previousClaudeBin;
   }
 });
 

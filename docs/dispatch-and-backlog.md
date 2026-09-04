@@ -1142,10 +1142,13 @@ The local method uses this ladder:
    written to Mission Control's database.
 
 The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
-exposes only `Skill`, `ToolSearch`, and
-`mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql`, pre-approves those three,
-invokes `upstartclaw-core:working-with-jira` first, and sends the configured JQL unchanged. Glean,
-web search, filesystem tools, and write-capable Jira tools are unavailable. The returned issue
+exposes only `Skill`, `ToolSearch`, and the five exact read-only `searchJiraIssuesUsingJql`
+registrations shipped by the Upstart Claude extensions: `plugin_upstartclaw-core_atlassian`,
+`atlassian`, `jira`, `plugin_atlassian_atlassian`, and `claude_ai_Atlassian_Rovo`. It pre-approves
+only those registrations, invokes `upstartclaw-core:working-with-jira` first, and sends the
+configured JQL unchanged. Unknown aliases, Glean, web search, filesystem tools, and write-capable
+Jira tools are unavailable. The third-party `mcp-atlassian` server's `jira_search` operation is
+not included because it has a different tool contract. The returned issue
 pages are read from the MCP provider's structured tool results and validated before entering the
 same mapper and deduplication ledger as a local answer. Jira's own `hasNextPage` and `endCursor`
 values decide whether another request is required; Claude's final summary cannot mark an

@@ -44,11 +44,18 @@ import { Tooltip } from "./Tooltip.tsx";
 // The shape is also SEPARABLE, and Workflows is the panel that proves it. Three pieces live
 // here - the leaves (`ConsoleCard` / `ConsoleSwitch` / `ConsoleState` and the `sc-`
 // vocabulary), the count strip, and the two-column split - and a panel takes the ones it
-// has the data to be honest about. A ledger earns the wide column; Workflows has no ledger
-// to put there, because `WorkflowRuns.tsx` already owns the run list, so it keeps its single
-// column and takes `ConsoleLinkStrip` instead of `ConsoleStrip`. A panel given a wide empty
-// half to match its neighbours would be the layout imitating a shape rather than expressing
-// one.
+// has the data to be honest about. Workflows takes the leaves and the split, but NOT
+// `ConsoleStrip`: it has no ledger, because `WorkflowRuns.tsx` already owns the run list, so
+// its tiles navigate there (`ConsoleLinkStrip`) rather than filtering rows it does not have.
+//
+// Which is to say the wide column is not the ledger's private property. It is earned by
+// anything worth reading at width, and Workflows fills it with READINGS - the escalation
+// strip, the health counters, and the Test Evidence Auditor's rates. The first cut of that
+// panel read this comment as "no ledger, therefore no split" and kept one column; what it
+// actually had was 2.55 screens of scroll with the two tiles that can mean "somebody must
+// look" at the very bottom, beside 640px of unused width. The rule that survives is the
+// narrower one: **do not fill the wide half with a duplicate of a list another surface
+// owns**, and do not give a panel an empty half to match its neighbours.
 
 /** How loud a posture line is. `danger` is reserved for "this is acting on GitHub now". */
 export type ConsoleTone = "danger" | "attention" | "ok" | "off" | "unknown";
@@ -224,7 +231,8 @@ export interface ConsoleLink {
  * There is also no ledger on the screen for them to be a filter over: the Workflows panel
  * deliberately has no run list, because `WorkflowRuns.tsx` already is one, with paging, SSE
  * reconciliation and per-run actions. A second, worse copy of it here would disagree with
- * the real one the first time either changed.
+ * the real one the first time either changed. That the panel now has two columns does not
+ * change this - the wide one holds readings, not rows, so there is still nothing to subset.
  *
  * So a tile navigates to the nearest corresponding view in that real list, using a status
  * filter where one exists, and its `hint` says what it opens rather than what it selects.

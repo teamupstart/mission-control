@@ -19781,9 +19781,15 @@ select.foreman-model-input {
    cards (`.sc-*`), so almost everything that used to be here has gone - the group labels,
    the toggle row's spacing and the health grid are all the shared vocabulary's job now.
 
-   What remains is the shapes the console has no equivalent for: the repository list and its
-   add row, the retention grid, and the retention readout. See `.sc-solo` for why this panel
-   keeps ONE column while its neighbours split. */
+   What remains is the shapes the console has no equivalent for: the retention row, the
+   retention readout, and the readings column. This panel now DOES split - see `.wf-settings`
+   below, and the module comment in `WorkflowSettingsPanel.tsx` for what earned the wide half
+   on a panel that still has no ledger.
+
+   The repository list and its add row went with the editor when grants moved to Trust, and
+   their rules went with them: nothing had carried `.wf-settings-repo-list` or
+   `.wf-settings-add` since, and a selector no element wears is a description of a surface
+   that no longer exists. `TrustGrantSummary` draws the count now. */
 .wf-settings-empty {
   color: var(--dim);
 }
@@ -19804,74 +19810,35 @@ select.foreman-model-input {
 .wf-default-warning {
   color: var(--attention);
 }
-/* Capped to about the width of the add row below it, so the two read as one control and
-   Remove sits beside its path rather than a pane's width away from it. A path longer than
-   this wraps (see `overflow-wrap` below) instead of widening the row. */
-.wf-settings-repo-list {
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 6px;
-  max-width: 720px;
-}
-.wf-settings-repo-list li {
+/* Three boxes and their Apply on ONE row. Stacked in a grid they were 150px of column to
+   ask three questions whose answers are two to four digits, and the button needed its own
+   flex wrapper to stop the card body stretching it edge to edge. `flex-end` so the boxes and
+   the button sit on a common baseline rather than the button floating against the tallest
+   label. Wraps rather than shrinking: at the narrow end the row becomes two, which is still
+   shorter than three stacked cards. */
+.wf-retention-inline {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 10px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-}
-/* A repo root is long and has no spaces to break at, so without `anywhere` it rides out
-   through the side of the row - the same sentence `.fn-hint code` makes in Foreman's. */
-.wf-settings-repo-list code {
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-.wf-settings-repo-list button {
-  flex: none;
-}
-/* Capped rather than stretched, for the reason `select.foreman-model-input` gives about a
-   model id: a box the width of the pane reads as a prose field. A repository path is longer
-   than a model id, so this one is wider than that 260px - but it is still a path, not an
-   essay. */
-.wf-settings-add {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-.wf-settings-add input {
-  flex: 1;
-  min-width: 0;
-  max-width: 440px;
-}
-/* `auto-fit` with a fixed track, not `1fr`: three boxes holding two- to four-digit numbers
-   have no reason to grow to a third of the pane each, and at 1fr they read as text fields. */
-.wf-settings-retention-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, 190px);
+  align-items: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
   margin: 10px 0;
 }
-.wf-settings-retention-grid label {
+/* The label sizes the pair, so each box is as wide as its own phrase and no wider. The three
+   full phrases are 100, 106 and 151px, which is why they did not need shortening - and
+   `nowrap` keeps the longest of them on one line rather than breaking "Newest completed runs
+   kept" into two and pushing the input down out of line with its neighbours. */
+.wf-retention-inline label {
   display: grid;
   gap: 5px;
-  padding: 10px 12px;
   font-size: 11px;
   color: var(--muted);
-  background: var(--bg-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
+  white-space: nowrap;
 }
-.wf-settings-retention-grid input {
+.wf-retention-inline input {
+  /* Sized to four digits and no wider. `maxCompletedRuns` tops out at 10000; a box that
+     could hold a sentence invites one to be typed into it. */
+  width: 92px;
   min-width: 0;
-  width: 100%;
   padding: 7px 8px;
   font-family: var(--mono);
   color: var(--fg);
@@ -19904,18 +19871,42 @@ select.foreman-model-input {
   text-transform: uppercase;
   color: var(--muted);
 }
-/* A card body is a flex column, so a bare button in one stretches edge to edge and reads as
-   the panel's primary action rather than as this card's Save. */
-.wf-settings-apply {
-  display: flex;
-}
-/* The health strip and the card it summarises, closer together than the column's own 12px
-   rhythm so the tiles read as that card's headline rather than as something adrift between
-   two cards. */
-.wf-settings-health-group {
+/* The readings half: the escalation strip, the health counters, retention and its readout,
+   and the auditor's rates. Same 12px rhythm as `.sc-controls` beside it, so cards in the two
+   columns line up instead of drifting apart down the page.
+
+   Deliberately NOT `.sc-ledger`: that class means a ledger table lives here, and this panel
+   still has no run list - `WorkflowRuns.tsx` owns that one. */
+.wf-readings {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 12px;
+  min-width: 0;
+}
+/* Six short readings as two columns rather than six full-width rows. Three of them are
+   single digits and two are timestamps; a row spanning the whole column to say "0" is what
+   made this the tallest card below the fold.
+
+   TWO columns at most, and one when a track would go under 260px where the label and the
+   value start colliding. The track floor is the larger of those two constraints, which is
+   what bounds the count at both ends without a media query - a media query would be keyed on
+   the VIEWPORT while this grid's width comes from the readings column, so the two would
+   disagree at any window where the panel is not the width the query assumed.
+
+   `50% - 11px` is half the container less half the 22px gap, so two tracks exactly fill it
+   and a third can never be placed. That upper bound was previously implicit: with a bare
+   `minmax(260px, 1fr)` the count was held at two only by `.settings-page`'s own 1400px cap,
+   which leaves the pane 1116px and this grid 708px - below the 824px a third 260px track
+   needs. Raising that unrelated cap would silently have made this six counters in two rows of
+   three. Measured at 1280 to 3440px: two tracks, three lines, throughout. */
+.wf-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(260px, calc(50% - 11px)), 1fr));
+  column-gap: 22px;
+}
+.wf-health-grid .sc-health-row {
+  margin: 0;
+  padding: 3px 0;
 }
 /* The link out to Library › Commands, where the argv table this panel used to hold now
    lives. Sized to its label rather than stretching the card, like Apply retention. */
@@ -19964,15 +19955,49 @@ select.foreman-model-input {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* A console panel with NO ledger, which is Workflows: it takes the leaves and the strip and
-   not the split, because `WorkflowRuns.tsx` already owns the run list and a second one here
-   would be a worse copy that disagrees with it. So this stays a reading column at the width
-   the rest of the settings page uses - the `max-width: none` above is for a form beside a
-   table, and a lone column of panels stretched to 1500px leaves a metre of
-   empty space after its title. Panels stay at `.sc-controls`' own width, and nothing pretending a second
-   column is coming. */
-.settings-pane > .settings-section.sc-section.sc-solo {
-  max-width: 760px;
+/* Workflows. It has no ledger and it still takes the split, because the wide half is earned
+   by anything worth reading at width and its READINGS are that - the escalation strip, the
+   health counters and the auditor's rates, which as one column ran the panel to 2.55 screens
+   with the tiles that mean "somebody must look" at the bottom of it. `.sc-solo` used to cap
+   this panel at 760px and Workflows was its only user, so the rule went with the column.
+
+   Wider than `.settings-section`'s 900px measure: that measure exists so a toggle stays
+   beside the sentence it answers, and it still governs the LEFT column, which is where every
+   toggle is. The readings beside it are label/value rows and rate tables, which read better
+   with room. */
+.settings-pane > .settings-section.wf-settings {
+  max-width: 1240px;
+}
+/* Readings earn the width; the controls keep the measure - and the control column is PLACED
+   into grid column 1 rather than being left to source order, because the readings come first
+   in the DOM.
+
+   That DOM order is the accessibility fix, not a detail. The first cut had the controls first
+   in the markup and gave `.wf-readings` `order: -1` under 1081px so the readings would lead
+   the collapsed layout. `order` moves boxes and never moves focus, so at those widths the
+   readings looked first while the tab sequence still entered the policy switches first (WCAG
+   2.4.3), and the relationship between what you saw and what you tabbed into INVERTED at the
+   breakpoint. Leading with the readings in the DOM and placing the controls here makes the
+   reading and focus order the same sequence at every width, with no `order` anywhere.
+
+   Gated on `min-width` rather than written unconditionally, and that is load-bearing. The
+   shared collapse above is `.sc-split` inside a `max-width` query - ONE class - so this
+   two-class selector outranks it at every width regardless of the query, and an earlier cut
+   of this rule stopped Workflows collapsing at all: at an 820px window it squeezed the two
+   columns into 320px and a sliver and ran the panel to 3345px, four screens, which is worse
+   than the single column it replaced. A media query does not raise specificity. */
+@media (min-width: 1081px) {
+  .wf-settings > .sc-split {
+    grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  }
+  .wf-settings > .sc-split > .sc-controls {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .wf-settings > .sc-split > .wf-readings {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 .sc-controls {
   display: flex;
@@ -20446,10 +20471,9 @@ select.sc-input {
    rather than filtering rows on this screen, so there is no `.is-active` state to style and
    no total for them to add up to. See `ConsoleLinkStrip`'s comment.
 
-   Its own margin, because this strip is grouped with the card it summarises
-   (`.wf-settings-health-group`) and that group's `gap` already spaces the two - the ledger
-   strip's `margin-bottom` would land on top of it and reopen exactly the hole the group
-   exists to close. */
+   Its own margin, because this strip leads the readings column and `.wf-readings`' own
+   `gap` already spaces it from the health card under it - the ledger strip's
+   `margin-bottom` would land on top of that gap and double it. */
 .sc-strip-links {
   margin-bottom: 0;
 }

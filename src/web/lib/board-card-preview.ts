@@ -197,7 +197,7 @@ export const PREVIEW_WORKFLOW_RUN: WorkflowRunSummary = {
   noteKey: "board-card-preview-note",
   status: "running",
   phase: "review",
-  round: 1,
+  round: 3,
   maxRepairRounds: 5,
   activePersonaNames: ["Inspector"],
   failedPersonaCount: 0,

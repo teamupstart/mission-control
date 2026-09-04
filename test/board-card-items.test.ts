@@ -166,9 +166,10 @@ test("hiding an item leaves no trace of it in the preview", async () => {
 });
 
 test("the shipped default hides the worktree and nothing else", () => {
-  // D2, at its narrowest. Every other id names something a card already drew, so its
-  // absence from this list is what makes an upgrade move nothing on screen; `worktree` is
-  // the one item that is new to the card, so it ships off and the operator opts in.
+  // D2, at its narrowest. `workflowProgressBar` deliberately changes an existing card when
+  // absent from this list: the whole-pipeline view ships on, with the old rung behind its
+  // checkbox. Every other visible id preserves a card item that was already on screen.
+  // `worktree` is the one item that is new to the card, so it ships off and the operator opts in.
   assert.deepEqual([...UI_CONFIG_DEFAULTS.hiddenDisplayItems], ["worktree"]);
   for (const item of CARD_ITEMS) {
     assert.equal(

@@ -37,7 +37,16 @@ test("both published Electron test commands run both preflights in order", () =>
   const preflight =
     "node scripts/ensure-electron-framework.mjs && node scripts/ensure-electron-runtime.mjs";
 
-  assert.equal(packageJson.scripts.pretest, preflight);
+  // `pretest` also provisions the native state lock for the specs that spawn a real daemon, so
+  // this is a prefix rather than an equality - which pins the same two preflights in the same
+  // order, and additionally pins that no later step in the chain can precede them.
+  // `test/native-state-lock-provisioning.test.ts` owns the rest of the chain.
+  const { pretest } = packageJson.scripts;
+  assert.ok(pretest, "package.json must publish a pretest script");
+  assert.ok(
+    pretest.startsWith(preflight),
+    `pretest must run both Electron preflights first, in order: ${pretest}`,
+  );
   assert.equal(packageJson.scripts["pretest:electron"], preflight);
 });
 

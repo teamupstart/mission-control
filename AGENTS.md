@@ -92,6 +92,23 @@ operator's state exactly as it always has.
 at once, so naming a single file makes it inert, and carrying it here implied a single-file
 run reproduces the suite's concurrency when it cannot.
 
+A test that spawns the real daemon needs one build artifact the suite does not otherwise
+produce. `src/server/index.ts` acquires state ownership through `dist/native/state-lock.node`
+before it serves anything, and CI runs `npm test` before `npm run build`, so `pretest` builds
+that addon once and a warm suite compiles nothing. A spec that spawns a daemon still calls
+`ensureNativeStateLockAddon` from `test/helpers/native-state-lock.ts` at module scope, because
+the single-file command above runs no npm lifecycle; the helper rebuilds only when the addon
+does not load. Do not let a spec inherit that artifact from whatever else its shard was dealt -
+`--test-shard` splits by file, so adding an unrelated test file elsewhere in `test/` silently
+reassigns which files keep each other working, and that is exactly how shard 6 went red on
+`main` while every other shard stayed green.
+
+Provisioning is therefore concurrent by design, and `scripts/build-state-lock-native.mjs`
+owns that: it stages the addon sources into a private directory instead of letting `node-gyp
+rebuild` delete and recreate `build/` under another builder, and it publishes the result with
+one atomic rename so a daemon starting up never loads a half-written addon.
+`test/native-state-lock-provisioning.test.ts` holds both lines.
+
 `npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
 and CI explicitly pins it to 8 on the selected frontend 8-core runner. CI therefore does
 not inherit future changes to the local fallback. A failure that only appears under that

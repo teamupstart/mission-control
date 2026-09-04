@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-daemon-owner-"));
 const repo = fileURLToPath(new URL("..", import.meta.url));
@@ -16,12 +17,9 @@ const children = new Set<ChildProcess>();
 // short waits for refusal/holder signals, but give successful process startup its own budget.
 const CHILD_START_TIMEOUT_MS = 60_000;
 
-// A direct single-file test does not run npm's build lifecycle. Compile the runtime artifact
+// A direct single-file test does not run npm's build lifecycle. Provision the runtime artifact
 // this spec exercises so the focused command proves source checkout behavior on its own.
-execFileSync(process.execPath, ["scripts/build-state-lock-native.mjs"], {
-  cwd: repo,
-  stdio: "pipe",
-});
+ensureNativeStateLockAddon();
 
 after(async () => {
   await Promise.all([...children].map((child) => stopDaemon(child)));

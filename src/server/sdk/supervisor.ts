@@ -1022,7 +1022,7 @@ export class SdkSupervisor {
     }
     if (task?.kind === "pipeline") {
       callerCredential = newPipelineCallerCredential();
-      mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential);
+      mcp = missionMcpDescriptorForPipelineTask(mcp, callerCredential, stateHome);
       if (!mcp) {
         cleanupDisposableAgentStateHome(stateHome);
         throw new Error(

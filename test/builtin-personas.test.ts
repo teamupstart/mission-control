@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 
-// What is at stake: the six review roles ship WITH the application, which is a promise about
+// What is at stake: the seven review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
 // generated module is the only copy that survives bundling and packaging, so a drifted or
 // hand-edited one is a build quietly reviewing with guidance nobody wrote. Second, that they
@@ -148,6 +148,33 @@ test("each built-in derives its identity from its document and declares itself b
   assert.match(
     design.guidanceMarkdown,
     /That title is not a route around those rules\./,
+  );
+  const slop = BUILTIN_PERSONAS.find(
+    (persona) => persona.id === builtinPersonaId("slop-filter"),
+  );
+  assert.ok(slop, "Slop Filter is present in the built-in catalog");
+  assert.equal(slop.name, "Slop Filter");
+  assert.equal(
+    slop.description,
+    "Rejects low-signal code, tests, comments, and prose that make a change look substantial "
+    + "without adding trustworthy behavior or useful explanation.",
+  );
+  for (const standard of [
+    "Redundant comments",
+    "Defensive and error-handling cruft",
+    "Hallucinated APIs or imports",
+    "Tests that only validate mocks",
+    "Trivial or tautological tests",
+    "Padded, generic AI-style prose",
+  ]) {
+    assert.match(slop.guidanceMarkdown, new RegExp(`### ${standard}`));
+  }
+  // These limits keep the blocking role evidence-bound. Without them, unfamiliar APIs and
+  // legitimate boundary checks can become speculative repair requests.
+  assert.match(slop.guidanceMarkdown, /uncertainty is not proof\./);
+  assert.match(
+    slop.guidanceMarkdown,
+    /Do not call an API hallucinated without supplied evidence that contradicts it\./,
   );
 });
 

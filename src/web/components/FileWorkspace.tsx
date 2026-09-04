@@ -245,6 +245,8 @@ export interface FileWorkspaceProps {
   fileCommentReviews?: readonly FileCommentReview[];
   /** A source line the reader deep-linked to. See `FileEditor`'s `scrollTo` for the nonce. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
+  /** A rendered file that should enter comment mode once its buffer is available. */
+  fileCommentRequest?: { sessionId: string; path: string; nonce: number } | null;
   onExtract?: () => void;
   extracted?: boolean;
   isOverlayOpen?: () => boolean;
@@ -263,10 +265,12 @@ export function fileWorkspacePropsEqual(
 ): boolean {
   return previous.session.id === next.session.id
     && previous.session.name === next.session.name
+    && JSON.stringify(previous.session.workspace ?? null) === JSON.stringify(next.session.workspace ?? null)
     && previous.controller === next.controller
     && previous.fileCommentThreads === next.fileCommentThreads
     && previous.fileCommentReviews === next.fileCommentReviews
     && previous.fileLineRequest === next.fileLineRequest
+    && previous.fileCommentRequest === next.fileCommentRequest
     && previous.onExtract === next.onExtract
     && previous.extracted === next.extracted
     && previous.isOverlayOpen === next.isOverlayOpen
@@ -279,12 +283,15 @@ function FileWorkspaceBody({
   fileCommentThreads = [],
   fileCommentReviews = [],
   fileLineRequest = null,
+  fileCommentRequest = null,
   onExtract,
   extracted = false,
   isOverlayOpen,
   ref,
 }: FileWorkspaceProps): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
+  const readOnlyWorkspace = session.workspace?.authority === "provider"
+    && !session.workspace.capabilities.write;
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
@@ -316,7 +323,8 @@ function FileWorkspaceBody({
    * Deliberately its own predicate and not `previewable`, which answers a different
    * question and includes `image` - see `isCommentableDocument`.
    */
-  const commentable = buffer ? isCommentableDocument(buffer.document) : false;
+  const documentCommentable = buffer ? isCommentableDocument(buffer.document) : false;
+  const commentable = documentCommentable && !readOnlyWorkspace;
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const [showComments, setShowComments] = useState(false);
@@ -359,7 +367,7 @@ function FileWorkspaceBody({
    * reading - and a person reading a rendered plan is exactly the person with something to
    * say about line 84.
    */
-  const commentsActive = commentMode && commentable && !comparing;
+  const commentsActive = commentMode && documentCommentable && !comparing;
   /**
    * Whether the panel Comment mode opens is docked OVER the rendered document.
    *
@@ -390,6 +398,29 @@ function FileWorkspaceBody({
     if (!commentable) return;
     setCommentMode(true);
   }, [commentable]);
+  const previewedCommentRequest = useRef<number | null>(null);
+  const honoredCommentRequest = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !fileCommentRequest
+      || fileCommentRequest.sessionId !== session.id
+      || fileCommentRequest.path !== selectedPath
+    ) return;
+    if (previewedCommentRequest.current !== fileCommentRequest.nonce) {
+      controller.setMode(session.id, "preview");
+      previewedCommentRequest.current = fileCommentRequest.nonce;
+    }
+    if (!commentable || honoredCommentRequest.current === fileCommentRequest.nonce) return;
+    enterCommentMode();
+    honoredCommentRequest.current = fileCommentRequest.nonce;
+  }, [
+    commentable,
+    controller.setMode,
+    enterCommentMode,
+    fileCommentRequest,
+    selectedPath,
+    session.id,
+  ]);
   useEffect(() => {
     if (extracted) return;
     function onKeyDown(event: KeyboardEvent): void {
@@ -410,7 +441,9 @@ function FileWorkspaceBody({
         isTypingTarget(event.target)
         || isOverlayOpen?.() === true
       ) return;
-      const editorAvailable = previewable && buffer?.document.editable === true;
+      const editorAvailable = previewable
+        && buffer?.document.editable === true
+        && !readOnlyWorkspace;
       if ((event.key === "p" && !previewable) || (event.key === "e" && !editorAvailable)) return;
       if (event.key === "m" && !commentable) return;
       const pageDirection = event.key === "u" ? -1 : event.key === "d" ? 1 : null;
@@ -442,6 +475,7 @@ function FileWorkspaceBody({
     isOverlayOpen,
     mode,
     previewable,
+    readOnlyWorkspace,
     session.id,
   ]);
   /*
@@ -795,7 +829,7 @@ function FileWorkspaceBody({
     setThreadError(null);
     setCommentMode(true);
     if (thread.status === "resolved") setShowResolved(true);
-    if (thread.status === "draft") {
+    if (thread.status === "draft" && !readOnlyWorkspace) {
       setOpenThreadId(null);
       draft.openDraft(thread);
     } else {
@@ -804,7 +838,7 @@ function FileWorkspaceBody({
     }
     jumpNonce.current += 1;
     setThreadJump({ id: thread.id, line: thread.startLine, nonce: jumpNonce.current });
-  }, [draft]);
+  }, [draft, readOnlyWorkspace]);
 
   /*
    * A comment belongs to the file and the session it was written on.
@@ -820,6 +854,9 @@ function FileWorkspaceBody({
    * typed is written where they typed it; only the panel goes.
    */
   const dismissDraft = draft.dismiss;
+  useEffect(() => {
+    if (readOnlyWorkspace) dismissDraft();
+  }, [dismissDraft, readOnlyWorkspace]);
   useEffect(() => {
     // A thread the reader asked for BY NAME survives the move that was made to reach it.
     // Opening a queued comment on another file selects that file, and this effect runs on the
@@ -852,8 +889,8 @@ function FileWorkspaceBody({
     setOpenThreadId(next.id);
     // A draft IS its composer - it was never submitted, so there is nothing to read yet and
     // everything still to edit. Opening it any other way would strand it unqueueable.
-    if (next.status === "draft") draft.openDraft(next);
-  }, [draft, openThreadId, threadLines]);
+    if (next.status === "draft" && !readOnlyWorkspace) draft.openDraft(next);
+  }, [draft, openThreadId, readOnlyWorkspace, threadLines]);
 
   const commentOnLine = useCallback((line: number): void => {
     if (threadLines.has(line)) {
@@ -919,6 +956,7 @@ function FileWorkspaceBody({
       openIndexedThread(existing);
       return;
     }
+    if (!commentable) return;
     setOpenThreadId(null);
     dismissDraftForBlock();
     if (openRange({ ...anchor, surface, revision })) {
@@ -926,7 +964,7 @@ function FileWorkspaceBody({
       return;
     }
     setThreadError("That block has no source text to anchor a comment to.");
-  }, [allThreadLines, dismissDraftForBlock, openIndexedThread, openRange]);
+  }, [allThreadLines, commentable, dismissDraftForBlock, openIndexedThread, openRange]);
 
   /**
    * A block of the rendered Markdown, anchored to the source it was rendered FROM.
@@ -1938,7 +1976,7 @@ function FileWorkspaceBody({
    * kept saying the same thing.
    */
   const commentPanel = useMemo((): React.ReactNode => {
-    if (composer) {
+    if (composer && !readOnlyWorkspace) {
       return (
         <FileCommentComposer
           startLine={composer.startLine}
@@ -1966,6 +2004,7 @@ function FileWorkspaceBody({
             openThread.quote,
             openThread.htmlBlockQuote,
           )}
+          readOnly={readOnlyWorkspace}
           busy={threadBusy}
           error={threadError?.refreshable ? null : (threadError?.message ?? null)}
           onReply={(body) => reply(openThread.id, body)}
@@ -1982,6 +2021,7 @@ function FileWorkspaceBody({
     draft.change,
     draft.submit,
     openThread,
+    readOnlyWorkspace,
     reply,
     setThreadStatus,
     threadBusy,
@@ -1994,7 +2034,7 @@ function FileWorkspaceBody({
    * both of which only mean something in a gutter - belong to the Editor's surface alone.
    */
   const editorComments = useMemo((): FileEditorComments | undefined => {
-    if (!commentable || !sourceShowing) return undefined;
+    if (!documentCommentable || !sourceShowing) return undefined;
     return {
       markers: [...threadLines.entries()].map(([line, threads]) => ({
         line,
@@ -2002,7 +2042,7 @@ function FileWorkspaceBody({
         tone: markerTone(threads),
       })),
       panelLine: composer?.line ?? openThread?.startLine ?? null,
-      onLineSelect: commentsActive ? commentOnLine : null,
+      onLineSelect: commentsActive && commentable ? commentOnLine : null,
       onMarkerSelect: openThreadOnLine,
       panel: commentPanel,
     };
@@ -2012,6 +2052,7 @@ function FileWorkspaceBody({
     commentable,
     commentsActive,
     composer,
+    documentCommentable,
     openThread,
     openThreadOnLine,
     sourceShowing,
@@ -2190,6 +2231,11 @@ function FileWorkspaceBody({
       />
 
       <div className="file-main">
+        {readOnlyWorkspace && (
+          <p className="file-readonly-banner" role="status">
+            Read-only Pipeline evidence from {session.workspace?.commit?.slice(0, 12) ?? "an unavailable commit"}
+          </p>
+        )}
         <header className="file-toolbar">
           <Tooltip label={selectedPath ?? "No file open"}><span className="file-path mono">{selectedPath ?? "Select a file"}</span></Tooltip>
           {buffer && <span className="file-language">{buffer.document.language}</span>}
@@ -2205,7 +2251,27 @@ function FileWorkspaceBody({
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
               <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} aria-label="Preview" aria-keyshortcuts={extracted ? undefined : "p"} aria-pressed={mode === "preview"} onClick={() => controller.setMode(session.id, "preview")}>Preview{!extracted && showKeybindingHints && <kbd className="kb-hint">p</kbd>}</button></Tooltip>
-              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} aria-label="Editor" aria-keyshortcuts={!extracted && buffer.document.editable ? "e" : undefined} aria-pressed={mode === "editor"} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor{!extracted && buffer.document.editable && showKeybindingHints && <kbd className="kb-hint">e</kbd>}</button></Tooltip>
+              <Tooltip label={readOnlyWorkspace
+                ? "Pinned Pipeline evidence is read-only"
+                : buffer.document.editable
+                ? "Edit this file's source"
+                : "This file is not editable"}
+              >
+                <button
+                  className={mode === "editor" ? "on" : ""}
+                  aria-label="Editor"
+                  aria-keyshortcuts={!extracted && buffer.document.editable && !readOnlyWorkspace
+                    ? "e"
+                    : undefined}
+                  aria-pressed={mode === "editor"}
+                  disabled={!buffer.document.editable || readOnlyWorkspace}
+                  onClick={() => controller.setMode(session.id, "editor")}
+                >
+                  Editor
+                  {!extracted && buffer.document.editable && !readOnlyWorkspace &&
+                    showKeybindingHints && <kbd className="kb-hint">e</kbd>}
+                </button>
+              </Tooltip>
             </div>
           )}
           {/*
@@ -2219,28 +2285,30 @@ function FileWorkspaceBody({
           */}
           {buffer && (
             <div className="file-comment-controls">
-              <Tooltip
-                label={commentable
-                  ? "Comment on a line: click a line number, or a block of the preview"
-                  : buffer.document.kind === "image"
-                  ? "An image has no lines to comment on"
-                  : "This file has no source to comment on"}
-              >
-                <button
-                  className={`file-comment-toggle${commentsActive ? " on" : ""}`}
-                  aria-label="Comment mode"
-                  aria-keyshortcuts={!extracted && commentable ? "m" : undefined}
-                  aria-pressed={commentsActive}
-                  disabled={!commentable}
-                  onClick={() => {
-                    if (commentsActive) setCommentMode(false);
-                    else enterCommentMode();
-                  }}
+              {!readOnlyWorkspace && (
+                <Tooltip
+                  label={commentable
+                    ? "Comment on a line: click a line number, or a block of the preview"
+                    : buffer.document.kind === "image"
+                    ? "An image has no lines to comment on"
+                    : "This file has no source to comment on"}
                 >
-                  Comment
-                  {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
-                </button>
-              </Tooltip>
+                  <button
+                    className={`file-comment-toggle${commentsActive ? " on" : ""}`}
+                    aria-label="Comment mode"
+                    aria-keyshortcuts={!extracted && commentable ? "m" : undefined}
+                    aria-pressed={commentsActive}
+                    disabled={!commentable}
+                    onClick={() => {
+                      if (commentsActive) setCommentMode(false);
+                      else enterCommentMode();
+                    }}
+                  >
+                    Comment
+                    {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip
                 label={showComments
                   ? "Hide every comment on this file"
@@ -2297,7 +2365,14 @@ function FileWorkspaceBody({
               )}
             </div>
           )}
-          <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />
+          <OpenInMenu
+            disabled={!buffer || readOnlyWorkspace}
+            disabledReason={readOnlyWorkspace && buffer
+              ? "Pinned Pipeline evidence is read-only"
+              : undefined}
+            busy={launching || pendingOpen !== null}
+            onChoose={openIn}
+          />
           {!extracted && onExtract && (
             <Tooltip label="Extract to a movable window"><button className="icon-btn file-extract" onClick={() => { controller.flush(session.id); onExtract(); }} aria-label="Extract files window">↗</button></Tooltip>
           )}
@@ -2361,7 +2436,9 @@ function FileWorkspaceBody({
             <FileEditor
               path={buffer.document.path}
               value={buffer.text}
-              readOnly={!buffer.document.editable || buffer.saveState === "conflict"}
+              readOnly={
+                readOnlyWorkspace || !buffer.document.editable || buffer.saveState === "conflict"
+              }
               comments={editorComments}
               find={editorFind}
               scrollTo={scrollTo}

@@ -120,6 +120,94 @@ export async function sourceRef(cwd: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Diff an immutable Pipeline attempt commit against a source ref resolved for this request.
+ * The head is always the stored object id. No working-tree or moving-branch fallback exists.
+ */
+export async function computePinnedRefDiff(
+  repoRoot: string,
+  headCommit: string,
+  branch: string | null,
+): Promise<SessionDiff> {
+  const base0: SessionDiff = {
+    ok: false,
+    error: null,
+    base: null,
+    baseSha: null,
+    headSha: null,
+    repoRoot,
+    branch,
+    filesChanged: 0,
+    insertions: 0,
+    deletions: 0,
+    patch: "",
+    truncated: false,
+  };
+  const head = await git(repoRoot, ["rev-parse", "--verify", "--quiet", `${headCommit}^{commit}`]);
+  if (head.code !== 0 || !/^[0-9a-f]{40,64}$/i.test(head.stdout.trim())) {
+    return { ...base0, error: "the pinned Pipeline evidence commit is unavailable" };
+  }
+  const headFull = head.stdout.trim();
+  if (headFull.toLowerCase() !== headCommit.toLowerCase()) {
+    return { ...base0, error: "the pinned Pipeline evidence commit is ambiguous" };
+  }
+  const source = await sourceRef(repoRoot);
+  if (!source) return { ...base0, headSha: headFull.slice(0, 12), error: "no source branch is available" };
+  const sourceResolved = await git(repoRoot, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${source}^{commit}`,
+  ]);
+  if (sourceResolved.code !== 0 || !sourceResolved.stdout.trim()) {
+    return { ...base0, headSha: headFull.slice(0, 12), error: "the source branch is unavailable" };
+  }
+  const sourceFull = sourceResolved.stdout.trim();
+  const mergeBase = await git(repoRoot, ["merge-base", headFull, sourceFull]);
+  if (mergeBase.code !== 0 || !mergeBase.stdout.trim()) {
+    return {
+      ...base0,
+      headSha: headFull.slice(0, 12),
+      error: "the pinned Pipeline evidence has no shared history with the source branch",
+    };
+  }
+  const baseFull = mergeBase.stdout.trim();
+  let filesChanged = 0;
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = await git(repoRoot, ["diff", "--numstat", baseFull, headFull]);
+  if (numstat.code !== 0) return { ...base0, error: "could not read the pinned diff stats" };
+  for (const line of numstat.stdout.split("\n")) {
+    const match = line.match(/^(\d+|-)\t(\d+|-)\t/);
+    if (!match) continue;
+    filesChanged += 1;
+    if (match[1] !== "-") insertions += Number(match[1]);
+    if (match[2] !== "-") deletions += Number(match[2]);
+  }
+  const patchResult = await git(repoRoot, ["diff", baseFull, headFull]);
+  if (patchResult.code !== 0) return { ...base0, error: "could not read the pinned diff" };
+  let patch = patchResult.stdout;
+  let truncated = false;
+  if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
+    patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
+    truncated = true;
+  }
+  return {
+    ok: true,
+    error: null,
+    base: source.replace(/^origin\//, ""),
+    baseSha: baseFull.slice(0, 12),
+    headSha: headFull.slice(0, 12),
+    repoRoot,
+    branch,
+    filesChanged,
+    insertions,
+    deletions,
+    patch,
+    truncated,
+  };
+}
+
 /** Every repo-relative path a checkout changed since its source branch, or why not. */
 export type ChangedPathsResult =
   | { ok: true; repoRoot: string; paths: string[] }

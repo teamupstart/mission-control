@@ -113,6 +113,7 @@ export function SessionTile({
   pipelineCommission?: PipelineCommission | null;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
+  const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
   // it is pressed.
@@ -409,7 +410,7 @@ export function SessionTile({
               NAME came from instead, so hiding "branch" hides the branch and does not empty
               the cell for a session that never had one. */}
           {shown("branch") && (
-            <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>
+            <span className="tile-branch">{workspaceBranch ?? session.nameSource}</span>
           )}
           {/* Which checkout this is - the one fact on this card that the console detail used
               to be the only place to read. The LEAF, not the path: a pool worktree path is

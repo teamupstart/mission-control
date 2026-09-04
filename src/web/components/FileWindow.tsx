@@ -19,6 +19,7 @@ export function FileWindow({
   fileCommentThreads,
   fileCommentReviews,
   fileLineRequest,
+  fileCommentRequest,
   onClose,
 }: {
   session: Session;
@@ -26,6 +27,7 @@ export function FileWindow({
   fileCommentThreads: FileCommentThread[];
   fileCommentReviews: FileCommentReview[];
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
+  fileCommentRequest?: { sessionId: string; path: string; nonce: number } | null;
   onClose: () => void;
 }): React.JSX.Element {
   const [rect, setRect] = useState(initialRect);
@@ -82,6 +84,7 @@ export function FileWindow({
           fileCommentThreads={fileCommentThreads}
           fileCommentReviews={fileCommentReviews}
           fileLineRequest={fileLineRequest}
+          fileCommentRequest={fileCommentRequest}
           extracted
         />
         {!maximized && <div className="file-window-resize" onPointerDown={resize} aria-hidden />}

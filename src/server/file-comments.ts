@@ -119,6 +119,11 @@ export class FileCommentManager {
     return loadFileCommentThreadWithFullHistory(id);
   }
 
+  /** Resolve a message's durable owner before a route applies session-level policy. */
+  messageSession(messageId: string): string | null {
+    return loadFileCommentMessage(messageId)?.sessionId ?? null;
+  }
+
   // ---- writes ----
 
   /**

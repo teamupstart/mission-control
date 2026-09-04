@@ -66,7 +66,7 @@ change in the pull request.
   protocol contract. Mission Control never stops, replaces, or silently speaks to an incompatible
   Herdr server.
 - The full `herdr` client is the attach target. Because the current attach contract carries argv but
-  not environment, the adapter returns a portable `env -u ...` wrapper that clears every Herdr
+  not environment, the adapter returns a POSIX `env -u ...` wrapper that clears every Herdr
   namespace selector before executing the resolved binary. The adapter first selects the target
   inside Herdr, then generic focus opens that wrapper through an installed emulator when no host can
   be found because `clients` is unavailable.

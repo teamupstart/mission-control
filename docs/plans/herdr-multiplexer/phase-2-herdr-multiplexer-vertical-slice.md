@@ -75,7 +75,7 @@ Define `HERDR_BIN` beside the adapter, following the cmux pattern:
 - PATH fallback: `herdr`;
 - drop inherited `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and
   `HERDR_PANE_ID` from every adapter-owned CLI and server-start environment;
-- wrap the full-client attach argv with portable `env -u` entries for the same variables, because
+- wrap the full-client attach argv with POSIX `env -u` entries for the same variables, because
   `MuxSessions.attachArgv` carries no environment and the emulator otherwise inherits the daemon's
   namespace selectors.
 

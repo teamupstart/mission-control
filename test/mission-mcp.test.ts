@@ -206,7 +206,7 @@ test("product issue registration requires public confirmation and bounded attach
   );
 });
 
-test("submit_workflow_evidence publishes bounded evidence and criterion coverage", () => {
+test("submit_workflow_evidence exposes bounded evidence and criterion coverage", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const registration = source.slice(
     source.indexOf('server.registerTool(\n  "submit_workflow_evidence"'),
@@ -215,21 +215,15 @@ test("submit_workflow_evidence publishes bounded evidence and criterion coverage
   assert.match(registration, /artifacts: z\.array\(z\.object/);
   assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.maxCount/);
   assert.match(registration, /WORKFLOW_TEXT_EVIDENCE_LIMITS\.locatorJsonBytes/);
-  assert.match(registration, /kind: "text"/);
   assert.match(registration, /commandOutputs: z\.array\(z\.object/);
   assert.match(registration, /workflowCommandEvidenceContent/);
-  assert.match(registration, /kind: "command"/);
   assert.match(registration, /coverage: z\.array\(z\.object/);
   assert.match(registration, /WORKFLOW_EVIDENCE_PROOF_CLASSES/);
   assert.match(registration, /WORKFLOW_EVIDENCE_PROOF_ROLES/);
   assert.match(registration, /unique by evidence item and proof role/);
-  assert.match(registration, /coverage claim\(s\)/);
-  assert.match(registration, /daemonSupportsCriterionMappedWorkflowEvidence/);
-  assert.match(registration, /workflowEvidenceNeedsCriterionMappedCapability/);
-  assert.match(registration, /Restart Mission Control/);
+  assert.match(registration, /submitWorkflowEvidenceToDaemon/);
   assert.match(registration, /exact command, exit/);
   assert.match(registration, /Do not commit evidence artifacts/);
-  assert.match(registration, /text artifact\(s\)/);
 });
 
 test("the bundle smoke can resolve every name MISSION_MCP_TOOLS is written with", () => {

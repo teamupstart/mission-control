@@ -38,15 +38,16 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Treating both as merely unhealthy would make Electron spawn into an occupied port.
  */
 export async function daemonCompatibility(timeoutMs = 800): Promise<DaemonCompatibility> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(HEALTH_URL, { signal: ctrl.signal });
-    clearTimeout(t);
     if (!res.ok) return "unreachable";
     return daemonHealthCompatibility(await res.json() as unknown, REQUIRED_DAEMON_CAPABILITY);
   } catch {
     return "unreachable";
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -35,12 +35,8 @@ import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
 import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
-import {
-  DAEMON_PROTOCOL_CAPABILITIES,
-  daemonHealthSupports,
-  workflowEvidenceNeedsCriterionMappedCapability,
-} from "@shared/daemon-protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
+import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -78,15 +74,6 @@ async function http(
     body: body ? JSON.stringify(body) : undefined,
     signal,
   });
-}
-
-async function daemonSupportsCriterionMappedWorkflowEvidence(): Promise<boolean> {
-  const res = await http("/api/health", "GET");
-  if (!res.ok) return false;
-  return daemonHealthSupports(
-    await res.json() as unknown,
-    DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence,
-  );
 }
 
 async function createReview(
@@ -1029,48 +1016,12 @@ server.registerTool(
     },
   },
   async ({ images, artifacts, commandOutputs, coverage }) => {
-    try {
-      const needsCurrentDaemon = workflowEvidenceNeedsCriterionMappedCapability({
-        coverage,
-        commandOutputs,
-      });
-      if (needsCurrentDaemon && !await daemonSupportsCriterionMappedWorkflowEvidence()) {
-        return textResult(
-          "Mission Control's running daemon does not support criterion-mapped workflow evidence. "
-          + "Restart Mission Control so the daemon and agent evidence tool use the same build.",
-          true,
-        );
-      }
-      const res = await http("/mcp/workflow-evidence", "POST", {
-        env: ENV,
-        sessionId: SESSION_ID,
-        cwd: process.cwd(),
-        images: (images ?? []).map((image) => ({ kind: "agent", ...image })),
-        artifacts: (artifacts ?? []).map((artifact) => ({ kind: "text", ...artifact })),
-        commandOutputs: (commandOutputs ?? []).map((artifact) => ({ kind: "command", ...artifact })),
-        coverage: coverage ?? [],
-      });
-      if (!res.ok) {
-        return textResult(
-          `Mission Control refused the workflow evidence (${res.status}): ${await res.text()}`,
-          true,
-        );
-      }
-      const body = (await res.json()) as {
-        images?: unknown[];
-        artifacts?: unknown[];
-        coverage?: unknown[];
-        generation?: number;
-      };
-      return textResult(
-        `Registered ${body.images?.length ?? images?.length ?? 0} image(s), `
-        + `${body.artifacts?.length ?? ((artifacts?.length ?? 0) + (commandOutputs?.length ?? 0))} `
-        + `text artifact(s), and ${body.coverage?.length ?? coverage?.length ?? 0} coverage claim(s) at `
-        + `generation ${body.generation ?? 0}.`,
-      );
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
+    const result = await submitWorkflowEvidenceToDaemon(
+      { images, artifacts, commandOutputs, coverage },
+      { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
+      http,
+    );
+    return textResult(result.text, result.isError);
   },
 );
 

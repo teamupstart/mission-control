@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -44,8 +44,10 @@ test("an invalid named credential file never falls back to the legacy credential
   const expired = credentialFile("expired.json", { credential: current, expiresAt: 100 });
   const malformed = join(root, "malformed.json");
   writeFileSync(malformed, "not json", { mode: 0o600 });
+  const insecure = credentialFile("insecure.json", { credential: current, expiresAt: 101 });
+  chmodSync(insecure, 0o644);
 
-  for (const path of [invalid, expired, malformed, join(root, "missing.json")]) {
+  for (const path of [invalid, expired, malformed, insecure, join(root, "missing.json")]) {
     assert.equal(
       readPipelineCallerCredential({
         [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]: path,

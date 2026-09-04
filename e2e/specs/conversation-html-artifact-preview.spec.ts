@@ -227,6 +227,39 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   await expect(restoredCard.getByRole("button", { name: `Comment on ${REPORT} in Files` })).toBeVisible();
 });
 
+test("a rejected preview read becomes retryable instead of loading forever", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const live = await session(daemon);
+  write(live.cwd, REPORT, REPORT_SOURCE);
+  write(live.cwd, CSS, "#finding { font-weight: 700; }\n");
+  await inject(daemon, live.id, REPORT_TURN);
+
+  let rejectDocumentReads = true;
+  await page.route("**/api/sessions/*/file?*", async (route) => {
+    const path = new URL(route.request().url()).searchParams.get("path");
+    if (rejectDocumentReads && path === REPORT) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "null" });
+      return;
+    }
+    await route.continue();
+  });
+  await setPresentation(page, daemon, "console", "chat");
+
+  const sessions = page.getByRole("navigation", { name: "Sessions" });
+  await sessions.getByRole("button", { name: /Prepare an HTML Artifact Preview/i }).click();
+  const card = artifactCard(page);
+  await expect(card.getByText("Preview unavailable.")).toBeVisible();
+
+  rejectDocumentReads = false;
+  await card.getByRole("button", { name: `Refresh preview of ${REPORT}` }).click();
+  await expect(card.frameLocator("iframe.artifact-preview").getByRole("heading", {
+    name: "Conversation artifact",
+  })).toBeVisible();
+});
+
 test("the card renders in Board terminal detail and wraps cleanly at narrow width", async ({
   dashboard: page,
   daemon,

@@ -114,25 +114,35 @@ function ArtifactCard({
     let live = true;
     const abort = new AbortController();
     setPreview({ status: "loading", result: null, previewText: null });
-    void fetchSessionFile(sessionId, path, abort.signal).then(async (response) => {
-      if (!live || abort.signal.aborted) return;
-      const result = classifyArtifactPreview(response);
-      if (result.kind === "refusal") {
-        setPreview({ status: "settled", result, previewText: null });
-        return;
+    void (async () => {
+      try {
+        const response = await fetchSessionFile(sessionId, path, abort.signal);
+        if (!live || abort.signal.aborted) return;
+        const result = classifyArtifactPreview(response);
+        if (result.kind === "refusal") {
+          setPreview({ status: "settled", result, previewText: null });
+          return;
+        }
+        const previewText = await inlinePreviewStyles(
+          result.document.text ?? "",
+          path,
+          async (assetPath) => {
+            const asset = await fetchSessionFile(sessionId, assetPath, abort.signal);
+            return asset.ok ? asset.file.text : null;
+          },
+          abort.signal,
+        );
+        if (!live || abort.signal.aborted) return;
+        setPreview({ status: "settled", result, previewText });
+      } catch {
+        if (!live || abort.signal.aborted) return;
+        setPreview({
+          status: "settled",
+          result: classifyArtifactPreview({ ok: false, error: "Preview read failed" }),
+          previewText: null,
+        });
       }
-      const previewText = await inlinePreviewStyles(
-        result.document.text ?? "",
-        path,
-        async (assetPath) => {
-          const asset = await fetchSessionFile(sessionId, assetPath, abort.signal);
-          return asset.ok ? asset.file.text : null;
-        },
-        abort.signal,
-      );
-      if (!live || abort.signal.aborted) return;
-      setPreview({ status: "settled", result, previewText });
-    });
+    })();
     return () => {
       live = false;
       abort.abort();

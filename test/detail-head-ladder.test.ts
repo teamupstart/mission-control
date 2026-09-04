@@ -58,6 +58,48 @@ const RULES: [string, string][] = [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)].ma
   ([, s = "", b = ""]) => [s.trim().replace(/\s+/g, " "), b],
 );
 
+/**
+ * A rung rule nested inside an at-rule, which this flat parse cannot see and which the ladder
+ * cannot survive.
+ *
+ * The parse above is deliberately flat - it reads `[selector, body]` pairs and knows nothing
+ * about nesting - so a rung rule inside `@media` reaches every scan below stripped of the
+ * query that gates it. The scans would then agree the rule applies unconditionally while the
+ * browser applied it at some widths and not others.
+ *
+ * That is not a hypothetical inconvenience for a MEASURED ladder, it is the one mistake the
+ * mechanism exists to avoid: `fitDetailHead` sets a rung and measures what it bought, so a
+ * rung that fires on a viewport instead of on the fit's instruction makes the measurement a
+ * lie - the fit steps down, nothing changes, and it steps down again to the bottom.
+ *
+ * Raised as a nitpick by a reviewer on #890. The same flat parse is in `topbar-ladder.test.ts`
+ * and `detail-tabs-ladder.test.ts`; neither guards this, and widening them is a change to
+ * files this task did not touch.
+ */
+test("no rung rule hides inside an at-rule, where the fit cannot reach it", () => {
+  const nested: string[] = [];
+  for (const at of bare.matchAll(/@(media|container|supports)[^{]*\{/g)) {
+    let depth = 1;
+    let i = at.index! + at[0].length;
+    const from = i;
+    while (i < bare.length && depth > 0) {
+      if (bare[i] === "{") depth += 1;
+      else if (bare[i] === "}") depth -= 1;
+      i += 1;
+    }
+    if (bare.slice(from, i).includes(".detail-head[data-rung")) {
+      nested.push(at[0].trim().replace(/\s+/g, " "));
+    }
+  }
+  assert.deepEqual(
+    nested,
+    [],
+    "a `.detail-head[data-rung]` rule is nested inside an at-rule, so it fires on a viewport " +
+      "rather than when the fit applies it - which makes every measurement the fit takes a " +
+      "lie, and hides the rule from every scan in this file",
+  );
+});
+
 /** The token a rung's selector carries, e.g. 2 for `.detail-head[data-rung~="2"] .wbc-word`. */
 function rungOf(selector: string): number | null {
   const found = [...selector.matchAll(/\.detail-head\[data-rung~="(\d+)"\]/g)].map((m) =>
@@ -492,17 +534,31 @@ test("the fit runs after every render, not only on mount", () => {
   // cost figure ticks, chips appear as a review opens or a pull request lands, and the next
   // session in the rail brings a different name. A mount-only fit is correct exactly until the
   // first server event.
-  const at = detail.indexOf("fitDetailHead(headRef.current)");
+  // Both assertions are anchored to the text AROUND the fit call, which is the correction a
+  // reviewer asked for on #890 and it was right: searching the file for a `useLayoutEffect`
+  // before the fit is satisfied by any other one in `ConsoleDetail` - and there are several -
+  // even with the fit itself sitting in a `useEffect` with a dependency array. A guard that can
+  // pass without its claim holding is worse than no guard, because it reads like coverage.
+  const CALL = "fitDetailHead(headRef.current)";
+  const at = detail.indexOf(CALL);
   assert.notEqual(at, -1, "ConsoleDetail no longer fits its header on render");
-  assert.notEqual(
-    detail.lastIndexOf("useLayoutEffect", at),
-    -1,
-    "the per-render fit is not in a useLayoutEffect, so it lands after paint",
+
+  const hook = detail.lastIndexOf("useLayoutEffect(", at);
+  assert.notEqual(hook, -1, "the per-render fit is not in a useLayoutEffect, so it lands after paint");
+  // Nothing else opens between that hook and the fit, so the hook the search found is the one
+  // the fit is actually inside rather than one further up the file.
+  assert.doesNotMatch(
+    detail.slice(hook + "useLayoutEffect(".length, at),
+    /use[A-Z]\w*\(/,
+    "the nearest hook before the fit is not the `useLayoutEffect` this test found, so the fit " +
+      "is in some other effect",
   );
+  // And that effect closes immediately after the fit, with no dependency array between.
   assert.match(
-    detail.slice(at, detail.indexOf("\n\n", at)),
-    /\}\);/,
-    "the per-render fit grew a dependency array - it must run after EVERY render",
+    detail.slice(at + CALL.length),
+    /^;\s*\}\);/,
+    "the per-render fit grew a dependency array, or something followed it inside the effect - " +
+      "it must run after EVERY render",
   );
   assert.match(
     detail,

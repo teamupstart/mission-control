@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 const repo = join(import.meta.dirname, "..");
 const script = join(repo, "scripts", "init.mjs");
 
-test("CI directly uses available frontend runners at their bounded capacities", async () => {
+test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", async () => {
   const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
   };
@@ -160,21 +160,9 @@ test("CI directly uses available frontend runners at their bounded capacities", 
         dependencies24: { scalar: "ubuntu-latest", group: null, label: null },
         dependencies26: { scalar: "ubuntu-latest", group: null, label: null },
         gates: { scalar: "ubuntu-latest", group: null, label: null },
-        unit24: {
-          scalar: null,
-          group: "frontend-platform",
-          label: "ubuntu-8cpu-32ram-300ssd",
-        },
-        unit26: {
-          scalar: null,
-          group: "frontend-platform",
-          label: "ubuntu-8cpu-32ram-300ssd",
-        },
-        e2e: {
-          scalar: null,
-          group: "frontend-platform",
-          label: "ubuntu-4cpu-32ram-150ssd",
-        },
+        unit24: { scalar: "ubuntu-latest", group: null, label: null },
+        unit26: { scalar: "ubuntu-latest", group: null, label: null },
+        e2e: { scalar: "ubuntu-latest", group: null, label: null },
       },
       hasBlacksmithLabel: false,
       hasRunnerVariable: false,
@@ -202,7 +190,7 @@ test("CI directly uses available frontend runners at their bounded capacities", 
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
       ],
       cacheActionVersions: ["v5", "v5", "v5", "v5"],
-      unitWorkers: ["'8'", "'8'"],
+      unitWorkers: ["'4'", "'4'"],
       unitShardTotals: ["'6'", "'6'"],
       unitShards: [
         [1, 2, 3, 4, 5, 6],

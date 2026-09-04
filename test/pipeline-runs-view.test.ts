@@ -8,6 +8,7 @@ import {
   ENGINEER_STEP_NAMES,
   PIPELINE_RUN_GROUPS,
   PIPELINE_STEPS,
+  pipelineRepoKey,
   pipelineRunKeyOf,
   type PipelineCommission,
   type PipelineGateVerdict,
@@ -29,6 +30,7 @@ import {
   pipelineStrip,
   pipelineVerdictStatus,
 } from "../src/web/pipelines/pipeline-run-model.ts";
+import { resolvePipelineFeatureSelection } from "../src/web/pipelines/pipeline-feature-selection.ts";
 import { PipelineRunView } from "../src/web/pipelines/PipelineRunView.tsx";
 import { PipelineRuns } from "../src/web/pipelines/PipelineRuns.tsx";
 import { fetchPipelineRepos, fetchPipelineRunDetail } from "../src/web/lib/api.ts";
@@ -146,6 +148,97 @@ function commission(over: Partial<PipelineCommission> = {}): PipelineCommission 
   };
 }
 
+test("feature selection resolves explicit and fallback sources in precedence order", () => {
+  const featureRun = run();
+  const otherRun = run({
+    slug: "other-feature",
+    worktree: "/repo/demo/.worktrees/other-feature",
+  });
+  const featureCommission = commission();
+  const otherCommission = commission({
+    id: "commission-2",
+    taskId: "task-2",
+    correlationId: "correlation-2",
+    planSlug: "other-feature",
+    linkedRun: {
+      provider: otherRun.provider,
+      repoRoot: otherRun.repoRoot,
+      slug: otherRun.slug,
+    },
+  });
+  const common = {
+    runs: [featureRun, otherRun],
+    commissions: [featureCommission, otherCommission],
+  };
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: otherRun,
+    fallbackRun: featureRun,
+    hasSelectedRunAddress: true,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: otherRun,
+    activeCommission: otherCommission,
+  }, "an addressed run wins and re-pairs commission evidence by exact identity");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: featureRun,
+    activeCommission: featureCommission,
+  }, "a selected commission suppresses the fleet fallback and crosses its own handoff");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: null,
+  }), {
+    activeRun: otherRun,
+    activeCommission: otherCommission,
+  }, "the bare tab uses the fleet fallback and resolves its paired commission");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    runs: [],
+    commissions: [featureCommission],
+    addressedRun: null,
+    fallbackRun: null,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: null,
+  }), {
+    activeRun: null,
+    activeCommission: featureCommission,
+  }, "the first commission is the final bare-tab fallback");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: "missing-commission",
+  }), {
+    activeRun: null,
+    activeCommission: null,
+  }, "an unknown commission selection does not fall through to another feature");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: true,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: null,
+    activeCommission: null,
+  }, "an unresolved run address does not revive stale commission state");
+});
+
 test("a commission reader continues its meter from the observed implementation run", () => {
   const implementation = run({
     steps: [
@@ -167,6 +260,149 @@ test("a commission reader continues its meter from the observed implementation r
 
   assert.match(html, /class="tpm-now workflow-running">BUILD · Build · step 2 of 3</);
   assert.doesNotMatch(html, />Awaiting spec merge</);
+});
+
+test("a linked feature composes commission and run evidence from either selection", () => {
+  const implementation = run({
+    steps: [
+      { name: "worktree", state: "done" },
+      { name: "build", state: "in_progress" },
+      { name: "finish", state: "pending" },
+    ],
+    lastStep: "build",
+  });
+  const render = (selectedCommissionId: string | null, selected: {
+    repoKey: string;
+    slug: string;
+  } | null) => renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [implementation],
+    commissions: [commission()],
+    selectedCommissionId,
+    onSelectCommission: () => undefined,
+    selected,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  for (const html of [
+    render("commission-1", null),
+    render(null, {
+      repoKey: pipelineRepoKey(implementation.provider, implementation.repoRoot),
+      slug: implementation.slug,
+    }),
+  ]) {
+    assert.match(html, /aria-label="Engineer attempts"/);
+    assert.match(html, /aria-label="Specification handoff"/);
+    assert.match(html, /aria-label="Pipeline for add-widgets"/);
+    assert.match(html, /aria-label="Gate verdicts"/);
+    assert.match(html, />Park</);
+  }
+});
+
+test("a directly selected run ignores a stale commission selection", () => {
+  const selectedRun = run({
+    slug: "other-feature",
+    worktree: "/repo/demo/.worktrees/other-feature",
+  });
+  const selectedCommission = commission({
+    id: "commission-2",
+    taskId: "task-2",
+    correlationId: "correlation-2",
+    planSlug: "other-feature",
+    authoringBranch: "plan/other-feature",
+    handoff: {
+      planSlug: "other-feature",
+      branch: "plan/other-feature",
+      prUrl: "https://github.com/example/repo/pull/43",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: selectedRun.provider,
+      repoRoot: selectedRun.repoRoot,
+      slug: selectedRun.slug,
+    },
+  });
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [run(), selectedRun],
+    commissions: [commission(), selectedCommission],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: {
+      repoKey: pipelineRepoKey(selectedRun.provider, selectedRun.repoRoot),
+      slug: selectedRun.slug,
+    },
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  assert.match(html, /<h3 class="pipelines-run-title">other-feature<\/h3>/);
+  assert.match(html, /<code>plan\/other-feature<\/code>/);
+  assert.doesNotMatch(html, /<code>plan\/add-widgets<\/code>/);
+});
+
+test("linked feature identity must match provider, repository, and slug", () => {
+  const implementation = run();
+  const mismatches: Array<Pick<PipelineRun, "provider" | "repoRoot" | "slug">> = [
+    {
+      provider: "future-provider" as PipelineRun["provider"],
+      repoRoot: implementation.repoRoot,
+      slug: implementation.slug,
+    },
+    {
+      provider: implementation.provider,
+      repoRoot: "/repo/other",
+      slug: implementation.slug,
+    },
+    {
+      provider: implementation.provider,
+      repoRoot: implementation.repoRoot,
+      slug: "other-feature",
+    },
+  ];
+
+  for (const linkedRun of mismatches) {
+    const html = renderToStaticMarkup(createElement(PipelineRuns, {
+      runs: [implementation],
+      commissions: [commission({ linkedRun })],
+      selectedCommissionId: null,
+      onSelectCommission: () => undefined,
+      selected: {
+        repoKey: pipelineRepoKey(implementation.provider, implementation.repoRoot),
+        slug: implementation.slug,
+      },
+      onSelect: () => undefined,
+      onOpenSettings: () => undefined,
+    }));
+
+    assert.doesNotMatch(html, /aria-label="Engineer attempts"/);
+    assert.doesNotMatch(html, /aria-label="Specification handoff"/);
+  }
+});
+
+test("commission disclosures stay reachable but collapse after implementation begins", () => {
+  const beforeHandoff = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [],
+    commissions: [commission({ handoff: null, linkedRun: null })],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.match(beforeHandoff, /<details[^>]*open=""[^>]*aria-label="Engineer attempts"/);
+
+  const afterHandoff = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [run()],
+    commissions: [commission()],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.match(afterHandoff, /<details[^>]*aria-label="Engineer attempts"/);
+  assert.doesNotMatch(afterHandoff, /<details[^>]*open=""[^>]*aria-label="Engineer attempts"/);
+  assert.match(afterHandoff, /<button[^>]*>Open implementation run/);
 });
 
 test("a synthetic commission run retains unknown provider steps after the canonical sequence", () => {
@@ -713,7 +949,7 @@ test("the header reserves its action slot without drawing a dead control", () =>
 test("attempt cards appear only once a run has been round more than once", () => {
   assert.equal(/pipelines-attempts/.test(markup()), false);
   const kicked = markup({}, [verdict({ step: "plan", kickbackFrom: "build_review" })]);
-  assert.match(kicked, /aria-label="Attempts"/);
+  assert.match(kicked, /aria-label="Kickback attempts"/);
   assert.match(kicked, /class="pipelines-attempt is-current"/);
   assert.ok(kicked.includes("Build Review sent it back to Plan"));
 });

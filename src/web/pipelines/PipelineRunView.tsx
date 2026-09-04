@@ -111,8 +111,8 @@ function Attempts({
   if (attempts.length < 2) return null;
   const label = (step: string): string => pipelineStepInfo(run.provider, step)?.label ?? step;
   return (
-    <section className="pipelines-attempts" aria-label="Attempts">
-      <h4>Attempts</h4>
+    <section className="pipelines-attempts" aria-label="Kickback attempts">
+      <h4>Kickback attempts</h4>
       <div className="pipelines-attempt-row">
         {attempts.map((attempt) => (
           <article
@@ -207,6 +207,58 @@ function GateVerdicts({
   );
 }
 
+export function PipelineRunHeader({
+  run,
+  actions = null,
+}: {
+  run: PipelineRun;
+  actions?: ReactNode;
+}): React.JSX.Element {
+  const engine = PIPELINE_PROVIDER_INFO[run.provider];
+  return (
+    <header className="pipelines-run-head">
+      <div className="pipelines-run-identity">
+        <p className="pipelines-run-eyebrow">{pipelineEyebrow(run)}</p>
+        <h3 className="pipelines-run-title">{run.slug}</h3>
+        <p className="pipelines-run-facts">
+          <span className={`workflow-chip workflow-${PIPELINE_GROUP_TONES[run.group]}`}>
+            {PIPELINE_GROUP_LABELS[run.group]}
+          </span>
+          {run.tier && <span className="pipelines-chip">Tier {run.tier}</span>}
+          {run.track && <span className="pipelines-chip">{run.track}</span>}
+          {/* The ENGINE's own figure, not a sum taken here: while a feature runs it is what
+              this daemon has tailed out of the engine's ledger, and once the feature ships
+              it is replaced by the total the engine committed to its own shipped record -
+              the same figure that enters the spend ledger. Tokens rather than dollars
+              because tokens are what every dispatch reports; a run whose provider priced
+              nothing has a real token count and no cost at all. */}
+          {run.costTokens !== null && (
+            <Tooltip label={`${PIPELINE_PROVIDER_INFO[run.provider].label} attributes ${run.costTokens.toLocaleString()} tokens to this feature`}>
+              <span className="pipelines-chip">{compactTokens(run.costTokens)} tokens</span>
+            </Tooltip>
+          )}
+          {run.prUrl && (
+            <Tooltip label="Open this run's pull request">
+              <a
+                className="pipelines-chip is-link"
+                href={run.prUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Pull request <span aria-hidden>→</span>
+              </a>
+            </Tooltip>
+          )}
+        </p>
+        <small>
+          {engine.label} · {repoLeaf(run.repoRoot)} · updated {relativeTime(run.updatedAt)}
+        </small>
+      </div>
+      {actions}
+    </header>
+  );
+}
+
 export function PipelineRunView({
   run,
   detail,
@@ -216,12 +268,18 @@ export function PipelineRunView({
    * Still a prop rather than a mount, and that is what keeps this view drawable from a
    * markup test and from a host that has no controls to offer: `PipelineRuns` decides which
    * verbs a run's state makes useful, and this view decides only where they sit.
-   */
+  */
   actions = null,
+  /**
+   * The unified feature reader owns the one header shared by commission and run evidence.
+   * Other hosts keep this view's standalone header by default.
+   */
+  showHeader = true,
 }: {
   run: PipelineRun;
   detail: PipelineRunDetailState;
   actions?: ReactNode;
+  showHeader?: boolean;
 }): React.JSX.Element {
   const gates = detail.state === "ready" ? detail.detail.gates : [];
   const strip = pipelineStrip(run.provider, run.steps, gates);
@@ -229,46 +287,7 @@ export function PipelineRunView({
 
   return (
     <div className="pipelines-run">
-      <header className="pipelines-run-head">
-        <div className="pipelines-run-identity">
-          <p className="pipelines-run-eyebrow">{pipelineEyebrow(run)}</p>
-          <h3 className="pipelines-run-title">{run.slug}</h3>
-          <p className="pipelines-run-facts">
-            <span className={`workflow-chip workflow-${PIPELINE_GROUP_TONES[run.group]}`}>
-              {PIPELINE_GROUP_LABELS[run.group]}
-            </span>
-            {run.tier && <span className="pipelines-chip">Tier {run.tier}</span>}
-            {run.track && <span className="pipelines-chip">{run.track}</span>}
-            {/* The ENGINE's own figure, not a sum taken here: while a feature runs it is what
-                this daemon has tailed out of the engine's ledger, and once the feature ships
-                it is replaced by the total the engine committed to its own shipped record -
-                the same figure that enters the spend ledger. Tokens rather than dollars
-                because tokens are what every dispatch reports; a run whose provider priced
-                nothing has a real token count and no cost at all. */}
-            {run.costTokens !== null && (
-              <Tooltip label={`${PIPELINE_PROVIDER_INFO[run.provider].label} attributes ${run.costTokens.toLocaleString()} tokens to this feature`}>
-                <span className="pipelines-chip">{compactTokens(run.costTokens)} tokens</span>
-              </Tooltip>
-            )}
-            {run.prUrl && (
-              <Tooltip label="Open this run's pull request">
-                <a
-                  className="pipelines-chip is-link"
-                  href={run.prUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Pull request <span aria-hidden>→</span>
-                </a>
-              </Tooltip>
-            )}
-          </p>
-          <small>
-            {engine.label} · {repoLeaf(run.repoRoot)} · updated {relativeTime(run.updatedAt)}
-          </small>
-        </div>
-        {actions}
-      </header>
+      {showHeader && <PipelineRunHeader run={run} actions={actions} />}
 
       {run.halt && (
         <p className="pipelines-run-halt" role="status">

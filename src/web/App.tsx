@@ -3399,7 +3399,7 @@ export function App(): React.JSX.Element {
                   runs={pipelineRuns}
                   commissions={pipelineCommissions}
                   selectedCommissionId={pipelineCommissionSelection}
-                  onSelectCommission={setPipelineCommissionSelection}
+                  onSelectCommission={openPipelineCommission}
                   selected={route.page === "runs" ? route.pipelineRun ?? null : null}
                   onSelect={openPipelineRun}
                   onOpenSettings={() => navigate({ page: "settings", category: "conductor" })}

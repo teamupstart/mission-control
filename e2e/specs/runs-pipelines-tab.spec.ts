@@ -219,7 +219,9 @@ test("the tab is earned, and its rail groups the engine's features per repositor
   await expect(dashboard.getByRole("heading", { name: "fix-the-thing" })).toBeVisible();
   await expect(dashboard.getByText("the build review found two blocking defects").first())
     .toBeVisible();
-  await expect(dashboard.getByText("Needs a human")).toBeVisible();
+  await expect(
+    dashboard.locator(".pipelines-run-halt").getByText("Needs a human", { exact: true }),
+  ).toBeVisible();
   await shoot(dashboard, "01-rail-and-halt");
 
   // The workflow surface is one press away, and it is the page it always was - here, a
@@ -291,6 +293,7 @@ test("one run's detail is drawn in the workflow diagram's grammar, from the engi
   await expect(dashboard.getByText("Building", { exact: true }).first()).toBeVisible();
   await expect(dashboard.getByText("Tier M", { exact: true })).toBeVisible();
   await expect(dashboard.getByText("product", { exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Engineer attempts" })).toHaveCount(0);
 
   // The strip: both termini, every phase, and the wires saying what they cross.
   const strip = dashboard.getByRole("group", { name: "Pipeline for add-widgets" });
@@ -308,7 +311,7 @@ test("one run's detail is drawn in the workflow diagram's grammar, from the engi
   await expect(dashboard.getByText(/A refused gate sends the run back to/)).toBeVisible();
 
   // The attempt a recorded kickback opened, where the workflow reader puts its rounds.
-  await expect(dashboard.getByRole("heading", { name: "Attempts" })).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Kickback attempts" })).toBeVisible();
   await expect(dashboard.getByText("Attempt 2", { exact: true })).toBeVisible();
   await expect(dashboard.getByText("Build Review sent it back to Plan")).toBeVisible();
 
@@ -372,7 +375,11 @@ test("a tier-S run draws what it skipped, and an unknown step is drawn rather th
 
   // A step this build's frozen table has never heard of: drawn, named, in the state the
   // engine reported, after every step it does know.
-  await expect(dashboard.getByText("Unknown steps")).toBeVisible();
+  await expect(
+    dashboard
+      .getByRole("group", { name: "Pipeline for tiny-tweak" })
+      .getByText("Unknown steps", { exact: true }),
+  ).toBeVisible();
   const unknown = dashboard.locator("li.wf-pipeline-reviewer", { hasText: "vibe_check" });
   await expect(unknown.getByText("Unknown step")).toBeVisible();
   await expect(unknown.getByText("Running")).toBeVisible();

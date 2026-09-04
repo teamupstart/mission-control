@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Criterion-mapped evidence preflight</title>
+  <style>
+    :root { color-scheme: dark; --bg:#07111d; --panel:#0d1b2a; --panel2:#10253a; --ink:#eaf2fb; --muted:#9fb2c8; --line:#25425d; --cyan:#4ed8d0; --blue:#79a9ff; --amber:#ffc96b; --red:#ff8d8d; --green:#78e6a3; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 20% 0,#153153 0,transparent 34rem),var(--bg); color:var(--ink); font:16px/1.58 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1180px,calc(100% - 40px)); margin:0 auto; padding:64px 0 96px; }
+    h1,h2,h3 { line-height:1.13; letter-spacing:-.025em; }
+    h1 { font-size:clamp(2.5rem,6vw,5.4rem); max-width:950px; margin:12px 0 18px; }
+    h2 { font-size:2rem; margin:0 0 18px; }
+    h3 { font-size:1.17rem; margin:0 0 8px; color:var(--cyan); }
+    p { margin:0 0 14px; }
+    a { color:var(--cyan); }
+    code { color:#b9d6ff; background:#071421; padding:.12rem .35rem; border-radius:5px; }
+    .eyebrow { color:var(--cyan); font-weight:800; letter-spacing:.14em; text-transform:uppercase; font-size:.77rem; }
+    .lede { max-width:880px; font-size:1.25rem; color:#c8d7e8; }
+    .pillrow { display:flex; flex-wrap:wrap; gap:9px; margin:28px 0 50px; }
+    .pill { border:1px solid var(--line); background:#0a1725cc; border-radius:999px; padding:7px 12px; color:var(--muted); font-size:.88rem; }
+    section { margin-top:64px; }
+    .panel { background:linear-gradient(145deg,#10253add,#0b1827e8); border:1px solid var(--line); border-radius:18px; padding:28px; box-shadow:0 24px 70px #0005; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .card { background:#091725; border:1px solid var(--line); border-radius:14px; padding:19px; }
+    .card p,.muted { color:var(--muted); }
+    .metric { font-size:2.7rem; font-weight:850; color:var(--amber); line-height:1; margin:5px 0 9px; }
+    .flow { overflow-x:auto; padding:12px 0 0; }
+    svg { min-width:980px; width:100%; height:auto; display:block; }
+    .node { fill:#0a1928; stroke:#315675; stroke-width:2; }
+    .ready { stroke:var(--green); }
+    .gap { stroke:var(--amber); }
+    .auditor { stroke:var(--blue); }
+    .label { fill:var(--ink); font:700 15px Inter,system-ui,sans-serif; }
+    .sub { fill:var(--muted); font:12px Inter,system-ui,sans-serif; }
+    .arrow { fill:none; stroke:#6b8daa; stroke-width:2; marker-end:url(#arrow); }
+    .arrow-green { stroke:var(--green); }
+    .arrow-amber { stroke:var(--amber); }
+    table { border-collapse:collapse; width:100%; min-width:760px; overflow:hidden; border-radius:12px; }
+    th,td { border-bottom:1px solid var(--line); padding:13px 14px; vertical-align:top; text-align:left; }
+    th { color:var(--cyan); background:#071522; }
+    td { background:#0a1928aa; }
+    ol.steps { list-style:none; counter-reset:step; padding:0; display:grid; gap:13px; }
+    ol.steps li { counter-increment:step; border:1px solid var(--line); border-radius:13px; background:#091725; padding:17px 18px 17px 62px; position:relative; }
+    ol.steps li::before { content:counter(step); position:absolute; left:18px; top:16px; width:29px; height:29px; display:grid; place-items:center; border-radius:50%; color:#06111c; background:var(--cyan); font-weight:850; }
+    .split { display:grid; grid-template-columns:1.15fr .85fr; gap:20px; }
+    .callout { border-left:4px solid var(--amber); background:#291f0e; padding:18px 20px; border-radius:0 12px 12px 0; color:#ffdfa5; }
+    .good { border-left-color:var(--green); background:#0b251a; color:#bdf5d1; }
+    ul { padding-left:21px; }
+    li { margin:7px 0; }
+    footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line); color:var(--muted); }
+    @media (prefers-color-scheme: light) {
+      :root { color-scheme:light; --bg:#f4f8fc; --panel:#ffffff; --panel2:#edf5fb; --ink:#10243a; --muted:#536b82; --line:#bfd1e0; --cyan:#087f7b; --blue:#2868c7; --amber:#9a5b00; --red:#b33f3f; --green:#177b43; }
+      body { background:radial-gradient(circle at 20% 0,#dbeaf8 0,transparent 34rem),var(--bg); }
+      .lede { color:#405a73; }
+      code { color:#174f97; background:#e6f0fa; }
+      .pill { background:#ffffffcc; }
+      .panel { background:linear-gradient(145deg,#ffffffed,#edf5fbe8); box-shadow:0 24px 70px #38566c1c; }
+      .card,.node { background:#fff; fill:#fff; }
+      td { background:#f8fbfd; }
+      th { background:#e7f1f8; }
+      .callout { background:#fff4db; color:#704500; }
+      .callout.good { background:#e4f7eb; color:#16572f; }
+      ol.steps li { background:#fff; }
+    }
+    @media(max-width:850px){ .grid,.split{grid-template-columns:1fr} main{width:min(100% - 24px,1180px);padding-top:38px}.panel{padding:20px;overflow-x:auto} }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Proposed feature plan</div>
+  <h1>Criterion-mapped evidence preflight</h1>
+  <p class="lede">Make every material acceptance criterion point to the proof intended to satisfy it, then catch structural omissions before Test Evidence Auditor spends an attempt.</p>
+  <div class="pillrow"><span class="pill">No Auditor weakening</span><span class="pill">Pre-activation gate</span><span class="pill">Same-round repair</span><span class="pill">Versioned opt-in</span><span class="pill">UI + MCP authoring</span></div>
+
+  <section class="grid">
+    <article class="card"><div class="eyebrow">Observed baseline</div><div class="metric">50%</div><p>First-submission acceptance in the reviewed workflow slice.</p></article>
+    <article class="card"><div class="eyebrow">Most common gap</div><div class="metric">7 / 8</div><p>Rejected packets involved missing or mismatched focused execution evidence.</p></article>
+    <article class="card"><div class="eyebrow">Design principle</div><div class="metric">0</div><p>Persona attempts created while a high-confidence structural gap is unresolved.</p></article>
+  </section>
+
+  <section class="panel">
+    <h2>Clarified model boundary</h2>
+    <div class="grid">
+      <article class="card"><h3>Existing configurable job</h3><p>Reuse <code>workflow-context</code> and its existing Settings, environment, and provider-default resolution. No new model or Settings row.</p></article>
+      <article class="card"><h3>Bounded new context</h3><p>Add changed code paths, a clipped diff summary, evidence captions, and claim metadata to the current goal-and-decisions prompt. Never include evidence locators, local artifact paths, or artifact bodies.</p></article>
+      <article class="card"><h3>Advisory classification</h3><p>The author's proof class selects hard evidence roles. A model-only visual suggestion warns, so a non-UI change is never forced to provide a screenshot by classifier opinion alone.</p></article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>What changes</h2>
+    <div class="flow" aria-label="Evidence readiness system flow">
+      <svg viewBox="0 0 1120 390" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">Criterion-mapped evidence readiness flow</title>
+        <desc id="flow-desc">Evidence and declared coverage are frozen, canonical criteria are derived, and a deterministic gate either activates workflow Personas or pauses for repair or override.</desc>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b8daa"/></marker></defs>
+        <rect class="node" x="20" y="55" rx="12" width="190" height="78"/><text class="label" x="115" y="84" text-anchor="middle">Stage evidence</text><text class="sub" x="115" y="106" text-anchor="middle">plus coverage manifest</text>
+        <rect class="node" x="250" y="55" rx="12" width="190" height="78"/><text class="label" x="345" y="84" text-anchor="middle">Freeze submission</text><text class="sub" x="345" y="106" text-anchor="middle">immutable item links</text>
+        <rect class="node" x="480" y="55" rx="12" width="190" height="78"/><text class="label" x="575" y="84" text-anchor="middle">Derive criteria</text><text class="sub" x="575" y="106" text-anchor="middle">existing configurable job</text>
+        <rect class="node" x="710" y="55" rx="12" width="190" height="78"/><text class="label" x="805" y="84" text-anchor="middle">Validate structure</text><text class="sub" x="805" y="106" text-anchor="middle">scope + required roles</text>
+        <rect class="node ready" x="930" y="20" rx="12" width="170" height="78"/><text class="label" x="1015" y="49" text-anchor="middle">Ready</text><text class="sub" x="1015" y="71" text-anchor="middle">activate Personas</text>
+        <rect class="node gap" x="710" y="235" rx="12" width="190" height="91"/><text class="label" x="805" y="264" text-anchor="middle">Structural gaps</text><text class="sub" x="805" y="286" text-anchor="middle">pause before activation</text><text class="sub" x="805" y="304" text-anchor="middle">deliver exact checklist</text>
+        <rect class="node" x="440" y="235" rx="12" width="210" height="91"/><text class="label" x="545" y="264" text-anchor="middle">Repair or override</text><text class="sub" x="545" y="286" text-anchor="middle">new same-round segment</text><text class="sub" x="545" y="304" text-anchor="middle">or audited reason</text>
+        <rect class="node auditor" x="930" y="145" rx="12" width="170" height="91"/><text class="label" x="1015" y="174" text-anchor="middle">Evidence Auditor</text><text class="sub" x="1015" y="196" text-anchor="middle">semantic authority</text><text class="sub" x="1015" y="214" text-anchor="middle">remains unchanged</text>
+        <path class="arrow" d="M210 94H250"/><path class="arrow" d="M440 94H480"/><path class="arrow" d="M670 94H710"/><path class="arrow arrow-green" d="M900 76H930"/><path class="arrow" d="M1015 98V145"/>
+        <path class="arrow arrow-amber" d="M805 133V235"/><path class="arrow arrow-amber" d="M710 280H650"/><path class="arrow" d="M545 235V180C545 155 575 145 710 145"/>
+        <text class="sub" x="912" y="61">complete</text><text class="sub" x="817" y="185">missing roles</text><text class="sub" x="590" y="169">retry evaluation</text>
+      </svg>
+    </div>
+    <div class="callout good"><strong>The boundary:</strong> preflight checks whether the expected proof shapes are present. Test Evidence Auditor still decides whether the proof actually demonstrates the claim.</div>
+  </section>
+
+  <section>
+    <h2>The proof-shape matrix</h2>
+    <div class="panel">
+      <table>
+        <thead><tr><th>Proof class</th><th>Required role</th><th>Failure caught early</th></tr></thead>
+        <tbody>
+          <tr><td><code>focused_execution</code></td><td><code>execution</code></td><td>Typecheck or prose offered instead of the focused behavior run.</td></tr>
+          <tr><td><code>integration</code></td><td><code>execution</code></td><td>No boundary or end-to-end exercise for a cross-component claim.</td></tr>
+          <tr><td><code>visual</code></td><td><code>execution</code> + <code>rendered_output</code></td><td>Browser assertions exist, but no pixels show the result.</td></tr>
+          <tr><td><code>performance</code></td><td><code>baseline_measurement</code> + <code>result_measurement</code></td><td>A functional check or single measurement cannot establish improvement.</td></tr>
+          <tr><td><code>rendered_artifact</code></td><td><code>deliverable</code> or <code>rendered_output</code></td><td>The requested report or document is described but not inspectable.</td></tr>
+          <tr><td><code>state_confirmation</code></td><td><code>state_snapshot</code></td><td>Downstream or external state is asserted only in prose.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="split">
+    <article class="panel"><h2>Safe by construction</h2><ul><li>Coverage links resolve only inside the same frozen submission.</li><li>Repository scope is checked deterministically.</li><li>Canonical IDs are daemon-derived, never model-supplied.</li><li>Model-only proof-class disagreements warn rather than hard-block.</li><li>Compaction failure proceeds as <code>unavailable</code> and cannot deadlock a run.</li><li>Absent coverage becomes <code>missing_coverage</code> under an enforcing policy.</li><li>Overrides require a durable reason and leave every gap visible.</li><li>Historical and custom workflows stay off until an immutable version opts in.</li></ul></article>
+    <article class="panel"><h2>Intentionally excluded</h2><ul><li>No automated command execution.</li><li>No semantic pass from the preflight.</li><li>No PR or CI evidence import.</li><li>No arbitrary file attachment.</li><li>No evidence artifacts committed.</li><li>No repair-round charge for preflight corrections.</li></ul></article>
+  </section>
+
+  <section>
+    <h2>Versioning and persistence</h2>
+    <div class="panel">
+      <p>Add immutable <code>evidenceReadinessPolicy</code> to workflow definitions and versions, with <code>off</code> as the compatibility default and <code>criterion_mapped_v1</code> enabled only by a new No-Mistakes Review version.</p>
+      <div class="grid">
+        <article class="card"><h3>Mutable authoring</h3><p><code>workflow_evidence_coverage_staging</code> holds bounded claims, proof classes, repository scopes, evidence links, and staging generations.</p></article>
+        <article class="card"><h3>Immutable review packet</h3><p>Submission coverage and readiness records freeze canonical criteria, mappings, deterministic gaps, and policy version. Existing <code>parent_submission_id</code> carries refinement lineage with a new reason.</p></article>
+        <article class="card"><h3>Audited exception</h3><p>An append-only override record stores actor, reason, request ID, and timestamp without rewriting the immutable evidence packet.</p></article>
+      </div>
+      <p class="muted">Incomplete packets enter <code>waiting_for_evidence_readiness</code> and prepare one idempotent <code>evidence_readiness</code> delivery. Replay keys resolve before mutable-state checks and must match their original target and payload. Agent repair creates a same-round evidence-refinement segment; operator override activates the same immutable submission.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Implementation sequence</h2>
+    <ol class="steps">
+      <li><strong>Add versioned contracts and migrations.</strong> Define policy, proof roles, lifecycle values, mutable coverage staging, immutable coverage, readiness results, overrides, and explicit segment lineage.</li>
+      <li><strong>Stage and freeze coverage atomically.</strong> Extend the dashboard and MCP contract while preserving legacy evidence-only calls.</li>
+      <li><strong>Derive and reconcile canonical criteria.</strong> Extend the existing configurable Workflow context call with bounded changed-path, clipped diff-summary, and evidence metadata, then apply deterministic matching, scope, and author-declared role checks.</li>
+      <li><strong>Gate before Persona activation.</strong> Pause incomplete submissions, create no Persona attempt, and deliver an exact repository-specific repair packet.</li>
+      <li><strong>Resume without spending repair budget.</strong> Freeze same-round refinement segments and support idempotent operator override on the same packet.</li>
+      <li><strong>Expose and verify the state.</strong> Build criterion mapping and history UI, add Playwright coverage, publish a new built-in workflow version, and add honest telemetry.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Acceptance bar</h2>
+    <div class="grid">
+      <article class="card"><h3>Before review</h3><p>Missing structural proof pauses the run before any Persona model call and identifies the exact criterion and role.</p></article>
+      <article class="card"><h3>During repair</h3><p>New evidence creates an immutable child segment in the same round, with restart-safe and inspectable lineage.</p></article>
+      <article class="card"><h3>After readiness</h3><p>The existing workflow continues normally and Test Evidence Auditor remains the semantic acceptance authority.</p></article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Measurement</h2>
+    <p>The primary metric becomes first Test Evidence Auditor attempt acceptance, not round 1 segment 0. Preflight interceptions are reported separately, along with missing proof classes, same-round refinements, overrides, readiness failures, and Auditor rejections after a ready result.</p>
+    <div class="callout"><strong>Success is not hiding rejections.</strong> A packet held by preflight has not passed the Auditor. The design preserves that distinction in storage, UI, and telemetry.</div>
+  </section>
+
+  <footer>Detailed source plan: <a href="plan.md">plan.md</a> · Proposed for Mission Control · 2026-09-03</footer>
+</main>
+</body>
+</html>

@@ -94,7 +94,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Six ready-made review roles ship with the application. Nothing has to be
+Seven ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -104,6 +104,7 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Slop Filter | Low-signal code, tests, comments, and prose that add no trustworthy behavior or useful explanation |
 | Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 | Code Design Reviewer | The design of the change: appropriate abstractions, SOLID without Liskov, DRY, composition over inheritance, encapsulation, unrepresentable illegal states, and explicit dependencies. Scoped to the submitted change, and never style or types |
 
@@ -131,11 +132,11 @@ generated module. Each document's first level-one heading is the Persona's name 
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
 an imported Persona's description stays empty.
 
-The six are written to compose, and they ship already composed: **No-Mistakes Review** is the
+The seven are written to compose, and they ship already composed: **No-Mistakes Review** is the
 built-in workflow below. Among its Personas, Intent Conformance Judge runs first as a cheap
 gate. Code Risk Reviewer, Code Quality Judge and Code Design Reviewer run together behind one
-All-pass Join. Test Evidence Auditor and Documentation Steward then run together behind
-another All-pass Join, immediately before the verified Pull Request action.
+All-pass Join. Test Evidence Auditor, Documentation Steward and Slop Filter then run together
+behind another All-pass Join, immediately before the verified Pull Request action.
 
 Code Design Reviewer is the one whose subject the other two refuse on purpose: Code Risk
 Reviewer is told not to infer a flaw from code shape or to demand an abstraction as the price
@@ -149,7 +150,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 10 are preserved for bindings that already pin them, and version 11 is current. There is
+through 11 are preserved for bindings that already pin them, and version 12 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -172,14 +173,14 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the six built-in Personas wired the way they were written to compose. Intent
+Behind it are the seven built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending deeper reviews on a
-change that has already drifted from what was asked. In version 11, Code Risk Reviewer, Code
+change that has already drifted from what was asked. In versions 11 and 12, Code Risk Reviewer, Code
 Quality Judge and Code Design Reviewer are stage 3, running **in parallel on the same
-submission** and aggregating at an All-pass Join. Test Evidence Auditor and Documentation
-Steward are stage 4, also running in parallel and aggregating at their own All-pass Join. Every
-fail returns to the session for repair, and the Pull Request action does not run until both
-stages pass.
+submission** and aggregating at an All-pass Join. In version 12, Test Evidence Auditor,
+Documentation Steward and Slop Filter are stage 4, also running in parallel and aggregating at
+their own All-pass Join. Every fail returns to the session for repair, and the Pull Request action
+does not run until both stages pass.
 
 Code Design Reviewer joined that stage in version 11 rather than taking a stage of its own,
 which is what makes it cost one model call per round and no extra wall-clock stage: all three
@@ -189,12 +190,17 @@ placed ahead of the deep reviews because a design objection is not a cheap gate 
 model call to reach either way, and gating on it first would delay risk feedback on a change
 whose shape is merely arguable.
 
-Code Quality Judge and Code Design Reviewer remain normal tool-less Personas and judge the same
+Slop Filter joins stage 4 in version 12. It rejects redundant comments, unjustified defensive
+branches, hallucinated APIs or imports, mock-only and tautological tests, and padded generic prose.
+It shares the stage 4 evidence bundle and repair packet, while its anti-overreach rules require
+concrete supplied evidence before it can call an API hallucinated or a boundary check unnecessary.
+
+Code Quality Judge, Code Design Reviewer and Slop Filter remain normal tool-less Personas and judge the same
 immutable local evidence bundle as the other roles, including dirty and untracked work, intent,
 decisions, transcript, standards, and prior feedback. Version 9 introduced the quality judge as
 a singleton stage immediately before Pull Request; version 10 preserves that version and moves
 the judge alongside Code Risk Reviewer; version 11 preserves both and adds the design reviewer
-to the same stage.
+to the same stage; version 12 preserves those versions and adds Slop Filter to stage 4.
 
 **Version 8 added the built-in [Pull Request action](#pull-request-actions),
 after the reviews and before End.** That is a change of *where the pull request comes from*.
@@ -206,9 +212,9 @@ continuation captured. End still means the authored graph succeeded - and by the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 11 preserve that verified publication
-contract. Versions 10 and 11 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action.
+would ask for one the run already has. Versions 9 through 12 preserve that verified publication
+contract. Versions 10 through 12 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in version 12.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -245,7 +251,7 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves one of the six Personas improves this workflow too, with no gesture
+An upgrade that improves one of the seven Personas improves this workflow too, with no gesture
 from you: it always carries the guidance and the graph the build was made from. Improving the
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
@@ -258,14 +264,14 @@ complete the default trigger; version 7 changes only the immutable
 stage and sets its missing-PR policy to `wait`; version 9 adds Code Quality Judge before that
 action and changes only the new version's completion policy to `none`; version 10 runs Code
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
-Steward in stage 4; and version 11 adds Code Design Reviewer to that stage 3 and changes
-nothing else. Every earlier version remains in the
+Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; and version 12 adds
+Slop Filter to stage 4 without changing the publication contract. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
-Code Quality Judge stage unchanged, and version 10 its two-member stage 3. New bindings take
-version 11 because it is current. Adopting the newer version on an
+Code Quality Judge stage unchanged, version 10 its two-member stage 3, and version 11 its
+two-member stage 4. New bindings take version 12 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

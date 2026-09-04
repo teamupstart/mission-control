@@ -42,6 +42,34 @@ const EXITED_UNCERTAIN = mkSession({
   name: "Uncertain resume",
   state: "exited",
 });
+const EXITED_READ_ONLY = mkSession({
+  id: "exited-read-only",
+  state: "exited",
+  workspaceRoot: null,
+  workspace: {
+    authority: "provider",
+    kind: "authoring",
+    availability: "missing",
+    reportedPath: "/repo/.worktrees/conflicted",
+    branch: "plan/conflicted",
+    commit: "1".repeat(40),
+    commitProvenance: "live_validation",
+    commitFrozenAt: 1,
+    planSlug: "conflicted",
+    attempt: 1,
+    providerRevision: 2,
+    reason: "identity_conflict",
+    capabilities: {
+      diff: true,
+      files: true,
+      write: false,
+      comment: false,
+      shell: false,
+      externalOpen: false,
+      manualWorkflow: false,
+    },
+  },
+});
 
 const SESSIONS = new Map([
   [PANED.id, PANED],
@@ -50,6 +78,7 @@ const SESSIONS = new Map([
   [NO_CWD.id, NO_CWD],
   [EXITED.id, EXITED],
   [EXITED_UNCERTAIN.id, EXITED_UNCERTAIN],
+  [EXITED_READ_ONLY.id, EXITED_READ_ONLY],
 ]);
 const UNCERTAIN_TASK = mkTask({
   id: "task-uncertain",
@@ -69,6 +98,12 @@ const registry = {
   getSession: (id: string) => SESSIONS.get(id),
   listTasks: () => [...TASKS.values()],
   getTask: (id: string) => TASKS.get(id),
+  resolveSessionWorkspace: async (id: string) => {
+    const session = SESSIONS.get(id);
+    return session?.workspace?.authority === "provider"
+      ? { root: null, view: session.workspace, repoRoot: "/repo" }
+      : { root: session?.cwd ?? null, view: session?.workspace ?? null, repoRoot: "/repo" };
+  },
   upsertTask: (task: typeof UNCERTAIN_TASK) => TASKS.set(task.id, task),
   subscribe: (fn: (e: { type: string; id: string }) => void) => {
     subscribers.push(fn);
@@ -113,11 +148,18 @@ const app = buildApp(
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 async function launch(id: string, body: unknown): Promise<Response> {
-  return app.request(`/api/sessions/${id}/launch`, {
-    method: "POST",
-    headers: HEADERS,
-    body: JSON.stringify(body),
-  });
+  const previous = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  try {
+    return await app.request(`/api/sessions/${id}/launch`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify(body),
+    });
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = previous;
+  }
 }
 
 test("the backend is a registered id, never a command", async () => {
@@ -180,6 +222,11 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(res.status, 200);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "tmux");
+  assert.equal(launched[0]?.argv[0], "/usr/bin/env");
+  assert.ok(
+    launched[0]?.argv.includes(process.execPath),
+    "the terminal receives the daemon-resolved executable, not a PATH-dependent command",
+  );
   // The stored mode rides along - the reopened CLI does not restore it from the
   // conversation, so a bare `--resume` would land the operator back in manual.
   assert.match(launched[0]?.argv.join(" ") ?? "", /--resume agent-1 --permission-mode acceptEdits/);
@@ -188,6 +235,18 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(repeated.status, 409);
   assert.match(((await repeated.json()) as { error: string }).error, /already being resumed/);
   assert.equal(launched.length, 1, "a lingering card must not reopen one conversation twice");
+});
+
+test("read-only Pipeline evidence cannot launch either an agent or a shell", async () => {
+  launched.length = 0;
+  const agent = await launch(EXITED_READ_ONLY.id, { backend: "tmux", payload: "agent" });
+  assert.equal(agent.status, 409);
+  assert.match(((await agent.json()) as { error: string }).error, /read-only/);
+
+  const shell = await launch(EXITED_READ_ONLY.id, { backend: "tmux", payload: "shell" });
+  assert.equal(shell.status, 400);
+  assert.match(((await shell.json()) as { error: string }).error, /read-only/);
+  assert.equal(launched.length, 0);
 });
 
 test("an uncertain exited-session resume keeps the terminal resource name", async () => {

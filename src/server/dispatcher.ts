@@ -1097,6 +1097,7 @@ export class Dispatcher {
             stateHome,
           ),
           callerCredential,
+          stateHome,
         );
         if (!descriptor) {
           throw new Error(
@@ -2352,7 +2353,10 @@ async function teardownOneWorktree(
     return;
   }
   const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
-    timeoutMs: 30000,
+    // Native worktree removal carries the same minute-long budget. Keep fallback teardown
+    // aligned so host contention cannot turn a completed archive capture into a false reclaim
+    // failure while preserving the bounded, fail-closed outcome when git never answers.
+    timeoutMs: 60_000,
   });
   if (removed.code !== 0) {
     // Same budget as the dispatch preflight, and for the same reason: on the 4s default a

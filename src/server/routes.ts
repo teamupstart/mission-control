@@ -363,12 +363,17 @@ import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
-import { readStandards } from "./standards.ts";
+import { readStandards, readStandardsFromGitTree } from "./standards.ts";
 import {
   foremanInstructionsView,
   updateForemanInstructions,
 } from "./foreman/instructions.ts";
-import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
+import {
+  computeCommitDiff,
+  computePinnedRefDiff,
+  computeSessionDiff,
+  repoRootOf,
+} from "./diff.ts";
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
@@ -430,15 +435,17 @@ import {
   WorkflowImageEvidenceError,
 } from "./workflows/images.ts";
 import {
+  listGitTreeFiles,
   listSessionFiles,
   MAX_SESSION_EDITOR_BYTES,
+  readGitTreeFile,
   readSessionFile,
   resolveSessionFilePath,
   saveSessionFile,
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { terminalTargetViews, launchTerminal } from "./terminal/targets.ts";
+import { terminalTargetViews, launchAgentTerminal, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1406,11 +1413,11 @@ export function buildApp(
             bin: string,
             args: readonly string[] = [],
           ) => {
-            const launched = await terminalLauncher(backend, {
+            const launched = await launchAgentTerminal(backend, {
               name,
               cwd,
               argv: [bin, ...args],
-            });
+            }, terminalLauncher);
             label = launched.label;
             // A 504 means the terminal may have opened. The embedded driver is already
             // stopped, so preserve the transfer and let discovery settle what appeared.
@@ -2352,12 +2359,59 @@ export function buildApp(
       }, 409);
     }
   });
+  const pipelineWorkspaceUnavailable = (
+    view: Awaited<ReturnType<typeof registry.resolveSessionWorkspace>>["view"],
+  ): string => {
+    if (!view) return "session has no working directory";
+    if (view.reason === "provider_pending") return "Pipeline workspace is still pending";
+    if (view.reason === "identity_conflict" || view.reason === "invalid_worktree") {
+      return "Pipeline workspace identity could not be revalidated";
+    }
+    return "Pinned Pipeline workspace evidence is unavailable";
+  };
+  const resolveRouteWorkspace = async (sessionId: string) => {
+    const session = registry.getSession(sessionId);
+    if (session && session.workspace?.authority !== "provider") {
+      return {
+        root: sessionWorkspaceRoot(session),
+        view: session.workspace ?? null,
+        repoRoot: session.repoRoot,
+      };
+    }
+    return registry.resolveSessionWorkspace(sessionId);
+  };
+  const readWorkspaceDocument = async (sessionId: string, filePath: string) => {
+    const resolved = await resolveRouteWorkspace(sessionId);
+    if (resolved.view?.authority === "provider" && resolved.root === null) {
+      if (resolved.view.capabilities.files && resolved.view.commit && resolved.repoRoot) {
+        return readGitTreeFile(resolved.repoRoot, resolved.view.commit, filePath);
+      }
+      throw new SessionFileError(pipelineWorkspaceUnavailable(resolved.view), 409);
+    }
+    if (!resolved.root) throw new SessionFileError("session has no working directory", 400);
+    return readSessionFile(resolved.root, filePath);
+  };
+  const requireLiveWorkspace = async (sessionId: string) => {
+    const resolved = await resolveRouteWorkspace(sessionId);
+    if (resolved.view?.authority === "provider" && !resolved.view.capabilities.write) {
+      throw new SessionFileError("Pinned Pipeline evidence is read-only", 409);
+    }
+    if (!resolved.root) throw new SessionFileError("session has no working directory", 400);
+    return resolved.root;
+  };
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     try {
-      return c.json({ files: await listSessionFiles(sessionWorkspaceRoot(session)!) });
+      const resolved = await resolveRouteWorkspace(session.id);
+      if (resolved.view?.authority === "provider" && resolved.root === null) {
+        if (!resolved.view.capabilities.files || !resolved.view.commit || !resolved.repoRoot) {
+          return c.json({ error: pipelineWorkspaceUnavailable(resolved.view) }, 409);
+        }
+        return c.json({ files: await listGitTreeFiles(resolved.repoRoot, resolved.view.commit) });
+      }
+      if (!resolved.root) return c.json({ error: "session has no working directory" }, 400);
+      return c.json({ files: await listSessionFiles(resolved.root) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
@@ -2366,14 +2420,16 @@ export function buildApp(
   app.get("/api/sessions/:id/file", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     try {
-      return c.json(await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path));
+      return c.json(await readWorkspaceDocument(session.id, parsed.data.path));
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      const status = known?.status === 403 ? 403
+        : known?.status === 404 ? 404
+        : known?.status === 409 ? 409
+        : 400;
       return c.json({ error: known?.message ?? "could not read session file" }, status);
     }
   });
@@ -2389,12 +2445,11 @@ export function buildApp(
     async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, SaveSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
       const result = await saveSessionFile(
-        sessionWorkspaceRoot(session)!,
+        await requireLiveWorkspace(session.id),
         parsed.data.path,
         parsed.data.text,
         parsed.data.expectedRevision,
@@ -2403,7 +2458,10 @@ export function buildApp(
       return c.json(result);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      const status = known?.status === 403 ? 403 : known?.status === 413 ? 413 : 400;
+      const status = known?.status === 403 ? 403
+        : known?.status === 409 ? 409
+        : known?.status === 413 ? 413
+        : 400;
       return c.json({ ok: false, error: known?.message ?? "could not save session file" }, status);
     }
     },
@@ -2425,15 +2483,17 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-anchor", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockAnchorSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
+      document = await readWorkspaceDocument(session.id, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      const status = known?.status === 403 ? 403
+        : known?.status === 404 ? 404
+        : known?.status === 409 ? 409
+        : 400;
       return c.json({ error: known?.message ?? "could not read session file" }, status);
     }
     if (document.text === null) {
@@ -2466,15 +2526,17 @@ export function buildApp(
   app.post("/api/sessions/:id/html-block-target", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, HtmlBlockTargetSchema);
     if (!parsed.ok) return parsed.res;
     let document: Awaited<ReturnType<typeof readSessionFile>>;
     try {
-      document = await readSessionFile(sessionWorkspaceRoot(session)!, parsed.data.path);
+      document = await readWorkspaceDocument(session.id, parsed.data.path);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      const status = known?.status === 403 ? 403
+        : known?.status === 404 ? 404
+        : known?.status === 409 ? 409
+        : 400;
       return c.json({ error: known?.message ?? "could not read session file" }, status);
     }
     if (document.text === null) {
@@ -2513,7 +2575,20 @@ export function buildApp(
     if (error instanceof FileCommentError) {
       return c.json({ error: error.message }, error.status as ContentfulStatusCode);
     }
+    if (error instanceof SessionFileError) {
+      return c.json({ error: error.message }, error.status as ContentfulStatusCode);
+    }
     throw error;
+  };
+  const fileCommentWorkspaceUnavailable = async (c: Context, threadId: string) => {
+    const thread = fileComments?.get(threadId);
+    if (!thread || !registry.getSession(thread.sessionId)) return null;
+    try {
+      await requireLiveWorkspace(thread.sessionId);
+      return null;
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
   };
 
   app.get("/api/sessions/:id/file-comments", (c) => {
@@ -2530,7 +2605,10 @@ export function buildApp(
     if (unavailable) return unavailable;
     const parsed = await parseBody(c, CreateFileCommentSchema);
     if (!parsed.ok) return parsed.res;
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
     try {
+      await requireLiveWorkspace(session.id);
       return c.json({
         thread: fileComments!.create({ sessionId: c.req.param("id"), ...parsed.data }),
       });
@@ -2547,6 +2625,7 @@ export function buildApp(
     const parsed = await parseBody(c, ReorderFileCommentsSchema);
     if (!parsed.ok) return parsed.res;
     try {
+      await requireLiveWorkspace(session.id);
       return c.json({ threads: fileComments!.reorder(session.id, parsed.data.order) });
     } catch (error) {
       return fileCommentFailure(c, error);
@@ -2566,9 +2645,11 @@ export function buildApp(
 
   // One route, not the status route composed with the reorder route. Those are two HTTP
   // requests, and a second submit landing between them takes the same queue position.
-  app.post("/api/file-comments/:id/queue", (c) => {
+  app.post("/api/file-comments/:id/queue", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const workspaceUnavailable = await fileCommentWorkspaceUnavailable(c, c.req.param("id"));
+    if (workspaceUnavailable) return workspaceUnavailable;
     try {
       return c.json({ thread: fileComments!.queue(c.req.param("id")) });
     } catch (error) {
@@ -2579,6 +2660,8 @@ export function buildApp(
   app.post("/api/file-comments/:id/messages", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const workspaceUnavailable = await fileCommentWorkspaceUnavailable(c, c.req.param("id"));
+    if (workspaceUnavailable) return workspaceUnavailable;
     const parsed = await parseBody(c, AppendFileCommentMessageSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -2599,6 +2682,14 @@ export function buildApp(
   app.post("/api/file-comment-messages/:id", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const messageSession = fileComments!.messageSession(c.req.param("id"));
+    if (messageSession) {
+      try {
+        await requireLiveWorkspace(messageSession);
+      } catch (error) {
+        return fileCommentFailure(c, error);
+      }
+    }
     const parsed = await parseBody(c, EditFileCommentMessageSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -2608,9 +2699,11 @@ export function buildApp(
     }
   });
 
-  app.post("/api/file-comments/:id/read", (c) => {
+  app.post("/api/file-comments/:id/read", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const workspaceUnavailable = await fileCommentWorkspaceUnavailable(c, c.req.param("id"));
+    if (workspaceUnavailable) return workspaceUnavailable;
     try {
       return c.json({ thread: fileComments!.markRead(c.req.param("id")) });
     } catch (error) {
@@ -2623,6 +2716,8 @@ export function buildApp(
   app.post("/api/file-comments/:id/status", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const workspaceUnavailable = await fileCommentWorkspaceUnavailable(c, c.req.param("id"));
+    if (workspaceUnavailable) return workspaceUnavailable;
     const parsed = await parseBody(c, SetFileCommentStatusSchema);
     if (!parsed.ok) return parsed.res;
     try {
@@ -2632,9 +2727,11 @@ export function buildApp(
     }
   });
 
-  app.delete("/api/file-comments/:id", (c) => {
+  app.delete("/api/file-comments/:id", async (c) => {
     const unavailable = fileCommentsUnavailable(c);
     if (unavailable) return unavailable;
+    const workspaceUnavailable = await fileCommentWorkspaceUnavailable(c, c.req.param("id"));
+    if (workspaceUnavailable) return workspaceUnavailable;
     // Wrapped now that `delete` carries the lifetime guard: a stale dashboard holding the id
     // of a thread whose session ended gets that guard's 409, not an opaque 500.
     try {
@@ -2679,6 +2776,11 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, FileCommentReviewControlSchema);
     if (!parsed.ok) return parsed.res;
+    try {
+      await requireLiveWorkspace(session.id);
+    } catch (error) {
+      return fileCommentFailure(c, error);
+    }
     // `start` covers resume: see the schema for why those are one action and not two.
     const review = parsed.data.action === "start"
       ? fileCommentWalkthrough.start(session.id)
@@ -2703,11 +2805,13 @@ export function buildApp(
   app.post("/api/sessions/:id/file/open", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sessionWorkspaceRoot(session)) return c.json({ error: "session has no working directory" }, 400);
     const parsed = await parseBody(c, OpenSessionFileSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      const file = await resolveSessionFilePath(sessionWorkspaceRoot(session)!, parsed.data.path);
+      const file = await resolveSessionFilePath(
+        await requireLiveWorkspace(session.id),
+        parsed.data.path,
+      );
       const result = await openFile(parsed.data.target, file);
       const body = {
         ok: result.ok,
@@ -2719,7 +2823,10 @@ export function buildApp(
       return result.ok ? c.json(body) : c.json(body, result.status as 409 | 502 | 504);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      const status = known?.status === 403 ? 403
+        : known?.status === 404 ? 404
+        : known?.status === 409 ? 409
+        : 400;
       return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
     }
   });
@@ -2896,7 +3003,17 @@ export function buildApp(
         );
       }
       if (action === "handoff") {
-        const handedOff = await handoffSession(session, backend);
+        let workspaceRoot: string;
+        try {
+          workspaceRoot = await requireLiveWorkspace(session.id);
+        } catch (error) {
+          const known = error instanceof SessionFileError ? error : null;
+          return c.json(
+            { ok: false, error: known?.message ?? "Pipeline workspace is unavailable" },
+            409,
+          );
+        }
+        const handedOff = await handoffSession({ ...session, cwd: workspaceRoot }, backend);
         const body = handedOff.ok
           ? {
               ok: true,
@@ -2911,6 +3028,16 @@ export function buildApp(
       if (action !== "resume") {
         return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
       }
+      let workspaceRoot: string;
+      try {
+        workspaceRoot = await requireLiveWorkspace(session.id);
+      } catch (error) {
+        const known = error instanceof SessionFileError ? error : null;
+        return c.json(
+          { ok: false, error: known?.message ?? "Pipeline workspace is unavailable" },
+          409,
+        );
+      }
       if (agentResumeClaims.has(session.id)) {
         return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
       }
@@ -2918,7 +3045,17 @@ export function buildApp(
       // With the mode the session was last observed in, so the resumed CLI starts where
       // the operator left it - the same carry the embedded handoff makes, and null when
       // nobody measured one, which renders no flag rather than a guess.
-      const argv = resumeArgvFor(session.agent, session.agentSessionId!, session.permissionMode);
+      let argv: string[] | null;
+      try {
+        argv = await resumeArgvFor(
+          session.agent,
+          session.agentSessionId!,
+          session.permissionMode,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return c.json({ ok: false, backend, error: message }, 409);
+      }
       if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
 
       agentResumeClaims.add(session.id);
@@ -2939,11 +3076,11 @@ export function buildApp(
 
       let result;
       try {
-        result = await terminalLauncher(backend, {
+        result = await launchAgentTerminal(backend, {
           name: session.name,
-          cwd: session.cwd!,
+          cwd: workspaceRoot,
           argv,
-        });
+        }, terminalLauncher);
       } catch (error) {
         agentResumeClaims.delete(session.id);
         if (task) tasks.settleAfterFailedHandoff(task.id);
@@ -2981,6 +3118,13 @@ export function buildApp(
 
     const noCheckout = shellLaunchBlockedReason(session);
     if (noCheckout) return c.json({ ok: false, error: noCheckout }, 400);
+    let shellRoot: string;
+    try {
+      shellRoot = await requireLiveWorkspace(session.id);
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      return c.json({ ok: false, error: known?.message ?? "Pipeline workspace is unavailable" }, 409);
+    }
 
     // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
     // be arbitrary code execution on this host from a button labelled "Terminal".
@@ -2991,7 +3135,7 @@ export function buildApp(
     // opens by hand - in a window that exists to run the same commands they would. Every
     // shell this can resolve to (bash, zsh, fish, ksh, dash, csh/tcsh) accepts `-l`.
     const argv = [process.env.SHELL || "/bin/sh", "-l"];
-    const result = await terminalLauncher(backend, { name: session.name, cwd: session.cwd!, argv });
+    const result = await terminalLauncher(backend, { name: session.name, cwd: shellRoot, argv });
     const body = {
       ok: result.ok,
       backend,
@@ -3319,7 +3463,24 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, StandardsRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const root = await repoRootOf(sessionWorkspaceRoot(session));
+    const resolved = await resolveRouteWorkspace(session.id);
+    if (
+      resolved.view?.authority === "provider" &&
+      resolved.root === null &&
+      resolved.view.capabilities.files &&
+      resolved.view.commit &&
+      resolved.repoRoot
+    ) {
+      return c.json(await readStandardsFromGitTree(
+        resolved.repoRoot,
+        resolved.view.commit,
+        parsed.data.paths,
+      ));
+    }
+    if (resolved.view?.authority === "provider" && resolved.root === null) {
+      return c.json({ docs: [], truncated: true });
+    }
+    const root = await repoRootOf(resolved.root);
     return c.json(readStandards(root, parsed.data.paths));
   });
 
@@ -3493,12 +3654,36 @@ export function buildApp(
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    const resolved = await resolveRouteWorkspace(session.id);
     // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
     // diffs from the merge-base and would answer with everything since that sha.
     const commit = c.req.query("commit");
-    if (commit) return c.json(await computeCommitDiff(sessionWorkspaceRoot(session), commit));
+    if (commit) return c.json(await computeCommitDiff(resolved.root ?? resolved.repoRoot, commit));
     const source = c.req.query("base") || undefined;
-    return c.json(await computeSessionDiff(sessionWorkspaceRoot(session), source));
+    if (resolved.view?.authority === "provider" && resolved.root === null) {
+      if (resolved.view.capabilities.diff && resolved.view.commit && resolved.repoRoot) {
+        return c.json(await computePinnedRefDiff(
+          resolved.repoRoot,
+          resolved.view.commit,
+          resolved.view.branch,
+        ));
+      }
+      return c.json({
+        ok: false,
+        error: pipelineWorkspaceUnavailable(resolved.view),
+        base: null,
+        baseSha: null,
+        headSha: resolved.view.commit?.slice(0, 12) ?? null,
+        repoRoot: resolved.repoRoot,
+        branch: resolved.view.branch,
+        filesChanged: 0,
+        insertions: 0,
+        deletions: 0,
+        patch: "",
+        truncated: false,
+      });
+    }
+    return c.json(await computeSessionDiff(resolved.root, source));
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>

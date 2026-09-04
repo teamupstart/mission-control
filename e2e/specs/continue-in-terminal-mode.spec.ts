@@ -32,6 +32,8 @@ import { recordsIn } from "../fixtures/records.ts";
 
 const EVIDENCE = artifactsDir("resume-mode-carry");
 
+test.use({ daemonEnv: { MC_E2E_CODEX_ON_DAEMON_PATH_ONLY: "1" } });
+
 async function shoot(page: Page, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -170,7 +172,10 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     const [command] = recordedWorkspaceCommands(daemon);
 
     // The same conversation, on the faked CLI - not a fresh agent wearing the card.
-    expect(command).toContain(join(daemon.home, "fake-bin", `fake-${agent}`));
+    const executable = agent === "codex"
+      ? join(daemon.home, "daemon-path-bin", "codex")
+      : join(daemon.home, "fake-bin", `fake-${agent}`);
+    expect(command).toContain(executable);
     expect(command).toContain(resumeWord);
     expect(command).toContain(`'${agentSessionId}'`);
     // And the mode it was running in, re-asserted in this harness's own spelling. Before

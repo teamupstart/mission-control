@@ -115,12 +115,16 @@ test("a first-seen provider worker resolves its commissioned task through the ex
     lifecycle: "awaiting_spec_merge",
     attempts: [{
       attempt: 1,
+      origin: "mission_control",
       launchKey: "launch-1",
       engineerRunId: "engineer-1",
       previousEngineerRunId: null,
       providerRevision: 3,
       state: "settled",
       terminalReason: "awaiting_spec_merge",
+      evidenceCommit: null,
+      evidenceCommitProvenance: null,
+      evidenceFrozenAt: null,
       updatedAt: 1_000,
     }],
     activeAttempt: 1,
@@ -130,6 +134,8 @@ test("a first-seen provider worker resolves its commissioned task through the ex
     track: "product",
     project: "demo",
     authoringWorktree: `${REPO}/.worktrees/spec`,
+    authoringBranch: `plan/${projected.slug}`,
+    planSlug: projected.slug,
     handoff: {
       planSlug: projected.slug,
       branch: `plan/${projected.slug}`,
@@ -389,7 +395,7 @@ test("a session Mission Control launched itself is never correlated, wherever it
   assert.equal(canMessage(after), true, "so it is still a session you can talk to");
 });
 
-test("a managed Pipeline host follows its reported workspace and then the exact projected run", () => {
+test("a managed Pipeline host never falls back to its process cwd without a commission", () => {
   const registry = new Registry();
   const host = registry.registerSdkSession({
     id: "sdk:managed-workspace",
@@ -418,15 +424,15 @@ test("a managed Pipeline host follows its reported workspace and then the exact 
   }));
 
   assert.equal(registry.getSession(host.id)?.cwd, REPO);
-  assert.equal(registry.getSession(host.id)?.workspaceRoot, authoring);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, null);
   assert.equal(registry.getSession(host.id)?.pipeline, null);
 
   registry.upsertPipelineRun(mkRun());
-  assert.equal(registry.getSession(host.id)?.workspaceRoot, `${REPO}/.worktrees/add-widgets`);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, null);
   assert.equal(registry.getSession(host.id)?.pipeline, null);
 
   registry.removePipelineRun("ai-conductor", REPO, "add-widgets");
-  assert.equal(registry.getSession(host.id)?.workspaceRoot, authoring);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, null);
 });
 
 test("an engine-driven session cannot be messaged, and says why", () => {

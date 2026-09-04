@@ -52,12 +52,16 @@ export function createPipelineCommission(input: {
   const id = input.id ?? randomUUID();
   const attempt: PipelineCommissionAttempt = {
     attempt: 1,
+    origin: "mission_control",
     launchKey: input.launchKey ?? randomUUID(),
     engineerRunId: null,
     previousEngineerRunId: null,
     providerRevision: 0,
     state: "reserved",
     terminalReason: null,
+    evidenceCommit: null,
+    evidenceCommitProvenance: null,
+    evidenceFrozenAt: null,
     updatedAt: now,
   };
   const commission: PipelineCommission = {
@@ -75,6 +79,8 @@ export function createPipelineCommission(input: {
     track: null,
     project: null,
     authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
     handoff: null,
     linkedRun: null,
     blocker: null,
@@ -157,12 +163,16 @@ export function appendPipelineCommissionAttempt(input: {
   const now = input.now ?? Date.now();
   const attempt: PipelineCommissionAttempt = {
     attempt: current.attempt + 1,
+    origin: "mission_control",
     launchKey: input.launchKey ?? randomUUID(),
     engineerRunId: null,
     previousEngineerRunId: current.engineerRunId,
     providerRevision: 0,
     state: "reserved",
     terminalReason: null,
+    evidenceCommit: null,
+    evidenceCommitProvenance: null,
+    evidenceFrozenAt: null,
     updatedAt: now,
   };
   const next: PipelineCommission = {
@@ -174,6 +184,8 @@ export function appendPipelineCommissionAttempt(input: {
     currentStep: null,
     project: null,
     authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
     handoff: null,
     linkedRun: null,
     blocker: null,
@@ -360,7 +372,19 @@ function reduceKnownEvent(
       next = { ...next, project: event.project };
       break;
     case "engineer_worktree_created":
-      next = { ...next, authoringWorktree: event.worktreePath };
+      if (
+        (next.authoringBranch !== null && next.authoringBranch !== event.branch) ||
+        (next.planSlug !== null && next.planSlug !== event.planSlug)
+      ) {
+        next = { ...next, lifecycle: "unsupported", error: "provider workspace identity changed within one attempt" };
+        break;
+      }
+      next = {
+        ...next,
+        authoringWorktree: event.worktreePath,
+        authoringBranch: event.branch,
+        planSlug: event.planSlug,
+      };
       break;
     case "engineer_step_started":
       next = {
@@ -417,6 +441,13 @@ function reduceKnownEvent(
       };
       break;
     case "engineer_spec_handoff":
+      if (
+        (next.authoringBranch !== null && next.authoringBranch !== event.branch) ||
+        (next.planSlug !== null && next.planSlug !== event.planSlug)
+      ) {
+        next = { ...next, lifecycle: "unsupported", error: "provider handoff identity conflicts with the authoring workspace" };
+        break;
+      }
       next = {
         ...next,
         lifecycle: "awaiting_spec_merge",
@@ -431,9 +462,20 @@ function reduceKnownEvent(
           repoRoot: next.repoRoot,
           slug: event.planSlug,
         },
+        authoringBranch: event.branch,
+        planSlug: event.planSlug,
         currentStep: null,
       };
-      nextAttempt = { ...nextAttempt, state: "awaiting_spec_merge" };
+      nextAttempt = {
+        ...nextAttempt,
+        state: "awaiting_spec_merge",
+        // A null commit is not evidence and cannot be frozen: both the live validator and
+        // legacy branch fallback refuse to advance an already-frozen attempt. Leave the
+        // slot open until one of them has pinned the handoff commit.
+        evidenceFrozenAt: nextAttempt.evidenceCommit === null
+          ? nextAttempt.evidenceFrozenAt
+          : Date.parse(event.ts),
+      };
       break;
     case "engineer_run_cancelled":
       next = { ...next, lifecycle: "cancelled", currentStep: null, error: event.reason };
@@ -470,7 +512,7 @@ export function applyEngineerEvent(
   const parsed = parseEngineerEvent(value);
   if (!parsed.ok) return { outcome: parsed.code, commission: null };
   const event = parsed.event;
-  const held = pipelineCommissionForEngineerRun(event.engineerRunId);
+  let held = pipelineCommissionForEngineerRun(event.engineerRunId);
   if (!held) return { outcome: "unknown_commission", commission: null };
   if (
     held.provider !== "ai-conductor" ||
@@ -498,9 +540,10 @@ export function applyEngineerEvent(
   }
   if (parsed.known && parsed.event.type === "engineer_spec_handoff") {
     const handoff = parsed.event;
+    const heldId = held.id;
     const key = pipelineRunKeyOf({ provider: held.provider, repoRoot: held.repoRoot, slug: handoff.planSlug });
     const collision = loadPipelineCommissions().some(
-      (commission) => commission.id !== held.id && commission.linkedRun && pipelineRunKeyOf(commission.linkedRun) === key,
+      (commission) => commission.id !== heldId && commission.linkedRun && pipelineRunKeyOf(commission.linkedRun) === key,
     );
     if (collision) return { outcome: "collision", commission: null };
   }
@@ -533,7 +576,7 @@ export function applyEngineerEvent(
   });
   return {
     outcome,
-    commission: outcome === "stored" ? reduced.commission : held,
+    commission: outcome === "stored" ? getPipelineCommission(held.id) : held,
   };
 }
 

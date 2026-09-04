@@ -4547,6 +4547,15 @@ body.is-pane-resizing {
   flex-direction: column;
   container: file-main / inline-size;
 }
+.file-readonly-banner {
+  flex: none;
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--attention) 35%, var(--border));
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+  font: 11px var(--mono);
+}
 .file-toolbar {
   flex: none;
   min-height: 43px;
@@ -14117,9 +14126,14 @@ select.ensemble-judge-persona {
   overflow: auto;
   padding: 16px;
 }
+.pipelines-feature {
+  display: grid;
+  gap: 16px;
+}
 /* A grid or flex child's `min-width` is `auto`, so one wide thing - a halt reason, an
    engine's own path - would stretch the whole ancestry and scroll the reader sideways with
    its right edge clipped. The same floor the workflow reader declares. */
+.pipelines-feature > *,
 .pipelines-run > *,
 .pipelines-section > *,
 .pipelines-run-head > * {
@@ -14178,6 +14192,29 @@ select.ensemble-judge-persona {
   padding: 9px 10px;
   text-align: left;
   cursor: pointer;
+}
+.pipelines-row-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 4px;
+}
+.pipelines-row-run {
+  align-self: stretch;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  padding: 0 9px;
+  color: var(--muted);
+  font: 14px var(--mono);
+  cursor: pointer;
+}
+.pipelines-row-run:hover,
+.pipelines-row-run:focus-visible {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--working);
 }
 .pipelines-row:hover,
 .pipelines-row.active {
@@ -14466,6 +14503,64 @@ a.pipelines-chip.is-link:focus-visible {
 .pipelines-attempts > h4,
 .pipelines-section > h4 {
   margin: 0;
+}
+.pipelines-disclosure > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  list-style: none;
+}
+.pipelines-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.pipelines-disclosure > summary::before {
+  content: "›";
+  flex: none;
+  color: var(--muted);
+  font: 16px/1 var(--mono);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+.pipelines-disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+.pipelines-disclosure > summary h4 {
+  display: inline;
+  margin: 0;
+}
+.pipelines-disclosure > summary small {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+.pipelines-disclosure > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.pipelines-handoff-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.pipelines-inline-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--working);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.pipelines-inline-link:hover,
+.pipelines-inline-link:focus-visible {
+  color: var(--fg);
 }
 .pipelines-attempt-row {
   display: flex;
@@ -32040,4 +32135,164 @@ body.foreman-sidecar-open .modal-backdrop {
     margin-left: 0;
     text-align: left;
   }
+}
+.turn-artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+
+.artifact-card {
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.artifact-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 6px 8px 6px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid transparent;
+}
+
+.artifact-card.is-open .artifact-head {
+  border-bottom-color: var(--border-soft);
+}
+
+.artifact-disclose {
+  display: flex;
+  flex: 1 1 190px;
+  gap: 7px;
+  align-items: baseline;
+  min-width: 150px;
+  padding: 3px 4px;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+}
+
+.artifact-disclose:hover {
+  background: var(--panel-2);
+}
+
+.artifact-disclose:focus-visible {
+  outline: 2px solid var(--agent-accent, var(--neutral));
+  outline-offset: 1px;
+}
+
+.artifact-caret {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-right: 1.6px solid var(--muted);
+  border-bottom: 1.6px solid var(--muted);
+  transition: transform 0.12s ease;
+  transform: rotate(-45deg);
+}
+
+.artifact-card.is-open .artifact-caret {
+  transform: rotate(45deg);
+}
+
+.artifact-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.artifact-dir {
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-size {
+  flex: none;
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.artifact-act {
+  flex: none;
+  padding: 3px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.artifact-act:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+
+.artifact-act.is-primary {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--agent-accent, var(--neutral)) 55%, var(--border));
+}
+
+.artifact-act.is-primary:hover {
+  background: color-mix(in srgb, var(--agent-accent, var(--neutral)) 18%, var(--panel-2));
+}
+
+.artifact-body {
+  position: relative;
+  height: 420px;
+  padding: 7px;
+  background: var(--panel-2);
+}
+
+.artifact-body[hidden] {
+  display: none;
+}
+
+.artifact-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.artifact-loading {
+  position: absolute;
+  inset: 50% 16px auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  transform: translateY(-50%);
+}
+
+.artifact-refusal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: auto;
+  padding: 14px 16px;
+}
+
+.artifact-refusal p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.artifact-refusal strong {
+  color: var(--fg);
 }

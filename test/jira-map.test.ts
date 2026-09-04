@@ -32,6 +32,7 @@ import {
   sweepResultFromWalk,
   UPSTARTCLAW_JIRA_SKILL,
   UPSTARTCLAW_JQL_TOOL,
+  UPSTARTCLAW_JQL_TOOLS,
   upstartClawPrompt,
   walkFromUpstartClawTrace,
   type RestAnswer,
@@ -106,9 +107,10 @@ function upstartToolCall(
   pageInfo: { hasNextPage: boolean; endCursor: string | null },
   nextPageToken?: string,
   maxResults = 50,
+  name: string = UPSTARTCLAW_JQL_TOOL,
 ) {
   return {
-    name: UPSTARTCLAW_JQL_TOOL,
+    name,
     input: {
       cloudId: UPSTART_CLOUD_ID,
       jql: "project = MC",
@@ -132,14 +134,72 @@ test("an empty config is usable enough to store, and says what it defaults to", 
 
 // ---- UpstartClaw's selected query path ----
 
-test("the UpstartClaw prompt preserves the JQL and requires the observed skill and tool route", () => {
+test("the UpstartClaw prompt preserves the JQL and requires the skill and approved tool routes", () => {
   const jql = 'project = MRT and assignee = "jordan.mance@upstart.com"';
   const prompt = upstartClawPrompt(cfg({ jql, queryVia: "upstartclaw" }), 17);
   assert.match(prompt, new RegExp(UPSTARTCLAW_JIRA_SKILL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(prompt, new RegExp(UPSTARTCLAW_JQL_TOOL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  for (const tool of UPSTARTCLAW_JQL_TOOLS) {
+    assert.ok(prompt.includes(tool), `prompt names approved registration ${tool}`);
+  }
   assert.ok(prompt.includes(JSON.stringify(jql)), "quotes survive as one exact JSON string");
   assert.match(prompt, /Do not use Glean, web search/);
   assert.match(prompt, /stopping after 17/);
+});
+
+test("every approved Jira JQL registration maps the provider's structured result", () => {
+  for (const tool of UPSTARTCLAW_JQL_TOOLS) {
+    const walk = walkFromUpstartClawTrace(
+      {
+        result: "done",
+        toolCalls: [
+          upstartToolCall([ISSUE], { hasNextPage: false, endCursor: null }, undefined, 50, tool),
+        ],
+      },
+      cfg({ queryVia: "upstartclaw" }),
+      1_000,
+    );
+    assert.equal(walk.error, null, tool);
+    assert.deepEqual(walk.issues, [ISSUE], tool);
+  }
+});
+
+test("an unapproved same-schema Jira registration is refused", () => {
+  const name = "mcp__untrusted_atlassian__searchJiraIssuesUsingJql";
+  const walk = walkFromUpstartClawTrace(
+    {
+      result: "done",
+      toolCalls: [
+        upstartToolCall([ISSUE], { hasNextPage: false, endCursor: null }, undefined, 50, name),
+      ],
+    },
+    cfg({ queryVia: "upstartclaw" }),
+    1_000,
+  );
+  assert.deepEqual(walk.issues, []);
+  assert.match(walk.error!, /unsupported Atlassian JQL registration/);
+  assert.match(walk.error!, new RegExp(name));
+});
+
+test("pagination cannot switch between approved Jira registrations", () => {
+  const walk = walkFromUpstartClawTrace(
+    {
+      result: "done",
+      toolCalls: [
+        upstartToolCall([ISSUE], { hasNextPage: true, endCursor: "cursor-2" }),
+        upstartToolCall(
+          [ISSUE_2],
+          { hasNextPage: false, endCursor: null },
+          "cursor-2",
+          50,
+          UPSTARTCLAW_JQL_TOOLS[1],
+        ),
+      ],
+    },
+    cfg({ queryVia: "upstartclaw" }),
+    1_000,
+  );
+  assert.deepEqual(walk.issues, []);
+  assert.match(walk.error!, /changed Atlassian JQL registrations/);
 });
 
 test("the raw Jira tool cursor, not Claude's final answer, makes pagination authoritative", () => {
@@ -204,7 +264,7 @@ test("the skill path grants only Jira discovery tools and maps its answer withou
       ready: async () => true,
       run: async (prompt, options) => {
         capturedPrompt = prompt;
-        assert.equal(options.tools, `Skill,ToolSearch,${UPSTARTCLAW_JQL_TOOL}`);
+        assert.equal(options.tools, ["Skill", "ToolSearch", ...UPSTARTCLAW_JQL_TOOLS].join(","));
         assert.equal(options.allowedTools, options.tools);
         assert.deepEqual(options.settingSources, ["user"]);
         assert.equal(options.cwd, ctx.repoRoot);

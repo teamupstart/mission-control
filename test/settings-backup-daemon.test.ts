@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,6 +20,13 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
 const SNAPSHOT_TIMEOUT_MS = 15_000;
 const POLL_MS = 100;
+
+// This spec launches the source daemon directly, so the focused test command does not run npm's
+// native build lifecycle. Compile the runtime artifact before exercising daemon startup.
+execFileSync(process.execPath, ["scripts/build-state-lock-native.mjs"], {
+  cwd: REPO_ROOT,
+  stdio: "pipe",
+});
 
 type HealthResponse = { service?: unknown; pid?: unknown; version?: unknown };
 

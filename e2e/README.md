@@ -61,8 +61,10 @@ npm run test:e2e -- --workers=2
 npm run test:e2e -- --workers=1
 ```
 
-The two CI shards remain concurrent because each job runs on its own machine. The lease coordinates
-processes sharing one host; it does not serialize separate runners.
+The CI shards remain concurrent because each job runs on its own machine. The lease coordinates
+processes sharing one host; it does not serialize separate runners. CI currently uses fifteen
+shards with a target of three minutes or less for every browser-test step. That target is measured,
+not enforced with a timeout, so a slow run retains its complete failure diagnostics.
 
 Useful flags:
 
@@ -519,12 +521,27 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 Attach the generated frame to the pull request; it is never committed.
 
+### The shipped Slop Filter
+
+`e2e/.artifacts/slop-filter/builtin-slop-filter.png` shows the seventh shipped review role open
+from the Persona rail, read-only, with its six review categories and evidence boundary rendered in
+Preview. Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/slop-filter.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frame to the pull request; it is never committed.
+
 ### The shipped No-Mistakes Review's stage layout
 
 `e2e/.artifacts/no-mistakes-review-stages/` holds two frames of the built-in's current stage
 order: `stage-3-code-review.png` is the parallel code-review wave, and
-`stage-4-before-pull-request.png` is the evidence and documentation wave immediately ahead of
-the verified Pull Request action.
+`stage-4-before-pull-request.png` is the evidence, documentation and Slop Filter wave immediately
+ahead of the verified Pull Request action.
 
 Stage 3 is the frame an assertion can only approximate. A stage that gained a third member is
 still five stages and still passes every membership check while drawing a card that overflows

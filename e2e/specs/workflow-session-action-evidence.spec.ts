@@ -339,8 +339,8 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   // 10. The current No-Mistakes Review, scrolled to where its stage order lives.
   //
   //     Code Risk Reviewer, Code Quality Judge and Code Design Reviewer share stage 3. Test
-  //     Evidence Auditor and Documentation Steward share stage 4, followed by Pull Request and
-  //     End with no fixed footer afterwards. GitHub Inspector remains available to observe the
+  //     Evidence Auditor, Documentation Steward and Slop Filter share stage 4, followed by Pull
+  //     Request and End with no fixed footer afterwards. GitHub Inspector remains available to observe the
   //     resulting pull request, but the current version does not wait for that optional remote
   //     pass. `code-design-reviewer.spec.ts` owns stage 3's membership; this step is here for
   //     the stage ORDER and the overflow measurement around it.
@@ -362,6 +362,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(evidenceAndDocs.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Test Evidence Auditor",
     "Documentation Steward",
+    "Slop Filter",
   ]);
   const pullRequest = shipped.locator("li.wf-pipeline-reviewer")
     .filter({ hasText: "Pull Request" });

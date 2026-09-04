@@ -18,6 +18,7 @@ const { FileCommentManager } = await import("../src/server/file-comments.ts");
 const {
   appendFileCommentMessage,
   beginFileCommentDelivery,
+  loadFileCommentMessage,
   loadFileCommentThread,
   markFileCommentMessageDelivered,
   openDb,
@@ -44,11 +45,43 @@ const events: ServerEvent[] = [];
 const held = new Map<string, FileCommentThread>();
 const reviews = new Map<string, FileCommentReview>();
 const sessions = new Set(["live", "other"]);
+const readOnlySessions = new Set<string>();
 /** Which session a `cwd` resolves to, so a reply can bind the way a real agent does. */
 const cwdSessions = new Map<string, string>([["/tmp", "live"], ["/tmp/other", "other"]]);
 
+function readOnlyWorkspace() {
+  return {
+    authority: "provider" as const,
+    kind: "authoring" as const,
+    availability: "missing" as const,
+    reportedPath: "/tmp/.worktrees/gone",
+    branch: "spec/gone",
+    commit: "1".repeat(40),
+    commitProvenance: "live_validation" as const,
+    commitFrozenAt: 1,
+    planSlug: "gone",
+    attempt: 1,
+    providerRevision: 1,
+    reason: "worktree_missing" as const,
+    capabilities: {
+      diff: true,
+      files: true,
+      write: false,
+      comment: false,
+      shell: false,
+      externalOpen: false,
+      manualWorkflow: false,
+    },
+  };
+}
+
 const registry = {
-  getSession: (id: string) => (sessions.has(id) ? { id, cwd: "/tmp" } : undefined),
+  getSession: (id: string) => sessions.has(id)
+    ? { id, cwd: "/tmp", workspace: readOnlySessions.has(id) ? readOnlyWorkspace() : undefined }
+    : undefined,
+  resolveSessionWorkspace: async (id: string) => readOnlySessions.has(id)
+    ? { root: null, view: readOnlyWorkspace(), repoRoot: "/tmp" }
+    : { root: "/tmp", view: null, repoRoot: "/tmp" },
   // The `/mcp/*` join. The real one resolves a pane token, then an agent session id, then a
   // UNIQUE cwd; what matters to these tests is only that a reply arrives already scoped to a
   // session, because that scoping is what makes a per-session `short_id` safe to resolve.
@@ -173,6 +206,7 @@ function reset(): void {
   db.exec("DELETE FROM file_comment_reviews");
   held.clear();
   reviews.clear();
+  readOnlySessions.clear();
   submitted.length = 0;
   events.length = 0;
 }
@@ -301,6 +335,34 @@ test("a reply appends a message, and an undelivered one can still be edited", as
     "rewritten while it is still mine",
   );
   assert.equal((await post("/api/file-comment-messages/ghost", { body: "x" })).status, 404);
+});
+
+test("editing an older message still checks its durable session's workspace policy", async () => {
+  reset();
+  const thread = await create();
+  const opening = thread.messages[0]!;
+  for (let i = 0; i < FILE_COMMENT_THREAD_MESSAGE_CAP + 1; i += 1) {
+    appendFileCommentMessage({
+      id: `${thread.id}-follow-up-${i}`,
+      threadId: thread.id,
+      author: "human",
+      sessionId: "live",
+      body: `follow-up ${i}`,
+      now: Date.now() + i,
+    });
+  }
+  held.set(thread.id, loadFileCommentThread(thread.id)!);
+  assert.equal(
+    held.get(thread.id)!.messages.some((message) => message.id === opening.id),
+    false,
+    "the opening message is outside the capped registry projection",
+  );
+
+  readOnlySessions.add("live");
+  const response = await post(`/api/file-comment-messages/${opening.id}`, { body: "bypass" });
+  assert.equal(response.status, 409);
+  assert.match(((await response.json()) as { error: string }).error, /read-only/);
+  assert.equal(loadFileCommentMessage(opening.id)?.body, COMMENT.body);
 });
 
 test("a comment already committed to the outbox cannot be rewritten behind the agent", async () => {

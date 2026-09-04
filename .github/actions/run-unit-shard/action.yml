@@ -1,0 +1,79 @@
+name: Run unit shard
+description: Restore one Node dependency tree and run one complete unit shard, build, and smoke check.
+
+inputs:
+  node-version:
+    description: Node.js major version used by this shard.
+    required: true
+  shard:
+    description: One-based shard index.
+    required: true
+  shard-total:
+    description: Total number of unit shards.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node ${{ inputs.node-version }}
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Restore node_modules
+      uses: actions/cache/restore@v5
+      with:
+        path: node_modules
+        key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+        fail-on-cache-miss: true
+
+    # Keyed on the version the lockfile actually installed rather than the range in
+    # package.json, because the cache holds one exact binary. `runner.arch` is in the key
+    # for the reason the Playwright cache uses it: an x64 artifact must never restore onto
+    # another architecture.
+    - name: Resolve Electron version
+      id: electron
+      shell: bash
+      run: echo "v=$(node -p "require('./node_modules/electron/package.json').version")" >> "$GITHUB_OUTPUT"
+
+    # Deliberately not keyed on the Node version, so both supported releases share one
+    # Electron runtime cache.
+    - name: Cache the Electron runtime
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/electron
+        key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
+
+    # Electron 42+ downloads its runtime on first use instead of during npm install.
+    # Provision it explicitly so GUI fixtures only exercise the application under test.
+    # The cache removes the normal network dependency; retries protect its cold path.
+    - name: Install Electron test runtime
+      shell: bash
+      run: |
+        for attempt in 1 2 3; do
+          if npm exec -- install-electron --no; then exit 0; fi
+          echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
+          sleep $((attempt * 10))
+        done
+        exit 1
+
+    # Source-loaded daemon tests acquire the same native state lock as the shipped daemon.
+    # Build it before each shard runs so no test depends on another shard's module-load side effect.
+    - name: Build native state lock
+      shell: bash
+      run: npm run build:state-lock-native
+
+    - name: Test
+      shell: bash
+      run: xvfb-run -a npm test
+      env:
+        MISSION_TEST_SHARD: ${{ inputs.shard }}/${{ inputs.shard-total }}
+
+    - name: Build
+      shell: bash
+      run: npm run build
+
+    # Executes the bundles produced by Build, not the source modules covered by unit tests.
+    - name: Smoke the built bundles
+      shell: bash
+      run: npm run smoke

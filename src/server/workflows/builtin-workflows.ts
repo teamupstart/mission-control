@@ -277,6 +277,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   depth: "nmr-depth-join",
   quality: "nmr-code-quality-judge",
   design: "nmr-code-design",
+  slop: "nmr-slop-filter",
   evidenceDocumentation: "nmr-evidence-documentation-join",
   pullRequest: "nmr-pull-request",
   end: "nmr-end",
@@ -598,6 +599,54 @@ const NO_MISTAKES_REVIEW_V7: StagePipeline = {
 };
 
 /**
+ * Version 12: Slop Filter joins Test Evidence and Documentation in stage 4.
+ *
+ * Written out in full so version 11 remains immutable. Slop Filter judges low-signal artifacts
+ * in the same submission the evidence and documentation roles already inspect, so all three run
+ * in parallel and contribute to one repair packet. The stage count, verified Pull Request action,
+ * completion posture, and binding defaults do not change.
+ */
+const NO_MISTAKES_REVIEW_V8: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.design, "code-design-reviewer"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.evidenceDocumentation,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.slop, "slop-filter"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+/**
  * The binding posture shipped before Foreman Complete became the application default.
  *
  * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
@@ -634,9 +683,10 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "Typecheck and test, then six built-in review roles: Intent Conformance first; Code Risk, "
+      "Typecheck and test, then seven built-in review roles: Intent Conformance first; Code Risk, "
       + "Code Quality and Code Design in parallel; then Test Evidence and Documentation in "
-      + "parallel. Configured checks run for real, while unconfigured slots skip and pass. Every "
+      + "parallel with Slop Filter. Configured checks run for real, while unconfigured slots skip "
+      + "and pass. Every "
       + "failure returns to the session for repair. The current version finishes both review "
       + "stages before opening and verifying the pull request, then completes without requiring "
       + "the optional GitHub Inspector gate.",
@@ -791,6 +841,18 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         resumptionPolicy: "auto",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 10,
+      },
+      {
+        // Version 12: Slop Filter joins stage 4's parallel review.
+        //
+        // Versions 1 through 11 remain frozen. Stage 4 still produces one all-pass result and
+        // one repair packet, and nothing changes after it, so the new version adds one focused
+        // judgment without adding a serial stage or changing publication behavior.
+        pipeline: NO_MISTAKES_REVIEW_V8,
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 11,
       },
     ],
   }),

@@ -87,6 +87,33 @@ export function resolveTargetRef(input: {
 }): { ref: string; source: TargetRefSource };
 export function receiptReleaseTag(input: { ref: string; source: TargetRefSource }): string | null;
 export function plistVersion(text: string | null | undefined): string | null;
+export interface IsolateStagedBundleOps {
+  /** The identity of the bundle directory now at a path, or null when there is none. */
+  revision(path: string): string | null;
+  remove(path: string): void;
+  makeDirectory(path: string): void;
+  move(from: string, to: string): void;
+}
+
+export function isolateStagedBundle(input: {
+  bundle: string;
+  isolated: string;
+  expectedRevision: string | null;
+  bundleName: string;
+  ops: IsolateStagedBundleOps;
+}): {
+  /** The path to copy from, or null when the install must be refused. */
+  sourceBundle: string | null;
+  /** Why the install must be refused, or null when it may proceed. */
+  problem: string | null;
+  /** True when the isolated directory holds another build and must not be cleaned up. */
+  keepIsolated: boolean;
+  /** Where that other build was left, for a human to recover. */
+  rescued: string | null;
+  /** Why the bundle is being installed in place rather than from isolation. */
+  inPlace: string | null;
+};
+
 export function stagedVersionProblem(input: {
   stagedVersion: string | null;
   ref: string | null;

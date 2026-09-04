@@ -585,6 +585,78 @@ function checkPrerequisites({ needsBuildTools }) {
 }
 
 /**
+ * Take a verified bundle out of the shared clone, so that what gets copied cannot change.
+ *
+ * Checking the clone path and then copying from it leaves the classic time-of-check/time-of-use
+ * window, and what lands in that window is a rebuild of the very directory being copied. The
+ * rename is atomic and preserves the inode and mtime, so the pin still describes the bundle
+ * afterwards, and the path being copied is then one nobody else has a name for.
+ *
+ * Three orderings here are load-bearing, and each one is a way of not damaging someone else's
+ * work to protect our own:
+ *
+ * 1. **Check before moving.** A bundle that fails the pin belongs to whoever is rebuilding the
+ *    clone - a concurrent `make install`, or a run still in progress - so it is left exactly
+ *    where it is.
+ * 2. **Check again after moving.** The microsecond between the first check and the rename is
+ *    the only window left, and whatever was at the path during it comes across with the rename.
+ * 3. **Put it back if that second check fails, and keep it if putting it back fails.** The
+ *    other builder may already have recreated the path, in which case the restore cannot land -
+ *    and then the moved directory is the only copy of THEIR build. It is left in place and its
+ *    location reported, never cleaned up, because deleting it would finish the damage.
+ *
+ * Every mutation is injected so the race and the failure to recover from it are reachable in a
+ * test; the real operations are supplied by the caller below.
+ */
+export function isolateStagedBundle({ bundle, isolated, expectedRevision, bundleName, ops }) {
+  const pinProblem = (path) =>
+    stagedRevisionProblem({ expected: expectedRevision, found: ops.revision(path) });
+
+  const before = pinProblem(bundle);
+  if (before) return { sourceBundle: null, problem: before, keepIsolated: false, rescued: null, inPlace: null };
+  // Nothing pinned this, so it was not staged by an app: a plain `make install` built it in this
+  // same process moments ago and leaves it in `release/`, where a developer expects to find it.
+  if (!expectedRevision) {
+    return { sourceBundle: bundle, problem: null, keepIsolated: false, rescued: null, inPlace: null };
+  }
+
+  const moved = join(isolated, bundleName);
+  try {
+    ops.remove(isolated);
+    ops.makeDirectory(isolated);
+    ops.move(bundle, moved);
+  } catch (error) {
+    // A rename across filesystems is the realistic failure. Installing in place is what this
+    // script has always done, and the pin was already checked; only the window stays open.
+    try {
+      ops.remove(isolated);
+    } catch {
+      // It may not exist, and it is inside the state directory either way.
+    }
+    return {
+      sourceBundle: bundle,
+      problem: null,
+      keepIsolated: false,
+      rescued: null,
+      inPlace: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const after = pinProblem(moved);
+  if (!after) {
+    return { sourceBundle: moved, problem: null, keepIsolated: false, rescued: null, inPlace: null };
+  }
+
+  // What came across is not what was checked, so it is not ours to install - or to delete.
+  try {
+    ops.move(moved, bundle);
+    return { sourceBundle: null, problem: after, keepIsolated: false, rescued: null, inPlace: null };
+  } catch {
+    return { sourceBundle: null, problem: after, keepIsolated: true, rescued: moved, inPlace: null };
+  }
+}
+
+/**
  * The two steps that need the installed app gone: put the bundle in place, then record what
  * was installed. One owner, called by a whole run and by a staged install alike, because the
  * receipt an update writes and the receipt a fresh install writes have to be one receipt.
@@ -613,79 +685,49 @@ function swapAndRecord({
   if (dryRun) {
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
-    // Refuse first, isolate second, then check again.
-    //
-    // The first check touches nothing, and that ordering matters: a bundle that fails the pin
-    // is somebody else's - a concurrent `make install`, or a rebuild still in progress - and
-    // moving or deleting it would break their run to protect ours.
-    //
-    // Once the pin matches, the bundle IS ours, and it comes out of the shared clone before it
-    // is copied. Checking a path in the clone and then copying from it leaves the classic
-    // time-of-check/time-of-use window, and what lands in that window is a rebuild of the very
-    // directory being copied - which tears the copy or swaps in an unverified build. The rename
-    // is atomic and preserves the inode and mtime, so whatever was at the clone path comes
-    // across whole and still answers to the pin; afterwards the path being copied is one nobody
-    // else has a name for, and the second check cannot go stale.
-    //
-    // Only when a pin was supplied, which means the app staged this. A plain `make install`
-    // built the bundle in this same process moments ago and leaves it in `release/`, where a
-    // developer expects to find it.
-    const pinProblem = (path) =>
-      stagedRevisionProblem({
-        expected: stagedRevision,
-        found: stagedBundleRevision(statSync(path, { throwIfNoEntry: false })),
-      });
-    const changed = pinProblem(bundle);
-    if (changed) fail(changed);
+    // Refuse first, isolate second, check again - and never delete what turns out to belong to
+    // somebody else. See `isolateStagedBundle`.
+    const isolated = join(stateDir(), `staged-install-${process.pid}`);
+    const isolation = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: stagedRevision,
+      bundleName: APP_BUNDLE_NAME,
+      ops: {
+        revision: (path) => stagedBundleRevision(statSync(path, { throwIfNoEntry: false })),
+        remove: (path) => rmSync(path, { recursive: true, force: true }),
+        makeDirectory: (path) => mkdirSync(path, { recursive: true }),
+        move: renameSync,
+      },
+    });
 
-    let sourceBundle = bundle;
-    if (stagedRevision) {
-      const isolated = join(stateDir(), `staged-install-${process.pid}`);
-      let moved = null;
-      try {
-        rmSync(isolated, { recursive: true, force: true });
-        mkdirSync(isolated, { recursive: true });
-        moved = join(isolated, APP_BUNDLE_NAME);
-        renameSync(bundle, moved);
-        // Whatever happens next - a refused pin, a failed swap, a clean install - this copy is
-        // temporary. `fail()` exits the process, so a hook rather than a finally block.
-        process.on("exit", () => {
-          try {
-            rmSync(isolated, { recursive: true, force: true });
-          } catch {
-            // Nothing useful to do at exit, and it is inside the state directory.
-          }
-        });
-        // The microsecond between the first check and the rename is the only one left, and a
-        // rebuild landing in it would have been carried across by the rename. If this fails,
-        // put it back rather than keeping a build that is not ours.
-        const raced = pinProblem(moved);
-        if (raced) {
-          try {
-            renameSync(moved, bundle);
-          } catch (restoreError) {
-            warning(
-              `could not put the replaced bundle back (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
-            );
-          }
-          fail(raced);
-        }
-        sourceBundle = moved;
-        ok("moved the verified bundle out of the shared clone");
-      } catch (error) {
-        // A rename across filesystems is the realistic failure, and installing in place is what
-        // this script has always done. The pin above was already checked; only the window stays
-        // open.
-        if (moved === null) {
-          rmSync(isolated, { recursive: true, force: true });
-          warning(
-            `could not move the verified bundle out of the shared clone (${error instanceof Error ? error.message : String(error)}); installing it where it is`,
-          );
-        } else {
-          throw error;
-        }
-      }
+    if (isolation.inPlace) {
+      warning(
+        `could not move the verified bundle out of the shared clone (${isolation.inPlace}); installing it where it is`,
+      );
     }
+    if (isolation.problem) {
+      if (isolation.rescued) {
+        // The other builder's bundle, which this run moved and could not put back. Naming it is
+        // the only way anyone recovers it, and nothing here deletes it.
+        warning(
+          `a bundle that was replaced mid-install was moved to ${isolation.rescued} and could not be put back; it is left there for recovery`,
+        );
+      }
+      fail(isolation.problem);
+    }
+    if (isolation.sourceBundle !== bundle && !isolation.keepIsolated) {
+      // Ours, and temporary. `fail()` exits the process, so a hook rather than a finally block.
+      process.on("exit", () => {
+        try {
+          rmSync(isolated, { recursive: true, force: true });
+        } catch {
+          // Nothing useful to do at exit, and it is inside the state directory.
+        }
+      });
+      ok("moved the verified bundle out of the shared clone");
+    }
+    const sourceBundle = isolation.sourceBundle;
 
     const swap = replaceAppBundle({
       sourceBundle,

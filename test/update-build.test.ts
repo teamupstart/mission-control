@@ -34,6 +34,32 @@ import {
   updatePrepareProgress,
 } from "../src/shared/update.ts";
 
+/**
+ * Whether a pid is gone, waited for rather than sampled.
+ *
+ * A killed process exists as an unreaped zombie until its parent reaps it - and these
+ * grandchildren are orphaned by the same kill that ends them, so the reaper is init. Sampling
+ * `kill(pid, 0)` the instant `close` arrives therefore says "alive" on a loaded machine and
+ * "gone" on an idle one, which is how this went red on one CI runner and green on the other.
+ *
+ * The property under test is that the group is dead and its pipes are closed - a zombie is
+ * writing to nothing - so a short wait for the reaper is legitimate rather than a way of
+ * hiding a real failure.
+ */
+async function waitForGone(pid: number, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      // EPERM means alive and owned by somebody else, which is still alive.
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 /** A clone whose install script is whatever the test needs it to be. */
 function fakeClone(script: string): string {
   // Realpath, because the child reports paths from its own `process.cwd()` and macOS serves
@@ -153,16 +179,9 @@ setInterval(() => {}, 1000);
 
     const grandchild = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : null;
     assert.ok(grandchild, "the fake build should have recorded a grandchild pid");
-    // Give the group kill a moment to be delivered before asking whether it landed.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    let alive = true;
-    try {
-      process.kill(grandchild!, 0);
-    } catch (error) {
-      alive = (error as NodeJS.ErrnoException).code !== "ESRCH";
-    }
-    if (alive) process.kill(grandchild!, "SIGKILL");
-    assert.equal(alive, false, "the grandchild should have been killed with the process group");
+    const gone = await waitForGone(grandchild!);
+    if (!gone) process.kill(grandchild!, "SIGKILL");
+    assert.equal(gone, true, "the grandchild should have been killed with the process group");
   } finally {
     delete process.env.MISSION_TEST_PID_FILE;
     rmSync(clone, { recursive: true, force: true });
@@ -208,17 +227,14 @@ setInterval(() => {}, 1000);
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason, "cancelled");
 
-    // And by the time it resolved, the grandchild was gone - which is the whole point.
+    // And the group it was waiting for is dead - which is the whole point. Waited for rather
+    // than sampled: the kill orphans these processes, so init reaps them, and how quickly it
+    // does is not something this test gets to assert.
     const grandchild = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : null;
     assert.ok(grandchild, "the fake build should have recorded a grandchild pid");
-    let alive = true;
-    try {
-      process.kill(grandchild!, 0);
-    } catch (error) {
-      alive = (error as NodeJS.ErrnoException).code !== "ESRCH";
-    }
-    if (alive) process.kill(grandchild!, "SIGKILL");
-    assert.equal(alive, false, "the group must be gone before the offer comes back");
+    const gone = await waitForGone(grandchild!);
+    if (!gone) process.kill(grandchild!, "SIGKILL");
+    assert.equal(gone, true, "the group must be gone before the offer comes back");
   } finally {
     delete process.env.MISSION_TEST_PID_FILE;
     rmSync(clone, { recursive: true, force: true });

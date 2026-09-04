@@ -42,6 +42,7 @@ import {
   stagingPaths,
   swapAppBundle,
   packagedVersionProblem,
+  isolateStagedBundle,
   parseArgs,
   stagedVersionProblem,
   parseRemote,
@@ -515,6 +516,149 @@ test(
   assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
   },
 );
+
+test("isolating a verified bundle never damages a build that is not ours", () => {
+  // The whole transaction, with its mutations injected, because the case that matters cannot be
+  // provoked from outside: another builder replacing the bundle in the microsecond between the
+  // pin check and the rename, and then recreating the path so the restore cannot land.
+  const bundle = "/state/app-src/release/mac-arm64/Mission Control.app";
+  const isolated = "/state/staged-install-4242";
+  const moved = `${isolated}/Mission Control.app`;
+  const pinned = "42-1700000000000";
+
+  const record = (revisions: Record<string, string | null>, over: Partial<{ move: (from: string, to: string) => void }> = {}) => {
+    const acted: string[] = [];
+    const ops = {
+      revision: (path: string) => revisions[path] ?? null,
+      remove: (path: string) => acted.push(`remove:${path}`),
+      makeDirectory: (path: string) => acted.push(`mkdir:${path}`),
+      move: (from: string, to: string) => {
+        acted.push(`move:${from}->${to}`);
+        if (over.move) over.move(from, to);
+      },
+    };
+    return { ops, acted };
+  };
+
+  // The ordinary case: pin matches, bundle comes out of the clone, and it is ours to clean up.
+  {
+    const { ops, acted } = record({ [bundle]: pinned, [moved]: pinned });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.deepEqual(result, {
+      sourceBundle: moved,
+      problem: null,
+      keepIsolated: false,
+      rescued: null,
+      inPlace: null,
+    });
+    assert.deepEqual(acted, [`remove:${isolated}`, `mkdir:${isolated}`, `move:${bundle}->${moved}`]);
+  }
+
+  // Fails the pin before anything is touched: it is somebody else's build, and it stays put.
+  {
+    const { ops, acted } = record({ [bundle]: "someone-elses" });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, false);
+    assert.deepEqual(acted, [], "nothing may be moved or removed on this path");
+  }
+
+  // The race, recovered: what came across is not what was checked, and it goes back.
+  {
+    const { ops, acted } = record({ [bundle]: pinned, [moved]: "arrived-mid-rename" });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, false);
+    assert.equal(result.rescued, null);
+    assert.ok(acted.includes(`move:${moved}->${bundle}`), acted.join(", "));
+  }
+
+  // The race, unrecoverable - the other builder already recreated the path, so the restore
+  // cannot land. The moved directory is then the only copy of THEIR build: it is kept, and its
+  // location reported, rather than cleaned up.
+  {
+    const { ops } = record(
+      { [bundle]: pinned, [moved]: "arrived-mid-rename" },
+      {
+        move: (_from, to) => {
+          if (to === bundle) throw new Error("ENOTEMPTY: directory not empty");
+        },
+      },
+    );
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, true, "the other build must not be deleted");
+    assert.equal(result.rescued, moved, "and a person must be told where it is");
+  }
+
+  // A rename that cannot cross filesystems falls back to installing in place, which is what
+  // this script always did. The pin was already checked; only the window stays open.
+  {
+    const { ops, acted } = record(
+      { [bundle]: pinned },
+      {
+        move: () => {
+          throw new Error("EXDEV: cross-device link not permitted");
+        },
+      },
+    );
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, bundle);
+    assert.equal(result.problem, null);
+    assert.equal(result.keepIsolated, false);
+    assert.match(String(result.inPlace), /EXDEV/);
+    assert.ok(acted.filter((entry) => entry === `remove:${isolated}`).length >= 1);
+  }
+
+  // No pin means nobody staged this: a plain `make install` leaves its build in `release/`,
+  // where a developer expects to find it.
+  {
+    const { ops, acted } = record({ [bundle]: pinned });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: null,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, bundle);
+    assert.equal(result.problem, null);
+    assert.deepEqual(acted, []);
+  }
+});
 
 test("a missing install directory stops the install before the copy invents one", () => {
   // `cp -R app dir` creates `dir` as the bundle when it does not exist, so a mistyped

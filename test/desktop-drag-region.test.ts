@@ -24,7 +24,11 @@ const css = readFileSync(CSS_PATH, "utf8");
 const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
 
 /** Comments carry `position: fixed` in prose, so they go before anything is parsed. */
-const bare = css.replace(/\/\*[\s\S]*?\*\//g, " ");
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, " ");
+}
+
+const bare = stripComments(css);
 
 interface Rule {
   selectors: string[];
@@ -86,7 +90,13 @@ const EXEMPT: Record<string, { because: string; declares: RegExp }> = {
  * argument so the guard itself can be tested against a stylesheet with a known hole.
  */
 function scan(source: string): { uncovered: string[]; staleExemptions: string[] } {
-  const all = rules(source);
+  // Stripped HERE rather than trusted to have arrived stripped. `rules()` keeps a whole rule
+  // body, so `.floating { /* -webkit-app-region: no-drag */ z-index: 11 }` would otherwise
+  // read as a rule that declares no-drag - to the coverage index below and to the self-skip
+  // inside the loop alike - and a real violation would be waved through by a comment about
+  // one. Both current callers already pass stripped source; this is what keeps a future one
+  // from having to know that.
+  const all = rules(stripComments(source));
   const noDrag = new Set(
     all
       .filter((r) => /-webkit-app-region:\s*no-drag/.test(r.body))
@@ -103,6 +113,13 @@ function scan(source: string): { uncovered: string[]; staleExemptions: string[] 
       /position:\s*fixed/.test(rule.body) ||
       Number(/z-index:\s*(-?\d+)/.exec(rule.body)?.[1] ?? "0") > topbarZ;
     if (!floats) continue;
+    // A rule that subtracts ITSELF from the drag region is covered by definition. The index
+    // above answers that for a subject carrying a class, and cannot for one that does not -
+    // the tour skin frames its active element by `[aria-controls="driver-popover-content"]`
+    // as well as by Driver's class, because React rewrites `className` on a target whose
+    // classes come from state the stop it is spotlighting just changed. Reading the rule's
+    // own body is the same question the class index is a shortcut for.
+    if (/-webkit-app-region:\s*no-drag/.test(rule.body)) continue;
 
     for (const selector of rule.selectors) {
       const classes = subjectClasses(selector);
@@ -169,4 +186,24 @@ test("a new desktop-only floating layer is not excused by the scope it is writte
   // selector would read `is-desktop` as covered and wave it through in silence.
   const { uncovered } = scan(`${bare}\n.is-desktop .toast { position: fixed; z-index: 200; }`);
   assert.deepEqual(uncovered, [".is-desktop .toast"]);
+});
+
+test("a commented-out no-drag excuses nothing, on its own rule or on anyone else's", () => {
+  // The scan reads whole rule BODIES, so the word and the declaration look alike to a regex.
+  // A rule may be skipped for declaring no-drag itself, and a class may be indexed as covered
+  // because some rule declared it - a comment must buy neither.
+  const { uncovered: self } = scan(
+    `${bare}\n.is-desktop .toast { /* -webkit-app-region: no-drag */ position: fixed; }`,
+  );
+  assert.deepEqual(self, [".is-desktop .toast"], "a comment skipped the rule it sits in");
+
+  const { uncovered: indexed } = scan(
+    `${bare}\n.mc-comment-probe { /* -webkit-app-region: no-drag */ color: red; }\n`
+      + `.is-desktop .mc-comment-probe { position: fixed; }`,
+  );
+  assert.deepEqual(
+    indexed,
+    [".is-desktop .mc-comment-probe"],
+    "a comment put a class into the covered index",
+  );
 });

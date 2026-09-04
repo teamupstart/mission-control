@@ -69,15 +69,20 @@ export const TOUR_TARGET_NAMESPACES = {
     "session-workflow-ladder": "run",
   },
   /**
-   * Setup reads one family at a time through a rail, so there is no per-family target to
-   * name: only the selected family's rows are mounted. `rail` is the always-present list of
-   * families, and `pane` is whichever family is showing - a step that wants a particular
-   * one selects it in `prepare` and then spotlights `pane`.
+   * Setup's targets are the PATH to the panel, not a reading of it: the gear that opens
+   * Settings, the rail row that opens Setup, the dependency list to work through, and
+   * Re-check. Two of them therefore live outside the panel, in the top bar and the Settings
+   * rail, which is the whole point - an operator who has never opened Setup has to be shown
+   * where it is before its rows mean anything.
+   *
+   * There is no per-family target, and not only because a step could select one first: only
+   * the chosen family's rows are ever mounted, and this tour deliberately hands the panel
+   * over rather than walking the families one at a time.
    */
   "setup": {
-    "panel": "page",
-    "rail": "page",
-    "pane": "page",
+    "settings-gear": "page",
+    "settings-tab": "page",
+    "dependencies": "page",
     "recheck": "page",
   },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;

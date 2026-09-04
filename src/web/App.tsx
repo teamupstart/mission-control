@@ -146,7 +146,7 @@ import { GuidedTourController } from "./tour/GuidedTourController.tsx";
 import { useGuidedTour } from "./lib/guided-tour.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
-import { tourEntry } from "./tour/entries.ts";
+import { FIRST_RUN_TOUR, tourEntry } from "./tour/entries.ts";
 import {
   SEE_WORK_TOUR,
   type SeeWorkTourNavigation,
@@ -161,7 +161,7 @@ import {
   type LibraryTourRuntime,
 } from "./tour/tours/library.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
-import { createTourTargetRegistry } from "./tour/target-registry.ts";
+import { createTourTargetRegistry, type TourTargetId } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
 import {
   captureFocusBookmark,
@@ -474,6 +474,12 @@ export function App(): React.JSX.Element {
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
   const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
+  // The gear, for the Setup tour's first stop. App renders the topbar above `TourTargetHost`,
+  // so it registers through the owned hook exactly as Dispatch does.
+  const settingsGearTourRef = useOwnedTourTargetRef<HTMLButtonElement>(
+    tourTargets,
+    "setup:settings-gear",
+  );
   // The settings control the palette last asked to land on, if any.
   //
   // The anchor is deliberately not in the hash (the settings route is category-only), so it
@@ -1004,13 +1010,13 @@ export function App(): React.JSX.Element {
   }, [boardOpen, filter, layout, lineDrawer, navigate, route, selectedId, tourStarters]);
 
   /**
-   * A fresh profile receives one automatic product orientation. The preference is consumed
-   * only after the preflight accepts, so a dirty route that declines navigation can try again
-   * after the operator resolves its ordinary leave dialog.
+   * A fresh profile receives one automatic orientation, and `FIRST_RUN_TOUR` says which. The
+   * preference is consumed only after the preflight accepts, so a dirty route that declines
+   * navigation can try again after the operator resolves its ordinary leave dialog.
    */
   useEffect(() => {
     if (!guidedTourHydrated || !guidedTourEnabled) return;
-    if (startTour("see-work", captureFocusBookmark(null))) consumeGuidedTour();
+    if (startTour(FIRST_RUN_TOUR, captureFocusBookmark(null))) consumeGuidedTour();
   }, [consumeGuidedTour, guidedTourEnabled, guidedTourHydrated, startTour]);
 
   // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
@@ -1221,6 +1227,11 @@ export function App(): React.JSX.Element {
    * back where they started FIRST, then ask the tour to reclaim what it made. A tour that
    * cannot finish reclaiming leaves the run installed again so its controller can retry
    * against the same resources rather than stranding them.
+   *
+   * "Where they started" is the snapshot for a tour that only demonstrates, and the entry's
+   * declared `exit` route for one whose point is to hand a page over - Set up this machine
+   * ends on Setup. Only the route differs; every other snapshotted field is replayed either
+   * way, so a tour still owes back the layout, selection, filter, and drawer it moved.
    */
   const finishTour = useCallback(async (): Promise<void> => {
     const run = activeTourRef.current;
@@ -1229,6 +1240,7 @@ export function App(): React.JSX.Element {
     // it reclaims its own task instead of attaching it to a controller that is leaving.
     activeTourRef.current = null;
     const { snapshot, focus } = run;
+    const exit = tourEntry(run.tourId).exit ?? null;
     cancelPending();
     for (const flag of TOUR_DEFINITIONS[run.tourId].documentFlags) {
       delete document.documentElement.dataset[flag];
@@ -1236,7 +1248,7 @@ export function App(): React.JSX.Element {
     closeComplete();
     closeDispatch();
     setReviewSessionId(null);
-    navigate(snapshot.route);
+    navigate(exit?.route ?? snapshot.route);
     setLayout(snapshot.layout);
     setSelectedId(snapshot.selectedId);
     setBoardOpen(snapshot.boardOpen);
@@ -1251,6 +1263,43 @@ export function App(): React.JSX.Element {
     }
     setActiveTour(null);
 
+    /**
+     * Put the keyboard on the exit route's landing control, once that page exists.
+     *
+     * Its own pass rather than a branch of the bookmark loop below, because it answers a
+     * different question. The bookmark names a control that was on screen a moment ago; this
+     * one is on a page that has not mounted yet - Exit at stop one of Set up this machine
+     * leaves the fleet for Setup, and the panel has to commit first.
+     *
+     * It keeps watching rather than acting once, because two things move focus out from under
+     * it and both are late: the page it is waiting for commits, and the coachmark's own
+     * teardown refocuses whatever was active when the tour began, which on the automatic
+     * first-run tour is the document root. A single attempt lost that race on a loaded
+     * machine, and abandoning the pass because the leaving popover still held focus lost it
+     * every time.
+     *
+     * It stops the frame after the focus STICKS, which is the difference between surviving
+     * that teardown and lying in wait. A pass that ran out its whole window would still be
+     * watching a minute of frames later, and the vacuum it waits for is also what an ordinary
+     * click on a non-focusable area leaves behind - so it would answer that click by pulling
+     * focus back. One frame of the element holding focus means the teardown has either already
+     * fired or never will, and there is nothing left to do.
+     *
+     * Two more guards, each for its own failure: it focuses only into a vacuum, so a control
+     * the operator reached for while the page was still committing keeps focus; and it gives
+     * up entirely if another tour has started, because that tour owns the screen and this
+     * landing is stale. Neither is a substitute for not starting the pass at all when the
+     * invoker survived - its caller below decides that.
+     */
+    const land = (target: TourTargetId, frames = 120): void => {
+      if (activeTourRef.current) return;
+      const element = tourTargets.get(target);
+      if (element && document.activeElement === element) return;
+      const active = document.activeElement;
+      if (element?.isConnected && (!active || active === document.body)) element.focus();
+      if (frames > 0) requestAnimationFrame(() => land(target, frames - 1));
+    };
+
     // Route restoration can remount the invoking control. Try the original node first, then
     // its semantic replacement for a few frames while the restored page commits.
     let attempts = 5;
@@ -1261,9 +1310,16 @@ export function App(): React.JSX.Element {
       const settled = restored && active === settledFocus;
       settledFocus = active;
       if (!settled && attempts-- > 0) requestAnimationFrame(restore);
+      // Only where the invoker did NOT survive, which is what `exit.focus` is for. A tour
+      // started from the Settings rail ends with that row focused, on the very page it handed
+      // over, and there is nothing left to land - starting the pass anyway would leave it
+      // watching for two seconds, ready to pull focus off the next non-focusable click the
+      // operator makes. The automatic first-run tour has no invoker at all, so the retry
+      // budget runs out unsettled, and that is the case this covers.
+      else if (!settled && exit) land(exit.focus);
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout]);
+  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout, tourTargets]);
 
   /**
    * Perform one palette row.
@@ -1552,18 +1608,16 @@ export function App(): React.JSX.Element {
       return true;
     },
   }), [layout, navigate, requestWorkflowsTab]);
+  /**
+   * The Setup tour's three moves, all of them ordinary route transitions.
+   *
+   * `showSettings` lands on the same category the gear itself opens, so the stop that points
+   * at Setup in the rail is pointing at a row that is not selected yet.
+   */
   const setupNavigation = useMemo<SetupTourNavigation>(() => ({
+    showFleet: () => navigate({ page: "fleet" }),
+    showSettings: () => navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY }),
     showSetup: () => navigate({ page: "settings", category: "setup" }),
-    // The rail's own deep-link anchor, through the same settings-jump path the ⌘K palette
-    // and Shipping's warnings already use, rather than a second channel into one panel.
-    showSetupFamily: (family) => {
-      const moved = navigate({ page: "settings", category: "setup" });
-      setSettingsJump((previous) => ({
-        anchor: `setup/family-${family}`,
-        nonce: (previous?.nonce ?? 0) + 1,
-      }));
-      return moved;
-    },
   }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
@@ -3291,6 +3345,7 @@ export function App(): React.JSX.Element {
                 }
               >
                 <button
+                  ref={settingsGearTourRef}
                   className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
                   onClick={() =>
                     navigate(

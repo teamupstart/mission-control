@@ -26,8 +26,16 @@ declare global {
      * The native View menu holds those zoom accelerators whenever the dashboard is not, so
      * this is what makes switching the Jump shortcut preference off give the keys back
      * rather than leave three keys nothing answers to.
+     *
+     * OPTIONAL, unlike the members above it, and the `?` is doing real work. A guard written
+     * `window.missionDesktop?.setCardJumpKeys(...)` covers the BRIDGE being absent and not
+     * this METHOD's, so a bridge object that predates the member - an older preload beside a
+     * newer renderer bundle, which is what a partly-applied desktop update looks like - throws
+     * a TypeError inside a mount effect and takes the whole dashboard down with it. Declaring
+     * it optional makes the compiler refuse the unguarded call, so the guard cannot be dropped
+     * again by an edit that still typechecks. Add later members the same way.
      */
-    setCardJumpKeys(claimed: boolean): Promise<void>;
+    setCardJumpKeys?(claimed: boolean): Promise<void>;
     /** Subscribe to the native Settings… menu item (⌘,). Returns an unsubscribe. */
     onOpenSettings(cb: () => void): () => void;
   }

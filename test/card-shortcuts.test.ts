@@ -129,6 +129,49 @@ test("no slot collides with grid navigation, and each prints and announces itsel
   }
 });
 
+test("the keydown handler reads the live numbering, not a paint-old copy of it", () => {
+  // A source scan, because the failure is sub-frame and no layer in this repository can
+  // observe it: a passive `useEffect` flushes AFTER paint, so re-subscribing the listener
+  // there leaves a window where the cards already draw the new numbering while the installed
+  // handler still closes over the previous map - ⌘3 pressed in that window opens the card that
+  // WAS third. `useLayoutEffect` runs inside the commit, before the browser can paint or
+  // deliver a keystroke, so the two cannot come apart.
+  //
+  // Every part of this is individually reversible by an ordinary-looking edit that typechecks,
+  // lints and passes every behavioral test - including the e2e one, which presses keys on a
+  // settled board and so never enters the window at all. Hence three assertions on the
+  // mechanism rather than on an outcome.
+  const app = readFileSync(
+    fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)),
+    "utf8",
+  );
+
+  // 1. The ref is synced in a layout effect. A `useEffect` here is the bug.
+  assert.match(
+    app,
+    /useLayoutEffect\(\(\) => \{\s*cardShortcutsRef\.current = cardShortcuts;\s*\}, \[cardShortcuts\]\);/,
+    "the shortcut map is no longer synced to the commit by a layout effect",
+  );
+
+  // 2. The handler resolves a keypress through that ref.
+  assert.match(
+    app,
+    /cardShortcutTarget\(chord, cardShortcutsRef\.current\)/,
+    "the keydown handler resolves a chord against a closed-over map instead of the ref",
+  );
+
+  // 3. And the listener is not re-subscribed on the map, which is what put it a paint behind
+  //    in the first place - and, because that map is rebuilt on every board reflow, what
+  //    re-installed a window keydown listener on every session event.
+  const deps = /window\.addEventListener\("keydown", onKey\);[\s\S]*?\}, \[([^\]]*)\]\);/
+    .exec(app)?.[1];
+  assert.ok(deps, "the keydown listener's dependency array could not be found");
+  assert.ok(
+    !/\bcardShortcuts\b/.test(deps),
+    "`cardShortcuts` is back in the keydown listener's dependencies",
+  );
+});
+
 test("no rebindable action ships with a chord these twelve would shadow", () => {
   // The one real collision risk, and it is between two registries rather than inside either.
   // These chords are fixed and are dispatched ahead of the selection actions, so a DEFAULT

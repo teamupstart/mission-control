@@ -219,10 +219,14 @@ test("the preference reaches the menu across all four layers", () => {
     readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
   const app = source("../src/web/App.tsx");
+  // Optional on BOTH links. The bridge member is declared optional so the compiler enforces
+  // this as well; the assertion is here because the second `?.` is exactly what a well-meaning
+  // tidy-up removes, and unguarded it unmounts the entire dashboard against any bridge object
+  // that predates the member - which is how `update-banner.spec.ts` caught it.
   assert.match(
     app,
-    /missionDesktop\?\.setCardJumpKeys\(cardShortcutsOn\)/,
-    "the dashboard no longer reports its claim on the number row",
+    /missionDesktop\?\.setCardJumpKeys\?\.\(cardShortcutsOn\)/,
+    "the dashboard does not report its claim on the number row, or reports it unguarded",
   );
 
   const preload = source("../src/preload/index.ts");

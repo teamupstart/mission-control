@@ -1950,6 +1950,24 @@ export function App(): React.JSX.Element {
     () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
     [cardShortcutsOn, boardColumns],
   );
+  // Read by the keydown handler through a ref, and synced in a LAYOUT effect - which is the
+  // whole point of it being one.
+  //
+  // A passive `useEffect` flushes after paint, so re-subscribing the listener there left a
+  // window in which the cards on screen already showed the new numbering while the installed
+  // handler still closed over the previous map: ⌘3 pressed in that window opened the card that
+  // WAS third. `useLayoutEffect` runs inside the commit, after the DOM mutation and before the
+  // browser can paint or deliver a keystroke, so what is drawn and what the key opens cannot
+  // come apart - which is the promise the keycap makes.
+  //
+  // It also takes `cardShortcuts` out of the listener's dependency array. That map is a fresh
+  // Map whenever `boardColumns` moves, which is every session event on the fleet, so the array
+  // was tearing down and re-installing a window keydown listener on every board reflow. Same
+  // reason `overlaysRef` and `lineDrawerRef` are read through refs further down.
+  const cardShortcutsRef = useRef(cardShortcuts);
+  useLayoutEffect(() => {
+    cardShortcutsRef.current = cardShortcuts;
+  }, [cardShortcuts]);
   // Tell the desktop shell, so its View menu can hold ⌘0/⌘-/⌘= for zoom whenever this
   // dashboard is not using them. Without this the menu gave them up for good and the
   // preference could switch the feature off without giving the keys back - three keys that
@@ -1962,8 +1980,14 @@ export function App(): React.JSX.Element {
   //
   // No-ops in a browser tab, where `missionDesktop` is undefined and there is no menu to
   // rebuild - the guard every caller of this bridge carries.
+  //
+  // TWO optional links, not one. `?.` on the bridge alone covers its absence and not this
+  // METHOD's, and a bridge object without the member - an older preload beside a newer
+  // renderer bundle - would throw a TypeError out of this effect and unmount the whole
+  // dashboard. That is a white screen, not a missing menu update. The member is declared
+  // optional so the compiler refuses the unguarded spelling.
   useEffect(() => {
-    void window.missionDesktop?.setCardJumpKeys(cardShortcutsOn);
+    void window.missionDesktop?.setCardJumpKeys?.(cardShortcutsOn);
   }, [cardShortcutsOn]);
 
   // Console's detail is its selection. Board keeps its detail separate from the arrow-key
@@ -2522,7 +2546,11 @@ export function App(): React.JSX.Element {
       // to the browser on a fleet of three cards instead of swallowing zoom for nothing. The
       // map is empty whenever the operator has the item switched off, so that case is the
       // same "not ours" answer rather than a second guard.
-      const jumpToId = cardShortcutTarget(chord, cardShortcuts);
+      //
+      // Through the REF, never the closed-over map: the ref is written in a layout effect, so
+      // it is already the numbering the cards are drawing by the time any keystroke can be
+      // delivered. See where it is declared.
+      const jumpToId = cardShortcutTarget(chord, cardShortcutsRef.current);
       if (jumpToId && !overlaysRef.current.anyOpen && !renamingId) {
         e.preventDefault();
         setSelectedId(jumpToId);
@@ -2978,11 +3006,15 @@ export function App(): React.JSX.Element {
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
     // No `lineDrawer` entry either, for the same reason: the guard reads `lineDrawerRef`.
+    // No `cardShortcuts` entry, and that one is load-bearing rather than an optimization: it
+    // is a fresh Map on every board reflow, so listing it re-installed this listener on every
+    // session event AND left the handler a paint behind the keycaps it has to agree with. The
+    // jump arm reads `cardShortcutsRef`, which a layout effect keeps in step with the commit.
     // No `focusSession` entry: it is a plain function, so listing it would re-subscribe on
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, cardShortcuts, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

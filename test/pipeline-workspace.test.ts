@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -341,6 +349,90 @@ test("Git validation yields to the event loop instead of blocking registry work"
   } finally {
     process.env.PATH = previousPath;
   }
+});
+
+test("a cached live workspace survives an equivalent symlinked provider path", async () => {
+  const repo = join(home, "symlink-repo");
+  const worktree = join(repo, ".worktrees", "canonical");
+  const reportedPath = join(repo, ".worktrees", "reported");
+  mkdirSync(join(repo, ".worktrees"), { recursive: true });
+  git(repo, "init", "-q");
+  git(repo, "branch", "-M", "main");
+  git(repo, "config", "user.email", "test@example.com");
+  git(repo, "config", "user.name", "Test");
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "base");
+  git(repo, "worktree", "add", "-qb", "spec/symlink", worktree);
+  symlinkSync(worktree, reportedPath);
+
+  const commit = git(worktree, "rev-parse", "HEAD");
+  const commission = {
+    id: "symlink",
+    taskId: "symlink-task",
+    provider: "ai-conductor" as const,
+    repoRoot: repo,
+    correlationId: "symlink",
+    lifecycle: "authoring" as const,
+    attempts: [{
+      attempt: 1,
+      origin: "mission_control" as const,
+      launchKey: "symlink",
+      engineerRunId: null,
+      previousEngineerRunId: null,
+      providerRevision: 1,
+      state: "authoring" as const,
+      terminalReason: null,
+      evidenceCommit: commit,
+      evidenceCommitProvenance: "live_validation" as const,
+      evidenceFrozenAt: 1,
+      updatedAt: 1,
+    }],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: reportedPath,
+    authoringBranch: "spec/symlink",
+    planSlug: "symlink",
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const registry = new Registry();
+  const host = registry.registerSdkSession({
+    id: "sdk:symlink",
+    agent: "codex",
+    name: "symlink workspace",
+    cwd: repo,
+    agentSessionId: "symlink",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  registry.upsertTask(mkTask({
+    id: commission.taskId,
+    kind: "pipeline",
+    agent: "codex",
+    repoRoot: repo,
+    status: "running",
+    sessionId: host.id,
+    pipelineCommissionId: commission.id,
+    pipelineWorkspacePath: reportedPath,
+  }));
+  registry.initializePipelineCommissions([commission]);
+
+  await registry.resolveSessionWorkspace(host.id);
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, realpathSync(worktree));
+
+  registry.upsertPipelineCommission({ ...commission, updatedAt: 2 });
+  assert.equal(registry.getSession(host.id)?.workspaceRoot, realpathSync(worktree));
+  assert.equal(registry.getSession(host.id)?.workspace?.availability, "available");
 });
 
 test("a newer provider revision supersedes an in-flight workspace projection", async () => {

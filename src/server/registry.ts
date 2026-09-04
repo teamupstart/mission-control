@@ -6487,10 +6487,12 @@ export class Registry extends EventEmitter {
     const input = { task, commission, linkedRun: run ?? null };
     const projected = projectPipelineWorkspace(input);
     const refreshKey = this.pipelineWorkspaceRefreshKey(input);
-    const current = this.sessions.get(sessionId)?.workspace ?? null;
+    const currentSession = this.sessions.get(sessionId);
+    const current = currentSession?.workspace ?? null;
+    const resolvedForProjection = this.pipelineWorkspaceResolvedKeys.get(sessionId) === refreshKey;
     const sameIdentity = current?.authority === "provider" &&
       current.kind === projected.view.kind &&
-      current.reportedPath === projected.view.reportedPath &&
+      (current.reportedPath === projected.view.reportedPath || resolvedForProjection) &&
       current.attempt === projected.view.attempt &&
       current.commit === projected.view.commit &&
       current.commitFrozenAt === projected.view.commitFrozenAt &&
@@ -6501,7 +6503,7 @@ export class Registry extends EventEmitter {
     if (sameIdentity && projected.view.reason === "provider_pending") {
       if (
         current.availability === "pending" &&
-        this.pipelineWorkspaceResolvedKeys.get(sessionId) !== refreshKey
+        !resolvedForProjection
       ) {
         this.schedulePipelineWorkspaceRefresh(sessionId, input);
       }
@@ -6509,7 +6511,7 @@ export class Registry extends EventEmitter {
         ? current
         : { ...current, providerRevision: projected.view.providerRevision };
       return {
-        root: view.availability === "available" ? view.reportedPath : null,
+        root: view.availability === "available" ? currentSession?.workspaceRoot ?? null : null,
         view,
       };
     }

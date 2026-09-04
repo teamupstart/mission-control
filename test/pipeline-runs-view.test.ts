@@ -215,6 +215,28 @@ test("feature selection resolves explicit and fallback sources in precedence ord
     activeRun: null,
     activeCommission: featureCommission,
   }, "the first commission is the final bare-tab fallback");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: "missing-commission",
+  }), {
+    activeRun: null,
+    activeCommission: null,
+  }, "an unknown commission selection does not fall through to another feature");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: true,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: null,
+    activeCommission: null,
+  }, "an unresolved run address does not revive stale commission state");
 });
 
 test("a commission reader continues its meter from the observed implementation run", () => {

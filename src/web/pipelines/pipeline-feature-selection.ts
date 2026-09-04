@@ -50,9 +50,14 @@ export function resolvePipelineFeatureSelection({
   const run =
     addressedRun
     ?? (!hasSelectedRunAddress && selectedCommissionId === null ? fallbackRun : null);
-  const commission =
-    commissions.find((entry) => entry.id === selectedCommissionId)
-    ?? (!hasSelectedRunAddress && !run ? commissions[0] ?? null : null);
+  let commission: PipelineCommission | null = null;
+  if (!hasSelectedRunAddress) {
+    if (selectedCommissionId !== null) {
+      commission = commissions.find((entry) => entry.id === selectedCommissionId) ?? null;
+    } else if (!run) {
+      commission = commissions[0] ?? null;
+    }
+  }
   const commissionRun = featureRecordForRun(runs, (candidate) => candidate, commission?.linkedRun);
   const activeRun = run ?? commissionRun;
   const activeCommission = activeRun

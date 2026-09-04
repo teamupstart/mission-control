@@ -75,6 +75,13 @@ export const DISPLAY_ITEMS = [
       "The cropped stage ladder for the review that owns this session, and the control that expands it in place. Hidden, a run in progress is only visible from Runs or the console.",
   },
   {
+    id: "workflowProgressBar",
+    group: "card",
+    label: "Workflow progress bar",
+    description:
+      "The run's whole stage track and repair-round budget. Unchecked, the card returns to the single consequential stage with its member detail.",
+  },
+  {
     id: "pipelinePhases",
     group: "card",
     label: "Pipeline phases",

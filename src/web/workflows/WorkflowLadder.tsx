@@ -599,6 +599,7 @@ function WorkflowTileDisclosure({
   expanded,
   onExpandedChange,
   onSurfaceClick = null,
+  progressMeter = false,
   regionId,
   loadError = false,
   children,
@@ -609,6 +610,7 @@ function WorkflowTileDisclosure({
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onSurfaceClick?: (() => void) | null;
+  progressMeter?: boolean;
   regionId: string;
   loadError?: boolean;
   children: React.ReactNode;
@@ -633,12 +635,20 @@ function WorkflowTileDisclosure({
         {expanded
           ? children
           : detail
-            ? <WorkflowLadderPeek summary={run} detail={detail} onOpenRun={onOpenRun} />
+            ? (
+                <WorkflowLadderPeek
+                  summary={run}
+                  detail={detail}
+                  onOpenRun={onOpenRun}
+                  progressMeter={progressMeter}
+                />
+              )
             : (
                 <WorkflowLadderPeekPlaceholder
                   summary={run}
                   error={loadError}
                   onOpenRun={onOpenRun}
+                  progressMeter={progressMeter}
                 />
               )}
       </div>
@@ -671,6 +681,7 @@ export function WorkflowLadderPanel({
   onOpenRun,
   tileDisclosure = null,
   stageDetail = "load",
+  progressMeter = false,
   session = null,
   sectionRef,
 }: {
@@ -691,6 +702,8 @@ export function WorkflowLadderPanel({
    * state and round, which is the shape the card's Workflow item actually governs.
    */
   stageDetail?: "load" | "summary";
+  /** Use the Board's whole-pipeline meter instead of its single-rung fallback. */
+  progressMeter?: boolean;
   /**
    * The session this run is reviewing, when the host already renders it.
    *
@@ -793,6 +806,7 @@ export function WorkflowLadderPanel({
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
             onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
+            progressMeter={progressMeter}
             regionId={disclosureRegionId}
             loadError={summaryOnly}
           >
@@ -821,6 +835,7 @@ export function WorkflowLadderPanel({
             expanded={tileDisclosure.expanded}
             onExpandedChange={tileDisclosure.onExpandedChange}
             onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
+            progressMeter={progressMeter}
             regionId={disclosureRegionId}
             loadError
           >
@@ -967,6 +982,7 @@ export function WorkflowLadderPanel({
               expanded={tileDisclosure.expanded}
               onExpandedChange={tileDisclosure.onExpandedChange}
               onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
+              progressMeter={progressMeter}
               regionId={disclosureRegionId}
             >
               {ladder}

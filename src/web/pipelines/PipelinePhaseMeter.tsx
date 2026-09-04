@@ -5,6 +5,7 @@ import type {
   SessionPipelineLink,
 } from "@shared/pipeline.ts";
 import { Tooltip, type TooltipContent } from "../components/Tooltip.tsx";
+import { SegmentMeter, segmentFillPercent } from "../components/SegmentMeter.tsx";
 import {
   pipelinePhaseMeter,
   pipelineCommissionLine,
@@ -190,19 +191,6 @@ function extrasPopover(
   };
 }
 
-/**
- * How much of a segment is filled, as a percentage.
- *
- * Rounded to a tenth rather than passed raw: five of nine steps is 55.55555555555556, and a
- * seventeen-digit float in a `style` attribute is noise in every diff and every screenshot of
- * the DOM for a difference no display can render. A phase the run's state file never mentioned
- * has nothing to divide by and is empty rather than NaN.
- */
-function fillPercent(segment: PipelinePhaseSegment): number {
-  if (segment.total === 0) return 0;
-  return Math.round((segment.finished / segment.total) * 1000) / 10;
-}
-
 export function PipelinePhaseMeter({
   run,
   link,
@@ -276,29 +264,17 @@ export function PipelinePhaseMeter({
             disagreed with the fill it captions is the bug this note exists to prevent. */}
         <span className="tpm-count">{`${view.done}/${view.total}`}</span>
       </span>
-      <span className="tpm-bar">
-        {view.segments.map((segment) => (
-          <Tooltip key={segment.phase} label={segmentPopover(segment, meterRun.lastStep)}>
-            {/*
-              Focusable, so the per-step states are not mouse-only: they are the whole reason
-              this meter has popovers, and `Tooltip` opens on focus as well as hover.
-
-              `flexGrow` from the phase's own step count in THIS run - never a hardcoded
-              split - with the `min-width` floor in the stylesheet keeping a one-step phase
-              hittable. SETUP and UNDERSTAND hold one step each in the default sequence.
-            */}
-            <span
-              className={`tpm-seg workflow-${segment.status.tone}${
-                segment.current ? " is-now" : ""
-              }${segment.status.degraded ? " is-degraded" : ""}`}
-              style={{ flexGrow: segment.total }}
-              tabIndex={0}
-            >
-              <i style={{ width: `${fillPercent(segment)}%` }} />
-            </span>
-          </Tooltip>
-        ))}
-      </span>
+      <SegmentMeter
+        segments={view.segments.map((segment) => ({
+          key: segment.phase,
+          tone: segment.status.tone,
+          fillPercent: segmentFillPercent(segment.finished, segment.total),
+          grow: segment.total,
+          current: segment.current,
+          degraded: segment.status.degraded,
+          tooltip: segmentPopover(segment, meterRun.lastStep),
+        }))}
+      />
     </span>
   );
 }

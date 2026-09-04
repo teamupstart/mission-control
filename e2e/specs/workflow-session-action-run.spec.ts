@@ -443,7 +443,9 @@ test("Board workflow controls expand in place and open the exact run", async ({
   const workflowRunLink = dashboard.getByRole("link", {
     name: /Open E2E action run preview v\d+ workflow run/,
   });
-  await expect(workflowRunLink.locator(".wf-tile-peek-rung")).toBeVisible();
+  await expect(workflowRunLink.locator(".wf-stage-meter")).toBeVisible();
+  await expect(workflowRunLink.getByRole("img", { name: "Tidy preview: Ready to send" }))
+    .toHaveClass(/is-now/);
   const boardUrl = dashboard.url();
   await workflowRunLink.evaluate((link) => {
     const name = link.querySelector(".wf-tile-peek-name");

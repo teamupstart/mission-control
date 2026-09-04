@@ -184,6 +184,26 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/board-card-phase-meter/focused-playwright-transcript.txt
 ```
 
+### The workflow progress meter on a board card
+
+`e2e/.artifacts/board-card-workflow-progress/` carries the same real No-Mistakes Review card
+in its single-rung fallback and its default whole-pipeline meter, each at exact 250px and 300px
+Board column widths. The narrow fallback frame is also the visual proof that its long Intent
+Conformance stage name keeps a gap from the status label.
+
+The spec runs the shipped workflow through fake agents, changes the preference through
+Settings > Display > Session display, reloads the Board in both states, and asserts accessible
+names for all five stage segments and all six legal round pips.
+
+Regenerate the four frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-workflow-progress.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Native workflow image evidence
 
 `e2e/.artifacts/workflow-image-evidence/` records the dashboard intake and audit surfaces for

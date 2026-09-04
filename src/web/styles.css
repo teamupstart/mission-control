@@ -26759,9 +26759,12 @@ span.line-run-prov {
   min-width: 0;
 }
 .wf-tile-peek-title strong {
-  flex: none;
+  min-width: 0;
+  overflow: hidden;
   font-size: 11px;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .wf-tile-peek-title > span {
   min-width: 0;
@@ -26853,6 +26856,111 @@ span.line-run-prov {
 }
 .wf-tile-peek.is-placeholder .wf-tile-peek-unavailable {
   color: color-mix(in oklab, var(--dim) 72%, transparent);
+}
+
+/* ---- board tile: whole-workflow progress ----
+   The bar itself is `SegmentMeter` and therefore uses the same `.tpm-*` geometry as the
+   ai-conductor phase meter below. This block owns only the workflow-specific rows around it. */
+.wf-stage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 7px;
+}
+.wf-stage-track-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.wf-stage-track-row > .tpm-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wf-stage-count {
+  flex: none;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-stage-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.wf-stage-caption strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-stage-caption > span {
+  flex: none;
+  margin-left: auto;
+  background: none;
+  border-color: transparent;
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.wf-repair-meter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dim);
+  font-size: 8.5px;
+  line-height: 1;
+}
+.wf-repair-label {
+  flex: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.wf-repair-pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.wf-repair-pip {
+  width: 5px;
+  height: 5px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in oklab, var(--exited) 58%, var(--border));
+  border-radius: 50%;
+  background: transparent;
+}
+.wf-repair-pip.is-spent {
+  border-color: var(--exited);
+  background: var(--exited);
+}
+.wf-repair-pip.is-current {
+  border-color: currentColor;
+  background: currentColor;
+  outline: 1px solid color-mix(in oklab, currentColor 56%, transparent);
+  outline-offset: 2px;
+}
+.wf-repair-count {
+  flex: none;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.wf-repair-none {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-tile-peek.is-placeholder .wf-repair-meter {
+  margin-top: 7px;
 }
 .tile-workflow-disclosure-row {
   display: flex;
@@ -32200,8 +32308,11 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 
 .artifact-name {
+  min-width: 0;
+  overflow: hidden;
   font-size: 12.5px;
   font-weight: 600;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

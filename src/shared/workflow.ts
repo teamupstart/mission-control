@@ -1775,6 +1775,21 @@ export function workflowRunGaveUp(run: {
   // this to "still working" the instant it lands, with no second revival path to keep in
   // step - the existing resume and full-restart moves gate on the same inequality and come
   // back by themselves.
+  return workflowRunHasNoRepairsLeft(run);
+}
+
+/**
+ * Whether the run is on the last round its repair budget can afford.
+ *
+ * `maxRepairRounds` counts repairs after the initial submission, so round
+ * `maxRepairRounds + 1` is legal but cannot be followed by another repair. Kept separate from
+ * `workflowRunGaveUp` because the budget fact applies to completed runs too; only the latter also
+ * requires a blocked, spent run.
+ */
+export function workflowRunHasNoRepairsLeft(run: {
+  round: number;
+  maxRepairRounds: number;
+}): boolean {
   return run.round > run.maxRepairRounds;
 }
 

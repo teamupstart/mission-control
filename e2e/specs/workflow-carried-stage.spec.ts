@@ -333,7 +333,7 @@ test("a carried stage names the round it passed in, and goes there in one press"
   }
 });
 
-test("the Board card counts what was carried and still points at the live rung", async ({
+test("the Board card shows what was carried and still points at the active stage", async ({
   dashboard,
   daemon,
 }) => {
@@ -353,20 +353,20 @@ test("the Board card counts what was carried and still points at the live rung",
   const peek = dashboard.locator(".wf-tile-peek");
   await expect(peek).toBeVisible();
 
-  // The tile's one line about everything this round did not have to run again. ONE stage: the
-  // reviewers above the action. The action is not counted and must not be - it judged nothing,
-  // so it has no pass to carry, and this segment exists precisely because it completed.
-  await expect(peek.locator(".wf-tile-peek-carried"))
-    .toHaveText(`✓ 1 stage carried from ${SOURCE_ROUND}`);
+  // The whole-pipeline default keeps the carried stage visible and neutral instead of spending
+  // a separate summary line on it. The stage's accessible status retains the semantic boundary:
+  // it was not re-run in this round, while its completed width is shown with the carried hatch.
+  const carried = peek.getByRole("img", { name: "Stage 1: Not re-run" });
+  await expect(carried).toBeVisible();
+  await expect(carried).toHaveClass(/workflow-stopped/);
+  await expect(carried).toHaveClass(/is-degraded/);
 
-  // And the rung the tile SPENDS ITS ONE SLOT ON is the live work, not a stage that already
-  // passed and will never run again. Before the sort learned about carried stages, the
-  // attempt-less reviewers fell through to amber `waiting` and won this slot outright - so the
-  // tile named a finished stage while the real work sat below it, unnamed.
-  await expect(peek.locator(".wf-tile-peek-members")).toContainText(REVIEWER.followUp);
-  for (const name of [REVIEWER.auditor, REVIEWER.steward]) {
-    await expect(peek.locator(".wf-tile-peek-members")).not.toContainText(name);
-  }
+  // The active caption and current marker still point at the downstream reviewer, not the
+  // attempt-less carried stage that used to sort ahead of it as amber waiting work.
+  const followUp = peek.getByRole("img", { name: `${REVIEWER.followUp}: Passed` });
+  await expect(followUp).toHaveClass(/is-now/);
+  await expect(peek.locator(".wf-stage-caption strong")).toHaveText(REVIEWER.followUp);
+  await expect(carried).not.toHaveClass(/is-now/);
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: `${EVIDENCE}03-board-card-carried.png`, fullPage: true });

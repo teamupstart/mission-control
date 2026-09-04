@@ -300,6 +300,7 @@ export function SessionTile({
           run={workflowRun}
           session={session}
           stageDetail={workflowStageDetail}
+          progressMeter={shown("workflowProgressBar")}
           onOpenRun={() => onOpenWorkflowRun?.(workflowRun.id)}
           tileDisclosure={{
             expanded: workflowExpanded,

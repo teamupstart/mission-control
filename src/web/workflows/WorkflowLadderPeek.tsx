@@ -11,6 +11,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { isDragSelection } from "../lib/pointer.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { InheritedPass } from "./run-model.ts";
+import { RepairRoundMeter, WorkflowStageMeter } from "./WorkflowStageMeter.tsx";
 import {
   actionBlockSentence,
   actionWaitSentence,
@@ -45,6 +46,8 @@ export interface WorkflowLadderPeekMember {
 }
 
 export interface WorkflowLadderPeekView {
+  /** The selected stage's stable position, or null for delivery, gate, session, and end views. */
+  stageIndex: number | null;
   name: string;
   sub: string | null;
   status: PipelineStatus;
@@ -54,7 +57,7 @@ export interface WorkflowLadderPeekView {
   carried: string | null;
 }
 
-interface StagePeek {
+export interface StagePeek {
   index: number;
   name: string;
   sub: string;
@@ -91,55 +94,27 @@ function carriedLine(passes: readonly InheritedPass[], stages: number): string |
   return `${stages} stage${stages === 1 ? "" : "s"} carried from ${source.roundLabel}`;
 }
 
-/**
- * The one rung worth spending Board height on.
- *
- * This is a projection over the same helpers the full ladder uses. It does not invent a second
- * workflow status vocabulary: an uncertain delivery wins, then the Inspector gate, then the
- * first failed/running/degraded stage. A healthy run falls through to its next end state.
- */
-export function workflowLadderPeekView(
-  summary: WorkflowRunSummary,
+interface WorkflowLadderStageProjection {
+  submission: NonNullable<ReturnType<typeof selectedSubmission>>;
+  pipeline: NonNullable<ReturnType<typeof projectStages>>;
+  attempts: ReturnType<typeof latestAttemptsFor>;
+  inherited: ReturnType<typeof inheritedPasses>;
+  stages: StagePeek[] | null;
+}
+
+/** Own the selected submission and its complete stage walk once for both Board representations. */
+function projectWorkflowLadderStages(
   detail: WorkflowRunDetail,
-): WorkflowLadderPeekView | null {
-  const uncertain = detail.deliveries.find((delivery) => delivery.state === "uncertain");
-  if (uncertain) {
-    const view = deliveryStateView(uncertain.state);
-    return {
-      name: "Repair delivery",
-      sub: null,
-      status: { tone: "waiting", label: view.label },
-      members: [],
-      sentence: view.sentence,
-      carried: null,
-    };
-  }
-
-  const gate = detail.inspectorGate
-    && detail.inspectorGate.state.waitReason !== null
-    ? detail.inspectorGate
-    : null;
-  if (gate) {
-    const spentStatus = spentInspectorGateStatus(detail);
-    const facts = [
-      summary.gatePrNumber ? `PR #${summary.gatePrNumber}` : null,
-      shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)
-        ? `head ${shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)}`
-        : null,
-    ].filter((fact): fact is string => fact !== null);
-    return {
-      name: "GitHub Inspector gate",
-      sub: facts.join(" · ") || null,
-      status: spentStatus ?? gateSummaryStatus(summary.gate),
-      members: [],
-      sentence: inspectorGateSentence(detail),
-      carried: null,
-    };
-  }
-
+): WorkflowLadderStageProjection | null {
   const submission = selectedSubmission(detail, null);
   const pipeline = detail.version ? projectStages(detail.version.graph) : null;
   if (!pipeline || !submission) return null;
+
+  const attempts = latestAttemptsFor(detail, submission.id);
+  const inherited = inheritedPasses(detail, submission);
+  if (submission.mode === "inspector_only") {
+    return { submission, pipeline, attempts, inherited, stages: null };
+  }
 
   const graph = detail.version!.graph;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -151,34 +126,9 @@ export function workflowLadderPeekView(
     node.kind === "session_action" && "action" in node
       ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
       : []);
-  const attempts = latestAttemptsFor(detail, submission.id);
   const statuses = nodeStatusesForSubmission(detail, submission.id);
-  const changesRequested = [...attempts.values()]
-    .some((attempt) => verdictOf(attempt)?.verdict === "fail");
-  const inherited = inheritedPasses(detail, submission);
 
-  if (submission.mode === "inspector_only") {
-    return {
-      name: "Session",
-      sub: "GitHub Inspector-only round",
-      status: submissionStatus(submission, changesRequested),
-      members: [],
-      sentence: null,
-      // Counted in STAGES rather than nodes, so the tile and the ladder beside it agree on
-      // what a unit is. An Inspector-only round bypasses whole stages at a time.
-      carried: carriedLine(
-        [...inherited.values()],
-        pipeline.stages.filter((stage) => {
-          const ids = stageMembers(stage).flatMap((member) =>
-            member.nodeId ? [member.nodeId] : []);
-          return ids.length > 0 && ids.every((id) => inherited.has(id));
-        }).length,
-      ),
-    };
-  }
-
-  let carriedStages = 0;
-  const stages: StagePeek[] = pipeline.stages.map((stage, index) => {
+  const stages = pipeline.stages.map((stage, index) => {
     let sentence: string | null = null;
     let degradedSentence: string | null = null;
     const stageCarriedPasses: InheritedPass[] = [];
@@ -227,7 +177,6 @@ export function workflowLadderPeekView(
       };
     });
     const stageCarried = members.length > 0 && stageCarriedPasses.length === members.length;
-    if (stageCarried) carriedStages += 1;
     return {
       index,
       name: stageName(stage, index, personaNames, actionNames),
@@ -241,51 +190,163 @@ export function workflowLadderPeekView(
     };
   });
 
-  const carried = carriedLine([...inherited.values()], carriedStages);
+  return { submission, pipeline, attempts, inherited, stages };
+}
+
+function stagePeekView(stage: StagePeek, carried: string | null): WorkflowLadderPeekView {
+  return {
+    stageIndex: stage.index,
+    name: stage.name,
+    sub: stage.sub,
+    status: stage.status,
+    members: stage.members,
+    sentence: stage.sentence ?? stage.degradedSentence,
+    carried,
+  };
+}
+
+/**
+ * The stage list and the one rung worth spending Board height on.
+ *
+ * This is the single Board projection entrypoint. An uncertain delivery wins, then the Inspector
+ * gate, then the first failed/running/degraded stage. A healthy run falls through to its next end
+ * state. Non-stage cases retain their purpose-built rung and return no stage list.
+ */
+export function workflowLadderPeekProjection(
+  summary: WorkflowRunSummary,
+  detail: WorkflowRunDetail,
+): { view: WorkflowLadderPeekView | null; stages: StagePeek[] | null } {
+  const uncertain = detail.deliveries.find((delivery) => delivery.state === "uncertain");
+  if (uncertain) {
+    const view = deliveryStateView(uncertain.state);
+    return {
+      view: {
+        stageIndex: null,
+        name: "Repair delivery",
+        sub: null,
+        status: { tone: "waiting", label: view.label },
+        members: [],
+        sentence: view.sentence,
+        carried: null,
+      },
+      stages: null,
+    };
+  }
+
+  const gate = detail.inspectorGate
+    && detail.inspectorGate.state.waitReason !== null
+    ? detail.inspectorGate
+    : null;
+  if (gate) {
+    const spentStatus = spentInspectorGateStatus(detail);
+    const facts = [
+      summary.gatePrNumber ? `PR #${summary.gatePrNumber}` : null,
+      shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)
+        ? `head ${shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)}`
+        : null,
+    ].filter((fact): fact is string => fact !== null);
+    return {
+      view: {
+        stageIndex: null,
+        name: "GitHub Inspector gate",
+        sub: facts.join(" · ") || null,
+        status: spentStatus ?? gateSummaryStatus(summary.gate),
+        members: [],
+        sentence: inspectorGateSentence(detail),
+        carried: null,
+      },
+      stages: null,
+    };
+  }
+
+  const projection = projectWorkflowLadderStages(detail);
+  if (!projection) return { view: null, stages: null };
+  const { submission, pipeline, attempts, inherited, stages } = projection;
+  const changesRequested = [...attempts.values()]
+    .some((attempt) => verdictOf(attempt)?.verdict === "fail");
+
+  if (submission.mode === "inspector_only") {
+    return {
+      view: {
+        stageIndex: null,
+        name: "Session",
+        sub: "GitHub Inspector-only round",
+        status: submissionStatus(submission, changesRequested),
+        members: [],
+        sentence: null,
+        // Counted in STAGES rather than nodes, so the tile and the ladder beside it agree on
+        // what a unit is. An Inspector-only round bypasses whole stages at a time.
+        carried: carriedLine(
+          [...inherited.values()],
+          pipeline.stages.filter((stage) => {
+            const ids = stageMembers(stage).flatMap((member) =>
+              member.nodeId ? [member.nodeId] : []);
+            return ids.length > 0 && ids.every((id) => inherited.has(id));
+          }).length,
+        ),
+      },
+      stages: null,
+    };
+  }
+
+  if (!stages) return { view: null, stages: null };
+
+  const carried = carriedLine(
+    [...inherited.values()],
+    stages.filter((stage) => stage.status.skipKind === "carried_pass").length,
+  );
   const active = stages
     .slice()
     .sort((left, right) => peekPriority(left) - peekPriority(right) || left.index - right.index)[0];
   if (active && peekPriority(active) < 4) {
-    return {
-      name: active.name,
-      sub: active.sub,
-      status: active.status,
-      members: active.members,
-      sentence: active.sentence ?? active.degradedSentence,
-      carried,
-    };
+    return { view: stagePeekView(active, carried), stages };
   }
 
   const end = endStatus(detail, submission, true);
   if (end.tone !== "passed") {
     return {
-      name: pipeline.endOutcome,
-      sub: null,
-      status: end,
-      members: [],
-      sentence: null,
-      carried,
-    };
-  }
-
-  const lastStage = stages.at(-1);
-  return lastStage
-    ? {
-        name: lastStage.name,
-        sub: lastStage.sub,
-        status: lastStage.status,
-        members: lastStage.members,
-        sentence: lastStage.sentence ?? lastStage.degradedSentence,
-        carried,
-      }
-    : {
+      view: {
+        stageIndex: null,
         name: pipeline.endOutcome,
         sub: null,
         status: end,
         members: [],
         sentence: null,
         carried,
+      },
+      stages,
+    };
+  }
+
+  const lastStage = stages.at(-1);
+  return lastStage
+    ? { view: stagePeekView(lastStage, carried), stages }
+    : {
+        view: {
+          stageIndex: null,
+          name: pipeline.endOutcome,
+          sub: null,
+          status: end,
+          members: [],
+          sentence: null,
+          carried,
+        },
+        stages,
       };
+}
+
+export function workflowLadderPeekView(
+  summary: WorkflowRunSummary,
+  detail: WorkflowRunDetail,
+): WorkflowLadderPeekView | null {
+  return workflowLadderPeekProjection(summary, detail).view;
+}
+
+export function workflowLadderStages(
+  summary: WorkflowRunSummary,
+  detail: WorkflowRunDetail,
+): StagePeek[] | null {
+  return workflowLadderPeekProjection(summary, detail).stages;
 }
 
 function glyph(status: PipelineStatus): string {
@@ -334,12 +395,17 @@ export function WorkflowLadderPeek({
   summary,
   detail,
   onOpenRun,
+  progressMeter = false,
 }: {
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
   onOpenRun: () => void;
+  progressMeter?: boolean;
 }): React.JSX.Element {
-  const view = workflowLadderPeekView(summary, detail);
+  const projection = workflowLadderPeekProjection(summary, detail);
+  const view = projection.view;
+  const stages = progressMeter ? projection.stages : null;
+  const showMeter = view !== null && stages !== null;
   const sentence = view?.sentence ? splitSentence(view.sentence) : null;
   return (
     <Tooltip label={`Open ${summary.workflowName} v${summary.workflowVersion} in Runs`}>
@@ -355,9 +421,21 @@ export function WorkflowLadderPeek({
           <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
             {workflowRunLabel(summary)}
           </span>
-          <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+          {!showMeter && (
+            <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+          )}
         </header>
-        {view ? (
+        {showMeter ? (
+          <>
+            <WorkflowStageMeter summary={summary} stages={stages} active={view} />
+            {sentence && (
+              <p className="wf-tile-peek-sentence">
+                {sentence.lead && <strong>{sentence.lead}</strong>} {" "}
+                {sentence.rest}
+              </p>
+            )}
+          </>
+        ) : view ? (
           <div className="wf-tile-peek-rung">
             <div className="wf-tile-peek-row">
               <span className="wf-tile-peek-title">
@@ -402,10 +480,12 @@ export function WorkflowLadderPeekPlaceholder({
   summary,
   error = false,
   onOpenRun,
+  progressMeter = false,
 }: {
   summary: WorkflowRunSummary;
   error?: boolean;
   onOpenRun: () => void;
+  progressMeter?: boolean;
 }): React.JSX.Element {
   return (
     <Tooltip label={`Open ${summary.workflowName} v${summary.workflowVersion} in Runs`}>
@@ -421,8 +501,11 @@ export function WorkflowLadderPeekPlaceholder({
           <span className={`wf-tile-peek-runstate workflow-${workflowRunTone(summary)}`}>
             {workflowRunLabel(summary)}
           </span>
-          <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+          {!progressMeter && (
+            <span className="wf-tile-peek-round">R{summary.round} / {summary.maxRepairRounds}</span>
+          )}
         </header>
+        {progressMeter && <RepairRoundMeter summary={summary} />}
         <p className="wf-tile-peek-unavailable">
           {error ? "Stage detail is unavailable." : "Loading the current stage…"}
         </p>

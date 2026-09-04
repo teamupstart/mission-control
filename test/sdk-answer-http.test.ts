@@ -20,6 +20,8 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-sdk-answer-"));
 process.env.HARNESS_HOME = home;
+const previousClaudeBin = process.env.MISSION_CLAUDE_BIN;
+process.env.MISSION_CLAUDE_BIN = process.execPath;
 
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -37,7 +39,11 @@ type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 type Session = import("../src/shared/types.ts").Session;
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  if (previousClaudeBin === undefined) delete process.env.MISSION_CLAUDE_BIN;
+  else process.env.MISSION_CLAUDE_BIN = previousClaudeBin;
+  rmSync(home, { recursive: true, force: true });
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
@@ -432,6 +438,59 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
   assert.match(launched[0]?.argv.join(" ") ?? "", /--permission-mode auto/);
   assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
+});
+
+test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
+  const previous = process.env.MISSION_CODEX_BIN;
+  process.env.MISSION_CODEX_BIN = process.execPath;
+  try {
+    const registry = new Registry();
+    registry.registerSdkSession({
+      id: "sdk:codex-ghostty",
+      agent: "codex",
+      name: "Keep the conversation",
+      cwd: "/wt/one",
+    });
+    registry.applyDriverEvent("sdk:codex-ghostty", {
+      kind: "bound",
+      agentSessionId: "codex-session-1",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    const supervisor = fakeSupervisor();
+    const launched: Array<{ backend: string; argv: readonly string[] }> = [];
+    const app = mkApp(
+      registry,
+      supervisor,
+      {
+        spawn: async () => assert.fail("the selected backend must own the launch"),
+        waitForSessionAtCwd: async () => null,
+        settleTask: () => assert.fail("a successful handoff settles nothing"),
+      },
+      async (backend, spec) => {
+        launched.push({ backend, argv: spec.argv });
+        return { ok: true, label: "Ghostty", homeName: null, status: 200 };
+      },
+    );
+
+    const res = await app.request("/api/sessions/sdk:codex-ghostty/launch", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ backend: "ghostty", payload: "agent" }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(supervisor.stopped, ["sdk:codex-ghostty"]);
+    assert.equal(launched[0]?.backend, "ghostty");
+    assert.equal(launched[0]?.argv[0], "/usr/bin/env");
+    assert.ok(launched[0]?.argv.includes(process.execPath));
+    assert.ok(!launched[0]?.argv.includes("codex"));
+    assert.match(launched[0]?.argv.join(" ") ?? "", /resume codex-session-1/);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_CODEX_BIN;
+    else process.env.MISSION_CODEX_BIN = previous;
+  }
 });
 
 test("an uncertain embedded-agent launch keeps the terminal resource name", async () => {
@@ -890,6 +949,24 @@ test("a handoff with no identity to resume from is refused before anything is st
   // Launching anyway would start a FRESH agent wearing the card of the one we just killed.
   assert.equal(res.status, 409);
   assert.deepEqual(supervisor.stopped, []);
+});
+
+test("a missing resume executable is refused before the embedded driver is stopped", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:missing-bin");
+  const supervisor = fakeSupervisor();
+  process.env.MISSION_CLAUDE_BIN = join(home, "missing-claude");
+  try {
+    const res = await mkApp(registry, supervisor).request(
+      "/api/sessions/sdk:missing-bin/handoff",
+      { method: "POST", headers: HEADERS },
+    );
+    assert.equal(res.status, 409);
+    assert.match(((await res.json()) as { error: string }).error, /does not exist|not found/);
+    assert.deepEqual(supervisor.stopped, []);
+  } finally {
+    process.env.MISSION_CLAUDE_BIN = process.execPath;
+  }
 });
 
 test("a pane-backed session has nothing to hand off", async () => {

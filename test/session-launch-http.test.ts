@@ -113,11 +113,18 @@ const app = buildApp(
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 async function launch(id: string, body: unknown): Promise<Response> {
-  return app.request(`/api/sessions/${id}/launch`, {
-    method: "POST",
-    headers: HEADERS,
-    body: JSON.stringify(body),
-  });
+  const previous = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  try {
+    return await app.request(`/api/sessions/${id}/launch`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify(body),
+    });
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = previous;
+  }
 }
 
 test("the backend is a registered id, never a command", async () => {
@@ -180,6 +187,11 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(res.status, 200);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "tmux");
+  assert.equal(launched[0]?.argv[0], "/usr/bin/env");
+  assert.ok(
+    launched[0]?.argv.includes(process.execPath),
+    "the terminal receives the daemon-resolved executable, not a PATH-dependent command",
+  );
   // The stored mode rides along - the reopened CLI does not restore it from the
   // conversation, so a bare `--resume` would land the operator back in manual.
   assert.match(launched[0]?.argv.join(" ") ?? "", /--resume agent-1 --permission-mode acceptEdits/);

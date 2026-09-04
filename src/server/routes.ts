@@ -438,7 +438,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { terminalTargetViews, launchTerminal } from "./terminal/targets.ts";
+import { terminalTargetViews, launchAgentTerminal, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1406,11 +1406,11 @@ export function buildApp(
             bin: string,
             args: readonly string[] = [],
           ) => {
-            const launched = await terminalLauncher(backend, {
+            const launched = await launchAgentTerminal(backend, {
               name,
               cwd,
               argv: [bin, ...args],
-            });
+            }, terminalLauncher);
             label = launched.label;
             // A 504 means the terminal may have opened. The embedded driver is already
             // stopped, so preserve the transfer and let discovery settle what appeared.
@@ -2918,7 +2918,17 @@ export function buildApp(
       // With the mode the session was last observed in, so the resumed CLI starts where
       // the operator left it - the same carry the embedded handoff makes, and null when
       // nobody measured one, which renders no flag rather than a guess.
-      const argv = resumeArgvFor(session.agent, session.agentSessionId!, session.permissionMode);
+      let argv: string[] | null;
+      try {
+        argv = await resumeArgvFor(
+          session.agent,
+          session.agentSessionId!,
+          session.permissionMode,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return c.json({ ok: false, backend, error: message }, 409);
+      }
       if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
 
       agentResumeClaims.add(session.id);
@@ -2939,11 +2949,11 @@ export function buildApp(
 
       let result;
       try {
-        result = await terminalLauncher(backend, {
+        result = await launchAgentTerminal(backend, {
           name: session.name,
           cwd: session.cwd!,
           argv,
-        });
+        }, terminalLauncher);
       } catch (error) {
         agentResumeClaims.delete(session.id);
         if (task) tasks.settleAfterFailedHandoff(task.id);

@@ -29,6 +29,11 @@ import type {
 } from "./types.ts";
 import { binPresent } from "./bin.ts";
 import { MULTIPLEXERS, EMULATORS } from "./registry.ts";
+import {
+  cleanupDisposableAgentStateHome,
+  createDisposableAgentStateHome,
+  isolatedAgentArgv,
+} from "../agent-subprocess-env.ts";
 
 export interface TerminalTargetDeps {
   multiplexers: Record<string, Multiplexer>;
@@ -181,6 +186,36 @@ export interface TerminalLaunchOutcome {
   homeName?: string | null;
   error?: string;
   status: number;
+}
+
+export type TerminalLauncher = (
+  backend: TerminalBackendId,
+  spec: TerminalLaunchSpec,
+) => Promise<TerminalLaunchOutcome>;
+
+/**
+ * Launch an agent command through a selected terminal without trusting that terminal's PATH
+ * or inherited Mission Control state.
+ *
+ * The executable in `spec.argv` is already absolute. The wrapper owns the disposable state
+ * home after a successful or outcome-unknown launch and removes it when the agent exits. A
+ * confirmed refusal started no agent, so this side releases the home immediately.
+ */
+export async function launchAgentTerminal(
+  backend: TerminalBackendId,
+  spec: TerminalLaunchSpec,
+  launcher: TerminalLauncher = launchTerminal,
+): Promise<TerminalLaunchOutcome> {
+  const stateHome = createDisposableAgentStateHome();
+  try {
+    const argv = isolatedAgentArgv(spec.argv, { cwd: spec.cwd, stateHome });
+    const result = await launcher(backend, { ...spec, argv });
+    if (!result.ok && result.status !== 504) cleanupDisposableAgentStateHome(stateHome);
+    return result;
+  } catch (error) {
+    cleanupDisposableAgentStateHome(stateHome);
+    throw error;
+  }
 }
 
 function uniqueSessionName(sessions: MuxSessions, baseName: string, launchId: string): string {

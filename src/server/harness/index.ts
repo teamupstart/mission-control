@@ -36,6 +36,7 @@ import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
 import { piControl } from "./pi/control.ts";
 import { discoverConfiguredPiModels } from "./pi/model-catalog.ts";
+import { resolveBinPath } from "../util/exec.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -302,13 +303,17 @@ export function resumeFor(agent: AgentType): ResumeSpec | null {
  * Both readers (the embedded handoff, and the conversation pane's agent launcher) go
  * through here, which is what keeps them spawning the same command line.
  */
-export function resumeArgvFor(
+export async function resumeArgvFor(
   agent: AgentType,
   agentSessionId: string,
   permissionMode: PermissionMode | null,
-): string[] | null {
+): Promise<string[] | null> {
   const spec = resumeFor(agent);
-  return spec ? [resolveAgentBin(agent), ...spec.argv(agentSessionId, permissionMode)] : null;
+  if (!spec) return null;
+  const configured = resolveAgentBin(agent);
+  const executable = await resolveBinPath(configured);
+  if (!executable) throw new Error(`agent binary "${configured}" not found on PATH`);
+  return [executable, ...spec.argv(agentSessionId, permissionMode)];
 }
 
 /**

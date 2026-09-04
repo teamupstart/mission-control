@@ -14,7 +14,27 @@ const TEST_DIR = join(REPO_ROOT, "test");
 // A spawned argument list, not a `readFileSync`/`new URL` reference: several specs read
 // `index.ts` as text to assert startup ordering, and those never load the addon.
 const SPAWNS_THE_DAEMON = /\[[^\]]*"src\/server\/index\.ts"/;
-const HELPER_IMPORT = /from "\.\/helpers\/native-state-lock\.ts"/;
+
+// The call, not the import. A spec can keep the import while the call is deleted, and the
+// import alone provisions nothing - its focused single-file run then fails on a clean checkout
+// exactly as before, because that command runs no npm lifecycle. A call without the import is
+// not this guard's problem: it does not compile, and `npm run typecheck` says so.
+const PROVISIONS = /ensureNativeStateLockAddon\s*\(/;
+
+// Line comments are stripped before looking for the call, so a commented-out call cannot stand
+// in for making one. Only the provisioning check reads this: the spawn detector stays on raw
+// source, because stripping from `//` would also truncate a line holding a `http://` literal
+// and could drop a real spawn from the scan. Over-reporting a spawn only demands provisioning,
+// which is the safe direction; missing one is the failure this whole guard exists to prevent.
+function executableSource(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => {
+      const comment = line.indexOf("//");
+      return comment === -1 ? line : line.slice(0, comment);
+    })
+    .join("\n");
+}
 
 // Recursive because `npm test` globs `test/**/*.test.ts`: a spec in a new subdirectory is run
 // by the suite, so it has to be scanned by this guard too.
@@ -37,7 +57,7 @@ test("every spec that spawns the real daemon provisions the native state lock it
     const source = readFileSync(join(TEST_DIR, name), "utf8");
     if (!SPAWNS_THE_DAEMON.test(source)) continue;
     spawning.push(name);
-    if (!HELPER_IMPORT.test(source)) unprovisioned.push(name);
+    if (!PROVISIONS.test(executableSource(source))) unprovisioned.push(name);
   }
 
   assert.ok(

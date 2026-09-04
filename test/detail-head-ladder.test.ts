@@ -124,7 +124,7 @@ function hiddenAt(pattern: RegExp): number {
 }
 
 /** A header with everything on it: reviews waiting, a bindable workflow, full metadata. */
-function head(): string {
+function head(over: Parameters<typeof mkSession>[0] = {}): string {
   const session = mkSession({
     name: "Investigate and plan adding herdr as a new supported multiplexer",
     runtime: "sdk",
@@ -142,6 +142,7 @@ function head(): string {
       pricingVersions: ["2026-01-01"],
       updatedAt: 0,
     },
+    ...over,
   });
   const html = renderToStaticMarkup(
     createElement(ConsoleDetail, {
@@ -455,6 +456,35 @@ test("every control the ladder strips to a mark still draws one, and still says 
   // And the mode chip is drawn as a button, so rung 6 is hiding a real control rather than a
   // selector that never matched - the claim that justifies it going last.
   assert.match(html, /mode-btn/, "the permission-mode picker left this header");
+});
+
+test("every spelling of the effort pill puts its level in an element", () => {
+  // Three components draw this pill and the ladder has to reach the level in all three: the
+  // interactive picker, `RuntimeMetaRow`'s static span, and `EffortPicker`'s own fallback for a
+  // session it cannot pick for - exited, stopping, or offering no levels. That third one held a
+  // bare text node, which no rule can select, so a finished session drew a wider pill than a
+  // live one at the same width and the header's rung 2 silently did nothing for it. Reported by
+  // a reviewer on #890.
+  //
+  // Asserted on rendered markup rather than by reading the components, because "the level is in
+  // an element" is a fact about output and the three call sites are free to reach it differently.
+  for (const [what, over] of [
+    ["a live session", {}],
+    ["a session that cannot be picked for", { state: "exited" as const }],
+  ] as const) {
+    const html = head({ meta: meta({ thinkingLevel: "high" }), ...over });
+    assert.match(
+      html,
+      /class="rt-think-glyph"/,
+      `${what} draws no effort mark, so this case is not being exercised`,
+    );
+    assert.match(
+      html,
+      /class="rt-think-word">high</,
+      `${what} renders its effort level as a bare text node. Rung 2 sheds \`.rt-think-word\`, ` +
+        `so this pill keeps its word at a width where every other one has given it up.`,
+    );
+  }
 });
 
 test("the fit runs after every render, not only on mount", () => {

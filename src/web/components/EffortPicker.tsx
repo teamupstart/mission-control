@@ -258,7 +258,12 @@ function EffortChip({
     >
       <span className={`rt-pill rt-think rt-think-${level}${pending ? " rt-think-pending" : ""}`}>
         <span className="rt-think-glyph" aria-hidden>✦</span>
-        {level}
+        {/* Wrapped like the other two spellings of this pill, and this is the THIRD: the
+            interactive one above, `RuntimeMetaRow`'s static one, and this fallback for a
+            session that cannot be picked for (exited, stopping, or offering no levels). A
+            bare text node here is a level the console header's ladder cannot shed at rung 2,
+            so the same session drew a wider pill than a live one at the same width. */}
+        <span className="rt-think-word">{level}</span>
         {pending && <span className="rt-think-next">next turn</span>}
       </span>
     </Tooltip>

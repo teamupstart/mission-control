@@ -118,6 +118,23 @@ test("artifact-free turns do not accumulate retained state", () => {
   resetArtifactState();
 });
 
+test("retention never exceeds the per-turn artifact cap", () => {
+  resetArtifactState();
+  const text = "one.html\ntwo.html\nthree.html\nfour.html";
+  const firstThree = [
+    { path: "one.html" },
+    { path: "two.html" },
+    { path: "three.html" },
+  ];
+
+  assert.deepEqual(retainDiscoveredArtifacts("s1", "t1", text, firstThree), firstThree);
+  assert.deepEqual(
+    retainDiscoveredArtifacts("s1", "t1", text, [...firstThree, { path: "four.html" }]),
+    firstThree,
+  );
+  resetArtifactState();
+});
+
 function document(over: Partial<SessionFileDocument> = {}): SessionFileDocument {
   return {
     path: REPORT,
@@ -197,4 +214,12 @@ test("the artifact header keeps the disclosure, size, and actions as sibling con
   const controlled = html.match(/aria-controls="([^"]+)"/)?.[1];
   assert.ok(controlled);
   assert.match(html, new RegExp(`id="${controlled}"`));
+
+  const withoutCommentHandler = renderToStaticMarkup(createElement(ConversationArtifacts, {
+    sessionId: "s1",
+    artifacts: [{ path: REPORT }],
+    onOpenFile: () => true,
+  }));
+  assert.doesNotMatch(withoutCommentHandler, /Comment in Files/);
+  assert.doesNotMatch(withoutCommentHandler, /aria-label="Comment on .* in Files"/);
 });

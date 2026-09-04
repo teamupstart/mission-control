@@ -31854,7 +31854,7 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 
 .artifact-disclose:focus-visible {
-  outline: 2px solid var(--agent-accent);
+  outline: 2px solid var(--agent-accent, var(--neutral));
   outline-offset: 1px;
 }
 
@@ -31911,11 +31911,11 @@ body.foreman-sidecar-open .modal-backdrop {
 
 .artifact-act.is-primary {
   color: var(--fg);
-  border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--agent-accent, var(--neutral)) 55%, var(--border));
 }
 
 .artifact-act.is-primary:hover {
-  background: color-mix(in srgb, var(--agent-accent) 18%, var(--panel-2));
+  background: color-mix(in srgb, var(--agent-accent, var(--neutral)) 18%, var(--panel-2));
 }
 
 .artifact-body {

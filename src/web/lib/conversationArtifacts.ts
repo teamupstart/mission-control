@@ -199,8 +199,8 @@ export function retainDiscoveredArtifacts(
   const seen = new Set(previous.artifacts.map(({ path }) => path));
   const artifacts = [...previous.artifacts];
   for (const artifact of current) {
+    if (artifacts.length >= MAX_ARTIFACTS_PER_TURN) break;
     if (!seen.has(artifact.path)) artifacts.push(artifact);
-    if (artifacts.length === MAX_ARTIFACTS_PER_TURN) break;
   }
   discoveredArtifacts.set(key, { text, artifacts });
   return artifacts;

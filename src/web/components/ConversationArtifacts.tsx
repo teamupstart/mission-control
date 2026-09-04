@@ -216,16 +216,18 @@ function ArtifactCard({
             Refresh
           </button>
         </Tooltip>
-        <Tooltip label="Open this rendered file in Files and start a comment">
-          <button
-            type="button"
-            className="artifact-act is-primary"
-            aria-label={`Comment on ${path} in Files`}
-            onClick={() => onCommentInFiles?.(path)}
-          >
-            Comment in Files
-          </button>
-        </Tooltip>
+        {onCommentInFiles && (
+          <Tooltip label="Open this rendered file in Files and start a comment">
+            <button
+              type="button"
+              className="artifact-act is-primary"
+              aria-label={`Comment on ${path} in Files`}
+              onClick={() => onCommentInFiles(path)}
+            >
+              Comment in Files
+            </button>
+          </Tooltip>
+        )}
       </header>
       <div
         id={bodyId}

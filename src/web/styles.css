@@ -24076,10 +24076,48 @@ span.line-run-prov {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
   /* Grows into the free space the spacer would otherwise take, so a long objective has
-     somewhere to be read on a wide pane and gives it back on a narrow one. */
-  flex: 1 1 auto;
+     somewhere to be read on a wide pane and gives it back on a narrow one.
+
+     `flex-basis: 0`, not `auto`, and this is what stopped the header wrapping. Flex
+     line-breaking places an item at its HYPOTHETICAL main size - the flex base size clamped
+     by min/max - so with `auto` this block was placed at the TITLE'S max-content width. A
+     long session name filled the first line by itself and pushed the whole runtime cluster
+     (mode, model, effort, context, cost) onto a second row, at every width, before the
+     shrinking pass ran and ellipsed the title that had just caused it. Zero base size takes
+     the name out of that measurement entirely, which is what a wrapping row needs and is also
+     why the three declarations under it exist: a block measured at zero has to be given its
+     room back some other way.
+
+     The floor is the other half. At `min-width: 0` this block would surrender every pixel
+     before the cost chip surrendered one, which is backwards - the session's name is what
+     the pane is about, and the chips have a ladder for exactly this
+     (`detailHeadLadder.ts`). 14ch keeps a readable stub of the name at every width and is
+     small enough that the row's floor is the dot, that stub and the review badge.
+
+     The GROW FACTOR and the CAP are what keep a zero base size from costing the name the room
+     it used to have, and they only make sense as a pair.
+
+     `flex-grow` shares free space in PROPORTION, so a block measured at zero growing at 1
+     beside `.detail-head-spacer` growing at 1 takes exactly half of what is going - which
+     ellipsed the name at 302px with the other 302px sitting empty beside it. Measured in the
+     browser, not reasoned about. The two are not equal claims on that space: the identity
+     block has the FIRST claim, and the spacer exists to absorb whatever is left over. So the
+     block grows at 1000 against the spacer's 1 and the split stops being a split. (A ratio
+     rather than a rule, because a ratio is what flex can express; the spacer keeps a
+     sub-pixel share of the surplus, which nothing can see.)
+
+     The cap is what hands that surplus back. Flex freezes an item at its max size and
+     redistributes the rest, so a block capped at `max-content` grows to exactly the name it
+     has and the spacer takes the remainder - which is how the runtime cluster stays against
+     the right edge on a wide pane carrying a short name. Uncapped, the block would swallow
+     the row and push the chips that belong beside the name across to the far side of it.
+
+     Line-breaking is untouched by either: a hypothetical main size is the base size clamped
+     by min and max, and the floor already wins that clamp. */
+  flex: 1000 1 0;
+  min-width: 14ch;
+  max-width: max-content;
 }
 .detail-title-line {
   display: flex;
@@ -24124,6 +24162,138 @@ span.line-run-prov {
 }
 .detail-head-spacer {
   flex: 1;
+}
+/* The cluster wraps on a board card, where it is a row of its own with nothing after it. In
+   this header it must not, and not merely for looks: the measured ladder READS wrapping by
+   comparing the row's height against its tallest child, so a child that wraps internally grows
+   the row and its tallest child in lockstep and hides the overflow from the one comparison the
+   fit makes. The ladder would sit at rung 0 while the header quietly went two rows deep. */
+.detail-head .card-runtime {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+/* ---- console detail header: responsive ladder ----
+   Six rungs, each shedding the least useful ink first, so the header stays ONE row on a pane
+   too narrow to carry the session's identity, its situational chips, the review badge and the
+   runtime cluster across it. Every pixel a second row takes here comes off the conversation
+   underneath, which is the whole reason this row is worth a ladder.
+
+   WHICH rungs apply is decided by `fitDetailHead` in `detailHeadLadder.ts`, which MEASURES:
+   it puts the row at rung 0, asks whether it wrapped, and steps down until it did not, writing
+   the rungs it landed on into `data-rung` as a cumulative token list. Same mechanism as the
+   topbar's and the tab strip's (`measuredLadder.ts`), for the same reason - a rung would
+   otherwise fire on the width the row HAS, while whether it needs to fire depends on the width
+   its content NEEDS. On this row that gap is at its widest: the identity block carries the
+   session's own name, and the chips between it and the badge are each drawn only when they have
+   something to say, so two sessions selected one after the other in the same rail need
+   different rungs at the same width. A container query is not available here either - the
+   conversation pane's only `container-type` is on `.transcript`, BELOW this row.
+
+   THE REVIEW BADGE NEVER GOES. It is the one control on this row that says an agent has
+   stopped dead waiting on a person. Rung 1 makes it smaller; no rung hides it, and
+   `test/detail-head-ladder.test.ts` fails if one tries to.
+
+   A shed WORD goes visually hidden - out of flow so it costs no width and no flex gap, clipped
+   so it paints nothing, still in the accessibility tree - so the control keeps its accessible
+   name and only its mark is drawn. `display: none` is for two other things: decoration that
+   names nothing (a keycap, a caret, an arrow), and a WHOLE control the row has decided it
+   cannot afford, which the deepest rungs do deliberately.
+
+   `~=` because the rungs STACK: at rung 4 the row has also shed 1, 2 and 3. */
+
+/* Rung 1: the review button's chord hint and its arrow. First because it is the cheapest ink
+   on the row: the `e` chord works at every width and is documented in `docs/ui.md`, the caps
+   can be switched off across the whole app in Settings anyway, and the arrow is decoration.
+   This is also the ONLY thing this button ever gives up. */
+.detail-head[data-rung~="1"] .kb-hint,
+.detail-head[data-rung~="1"] .badge-go {
+  display: none;
+}
+
+/* Rung 2: three words drop to the marks that were already beside them - the runtime chip's
+   `Agent SDK` to its ◈, the effort pill's level to its ✦, and the bind chip's offer or bound
+   workflow to its ＋ or ⌘. One rung rather than three because it is one idea applied three
+   times, and because each is only ~60px: split up, the row would spend three fits crawling
+   towards a width it can reach in one.
+
+   The effort pill's caret goes WITH its word - a caret floating beside a bare glyph reads as a
+   second glyph, and its promise is already carried by `aria-haspopup`. So does the `→` between
+   a superseded level and its replacement, which separates two words that are no longer drawn;
+   the dashed border that says the level is pending survives, and the tooltip says both. */
+.detail-head[data-rung~="2"] .runtime-name,
+.detail-head[data-rung~="2"] .rt-think-word,
+.detail-head[data-rung~="2"] .rt-think-was,
+.detail-head[data-rung~="2"] .rt-think-next,
+.detail-head[data-rung~="2"] .wbc-word,
+.detail-head[data-rung~="2"] .wbc-name,
+.detail-head[data-rung~="2"] .wbc-version {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.detail-head[data-rung~="2"] .rt-think-btn .mode-caret,
+.detail-head[data-rung~="2"] .rt-think-arrow {
+  display: none;
+}
+/* And a mark left on its own is no longer a lead-in to a word, it IS the chip - so it stops
+   being a 9px hint at three-quarter opacity and reads at the size of the pill around it.
+   Skipping this leaves two pills that look empty at a glance, which is the same failure as
+   shedding them: an operator cannot see what is there. */
+.detail-head[data-rung~="2"] .rt-think-glyph,
+.detail-head[data-rung~="2"] .runtime-glyph {
+  font-size: 11px;
+  opacity: 1;
+}
+
+/* Rung 3: the context percentage, keeping its meter. The bar is tinted by the same tone the
+   figure was (`.rt-ctx-warn`, `.rt-ctx-high`), so "how full is the window" still reads at a
+   glance and the exact figure - with the token counts behind it - is on the tooltip. Visually
+   hidden rather than removed, because it is a readout and not decoration. */
+.detail-head[data-rung~="3"] .rt-ctx-num {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Rung 4: cost and the context meter go entirely, and this is where the ladder starts hiding
+   whole controls rather than words. Both are ticking ESTIMATES of what the session is spending
+   rather than facts about what it is, both are drawn on the board's card for the same session
+   (`SessionTile`), and the fleet's own spend chip is on the topbar. Cost leads because the
+   figure is the wider of the two. */
+.detail-head[data-rung~="4"] .cost-chip,
+.detail-head[data-rung~="4"] .rt-ctx {
+  display: none;
+}
+
+/* Rung 5: the model pill. Later than the estimates because it does not tick - it is a durable
+   fact about this session, and its `1M` flag is the only place a long-context run says so on
+   this row. Still ahead of the two pickers, because it is a readout and they are controls. */
+.detail-head[data-rung~="5"] .rt-model {
+  display: none;
+}
+
+/* Rung 6: the mode and effort pickers, and the last thing this row has to give. Controls go
+   last on principle, and these two can go at all only because they exist elsewhere: the board
+   card mounts both shared leaves for the same session, and a permission mode is also cycled
+   with ⇧⇥ in the session's own terminal.
+   `.card-runtime` goes with them rather than staying as an empty flex item, which would keep
+   costing the row a 10px gap for nothing.
+
+   The bind chip is deliberately NOT here. It keeps its ＋ at every rung because the console
+   detail is the only surface that offers it, so hiding it would remove the only way to bind a
+   workflow rather than move an operator to another one. */
+.detail-head[data-rung~="6"] .mode,
+.detail-head[data-rung~="6"] .card-runtime {
+  display: none;
 }
 
 .detail-pipeline-meter {

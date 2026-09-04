@@ -176,7 +176,10 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
             </span>
           </>
         )}
-        {shown}
+        {/* Its own element so the console header's ladder can shed the WORD and leave the
+            glyph, which keeps the pill's accent (`rt-think-{level}`), its tooltip and its
+            `aria-label` - see `detailHeadLadder.ts`, rung 2. */}
+        <span className="rt-think-word">{shown}</span>
         {pending && <span className="rt-think-next">next turn</span>}
         <span className="mode-caret" aria-hidden>
           ⌄

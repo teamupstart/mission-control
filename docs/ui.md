@@ -692,6 +692,18 @@ available:
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
   places, or have it in neither.
+- **The conversation header stays on one row, and gives way in a fixed order.** It carries the
+  session's name and objective, the chips that have something to say about it, the review
+  button, and then the permission mode, model, reasoning effort, context meter and cost. On a
+  pane too narrow for all of that it collapses rather than wrapping to a second row, which
+  would come straight off the conversation underneath. What goes, in order: the review
+  button's chord hint and arrow, then the words beside marks that already say the same thing
+  (`Agent SDK` to its ◈, the effort level to its ✦, `＋ workflow` to its ＋), then the context
+  percentage, then cost and the context meter, then the model, and last the mode and effort
+  pickers - every one of which the board's card still draws for the same session. **The review
+  button is never given up**: it is the one control there that means an agent has stopped and
+  is waiting on you, so it only ever gets smaller. Nothing collapsed loses its tooltip or its
+  name for a screen reader, and the `e` chord still opens the queue at any width.
 - **Cards are grouped by the repository they belong to, and it ships on.** Each column
   collects its cards under a heading naming the repository's directory, with a colour drawn
   from the path so a project keeps the same colour across reloads and machines. The heading

@@ -34,10 +34,13 @@
  * That splits by surface, and the split is honest rather than hidden:
  *
  * - The PACKAGED DESKTOP APP is where all twelve are ours, and where the operator asked for
- *   them. It has no tabs to select, and `src/main/menu-template.ts` spells out the View menu
- *   so its zoom items keep working from the menu while giving up ⌘0/⌘-/⌘=. That file's
- *   `RENDERER_OWNED_ACCELERATORS` is the same decision from the menu's side, and
- *   `test/app-menu-template.test.ts` holds it.
+ *   them. It has no tabs to select, and `src/main/menu-template.ts` hands ⌘0/⌘-/⌘= over for
+ *   as long as this feature is switched on, keeping zoom's menu items throughout. That
+ *   handover is CONDITIONAL and reversed by the item's own checkbox - `App` reports the
+ *   preference through `missionDesktop.setCardJumpKeys` and the menu takes the accelerators
+ *   back - because a preference that switches the feature off without giving the keys back
+ *   leaves three keys nothing answers to, which is what that file's `RENDERER_OWNED_
+ *   ACCELERATORS` and `test/app-menu-template.test.ts` now hold in both directions.
  * - A PLAIN BROWSER TAB gets the same keys and the same keycaps, and any of them its browser
  *   reserves stay the browser's.
  *

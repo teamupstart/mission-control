@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   appMenuTemplate,
@@ -29,10 +31,19 @@ type Item = {
   submenu?: Item[];
 };
 
-const template = appMenuTemplate("Mission Control", {
-  onOpenSettings: () => {},
-  onCheckForUpdates: () => {},
-}) as Item[];
+/** The menu in a chosen state. `claimed` is whether the dashboard holds the number row. */
+function menu(claimed: boolean): Item[] {
+  return appMenuTemplate(
+    "Mission Control",
+    { onOpenSettings: () => {}, onCheckForUpdates: () => {} },
+    { rendererOwnsNumberRow: claimed },
+  ) as Item[];
+}
+
+/** While the Board is using the jump keys. */
+const template = menu(true);
+/** While it is not - the preference off, or any layout that cannot use them. */
+const released = menu(false);
 
 /** Every item at every depth, so a nested submenu cannot smuggle an accelerator in. */
 function flatten(items: Item[]): Item[] {
@@ -40,6 +51,17 @@ function flatten(items: Item[]): Item[] {
 }
 
 const view = template.find((item) => item.label === "View");
+const releasedView = released.find((item) => item.label === "View");
+
+/** Every accelerator the template registers, lowercased, at every depth. */
+function accelerators(items: Item[]): Set<string> {
+  return new Set(
+    flatten(items)
+      .map((item) => item.accelerator)
+      .filter((accelerator): accelerator is string => Boolean(accelerator))
+      .map((accelerator) => accelerator.toLowerCase()),
+  );
+}
 
 test("the View menu is spelled out rather than the stock role", () => {
   // `role: "viewMenu"` is one line and brings the three zoom accelerators with it, which is
@@ -81,13 +103,8 @@ test("the reload, devtools and full-screen roles are untouched", () => {
   }
 });
 
-test("no menu item claims a chord the Board's jump keys use", () => {
-  const claimed = new Set(
-    flatten(template)
-      .map((item) => item.accelerator)
-      .filter((accelerator): accelerator is string => Boolean(accelerator))
-      .map((accelerator) => accelerator.toLowerCase()),
-  );
+test("no menu item claims a chord the Board's jump keys use, while the Board is using them", () => {
+  const claimed = accelerators(template);
   for (const accelerator of RENDERER_OWNED_ACCELERATORS) {
     assert.equal(
       claimed.has(accelerator.toLowerCase()),
@@ -127,6 +144,125 @@ test("every accelerator the list reserves is one the Board actually binds", () =
       `⌘${key} is a card slot the zoom roles claim, and the list does not reserve it`,
     );
   }
+});
+
+test("the menu takes the zoom keys BACK when the Board is not using them", () => {
+  // The bug this is here for: the accelerators were given up unconditionally, so unchecking
+  // Jump shortcut left ⌘0/⌘-/⌘= doing nothing at all - the renderer had stopped handling
+  // them and the menu no longer owned them either. The preference could switch the feature
+  // off but could not give the keys back, which is exactly what its description promises.
+  //
+  // Asserted through the ROLES rather than through accelerator strings, because that is the
+  // actual fix: a role carries Electron's own accelerator, so the fallback is the stock View
+  // menu instead of an imitation of it.
+  const roles = (releasedView?.submenu ?? []).map((item) => item.role);
+  for (const role of ["resetZoom", "zoomIn", "zoomOut"]) {
+    assert.ok(
+      roles.includes(role),
+      `zoom does not get its "${role}" accelerator back when the Board releases the keys`,
+    );
+  }
+  // And no hand-rolled duplicate left behind beside them, which would give the View menu two
+  // Zoom In entries.
+  const labels = (releasedView?.submenu ?? []).map((item) => item.label);
+  for (const label of ["Actual Size", "Zoom In", "Zoom Out"]) {
+    assert.equal(
+      labels.filter((candidate) => candidate === label).length,
+      0,
+      `"${label}" is drawn twice: once as a role and once as a click handler`,
+    );
+  }
+});
+
+test("releasing the keys changes only the zoom entries", () => {
+  // The two states must not drift into two different menus. Everything outside the three
+  // zoom rows - Settings, the tray-shared update item, reload, DevTools, full screen, and
+  // every accelerator any of them carries - is the same in both.
+  const zoomChords = new Set(RENDERER_OWNED_ACCELERATORS.map((a) => a.toLowerCase()));
+  const outside = (items: Item[]): string[] =>
+    [...accelerators(items)].filter((chord) => !zoomChords.has(chord)).sort();
+  assert.deepEqual(outside(released), outside(template));
+
+  const labels = (items: Item[]): string[] =>
+    flatten(items)
+      .map((item) => item.label ?? item.role ?? item.type ?? "")
+      .filter((name) => !["Actual Size", "Zoom In", "Zoom Out", "resetZoom", "zoomIn", "zoomOut"]
+        .includes(name));
+  assert.deepEqual(labels(released), labels(template));
+});
+
+test("the default state is the one that leaves zoom alone", () => {
+  // `appMenuTemplate` is called once at launch, before any renderer has reported anything.
+  // Defaulting to "the Board owns the keys" would take zoom's shortcuts away for the whole
+  // window that a dashboard takes to load, and keep them away in the Console layout of a
+  // profile that never opens Board.
+  const roles = (menu(false).find((item) => item.label === "View")?.submenu ?? [])
+    .map((item) => item.role);
+  const atLaunch = appMenuTemplate("Mission Control", {
+    onOpenSettings: () => {},
+    onCheckForUpdates: () => {},
+  }) as Item[];
+  const launchRoles = (atLaunch.find((item) => item.label === "View")?.submenu ?? [])
+    .map((item) => item.role);
+  assert.deepEqual(launchRoles, roles);
+});
+
+test("the preference reaches the menu across all four layers", () => {
+  // A source scan, for the reason `board-card-items.test.ts` is one: this seam is four files
+  // deep - the dashboard reports, the preload forwards, main handles, the menu rebuilds - and
+  // any one of them can be edited alone and still typecheck, lint, build and pass every other
+  // test in this repository. The result is a preference that appears to work and silently
+  // leaves the desktop shortcuts wherever they were, which is the bug this whole state
+  // parameter exists to fix. Nothing else here can see it: the two states above are pure and
+  // `menu.ts` cannot be imported outside the Electron process at all.
+  const source = (path: string): string =>
+    readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+
+  const app = source("../src/web/App.tsx");
+  assert.match(
+    app,
+    /missionDesktop\?\.setCardJumpKeys\(cardShortcutsOn\)/,
+    "the dashboard no longer reports its claim on the number row",
+  );
+
+  const preload = source("../src/preload/index.ts");
+  assert.match(preload, /setCardJumpKeys:/, "the preload bridge no longer exposes the report");
+  assert.match(
+    preload,
+    /ipcRenderer\.invoke\("mission:card-jump-keys", claimed\)/,
+    "the preload bridge no longer forwards the report to main",
+  );
+
+  const main = source("../src/main/index.ts");
+  assert.match(
+    main,
+    /ipcMain\.handle\("mission:card-jump-keys"/,
+    "main no longer handles the report",
+  );
+  assert.match(
+    main,
+    /setRendererOwnsNumberRow\(/,
+    "main receives the report and does not pass it to the menu",
+  );
+
+  const menu = source("../src/main/menu.ts");
+  assert.match(
+    menu,
+    /export function setRendererOwnsNumberRow/,
+    "the menu module no longer accepts a changed claim",
+  );
+  assert.match(
+    menu,
+    /appMenuTemplate\(app\.name, installed, state\)/,
+    "the menu is rebuilt without the claim it was told about",
+  );
+  // Idempotent, because the dashboard reports on load, on change and on every reload. Without
+  // this the macOS menu bar is replaced on each of those for no reason.
+  assert.match(
+    menu,
+    /if \(state\.rendererOwnsNumberRow === owns\) return;/,
+    "an unchanged claim still rebuilds the whole application menu",
+  );
 });
 
 test("Settings keeps its conventional chord", () => {

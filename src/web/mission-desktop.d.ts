@@ -20,6 +20,14 @@ declare global {
       defer(): Promise<void>;
       onState(cb: (snapshot: UpdateSnapshot) => void): () => void;
     };
+    /**
+     * Tell the shell whether the Board is claiming ⌘0/⌘-/⌘= for its card jump shortcuts.
+     *
+     * The native View menu holds those zoom accelerators whenever the dashboard is not, so
+     * this is what makes switching the Jump shortcut preference off give the keys back
+     * rather than leave three keys nothing answers to.
+     */
+    setCardJumpKeys(claimed: boolean): Promise<void>;
     /** Subscribe to the native Settings… menu item (⌘,). Returns an unsubscribe. */
     onOpenSettings(cb: () => void): () => void;
   }

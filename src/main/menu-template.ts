@@ -19,14 +19,21 @@ export interface AppMenuHandlers {
 }
 
 /**
- * Chords the renderer owns, which this template must therefore not claim.
+ * Chords this template gives up WHILE the renderer is claiming them, and takes back when it
+ * is not.
  *
  * `⌘0`, `⌘-` and `⌘=` are the last three of the Board card's twelve jump shortcuts (see
  * `src/web/lib/card-shortcuts.ts`), and each is also the default accelerator of a zoom role
- * in Electron's stock `viewMenu`. Both cannot have them, and the resolution is written down
- * here rather than left to be discovered: the jump keys are a dashboard feature an operator
- * switched on, and page zoom keeps its menu items - so it stays one click away - while
- * giving up its keyboard shortcuts.
+ * in Electron's stock `viewMenu`. Both cannot have them at once, because a menu accelerator
+ * is registered with the system and is handled before the renderer sees the keystroke.
+ *
+ * CONDITIONAL, and that is the whole point of `rendererOwnsNumberRow` below. Giving them up
+ * unconditionally was a bug: an operator who unchecked Jump shortcut got keys that did
+ * nothing at all, because the renderer had stopped handling them and the menu no longer
+ * owned them either - so the preference could switch the feature off but could not give the
+ * keys back, which is exactly what its own description promises. The menu is the fallback
+ * holder: whenever the dashboard is not claiming the number row, zoom answers to these keys
+ * as it always did.
  *
  * This is the DESKTOP half of a decision with two halves. A dashboard opened in an ordinary
  * browser tab has a browser's own chrome in front of it, which no page and no file in this
@@ -69,10 +76,41 @@ function zoomWindow(window: unknown, step: number | "reset"): void {
   contents.setZoomLevel(step === "reset" ? 0 : contents.getZoomLevel() + step);
 }
 
+export interface AppMenuState {
+  /**
+   * Whether the dashboard is currently claiming ⌘0/⌘-/⌘= for Board card jumps.
+   *
+   * Follows the PREFERENCE (and the layout that can use it), not the live card count, and
+   * that is deliberate. The set of slots a board is filling changes every time a session
+   * appears or leaves, and a zoom shortcut that worked until a tenth agent showed up and
+   * then silently stopped would be worse than one that is plainly the board's for as long
+   * as the feature is on. So it moves when a person moves it: unchecking Jump shortcut, or
+   * leaving the Board layout, hands these keys straight back to zoom.
+   *
+   * The consequence to own is the other side of that: while the feature is on and the board
+   * is holding fewer than ten cards, these three keys belong to a board that has no card to
+   * give them to, and do nothing in the desktop app. That is a stated rule rather than an
+   * accident - the number row is the board's while the board is using it - and `docs/ui.md`
+   * says so where an operator reads it.
+   */
+  rendererOwnsNumberRow: boolean;
+}
+
 export function appMenuTemplate(
   appName: string,
   handlers: AppMenuHandlers,
+  state: AppMenuState = { rendererOwnsNumberRow: false },
 ): MenuItemConstructorOptions[] {
+  // Given up only while the renderer is claiming them. The roles carry Electron's own
+  // accelerators, labels and behavior, so the fallback is the stock View menu rather than an
+  // imitation of it - which is what makes "the keys come back" true rather than approximate.
+  const zoom: MenuItemConstructorOptions[] = state.rendererOwnsNumberRow
+    ? [
+        { label: "Actual Size", click: (_item, window) => zoomWindow(window, "reset") },
+        { label: "Zoom In", click: (_item, window) => zoomWindow(window, ZOOM_STEP) },
+        { label: "Zoom Out", click: (_item, window) => zoomWindow(window, -ZOOM_STEP) },
+      ]
+    : [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }];
   return [
     {
       label: appName,
@@ -98,19 +136,18 @@ export function appMenuTemplate(
     { role: "editMenu" },
     {
       // Spelled out rather than `role: "viewMenu"`, and the zoom items are the whole reason.
-      // The stock submenu is exactly this list with `⌘0`/`⌘-`/`⌘+` attached to the three zoom
-      // roles; written out, the zooming still happens and the keys reach the Board's jump
-      // shortcuts. Reload, DevTools and full screen keep their standard accelerators, none of
-      // which the dashboard binds - `⌃R` is a dashboard chord and is not `⌘R`.
+      // The stock submenu is exactly this list, so writing it out costs nothing and buys the
+      // one thing the role cannot express: three zoom entries whose accelerators depend on
+      // whether the dashboard is using those keys. Reload, DevTools and full screen keep
+      // their standard accelerators in both states, none of which the dashboard binds -
+      // `⌃R` is a dashboard chord and is not `⌘R`.
       label: "View",
       submenu: [
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },
         { type: "separator" },
-        { label: "Actual Size", click: (_item, window) => zoomWindow(window, "reset") },
-        { label: "Zoom In", click: (_item, window) => zoomWindow(window, ZOOM_STEP) },
-        { label: "Zoom Out", click: (_item, window) => zoomWindow(window, -ZOOM_STEP) },
+        ...zoom,
         { type: "separator" },
         { role: "togglefullscreen" },
       ],

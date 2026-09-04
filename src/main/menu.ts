@@ -5,13 +5,45 @@
 // (see App / SettingsPage).
 //
 // The template itself is `./menu-template.ts`, which imports no electron runtime and is
-// therefore unit-testable. This file is the install.
+// therefore unit-testable. This file is the install, and it is RE-installable: the View
+// menu's three zoom accelerators are held or given up depending on whether the dashboard is
+// currently claiming the number row for Board card jumps, so the menu is rebuilt whenever
+// that answer changes.
 
 import { app, Menu } from "electron";
-import { appMenuTemplate, type AppMenuHandlers } from "./menu-template.ts";
+import { appMenuTemplate, type AppMenuHandlers, type AppMenuState } from "./menu-template.ts";
 
 export type { AppMenuHandlers };
 
+/**
+ * The handlers and the last known renderer claim, so a rebuild driven by one does not have
+ * to be handed the other. Held here rather than in `index.ts` because this module is the
+ * only thing that installs a menu, and two callers each holding half of the state is how the
+ * menu comes to disagree with itself.
+ */
+let installed: AppMenuHandlers | null = null;
+let state: AppMenuState = { rendererOwnsNumberRow: false };
+
+function build(): void {
+  if (!installed) return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.name, installed, state)));
+}
+
 export function installAppMenu(handlers: AppMenuHandlers): void {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.name, handlers)));
+  installed = handlers;
+  build();
+}
+
+/**
+ * Follow the dashboard's claim on ⌘0/⌘-/⌘=.
+ *
+ * Idempotent, and deliberately so: the renderer reports its preference on load, on every
+ * change, and on every reload, so the overwhelmingly common call is one that changes nothing.
+ * Rebuilding the whole application menu on each of those would replace the menu bar for no
+ * reason, so an unchanged answer returns immediately.
+ */
+export function setRendererOwnsNumberRow(owns: boolean): void {
+  if (state.rendererOwnsNumberRow === owns) return;
+  state = { rendererOwnsNumberRow: owns };
+  build();
 }

@@ -1371,11 +1371,22 @@ console, where it re-points the open detail at another card without a trip back 
 works while the cursor is in a reply box, because every one of these chords carries
 <kbd>⌘</kbd>.
 
-**In the desktop app all twelve are the app's.** There are no browser tabs to select, and the
-View menu is spelled out so that page zoom keeps its **Zoom In**, **Zoom Out** and **Actual
-Size** items while giving up <kbd>⌘</kbd><kbd>0</kbd>, <kbd>⌘</kbd><kbd>-</kbd> and
-<kbd>⌘</kbd><kbd>=</kbd> - a menu accelerator is registered with the system and would be
-handled before the dashboard ever saw the keystroke.
+**In the desktop app all twelve are the app's while this is switched on.** There are no
+browser tabs to select, and the View menu hands <kbd>⌘</kbd><kbd>0</kbd>,
+<kbd>⌘</kbd><kbd>-</kbd> and <kbd>⌘</kbd><kbd>=</kbd> over for as long as the Board is using
+them - a menu accelerator is registered with the system and would otherwise be handled before
+the dashboard ever saw the keystroke. Page zoom keeps its **Zoom In**, **Zoom Out** and
+**Actual Size** items throughout, so it is always one click away, and **it gets its keyboard
+shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, or switch
+to the Console layout, and <kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd>
+zoom again exactly as they always did.
+
+That follows the *preference*, not the card count. While the feature is on, the number row
+belongs to the Board even where it has no card to give a key to - so on a board of three
+cards, <kbd>⌘</kbd><kbd>-</kbd> does nothing in the desktop app rather than zooming. The
+alternative was a zoom shortcut that worked until a tenth agent appeared and then silently
+stopped, which is worse than a key that is plainly the Board's for as long as you have the
+feature switched on.
 
 **In a plain browser tab, some of them may stay the browser's.** These twelve are also
 browser-chrome shortcuts on macOS: <kbd>⌘</kbd><kbd>1</kbd>-<kbd>⌘</kbd><kbd>9</kbd> select a

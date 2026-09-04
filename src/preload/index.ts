@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld("missionDesktop", {
       return () => ipcRenderer.removeListener("mission:update-state", listener);
     },
   },
+  // Report whether the Board is claiming ⌘0/⌘-/⌘= for its card jump shortcuts, so the
+  // native View menu can hold those zoom accelerators whenever it is not. One boolean
+  // rather than the live slot set: see `main/menu-template.ts` for why the answer follows
+  // the preference and not the card count.
+  setCardJumpKeys: (claimed: boolean): Promise<void> =>
+    ipcRenderer.invoke("mission:card-jump-keys", claimed),
   // Main pushes this when the native "Settings…" item (⌘,) is chosen. Returns an
   // unsubscribe so the renderer can detach on unmount.
   onOpenSettings: (cb: () => void): (() => void) => {

@@ -67,7 +67,7 @@ export const DISPLAY_ITEMS = [
     group: "card",
     label: "Jump shortcut",
     description:
-      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap in the card's top corner, and the chord itself: press it to open that card's console. The keys are handed out down the board and across its columns, and move up as cards finish. All twelve are the app's in the desktop app; in a browser tab, any of them your browser keeps for selecting a tab or zooming the page stays the browser's. Unchecked, the keycaps go, the chords do nothing, and those keys are your browser's again.",
+      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap in the card's top corner, and the chord itself: press it to open that card's console. The keys are handed out down the board and across its columns, and move up as cards finish. While this is on the number row belongs to the board: in the desktop app page zoom keeps its View menu items but gives up ⌘0/⌘-/⌘=, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.",
   },
   {
     id: "goal",

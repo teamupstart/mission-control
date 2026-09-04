@@ -1950,6 +1950,21 @@ export function App(): React.JSX.Element {
     () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
     [cardShortcutsOn, boardColumns],
   );
+  // Tell the desktop shell, so its View menu can hold ⌘0/⌘-/⌘= for zoom whenever this
+  // dashboard is not using them. Without this the menu gave them up for good and the
+  // preference could switch the feature off without giving the keys back - three keys that
+  // nothing at all answered to, which is what its own description promises it undoes.
+  //
+  // The PREFERENCE, not `cardShortcuts.size`: the slot set moves every time a session
+  // appears or leaves, and a zoom shortcut silently lost to a tenth agent showing up would
+  // be worse than one that is plainly the board's while the feature is on. See
+  // `main/menu-template.ts`, which owns that reasoning and the rule it implies.
+  //
+  // No-ops in a browser tab, where `missionDesktop` is undefined and there is no menu to
+  // rebuild - the guard every caller of this bridge carries.
+  useEffect(() => {
+    void window.missionDesktop?.setCardJumpKeys(cardShortcutsOn);
+  }, [cardShortcutsOn]);
 
   // Console's detail is its selection. Board keeps its detail separate from the arrow-key
   // cursor; Enter or a click opens it, and what it opens is the cursor's session.

@@ -871,6 +871,16 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 11,
       },
+      {
+        // Version 13: the version 12 graph now enforces criterion-mapped evidence readiness.
+        // Every earlier version remains advisory and behaviorally unchanged.
+        pipeline: NO_MISTAKES_REVIEW_V8,
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 12,
+      },
     ],
   }),
 ];

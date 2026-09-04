@@ -172,6 +172,7 @@ export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
     "waiting_for_pr",
     "waiting_for_inspector",
     "waiting_for_new_head",
+    "waiting_for_evidence_readiness",
   ].includes(run.status)) return "waiting";
   if (run.status === "blocked") return "blocked";
   if (run.status === "failed" || run.status === "cancelled") return "failed";
@@ -184,6 +185,7 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   if (run.gate === "waiting_pr") return "Waiting for PR";
   if (run.gate === "waiting_inspector") return "GitHub Inspector gate";
   if (run.gate === "findings") return "GitHub Inspector findings";
+  if (run.status === "waiting_for_evidence_readiness") return "Evidence preflight";
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";

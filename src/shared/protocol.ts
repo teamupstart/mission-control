@@ -5237,6 +5237,16 @@ export const RetryWorkflowRunSchema = z.object({
 });
 export type RetryWorkflowRun = z.infer<typeof RetryWorkflowRunSchema>;
 
+export const RetryWorkflowEvidenceReadinessSchema = z.object({
+  requestId: z.string().min(1).max(200),
+}).strict();
+
+export const OverrideWorkflowEvidenceReadinessSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  reason: z.string().trim().min(1).max(WORKFLOW_LIMITS.readinessOverrideReason),
+  acknowledgedRisk: z.literal(true),
+}).strict();
+
 export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
 });

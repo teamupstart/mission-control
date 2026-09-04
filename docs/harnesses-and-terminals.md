@@ -57,8 +57,8 @@ and [harness-change contract](agent-guides/change-contracts.md#harness-changes).
 
 Every model picker that can affect a dispatch reads one browser catalog. The browser starts with
 the shipped choices, then reads the daemon's aggregate catalog once when the dashboard loads. It
-does not poll and individual controls do not fetch their own lists. Claude Code and Codex continue
-to use their shipped static choices.
+does not poll and individual controls do not fetch their own lists. Claude Code continues to use
+its shipped static choices; Codex and Pi discover theirs.
 
 Pi's rows come from the configured local Pi installation and account, using the same binary
 resolution as a Pi launch, including `MISSION_PI_BIN`. The daemon asks Pi for its available models
@@ -67,12 +67,26 @@ model provider. The browser preserves Pi's order and groups every returned row b
 provider. The selected value remains one exact provider-qualified string such as
 `anthropic/claude-sonnet-5`; no separate provider field is stored.
 
-The daemon caches a successful discovery for five minutes. A dashboard reload normally consumes
-that cache. **Retry Pi models** forces the same aggregate read with `?refresh=1`. If refresh fails,
-the daemon serves the last successful list when one exists and otherwise returns the compact
-shipped Pi fallback. A transport failure in the browser likewise leaves its current choices in
-place. These degraded states show a bounded status message, keep every picker and dispatch action
-enabled, and never expose Pi's process output.
+Codex's rows come from the configured local Codex installation and account, resolved the same way
+a Codex launch resolves it, including `MISSION_CODEX_BIN`. The daemon runs `codex app-server`,
+completes the handshake, asks `model/list`, and exits. **It starts no thread and no turn**, so the
+probe cannot spend anything, and it runs from a temporary directory so the answer describes the
+installation rather than whichever repository triggered it. Codex reports no per-row provider or
+context window, so its rows stay ungrouped and carry neither; rows Codex hides from its own picker
+are excluded here too, and the selected value remains the exact model id such as `gpt-5.4`.
+
+Discovering Codex's list means the picker can now offer a model Mission Control has no price for.
+The [standard-price snapshot](sessions.md#cost-telemetry) recognizes a fixed set of ids and
+intentionally leaves a new model unpriced rather than guessing its rate, so such a session runs
+normally and simply reports no estimated cost.
+
+The daemon caches a successful discovery for five minutes, per harness. A dashboard reload normally
+consumes that cache. **Retry Pi models** and **Retry Codex models** force the same aggregate read
+with `?refresh=1`. If refresh fails, the daemon serves that harness's last successful list when one
+exists and otherwise returns its compact shipped fallback. A transport failure in the browser
+likewise leaves its current choices in place. These degraded states show a bounded status message,
+keep every picker and dispatch action enabled, and never expose the probe's process output. A Codex
+too old to know `model/list` reports the same fallback as any other failure rather than an error.
 
 A saved model absent from the current response is appended once as **not currently reported**. It
 remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring

@@ -913,10 +913,11 @@ model it was never explicitly pinned with. If a Foreman-launched agent is not us
 set here, check tier 2 first - that is the setting overriding it.
 
 Every dispatch-time picker reads the same [browser model catalog](harnesses-and-terminals.md#dispatch-time-model-catalogs).
-Claude Code and Codex keep the shipped rows from `src/shared/model.ts`. Pi instead mirrors every
-model reported by the configured local Pi account, grouped by provider, while the shipped Pi rows
-remain its immediate and failure fallback. The browser performs one aggregate read when it loads,
-and **Retry Pi models** forces a refresh without polling.
+Claude Code keeps the shipped rows from `src/shared/model.ts`. Pi mirrors every model reported by
+the configured local Pi account, grouped by provider, and Codex mirrors the models its own
+installation offers, ungrouped because Codex reports no provider per row. For both, the shipped
+rows remain the immediate and failure fallback. The browser performs one aggregate read when it
+loads, and **Retry Pi models** / **Retry Codex models** force a refresh without polling.
 
 Loading or discovery failure never disables a picker or dispatch. A saved value missing from the
 current response, including one set by a newer build or a direct `PUT` to

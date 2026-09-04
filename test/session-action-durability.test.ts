@@ -64,10 +64,12 @@ test("every durable tuple this phase touches is APPENDED, never reordered", () =
     // because the two answer different things - a claim, and a silence - and a ledger a
     // person reads to work out why a run sat still has to keep them apart.
     "parked_repair_reminder",
+    "evidence_readiness",
   ]);
   assert.deepEqual([...WORKFLOW_RUN_STATUSES], [
     "capturing", "running", "waiting_for_session", "waiting_for_pr", "waiting_for_inspector",
     "waiting_for_new_head", "blocked", "completed", "cancelled", "failed", "waiting_for_action",
+    "waiting_for_evidence_readiness",
   ]);
   // `waiting` is none of the other six, and each exclusion is load-bearing.
   assert.equal(WORKFLOW_NODE_ATTEMPT_STATES.includes("waiting"), true);
@@ -186,9 +188,30 @@ test("continuation provenance is all-or-nothing with a nonzero segment", () => {
     parent_submission_id: "s0",
     continuation_node_id: "act",
     continuation_node_attempt_id: "a0",
+    refinement_reason: null,
   }));
   assert.equal(child.segment, 1);
   assert.equal(child.parentSubmissionId, "s0");
+  assert.equal(child.refinementReason, "session_action");
+
+  const evidenceRefinement = parseWorkflowSubmissionRow(submissionRow({
+    segment: 2,
+    parent_submission_id: "s1",
+    refinement_reason: "evidence_preflight",
+  }));
+  assert.equal(evidenceRefinement.segment, 2);
+  assert.equal(evidenceRefinement.parentSubmissionId, "s1");
+  assert.equal(evidenceRefinement.continuationNodeId, null);
+  assert.equal(evidenceRefinement.refinementReason, "evidence_preflight");
+  assert.throws(
+    () => parseWorkflowSubmissionRow(submissionRow({
+      segment: 2,
+      parent_submission_id: "s1",
+      continuation_node_id: "act",
+      refinement_reason: "evidence_preflight",
+    })),
+    WorkflowRowError,
+  );
 });
 
 const attemptRow = (patch: Record<string, unknown> = {}) => ({

@@ -1860,7 +1860,7 @@ test("file change summaries name kinds and moved paths without patch text", () =
 
 test("the activity line says what the session is doing, on one line", () => {
   assert.equal(
-    itemActivity({ type: "commandExecution", id: "c", command: "npm test\n  --watch", cwd: "/", processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null }),
+    itemActivity({ type: "commandExecution", id: "c", pluginId: null, scriptPath: null, command: "npm test\n  --watch", cwd: "/", processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null }),
     "npm test --watch",
   );
   assert.equal(

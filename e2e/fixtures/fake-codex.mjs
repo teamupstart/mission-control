@@ -132,6 +132,69 @@ function recordResumePhase(phase) {
   );
 }
 
+/**
+ * The rows `model/list` answers with, shaped as codex-cli 0.146.0 returns them.
+ *
+ * Deliberately the real six plus a hidden one. `gpt-5.4` and `gpt-5.4-mini` are the two
+ * models a live Codex offers that Mission Control's shipped catalog does not, which is the
+ * gap live discovery exists to close - so a spec that finds them in the picker has proved
+ * the list came from here rather than from `MODEL_CATALOG`.
+ */
+const CATALOG_ROWS = [
+  ["gpt-5.6-sol", "GPT-5.6-Sol", "Reliable agentic workhorse for everyday tasks.", false],
+  ["gpt-5.6-terra", "GPT-5.6-Terra", "Balanced agentic coding model.", false],
+  ["gpt-5.6-luna", "GPT-5.6-Luna", "Fast and affordable agentic coding model.", false],
+  ["gpt-5.5", "GPT-5.5", "Proven previous-generation model.", false],
+  ["gpt-5.4", "GPT-5.4", "Strong model for everyday coding.", false],
+  ["gpt-5.4-mini", "GPT-5.4-Mini", "Small, fast, and cost-efficient model.", false],
+  ["gpt-5.6-e2e-hidden", "GPT-5.6 Hidden", "Never offered in a picker.", true],
+].map(([id, displayName, description, hidden]) => ({
+  id,
+  model: id,
+  upgrade: null,
+  upgradeInfo: null,
+  availabilityNux: null,
+  displayName,
+  description,
+  hidden,
+  supportedReasoningEfforts: [
+    { reasoningEffort: "low", description: "Fast responses with lighter reasoning" },
+    { reasoningEffort: "medium", description: "Balances speed and reasoning depth" },
+  ],
+  defaultReasoningEffort: "medium",
+  inputModalities: ["text", "image"],
+  supportsPersonality: false,
+  additionalSpeedTiers: [],
+  serviceTiers: [],
+  defaultServiceTier: null,
+  isDefault: id === "gpt-5.6-sol",
+}));
+
+/**
+ * Whether the next catalog probe succeeds, read per request from a control file.
+ *
+ * A file rather than an env var so a spec can change it and restart the daemon, exactly as
+ * the Pi fake does. A missing control is a FAILURE: an accidentally unconfigured fixture
+ * must not read as a working provider boundary.
+ */
+function catalogMode() {
+  try {
+    return readFileSync(process.env.MC_E2E_CODEX_CATALOG_CONTROL, "utf8").trim();
+  } catch {
+    return "failure";
+  }
+}
+
+/** The catalog probe's own record, kept apart from session invocations. */
+function recordCatalogProbe(params) {
+  if (!recordDir) return;
+  mkdirSync(join(recordDir, "codex-models"), { recursive: true });
+  writeFileSync(
+    join(recordDir, "codex-models", `probe-${Date.now()}-${process.pid}.json`),
+    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), params }, null, 2),
+  );
+}
+
 function workflowImageManifest(prompt) {
   const lines = prompt.split("\n");
   const start = lines.findIndex((line) => /^`{3,}workflow-image-manifest-untrusted$/.test(line));
@@ -378,6 +441,7 @@ function write(frame) {
 }
 
 const respond = (id, result) => write({ jsonrpc: "2.0", id, result });
+const respondError = (id, code, message) => write({ jsonrpc: "2.0", id, error: { code, message } });
 const notify = (method, params) => write({ jsonrpc: "2.0", method, params });
 
 /** A Turn, in the shape `TurnStartedNotification` and `TurnCompletedNotification` carry. */
@@ -599,6 +663,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "initialize":
       respond(id, { userAgent: "fake-codex/e2e" });
       return;
+    case "model/list": {
+      // The catalog probe. It arrives on the same connection a session would use, so the
+      // fake answers it here rather than refusing non-session argv the way the Pi fake can.
+      recordCatalogProbe(params ?? null);
+      if (catalogMode() !== "success") {
+        respondError(id, -32000, "fake-codex: scripted catalog failure");
+        return;
+      }
+      respond(id, { data: CATALOG_ROWS, nextCursor: null });
+      return;
+    }
     case "thread/start":
       respond(id, {
         thread: thread({ type: "idle" }),

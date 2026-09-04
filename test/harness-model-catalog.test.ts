@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import { MODEL_CATALOG } from "../src/shared/model.ts";
 import { AGENT_TYPES, type AgentType } from "../src/shared/types.ts";
 import {
@@ -83,9 +84,27 @@ test("every harness explicitly owns shipped models and a discovery decision", ()
     assert.deepEqual(HARNESSES[agent].models.shipped, MODEL_CATALOG[agent]);
     assert.equal("discover" in HARNESSES[agent].models, true);
   }
+  // Claude is the one harness still on shipped rows, and deliberately so: its live rows
+  // are account-shaped aliases, two of which `ModelIdSchema` rejects, so adopting them is
+  // a persisted-vocabulary decision rather than a catalog refresh. See
+  // `docs/plans/claude-codex-live-model-catalog/plan.md`.
   assert.equal(HARNESSES.claude.models.discover, null);
-  assert.equal(HARNESSES.codex.models.discover, null);
+  assert.equal(typeof HARNESSES.codex.models.discover, "function");
   assert.equal(typeof HARNESSES.pi.models.discover, "function");
+});
+
+test("the browser's discovery flag and the server's probe are one fact in two files", () => {
+  // The treatment `runtimes` / `sdk` and `resumes` / `resume` get. The browser draws the
+  // catalog notice and its retry button from `discoversModels`, so a probe wired here
+  // without the flag can never report its own failure, and a flag set without a probe
+  // offers a retry that does nothing.
+  for (const agent of AGENT_TYPES) {
+    assert.equal(
+      HARNESS_CAPABILITIES[agent].discoversModels,
+      HARNESSES[agent].models.discover !== null,
+      `${agent} disagrees about whether it discovers models`,
+    );
+  }
 });
 
 test("static harnesses never discover, while one successful Pi probe is cached fresh", async () => {

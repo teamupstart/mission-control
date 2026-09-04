@@ -347,9 +347,12 @@ after capture.
 
 The persisted proof-class, proof-role, readiness-status, gap-code, warning-code, and policy
 values are append-only vocabularies. `evidenceReadinessPolicy` is frozen into a published
-version. In Phase 1 only `off` may publish, and readiness is advisory. Model output may match
-author ids and suggest a proof class, but deterministic code owns canonical ids, role gaps,
-scope checks, evidence identity, and readiness status.
+version. `off` is advisory; `criterion_mapped_v1` parks structural gaps before any attempt and
+resumes through an immutable same-round evidence-preflight segment or an append-only operator
+override whose API request and durable row retain explicit risk acknowledgement. Model output may
+match author ids and suggest a proof class, but deterministic code owns
+canonical ids, role gaps, scope checks, evidence identity, and readiness status. Proof-class
+suggestions remain warnings and never become a hard gate.
 
 ## One workflow run is one repository
 

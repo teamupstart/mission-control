@@ -1380,7 +1380,9 @@ the dashboard ever saw the keystroke. Page zoom keeps its **Zoom In**, **Zoom Ou
 shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, switch to
 the Console layout, or simply leave Fleet for the Library, Runs or Settings, and
 <kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd> zoom again exactly as
-they always did. The keys are the Board's only while a Board card is there to answer them.
+they always did. Ownership follows the page and the preference, not the cards: the number row
+is the Board's whenever you are on Fleet in the Board layout with this switched on, and it is
+zoom's every other time.
 
 That follows the *preference*, not the card count. While the feature is on, the number row
 belongs to the Board even where it has no card to give a key to - so on a board of three
@@ -1414,6 +1416,15 @@ operator could usefully rebind. They are switched on and off with the other card
 **Settings → Display → Session display → Jump shortcut**, which takes down the keycaps and
 the chords together.
 
+The twelve are also **reserved from the shortcut list**, so no action can be bound to one.
+That is the same rule <kbd>Enter</kbd> follows and for the same reason: the jump runs ahead of
+the action, so an action bound to <kbd>⌘</kbd><kbd>4</kbd> would keep working in the Console
+and on every other page and silently stop working on the Board, and a shortcut that works in
+some layouts and not others is the one thing the table promises not to do. Pressing one while
+recording says so instead of accepting it. If you had already bound an action to one of these
+before upgrading, that binding is dropped on read and the action returns to its own default -
+so it works everywhere again rather than being shadowed on the Board.
+
 Every shortcut managed by the shortcut list is **customizable**. Open **Settings** - the ⚙ gear
 in the top bar, or (in the desktop app)
 **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
@@ -1425,7 +1436,8 @@ trying to reuse an assigned key is refused inline. You can reset any one shortcu
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
-and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
+and can't be reassigned; neither can the Board's twelve
+[card jump chords](#jumping-straight-to-a-board-card); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
 are in-surface keys rather than fleet chords - they only exist while their surface is active - so

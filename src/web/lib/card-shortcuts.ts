@@ -19,6 +19,14 @@
  * on and off as a whole, with the keycap they print, through the Board card's own display
  * registry (`board-card.ts`, item `cardShortcut`).
  *
+ * They are RESERVED from that registry all the same, and `CARD_SHORTCUT_CHORDS` is what
+ * `reservedChordReason` reads to do it. App's jump arm runs ahead of the action dispatch, so
+ * an action bound to ⌘4 would keep working in the Console, on every other page and with the
+ * card item off, and silently stop working on the Board - the same "works in some layouts and
+ * not others" that `Enter` is reserved to prevent. Reserving them also migrates an operator
+ * who had already bound one: `sanitize` drops a stored override on any reserved chord as the
+ * config is read, so that action returns to its own default rather than staying shadowed.
+ *
  * ---
  *
  * WHO OWNS THESE KEYS, and the decision taken on it. This is the one thing about this

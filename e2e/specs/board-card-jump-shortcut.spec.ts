@@ -10,10 +10,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= on the Board's cards: the keycap in each card's top-right corner, and
  * the key opening that card's console.
  *
- * Four claims, and this is the only layer that can settle any of them. The unit tests beside
- * `lib/card-shortcuts.ts` prove how a slot is handed out over a list of ids; they cannot see
- * a keycap on a laid-out card, and they certainly cannot see a keystroke become a route
- * become an open conversation.
+ * Every claim below needs a browser. The unit tests beside `lib/card-shortcuts.ts` prove how a
+ * slot is handed out over a list of ids; they cannot see a keycap on a laid-out card, and they
+ * certainly cannot see a keystroke become a route become an open conversation.
  *
  * - Every card prints its key, and the numbering runs down the board and ACROSS its status
  *   columns rather than restarting in each. That is why this spec pays for two sessions in
@@ -25,6 +24,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * - The item is switched on and off in Settings → Display like every other card item, and
  *   unchecking it stands down the keycaps AND the chords together - an invisible shortcut
  *   that still swallowed ⌘0/⌘-/⌘= would be the one shape this control must not have.
+ * - The desktop shell is told when the Board owns the number row, so page zoom keeps those
+ *   keys the rest of the time. The menu itself is invisible from a browser; the report the
+ *   dashboard sends is the whole input to it, and that is observable.
+ * - The Keyboard panel refuses these twelve chords, naming the reservation, so no action can
+ *   be bound to a key that would work in the Console and die on the Board.
  *
  * No model tokens are spent: every agent binary is redirected by
  * `e2e/fixtures/fake-agents.ts`, and the question that puts the second card in a second
@@ -385,7 +389,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await expect(dashboard.locator(".cdetail")).toBeVisible();
 });
 
-test("the desktop shell is told to keep zoom's keys whenever no card can answer them", async ({
+test("the shell is told the Board owns the number row only on Fleet, and only while it is on", async ({
   dashboard,
   daemon,
 }) => {
@@ -398,9 +402,11 @@ test("the desktop shell is told to keep zoom's keys whenever no card can answer 
   // observable is the report the dashboard sends, and that report is the whole input to the
   // decision, so this stubs the bridge and reads it.
   //
-  // The three cases below are three different ways for "no card can answer this key" to be
-  // true, and each of them shipped broken at some point in this branch: the preference off,
-  // a layout with no cards, and a PAGE with no cards under a layout that still says `board`.
+  // Ownership follows the PAGE and the PREFERENCE, not whether a card happens to hold a
+  // given slot - on the enabled Fleet Board the row is the Board's even where slots 10-12 have
+  // no card, which is the rule `main/menu-template.ts` states and `docs/ui.md` repeats. So the
+  // cases below vary exactly those two things, and both shipped broken in this branch: a page
+  // that is not Fleet under a layout that still says `board`, and the preference switched off.
   await dashboard.addInitScript(() => {
     const reports: boolean[] = [];
     Object.defineProperty(window, "__cardJumpKeyReports", {
@@ -467,6 +473,26 @@ test("the shortcut is not a rebindable action in the Keyboard panel", async ({
   for (const chord of ["⌘1", "⌘0", "⌘-", "⌘="]) {
     await expect(panel.getByText(chord, { exact: true })).toHaveCount(0);
   }
+  // Nor can an action be REBOUND onto one of the twelve, which is the other half of "not
+  // configurable here". The jump arm runs ahead of the action dispatch, so an action bound to
+  // ⌘1 would keep working in the Console and on every other page and silently stop working on
+  // the Board - so the editor refuses the chord instead of accepting one it cannot honour, and
+  // says which reservation refused it.
+  const diffRow = panel.locator('[data-anchor="keyboard/diff"]');
+  await diffRow.getByRole("button", { name: /^Change shortcut for Open diff/ }).click();
+  await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
+  await dashboard.keyboard.press("Meta+1");
+  await expect(panel.locator(".settings-error"))
+    .toHaveText("⌘1 is reserved for the Board's card jump shortcuts.");
+  // Still recording after a refusal, which is the right shape - the operator is being asked
+  // for a different key, not silently returned to a row that looks unchanged.
+  await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  // Refused, not quietly applied: the action still answers to its own key.
+  await expect(
+    diffRow.getByRole("button", { name: /^Change shortcut for Open diff \(currently ⇧D\)/ }),
+  ).toBeVisible();
+
   // The switch that does exist, on the surface the request named, so the two panels
   // together say where this feature is turned on and off.
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);

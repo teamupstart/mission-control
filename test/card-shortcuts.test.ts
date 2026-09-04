@@ -12,9 +12,12 @@ import {
 } from "../src/web/lib/card-shortcuts.ts";
 import {
   ariaKeyshortcuts,
+  bindingValidationError,
   chordFromEvent,
   formatChord,
   isReservedChord,
+  reservedChordReason,
+  resolveKeybindings,
 } from "../src/web/lib/keybindings.ts";
 
 /**
@@ -119,13 +122,55 @@ test("every chord is one a keypress can actually produce", () => {
   }
 });
 
-test("no slot collides with grid navigation, and each prints and announces itself", () => {
+test("each slot prints and announces itself", () => {
   for (const chord of CARD_SHORTCUT_CHORDS) {
-    assert.equal(isReservedChord(chord), false, `${chord} is reserved for navigation`);
     // The keycap on the card, and the WAI-ARIA spelling on the button it drives. Both are
     // asserted because they are read by different people and produced by different helpers.
     assert.match(formatChord(chord), /^⌘[0-9=-]$/);
     assert.match(ariaKeyshortcuts(chord) ?? "", /^Meta\+[0-9=-]$/);
+  }
+});
+
+test("a slot cannot be bound to an action, and says which reservation refused it", () => {
+  // The jump arm runs AHEAD of the action dispatch, so an action bound to ⌘4 would keep
+  // working in the Console, on every other page and with the card item off, and silently stop
+  // working on the Board. "Works in some layouts and not others" is the one promise the
+  // shortcut table makes, so the table refuses the chord rather than accepting one it cannot
+  // honour - which is exactly why `Enter` is reserved.
+  for (const chord of CARD_SHORTCUT_CHORDS) {
+    assert.equal(isReservedChord(chord), true, `${chord} can still be bound to an action`);
+    assert.equal(reservedChordReason(chord), "the Board's card jump shortcuts");
+    // Reported to the operator naming the RIGHT reservation. "grid navigation" was true of
+    // every reservation when that sentence was written, and over one of these it would send
+    // somebody hunting for an arrow key they never pressed.
+    assert.equal(
+      bindingValidationError(resolveKeybindings({}), "diff", chord),
+      `${formatChord(chord)} is reserved for the Board's card jump shortcuts.`,
+    );
+  }
+  // And the older reservation still reports as itself rather than being relabelled.
+  assert.equal(reservedChordReason("Enter"), "grid navigation");
+  assert.equal(reservedChordReason("cmd+shift+1"), null, "a shifted digit is not a slot");
+  assert.equal(reservedChordReason("cmd+j"), null);
+});
+
+test("an override already stored on a slot is migrated off it, not left shadowed", () => {
+  // The upgrade case, and the reason reserving them is enough on its own. An operator who had
+  // bound Open diff to ⌘1 before this feature existed would have had it silently shadowed on
+  // the Board; `sanitize` drops a stored override on any reserved chord when the config is
+  // READ, so the action returns to its own default instead of staying dead.
+  const migrated = resolveKeybindings({ diff: "cmd+1", files: "cmd+=" });
+  const shipped = resolveKeybindings({});
+  assert.equal(migrated.diff, shipped.diff, "the shadowed override was not dropped");
+  assert.equal(migrated.files, shipped.files);
+  assert.deepEqual(migrated, shipped, "dropping those two moved something else as well");
+  // A default is always there to fall back to, which is what makes dropping safe rather than
+  // leaving an action unbound.
+  for (const chord of CARD_SHORTCUT_CHORDS) {
+    assert.ok(
+      !Object.values(shipped).includes(chord),
+      `a shipped default is ${chord}, so an action migrated off it would collide`,
+    );
   }
 });
 

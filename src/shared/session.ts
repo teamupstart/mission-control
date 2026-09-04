@@ -10,8 +10,13 @@ import { canWriteTo } from "./pane.ts";
 
 /** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
 export function sessionWorkspaceRoot(
-  session: Pick<Session, "workspaceRoot" | "cwd">,
+  session: Pick<Session, "workspaceRoot" | "workspace" | "cwd">,
 ): string | null {
+  if (session.workspace?.authority === "provider") {
+    return session.workspace.availability === "available"
+      ? session.workspace.reportedPath
+      : null;
+  }
   return session.workspaceRoot ?? session.cwd;
 }
 

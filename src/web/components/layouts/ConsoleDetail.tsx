@@ -185,6 +185,7 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   const workspaceRoot = sessionWorkspaceRoot(session);
+  const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   const workflowRuns = view.workflowRunsBySession?.get(session.id) ?? null;
   // The Workflows tab and the retro offer speak about ONE review; the chips and the bind
   // gate above read every one. Derived from the same list so the two cannot disagree.
@@ -398,7 +399,7 @@ export function ConsoleDetail({
   // the Display panel gets the band the previous release drew.
   const shown = useDisplayItems();
   const showPath = shown("detailPath");
-  const showBranch = shown("detailBranch") && Boolean(session.gitBranch);
+  const showBranch = shown("detailBranch") && Boolean(workspaceBranch);
   // `silent` is already true for a session with no task, so this needs no separate guard.
   const showTaskChip = !pill.silent;
   const showRepoPrs = (session.task?.repoPrs.length ?? 0) > 0;
@@ -594,7 +595,7 @@ export function ConsoleDetail({
         {showBranch && (
           <div className="kv">
             <dt>branch</dt>
-            <dd className="mono branch">{session.gitBranch}</dd>
+            <dd className="mono branch">{workspaceBranch}</dd>
           </div>
         )}
         {session.task && (

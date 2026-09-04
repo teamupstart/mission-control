@@ -11,6 +11,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const {
   MAX_PIPELINE_COMMISSION_EVENTS,
+  advancePipelineCommissionEvidence,
   countPipelineCommissionEvents,
   deletePipelineCommissionRow,
   getPipelineCommission,
@@ -141,6 +142,108 @@ test("migration creates one durable commission per task and preserves exact task
       }),
     /repository does not match/,
   );
+});
+
+test("attempt origin and evidence advances persist with compare-and-swap and freeze", () => {
+  reset();
+  const held = commission();
+  assert.equal(held.attempts[0]?.origin, "mission_control");
+  assert.equal(held.attempts[0]?.evidenceCommit, null);
+
+  const first = "1".repeat(40);
+  const second = "2".repeat(40);
+  const losing = "3".repeat(40);
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: held.id,
+    attempt: 1,
+    previousCommit: null,
+    commit: first,
+    provenance: "live_validation",
+  }), "stored");
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: held.id,
+    attempt: 1,
+    previousCommit: null,
+    commit: losing,
+    provenance: "live_validation",
+  }), "stale");
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: held.id,
+    attempt: 1,
+    previousCommit: first,
+    commit: second,
+    provenance: "live_validation",
+  }), "stored");
+
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_spec_handoff", 2, {
+    planSlug: "durable-evidence",
+    branch: "spec/durable-evidence",
+    prUrl: null,
+    outcome: "local_commit",
+    state: "awaiting_spec_merge",
+  })).outcome, "stored");
+  const frozen = getPipelineCommission(held.id)?.attempts[0];
+  assert.equal(frozen?.evidenceCommit, second);
+  assert.equal(frozen?.evidenceCommitProvenance, "live_validation");
+  assert.equal(typeof frozen?.evidenceFrozenAt, "number");
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: held.id,
+    attempt: 1,
+    previousCommit: second,
+    commit: losing,
+    provenance: "live_validation",
+  }), "frozen");
+});
+
+test("a handoff without a pinned commit leaves the evidence slot available", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_spec_handoff", 2, {
+    planSlug: "late-evidence",
+    branch: "spec/late-evidence",
+    prUrl: null,
+    outcome: "local_commit",
+    state: "awaiting_spec_merge",
+  })).outcome, "stored");
+
+  const attempt = getPipelineCommission("commission-task-1")?.attempts[0];
+  assert.equal(attempt?.evidenceCommit, null);
+  assert.equal(attempt?.evidenceFrozenAt, null);
+  assert.equal(advancePipelineCommissionEvidence({
+    commissionId: "commission-task-1",
+    attempt: 1,
+    previousCommit: null,
+    commit: "4".repeat(40),
+    provenance: "legacy_branch_resolution",
+    frozenAt: 1_700_000_000_003,
+  }), "stored");
+});
+
+test("authoring branch and plan slug are stable within one attempt", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_worktree_created", 2, {
+    worktreePath: `${repo}/spec-worktree`,
+    branch: "spec/stable-identity",
+    planSlug: "stable-identity",
+  })).outcome, "stored");
+  const retained = getPipelineCommission("commission-task-1");
+  assert.equal(retained?.authoringBranch, "spec/stable-identity");
+  assert.equal(retained?.planSlug, "stable-identity");
+
+  assert.equal(applyEngineerEvent(event("engineer_worktree_created", 3, {
+    worktreePath: `${repo}/reused-worktree`,
+    branch: "spec/different",
+    planSlug: "different",
+  })).outcome, "stored");
+  const conflicted = getPipelineCommission("commission-task-1");
+  assert.equal(conflicted?.lifecycle, "unsupported");
+  assert.equal(conflicted?.authoringBranch, "spec/stable-identity");
+  assert.equal(conflicted?.planSlug, "stable-identity");
+  assert.match(conflicted?.error ?? "", /identity changed/);
 });
 
 test("the initial commission and task claim roll back as one transaction", () => {
@@ -814,6 +917,35 @@ test("one malformed persisted projection degrades explicitly without breaking th
   held = loadPipelineCommissions();
   assert.equal(held[0]?.lifecycle, "unsupported");
   assert.match(held[0]?.error ?? "", /unreadable/);
+
+  db.prepare(`UPDATE pipeline_commissions SET state_json = ? WHERE id = ?`).run(
+    JSON.stringify(original),
+    "commission-task-1",
+  );
+  db.prepare(`UPDATE pipeline_commission_attempts SET origin = 'future_origin' WHERE commission_id = ?`).run(
+    "commission-task-1",
+  );
+  held = loadPipelineCommissions();
+  assert.equal(held[0]?.lifecycle, "unsupported");
+  assert.match(held[0]?.error ?? "", /unsupported stored attempt origin future_origin/);
+
+  db.prepare(
+    `UPDATE pipeline_commission_attempts
+        SET origin = NULL, evidence_commit_provenance = 'future_provenance'
+      WHERE commission_id = ?`,
+  ).run("commission-task-1");
+  held = loadPipelineCommissions();
+  assert.equal(held[0]?.lifecycle, "unsupported");
+  assert.match(held[0]?.error ?? "", /unsupported stored evidence provenance future_provenance/);
+
+  db.prepare(
+    `UPDATE pipeline_commission_attempts
+        SET evidence_commit_provenance = NULL
+      WHERE commission_id = ?`,
+  ).run("commission-task-1");
+  held = loadPipelineCommissions();
+  assert.equal(held[0]?.attempts[0]?.origin, "mission_control");
+  assert.equal(held[0]?.attempts[0]?.evidenceCommit, null);
 });
 
 test("live-first, replay-first, and restart reconciliation converge on one projection", async () => {

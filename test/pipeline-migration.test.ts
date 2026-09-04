@@ -191,6 +191,20 @@ test("a pre-feature database gains the empty durable commission family", () => {
     name: string;
   }>;
   assert.ok(taskColumns.some((column) => column.name === "pipeline_commission_id"));
+  const attemptColumns = db.prepare(`PRAGMA table_info(pipeline_commission_attempts)`).all() as unknown as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  for (const name of [
+    "origin",
+    "evidence_commit",
+    "evidence_commit_provenance",
+    "evidence_frozen_at",
+  ]) {
+    const column = attemptColumns.find((candidate) => candidate.name === name);
+    assert.ok(column, `pipeline_commission_attempts is missing ${name}`);
+    assert.equal(column.notnull, 0, `${name} must remain nullable for rolling upgrades`);
+  }
   assert.deepEqual(loadPipelineCommissions(), []);
 });
 

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
 import { lstat, open, realpath, rename, stat, unlink } from "node:fs/promises";
@@ -41,6 +42,31 @@ function isHtml(filePath: string): boolean {
 
 function isMarkdown(filePath: string): boolean {
   return /\.(?:md|markdown|mdown)$/i.test(filePath);
+}
+
+function assertGitTreePath(relativePath: string): void {
+  if (
+    !relativePath ||
+    relativePath.includes("\0") ||
+    path.isAbsolute(relativePath) ||
+    relativePath.split("/").some((part) => part === "..")
+  ) {
+    throw new SessionFileError("path must stay within the pinned Pipeline tree", 403);
+  }
+}
+
+function gitBuffer(cwd: string, args: string[], maxBuffer: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["-C", cwd, ...args],
+      { encoding: "buffer", timeout: 15_000, maxBuffer },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+      },
+    );
+  });
 }
 
 export async function readFileWithinCap(
@@ -148,6 +174,134 @@ export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]>
     if (info?.isFile() && !info.isSymbolicLink()) files.push({ path: filePath });
   }
   return files;
+}
+
+/** List regular blobs directly from one immutable Git tree. */
+export async function listGitTreeFiles(
+  repoRoot: string,
+  commit: string,
+): Promise<SessionFileEntry[]> {
+  const result = await run(
+    "git",
+    ["-C", repoRoot, "ls-tree", "-rz", "--full-tree", commit],
+    { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 },
+  );
+  if (result.code !== 0 || result.overflowed) {
+    throw new SessionFileError("the pinned Pipeline file tree is unavailable", 404);
+  }
+  const files: SessionFileEntry[] = [];
+  for (const record of result.stdout.split("\0")) {
+    if (!record) continue;
+    const match = record.match(/^(\d+) blob [0-9a-f]+\t([\s\S]+)$/);
+    if (!match || match[1] === "120000") continue;
+    const filePath = match[2];
+    if (!filePath) continue;
+    assertGitTreePath(filePath);
+    files.push({ path: filePath });
+    if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Read one bounded blob without materializing a checkout. */
+export async function readGitTreeFile(
+  repoRoot: string,
+  commit: string,
+  relativePath: string,
+): Promise<SessionFileDocument> {
+  assertGitTreePath(relativePath);
+  const html = isHtml(relativePath);
+  const markdown = isMarkdown(relativePath);
+  const imageMediaType = browserImageMediaTypeForPath(relativePath);
+  const previewable = html || markdown || imageMediaType !== null;
+  const cap = previewable ? MAX_SESSION_PREVIEW_BYTES : MAX_SESSION_EDITOR_BYTES;
+  const sizeResult = await run(
+    "git",
+    ["-C", repoRoot, "cat-file", "-s", `${commit}:${relativePath}`],
+    { timeoutMs: 15_000 },
+  );
+  const size = Number(sizeResult.stdout.trim());
+  if (sizeResult.code !== 0 || !Number.isSafeInteger(size) || size < 0) {
+    throw new SessionFileError("file does not exist in the pinned Pipeline tree", 404);
+  }
+  if (size > cap) {
+    return {
+      path: relativePath,
+      kind: "oversized",
+      editable: false,
+      text: null,
+      size,
+      mtime: 0,
+      language: languageFor(relativePath),
+      revision: "",
+      error: `File exceeds the ${Math.round(cap / 1024 / 1024)} MiB ${previewable ? "preview" : "editor"} limit`,
+    };
+  }
+  let bytes: Buffer;
+  try {
+    bytes = await gitBuffer(repoRoot, ["show", `${commit}:${relativePath}`], cap + 1);
+  } catch {
+    throw new SessionFileError("could not read the pinned Pipeline file", 500);
+  }
+  const rev = revision(bytes);
+  if (imageMediaType) {
+    let text: string | null = null;
+    if (imageMediaType === "image/svg+xml") {
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {}
+    }
+    return {
+      path: relativePath,
+      kind: "image",
+      editable: false,
+      text,
+      size: bytes.length,
+      mtime: 0,
+      language: languageFor(relativePath),
+      revision: rev,
+      error: "Read-only Pipeline evidence",
+      image: { mediaType: imageMediaType, dataUrl: `data:${imageMediaType};base64,${bytes.toString("base64")}` },
+    };
+  }
+  if (bytes.includes(0)) {
+    return {
+      path: relativePath,
+      kind: "binary",
+      editable: false,
+      text: null,
+      size: bytes.length,
+      mtime: 0,
+      language: languageFor(relativePath),
+      revision: rev,
+      error: "Binary files cannot be opened in the text editor",
+    };
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return {
+      path: relativePath,
+      kind: "binary",
+      editable: false,
+      text: null,
+      size: bytes.length,
+      mtime: 0,
+      language: languageFor(relativePath),
+      revision: rev,
+      error: "This file is not valid UTF-8",
+    };
+  }
+  return {
+    path: relativePath,
+    kind: html ? "html" : markdown ? "markdown" : "text",
+    editable: false,
+    text,
+    size: bytes.length,
+    mtime: 0,
+    language: languageFor(relativePath),
+    revision: rev,
+    error: "Read-only Pipeline evidence",
+  };
 }
 
 export async function readSessionFile(cwd: string, relativePath: string): Promise<SessionFileDocument> {

@@ -166,16 +166,46 @@ function thread(over: Partial<FileCommentThread> = {}): FileCommentThread {
 function workspace(input: {
   extracted?: boolean;
   kind?: SessionFileKind;
+  readOnly?: boolean;
   text?: string | null;
+  threads?: readonly FileCommentThread[];
 } = {}): string {
   return renderToStaticMarkup(
     createElement(FileWorkspace, {
-      session: mkSession({ id: SESSION, name: "plan review" }),
+      session: mkSession({
+        id: SESSION,
+        name: "plan review",
+        workspace: input.readOnly
+          ? {
+              authority: "provider",
+              kind: "authoring",
+              availability: "retired",
+              reportedPath: "/repo/.worktrees/gone",
+              branch: "spec/plan-review",
+              commit: "a".repeat(40),
+              commitProvenance: "provider_retirement",
+              commitFrozenAt: 1_700_000_000_000,
+              planSlug: "plan-review",
+              attempt: 1,
+              providerRevision: 2,
+              reason: "worktree_missing",
+              capabilities: {
+                diff: true,
+                files: true,
+                write: false,
+                comment: false,
+                shell: false,
+                externalOpen: false,
+                manualWorkflow: false,
+              },
+            }
+          : null,
+      }),
       controller: controller({
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.text === undefined ? {} : { text: input.text }),
       }),
-      fileCommentThreads: [],
+      fileCommentThreads: input.threads ?? [],
       extracted: input.extracted ?? false,
     }),
   );
@@ -207,6 +237,32 @@ test("an image disables the control with a reason instead of hiding it", () => {
   const html = workspace({ kind: "image", text: null });
   assert.match(html, /aria-label="Comment mode"[^>]*disabled/, "the control is present and dead");
   assert.ok(hasTooltip(html, "An image has no lines to comment on"), "and says why");
+});
+
+test("retained Pipeline evidence keeps threads readable without authoring controls", () => {
+  const html = workspace({ readOnly: true, threads: [thread()] });
+  assert.match(html, /aria-label="Comments"[^>]*>Comments \(1\)</);
+  assert.match(html, /aria-label="Editor"[^>]*disabled/);
+  assert.ok(!html.includes('aria-label="Comment mode"'));
+  assert.ok(!html.includes('aria-keyshortcuts="e"'));
+
+  const card = renderToStaticMarkup(
+    createElement(FileCommentThreadCard, {
+      thread: thread(),
+      displayQuote: "line two says something",
+      readOnly: true,
+      busy: false,
+      error: null,
+      onReply: () => Promise.resolve(true),
+      onResolve: () => {},
+      onReopen: () => {},
+      onClose: () => {},
+    }),
+  );
+  assert.ok(card.includes("This contradicts the table below."));
+  assert.ok(!card.includes('aria-label="Reply to comment MC-a41f"'));
+  assert.ok(!card.includes(">Resolve<"));
+  assert.ok(!card.includes(">Reply<"));
 });
 
 test("comment eligibility is its own predicate, and is not `previewable`", () => {
@@ -494,7 +550,7 @@ test("Escape closes the panel and does not reach App's global Escape", () => {
     fileURLToPath(new URL("../src/web/components/FileCommentThread.tsx", import.meta.url)),
     "utf8",
   );
-  const handlers = [...source.matchAll(/if \(event\.key === "Escape"\) \{([\s\S]*?)\n {10}\}/g)]
+  const handlers = [...source.matchAll(/if \(event\.key === "Escape"\) \{([\s\S]*?)\n\s+\}/g)]
     .map((match) => match[1] ?? "");
   assert.equal(handlers.length, 2, "both the composer and the thread's reply box handle Escape");
   for (const handler of handlers) {

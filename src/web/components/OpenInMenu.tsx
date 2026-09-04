@@ -66,11 +66,14 @@ export function OpenInList({
 
 export function OpenInMenu({
   disabled,
+  disabledReason,
   busy,
   onChoose,
 }: {
-  /** No file is selected, so there is nothing to hand anyone. */
+  /** There is currently no file the daemon may hand to another application. */
   disabled: boolean;
+  /** Why the otherwise available action is disabled. */
+  disabledReason?: string;
   /** A launch is in flight - including the save that has to land before it. */
   busy: boolean;
   onChoose: (target: OpenTargetId) => void;
@@ -147,7 +150,7 @@ export function OpenInMenu({
 
   return (
     <div className="open-in" ref={root}>
-      <Tooltip label={disabled ? "Select a file first" : "Open this file in another application"}>
+      <Tooltip label={disabled ? (disabledReason ?? "Select a file first") : "Open this file in another application"}>
         <button
           type="button"
           className="btn open-in-btn"

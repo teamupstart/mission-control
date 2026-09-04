@@ -35,7 +35,16 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("settings-workflows-layout");
 
-/** The settings scrollport at the suite's 1440x900 viewport, measured on the live app. */
+/**
+ * One screenful, as a fixed budget rather than as this run's own viewport.
+ *
+ * 831px is the settings scrollport measured on the live app at 1440x900, which is the window
+ * the regression was reported and measured in - the panel was 2115px there, 2.55 screens.
+ * This suite runs at Playwright's `Desktop Chrome` default of 1280x720, so it is deliberately
+ * NOT the height of the viewport under test: it is the yardstick the numbers in the change
+ * were quoted against, and every assertion using it measures from the PANEL's top so the page
+ * header's height cannot shift the result.
+ */
 const SCROLLPORT = 831;
 
 /** Photograph a state this spec has already asserted on, behind the suite's evidence flag. */
@@ -147,9 +156,14 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
     "the panel is back over two screens tall",
   ).toBeLessThan(SCROLLPORT * 2);
 
-  // The six health counters read two across rather than as six full-width rows, which is
-  // what a used-width measurement can see and markup cannot: two rows sharing a line have
+  // The six health counters SHARE lines rather than taking six full-width rows, which is
+  // what a used-width measurement can see and markup cannot: two counters on one line have
   // the same `top`.
+  //
+  // Bounded rather than pinned to exactly three lines. `.wf-health-grid` is
+  // `repeat(auto-fit, minmax(260px, 1fr))`, so the track count follows the column's used
+  // width - three tracks on a wide window is two lines, and equally correct. What must not
+  // happen is six lines, which is the full-width stack this replaced.
   const rows = panel.locator('.sc-card[data-anchor="workflows/health"] .sc-health-row');
   await expect(rows).toHaveCount(6);
   const tops = await rows.evaluateAll((nodes) =>
@@ -157,8 +171,8 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
   );
   expect(
     new Set(tops).size,
-    "the health counters are laid out one per line, not two across",
-  ).toBe(3);
+    "the health counters are laid out one per line instead of sharing lines",
+  ).toBeLessThan(6);
 
   // The retention boxes are on one row with their Apply, and each keeps the full phrase as
   // its accessible name - which is how this spec reaches them without a `data-testid`.
@@ -175,11 +189,23 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
     rect(newest, "the newest-kept box"),
     rect(apply, "the Apply button"),
   ]);
-  const lines = new Set(boxes.map((box) => Math.round(box.top / 8)));
+  // "On one row" means all four share a horizontal scanline: the lowest top is still above
+  // the highest bottom. If the flex row wrapped, the wrapped item's top would be at or below
+  // the first line's bottom and this flips.
+  //
+  // Deliberately NOT a comparison of their `top` values. The first version of this bucketed
+  // each top into 8px bins and required one bin, which passed on macOS and failed on the CI
+  // Linux runner with "expected 1, received 2" - because `align-items: flex-end` aligns the
+  // items' BOTTOMS, and the Apply button renders a few pixels taller than a number input
+  // there, so the tops legitimately differ while the row is intact. CI's own failure
+  // screenshot showed four controls side by side. The assertion was wrong, not the layout,
+  // and a tolerance would only have moved the threshold that platform metrics can cross.
+  const highestBottom = Math.min(...boxes.map((box) => box.bottom));
+  const lowestTop = Math.max(...boxes.map((box) => box.top));
   expect(
-    lines.size,
-    "the retention boxes and their Apply are not on one row",
-  ).toBe(1);
+    lowestTop,
+    "the retention boxes and their Apply wrapped onto more than one row",
+  ).toBeLessThan(highestBottom);
 
   // The panel still grows NO run list: `WorkflowRuns.tsx` owns that, and the wide column
   // holds readings. A tile is a link INTO that list, which is the distinction being kept.

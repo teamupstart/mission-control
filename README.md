@@ -28,9 +28,10 @@ registered. Their names and stage copy are edited in
 
 **Set up this machine** is the one a fresh profile receives, because nothing else works until
 this machine has the tools the work needs. Four stops: the ⚙ gear, **Setup** in the Settings
-rail, the dependency list to install what you will use from, and **Re-check** to confirm it.
-It installs nothing and runs no remedy, and it is the one tour that leaves you on the page it
-opened rather than returning you to where you started - being on Setup is the point of it.
+rail, the dependency list where you install the tools you will use, and **Re-check** to confirm
+they took. It installs nothing and runs no remedy, and it is the one tour that leaves you on
+the page it opened rather than returning you to where you started - being on Setup is the
+point of it.
 
 **See the work** teaches the operating half - the Line, the Board, one session's desk, and a
 task from dispatch through review to completion.

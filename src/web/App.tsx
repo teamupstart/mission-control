@@ -1271,24 +1271,31 @@ export function App(): React.JSX.Element {
      * one is on a page that has not mounted yet - Exit at stop one of Set up this machine
      * leaves the fleet for Setup, and the panel has to commit first.
      *
-     * It watches for its whole window instead of acting once, because two things move focus
-     * out from under it and both are late: the page it is waiting for commits, and the
-     * coachmark's own teardown refocuses whatever was active when the tour began, which on
-     * the automatic first-run tour is the document root. A single attempt lost that race on a
-     * loaded machine, and abandoning the pass because the leaving popover still held focus
-     * lost it every time.
+     * It keeps watching rather than acting once, because two things move focus out from under
+     * it and both are late: the page it is waiting for commits, and the coachmark's own
+     * teardown refocuses whatever was active when the tour began, which on the automatic
+     * first-run tour is the document root. A single attempt lost that race on a loaded
+     * machine, and abandoning the pass because the leaving popover still held focus lost it
+     * every time.
      *
-     * It only ever focuses into a vacuum, so a control the operator reached for during the
-     * wait keeps focus, and it gives up entirely if another tour has started - that tour owns
-     * the screen and this landing is stale. Neither guard is a substitute for not starting it
-     * at all when the invoker survived: a vacuum is also what an ordinary click on a
-     * non-focusable area leaves behind, so a pass running with nothing to land would hijack
-     * that click. Its caller below is what decides that.
+     * It stops the frame after the focus STICKS, which is the difference between surviving
+     * that teardown and lying in wait. A pass that ran out its whole window would still be
+     * watching a minute of frames later, and the vacuum it waits for is also what an ordinary
+     * click on a non-focusable area leaves behind - so it would answer that click by pulling
+     * focus back. One frame of the element holding focus means the teardown has either already
+     * fired or never will, and there is nothing left to do.
+     *
+     * Two more guards, each for its own failure: it focuses only into a vacuum, so a control
+     * the operator reached for while the page was still committing keeps focus; and it gives
+     * up entirely if another tour has started, because that tour owns the screen and this
+     * landing is stale. Neither is a substitute for not starting the pass at all when the
+     * invoker survived - its caller below decides that.
      */
     const land = (target: TourTargetId, frames = 120): void => {
       if (activeTourRef.current) return;
-      const active = document.activeElement;
       const element = tourTargets.get(target);
+      if (element && document.activeElement === element) return;
+      const active = document.activeElement;
       if (element?.isConnected && (!active || active === document.body)) element.focus();
       if (frames > 0) requestAnimationFrame(() => land(target, frames - 1));
     };

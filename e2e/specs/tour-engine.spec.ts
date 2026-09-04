@@ -78,6 +78,23 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   // document root focused, and the landing pass puts the keyboard on Setup's one action once
   // the panel has committed. `toBeFocused` waits for that, which is the guarantee.
   await expect(page.getByRole("button", { name: "Re-check" })).toBeFocused();
+
+  // Having landed, the pass is done rather than lying in wait. It survives the teardown by
+  // watching, and the vacuum it watches for is also what an ordinary click on a non-focusable
+  // area leaves behind, so a pass still running would answer that click by pulling focus
+  // back. Click the Setup heading the way an operator would, then watch every frame - the
+  // unit the pass counts its own window in - for longer than that window.
+  await page.getByRole("heading", { name: "Setup", exact: true }).click();
+  const reclaimed = await page.evaluate(async (frames) => {
+    for (let frame = 0; frame < frames; frame += 1) {
+      await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+      if (document.activeElement !== document.body) {
+        return (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? "unknown";
+      }
+    }
+    return null;
+  }, 200);
+  expect(reclaimed, "the landing pass took focus back after it had already landed").toBeNull();
   await expectToursCleaned(daemon);
 });
 

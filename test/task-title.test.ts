@@ -21,6 +21,7 @@ process.env.MISSION_HOME = home;
 const bin = mkdtempSync(join(tmpdir(), "fake-claude-"));
 const modeFile = join(bin, "mode");
 const callsFile = join(bin, "calls");
+const releaseFile = join(bin, "release");
 const fake = join(bin, "claude.sh");
 writeFileSync(
   fake,
@@ -32,6 +33,10 @@ echo x >> ${callsFile}
 # on the other. As an argument the payload reaches stdout byte for byte.
 case "$(cat ${modeFile} 2>/dev/null)" in
   crash) echo "boom" >&2; exit 1 ;;
+  hang)
+    while [ ! -f ${releaseFile} ]; do sleep 0.01; done
+    printf %s '{"result":"\`\`\`json\\n{\\"title\\":\\"Fix flaky worktree cleanup\\"}\\n\`\`\`"}'
+    ;;
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp
   # onto the card, which would leave it blank.
   blank) printf %s '{"result":"{\\"title\\":\\"   \\"}"}' ;;
@@ -42,7 +47,7 @@ esac
 `,
 );
 chmodSync(fake, 0o755);
-const setMode = (m: "good" | "crash" | "blank"): void => writeFileSync(modeFile, m);
+const setMode = (m: "good" | "crash" | "blank" | "hang"): void => writeFileSync(modeFile, m);
 const callCount = (): number =>
   existsSync(callsFile) ? readFileSync(callsFile, "utf8").split("\n").filter(Boolean).length : 0;
 setMode("good");
@@ -208,21 +213,22 @@ test("dispatching while titling is in flight uses the model's title, not the heu
  * So this asserts on the ordering, not on the outcome.
  */
 test("an untitled dispatch launches before the model has named it", async () => {
-  setMode("good");
+  rmSync(releaseFile, { force: true });
+  setMode("hang");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
 
   // Stand in for the real dispatch, which would shell out to git against a repo that does not
-  // exist. Records WHEN it was reached and under which title.
+  // exist. Records whether it was reached and under which title.
   let titleAtDispatch: string | undefined;
-  let dispatchedAt = 0;
+  let dispatched = false;
   const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
   inner.dispatcher.dispatch = async (id) => {
     titleAtDispatch = registry.getTask(id)?.title;
-    dispatchedAt = Date.now();
+    dispatched = true;
   };
 
-  const started = Date.now();
+  const before = callCount();
   const t = tasks.create({
     repoRoot: "/repo",
     intent: "hey, could you please look at the flaky worktree cleanup on Reset?",
@@ -232,23 +238,23 @@ test("an untitled dispatch launches before the model has named it", async () => 
     backlog: false,
   });
 
-  await until(() => dispatchedAt > 0, "the launch to start");
-
-  // The load-bearing claim: the agent was launched under the HEURISTIC title, which means it
-  // was not waiting on the model. The fake still takes a real subprocess to answer, so a
-  // launch that had waited could not have landed this early.
-  assert.match(
-    titleAtDispatch ?? "",
-    /^Hey, Could You Please/,
-    "the launch must not have waited for the model's title",
-  );
-  assert.ok(
-    dispatchedAt - started < 100,
-    `the launch waited ${dispatchedAt - started}ms - it must not sit behind the titling call`,
-  );
+  try {
+    // The provider has started but cannot answer until this assertion releases it. This pins
+    // the ordering directly instead of inferring it from wall-clock latency on a busy runner.
+    await until(() => callCount() >= before + 1, "the blocked title call to start");
+    assert.equal(dispatched, true, "the launch must not wait for the model's title");
+    assert.match(
+      titleAtDispatch ?? "",
+      /^Hey, Could You Please/,
+      "the launch must use the heuristic title while the model is still answering",
+    );
+  } finally {
+    writeFileSync(releaseFile, "release");
+  }
 
   // And the model's title still lands on the card afterwards, so nothing was traded away.
   await until(() => tasks.get(t.id)?.title === "Fix flaky worktree cleanup", "the model's title");
+  setMode("good");
 });
 
 test("a launch whose model never answers keeps its heuristic name and still runs", async () => {

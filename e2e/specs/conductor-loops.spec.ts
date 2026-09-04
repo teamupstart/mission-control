@@ -517,8 +517,7 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   await expect(detail.getByRole("button", { name: "Comments" })).toContainText("(1)");
   await detail.getByRole("button", { name: "Comment mode" }).click();
   const preview = detail.frameLocator('iframe[title="Preview of pipeline-change.html"]');
-  await preview.getByText("Draft target").hover();
-  await preview.getByRole("button", { name: "Comment on line 2" }).click();
+  await preview.getByText("Draft target").click();
   const activeComposer = detail.getByRole("textbox", { name: "Comment on line 2" });
   await expect(activeComposer).toBeVisible();
   await shoot(dashboard, "10-managed-workspace-files", detail);

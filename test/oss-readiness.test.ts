@@ -47,7 +47,14 @@ test("public entry-point documentation has no legacy internal-only notice", () =
 
   assert.match(repoFile("README.md"), /Apache License 2\.0/);
   assert.match(repoFile("CONTRIBUTING.md"), /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
-  assert.match(repoFile("SECURITY.md"), /security\/advisories\/new/);
   assert.match(repoFile("SECURITY.md"), /upstart\.com\/lenders\/regulatory-compliance\/vulnerability-reporting/);
+  assert.doesNotMatch(
+    [
+      repoFile("SECURITY.md"),
+      repoFile(".github/ISSUE_TEMPLATE/bug_report.md"),
+      repoFile(".github/ISSUE_TEMPLATE/config.yml"),
+    ].join("\n"),
+    /github\.com\/teamupstart\/mission-control\/security\/advisories\/new/u,
+  );
   assert.match(repoFile("README.md"), /@anthropic-ai\/claude-agent-sdk/);
 });

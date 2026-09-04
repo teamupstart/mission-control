@@ -11,13 +11,13 @@ latest release before reporting it when you can do so safely.
 
 ## Reporting a vulnerability
 
-Do not open a public issue or discussion for a suspected vulnerability. Use GitHub's
-[private vulnerability reporting form](https://github.com/teamupstart/mission-control/security/advisories/new)
-so details remain visible only to repository maintainers and the reporter.
+Do not open a public issue or discussion for a suspected vulnerability. Use Upstart's
+[vulnerability reporting form](https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/)
+so the report reaches the security team through a private channel.
 
-If the GitHub form is not available, use Upstart's
-[vulnerability reporting form](https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/).
-Do not include vulnerability details in a public issue while requesting access to either route.
+Maintainers intend to switch this policy to GitHub private vulnerability reporting after that
+repository feature is enabled and its reporting form has been verified. Do not publish an
+unverified reporting link or include vulnerability details in a public issue.
 
 Include:
 

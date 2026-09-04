@@ -7,10 +7,8 @@ assignees: ""
 ---
 
 > [!IMPORTANT]
-> Do not report security vulnerabilities here. Use the
-> [private vulnerability reporting form](https://github.com/teamupstart/mission-control/security/advisories/new),
-> or Upstart's [vulnerability reporting form](https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/)
-> if the GitHub form is unavailable.
+> Do not report security vulnerabilities here. Use Upstart's
+> [vulnerability reporting form](https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/).
 
 ## Summary
 

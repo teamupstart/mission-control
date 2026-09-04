@@ -409,6 +409,94 @@ setInterval(() => {}, 1000);
   }
 });
 
+test("a clone whose killed build never exited is refused to the next build", async (t) => {
+  // Settling on a bound instead of on `close` is what makes this necessary: `close` is the only
+  // proof every descendant let go of the output pipes, and so of the clone. Until it arrives,
+  // starting another build would run `git checkout --force` and `npm ci` in a directory the
+  // dying group may still be writing to.
+  const clone = fakeClone(`
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  detached: true,
+  stdio: "inherit",
+});
+escaped.unref();
+writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
+setInterval(() => {}, 1000);
+`);
+  const pidFile = join(clone, "escaped.pid");
+  process.env.MISSION_TEST_PID_FILE = pidFile;
+  let escaped: number | null = null;
+  t.after(() => {
+    delete process.env.MISSION_TEST_PID_FILE;
+    // Whatever the LAST run left behind, not the pid captured mid-test: every run of this fake
+    // build escapes a descendant, and one left alive holds the pipes and the event loop with it.
+    const leaked = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : null;
+    for (const pid of new Set([escaped, leaked].filter((value): value is number => value !== null))) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    rmSync(clone, { recursive: true, force: true });
+  });
+
+  const logged: string[] = [];
+  const first = await stageUpdateBuild({
+    node: process.execPath,
+    sourceClone: clone,
+    targetTag: "v1.7.0",
+    signal: new AbortController().signal,
+    onStage: () => {},
+    log: (line) => logged.push(line),
+    timeoutMs: 200,
+    exitTimeoutMs: 300,
+  });
+  assert.equal(first.ok, false);
+  escaped = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : null;
+  assert.ok(escaped, "the fake build should have recorded the descendant that escaped");
+
+  // The descendant still holds the pipes, so `close` has not arrived and the clone is not free.
+  const second = await stageUpdateBuild({
+    node: process.execPath,
+    sourceClone: clone,
+    targetTag: "v1.7.0",
+    signal: new AbortController().signal,
+    onStage: () => {},
+    log: (line) => logged.push(line),
+    timeoutMs: 200,
+    exitTimeoutMs: 300,
+  });
+  assert.equal(second.ok, false);
+  if (!second.ok) {
+    assert.equal(second.reason, "failed");
+    assert.match(second.message, /has not finished shutting down/);
+  }
+  assert.ok(
+    logged.some((line) => line.includes("refusing to start another one over it")),
+    logged.join(" | "),
+  );
+
+  // Once it finally lets go, the clone is usable again.
+  process.kill(escaped!, "SIGKILL");
+  escaped = null;
+  const third = await stageUpdateBuild({
+    node: process.execPath,
+    sourceClone: clone,
+    targetTag: "v1.7.0",
+    signal: new AbortController().signal,
+    onStage: () => {},
+    log: () => {},
+    timeoutMs: 200,
+    exitTimeoutMs: 300,
+  });
+  // It ran this time - and timed out on its own terms, which is a different refusal.
+  assert.equal(third.ok, false);
+  if (!third.ok) assert.match(third.message, /did not finish within/);
+});
+
 test("a build that outruns its limit is stopped and says so", async () => {
   const clone = fakeClone(`setInterval(() => {}, 1000);`);
   try {

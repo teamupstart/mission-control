@@ -142,7 +142,10 @@ process group is actually gone. Both that wait and the 45-minute build timeout a
 same way, because the signal that the group is gone is the child's `close` and a descendant that
 escaped the group - or one stuck in uninterruptible I/O - can hold the output pipes open
 indefinitely. When that happens the update settles anyway, says the shutdown was uncertain, and
-writes it to the log; a cancel that never returns would be worse than one that reports late. When the
+writes it to the log; a cancel that never returns would be worse than one that reports late. The
+clone stays off limits until `close` finally arrives, though - the next preparation waits for it
+and refuses rather than running `git checkout --force` and `npm ci` in a directory a dying build
+may still be writing to. When the
 new version is built and verified the banner reads **ready to install** and offers **Restart and
 Install**, which is the only part of an update that needs the app gone. That part takes seconds.
 
@@ -165,10 +168,14 @@ built. A bundle that is missing, a different version, or the same version rebuil
 the banner with a retry, before anything quits.
 
 The revision is read by the install script at the instant it verifies the bundle and reported with
-the staged marker, not by the app afterwards: between the script's exit and the app's next look,
+the staged marker, never by the app afterward: between the script's exit and the app's next look,
 anything rebuilding that clone would leave a replacement to pin, and a pin taken from an unverified
 build would pass every later check. A clone whose script predates the field reports no revision, and
-the app then reads it itself and carries that gap knowingly.
+rather than inventing one after the fact the whole install goes to the detached helper - the
+pre-staging path, with no progress bar and no claim about a bundle nobody checked. A build whose
+identity does not match what was verified never reaches **ready** either: it is a retryable error at
+the end of the build, because promising a restart and refusing it afterwards spends the same minutes
+twice.
 
 That check cannot be the last one either, because the swap happens in another process up to two
 minutes later - the helper waits for the app to exit first - and a rebuild can land in that window.

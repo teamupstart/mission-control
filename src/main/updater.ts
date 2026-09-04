@@ -784,13 +784,25 @@ export class UpdateController {
           },
         });
         if (outcome.ok) {
+          // A build this app cannot pin is not staged at all.
+          //
+          // The pin has to come from the install script, which reads it in the same breath as
+          // it verifies the bundle. Reading it here instead - after that process has exited -
+          // would pin whatever is on disk by now, and anything that rebuilt the shared clone in
+          // between would be pinned and installed as though it had been verified. A clone whose
+          // script predates the field cannot answer, so rather than inventing a pin, the whole
+          // install goes to the detached helper: no progress bar, and no claim about a bundle
+          // nobody checked.
+          if (outcome.staged.revision === null) {
+            this.port.log(
+              "the installed version's install script reports no bundle identity; handing the whole install to the detached helper rather than pinning one after the fact",
+            );
+            return await this.handOff(offer, null);
+          }
           // Whatever the install script saw at the instant it verified this bundle, not
-          // whatever is there now: between its exit and this line, anything that rebuilds the
-          // shared clone would leave a replacement to pin, and a pin taken from an unverified
-          // build passes every later check. Reading it here is the fallback for a clone whose
-          // script predates the field, and it carries that gap knowingly.
+          // whatever is there now.
           const disk = this.identify(outcome.staged.bundlePath);
-          const pinned = outcome.staged.revision ?? disk.revision;
+          const pinned = outcome.staged.revision;
           // Settled HERE rather than at the restart. A build that cannot be pinned, or that
           // has already been replaced, is not something to call ready: the person would spend
           // the minutes, be told it is ready, press Restart and Install, and only then be sent

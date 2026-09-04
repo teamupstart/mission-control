@@ -51,6 +51,22 @@ export function updateChildEnvironment(
   return { ...current, PATH: path };
 }
 
+/**
+ * Clones whose last build was killed without ever being seen to exit.
+ *
+ * Settling on a bound rather than on `close` is what makes this necessary: `close` is the only
+ * proof that every descendant let go of the output pipes, and therefore of the clone, so when
+ * the bound wins instead the group may still be writing in there. The promise here resolves if
+ * and when `close` finally arrives, and the next build for that clone waits on it - because the
+ * first thing a build does is `git checkout --force` and `npm ci` in exactly that directory.
+ *
+ * Keyed by clone, module-scoped, and deliberately in memory only: it exists to stop THIS app
+ * from starting a second build over a dying one. A fresh app after a quit has no dying build of
+ * its own, and the install script's own guards - a dirty checkout fails the build, and the
+ * packaged version is verified against the source tree - are what stand behind that case.
+ */
+const unsettledBuilds = new Map<string, Promise<void>>();
+
 export interface StagedBuild {
   version: string;
   bundlePath: string;
@@ -118,7 +134,32 @@ export function stagingUnsupported(output: string): boolean {
  * failures are only ever diagnosable from their own words. Only the two marker lines mean
  * anything structurally.
  */
-export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
+export async function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
+  const unsettled = unsettledBuilds.get(request.sourceClone);
+  if (unsettled) {
+    const waited = await Promise.race([
+      unsettled.then(() => true),
+      new Promise<false>((resolve) => {
+        const timer = setTimeout(() => resolve(false), request.exitTimeoutMs ?? CANCEL_EXIT_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (!waited) {
+      request.log(
+        "a previous build of this clone was killed and has still not exited; refusing to start another one over it",
+      );
+      return {
+        ok: false,
+        reason: "failed",
+        message:
+          "The previous update build has not finished shutting down yet. Try again in a moment.",
+      };
+    }
+  }
+  return runStagedBuild(request);
+}
+
+function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
   const script = stageScriptPath(request.sourceClone);
   const timeoutMs = request.timeoutMs ?? STAGE_TIMEOUT_MS;
   const exitTimeoutMs = request.exitTimeoutMs ?? CANCEL_EXIT_TIMEOUT_MS;
@@ -205,6 +246,19 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
         request.log(
           `the build did not exit within ${Math.round(exitTimeoutMs / 1000)} seconds of being killed; something in its process group is still holding on`,
         );
+        // Settle, so nothing is left hanging - but leave the clone marked. `close` is the only
+        // proof the group let go of it, and until that arrives the next build must not check
+        // out and reinstall in the same directory.
+        const closed = new Promise<void>((resolve) => {
+          child?.once("close", () => resolve());
+        });
+        unsettledBuilds.set(request.sourceClone, closed);
+        void closed.then(() => {
+          if (unsettledBuilds.get(request.sourceClone) === closed) {
+            unsettledBuilds.delete(request.sourceClone);
+            request.log("the previously killed build has finally exited; its clone is free again");
+          }
+        });
         settle(uncertain());
       }, exitTimeoutMs);
       exitTimer.unref?.();

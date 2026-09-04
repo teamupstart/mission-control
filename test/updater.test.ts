@@ -118,13 +118,15 @@ function fixture(over: Partial<UpdaterPort> = {}) {
         staged: {
           version: "1.2.4",
           bundlePath: STAGED_BUNDLE,
-          // Wrapped like the real thing: the install script reads this, so a disk this app
-          // cannot stat leaves the marker without a revision rather than failing the build.
+          // The script reads this while it still holds the bundle it just built, so it
+          // reports an identity even when THIS app cannot stat the path afterwards - that
+          // split is the situation `install()` and the ready-time check exist for. A test
+          // that wants an install script too old to report one overrides `stage` itself.
           revision: (() => {
             try {
-              return identity(STAGED_BUNDLE).revision;
+              return identity(STAGED_BUNDLE).revision ?? "staged-1";
             } catch {
-              return null;
+              return "staged-1";
             }
           })(),
         },
@@ -1166,10 +1168,12 @@ test("a build replaced before it could be pinned is refused, and never called re
   f.controller.stop();
 });
 
-test("an older script that reports no revision still stages, pinned by a later read", async () => {
-  // A clone checked out at a ref older than this app has a script that predates the field.
-  // The pin is then whatever this app can read, which carries the gap knowingly rather than
-  // refusing an update outright.
+test("a build this app cannot pin is not staged at all, it is handed over whole", async () => {
+  // A clone checked out at a ref older than this app has a script that predates the identity
+  // field, so it reports no revision. Reading one here instead - after that process exited -
+  // would pin whatever is on disk by now, which is the very race the pin exists to close. So
+  // the whole install goes to the detached helper: no progress bar, and no claim about a
+  // bundle nobody checked.
   const f = fixture({
     stage: async () => ({
       ok: true,
@@ -1178,9 +1182,19 @@ test("an older script that reports no revision still stages, pinned by a later r
   });
   await f.controller.start();
   await f.controller.check(true);
+
   assert.equal(await f.controller.apply(), true);
-  assert.equal(await f.controller.install(), true);
-  assert.equal(f.handoffs[0]?.stagedRevision, "staged-1");
+  assert.equal(f.controller.getSnapshot().phase, "applying");
+  // Handed over with no bundle and no pin, which is the pre-staging path.
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]?.stagedBundle, null);
+  assert.equal(f.handoffs[0]?.stagedRevision, null);
+  assert.ok(
+    f.events.some((event) => event.startsWith("log:the installed version's install script reports no bundle identity")),
+    f.events.join("\n"),
+  );
+  // Never called ready, so nobody was promised a restart into a bundle that was not pinned.
+  assert.deepEqual(f.events.filter((event) => event === "quit"), ["quit"]);
   f.controller.stop();
 });
 

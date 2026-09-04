@@ -36,6 +36,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { createCheckScheduler } = await import("../src/server/workflows/checks.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 
 /** Session → p1 (Persona) and gate (Check) → Join → End, with the usual repair route back. */
@@ -323,6 +324,71 @@ test("the default budget of one runs the command in round 1 and records budget_s
     1,
   );
   assert.equal(store.getRun("run-default")?.currentPhase, "complete");
+});
+
+test("a repair-round gate with a spent budget bypasses occupied command capacity", async () => {
+  // The dashboard symptom this pins: a repair round showed test as Queued behind unrelated
+  // Commands for several minutes, then changed to budget_spent without ever executing. Once
+  // an earlier round has spent this Command's allowance, no scarce execution slot is needed
+  // to decide the next gate, so an occupied slot must not delay the graph.
+  const store = seedSubmission("occupied");
+  const checkSchedule = createCheckScheduler(1);
+  let round = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    checkSchedule,
+    runnerFor: scriptedRunner(() => (++round === 1 ? "fail" : "pass")),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      checkoutSubpath: async () => null,
+      execute: async () => ({
+        kind: "exited" as const,
+        exitCode: 0,
+        output: "42 passing\n",
+        truncatedBytes: 0,
+      }),
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-occupied");
+  await waitFor(() => store.getRun("run-occupied")?.status === "waiting_for_session");
+
+  let releaseCapacity!: () => void;
+  let markOccupied!: () => void;
+  const capacityReleased = new Promise<void>((resolve) => {
+    releaseCapacity = resolve;
+  });
+  const capacityOccupied = new Promise<void>((resolve) => {
+    markOccupied = resolve;
+  });
+  const occupant = checkSchedule(async () => {
+    markOccupied();
+    await capacityReleased;
+  });
+  await capacityOccupied;
+
+  const second = repairRound(store, "occupied", 2);
+  try {
+    engine.activateSubmission(second);
+    // The immediate Persona is a deterministic event-loop boundary: by the time it settles,
+    // an ungated budget decision has had every microtask it needs. The old behavior leaves
+    // only the Check queued here until capacity is released below.
+    await waitFor(() => store.listAttempts(second).some((item) =>
+      item.nodeId === "p1" && item.state === "completed"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      store.listAttempts(second).find((item) => item.nodeId === "gate")?.state,
+      "completed",
+    );
+    assert.equal(gateOutcome(store, second).status, "budget_spent");
+  } finally {
+    releaseCapacity();
+    await occupant;
+    await engine.stop();
+  }
 });
 
 test("a budget of two runs the command in both rounds", async () => {

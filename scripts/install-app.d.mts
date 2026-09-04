@@ -97,7 +97,18 @@ export function packagedVersionProblem(input: {
   sourceVersion: string;
 }): string | null;
 export function parseArgs(argv: string[]): {
-  options: { ref: string | null; fromOrigin: boolean; dryRun: boolean; appsDir: string };
+  options: {
+    ref: string | null;
+    fromOrigin: boolean;
+    dryRun: boolean;
+    appsDir: string;
+    /** Emit machine-readable stage markers for the app that is watching. */
+    progress: boolean;
+    /** Build and verify, then stop before touching the installed app. */
+    stageOnly: boolean;
+    /** Install this already-built bundle: swap and receipt only. */
+    fromStaged: string | null;
+  };
   help: boolean;
   problem: string | null;
 };

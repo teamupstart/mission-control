@@ -3,6 +3,13 @@
 // directory before launching it, because both the app bundle and updater-owned clone can be
 // rewritten during the update. Its one sibling module is copied into the same directory before
 // launch and imports only node: builtins. Do not add runtime imports after work begins.
+//
+// The app builds the new version before it quits and hands the verified bundle over with
+// `--staged-bundle`, so this helper's work is the part that genuinely needs the app gone: wait
+// for it to exit, swap the bundle in, relaunch. It still accepts a handoff without one, and
+// then builds from the clone itself exactly as before - that is the path a `--ref` install
+// from an older app takes, and it is the reason the timeout below is still measured in
+// three quarters of an hour.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -40,6 +47,16 @@ const PARENT_POLL_MS = 250;
  * hangs are different failures and read differently.
  */
 export const INSTALL_TIMEOUT_MS = 45 * 60 * 1000;
+
+/**
+ * The same bound for an install that only has to swap an already-built bundle.
+ *
+ * Minutes rather than tens of them, because nothing here compiles: the whole run is a copy of
+ * a few hundred megabytes and a receipt. It is not seconds, because the swap may raise an
+ * administrator panel, and a person walking back to their desk to answer it must not find the
+ * update abandoned.
+ */
+export const STAGED_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Where a failed update leaves what it was holding.
@@ -329,7 +346,7 @@ export function rollbackIsNeeded({ installedVersion, backupVersion }) {
 }
 
 export function parseArgs(argv) {
-  const values = {};
+  const values = { stagedBundle: null };
   const names = new Map([
     ["--source-clone", "sourceClone"],
     ["--target-tag", "targetTag"],
@@ -337,7 +354,11 @@ export function parseArgs(argv) {
     ["--parent-pid", "parentPid"],
     ["--state-dir", "stateDirectory"],
     ["--log-path", "logPath"],
+    ["--staged-bundle", "stagedBundle"],
   ]);
+  // The one optional argument, and optional rather than required because a handoff from an app
+  // that predates staging carries no bundle and must still be applied.
+  const optional = new Set(["stagedBundle"]);
   for (let index = 0; index < argv.length; index += 2) {
     const key = names.get(argv[index]);
     const value = argv[index + 1];
@@ -346,19 +367,32 @@ export function parseArgs(argv) {
     }
     values[key] = key === "parentPid" ? Number(value) : value;
   }
-  const missing = [...names.values()].find((name) => values[name] === undefined);
+  const missing = [...names.values()].find(
+    (name) => !optional.has(name) && values[name] === undefined,
+  );
   if (missing || !Number.isInteger(values.parentPid) || values.parentPid < 1) {
     return { args: null, problem: missing ? `missing ${missing}` : "parent pid is invalid" };
   }
   return { args: values, problem: null };
 }
 
+/**
+ * The same rule set as `sanitizeLogLine` in `src/main/update-log.ts`, plus a length cap.
+ *
+ * A deliberate copy, not an oversight: this file is copied to a temp directory with exactly
+ * one sibling module before it outlives the app bundle, so it cannot import that one.
+ * `test/update-log.test.ts` asserts both produce identical output, which is what keeps a copy
+ * from becoming a divergence - the URL rules were added to both in the same change, after a
+ * review found that a registry or git URL reached the log in full.
+ */
 export function sanitizeDiagnostic(value) {
   return String(value)
     .replace(/Authorization\s*:\s*[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
     .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "<redacted-token>")
     .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
     .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)<>\]]+/gi, "<url>")
+    .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+:[^\s"'`)<>]+/gi, "<url>")
     .replace(/(^|[\s"'(=])\/(?:[^\s"'),]+\/?)+/g, "$1<path>")
     .slice(0, 500);
 }
@@ -401,7 +435,11 @@ function restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops }) {
   ops.move(staged, receiptPath);
 }
 
-export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_MS) {
+export function realApplyOperations(
+  logPath,
+  installTimeoutMs = INSTALL_TIMEOUT_MS,
+  stagedInstallTimeoutMs = STAGED_INSTALL_TIMEOUT_MS,
+) {
   const log = (line) => {
     try {
       appendFileSync(logPath, `${new Date().toISOString()} ${sanitizeDiagnostic(line)}\n`, {
@@ -437,7 +475,7 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
       }
       throw new Error("the app did not quit before the update timeout");
     },
-    install: (node, script, tag, appsDir) => {
+    install: (node, script, tag, appsDir, stagedBundle = null) => {
       // SIGKILL, not the default SIGTERM: this child is the last thing standing between the
       // person and a rollback, and it must be gone before one starts. Its own grandchildren
       // (npm, electron-builder) do outlive it, but they only ever write inside the
@@ -450,18 +488,33 @@ export function realApplyOperations(logPath, installTimeoutMs = INSTALL_TIMEOUT_
       // the operator's real app - the default would have rebuilt into `/Applications` while
       // the backup, the rollback, and the relaunch all still pointed at the receipt's path,
       // leaving the update reported as applied and the running app still on the old version.
-      const result = spawnSync(node, [script, "--ref", tag, "--apps-dir", appsDir], {
-        encoding: "utf8",
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: installTimeoutMs,
-        killSignal: "SIGKILL",
-      });
+      // `--from-staged` selects the same script's swap-and-receipt half. The app already ran
+      // its build half, in front of the person, so this is the only work left.
+      const staged = typeof stagedBundle === "string" && stagedBundle.length > 0;
+      const timeout = staged ? stagedInstallTimeoutMs : installTimeoutMs;
+      const result = spawnSync(
+        node,
+        [
+          script,
+          "--ref",
+          tag,
+          "--apps-dir",
+          appsDir,
+          ...(staged ? ["--from-staged", stagedBundle] : []),
+        ],
+        {
+          encoding: "utf8",
+          maxBuffer: 10 * 1024 * 1024,
+          timeout,
+          killSignal: "SIGKILL",
+        },
+      );
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
       const summary = installFailureSummary(output);
       if (summary) log(summary);
       if (result.error?.code === "ETIMEDOUT") {
         throw new Error(
-          `the build did not finish within ${Math.round(installTimeoutMs / 60_000)} minutes and was stopped`,
+          `the ${staged ? "install" : "build"} did not finish within ${Math.round(timeout / 60_000)} minutes and was stopped`,
         );
       }
       if (result.error) throw result.error;
@@ -636,6 +689,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       join(args.sourceClone, "scripts", "install-app.mjs"),
       args.targetTag,
       dirname(args.appPath),
+      args.stagedBundle ?? null,
     );
     record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
     try {

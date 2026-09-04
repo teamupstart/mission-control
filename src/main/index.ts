@@ -28,6 +28,7 @@ import {
   type UpdateDialogs,
 } from "./updater.ts";
 import type { UpdateSnapshot } from "../shared/update.ts";
+import { UPDATE_COPY } from "../shared/update-copy.ts";
 
 app.setName("Mission Control");
 
@@ -74,7 +75,12 @@ const updateDialogs: UpdateDialogs = {
       cancelId: 1,
       noLink: true,
     });
-    return response.response === 0 ? "apply" : "defer";
+    if (response.response !== 0) return "defer";
+    // The build is about to start, and its progress is drawn in the dashboard. Someone who
+    // accepted from the menu bar with the window hidden would otherwise get no sign at all -
+    // which is the complaint this whole path exists to answer.
+    showWindow(paths.preload);
+    return "apply";
   },
   async upToDate(version) {
     await showNativeMessage({
@@ -84,12 +90,38 @@ const updateDialogs: UpdateDialogs = {
       buttons: ["OK"],
     });
   },
+  // The three phases below take their words from UPDATE_COPY, which the dashboard banner reads
+  // too. Whichever surface a person meets - this dialog with the window hidden, or the banner
+  // with it up - they are told the same thing.
+  async preparing(version, stage) {
+    showWindow(paths.preload);
+    await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: UPDATE_COPY.preparing.title(version),
+      detail: `${stage}. ${UPDATE_COPY.preparing.detail}`,
+      buttons: ["OK"],
+    });
+  },
+  async ready(version) {
+    const response = await showNativeMessage({
+      type: "info",
+      title: "Mission Control update",
+      message: UPDATE_COPY.ready.title(version),
+      detail: UPDATE_COPY.ready.detail,
+      buttons: ["Restart and Install", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return response.response === 0 ? "install" : "defer";
+  },
   async applying(version) {
     await showNativeMessage({
       type: "info",
       title: "Mission Control update",
-      message: `An update to Mission Control ${version} is already in progress`,
-      detail: "Mission Control will relaunch when the update attempt finishes.",
+      message: UPDATE_COPY.applying.title(version),
+      detail: UPDATE_COPY.applying.detail,
       buttons: ["OK"],
     });
   },
@@ -149,6 +181,8 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
   ipcMain.handle("mission:update-apply", () => updateController.apply());
+  ipcMain.handle("mission:update-install", () => updateController.install());
+  ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
 }
 

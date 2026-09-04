@@ -368,7 +368,15 @@ test("the packaged app is verified against the source tree before the swap", () 
 
 test("install arguments parse, and an unknown one stops the install", () => {
   assert.deepEqual(parseArgs(["--dry-run", "--ref", "v1.2.3", "--from-origin"]), {
-    options: { ref: "v1.2.3", fromOrigin: true, dryRun: true, appsDir: "/Applications" },
+    options: {
+      ref: "v1.2.3",
+      fromOrigin: true,
+      dryRun: true,
+      appsDir: "/Applications",
+      progress: false,
+      stageOnly: false,
+      fromStaged: null,
+    },
     help: false,
     problem: null,
   });
@@ -376,6 +384,31 @@ test("install arguments parse, and an unknown one stops the install", () => {
   assert.equal(parseArgs(["--wat"]).problem, "unknown argument: --wat");
   assert.equal(parseArgs(["--help"]).help, true);
   assert.equal(parseArgs(["--apps-dir", "/tmp/apps"]).options.appsDir, "/tmp/apps");
+});
+
+test("the two halves of an update are selected by flags, and never both at once", () => {
+  // The app builds with `--stage-only` while it is still open, and the detached helper
+  // installs that bundle with `--from-staged` after it quits. An older install script has
+  // neither, and says so in the words `stagingUnsupported` looks for.
+  const staged = parseArgs(["--stage-only", "--progress", "--ref", "v1.2.4"]);
+  assert.equal(staged.problem, null);
+  assert.equal(staged.options.stageOnly, true);
+  assert.equal(staged.options.progress, true);
+  assert.equal(staged.options.fromStaged, null);
+
+  const install = parseArgs(["--from-staged", "/state/app-src/release/mac-arm64/Mission Control.app"]);
+  assert.equal(install.problem, null);
+  assert.equal(
+    install.options.fromStaged,
+    "/state/app-src/release/mac-arm64/Mission Control.app",
+  );
+  assert.equal(install.options.stageOnly, false);
+
+  assert.equal(parseArgs(["--from-staged"]).problem, "--from-staged needs a value");
+  assert.equal(
+    parseArgs(["--stage-only", "--from-staged", "/tmp/a.app"]).problem,
+    "--stage-only and --from-staged cannot be combined",
+  );
 });
 
 test("a missing install directory stops the install before the copy invents one", () => {

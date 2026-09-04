@@ -382,7 +382,9 @@ make install
 That builds Mission Control in a clone only the updater ever touches, verifies the packaged
 version, and installs `/Applications/Mission Control.app` - a menu-bar app that supervises the
 daemon and delivers alerts with the window closed. From then on it checks for new releases on
-its own and offers them in the app. Prerequisites, checked before anything long-running starts:
+its own and offers them in the app: accepting one builds the new version while Mission Control
+keeps running, with a progress bar and a Cancel, and only asks to restart once it is built and
+verified. Prerequisites, checked before anything long-running starts:
 an Apple Silicon Mac, Node.js 24 or newer, `git`, an authenticated `gh` (`gh auth login`), and
 the Xcode command line tools (`xcode-select --install`). See
 [Desktop app](docs/overview.md#desktop-app-macos) for what each step does, `--ref`, and the

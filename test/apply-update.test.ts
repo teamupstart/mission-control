@@ -16,6 +16,7 @@ import {
   releaseHelperLock,
   stagingEntryName,
   INSTALL_TIMEOUT_MS,
+  STAGED_INSTALL_TIMEOUT_MS,
   installFailureSummary,
   parseArgs,
   processIsAlive,
@@ -132,8 +133,14 @@ function operations(
       actions.push(`wait:${pid}`);
       if (options.waitFails) throw new Error("the app did not quit before the update timeout");
     },
-    install: (node: string, script: string, tag: string, appsDir: string) => {
-      actions.push(`install:${node}:${script}:${tag}:${appsDir}`);
+    install: (
+      node: string,
+      script: string,
+      tag: string,
+      appsDir: string,
+      stagedBundle: string | null = null,
+    ) => {
+      actions.push(`install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}`);
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
     },
     restoreApp: (backupApp: string, appPath: string, pid: number) => {
@@ -199,7 +206,7 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
-        action.endsWith("/scripts/install-app.mjs:v1.2.4:/Applications"),
+        action.endsWith("/scripts/install-app.mjs:v1.2.4:/Applications:staged=none"),
     ),
   );
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
@@ -224,7 +231,7 @@ test("the rebuild targets the directory the receipt names, not /Applications by 
   assert.ok(
     f.actions.some((action) =>
       action.endsWith(
-        "/scripts/install-app.mjs:v1.2.4:/Users/someone/phase4-sandbox/Applications",
+        "/scripts/install-app.mjs:v1.2.4:/Users/someone/phase4-sandbox/Applications:staged=none",
       ),
     ),
     `no install action carried the receipt's apps dir: ${f.actions.join(", ")}`,
@@ -283,6 +290,9 @@ test("helper argv is explicit and complete", () => {
     ]),
     {
       args: {
+        // The one optional argument, absent: a handoff from an app that predates staging
+        // carries no bundle and still has to be applied.
+        stagedBundle: null,
         sourceClone: "/clone",
         targetTag: "v1.2.4",
         appPath: "/Applications/Mission Control.app",
@@ -302,6 +312,14 @@ test("helper diagnostics redact absolute paths including file URLs", () => {
   );
   assert.doesNotMatch(diagnostic, /\/Users\/person|\/private\/tmp|hush/);
   assert.match(diagnostic, /<path>/);
+  // A remote URL is redacted too, in a registry line and in either spelling of a git remote.
+  // This message is written to update.log AND carried into the outcome a person reads, so a
+  // private registry host or an embedded credential must not survive either trip.
+  const remote = sanitizeDiagnostic(
+    "npm error request to https://deploy:hunter2@registry.internal.example.dev/lodash failed; remote: git@github.com:org/repo.git",
+  );
+  assert.doesNotMatch(remote, /hunter2|registry\.internal\.example\.dev|github\.com/);
+  assert.match(remote, /npm error request to <url> failed; remote: <url>/);
 });
 
 test("a failed install surfaces the decisive child-process tail", async (t) => {
@@ -995,4 +1013,76 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
 
   releaseHelperLock(directory, third.entryName!, ops);
   assert.deepEqual(await readdir(directory), []);
+});
+
+
+test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", async (t) => {
+  // The app now builds before it quits, so the work left here is the swap. What proves it is
+  // the argument reaching the install script: `--from-staged` selects its swap-and-receipt
+  // half, and the minutes of `npm ci` never happen in the dark.
+  const state = await mkdtemp(join(tmpdir(), "mission-apply-staged-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await writeFile(join(state, "install-receipt.json"), "old receipt");
+  const bundle = "/state/app-src/release/mac-arm64/Mission Control.app";
+  const f = operations();
+
+  const result = await runApplyUpdate({ ...args(state), stagedBundle: bundle }, f.ops);
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+
+  assert.deepEqual(result, { ok: true, message: null });
+  assert.equal(outcome.result, "success");
+  assert.ok(
+    f.actions.some(
+      (action) =>
+        action.startsWith(`install:${process.execPath}:`) &&
+        action.endsWith(`/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}`),
+    ),
+    f.actions.join("\n"),
+  );
+  // Everything the helper protects is unchanged by staging: the wait, the backup, the lock,
+  // and the relaunch by exact path.
+  assert.ok(f.actions.includes("wait:42"));
+  assert.ok(f.actions.some((action) => action.includes("previous-app.bundle")));
+  assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
+});
+
+test("a staged install is bounded in minutes and forwards the bundle to the install script", async (t) => {
+  // Asserted against realApplyOperations, because both the flag and the shorter bound live
+  // inside the real spawnSync call and no injected `install` can see either.
+  const root = await mkdtemp(join(tmpdir(), "mission-apply-staged-args-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const echo = join(root, "echo-args.mjs");
+  await writeFile(
+    echo,
+    "import { writeFileSync } from 'node:fs';\n" +
+      "writeFileSync(process.env.MISSION_TEST_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n",
+  );
+  const argsFile = join(root, "args.json");
+  process.env.MISSION_TEST_ARGS_FILE = argsFile;
+  t.after(() => {
+    delete process.env.MISSION_TEST_ARGS_FILE;
+  });
+  const bundle = join(root, "Mission Control.app");
+
+  const ops = realApplyOperations(join(root, "update.log"), 5_000, 5_000);
+  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle);
+  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+    "--ref",
+    "v1.2.4",
+    "--apps-dir",
+    "/Applications",
+    "--from-staged",
+    bundle,
+  ]);
+
+  const wedged = join(root, "wedged.mjs");
+  await writeFile(wedged, "setTimeout(() => {}, 60_000);\n");
+  const bounded = realApplyOperations(join(root, "update.log"), 60_000, 300);
+  assert.throws(
+    () => bounded.install(process.execPath, wedged, "v1.2.4", "/Applications", bundle),
+    // "install", not "build": there is nothing to build by this point, and the words a person
+    // reads should say which half of the update stopped.
+    /the install did not finish within .* minutes and was stopped/,
+  );
+  assert.equal(STAGED_INSTALL_TIMEOUT_MS, 10 * 60 * 1000);
 });

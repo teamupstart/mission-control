@@ -7,11 +7,24 @@
 // so the updater stays off for a work-in-progress build.
 //
 // Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-origin] [--dry-run]
-//                                     [--apps-dir <dir>]
-//   --ref <git-ref>   install that ref instead of the newest stable release
-//   --from-origin     install this checkout's own origin rather than the canonical repository
-//   --dry-run         print what each step would do, change nothing
-//   --apps-dir <dir>  install into <dir> instead of /Applications (verification aid)
+//                                     [--apps-dir <dir>] [--progress]
+//                                     [--stage-only | --from-staged <bundle>]
+//   --ref <git-ref>       install that ref instead of the newest stable release
+//   --from-origin         install this checkout's own origin rather than the canonical repository
+//   --dry-run             print what each step would do, change nothing
+//   --apps-dir <dir>      install into <dir> instead of /Applications (verification aid)
+//   --progress            also emit machine-readable stage markers for the app to render
+//   --stage-only          build and verify, then stop before touching the installed app
+//   --from-staged <path>  install an already-staged bundle: swap and receipt only
+//
+// ## Why the run splits in two
+//
+// Steps 1 to 7 touch nothing but the updater-owned clone; only the swap and the receipt need
+// the installed app gone. The app updating itself runs `--stage-only` while it is still open,
+// so the minutes of fetching and building happen in front of a person with a progress bar,
+// and then hands `--from-staged` to the detached helper for the seconds that need the quit.
+// A plain `make install` still runs the whole thing in one pass, which is why neither flag
+// changes what any step does - they only choose which steps run.
 //
 // Idempotent by construction: every step detects its own completion, so re-running with the
 // same ref changes nothing except rebuilding.
@@ -61,6 +74,10 @@ import {
   swapAppBundle,
 } from "./app-bundle-swap.mjs";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
+import {
+  UPDATE_PROGRESS_MARKER,
+  UPDATE_STAGED_MARKER,
+} from "../src/shared/update-stages.mjs";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
@@ -416,29 +433,50 @@ export function packagedVersionProblem({ packagedVersion, sourceVersion }) {
 // CLI
 // ---------------------------------------------------------------------------------------
 
-const USAGE = `Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-origin] [--dry-run] [--apps-dir <dir>]
+const USAGE = `Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-origin] [--dry-run]
+                                    [--apps-dir <dir>] [--progress]
+                                    [--stage-only | --from-staged <bundle>]
 
-  --ref <git-ref>   install that ref instead of the newest stable release
-  --from-origin     install this checkout's own origin rather than ${CANONICAL_REPO}
-  --dry-run         print what each step would do, change nothing
-  --apps-dir <dir>  install into <dir> instead of ${DEFAULT_APPS_DIR}`;
+  --ref <git-ref>       install that ref instead of the newest stable release
+  --from-origin         install this checkout's own origin rather than ${CANONICAL_REPO}
+  --dry-run             print what each step would do, change nothing
+  --apps-dir <dir>      install into <dir> instead of ${DEFAULT_APPS_DIR}
+  --progress            emit machine-readable stage markers alongside the human output
+  --stage-only          build and verify, then stop before touching the installed app
+  --from-staged <path>  install an already-staged bundle: swap and receipt only`;
 
 export function parseArgs(argv) {
-  const options = { ref: null, fromOrigin: false, dryRun: false, appsDir: DEFAULT_APPS_DIR };
+  const options = {
+    ref: null,
+    fromOrigin: false,
+    dryRun: false,
+    appsDir: DEFAULT_APPS_DIR,
+    progress: false,
+    stageOnly: false,
+    fromStaged: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--from-origin") options.fromOrigin = true;
+    else if (arg === "--progress") options.progress = true;
+    else if (arg === "--stage-only") options.stageOnly = true;
     else if (arg === "--help" || arg === "-h") return { options, help: true, problem: null };
-    else if (arg === "--ref" || arg === "--apps-dir") {
+    else if (arg === "--ref" || arg === "--apps-dir" || arg === "--from-staged") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) {
         return { options, help: false, problem: `${arg} needs a value` };
       }
       if (arg === "--ref") options.ref = value;
+      else if (arg === "--from-staged") options.fromStaged = resolve(value);
       else options.appsDir = resolve(value);
       i += 1;
     } else return { options, help: false, problem: `unknown argument: ${arg}` };
+  }
+  // Mutually exclusive by construction: one asks for everything before the swap and the other
+  // for the swap alone, so a run carrying both has no meaning to fall back to.
+  if (options.stageOnly && options.fromStaged) {
+    return { options, help: false, problem: "--stage-only and --from-staged cannot be combined" };
   }
   return { options, help: false, problem: null };
 }
@@ -467,27 +505,13 @@ function capture(command, args, opts = {}) {
   };
 }
 
-function installApp(options) {
-  const { dryRun } = options;
-  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-  /** Run a command for real, unless --dry-run, in which case just print it. */
-  const run = (command, args, opts = {}) => {
-    if (dryRun) {
-      doing(`[dry-run] ${command} ${args.join(" ")}`);
-      return;
-    }
-    try {
-      execFileSync(command, args, { stdio: "inherit", ...opts });
-    } catch (err) {
-      fail(`\`${command} ${args.join(" ")}\` failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  console.log(`\x1b[1mMission Control · install\x1b[0m${dryRun ? "  (dry-run)" : ""}`);
-
-  // 1. Prerequisites ---------------------------------------------------------------------
-  heading("Prerequisites");
+/**
+ * Steps 1 and 2 of the printed run, and why they are their own function: a staged install
+ * runs them too, and needs the same words for them, while having nothing to ask of the tools
+ * only a build uses. `needsBuildTools` is that difference - installing a bundle that is
+ * already built must not fail because a `gh` credential lapsed after it was built.
+ */
+function checkPrerequisites({ needsBuildTools }) {
   const nodeProblem = nodePrerequisiteMessage(process.versions.node);
   if (nodeProblem) fail(nodeProblem);
   ok(`Node.js ${process.versions.node}`);
@@ -500,8 +524,10 @@ function installApp(options) {
   if (gitProblem) fail(gitProblem);
   ok("git available");
 
-  // Asked here rather than discovered in step 6, where node-gyp's own text is buried in the
-  // package output and `run()` reports only "`npm run package` failed".
+  if (!needsBuildTools) return;
+
+  // Asked here rather than discovered in the build step, where node-gyp's own text is buried
+  // in the package output and `run()` reports only "`npm run package` failed".
   const xcodeProblem = xcodeToolsPrerequisiteMessage({
     platform: process.platform,
     installed: capture("xcode-select", ["-p"]).status === 0,
@@ -517,6 +543,110 @@ function installApp(options) {
   });
   if (ghProblem) fail(ghProblem);
   ok("gh authenticated");
+}
+
+/**
+ * The two steps that need the installed app gone: put the bundle in place, then record what
+ * was installed. One owner, called by a whole run and by a staged install alike, because the
+ * receipt an update writes and the receipt a fresh install writes have to be one receipt.
+ */
+function swapAndRecord({
+  dryRun,
+  bundle,
+  appsDir,
+  repo,
+  ref,
+  source,
+  clone,
+  sourceVersion,
+  progress,
+}) {
+  progress("install");
+  heading("Install");
+  const appPath = join(appsDir, APP_BUNDLE_NAME);
+  const appsDirIssue = appsDirProblem({
+    appsDir,
+    exists: existsSync(appsDir),
+    isDirectory: existsSync(appsDir) && statSync(appsDir).isDirectory(),
+  });
+  if (appsDirIssue) fail(appsDirIssue);
+  if (dryRun) {
+    doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
+  } else {
+    const swap = replaceAppBundle({
+      sourceBundle: bundle,
+      appPath,
+      appsDir,
+      pid: process.pid,
+    });
+    if (swap.problem) fail(swap.problem);
+    for (const stray of swap.stranded) {
+      // A bundle displaced by an earlier privileged install, which this account can rename but
+      // not delete. Naming it is the only way anyone reclaims the space, and it is a hidden
+      // sibling that Finder does not show.
+      warning(`${stray} is owned by another account and could not be removed; delete it with an administrator account`);
+    }
+    ok(`installed ${appPath}${swap.elevated ? " with administrator authorization" : ""}`);
+  }
+
+  progress("receipt");
+  heading("Receipt");
+  if (dryRun) {
+    doing(`[dry-run] would write ${receiptPath()}`);
+  } else {
+    const written = writeReceipt({
+      schema: 1,
+      repo,
+      releaseTag: receiptReleaseTag({ ref, source }),
+      installedVersion: sourceVersion,
+      sourceClone: clone,
+      appPath,
+      installedAt: new Date().toISOString(),
+    });
+    ok(`wrote ${written}`);
+  }
+  return appPath;
+}
+
+function installApp(options) {
+  const { dryRun } = options;
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  // Which half of the run this is. A staged bundle already exists, so everything up to and
+  // including the build has happened and only the swap and the receipt are left.
+  const stagedBundle = options.fromStaged;
+  const swapOnly = stagedBundle !== null;
+  /**
+   * The one machine-readable channel out of this script.
+   *
+   * Off unless asked for, because the human output is the product for `make install` and a
+   * marker line in it is noise. On, it is what draws the app's own progress bar - and it is a
+   * plain prefixed line rather than JSON because npm and electron-builder own most of this
+   * stream, and a reader should be able to ignore ours at a glance.
+   */
+  const progress = (stage) => {
+    if (options.progress) console.log(`${UPDATE_PROGRESS_MARKER} ${stage}`);
+  };
+
+  /** Run a command for real, unless --dry-run, in which case just print it. */
+  const run = (command, args, opts = {}) => {
+    if (dryRun) {
+      doing(`[dry-run] ${command} ${args.join(" ")}`);
+      return;
+    }
+    try {
+      execFileSync(command, args, { stdio: "inherit", ...opts });
+    } catch (err) {
+      fail(`\`${command} ${args.join(" ")}\` failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const mode = options.stageOnly ? "  (stage only)" : swapOnly ? "  (staged bundle)" : "";
+  console.log(`\x1b[1mMission Control · install\x1b[0m${mode}${dryRun ? "  (dry-run)" : ""}`);
+
+  // 1. Prerequisites ---------------------------------------------------------------------
+  progress("prerequisites");
+  heading("Prerequisites");
+  checkPrerequisites({ needsBuildTools: !swapOnly });
 
   // 2. Repository to install -------------------------------------------------------------
   heading("Repository");
@@ -530,9 +660,55 @@ function installApp(options) {
   if (repoProblem) fail(repoProblem);
   ok(repo === CANONICAL_REPO ? `${repo} (canonical)` : `${repo} (--from-origin)`);
 
-  // 3. Updater-owned clone ---------------------------------------------------------------
-  heading("Updater-owned clone");
   const clone = join(stateDir(), SOURCE_CLONE_DIR_NAME);
+
+  if (swapOnly) {
+    // The build already happened, in an earlier run of this same script, and its output is the
+    // bundle named here. Verified rather than trusted: this path runs from a detached helper
+    // minutes later, and a bundle that vanished in between has to fail before anything
+    // replaces a working app.
+    heading("Staged build");
+    let stagedVersion = "0.0.0";
+    if (dryRun) {
+      doing(`[dry-run] would install the staged bundle at ${stagedBundle}`);
+    } else {
+      if (!existsSync(stagedBundle)) fail(`there is no staged app bundle at ${stagedBundle}`);
+      const version = plistVersion(
+        readFileSync(join(stagedBundle, "Contents", "Info.plist"), "utf8"),
+      );
+      if (!version) {
+        fail("could not read CFBundleShortVersionString from the staged app's Info.plist");
+      }
+      stagedVersion = version;
+      ok(`staged version ${version}`);
+    }
+    const stagedApp = swapAndRecord({
+      dryRun,
+      bundle: stagedBundle,
+      appsDir: options.appsDir,
+      repo,
+      // The bundle's own version is what is being installed, so the receipt records that
+      // rather than the clone's `package.json`, which a later checkout could already have
+      // moved on from. `--ref` still names the tag, and only the tag.
+      ref: options.ref ?? "",
+      source: "flag",
+      clone,
+      sourceVersion: stagedVersion,
+      progress,
+    });
+    console.log("\n\x1b[1m─ summary ─\x1b[0m");
+    if (dryRun) {
+      console.log("(dry-run: nothing was changed)");
+      return 0;
+    }
+    console.log(`\x1b[32mMission Control ${stagedVersion} installed from the staged build.\x1b[0m`);
+    console.log(`  app:    ${stagedApp}`);
+    return 0;
+  }
+
+  // 3. Updater-owned clone ---------------------------------------------------------------
+  progress("source");
+  heading("Updater-owned clone");
   const remoteUrl = canonicalRemoteUrl(origin?.transport ?? "https", repo);
   if (existsSync(clone)) {
     // Host AND slug. This clone is about to be fetched and force-checked-out, so a remote that
@@ -575,6 +751,7 @@ function installApp(options) {
   }
 
   // 4. Target ref ------------------------------------------------------------------------
+  progress("release");
   heading("Target ref");
   // Not asked at all when a ref was named: an explicit `--ref` install has no reason to fail on
   // a GitHub outage it does not depend on.
@@ -599,6 +776,7 @@ function installApp(options) {
   ok(`${ref} (${sourceLabel})`);
 
   // 5. Checkout --------------------------------------------------------------------------
+  progress("checkout");
   heading("Checkout");
   // Forced, and correct here only because this clone belongs to the updater: nothing a person
   // edits ever lives in it.
@@ -611,10 +789,15 @@ function installApp(options) {
 
   // 6. Build -----------------------------------------------------------------------------
   heading("Build");
+  // Two markers for one heading. These are the minutes - dependency install, then the
+  // packaged build - and a bar that could not tell them apart would sit still for both.
+  progress("dependencies");
   run("npm", ["ci"], { cwd: clone });
+  progress("build");
   run("npm", ["run", "package"], { cwd: clone });
 
   // 7. Verify ----------------------------------------------------------------------------
+  progress("verify");
   heading("Verify");
   const packagedApp = join(clone, PACKAGED_APP_RELATIVE_PATH);
   let sourceVersion = "0.0.0";
@@ -631,50 +814,36 @@ function installApp(options) {
     ok(`packaged version ${packagedVersion}`);
   }
 
-  // 8. Install ---------------------------------------------------------------------------
-  heading("Install");
-  const appPath = join(options.appsDir, APP_BUNDLE_NAME);
-  const appsDirIssue = appsDirProblem({
-    appsDir: options.appsDir,
-    exists: existsSync(options.appsDir),
-    isDirectory: existsSync(options.appsDir) && statSync(options.appsDir).isDirectory(),
-  });
-  if (appsDirIssue) fail(appsDirIssue);
-  if (dryRun) {
-    doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
-  } else {
-    const swap = replaceAppBundle({
-      sourceBundle: packagedApp,
-      appPath,
-      appsDir: options.appsDir,
-      pid: process.pid,
-    });
-    if (swap.problem) fail(swap.problem);
-    for (const stray of swap.stranded) {
-      // A bundle displaced by an earlier privileged install, which this account can rename but
-      // not delete. Naming it is the only way anyone reclaims the space, and it is a hidden
-      // sibling that Finder does not show.
-      warning(`${stray} is owned by another account and could not be removed; delete it with an administrator account`);
+  if (options.stageOnly) {
+    // Stop one step short of the installed app. The caller - the running app updating itself -
+    // now holds a verified bundle it can install the moment the person says so, and this line
+    // is how it learns what and where that bundle is.
+    console.log(`${UPDATE_STAGED_MARKER} ${sourceVersion} ${packagedApp}`);
+    console.log("\n\x1b[1m─ summary ─\x1b[0m");
+    if (dryRun) {
+      console.log("(dry-run: nothing was changed)");
+      return 0;
     }
-    ok(`installed ${appPath}${swap.elevated ? " with administrator authorization" : ""}`);
+    console.log(`\x1b[32mMission Control ${sourceVersion} is built and verified.\x1b[0m`);
+    console.log(`  bundle: ${packagedApp}`);
+    console.log(`  source: ${clone}  (nothing was installed: --stage-only)`);
+    console.log("\nNext:");
+    console.log(`  node scripts/install-app.mjs --ref ${ref} --from-staged "${packagedApp}"`);
+    return 0;
   }
 
-  // 9. Receipt ---------------------------------------------------------------------------
-  heading("Receipt");
-  if (dryRun) {
-    doing(`[dry-run] would write ${receiptPath()}`);
-  } else {
-    const written = writeReceipt({
-      schema: 1,
-      repo,
-      releaseTag: receiptReleaseTag({ ref, source }),
-      installedVersion: sourceVersion,
-      sourceClone: clone,
-      appPath,
-      installedAt: new Date().toISOString(),
-    });
-    ok(`wrote ${written}`);
-  }
+  // 8. Install and 9. Receipt ------------------------------------------------------------
+  const appPath = swapAndRecord({
+    dryRun,
+    bundle: packagedApp,
+    appsDir: options.appsDir,
+    repo,
+    ref,
+    source,
+    clone,
+    sourceVersion,
+    progress,
+  });
 
   console.log("\n\x1b[1m─ summary ─\x1b[0m");
   if (dryRun) {

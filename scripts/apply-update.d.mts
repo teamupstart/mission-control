@@ -5,6 +5,11 @@ export interface ApplyUpdateArgs {
   parentPid: number;
   stateDirectory: string;
   logPath: string;
+  /**
+   * A bundle the app already built and verified before it quit, or null to build from the
+   * clone as the helper always did.
+   */
+  stagedBundle?: string | null;
 }
 
 /**
@@ -41,7 +46,13 @@ export interface ApplyOperations {
   copy(from: string, to: string): void;
   nowIso(): string;
   waitForParent(pid: number): Promise<void>;
-  install(node: string, script: string, tag: string, appsDir: string): void;
+  install(
+    node: string,
+    script: string,
+    tag: string,
+    appsDir: string,
+    stagedBundle?: string | null,
+  ): void;
   restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   bundleVersion(path: string): string | null;
   lock: HelperLockOps;
@@ -51,6 +62,7 @@ export interface ApplyOperations {
 
 export const UPDATE_OUTCOME_SCHEMA: number;
 export const INSTALL_TIMEOUT_MS: number;
+export const STAGED_INSTALL_TIMEOUT_MS: number;
 export const RETAINED_FAILURE_DIR_NAME: string;
 export const HELPER_LOCK_DIR_NAME: string;
 export function processIsAlive(pid: number, kill?: (pid: number) => void): boolean;
@@ -96,6 +108,7 @@ export function writeOutcome(path: string, outcome: Record<string, unknown>): vo
 export function realApplyOperations(
   logPath: string,
   installTimeoutMs?: number,
+  stagedInstallTimeoutMs?: number,
 ): ApplyOperations;
 export function runApplyUpdate(
   args: ApplyUpdateArgs,

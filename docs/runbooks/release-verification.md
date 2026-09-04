@@ -141,7 +141,10 @@ one is `Latest`.
 
 **Check for Updates…** from the application menu, and again from the tray. Both call the same
 seam. Confirm the native dialog offers **Update Now** and **Later**, and that **Later** dismisses
-it without applying.
+it without applying. Accepting from either place should also reveal the dashboard window, because
+the build's progress is drawn there, and should ask about the restart in a second dialog once the
+build finishes. A **Check for Updates…** issued while that build is running must report the stage
+it has reached rather than starting a second build.
 
 This step needs a real click. The dialog is a native `dialog.showMessageBox`, not DOM, so it is
 unreachable from the remote debugging port, and driving the menu with `osascript` requires
@@ -158,8 +161,18 @@ hides it until the next scheduled check or launch, not forever.
 
 ### 6. Apply the update
 
-Click **Update Now**. The app quits, a detached helper waits for it to exit, rebuilds at the new
-tag, swaps, and relaunches. Then confirm all four:
+Click **Update Now**. The app does **not** quit: it builds the new version in the updater-owned
+clone while it keeps running, and the banner becomes a progress bar naming each stage. Confirm
+that while the bar is up:
+
+- the window is still usable and the app is still on the old version;
+- `tail -f "$SB/state/update.log"` shows the build's own output, stage markers included;
+- **Cancel** stops the build, puts the offer back, and leaves no `npm` or `electron-builder`
+  process behind (`pgrep -f electron-builder`).
+
+Then build through to **ready to install** and click **Restart and Install**. That is the only
+part that quits: a detached helper waits for the app to exit, swaps the bundle the app already
+built and verified, writes the receipt, and relaunches. Then confirm all four:
 
 ```sh
 cat "$SB/state/update-outcome.json"          # result: success, targetVersion: <new>
@@ -169,9 +182,16 @@ cat "$SB/state/install-receipt.json"          # releaseTag and installedVersion 
 git -C "$SB/state/app-src" describe --tags --exact-match
 ```
 
-**Observed:** 70s from click to `result: "success"`. The helper allows 45 minutes
-(`INSTALL_TIMEOUT_MS`) because a cold npm cache is far slower; treat a minute as the floor, not the
-expectation.
+**Observed:** 70s from click to `result: "success"` when the app itself did the build - almost all
+of it before the quit, with the window up and the bar advancing, and only seconds of it after.
+The build is allowed 45 minutes wherever it runs (`INSTALL_TIMEOUT_MS`, and `STAGE_TIMEOUT_MS` in
+the app) because a cold npm cache is far slower; the staged install that follows is allowed ten
+(`STAGED_INSTALL_TIMEOUT_MS`), which is a copy, a receipt, and room for an administrator panel to
+be answered. Treat a minute as the floor, not the expectation.
+
+Also confirm the deferral shortcut: prepare an update, choose **Later** at the ready banner, then
+check again and accept. The second acceptance must reach **ready to install** immediately, with no
+second build in `update.log`.
 
 ### 7. Verify the negative path
 
@@ -214,10 +234,15 @@ bridge is the real one, so this reads real state rather than a fixture:
 ```js
 window.missionDesktop.updates.getState()   // the live snapshot
 window.missionDesktop.updates.check()      // same code path as a background check, no dialog
+window.missionDesktop.updates.apply()      // start the build; the app stays open
+window.missionDesktop.updates.cancel()     // stop a build in progress
+window.missionDesktop.updates.install()    // restart into the prepared build
 ```
 
-The banner's **Update Now** and **Later** are ordinary DOM buttons and can be clicked this way, and
-`Page.captureScreenshot` gives a clean image of the window without needing focus.
+The banner's **Update Now**, **Cancel**, **Restart and Install** and **Later** are ordinary DOM
+buttons and can be clicked this way, and `Page.captureScreenshot` gives a clean image of the window
+without needing focus - including, now, of the progress bar mid-build, which is the one part of an
+update a person used to have no way to see.
 
 What this cannot reach: the native dialogs, the application menu, and the tray. `updates.check()`
 is *not* the manual path - `mission:update-check` calls `check(true)` only, while the menu item

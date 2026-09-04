@@ -263,6 +263,10 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   const handoffDisclosure = commissionReader.locator(
     'details[aria-label="Specification handoff"]',
   );
+  const engineerSummary = engineerDisclosure.locator(":scope > summary");
+  const handoffSummary = handoffDisclosure.locator(":scope > summary");
+  await expect(engineerSummary).toHaveCount(1);
+  await expect(handoffSummary).toHaveCount(1);
   await expect(engineerDisclosure).not.toHaveAttribute("open", "");
   await expect(handoffDisclosure).not.toHaveAttribute("open", "");
   await expect(commissionReader.getByRole("heading", { name: "Engineer attempts" })).toBeVisible();
@@ -276,7 +280,10 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   ).toBeVisible();
   await dashboard.screenshot({ path: join(evidenceDir, "runs-continuation.png") });
 
-  await handoffDisclosure.locator("summary").click();
+  await engineerSummary.click();
+  await expect(engineerDisclosure).toHaveAttribute("open", "");
+  await handoffSummary.click();
+  await expect(handoffDisclosure).toHaveAttribute("open", "");
   await handoffDisclosure
     .getByRole("button", { name: "Open implementation run visible-pipeline-continuity" })
     .click();

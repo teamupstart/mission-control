@@ -47,6 +47,8 @@ function EngineerAttempts({
       open={expanded}
       aria-label="Engineer attempts"
     >
+      {/* Tooltip clones enabled triggers without emitting a wrapper, so summary remains the
+          first direct DOM child required by the native details disclosure. */}
       <Tooltip label="Show or hide the Engineer attempt history">
         <summary>
           <h4>Engineer attempts</h4>
@@ -96,6 +98,7 @@ function SpecificationHandoff({
       open={expanded}
       aria-label="Specification handoff"
     >
+      {/* Keep this summary on Tooltip's wrapper-free path for native disclosure semantics. */}
       <Tooltip label="Show or hide the specification handoff">
         <summary>
           <h4>Specification handoff</h4>

@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -343,6 +343,12 @@ function cfg(over: Record<string, unknown> = {}): Record<string, unknown> {
     ...over,
   };
 }
+
+// Every case owns its temp homes, fake-agent log, worker process, and loopback port. Running
+// four at a time preserves the real wall-clock cadence assertions without serializing their
+// independent idle windows. The bound matches the E2E per-host ceiling and avoids a process
+// burst when this file runs beside the rest of the unit suite.
+describe("prompted wrap-up worker", { concurrency: 4 }, () => {
 
 test("a daemon blip on the queue read never double-fires a wrap-up, and never stalls triage", async () => {
   // The bug this pins: `client.queue()` used to coerce a throw to `null`, and `null` is
@@ -2361,4 +2367,6 @@ process.stdin.on("end", () => {
   assert.equal((episodes[0]!.body as { situation?: string }).situation, "ship-recovery");
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
+});
+
 });

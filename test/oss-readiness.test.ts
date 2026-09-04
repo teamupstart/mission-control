@@ -29,6 +29,16 @@ test("the packaged application includes its license and attribution notice", () 
   assert.match(yml, /^\s*-\s*NOTICE\s*$/m);
 });
 
+test("fork pull requests cannot execute on shared self-hosted runners", () => {
+  const workflow = repoFile(".github/workflows/ci.yml");
+
+  assert.doesNotMatch(workflow, /frontend-platform|self-hosted:\s*true/iu);
+  assert.doesNotMatch(workflow, /^\s+labels:\s+/mu);
+  assert.match(workflow, /unit-node-24:[\s\S]*?runs-on:\s*ubuntu-latest/u);
+  assert.match(workflow, /unit-node-26:[\s\S]*?runs-on:\s*ubuntu-latest/u);
+  assert.match(workflow, /e2e:[\s\S]*?runs-on:\s*ubuntu-latest/u);
+});
+
 test("public entry-point documentation has no legacy internal-only notice", () => {
   for (const rel of ["README.md", "CONTRIBUTING.md", "SECURITY.md"]) {
     const text = repoFile(rel);
@@ -38,5 +48,6 @@ test("public entry-point documentation has no legacy internal-only notice", () =
   assert.match(repoFile("README.md"), /Apache License 2\.0/);
   assert.match(repoFile("CONTRIBUTING.md"), /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
   assert.match(repoFile("SECURITY.md"), /security\/advisories\/new/);
+  assert.match(repoFile("SECURITY.md"), /upstart\.com\/lenders\/regulatory-compliance\/vulnerability-reporting/);
   assert.match(repoFile("README.md"), /@anthropic-ai\/claude-agent-sdk/);
 });

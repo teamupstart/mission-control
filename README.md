@@ -412,13 +412,13 @@ the full verification path, use the setup guide below.
 
 ## CI runner allocation
 
-The `gates` job runs on GitHub-hosted `ubuntu-latest`. CPU-heavy unit and end-to-end jobs use
-self-hosted runners configured by the project maintainers. External contributors do not need
-direct access to those runners: run the checks locally before opening a pull request, and a
-maintainer will handle any required workflow approval.
+All Linux checks run on ephemeral GitHub-hosted `ubuntu-latest` runners. Pull requests execute
+contributor-controlled code, so the workflow does not route them to shared self-hosted runners.
+Run the checks locally before opening a pull request; GitHub may require a maintainer to approve
+the first workflow from a new contributor.
 
-The workflow keeps runner labels, worker counts, and shard counts explicit. Changes to that
-allocation are one capacity decision and should be benchmarked together.
+The workflow keeps worker and shard counts explicit. Changes to that allocation are one capacity
+decision and should be benchmarked together.
 
 This allocation is a performance experiment, not a claim that the five-minute target has
 already been met. Accept it only after three consecutive live workflows complete all required

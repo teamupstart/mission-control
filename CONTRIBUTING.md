@@ -70,8 +70,9 @@ tests with the required scoped outside-sandbox approval; do not bypass the
 preflight or add Chromium flags.
 
 `npm test` runs six test files concurrently by default. Set
-`MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses an explicit worker
-and shard allocation so its behavior does not depend on the local fallback.
+`MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses ephemeral GitHub-hosted
+runners with an explicit worker and shard allocation so its behavior does not depend on the local
+fallback and fork pull requests never execute on shared self-hosted infrastructure.
 
 ## Test layers
 

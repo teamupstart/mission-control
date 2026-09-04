@@ -3,6 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/teamupstart/mission-control/security/advisories/new
     about: Report suspected vulnerabilities privately to the maintainers.
+  - name: Alternate vulnerability reporting
+    url: https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/
+    about: Use Upstart's private reporting process if GitHub reporting is unavailable.
   - name: Read the documentation
     url: https://github.com/teamupstart/mission-control/tree/main/docs
     about: Review setup, configuration, troubleshooting, and product guides.

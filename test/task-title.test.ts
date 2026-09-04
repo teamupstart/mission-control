@@ -34,7 +34,7 @@ echo x >> ${callsFile}
 case "$(cat ${modeFile} 2>/dev/null)" in
   crash) echo "boom" >&2; exit 1 ;;
   hang)
-    while [ ! -f ${releaseFile} ]; do sleep 0.01; done
+    while [ ! -f "${releaseFile}" ]; do sleep 0.01; done
     printf %s '{"result":"\`\`\`json\\n{\\"title\\":\\"Fix flaky worktree cleanup\\"}\\n\`\`\`"}'
     ;;
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp

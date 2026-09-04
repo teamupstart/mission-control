@@ -293,5 +293,5 @@ test("run detail statement count is constant as submission history grows", () =>
   assert.equal(detail?.attempts.length, 20);
   assert.equal(detail?.receipts.length, 20);
   assert.equal(many.statements.count, one.statements.count);
-  assert.ok(many.statements.count <= 15, `detail used ${many.statements.count} statements`);
+  assert.ok(many.statements.count <= 16, `detail used ${many.statements.count} statements`);
 });

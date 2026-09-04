@@ -68,6 +68,7 @@ const workflow: WorkflowDefinition = {
   draft: graph,
   completionPolicy: { kind: "none" },
   resumptionPolicy: "manual",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -179,6 +180,7 @@ test("published built-in snapshots compare shipped guidance instead of revision"
     },
     completionPolicy: workflow.completionPolicy,
     resumptionPolicy: "manual",
+    evidenceReadinessPolicy: "off",
     bindingDefaults: workflow.bindingDefaults,
     publishedAt: 1,
   };

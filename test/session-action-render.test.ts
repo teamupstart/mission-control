@@ -106,6 +106,7 @@ const workflow: WorkflowDefinition = {
   draft: graph,
   completionPolicy: { kind: "none" },
   resumptionPolicy: "auto",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   draftRevision: 1,
   currentVersionId: null,
@@ -475,6 +476,7 @@ test("a published version shows the exact instruction it froze", () => {
     },
     completionPolicy: { kind: "none" },
     resumptionPolicy: "auto",
+    evidenceReadinessPolicy: "off",
     bindingDefaults: workflow.bindingDefaults,
     publishedAt: 1,
   };

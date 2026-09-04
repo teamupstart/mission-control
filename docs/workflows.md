@@ -703,6 +703,16 @@ its exact output directly through the existing evidence tool, so normalized tran
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
 
+The same tool and dashboard composer accept `coverage` claims. Each claim carries a stable
+caller-owned criterion id, the criterion text, an author-selected proof class, an issued
+repository scope, and links from evidence client ids to proof roles. Proof classes select a
+fixed role matrix: focused execution and integration require execution evidence; visual
+requires execution plus rendered output; performance requires baseline plus result;
+rendered artifact requires a deliverable or rendered output; state confirmation requires a
+state snapshot. The model may suggest a different class during context compaction, but that
+produces a warning only. It cannot rewrite the author's class or introduce a screenshot
+requirement.
+
 Registration itself is authorized by the conversation's own active Persona binding rather than by
 the task's dispatch-time selection, so a workflow an operator attaches to a session that is already
 running accepts evidence exactly as a selected one does.
@@ -725,7 +735,7 @@ absent from the Persona snapshot. Evidence is proportional to material behavior,
 count: a repository with 10,000 tests does not need 10,000 outputs, and one focused completed run
 can settle multiple criteria when its command and output identify the behavior.
 
-The dashboard uses one **Image evidence** composer anywhere a person can capture a new
+The dashboard uses one **Workflow evidence** composer anywhere a person can capture a new
 submission: the initial **Preview** in the binding dialog, **Ship it** and No-Mistakes review
 from a session card, **Run again** or **Preview again**, and every fresh repair resubmission.
 Choose files, drop them, or paste a screenshot; then give every image a caption and a repository
@@ -738,6 +748,9 @@ or scope is missing, registered evidence cannot be read, or the packet exceeds 8
 per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
 or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
 the count and byte total shown in the composer become part of that immutable submission.
+The composer also saves criterion mappings before capture, including incomplete mappings.
+Its missing-role messages come from the shared proof matrix and are provisional, not a
+semantic acceptance decision. Canonical reconciliation occurs during capture.
 
 **Resubmit unchanged snapshot** is deliberately different. It replays exactly the images named
 by the previous submission and offers no fresh-image composer; the confirmation states that
@@ -754,6 +767,20 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 `image_evidence_capture` recovery phase. Normal repair rounds take only newly staged evidence;
 explicit retry of a capture fault revives the same submission and therefore the same reserved
 bytes.
+
+Coverage is reserved in the same transaction as its linked evidence and copied to an
+immutable submission table. After evidence bytes are safely captured, context compaction
+returns bounded canonical criteria and advisory matches to the author claim ids. The daemon
+assigns stable canonical ids, resolves links only against evidence frozen for that submission,
+and persists a deterministic readiness result with `ready`, `gaps`, or `unavailable` status.
+Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
+text does not enter fleet summaries.
+
+Phase 1 keeps `evidenceReadinessPolicy` at `off` for every built-in, new, and duplicated
+workflow. Publishing refuses a non-off draft until the enforcement lifecycle exists. Coverage
+under `off` still produces advisory readiness, but readiness never changes activation and
+workflow execution remains non-blocking. A null readiness value means historical data or an
+off-policy submission with no coverage; it never means ready.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all

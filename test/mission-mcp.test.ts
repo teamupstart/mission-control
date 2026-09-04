@@ -208,7 +208,7 @@ test("product issue registration requires public confirmation and bounded attach
   );
 });
 
-test("submit_workflow_evidence publishes bounded text artifacts beside existing images", () => {
+test("submit_workflow_evidence publishes bounded evidence and criterion coverage", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   const registration = source.slice(
     source.indexOf('server.registerTool(\n  "submit_workflow_evidence"'),
@@ -221,6 +221,11 @@ test("submit_workflow_evidence publishes bounded text artifacts beside existing 
   assert.match(registration, /commandOutputs: z\.array\(z\.object/);
   assert.match(registration, /workflowCommandEvidenceContent/);
   assert.match(registration, /kind: "command"/);
+  assert.match(registration, /coverage: z\.array\(z\.object/);
+  assert.match(registration, /WORKFLOW_EVIDENCE_PROOF_CLASSES/);
+  assert.match(registration, /WORKFLOW_EVIDENCE_PROOF_ROLES/);
+  assert.match(registration, /unique by evidence item and proof role/);
+  assert.match(registration, /coverage claim\(s\)/);
   assert.match(registration, /exact command, exit/);
   assert.match(registration, /Do not commit evidence artifacts/);
   assert.match(registration, /text artifact\(s\)/);

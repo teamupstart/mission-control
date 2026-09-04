@@ -10,6 +10,9 @@ import {
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
+  WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EVIDENCE_PROOF_ROLES,
   workflowCommandEvidenceContent,
 } from "@shared/workflow.ts";
 import {
@@ -32,7 +35,7 @@ import {
   PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -876,7 +879,8 @@ server.registerTool(
     description:
       "Register gitignored screenshots, focused UTF-8 text/log artifacts, or the exact command, exit " +
       "code, and output from a completed focused check for the Persona workflow that will run when " +
-      "this task completes. Mission Control freezes applicable evidence into the immutable submission. " +
+      "this task completes. Optionally map acceptance criteria to that evidence with proof classes and " +
+      "roles. Mission Control freezes applicable evidence and coverage into the immutable submission. " +
       "Do not commit evidence artifacts.",
     inputSchema: {
       images: z.array(z.object({
@@ -930,7 +934,7 @@ server.registerTool(
           .describe("Stable caller id used to make an identical registration idempotent."),
         command: z.string().trim().min(1).max(WORKFLOW_LIMITS.checkCommandLength)
           .describe("The exact focused command that completed."),
-        exitCode: z.number().int().min(0).max(2_147_483_647)
+        exitCode: WorkflowCommandExitCodeSchema
           .describe("The completed command's process exit code."),
         output: z.string().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact)
           .describe("The exact completed stdout/stderr output. Empty is allowed when the command printed nothing."),
@@ -966,9 +970,51 @@ server.registerTool(
         )
         .optional()
         .describe("Optional exact output from completed focused commands, without creating a temporary file."),
+      coverage: z.array(z.object({
+        clientCriterionId: z.string().min(1)
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars)
+          .describe("Stable caller id for this acceptance criterion."),
+        criterion: z.string().trim().min(1)
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
+          .refine(
+            (value) => Buffer.byteLength(value)
+              <= WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes,
+            `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
+          )
+          .describe("The material acceptance criterion the linked evidence is intended to prove."),
+        proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES)
+          .describe("The author's proof class, which selects deterministic required evidence roles."),
+        repositoryScope: z.union([
+          z.literal("all"),
+          z.string().regex(/^repo-\d{2}$/),
+        ]).describe("An issued repository slot such as repo-01, or all."),
+        links: z.array(z.object({
+          clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
+            .describe("A staged evidence client item id."),
+          role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES)
+            .describe("How this evidence item contributes to the criterion."),
+        })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim).refine(
+          (links) => new Set(
+            links.map((link) => `${link.clientItemId}\0${link.role}`),
+          ).size === links.length,
+          "Workflow coverage links must be unique by evidence item and proof role",
+        ),
+      }))
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+        .refine(
+          (value) => new Set(value.map((claim) => claim.clientCriterionId)).size === value.length,
+          "Workflow coverage criterion ids must be unique",
+        )
+        .refine(
+          (value) => Buffer.byteLength(JSON.stringify(value))
+            <= WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+          `Workflow coverage exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes`,
+        )
+        .optional()
+        .describe("Optional acceptance criteria mapped to registered evidence and proof roles."),
     },
   },
-  async ({ images, artifacts, commandOutputs }) => {
+  async ({ images, artifacts, commandOutputs, coverage }) => {
     try {
       const res = await http("/mcp/workflow-evidence", "POST", {
         env: ENV,
@@ -977,6 +1023,7 @@ server.registerTool(
         images: (images ?? []).map((image) => ({ kind: "agent", ...image })),
         artifacts: (artifacts ?? []).map((artifact) => ({ kind: "text", ...artifact })),
         commandOutputs: (commandOutputs ?? []).map((artifact) => ({ kind: "command", ...artifact })),
+        coverage: coverage ?? [],
       });
       if (!res.ok) {
         return textResult(
@@ -984,11 +1031,16 @@ server.registerTool(
           true,
         );
       }
-      const body = (await res.json()) as { images?: unknown[]; artifacts?: unknown[]; generation?: number };
+      const body = (await res.json()) as {
+        images?: unknown[];
+        artifacts?: unknown[];
+        coverage?: unknown[];
+        generation?: number;
+      };
       return textResult(
-        `Registered ${body.images?.length ?? images?.length ?? 0} image(s) and `
+        `Registered ${body.images?.length ?? images?.length ?? 0} image(s), `
         + `${body.artifacts?.length ?? ((artifacts?.length ?? 0) + (commandOutputs?.length ?? 0))} `
-        + `text artifact(s) at workflow evidence `
+        + `text artifact(s), and ${body.coverage?.length ?? coverage?.length ?? 0} coverage claim(s) at `
         + `generation ${body.generation ?? 0}.`,
       );
     } catch (err) {

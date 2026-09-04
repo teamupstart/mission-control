@@ -39,6 +39,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp, WORKFLOW_EVIDENCE_BODY_MAX_BYTES } = await import("../src/server/routes.ts");
 const {
   JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
@@ -218,7 +219,7 @@ test("workflow image contracts default historical context and bind image citatio
       kind: "command",
       clientItemId: "focused-command",
       command: "node --test focused.test.ts",
-      exitCode: 0,
+      exitCode: -9,
       output: "ok 1 - focused behavior\n",
       caption: "The focused behavior passed",
       repositoryScope: "repo-01",
@@ -268,6 +269,7 @@ test("workflow evidence HTTP sizing reserves metadata for every command item", (
     WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
     + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
       * JSON_UTF8_MAX_BYTES_PER_CHAR
+    + WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
     + 32 * 1024;
   const everyCommandItemMetadata =
     WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount

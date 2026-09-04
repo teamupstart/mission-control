@@ -172,6 +172,13 @@ test("a manually attached workflow accepts agent evidence from a scout session",
         caption: "Focused Playwright regression for the narrow files toolbar",
         repositoryScope: "repo-01",
       }],
+      coverage: [{
+        clientCriterionId: "focused-files-toolbar",
+        criterion: "The narrow files toolbar remains usable",
+        proofClass: "focused_execution",
+        repositoryScope: "repo-01",
+        links: [{ clientItemId: "focused-regression", role: "execution" }],
+      }],
     });
 
     const body = await response.text();
@@ -179,16 +186,54 @@ test("a manually attached workflow accepts agent evidence from a scout session",
     const staged = JSON.parse(body) as {
       generation: number;
       artifacts: Array<{ clientItemId: string; sourceKind: string }>;
+      coverage: Array<{ clientCriterionId: string; criterion: string }>;
     };
     assert.equal(staged.generation, 1);
     assert.deepEqual(
       staged.artifacts.map((entry) => [entry.clientItemId, entry.sourceKind]),
       [["focused-regression", "command"]],
     );
+    assert.deepEqual(
+      staged.coverage.map((entry) => entry.clientCriterionId),
+      ["focused-files-toolbar"],
+    );
     assert.equal(
       workflows.store.listWorkflowEvidence(noteKeyFor(session)).artifacts?.length,
       1,
     );
+    const update = await app.request(
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage`,
+      {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:7317",
+          "content-type": "application/json",
+          "x-harness-token": ensureToken(),
+        },
+        body: JSON.stringify({
+          clientCriterionId: "focused-files-toolbar",
+          criterion: "The narrow files toolbar remains usable after a focused run",
+          proofClass: "focused_execution",
+          repositoryScope: "repo-01",
+          links: [{ clientItemId: "focused-regression", role: "execution" }],
+        }),
+      },
+    );
+    const updateBody = await update.text();
+    assert.equal(update.status, 200, updateBody);
+    const updated = JSON.parse(updateBody) as typeof staged;
+    assert.equal(updated.coverage.length, 1);
+    assert.match(updated.coverage[0]?.criterion ?? "", /after a focused run/);
+    const removed = await app.request(
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage/focused-files-toolbar`,
+      {
+        method: "DELETE",
+        headers: { host: "127.0.0.1:7317", "x-harness-token": ensureToken() },
+      },
+    );
+    const removedBody = await removed.text();
+    assert.equal(removed.status, 200, removedBody);
+    assert.deepEqual((JSON.parse(removedBody) as typeof staged).coverage, []);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

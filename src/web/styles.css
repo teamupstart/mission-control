@@ -17334,6 +17334,52 @@ button.wf-carried.is-link:focus-visible {
 .workflow-evidence-errors { margin: 0; padding-left: 18px; color: var(--danger); font-size: 10.5px; }
 .workflow-evidence-note,
 .workflow-evidence-artifacts { margin: 0; color: var(--dim); font-size: 10px; line-height: 1.45; }
+.workflow-coverage-composer {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.workflow-coverage-claim {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.workflow-coverage-claim > div { display: grid; gap: 3px; min-width: 0; }
+.workflow-coverage-claim strong { font-size: 11px; overflow-wrap: anywhere; }
+.workflow-coverage-claim small { color: var(--dim); font-size: 9.5px; }
+.workflow-coverage-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, .5fr);
+  gap: 8px;
+}
+.workflow-coverage-fields label { display: grid; gap: 4px; color: var(--muted); font-size: 9.5px; }
+.workflow-coverage-fields label:first-child { grid-column: 1 / -1; }
+.workflow-coverage-fields textarea,
+.workflow-coverage-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  color: var(--fg);
+  font: 11px var(--sans);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.workflow-coverage-fields textarea { min-height: 58px; resize: vertical; }
+.workflow-coverage-gaps { margin: 0; color: var(--attention); font-size: 10.5px; }
+.workflow-coverage-hint { margin: 0; color: var(--muted); font-size: 10px; }
+.workflow-coverage-actions { display: flex; align-items: center; gap: 9px; }
+.workflow-coverage-actions small { color: var(--dim); font-size: 9.5px; line-height: 1.4; }
+.wf-coverage-ledger { display: grid; gap: 8px; }
+.wf-coverage-ledger h5 { margin: 0; }
+.wf-evidence-links { display: flex; flex-wrap: wrap; gap: 5px; }
+.wf-evidence-readiness .wf-run-card { gap: 6px; }
 
 .wf-image-ledger { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .wf-image-record {
@@ -17376,6 +17422,9 @@ button.wf-carried.is-link:focus-visible {
   .workflow-evidence-heading { align-items: flex-start; flex-direction: column; }
   .workflow-evidence-fields { grid-template-columns: 1fr; }
   .workflow-evidence-fields > * { grid-column: 1; }
+  .workflow-coverage-fields { grid-template-columns: 1fr; }
+  .workflow-coverage-fields label:first-child { grid-column: 1; }
+  .workflow-coverage-actions { align-items: flex-start; flex-direction: column; }
   .wf-image-record { grid-template-columns: 1fr; }
 }
 

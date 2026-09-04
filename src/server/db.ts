@@ -1283,6 +1283,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       draft_graph_json       TEXT NOT NULL,
       completion_policy_json TEXT NOT NULL,
       resumption_policy      TEXT,
+      evidence_readiness_policy TEXT NOT NULL DEFAULT 'off',
       binding_defaults_json  TEXT NOT NULL,
       draft_revision         INTEGER NOT NULL DEFAULT 1,
       current_version_id     TEXT,
@@ -1301,6 +1302,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       graph_json             TEXT NOT NULL,
       completion_policy_json TEXT NOT NULL,
       resumption_policy      TEXT,
+      evidence_readiness_policy TEXT NOT NULL DEFAULT 'off',
       binding_defaults_json  TEXT NOT NULL,
       published_at           INTEGER NOT NULL
     );
@@ -1402,6 +1404,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       evidence_fingerprint TEXT NOT NULL,
       context_json         TEXT NOT NULL,
       evidence_json        TEXT NOT NULL,
+      readiness_json       TEXT,
       pr_head_sha          TEXT,
       status               TEXT NOT NULL,
       created_at           INTEGER NOT NULL,
@@ -1443,6 +1446,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       source_root           TEXT NOT NULL,
       source_locator        TEXT NOT NULL,
       inline_content        TEXT,
+      command_exit_code     INTEGER,
       episode_key           TEXT,
       display_name          TEXT NOT NULL,
       caption               TEXT NOT NULL,
@@ -1461,6 +1465,28 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_evidence_staging(note_key, state, generation, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_staging_reservation
       ON workflow_evidence_staging(reserved_group_key, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_evidence_coverage_staging (
+      id                    TEXT PRIMARY KEY,
+      note_key              TEXT NOT NULL,
+      client_criterion_id   TEXT NOT NULL,
+      criterion             TEXT NOT NULL,
+      proof_class           TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      source_root           TEXT NOT NULL,
+      links_json            TEXT NOT NULL,
+      episode_key           TEXT,
+      generation            INTEGER NOT NULL,
+      state                 TEXT NOT NULL,
+      reserved_group_key    TEXT,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      UNIQUE(note_key, client_criterion_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
+      ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
+      ON workflow_evidence_coverage_staging(reserved_group_key, state);
 
     CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
       staging_id            TEXT NOT NULL,
@@ -1495,6 +1521,22 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_submission_images(submission_id, ordinal);
     CREATE INDEX IF NOT EXISTS idx_workflow_submission_images_availability
       ON workflow_submission_images(availability, created_at, id);
+
+    CREATE TABLE IF NOT EXISTS workflow_submission_evidence_coverage (
+      submission_id         TEXT NOT NULL,
+      staging_id            TEXT NOT NULL,
+      client_criterion_id   TEXT NOT NULL,
+      criterion             TEXT NOT NULL,
+      proof_class           TEXT NOT NULL,
+      repository_scope      TEXT NOT NULL,
+      links_json            TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      PRIMARY KEY(submission_id, client_criterion_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_submission_evidence_coverage_submission
+      ON workflow_submission_evidence_coverage(submission_id, client_criterion_id);
 
     CREATE TABLE IF NOT EXISTS workflow_submission_text_artifacts (
       id                    TEXT PRIMARY KEY,
@@ -3307,6 +3349,9 @@ function migrate(d: DatabaseSync): void {
   // bounded content is already present at registration and therefore must survive until capture.
   // NULL means every historical row and every path/image source exactly as before.
   addColumn(d, "workflow_evidence_staging", "inline_content", "TEXT");
+  // Command status is structured evidence metadata. Keeping it beside the immutable content
+  // prevents compaction from reverse-parsing a human-readable retained artifact.
+  addColumn(d, "workflow_evidence_staging", "command_exit_code", "INTEGER");
   // Evidence belongs to the resolved human-intent episode current at registration.
   // NULL preserves legacy rows and unresolved intent without inventing provenance.
   addColumn(d, "workflow_evidence_staging", "episode_key", "TEXT");
@@ -3810,6 +3855,21 @@ function migrate(d: DatabaseSync): void {
   // never selects on this column.
   addColumn(d, "workflow_definitions", "resumption_policy", "TEXT");
   addColumn(d, "workflow_versions", "resumption_policy", "TEXT");
+  // Criterion readiness remains disabled for every historical draft and version. The enum is
+  // frozen now so the enforcement phase can consume it without rewriting old rows.
+  addColumn(
+    d,
+    "workflow_definitions",
+    "evidence_readiness_policy",
+    "TEXT NOT NULL DEFAULT 'off'",
+  );
+  addColumn(
+    d,
+    "workflow_versions",
+    "evidence_readiness_policy",
+    "TEXT NOT NULL DEFAULT 'off'",
+  );
+  addColumn(d, "workflow_submissions", "readiness_json", "TEXT");
 
   // Which provider handed a check its worktree. Editing the CREATE TABLE block above is not
   // enough - it is IF NOT EXISTS, so an operator upgrading into this build keeps the table

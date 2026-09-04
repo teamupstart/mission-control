@@ -34,6 +34,11 @@ import {
   WorkflowEvidenceImageSchema,
   WorkflowEvidenceTextArtifactSchema,
   WorkflowEvidenceRepositoryScopeSchema,
+  WorkflowEvidenceCoverageClaimSchema,
+  WorkflowEvidenceCoverageLinkSchema,
+  WorkflowEvidenceCoverageClaimsSchema,
+  WorkflowEvidenceReadinessResultSchema,
+  WorkflowCommandExitCodeSchema,
   WorkflowInspectorOnlyContextSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
@@ -49,6 +54,9 @@ import {
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
+  WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EVIDENCE_READINESS_POLICIES,
   WORKFLOW_LIMITS,
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
@@ -56,6 +64,8 @@ import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
+  DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
+  DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   SESSION_ACTION_COMPLETION_KINDS,
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
@@ -76,10 +86,15 @@ import {
   type WorkflowResumptionPolicy,
   type WorkflowEvidenceImage,
   type WorkflowEvidenceTextArtifact,
+  type WorkflowEvidenceRepositoryScope,
   type WorkflowCheckEvidence,
   type WorkflowStagedEvidenceImage,
   type WorkflowStagedEvidenceTextArtifact,
   type WorkflowStagedEvidenceList,
+  type WorkflowStagedEvidenceCoverageClaim,
+  type WorkflowEvidenceCoverageClaim,
+  type WorkflowEvidenceReadinessPolicy,
+  type WorkflowEvidenceReadinessResult,
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import type {
@@ -107,6 +122,7 @@ import type {
   WorkflowRunPage,
   WorkflowRunSummary,
   WorkflowSubmissionEvidenceImages,
+  WorkflowSubmissionEvidenceCoverage,
   WorkflowEventPage,
   WorkflowLlmCallPage,
   WorkflowContextSnapshot,
@@ -323,8 +339,10 @@ export const WORKFLOW_TABLES = [
   "workflow_evidence_owners",
   "workflow_evidence_scope_generations",
   "workflow_evidence_staging",
+  "workflow_evidence_coverage_staging",
   "workflow_evidence_reservations",
   "workflow_submission_images",
+  "workflow_submission_evidence_coverage",
   "workflow_submission_text_artifacts",
   "workflow_image_cleanup",
 ] as const;
@@ -407,6 +425,15 @@ function readResumptionPolicy(raw: string | null): WorkflowResumptionPolicy {
   return (WORKFLOW_RESUMPTION_POLICIES as readonly string[]).includes(raw ?? "")
     ? (raw as WorkflowResumptionPolicy)
     : LEGACY_WORKFLOW_RESUMPTION_POLICY;
+}
+
+/** Historical rows have no policy and resolve to the only non-enforcing posture. */
+function readEvidenceReadinessPolicy(raw: string | null): WorkflowEvidenceReadinessPolicy {
+  if (raw === null) return DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY;
+  if ((WORKFLOW_EVIDENCE_READINESS_POLICIES as readonly string[]).includes(raw)) {
+    return raw as WorkflowEvidenceReadinessPolicy;
+  }
+  throw new TypeError(`Unknown workflow evidence readiness policy: ${raw}`);
 }
 
 /**
@@ -745,6 +772,8 @@ const WorkflowDefinitionRowSchema = z.object({
   // Tolerant on READ for the reason `readResumptionPolicy` documents: an absent column on an
   // upgrading database and an unknown value from a newer build are both answered there.
   resumption_policy: nullableText.optional().default(null),
+  evidence_readiness_policy: z.enum(WORKFLOW_EVIDENCE_READINESS_POLICIES)
+    .nullable().optional().default(null),
   binding_defaults_json: nonempty,
   draft_revision: positive,
   current_version_id: nullableText,
@@ -769,6 +798,7 @@ export function parseWorkflowDefinitionRow(value: unknown): WorkflowDefinition {
       WorkflowCompletionPolicySchema,
     ),
     resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
+    evidenceReadinessPolicy: readEvidenceReadinessPolicy(row.evidence_readiness_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_definitions",
       row.id,
@@ -794,6 +824,8 @@ const WorkflowVersionRowSchema = z.object({
   graph_json: nonempty,
   completion_policy_json: nonempty,
   resumption_policy: nullableText.optional().default(null),
+  evidence_readiness_policy: z.enum(WORKFLOW_EVIDENCE_READINESS_POLICIES)
+    .nullable().optional().default(null),
   binding_defaults_json: nonempty,
   published_at: integer,
 });
@@ -814,6 +846,7 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
       WorkflowCompletionPolicySchema,
     ),
     resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
+    evidenceReadinessPolicy: readEvidenceReadinessPolicy(row.evidence_readiness_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_versions",
       row.id,
@@ -842,6 +875,7 @@ export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersion
       WorkflowCompletionPolicySchema,
     ),
     resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
+    evidenceReadinessPolicy: readEvidenceReadinessPolicy(row.evidence_readiness_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_versions",
       row.id,
@@ -986,6 +1020,7 @@ const WorkflowSubmissionRowSchema = z.object({
   repository_fingerprint: nullableText.optional().default(null),
   context_json: nonempty,
   evidence_json: nonempty,
+  readiness_json: nullableText.optional().default(null),
   pr_head_sha: nullableText,
   status: WorkflowSubmissionStatusSchema,
   created_at: integer,
@@ -1043,6 +1078,14 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
       WorkflowJsonSchema,
       WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
+    readiness: parseNullableJson(
+      "workflow_submissions",
+      row.id,
+      "readiness_json",
+      row.readiness_json ?? null,
+      WorkflowEvidenceReadinessResultSchema,
+      WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+    ),
     prHeadSha: row.pr_head_sha,
     status: row.status,
     createdAt: row.created_at,
@@ -1060,6 +1103,7 @@ const WorkflowEvidenceStagingRowSchema = z.object({
   source_root: nonempty,
   source_locator: nonempty.max(WORKFLOW_IMAGE_LIMITS.relativePathChars),
   inline_content: nullableText.optional().default(null),
+  command_exit_code: WorkflowCommandExitCodeSchema.nullable().optional().default(null),
   episode_key: nullableText.optional().default(null),
   display_name: nonempty.max(WORKFLOW_IMAGE_LIMITS.displayNameChars),
   caption: nonempty.max(WORKFLOW_IMAGE_LIMITS.captionChars),
@@ -1104,6 +1148,13 @@ const WorkflowEvidenceStagingRowSchema = z.object({
       message: "Only command evidence carries inline content, and command evidence must carry it",
     });
   }
+  if ((row.source_kind === "command") !== (row.command_exit_code !== null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["command_exit_code"],
+      message: "Only command evidence carries an exit code, and command evidence must carry it",
+    });
+  }
   if (row.source_kind === "command" && row.inline_content !== null) {
     const bytes = Buffer.byteLength(row.inline_content, "utf8");
     const sha256 = createHash("sha256").update(Buffer.from(row.inline_content, "utf8")).digest("hex");
@@ -1131,8 +1182,103 @@ export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenc
     ...row,
     evidence_kind: row.evidence_kind ?? "image",
     inline_content: row.inline_content ?? null,
+    command_exit_code: row.command_exit_code ?? null,
     episode_key: row.episode_key ?? null,
   };
+}
+
+const WorkflowEvidenceCoverageStagingRowSchema = z.object({
+  id: nonempty.max(200),
+  note_key: nonempty,
+  client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+  criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
+  repository_scope: WorkflowEvidenceRepositoryScopeSchema,
+  source_root: nonempty,
+  links_json: nonempty,
+  episode_key: nullableText.optional().default(null),
+  generation: positive,
+  state: z.enum(["staged", "reserved"]),
+  reserved_group_key: nullableText,
+  created_at: integer,
+  updated_at: integer,
+}).superRefine((row, ctx) => {
+  if ((row.state === "staged") !== (row.reserved_group_key === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reserved_group_key"],
+      message: "Reserved state and evidence group must be present together",
+    });
+  }
+});
+
+export type WorkflowEvidenceCoverageStagingRow = z.infer<
+  typeof WorkflowEvidenceCoverageStagingRowSchema
+>;
+
+export function parseWorkflowEvidenceCoverageStagingRow(
+  value: unknown,
+): WorkflowEvidenceCoverageStagingRow {
+  const row = parseShape(
+    "workflow_evidence_coverage_staging",
+    WorkflowEvidenceCoverageStagingRowSchema,
+    value,
+  );
+  return { ...row, episode_key: row.episode_key ?? null };
+}
+
+function coverageClaimFromRow(row: WorkflowEvidenceCoverageStagingRow): WorkflowEvidenceCoverageClaim {
+  return WorkflowEvidenceCoverageClaimSchema.parse({
+    clientCriterionId: row.client_criterion_id,
+    criterion: row.criterion,
+    proofClass: row.proof_class,
+    repositoryScope: row.repository_scope,
+    links: parseJson(
+      "workflow_evidence_coverage_staging",
+      row.id,
+      "links_json",
+      row.links_json,
+      z.array(WorkflowEvidenceCoverageLinkSchema)
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
+      WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+    ),
+  });
+}
+
+const WorkflowSubmissionCoverageRowSchema = z.object({
+  submission_id: nonempty,
+  staging_id: nonempty,
+  client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+  criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
+  repository_scope: WorkflowEvidenceRepositoryScopeSchema,
+  links_json: nonempty,
+  generation: positive,
+  created_at: integer,
+  updated_at: integer,
+});
+
+function submissionCoverageClaimFromRow(value: unknown): WorkflowEvidenceCoverageClaim {
+  const row = parseShape(
+    "workflow_submission_evidence_coverage",
+    WorkflowSubmissionCoverageRowSchema,
+    value,
+  );
+  return WorkflowEvidenceCoverageClaimSchema.parse({
+    clientCriterionId: row.client_criterion_id,
+    criterion: row.criterion,
+    proofClass: row.proof_class,
+    repositoryScope: row.repository_scope,
+    links: parseJson(
+      "workflow_submission_evidence_coverage",
+      `${row.submission_id}:${row.client_criterion_id}`,
+      "links_json",
+      row.links_json,
+      z.array(WorkflowEvidenceCoverageLinkSchema)
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
+      WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+    ),
+  });
 }
 
 const WorkflowSubmissionImageRowSchema = z.object({
@@ -1741,7 +1887,11 @@ export type SessionActionStoreWrite =
       current: SessionAction | null;
     };
 
-export interface WorkflowInsert extends CreateWorkflow {
+type WorkflowDefaultedPolicyField = "resumptionPolicy" | "evidenceReadinessPolicy";
+
+export interface WorkflowInsert extends Omit<CreateWorkflow, WorkflowDefaultedPolicyField> {
+  resumptionPolicy?: CreateWorkflow["resumptionPolicy"];
+  evidenceReadinessPolicy?: CreateWorkflow["evidenceReadinessPolicy"];
   id: string;
   normalizedName: string;
   createdAt: number;
@@ -1881,12 +2031,19 @@ export interface WorkflowStagedEvidenceWrite {
   sourceLocator: string;
   /** Present only for bounded command output supplied directly through the evidence tool. */
   inlineContent?: string | null;
+  /** Present only for command evidence; never recovered from the retained display text. */
+  commandExitCode?: number | null;
   displayName: string;
   caption: string;
   repositoryScope: string;
   mimeType: WorkflowEvidenceImage["mimeType"] | "text/plain";
   bytes: number;
   sha256: string;
+}
+
+export interface WorkflowStagedEvidenceCoverageWrite extends WorkflowEvidenceCoverageClaim {
+  id: string;
+  sourceRoot: string;
 }
 
 export interface WorkflowReservedEvidence extends WorkflowStagedEvidenceWrite {
@@ -3016,14 +3173,16 @@ export class WorkflowStore {
     const writeWorkflow = this.db.prepare(
       `INSERT INTO workflow_definitions (
          id, name, normalized_name, description, draft_graph_json,
-         completion_policy_json, resumption_policy, binding_defaults_json,
-         draft_revision, current_version_id, archived_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+         completion_policy_json, resumption_policy, evidence_readiness_policy,
+         binding_defaults_json, draft_revision, current_version_id, archived_at,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, draft_graph_json=excluded.draft_graph_json,
          completion_policy_json=excluded.completion_policy_json,
          resumption_policy=excluded.resumption_policy,
+         evidence_readiness_policy=excluded.evidence_readiness_policy,
          binding_defaults_json=excluded.binding_defaults_json,
          draft_revision=excluded.draft_revision, current_version_id=NULL,
          archived_at=excluded.archived_at, updated_at=excluded.updated_at`,
@@ -3045,6 +3204,7 @@ export class WorkflowStore {
         JSON.stringify(row.draft),
         JSON.stringify(row.completionPolicy),
         row.resumptionPolicy,
+        row.evidenceReadinessPolicy,
         JSON.stringify(row.bindingDefaults),
         draftRevision,
         row.archivedAt,
@@ -3075,8 +3235,9 @@ export class WorkflowStore {
     const insertVersion = this.db.prepare(
       `INSERT INTO workflow_versions (
          id, workflow_id, version, source_draft_revision, graph_json,
-         completion_policy_json, resumption_policy, binding_defaults_json, published_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         completion_policy_json, resumption_policy, evidence_readiness_policy,
+         binding_defaults_json, published_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of staged.workflowVersions) {
       const byId = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(row.id);
@@ -3099,6 +3260,7 @@ export class WorkflowStore {
         JSON.stringify(row.graph),
         JSON.stringify(row.completionPolicy),
         row.resumptionPolicy,
+        row.evidenceReadinessPolicy,
         JSON.stringify(row.bindingDefaults),
         row.publishedAt,
       );
@@ -3352,9 +3514,10 @@ export class WorkflowStore {
       this.db.prepare(
         `INSERT INTO workflow_definitions (
            id, name, normalized_name, description, draft_graph_json,
-           completion_policy_json, resumption_policy, binding_defaults_json, draft_revision,
+           completion_policy_json, resumption_policy, evidence_readiness_policy,
+           binding_defaults_json, draft_revision,
            current_version_id, archived_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
       ).run(
         input.id,
         input.name,
@@ -3362,7 +3525,8 @@ export class WorkflowStore {
         input.description,
         JSON.stringify(input.draft),
         JSON.stringify(input.completionPolicy),
-        input.resumptionPolicy,
+        input.resumptionPolicy ?? DEFAULT_WORKFLOW_RESUMPTION_POLICY,
+        input.evidenceReadinessPolicy ?? DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
         JSON.stringify(input.bindingDefaults),
         input.createdAt,
         input.updatedAt,
@@ -3408,6 +3572,9 @@ export class WorkflowStore {
       if (patch.draft !== undefined) add("draft_graph_json", JSON.stringify(patch.draft));
       if (patch.completionPolicy !== undefined) add("completion_policy_json", JSON.stringify(patch.completionPolicy));
       if (patch.resumptionPolicy !== undefined) add("resumption_policy", patch.resumptionPolicy);
+      if (patch.evidenceReadinessPolicy !== undefined) {
+        add("evidence_readiness_policy", patch.evidenceReadinessPolicy);
+      }
       if (patch.bindingDefaults !== undefined) add("binding_defaults_json", JSON.stringify(patch.bindingDefaults));
       assignments.push("draft_revision = draft_revision + 1", "updated_at = ?");
       values.push(updatedAt, id, expectedDraftRevision);
@@ -3556,7 +3723,8 @@ export class WorkflowStore {
     if (shipped) return shipped.map(({ graph: _graph, ...metadata }) => metadata);
     const rows = this.db.prepare(
       `SELECT id, workflow_id, version, source_draft_revision,
-              completion_policy_json, resumption_policy, binding_defaults_json, published_at
+              completion_policy_json, resumption_policy, evidence_readiness_policy,
+              binding_defaults_json, published_at
          FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
     ).all(workflowId) as unknown[];
     const out: WorkflowVersionMetadata[] = [];
@@ -3601,6 +3769,18 @@ export class WorkflowStore {
       if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
+      }
+      if (workflow.evidenceReadinessPolicy !== "off") {
+        return {
+          ok: false,
+          reason: "validation",
+          current: workflow,
+          diagnostics: [{
+            severity: "error",
+            code: "evidence_readiness_not_enforced",
+            message: "Criterion-mapped readiness cannot be published until enforcement is available",
+          }],
+        };
       }
       // BOTH catalogs read inside this transaction, and the snapshots below are taken from
       // these exact lists. Re-reading either after validation would open the window this
@@ -3650,8 +3830,9 @@ export class WorkflowStore {
       this.db.prepare(
         `INSERT INTO workflow_versions (
            id, workflow_id, version, source_draft_revision, graph_json,
-           completion_policy_json, resumption_policy, binding_defaults_json, published_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           completion_policy_json, resumption_policy, evidence_readiness_policy,
+           binding_defaults_json, published_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         versionId,
         id,
@@ -3662,6 +3843,7 @@ export class WorkflowStore {
         // Frozen from the draft at publish time, exactly like the completion policy: a later
         // edit to the draft must not change how a version already bound behaves.
         workflow.resumptionPolicy,
+        workflow.evidenceReadinessPolicy,
         JSON.stringify(workflow.bindingDefaults),
         publishedAt,
       );
@@ -4251,7 +4433,14 @@ export class WorkflowStore {
     items: readonly WorkflowStagedEvidenceWrite[],
     now = Date.now(),
     episodeKey: string | null = null,
+    coverage: readonly WorkflowStagedEvidenceCoverageWrite[] = [],
   ): WorkflowStagedEvidenceList {
+    const validatedItems = items.map((item) => ({
+      ...item,
+      commandExitCode: item.sourceKind === "command"
+        ? WorkflowCommandExitCodeSchema.parse(item.commandExitCode)
+        : null,
+    }));
     return transaction(this.db, () => {
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_evidence_owners (
@@ -4262,10 +4451,17 @@ export class WorkflowStore {
         `SELECT * FROM workflow_evidence_staging WHERE note_key = ?`,
       ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
       const existing = new Map(existingRows.map((row) => [row.client_item_id, row]));
+      const existingCoverageRows = (this.db.prepare(
+        `SELECT * FROM workflow_evidence_coverage_staging WHERE note_key = ?`,
+      ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceCoverageStagingRow);
+      const existingCoverage = new Map(
+        existingCoverageRows.map((row) => [row.client_criterion_id, row]),
+      );
       const changedItems: WorkflowStagedEvidenceWrite[] = [];
+      const changedCoverage: WorkflowStagedEvidenceCoverageWrite[] = [];
       const affectedRoots = new Set<string>();
       let allAffected = false;
-      for (const item of items) {
+      for (const item of validatedItems) {
         const row = existing.get(item.clientItemId);
         const same = row
           && row.source_kind === item.sourceKind
@@ -4273,6 +4469,7 @@ export class WorkflowStore {
           && row.source_root === item.sourceRoot
           && row.source_locator === item.sourceLocator
           && row.inline_content === (item.inlineContent ?? null)
+          && row.command_exit_code === (item.commandExitCode ?? null)
           && row.episode_key === episodeKey
           && row.display_name === item.displayName
           && row.caption === item.caption
@@ -4289,7 +4486,27 @@ export class WorkflowStore {
         if (row && row.repository_scope !== "all") affectedRoots.add(row.source_root);
         if (item.repositoryScope !== "all") affectedRoots.add(item.sourceRoot);
       }
-      if (changedItems.length === 0) return this.listWorkflowEvidence(noteKey);
+      for (const claim of coverage) {
+        const row = existingCoverage.get(claim.clientCriterionId);
+        const same = row
+          && row.criterion === claim.criterion
+          && row.proof_class === claim.proofClass
+          && row.repository_scope === claim.repositoryScope
+          && row.source_root === claim.sourceRoot
+          && row.episode_key === episodeKey
+          && row.links_json === JSON.stringify(claim.links);
+        if (same) continue;
+        if (row?.reserved_group_key) {
+          throw new Error(`Workflow coverage claim ${claim.clientCriterionId} is already reserved`);
+        }
+        changedCoverage.push(claim);
+        if (row?.repository_scope === "all" || claim.repositoryScope === "all") allAffected = true;
+        if (row && row.repository_scope !== "all") affectedRoots.add(row.source_root);
+        if (claim.repositoryScope !== "all") affectedRoots.add(claim.sourceRoot);
+      }
+      if (changedItems.length === 0 && changedCoverage.length === 0) {
+        return this.listWorkflowEvidence(noteKey);
+      }
 
       const currentStaged = existingRows.filter((row) => row.state === "staged");
       const nextIds = new Set(changedItems.map((item) => item.clientItemId));
@@ -4316,6 +4533,48 @@ export class WorkflowStore {
         > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
       ) {
         throw new Error("Workflow text artifacts exceed the aggregate byte limit");
+      }
+      const nextItemScopes = new Map([
+        ...currentStaged.filter((row) => !nextIds.has(row.client_item_id)).map((row) => [
+          row.client_item_id,
+          { repositoryScope: row.repository_scope, sourceRoot: row.source_root },
+        ] as const),
+        ...changedItems.map((item) => [
+          item.clientItemId,
+          { repositoryScope: item.repositoryScope, sourceRoot: item.sourceRoot },
+        ] as const),
+      ]);
+      const changedCriterionIds = new Set(
+        changedCoverage.map((claim) => claim.clientCriterionId),
+      );
+      const nextCoverage = [
+        ...existingCoverageRows
+          .filter((row) => row.state === "staged" && !changedCriterionIds.has(row.client_criterion_id))
+          .map(coverageClaimFromRow),
+        ...changedCoverage.map(({ id: _id, sourceRoot: _sourceRoot, ...claim }) => claim),
+      ];
+      WorkflowEvidenceCoverageClaimsSchema.parse(nextCoverage);
+      for (const claim of nextCoverage) {
+        for (const link of claim.links) {
+          const item = nextItemScopes.get(link.clientItemId);
+          if (!item) {
+            throw new Error(
+              `Workflow coverage claim ${claim.clientCriterionId} links unknown evidence ${link.clientItemId}`,
+            );
+          }
+          const sourceRoot = changedCoverage.find(
+            (candidate) => candidate.clientCriterionId === claim.clientCriterionId,
+          )?.sourceRoot ?? existingCoverage.get(claim.clientCriterionId)?.source_root;
+          const scopeMatches = item.repositoryScope === "all"
+            || (claim.repositoryScope !== "all"
+              && item.repositoryScope === claim.repositoryScope
+              && item.sourceRoot === sourceRoot);
+          if (!scopeMatches) {
+            throw new Error(
+              `Workflow coverage claim ${claim.clientCriterionId} links evidence ${link.clientItemId} outside its repository scope`,
+            );
+          }
+        }
       }
       this.db.prepare(
         `UPDATE workflow_evidence_owners
@@ -4344,15 +4603,16 @@ export class WorkflowStore {
       const write = this.db.prepare(
         `INSERT INTO workflow_evidence_staging (
            id, note_key, client_item_id, source_kind, evidence_kind, source_root, source_locator,
-           inline_content, episode_key, display_name, caption, repository_scope, mime_type, bytes,
-           sha256, generation, state, reserved_group_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+           inline_content, command_exit_code, episode_key, display_name, caption, repository_scope,
+           mime_type, bytes, sha256, generation, state, reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_item_id) DO UPDATE SET
            source_kind = excluded.source_kind,
            evidence_kind = excluded.evidence_kind,
            source_root = excluded.source_root,
            source_locator = excluded.source_locator,
            inline_content = excluded.inline_content,
+           command_exit_code = excluded.command_exit_code,
            episode_key = excluded.episode_key,
            display_name = excluded.display_name,
            caption = excluded.caption,
@@ -4376,6 +4636,7 @@ export class WorkflowStore {
           item.sourceRoot,
           item.sourceLocator,
           item.inlineContent ?? null,
+          item.commandExitCode ?? null,
           episodeKey,
           item.displayName,
           item.caption,
@@ -4383,6 +4644,41 @@ export class WorkflowStore {
           item.mimeType,
           item.bytes,
           item.sha256,
+          owner.generation,
+          prior?.created_at ?? now,
+          now,
+        );
+      }
+      const writeCoverage = this.db.prepare(
+        `INSERT INTO workflow_evidence_coverage_staging (
+           id, note_key, client_criterion_id, criterion, proof_class, repository_scope,
+           source_root, links_json, episode_key, generation, state, reserved_group_key,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+         ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
+           criterion = excluded.criterion,
+           proof_class = excluded.proof_class,
+           repository_scope = excluded.repository_scope,
+           source_root = excluded.source_root,
+           links_json = excluded.links_json,
+           episode_key = excluded.episode_key,
+           generation = excluded.generation,
+           state = 'staged',
+           reserved_group_key = NULL,
+           updated_at = excluded.updated_at`,
+      );
+      for (const claim of changedCoverage) {
+        const prior = existingCoverage.get(claim.clientCriterionId);
+        writeCoverage.run(
+          prior?.id ?? claim.id,
+          noteKey,
+          claim.clientCriterionId,
+          claim.criterion,
+          claim.proofClass,
+          claim.repositoryScope,
+          claim.sourceRoot,
+          JSON.stringify(claim.links),
+          episodeKey,
           owner.generation,
           prior?.created_at ?? now,
           now,
@@ -4401,6 +4697,11 @@ export class WorkflowStore {
         WHERE note_key = ? AND state = 'staged'
         ORDER BY created_at ASC, id ASC`,
     ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
+    const coverageRows = (this.db.prepare(
+      `SELECT * FROM workflow_evidence_coverage_staging
+        WHERE note_key = ? AND state = 'staged'
+        ORDER BY created_at ASC, id ASC`,
+    ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceCoverageStagingRow);
     return {
       generation: Number(owner?.generation ?? 0),
       images: rows.filter((row) => row.evidence_kind === "image").map((row): WorkflowStagedEvidenceImage => ({
@@ -4437,6 +4738,12 @@ export class WorkflowStore {
           updatedAt: row.updated_at,
         }),
       ),
+      coverage: coverageRows.map((row): WorkflowStagedEvidenceCoverageClaim => ({
+        ...coverageClaimFromRow(row),
+        generation: row.generation,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      })),
     };
   }
 
@@ -4454,6 +4761,17 @@ export class WorkflowStore {
 
   removeWorkflowEvidence(noteKey: string, clientItemId: string, now = Date.now()): WorkflowStagedEvidenceList {
     return transaction(this.db, () => {
+      const linked = (this.db.prepare(
+        `SELECT * FROM workflow_evidence_coverage_staging
+          WHERE note_key = ? AND state = 'staged'`,
+      ).all(noteKey) as unknown[])
+        .map(parseWorkflowEvidenceCoverageStagingRow)
+        .some((row) => coverageClaimFromRow(row).links.some(
+          (link) => link.clientItemId === clientItemId,
+        ));
+      if (linked) {
+        throw new Error("Remove the evidence link from its coverage claim first");
+      }
       const item = this.db.prepare(
         `SELECT * FROM workflow_evidence_staging
           WHERE note_key = ? AND client_item_id = ? AND state = 'staged'
@@ -4493,6 +4811,51 @@ export class WorkflowStore {
     });
   }
 
+  removeWorkflowEvidenceCoverage(
+    noteKey: string,
+    clientCriterionId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList {
+    return transaction(this.db, () => {
+      const value = this.db.prepare(
+        `SELECT * FROM workflow_evidence_coverage_staging
+          WHERE note_key = ? AND client_criterion_id = ? AND state = 'staged'
+            AND reserved_group_key IS NULL`,
+      ).get(noteKey, clientCriterionId);
+      const claim = value ? parseWorkflowEvidenceCoverageStagingRow(value) : null;
+      const removed = this.db.prepare(
+        `DELETE FROM workflow_evidence_coverage_staging
+          WHERE note_key = ? AND client_criterion_id = ? AND state = 'staged'
+            AND reserved_group_key IS NULL`,
+      ).run(noteKey, clientCriterionId);
+      if (Number(removed.changes) > 0 && claim) {
+        this.db.prepare(
+          `UPDATE workflow_evidence_owners
+              SET generation = generation + 1, updated_at = ?
+            WHERE note_key = ?`,
+        ).run(now, noteKey);
+        const owner = this.db.prepare(
+          `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
+        ).get(noteKey) as { generation: number };
+        if (claim.repository_scope === "all") {
+          this.db.prepare(
+            `UPDATE workflow_evidence_owners SET all_generation = ? WHERE note_key = ?`,
+          ).run(owner.generation, noteKey);
+        } else {
+          this.db.prepare(
+            `INSERT INTO workflow_evidence_scope_generations (
+               note_key, source_root, generation, updated_at
+             ) VALUES (?, ?, ?, ?)
+             ON CONFLICT(note_key, source_root) DO UPDATE SET
+               generation = excluded.generation,
+               updated_at = excluded.updated_at`,
+          ).run(noteKey, claim.source_root, owner.generation, now);
+        }
+      }
+      return this.listWorkflowEvidence(noteKey);
+    });
+  }
+
   listReservedWorkflowEvidence(submissionId: string): WorkflowReservedEvidence[] {
     return (this.db.prepare(
       `SELECT s.*, r.ordinal
@@ -4511,6 +4874,7 @@ export class WorkflowStore {
         sourceRoot: row.source_root,
         sourceLocator: row.source_locator,
         inlineContent: row.inline_content,
+        commandExitCode: row.command_exit_code,
         displayName: row.display_name,
         caption: row.caption,
         repositoryScope: row.repository_scope,
@@ -4609,6 +4973,46 @@ export class WorkflowStore {
       .map(workflowEvidenceTextArtifactFromRow);
   }
 
+  listSubmissionCoverage(submissionId: string): WorkflowEvidenceCoverageClaim[] {
+    const claims = (this.db.prepare(
+      `SELECT * FROM workflow_submission_evidence_coverage
+        WHERE submission_id = ? ORDER BY client_criterion_id ASC`,
+    ).all(submissionId) as unknown[]).map(submissionCoverageClaimFromRow);
+    return WorkflowEvidenceCoverageClaimsSchema.parse(claims);
+  }
+
+  /** Resolve public client ids only to immutable evidence frozen for this submission. */
+  submissionFrozenEvidenceIdentities(submissionId: string): Array<{
+    clientItemId: string;
+    evidenceId: string;
+    repositoryScope: WorkflowEvidenceRepositoryScope;
+  }> {
+    const rows = this.db.prepare(
+      `SELECT s.client_item_id, s.repository_scope, i.id AS image_id, t.id AS artifact_id
+         FROM workflow_evidence_reservations r
+         JOIN workflow_evidence_staging s ON s.id = r.staging_id
+         LEFT JOIN workflow_submission_images i
+           ON i.submission_id = r.submission_id AND i.staging_id = r.staging_id
+         LEFT JOIN workflow_submission_text_artifacts t
+           ON t.submission_id = r.submission_id AND t.staging_id = r.staging_id
+        WHERE r.submission_id = ?
+        ORDER BY r.ordinal ASC`,
+    ).all(submissionId) as Array<{
+      client_item_id: string;
+      repository_scope: WorkflowEvidenceRepositoryScope;
+      image_id: string | null;
+      artifact_id: string | null;
+    }>;
+    return rows.flatMap((row) => {
+      const evidenceId = row.image_id ?? row.artifact_id;
+      return evidenceId ? [{
+        clientItemId: row.client_item_id,
+        evidenceId,
+        repositoryScope: WorkflowEvidenceRepositoryScopeSchema.parse(row.repository_scope),
+      }] : [];
+    });
+  }
+
   private runSubmissionImageGroups(
     runId: string,
     submissions: readonly WorkflowSubmission[],
@@ -4629,6 +5033,33 @@ export class WorkflowStore {
     return submissions.map((submission) => ({
       submissionId: submission.id,
       images: groups.get(submission.id) ?? [],
+    }));
+  }
+
+  private runSubmissionCoverageGroups(
+    runId: string,
+    submissions: readonly WorkflowSubmission[],
+  ): WorkflowSubmissionEvidenceCoverage[] {
+    const groups = new Map<string, WorkflowEvidenceCoverageClaim[]>();
+    const rows = this.db.prepare(
+      `SELECT c.* FROM workflow_submission_evidence_coverage c
+        JOIN workflow_submissions s ON s.id = c.submission_id
+       WHERE s.run_id = ?
+       ORDER BY c.submission_id ASC, c.client_criterion_id ASC`,
+    ).all(runId) as unknown[];
+    for (const value of rows) {
+      const row = parseShape(
+        "workflow_submission_evidence_coverage",
+        WorkflowSubmissionCoverageRowSchema,
+        value,
+      );
+      const coverage = groups.get(row.submission_id) ?? [];
+      coverage.push(submissionCoverageClaimFromRow(value));
+      groups.set(row.submission_id, coverage);
+    }
+    return submissions.map((submission) => ({
+      submissionId: submission.id,
+      coverage: WorkflowEvidenceCoverageClaimsSchema.parse(groups.get(submission.id) ?? []),
     }));
   }
 
@@ -5028,6 +5459,7 @@ export class WorkflowStore {
       evidence: WorkflowJson;
       fingerprint?: string;
       repositoryFingerprint?: string;
+      readiness?: WorkflowEvidenceReadinessResult | null;
       status?: WorkflowSubmission["status"];
     },
     now = Date.now(),
@@ -5036,13 +5468,16 @@ export class WorkflowStore {
     this.db.prepare(
       `UPDATE workflow_submissions
           SET context_json = ?, evidence_json = ?, evidence_fingerprint = ?,
-              repository_fingerprint = ?, status = ?, updated_at = ?
+              repository_fingerprint = ?, readiness_json = ?, status = ?, updated_at = ?
         WHERE id = ?`,
     ).run(
       JSON.stringify(input.context),
       JSON.stringify(input.evidence),
       input.fingerprint ?? current.evidenceFingerprint,
       input.repositoryFingerprint ?? current.repositoryFingerprint ?? null,
+      (input.readiness === undefined ? current.readiness : input.readiness) === null
+        ? null
+        : JSON.stringify(input.readiness === undefined ? current.readiness : input.readiness),
       input.status ?? current.status,
       now,
       id,
@@ -7340,6 +7775,10 @@ export class WorkflowStore {
 
   private deleteRunImageRowsInTransaction(runId: string): void {
     this.db.prepare(
+      `DELETE FROM workflow_submission_evidence_coverage
+        WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+    ).run(runId);
+    this.db.prepare(
       `DELETE FROM workflow_submission_images
         WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
     ).run(runId);
@@ -7353,6 +7792,14 @@ export class WorkflowStore {
           AND NOT EXISTS (
             SELECT 1 FROM workflow_evidence_reservations r
              WHERE r.staging_id = workflow_evidence_staging.id
+          )`,
+    ).run();
+    this.db.prepare(
+      `DELETE FROM workflow_evidence_coverage_staging
+        WHERE state = 'reserved'
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_submission_evidence_coverage c
+             WHERE c.staging_id = workflow_evidence_coverage_staging.id
           )`,
     ).run();
   }
@@ -7601,6 +8048,7 @@ export class WorkflowStore {
       contextState: runContextState(submissions),
       submissions,
       evidenceImages: this.runSubmissionImageGroups(id, submissions),
+      evidenceCoverage: this.runSubmissionCoverageGroups(id, submissions),
       attempts,
       receipts: this.listReceiptsForRun(id),
       deliveries: this.listDeliveries(id),
@@ -7862,6 +8310,9 @@ export class WorkflowStore {
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_evidence_staging WHERE note_key = ?`).run(noteKey);
+      this.db.prepare(
+        `DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ?`,
+      ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_evidence_scope_generations WHERE note_key = ?`).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_evidence_owners WHERE note_key = ?`).run(noteKey);
       return { runIds, bindingIds };
@@ -7998,9 +8449,10 @@ export class WorkflowStore {
       `INSERT INTO workflow_submissions (
          id, run_id, round, segment, parent_submission_id, continuation_node_id,
          continuation_node_attempt_id, mode, trigger_source, trigger_key, evidence_group_key,
-         staged_image_generation, evidence_fingerprint, context_json, evidence_json, pr_head_sha,
+         staged_image_generation, evidence_fingerprint, context_json, evidence_json,
+         readiness_json, pr_head_sha,
          status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?,
                  CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
     ).run(
       input.id,
@@ -8099,6 +8551,58 @@ export class WorkflowStore {
       }
       reserve.run(row.id, submissionId, ordinal, now);
     });
+    const applicableItemIds = new Set(rows.map((row) => row.client_item_id));
+    const coverageRows = (this.db.prepare(
+      `SELECT * FROM workflow_evidence_coverage_staging
+        WHERE note_key = ?
+          AND (state = 'staged' OR reserved_group_key = ?)
+          AND (repository_scope = 'all' OR source_root = ?)
+        ORDER BY created_at ASC, id ASC`,
+    ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
+      .map(parseWorkflowEvidenceCoverageStagingRow);
+    if (coverageRows.length > WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims) {
+      throw new Error(
+        `At most ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims} workflow coverage claims apply to a submission`,
+      );
+    }
+    const markCoverage = this.db.prepare(
+      `UPDATE workflow_evidence_coverage_staging
+          SET state = 'reserved', reserved_group_key = ?, updated_at = ?
+        WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ?)`,
+    );
+    const freezeCoverage = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
+         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         repository_scope, links_json, generation, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of coverageRows) {
+      const claim = coverageClaimFromRow(row);
+      const missingLink = claim.links.find((link) => !applicableItemIds.has(link.clientItemId));
+      if (missingLink) {
+        throw new Error(
+          `Workflow coverage claim ${claim.clientCriterionId} links evidence ${missingLink.clientItemId} outside this submission scope`,
+        );
+      }
+      const marked = markCoverage.run(groupKey, now, row.id, groupKey);
+      if (Number(marked.changes) !== 1) {
+        throw new Error(
+          `Workflow coverage claim ${row.client_criterion_id} was reserved concurrently`,
+        );
+      }
+      freezeCoverage.run(
+        submissionId,
+        row.id,
+        claim.clientCriterionId,
+        claim.criterion,
+        claim.proofClass,
+        claim.repositoryScope,
+        JSON.stringify(claim.links),
+        row.generation,
+        row.created_at,
+        row.updated_at,
+      );
+    }
   }
 
   private mustRun(id: string): WorkflowRun {

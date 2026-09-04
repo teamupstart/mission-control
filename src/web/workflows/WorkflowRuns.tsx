@@ -11,7 +11,9 @@ import type {
   WorkflowRunStatus,
   WorkflowRunSummary,
   WorkflowEventPage,
+  WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceImage,
+  WorkflowEvidenceReadinessResult,
   WorkflowLlmCallPage,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
@@ -287,6 +289,78 @@ function SubmissionImageEvidence({
         </ol>
       )}
       {error && <p className="wf-run-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function SubmissionEvidenceReadiness({
+  coverage,
+  readiness,
+}: {
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  readiness: WorkflowEvidenceReadinessResult | null | undefined;
+}): React.JSX.Element {
+  return (
+    <section className="wf-run-section wf-evidence-readiness" aria-label="Evidence readiness">
+      <header className="wf-run-section-head">
+        <h4>Evidence readiness</h4>
+        <span className={`workflow-chip workflow-${readiness?.status === "ready" ? "passed" : readiness ? "waiting" : "stopped"}`}>
+          {readiness?.status.replaceAll("_", " ") ?? "not evaluated"}
+        </span>
+      </header>
+      <p className="wf-run-meta">Advisory only. This result did not block workflow execution.</p>
+      {coverage.length === 0 ? (
+        <p className="wf-run-empty">No acceptance criterion coverage was frozen for this submission.</p>
+      ) : (
+        <div className="wf-coverage-ledger">
+          <h5>Frozen author claims</h5>
+          {coverage.map((claim) => (
+            <article key={claim.clientCriterionId} className="wf-run-card">
+              <header className="wf-run-card-head">
+                <strong>{claim.criterion}</strong>
+                <span>{claim.proofClass.replaceAll("_", " ")}</span>
+              </header>
+              <p className="wf-run-meta">{claim.repositoryScope}</p>
+              <div className="wf-evidence-links">
+                {claim.links.length === 0 ? <span className="workflow-chip workflow-waiting">No evidence linked</span> : claim.links.map((link) => (
+                  <span className="workflow-chip workflow-completed" key={`${link.clientItemId}:${link.role}`}>
+                    {link.role.replaceAll("_", " ")}: {link.clientItemId}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+      {readiness?.status === "unavailable" && (
+        <p className="wf-run-error" role="alert">Unavailable: {readiness.unavailableReason ?? "Context compaction did not return canonical criteria."}</p>
+      )}
+      {readiness && readiness.criteria.length > 0 && (
+        <div className="wf-coverage-ledger">
+          <h5>Canonical reconciliation</h5>
+          {readiness.criteria.map((criterion) => (
+            <article key={criterion.criterionId} className="wf-run-card">
+              <header className="wf-run-card-head">
+                <strong>{criterion.criterion}</strong>
+                <span>{criterion.material ? "material" : "supporting"}</span>
+              </header>
+              {criterion.gaps.length > 0 && (
+                <p className="wf-run-error">Gaps: {criterion.gaps.map((gap) => gap.replaceAll("_", " ")).join(", ")}</p>
+              )}
+              {criterion.warnings.length > 0 && (
+                <p className="wf-run-notice">Warnings: {criterion.warnings.map((warning) => warning.replaceAll("_", " ")).join(", ")}</p>
+              )}
+              <div className="wf-evidence-links">
+                {criterion.links.map((link) => (
+                  <span className="workflow-chip workflow-completed" key={`${link.evidenceId}:${link.role}`}>
+                    {link.role.replaceAll("_", " ")}: {link.clientItemId}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -1716,6 +1790,9 @@ export function WorkflowRunView({
   const submissionImages = viewed
     ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images ?? []
     : [];
+  const submissionCoverage = viewed
+    ? detail.evidenceCoverage?.find((group) => group.submissionId === viewed.id)?.coverage ?? []
+    : [];
   const inspectorGate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
   const spentGateStatus = spentInspectorGateStatus(detail);
@@ -2475,6 +2552,12 @@ export function WorkflowRunView({
           scopeOptions={evidenceScopeOptions}
           canRestage={detail.binding.state === "active" && !detail.externalSource}
           onRestage={onRestageImage}
+        />
+      )}
+      {viewed && (submissionCoverage.length > 0 || viewed.readiness != null) && (
+        <SubmissionEvidenceReadiness
+          coverage={submissionCoverage}
+          readiness={viewed.readiness}
         />
       )}
       {detail.contextState === "corrupt" && (

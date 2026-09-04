@@ -78,6 +78,7 @@ import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
+  DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
@@ -91,6 +92,13 @@ import {
   WORKFLOW_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
+  WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EVIDENCE_PROOF_ROLES,
+  WORKFLOW_EVIDENCE_READINESS_GAP_CODES,
+  WORKFLOW_EVIDENCE_READINESS_POLICIES,
+  WORKFLOW_EVIDENCE_READINESS_STATUSES,
+  WORKFLOW_EVIDENCE_READINESS_WARNING_CODES,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
@@ -106,7 +114,12 @@ import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
   workflowCommandEvidenceContent,
 } from "./workflow.ts";
-import type { WorkflowEvidenceRepositoryScope, WorkflowJson } from "./workflow.ts";
+import type {
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceReadinessResult,
+  WorkflowEvidenceRepositoryScope,
+  WorkflowJson,
+} from "./workflow.ts";
 import {
   ENSEMBLE_ARTIFACT_KINDS,
   ENSEMBLE_ARTIFACT_STATUSES,
@@ -4554,6 +4567,9 @@ export const WorkflowCompletionPolicySchema = z.discriminatedUnion("kind", [
 ]);
 
 export const WorkflowResumptionPolicySchema = z.enum(WORKFLOW_RESUMPTION_POLICIES);
+export const WorkflowEvidenceReadinessPolicySchema = z.enum(
+  WORKFLOW_EVIDENCE_READINESS_POLICIES,
+);
 
 export const WorkflowBindingDefaultsSchema = z.object({
   triggerMode: z.enum(WORKFLOW_TRIGGER_MODES),
@@ -4606,6 +4622,96 @@ export const WorkflowEvidenceRepositoryScopeSchema: z.ZodType<WorkflowEvidenceRe
     (value) => value === "all" || (typeof value === "string" && /^repo-\d{2}$/.test(value)),
     "Repository scope must be an issued repo slot",
   );
+
+export const WorkflowEvidenceCoverageLinkSchema = z.object({
+  clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
+  role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES),
+});
+
+export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCoverageClaim> = z.object({
+  clientCriterionId: z.string().min(1).max(
+    WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars,
+  ),
+  criterion: z.string().trim().min(1)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
+    .refine(
+      (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+      `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
+    ),
+  proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
+  repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
+  links: z.array(WorkflowEvidenceCoverageLinkSchema)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim)
+    .refine(
+      (links) => new Set(links.map((link) => `${link.clientItemId}\0${link.role}`)).size === links.length,
+      "Workflow coverage links must be unique by evidence item and proof role",
+    ),
+});
+
+export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCoverageClaimSchema)
+  .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+  .refine(
+    (claims) => new Set(claims.map((claim) => claim.clientCriterionId)).size === claims.length,
+    "Workflow coverage criterion ids must be unique",
+  )
+  .refine(
+    (claims) => jsonAtMost(claims, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes),
+    `Workflow coverage exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes`,
+  );
+
+export const WorkflowCanonicalCriterionSchema = z.object({
+  id: z.string().min(1).max(200),
+  text: z.string().trim().min(1)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
+    .refine(
+      (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+      `Workflow canonical criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
+    ),
+  material: z.boolean(),
+  suggestedProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
+  matchedClientCriterionIds: z.array(
+    z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+  ).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+});
+
+export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceReadinessResult> = z.object({
+  evaluatorVersion: z.literal("criterion_mapped_v1"),
+  status: z.enum(WORKFLOW_EVIDENCE_READINESS_STATUSES),
+  criteria: z.array(z.object({
+    criterionId: z.string().min(1).max(200),
+    criterion: z.string().trim().min(1)
+      .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
+      .refine(
+        (criterion) => utf8AtMost(
+          criterion,
+          WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes,
+        ),
+        `Workflow readiness criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
+      ),
+    material: z.boolean(),
+    matchedClientCriterionId: z.string().min(1)
+      .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    authorProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
+    suggestedProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
+    links: z.array(z.object({
+      clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars),
+      evidenceId: z.string().min(1).max(200),
+      role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES),
+    })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
+    gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES))
+      .max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
+    warnings: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))
+      .max(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES.length),
+  })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  gapCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES))
+    .max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
+  warningCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))
+    .max(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES.length),
+  unavailableReason: z.string().max(8_000).nullable(),
+}).refine(
+  (value) => jsonAtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes),
+  `Workflow readiness exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes`,
+);
 
 export const WorkflowEvidenceImageSchema = z.object({
   id: z.string().min(1).max(200),
@@ -4687,13 +4793,18 @@ export const WorkflowAgentTextEvidenceLocatorSchema = z.object({
   path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.relativePathChars),
 });
 
+/** SQLite-backed process statuses, including negative signal-termination values. */
+export const WorkflowCommandExitCodeSchema = z.number().int()
+  .min(-2_147_483_648)
+  .max(2_147_483_647);
+
 export const WorkflowAgentCommandEvidenceLocatorSchema = z.object({
   kind: z.literal("command"),
   clientItemId: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.clientItemIdChars),
   caption: z.string().trim().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.captionChars),
   repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
   command: z.string().trim().min(1).max(WORKFLOW_LIMITS.checkCommandLength),
-  exitCode: z.number().int().min(0).max(2_147_483_647),
+  exitCode: WorkflowCommandExitCodeSchema,
   // Character and byte bounds are both required: Zod counts UTF-16 code units, while storage
   // and model budgets count the canonical UTF-8 artifact containing command and exit metadata.
   output: z.string().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
@@ -4768,9 +4879,18 @@ export const SubmitWorkflowEvidenceSchema = z.object({
     .refine((value) => new Set(value.map((item) => item.clientItemId)).size === value.length, {
       message: "Workflow evidence client item ids must be unique",
     }).optional().default([]),
+  coverage: WorkflowEvidenceCoverageClaimsSchema.optional().default([]),
 }).superRefine((value, ctx) => {
-  if (value.images.length === 0 && value.artifacts.length === 0 && value.commandOutputs.length === 0) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "At least one workflow evidence item is required" });
+  if (
+    value.images.length === 0
+    && value.artifacts.length === 0
+    && value.commandOutputs.length === 0
+    && value.coverage.length === 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "At least one workflow evidence item or coverage claim is required",
+    });
   }
   const ids = [...value.images, ...value.artifacts, ...value.commandOutputs]
     .map((item) => item.clientItemId);
@@ -4894,6 +5014,9 @@ export const WorkflowContextSnapshotSchema = z.object({
   humanDecisions: z.array(WorkflowHumanDecisionSchema).max(200),
   constraints: z.array(z.string().max(4_000)).max(100),
   acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
+  canonicalCriteria: z.array(WorkflowCanonicalCriterionSchema)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+    .default([]),
   priorPersonaFeedback: z.array(z.object({
     personaName: z.string().max(WORKFLOW_LIMITS.personaName),
     summary: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
@@ -4993,6 +5116,9 @@ export const CreateWorkflowSchema = z.object({
   // A NEW draft, so `auto` rather than the `manual` a NULL column reads as - see
   // `WORKFLOW_RESUMPTION_POLICIES`. The two defaults answer different questions.
   resumptionPolicy: WorkflowResumptionPolicySchema.optional().default(DEFAULT_WORKFLOW_RESUMPTION_POLICY),
+  evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicySchema
+    .optional()
+    .default(DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY),
   bindingDefaults: WorkflowBindingDefaultsSchema.optional().default(DEFAULT_WORKFLOW_BINDING_DEFAULTS),
 });
 export type CreateWorkflow = z.infer<typeof CreateWorkflowSchema>;
@@ -5003,6 +5129,7 @@ const WORKFLOW_EDIT_FIELDS = [
   "draft",
   "completionPolicy",
   "resumptionPolicy",
+  "evidenceReadinessPolicy",
   "bindingDefaults",
 ] as const;
 
@@ -5014,6 +5141,7 @@ export const UpdateWorkflowSchema = z
     draft: WorkflowDraftGraphSchema.optional(),
     completionPolicy: WorkflowCompletionPolicySchema.optional(),
     resumptionPolicy: WorkflowResumptionPolicySchema.optional(),
+    evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicySchema.optional(),
     bindingDefaults: WorkflowBindingDefaultsSchema.optional(),
   })
   .refine((value) => WORKFLOW_EDIT_FIELDS.some((field) => field in value), {

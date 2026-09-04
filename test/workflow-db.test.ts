@@ -485,18 +485,28 @@ test("workflow evidence rows preserve old image defaults and validate text artif
     evidence_kind: "text",
     source_locator: "command:command-client",
     inline_content: commandContent,
+    command_exit_code: 0,
     display_name: "command-output.txt",
     mime_type: "text/plain",
     bytes: Buffer.byteLength(commandContent),
     sha256: createHash("sha256").update(commandContent).digest("hex"),
   };
   assert.equal(parseWorkflowEvidenceStagingRow(command).source_kind, "command");
+  assert.equal(parseWorkflowEvidenceStagingRow(command).command_exit_code, 0);
+  assert.equal(
+    parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: -9 }).command_exit_code,
+    -9,
+  );
   assert.throws(
     () => parseWorkflowEvidenceStagingRow({ ...command, sha256: "c".repeat(64) }),
     WorkflowRowError,
   );
   assert.throws(
     () => parseWorkflowEvidenceStagingRow({ ...command, inline_content: null }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: null }),
     WorkflowRowError,
   );
   assert.throws(

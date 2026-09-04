@@ -99,6 +99,8 @@ const evidenceController = (
   update: () => {},
   refreshStaged: () => {},
   removeStaged: () => {},
+  saveCoverage: async () => {},
+  removeCoverage: async () => {},
   clear: () => {},
 });
 

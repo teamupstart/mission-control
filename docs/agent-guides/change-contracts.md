@@ -338,6 +338,19 @@ One receipt may cross submissions, and only one: the attempt a child segment nam
 cross-submission source would let a node activated on one evidence snapshot advance a graph
 running on another.
 
+Criterion coverage follows the same evidence identity. Mutable claims are keyed by
+`(note_key, client_criterion_id)` and carry the staged generation. Submission creation reserves
+claims and linked evidence together; immutable coverage is keyed by submission plus client
+criterion id. A frozen link resolves only within that submission and repository scope. Never
+join coverage to the newest evidence row by client id, and never rewrite an immutable claim
+after capture.
+
+The persisted proof-class, proof-role, readiness-status, gap-code, warning-code, and policy
+values are append-only vocabularies. `evidenceReadinessPolicy` is frozen into a published
+version. In Phase 1 only `off` may publish, and readiness is advisory. Model output may match
+author ids and suggest a proof class, but deterministic code owns canonical ids, role gaps,
+scope checks, evidence identity, and readiness status.
+
 ## One workflow run is one repository
 
 Concurrency lives at the binding and run layer. Nothing below a run knows a session can review

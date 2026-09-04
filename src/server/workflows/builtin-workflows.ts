@@ -11,6 +11,7 @@ import {
   type SessionActionSnapshot,
   type WorkflowCompletionPolicy,
   type WorkflowDefinition,
+  type WorkflowEvidenceReadinessPolicy,
   type WorkflowResumptionPolicy,
   type WorkflowCheckSlot,
   type WorkflowDraftGraph,
@@ -198,6 +199,7 @@ interface BuiltinWorkflowSource {
      * silently change how versions 1-6 behave the next time that default moves.
      */
     resumptionPolicy: WorkflowResumptionPolicy;
+    evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicy;
     bindingDefaults: WorkflowBindingDefaults;
     sourceDraftRevision: number;
   }[];
@@ -216,6 +218,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     graph: publishBuiltinGraph(graph),
     completionPolicy: source.versions[index]!.completionPolicy,
     resumptionPolicy: source.versions[index]!.resumptionPolicy,
+    evidenceReadinessPolicy: source.versions[index]!.evidenceReadinessPolicy,
     bindingDefaults: source.versions[index]!.bindingDefaults,
     // Not published on this machine and carrying no edit history, so there is no instant to
     // report. Surfaces print "Built-in" where they print a row's dates.
@@ -228,6 +231,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     draft: graphs[graphs.length - 1]!,
     completionPolicy: current.completionPolicy,
     resumptionPolicy: current.resumptionPolicy,
+    evidenceReadinessPolicy: "off" as const,
     bindingDefaults: current.bindingDefaults,
   };
   const duplicable = CreateWorkflowSchema.safeParse(duplicateSeed);
@@ -245,6 +249,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
       draft: graphs[graphs.length - 1]!,
       completionPolicy: current.completionPolicy,
       resumptionPolicy: current.resumptionPolicy,
+      evidenceReadinessPolicy: current.evidenceReadinessPolicy,
       bindingDefaults: current.bindingDefaults,
       draftRevision: current.sourceDraftRevision,
       currentVersionId: current.id,
@@ -657,6 +662,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "offer_prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: LEGACY_WORKFLOW_BINDING_DEFAULTS,
         sourceDraftRevision: 1,
       },
@@ -668,6 +674,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "offer_prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 1,
       },
@@ -679,6 +686,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "offer_prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 2,
       },
@@ -690,6 +698,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "offer_prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 3,
       },
@@ -701,6 +710,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 4,
       },
@@ -712,6 +722,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "prepare_pr",
         },
         resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 5,
       },
@@ -732,6 +743,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "prepare_pr",
         },
         resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 6,
       },
@@ -752,6 +764,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           missingPrAction: "wait",
         },
         resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 7,
       },
@@ -765,6 +778,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         pipeline: NO_MISTAKES_REVIEW_V5,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 8,
       },
@@ -777,6 +791,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         pipeline: NO_MISTAKES_REVIEW_V6,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 9,
       },
@@ -789,6 +804,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         pipeline: NO_MISTAKES_REVIEW_V7,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "off",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 10,
       },

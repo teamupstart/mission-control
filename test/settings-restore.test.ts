@@ -391,6 +391,11 @@ test("v1 staging is deterministic, applies schema defaults, and generic merge pr
   const older = resign(original, (body) => {
     const ui = body.domains.find((entry) => entry.domain === "ui")!;
     delete (ui.payload as Record<string, unknown>).richText;
+    for (const domain of ["workflow-definitions", "workflow-versions"] as const) {
+      const rows = body.domains.find((entry) => entry.domain === domain)!.payload as
+        Array<Record<string, unknown>>;
+      for (const row of rows) delete row.evidenceReadinessPolicy;
+    }
   });
   assert.deepEqual(migrateSettingsBackupSnapshot(older), migrateSettingsBackupSnapshot(older));
   const first = stageSettingsBackupSnapshot(older);
@@ -401,6 +406,8 @@ test("v1 staging is deterministic, applies schema defaults, and generic merge pr
   );
   const ui = first.config.find((entry) => entry.domain === "ui")!.settingPayload as Record<string, unknown>;
   assert.equal(typeof ui.richText, "boolean");
+  assert.equal(first.workflows[0]?.evidenceReadinessPolicy, "off");
+  assert.equal(first.workflowVersions[0]?.evidenceReadinessPolicy, "off");
 
   const synthetic = {
     key: "synthetic",
@@ -529,7 +536,13 @@ test("restore advances catalogs, preserves immutable history and every excluded 
   assert.notEqual(workflowStore.getWorkflow("workflow-later")!.archivedAt, null);
   const restoredWorkflow = workflowStore.getWorkflow("workflow-one")!;
   assert.equal(restoredWorkflow.currentVersionId, "version-one");
+  assert.equal(restoredWorkflow.evidenceReadinessPolicy, "off");
   assert.ok(restoredWorkflow.draftRevision > 2);
+  assert.equal(
+    workflowStore.listWorkflowVersions("workflow-one")
+      .find((version) => version.id === "version-one")?.evidenceReadinessPolicy,
+    "off",
+  );
   assert.deepEqual(workflowStore.listWorkflowVersions("workflow-one").map((row) => row.id), [
     "version-two",
     "version-one",

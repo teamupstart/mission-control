@@ -56,6 +56,26 @@ test("definitions use revision CAS, normalized-name uniqueness, summaries, and s
   assert.equal(store.listWorkflows(true).find((workflow) => workflow.id === "w1")?.archivedAt, 5);
 });
 
+test("readiness policy defaults off and Phase 1 refuses an enforcing published version", () => {
+  const created = seed();
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  assert.equal(created.workflow.evidenceReadinessPolicy, "off");
+  const updated = store.updateWorkflowCas("w1", 1, {
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  }, 3);
+  assert.equal(updated.ok, true);
+  if (!updated.ok) return;
+  const published = store.publishWorkflow("w1", 2, "v-readiness", 4);
+  assert.equal(published.ok, false);
+  if (published.ok) return;
+  assert.equal(published.reason, "validation");
+  assert.deepEqual(published.diagnostics?.map((item) => item.code), [
+    "evidence_readiness_not_enforced",
+  ]);
+  assert.deepEqual(store.listWorkflowVersions("w1"), []);
+});
+
 test("Publish snapshots exact Persona bytes, is idempotent per draft, and never mutates old versions", () => {
   const exact = "# Exact\r\n\r\nKeep this.  \r\n";
   seed(exact);

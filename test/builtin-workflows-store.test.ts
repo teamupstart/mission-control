@@ -80,6 +80,7 @@ const shippedVersion = (version: number): WorkflowVersion => ({
   },
   completionPolicy: { kind: "none" },
   resumptionPolicy: "manual",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   publishedAt: 0,
 });
@@ -92,6 +93,7 @@ const shippedDefinition: WorkflowDefinition = {
   draft: shippedDraft,
   completionPolicy: { kind: "none" },
   resumptionPolicy: "manual",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   draftRevision: 1,
   // Two versions, because the append-only version list is the whole reason the catalog holds

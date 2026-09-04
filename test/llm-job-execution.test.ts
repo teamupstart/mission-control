@@ -168,7 +168,7 @@ test("the compaction stamp records the provider the call used, not the app-wide 
   // and the real call diverge every time rather than only under a race. With no override the
   // two coincide and the assertion proves nothing.
   setLlmConfig({ runner: "claude", runners: { "workflow-context": "codex" } });
-  reply = '{"constraints":["be quick"],"acceptanceCriteria":["it works"]}';
+  reply = '{"constraints":["be quick"],"acceptanceCriteria":["it works"],"canonicalCriteria":[]}';
 
   const snapshot = await compactWorkflowContext(RAW);
 

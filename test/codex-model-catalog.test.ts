@@ -339,6 +339,25 @@ test("an implausibly large page is refused before it is mapped or cached", async
   );
 });
 
+test("the page cap counts UTF-8 bytes, not UTF-16 code units", async () => {
+  // Nothing in the protocol restricts a description to ASCII. This page is about 470 code
+  // units and about 1270 UTF-8 bytes, so a `String.prototype.length` check would have
+  // admitted it under an 800-byte cap and cached a page three times the stated size.
+  const page = {
+    data: [{ id: "gpt-5.4", displayName: "GPT-5.4", description: "\u6f22".repeat(400) }],
+    nextCursor: null,
+  };
+  const units = JSON.stringify(page).length;
+  const bytes = Buffer.byteLength(JSON.stringify(page), "utf8");
+  assert.ok(units < 800, `expected ${units} code units under the cap`);
+  assert.ok(bytes > 800, `expected ${bytes} bytes over the cap`);
+
+  assert.equal(
+    await problemOf({ "model/list": page }, { bounds: { responseBytes: 800 } }),
+    "output_limit",
+  );
+});
+
 test("a response that is not a model list is invalid rather than empty", async () => {
   assert.equal(await problemOf({ "model/list": { data: "nope", nextCursor: null } }), "invalid_response");
   assert.equal(await problemOf({ "model/list": "nope" }), "invalid_response");
@@ -356,8 +375,37 @@ test("an empty list and an all-unusable list both report unavailable", async () 
 test("a Codex that has never heard of model/list is unsupported, not broken", async () => {
   // The fake answers an unmapped method exactly as the server does: JSON-RPC -32601.
   assert.equal(await problemOf({}), "unsupported");
+});
+
+test("only the protocol's own code means unsupported, never the vendor's wording", async () => {
+  // The misroute this pins: a message regex looking for "not found" or "unknown method"
+  // turns an operator's ordinary problems into "your Codex is too old". Every message
+  // below would have matched such a regex, and none of them is a missing method.
+  for (const message of [
+    "unknown method model/list",
+    "auth token not found; run codex login",
+    "config file not found",
+    "unrecognized workspace",
+    "unsupported sandbox policy",
+  ]) {
+    assert.equal(
+      await problemOf({ "model/list": { error: { code: -32000, message } } }),
+      "rpc_failed",
+      `"${message}" must not read as an old binary`,
+    );
+  }
+});
+
+test("a logged-out handshake is an rpc failure rather than an old binary", async () => {
+  // The same misroute on the other call site. A handshake that fails on credentials is
+  // the scenario the plan flags as unmeasured, so it must not be reported as a Codex too
+  // old to have the method - only a genuine METHOD_NOT_FOUND is that.
   assert.equal(
-    await problemOf({ "model/list": { error: { code: -32000, message: "unknown method model/list" } } }),
+    await problemOf({ initialize: { error: { code: -32000, message: "auth token not found" } } }),
+    "rpc_failed",
+  );
+  assert.equal(
+    await problemOf({ initialize: { error: { code: -32601, message: "no such method" } } }),
     "unsupported",
   );
 });

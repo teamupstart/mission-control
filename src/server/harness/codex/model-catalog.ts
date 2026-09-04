@@ -84,12 +84,16 @@ export const CODEX_MODEL_CATALOG_BOUNDS = {
    */
   timeoutMs: 15_000,
   /**
-   * Refused post-parse, per page.
+   * Refused post-parse, per page, counted as UTF-8 BYTES.
    *
    * The shared transport owns framing and reads bytes this module never sees, so this is
    * a cap on what is ACCEPTED rather than on what is read - adding a byte counter to the
    * transport would put it in a live session's hot path to bound a probe. Forty times the
    * measured payload, so an implausible page is refused before it is mapped or cached.
+   *
+   * Bytes, not `String.prototype.length`, which counts UTF-16 code units: nothing in the
+   * protocol restricts a `description` to ASCII, and a page of CJK text weighs three bytes
+   * per unit, so a length check would have admitted roughly three times this cap.
    */
   responseBytes: 262_144,
   /** The protocol's own ceiling for a carried catalog. */
@@ -186,19 +190,36 @@ function nextCursor(response: Record<string, unknown>): string | null {
   return typeof cursor === "string" && cursor.trim() ? cursor : null;
 }
 
+/** JSON-RPC's own "the method you asked for does not exist here". */
+const METHOD_NOT_FOUND = -32601;
+
 /**
  * Why a call failed, in the vocabulary the catalog service degrades on.
  *
- * `unsupported` is reserved for a Codex that does not have this method - an older build,
- * which is an ordinary thing for an operator to be running and not a fault to report. A
- * rejection that is not a JSON-RPC error at all came from the connection ending underneath
- * the request, which is a process failure however the server felt about the method.
+ * `unsupported` means ONE thing: the server answered `METHOD_NOT_FOUND`, so this build
+ * does not have the method we asked for. That is the protocol's own answer to the
+ * question, and it is the only signal used.
+ *
+ * It deliberately does not also match the vendor's prose. A message regex looking for
+ * "not found" or "unknown method" reads an operator's ordinary problems as an old binary:
+ * a logged-out Codex failing the handshake with "auth token not found", or a config path
+ * that could not be found, are not missing methods. Both belong in `rpc_failed`, which
+ * degrades to the same shipped fallback while telling the operator something true. Nothing
+ * here has been measured against an old Codex - which is exactly why it keys on a code the
+ * protocol defines rather than on text this codebase has never seen.
+ *
+ * Shared by both call sites because the question is the same one at each, though the answer
+ * means something different: on `model/list` it is a Codex too old to have the catalog
+ * method, and on `initialize` it is a binary that does not speak the app-server protocol at
+ * all. Both are "this installation cannot answer", which is what `unsupported` reports.
+ *
+ * A rejection that is not a JSON-RPC error at all came from the connection ending
+ * underneath the request, which is a process failure however the server felt about the
+ * method.
  */
 function callFailure(error: unknown): ModelCatalogDiscoveryResult {
   if (!(error instanceof AppServerError)) return failure("process_failed");
-  const unknownMethod =
-    error.code === -32601 || /unknown method|unsupported|not found|unrecognized/i.test(error.message);
-  return failure(unknownMethod ? "unsupported" : "rpc_failed");
+  return failure(error.code === METHOD_NOT_FOUND ? "unsupported" : "rpc_failed");
 }
 
 async function readCatalog(
@@ -232,7 +253,7 @@ async function readCatalog(
     } catch (error) {
       return callFailure(error);
     }
-    if (JSON.stringify(response ?? null).length > bounds.responseBytes) {
+    if (Buffer.byteLength(JSON.stringify(response ?? null), "utf8") > bounds.responseBytes) {
       return failure("output_limit");
     }
     const frame = record(response);

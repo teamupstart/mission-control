@@ -166,7 +166,7 @@ test.describe("version-manager Pi installation", () => {
     daemonEnv: { MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY: "1" },
   });
 
-  test("model discovery survives an unavailable login shell through the mise shim", async ({
+  test("model discovery survives an unavailable login shell through a configured mise shim", async ({
     page,
     daemon,
   }) => {

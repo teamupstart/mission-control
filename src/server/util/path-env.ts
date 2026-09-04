@@ -18,11 +18,13 @@ export const LOGIN_SHELL_PATH_REFRESH_COOLDOWN_MS = 30_000;
 function fallbackDirs(): string[] {
   const home = homedir();
   const dataHome = process.env.XDG_DATA_HOME?.trim() || `${home}/.local/share`;
+  const miseDataDir = process.env.MISE_DATA_DIR?.trim() || `${dataHome}/mise`;
+  const miseShimsDir = process.env.MISE_SHIMS_DIR?.trim() || `${miseDataDir}/shims`;
   const asdfDataDir = process.env.ASDF_DATA_DIR?.trim() || `${home}/.asdf`;
   const voltaHome = process.env.VOLTA_HOME?.trim() || `${home}/.volta`;
   return [
     `${home}/.local/bin`,
-    `${dataHome}/mise/shims`,
+    miseShimsDir,
     `${asdfDataDir}/shims`,
     `${voltaHome}/bin`,
     `${home}/go/bin`,

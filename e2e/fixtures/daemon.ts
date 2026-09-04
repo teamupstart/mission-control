@@ -254,7 +254,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
-  const versionManagerPiBin = join(home, ".local", "share", "mise", "shims", "pi");
+  const versionManagerPiBin = join(home, "tool-data", "mise-shims", "pi");
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   if (codexOnDaemonPathOnly) {
@@ -475,6 +475,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     isolatedEnv.MISSION_PI_BIN = "pi";
     isolatedEnv.PATH = `${versionManagerRuntimeBin}${delimiter}/usr/bin${delimiter}/bin`;
     isolatedEnv.SHELL = join(home, "missing-login-shell");
+    isolatedEnv.MISE_SHIMS_DIR = dirname(versionManagerPiBin);
     delete isolatedEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY;
   } else if (conductorNodeVersion !== undefined) {
     // Setup forces a login-shell PATH refresh before inspecting installer prerequisites.

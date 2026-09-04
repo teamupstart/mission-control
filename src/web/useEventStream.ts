@@ -30,6 +30,7 @@ import {
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
+import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
@@ -369,9 +370,10 @@ export function useEventStream(): MissionState {
           // yet re-added: the daemon evicted it after a completed sweep. That makes
           // this the only safe place to collect its half-written compose text, its
           // accumulated conversation history, and the rendering it was being read in -
-          // all three are bound to the session the same way and would otherwise be
+          // all four are bound to the session the same way and would otherwise be
           // re-hydrated into a reused id.
           dropSessionDrafts(msg.id);
+          dropSessionArtifactState(msg.id);
           dropHistory(msg.id);
           dropSessionView(msg.id);
           dropInterrupting(msg.id);

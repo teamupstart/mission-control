@@ -105,6 +105,8 @@ export interface SessionViewProps {
    * path rather than prose - `onOpenFile` would read a trailing `:12` as a line number.
    */
   onOpenFilePath: (id: string, path: string) => void;
+  /** Open an exact path in Preview with Files comment mode armed. */
+  onCommentInFiles?: (id: string, path: string) => void;
   /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
   fileTabRequest: { sessionId: string; nonce: number } | null;
   /**
@@ -134,6 +136,8 @@ export interface SessionViewProps {
   fileCommentReviews?: FileCommentReview[];
   /** Which source line the reader deep-linked to, and how many times they asked. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
+  /** Which rendered file should enter comment mode, and how many times it was requested. */
+  fileCommentRequest?: { sessionId: string; path: string; nonce: number } | null;
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */
   onComplete: (id: string) => void;

@@ -772,6 +772,9 @@ export function ConsoleDetail({
               reviews={timelineReviews}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
+              onCommentInFiles={view.onCommentInFiles
+                ? (path) => view.onCommentInFiles?.(session.id, path)
+                : undefined}
               files={view.files}
               registerFind={view.registerFind}
               resetNonce={view.resetNonces[session.id] ?? 0}
@@ -851,6 +854,7 @@ export function ConsoleDetail({
                 fileCommentThreads={view.fileCommentThreads}
                 fileCommentReviews={view.fileCommentReviews}
                 fileLineRequest={view.fileLineRequest}
+                fileCommentRequest={view.fileCommentRequest}
                 onExtract={extractFiles}
                 isOverlayOpen={view.isOverlayOpen}
               />

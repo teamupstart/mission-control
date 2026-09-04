@@ -305,6 +305,110 @@ process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
   }
 });
 
+test("a hung build settles anyway when something escapes the kill and holds the pipes", async (t) => {
+  // The bound exists for the case that actually breaks the promise: a descendant in its OWN
+  // process group, which the group kill cannot reach, still holding the output pipes open. The
+  // child's `close` then never arrives, and waiting on it unconditionally would leave the
+  // banner reading `preparing` for good - the opposite of what a documented timeout is for.
+  const clone = fakeClone(`
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+// detached: its own process group, so the kill of ours does not touch it. It inherits stdio,
+// so it holds the pipes this test's reader is attached to.
+const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  detached: true,
+  stdio: "inherit",
+});
+escaped.unref();
+writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
+setInterval(() => {}, 1000);
+`);
+  const pidFile = join(clone, "escaped.pid");
+  process.env.MISSION_TEST_PID_FILE = pidFile;
+  t.after(() => {
+    delete process.env.MISSION_TEST_PID_FILE;
+    if (existsSync(pidFile)) {
+      const escaped = Number(readFileSync(pidFile, "utf8").trim());
+      try {
+        process.kill(escaped, "SIGKILL");
+      } catch {
+        // Already gone, which is the only other acceptable state.
+      }
+    }
+    rmSync(clone, { recursive: true, force: true });
+  });
+
+  const logged: string[] = [];
+  const outcome = await stageUpdateBuild({
+    node: process.execPath,
+    sourceClone: clone,
+    targetTag: "v1.7.0",
+    signal: new AbortController().signal,
+    onStage: () => {},
+    log: (line) => logged.push(line),
+    timeoutMs: 200,
+    exitTimeoutMs: 400,
+  });
+
+  // It settled, which is the whole point, and it says what it actually knows.
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    assert.equal(outcome.reason, "failed");
+    assert.match(outcome.message, /did not finish within/);
+  }
+  assert.ok(
+    logged.some((line) => line.includes("still holding on")),
+    `the uncertain shutdown should be logged: ${logged.join(" | ")}`,
+  );
+});
+
+test("a cancelled build settles anyway when something escapes the kill", async (t) => {
+  const clone = fakeClone(`
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  detached: true,
+  stdio: "inherit",
+});
+escaped.unref();
+writeFileSync(process.env.MISSION_TEST_PID_FILE, String(escaped.pid));
+process.stdout.write("${UPDATE_PROGRESS_MARKER} dependencies\\n");
+setInterval(() => {}, 1000);
+`);
+  const pidFile = join(clone, "escaped.pid");
+  process.env.MISSION_TEST_PID_FILE = pidFile;
+  t.after(() => {
+    delete process.env.MISSION_TEST_PID_FILE;
+    if (existsSync(pidFile)) {
+      const escaped = Number(readFileSync(pidFile, "utf8").trim());
+      try {
+        process.kill(escaped, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    rmSync(clone, { recursive: true, force: true });
+  });
+
+  const abort = new AbortController();
+  const outcome = await stageUpdateBuild({
+    node: process.execPath,
+    sourceClone: clone,
+    targetTag: "v1.7.0",
+    signal: abort.signal,
+    onStage: () => abort.abort(),
+    log: () => {},
+    exitTimeoutMs: 400,
+  });
+
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    assert.equal(outcome.reason, "cancelled");
+    // Said plainly rather than claiming a clean stop, because this one is not certain.
+    assert.match(outcome.message, /may still be shutting down/);
+  }
+});
+
 test("a build that outruns its limit is stopped and says so", async () => {
   const clone = fakeClone(`setInterval(() => {}, 1000);`);
   try {

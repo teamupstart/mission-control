@@ -138,7 +138,11 @@ reached - prerequisites, source, release, checkout, dependencies, build, verify 
 that stops the build. Cancel does not return the offer straight away: `npm` and
 `electron-builder` write into the shared clone, and the next preparation force-checks-out and
 reinstalls in that same directory, so the banner reads *cancelling* until the build's whole
-process group is actually gone (bounded, in case one is wedged in uninterruptible I/O). When the
+process group is actually gone. Both that wait and the 45-minute build timeout are bounded the
+same way, because the signal that the group is gone is the child's `close` and a descendant that
+escaped the group - or one stuck in uninterruptible I/O - can hold the output pipes open
+indefinitely. When that happens the update settles anyway, says the shutdown was uncertain, and
+writes it to the log; a cancel that never returns would be worse than one that reports late. When the
 new version is built and verified the banner reads **ready to install** and offers **Restart and
 Install**, which is the only part of an update that needs the app gone. That part takes seconds.
 

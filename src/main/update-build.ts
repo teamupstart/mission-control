@@ -82,6 +82,8 @@ export interface StageRequest {
   onStage(stage: UpdatePrepareStage): void;
   log(line: string): void;
   timeoutMs?: number;
+  /** Overrides CANCEL_EXIT_TIMEOUT_MS; the wait for a killed group to actually be gone. */
+  exitTimeoutMs?: number;
 }
 
 export function stageScriptPath(sourceClone: string): string {
@@ -119,6 +121,7 @@ export function stagingUnsupported(output: string): boolean {
 export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
   const script = stageScriptPath(request.sourceClone);
   const timeoutMs = request.timeoutMs ?? STAGE_TIMEOUT_MS;
+  const exitTimeoutMs = request.exitTimeoutMs ?? CANCEL_EXIT_TIMEOUT_MS;
 
   return new Promise<StageOutcome>((resolve) => {
     if (request.signal.aborted) {
@@ -177,33 +180,44 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
     };
 
     /**
-     * Kill the group, then wait for it to be gone before telling the caller.
+     * Kill the group, then wait for it to be gone before telling the caller - but not forever.
      *
      * Resolving on the signal alone let the offer come straight back while `npm` and
-     * `electron-builder` were still shutting down - and one click on Update Now then started a
+     * `electron-builder` were still shutting down, and one click on Update Now then started a
      * fresh `git checkout --force` and `npm ci` in the directory those processes were still
      * writing to. `close` is the signal that they are all gone, because it waits for every
      * holder of the output pipes.
+     *
+     * Which is also why the wait needs a bound. SIGKILL cannot be caught, but a descendant that
+     * escaped the group - or one stuck in uninterruptible I/O - can hold those pipes open
+     * indefinitely, and then `close` never arrives. Waiting on it unconditionally would leave
+     * the promise unsettled and the banner reading `preparing` forever, which is the opposite
+     * of what both the cancel and the timeout exist to guarantee. So `close` wins when it comes,
+     * and this settles anyway when it does not, saying that the shutdown is uncertain.
      */
-    function onAbort(): void {
-      if (cancelling) return;
-      cancelling = true;
+    const killAndSettle = (outcome: StageOutcome, uncertain: () => StageOutcome): void => {
       killGroup();
-      if (!child || child.exitCode !== null || child.signalCode !== null) {
-        settle(cancelled());
+      if (!child) {
+        settle(outcome);
         return;
       }
       exitTimer = setTimeout(() => {
         request.log(
-          `the cancelled build did not exit within ${Math.round(CANCEL_EXIT_TIMEOUT_MS / 1000)} seconds; giving up on waiting for it`,
+          `the build did not exit within ${Math.round(exitTimeoutMs / 1000)} seconds of being killed; something in its process group is still holding on`,
         );
-        settle(
-          cancelled(
-            "The update was cancelled, but its build may still be shutting down. Try again in a moment.",
-          ),
-        );
-      }, CANCEL_EXIT_TIMEOUT_MS);
+        settle(uncertain());
+      }, exitTimeoutMs);
       exitTimer.unref?.();
+    };
+
+    function onAbort(): void {
+      if (cancelling) return;
+      cancelling = true;
+      killAndSettle(cancelled(), () =>
+        cancelled(
+          "The update was cancelled, but its build may still be shutting down. Try again in a moment.",
+        ),
+      );
     }
 
     const consume = (line: string): void => {
@@ -284,10 +298,18 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
     child.stdout?.on("data", reader());
     child.stderr?.on("data", reader());
 
+    const timedOutOutcome = (): StageOutcome => ({
+      ok: false,
+      reason: "failed",
+      message: `The update build did not finish within ${Math.round(timeoutMs / 60_000)} minutes and was stopped.`,
+    });
+
     timer = setTimeout(() => {
       timedOut = true;
       request.log(`the staged build passed its ${Math.round(timeoutMs / 60_000)} minute limit`);
-      killGroup();
+      // Bounded like the cancel, and for the same reason: the documented timeout has to hold
+      // even when the thing it is killing will not let go of the output pipes.
+      killAndSettle(timedOutOutcome(), timedOutOutcome);
     }, timeoutMs);
     timer.unref?.();
 
@@ -306,11 +328,7 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
         return;
       }
       if (timedOut) {
-        settle({
-          ok: false,
-          reason: "failed",
-          message: `The update build did not finish within ${Math.round(timeoutMs / 60_000)} minutes and was stopped.`,
-        });
+        settle(timedOutOutcome());
         return;
       }
       const output = tail.join("\n");

@@ -48,6 +48,7 @@ import type {
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import {
+  PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineRunKey,
   pipelineRunKeyOf,
   pipelineCommissionKey,
@@ -56,8 +57,14 @@ import {
   type PipelineProviderId,
   type PipelineRun,
   type PipelineRunLink,
+  type PipelineWorkspaceView,
   type SessionPipelineLink,
 } from "@shared/pipeline.ts";
+import {
+  projectPipelineWorkspace,
+  resolvePipelineWorkspace,
+  type PipelineWorkspaceResolution,
+} from "./pipelines/workspace.ts";
 import type {
   HookIngest,
   OtlpMetrics,
@@ -297,6 +304,7 @@ export interface ManagedPipelineCaller {
   taskId: string;
   sessionId: string;
   cwd: string;
+  expiresAt: number;
 }
 
 /**
@@ -736,6 +744,11 @@ export class Registry extends EventEmitter {
   private pipelineRuns = new Map<string, PipelineRun>();
   /** Active task-owned lifecycle projections, loaded from SQLite before serving traffic. */
   private pipelineCommissions = new Map<string, PipelineCommission>();
+  private pipelineWorkspaceRefreshes = new Map<string, {
+    key: string;
+    promise: Promise<void>;
+  }>();
+  private pipelineWorkspaceResolvedKeys = new Map<string, string>();
   /**
    * Live line-comment threads, keyed by id.
    *
@@ -1267,7 +1280,12 @@ export class Registry extends EventEmitter {
     cwd: string,
     credential: string,
   ): void {
-    this.managedPipelineCallers.set(credential, { taskId, sessionId, cwd });
+    this.managedPipelineCallers.set(credential, {
+      taskId,
+      sessionId,
+      cwd,
+      expiresAt: Date.now() + PIPELINE_CALLER_CREDENTIAL_TTL_MS,
+    });
   }
 
   endManagedPipelineCaller(taskId: string, sessionId: string, credential: string): void {
@@ -1278,7 +1296,12 @@ export class Registry extends EventEmitter {
   }
 
   managedPipelineCaller(credential: string): ManagedPipelineCaller | null {
-    return this.managedPipelineCallers.get(credential) ?? null;
+    const caller = this.managedPipelineCallers.get(credential) ?? null;
+    if (caller && caller.expiresAt <= Date.now()) {
+      this.managedPipelineCallers.delete(credential);
+      return null;
+    }
+    return caller;
   }
 
   /**
@@ -1924,6 +1947,8 @@ export class Registry extends EventEmitter {
     }
     if (previous && JSON.stringify(previous) === JSON.stringify(commission)) return;
     this.emitEvent({ type: "pipeline_commission_upsert", commission });
+    const task = this.tasks.get(commission.taskId);
+    if (task?.sessionId) this.resyncSessionTask(task.sessionId);
   }
 
   removePipelineCommission(id: PipelineCommissionId): void {
@@ -2406,7 +2431,9 @@ export class Registry extends EventEmitter {
       paneDialog: null,
     };
     s.task = this.taskSummaryFor(s.id, s.cwd);
-    s.workspaceRoot = this.workspaceRootFor(s.id, s.cwd, s.runtime);
+    const workspace = this.workspaceFor(s.id, s.cwd, s.runtime);
+    s.workspaceRoot = workspace.root;
+    s.workspace = workspace.view;
     s.note = this.noteSummaryFor(s);
     s.goal = this.goalSummaryFor(s);
     s.foremanInvite = this.foremanInviteFor(s);
@@ -5742,6 +5769,8 @@ export class Registry extends EventEmitter {
     for (const [credential, caller] of this.managedPipelineCallers) {
       if (caller.sessionId === id) this.managedPipelineCallers.delete(credential);
     }
+    this.pipelineWorkspaceRefreshes.delete(id);
+    this.pipelineWorkspaceResolvedKeys.delete(id);
     // Held until the ROW goes, not until the agent stopped - see `retroCorrections`. This is
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
@@ -6435,16 +6464,18 @@ export class Registry extends EventEmitter {
    * A managed Pipeline host stays interactive and daemon-owned, so its process cwd and
    * `Session.pipeline` remain unchanged. Only its workspace projection follows Engineer:
    * first the exact provider run worktree once observed, otherwise the reported authoring
-   * checkout, otherwise the host cwd.
+   * checkout, otherwise an explicit unavailable state.
    */
-  private workspaceRootFor(
+  private workspaceFor(
     sessionId: string,
     cwd: string | null,
     runtime: Session["runtime"],
-  ): string | null {
-    if (runtime !== "sdk") return cwd;
+  ): { root: string | null; view: PipelineWorkspaceView | null } {
+    if (runtime !== "sdk") return { root: cwd, view: null };
     const task = this.activeTaskFor(sessionId, cwd);
-    if (task?.kind !== "pipeline" || task.sessionId !== sessionId) return cwd;
+    if (task?.kind !== "pipeline" || task.sessionId !== sessionId) {
+      return { root: cwd, view: null };
+    }
     const link = task.pipelineRun;
     const run = link
       ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug))
@@ -6452,7 +6483,161 @@ export class Registry extends EventEmitter {
     const commission = task.pipelineCommissionId
       ? this.pipelineCommission(task.pipelineCommissionId)
       : null;
-    return run?.worktree ?? commission?.authoringWorktree ?? task.pipelineWorkspacePath ?? cwd;
+    if (!commission) return { root: null, view: null };
+    const input = { task, commission, linkedRun: run ?? null };
+    const projected = projectPipelineWorkspace(input);
+    const refreshKey = this.pipelineWorkspaceRefreshKey(input);
+    const currentSession = this.sessions.get(sessionId);
+    const current = currentSession?.workspace ?? null;
+    const resolvedForProjection = this.pipelineWorkspaceResolvedKeys.get(sessionId) === refreshKey;
+    const sameIdentity = current?.authority === "provider" &&
+      current.kind === projected.view.kind &&
+      (current.reportedPath === projected.view.reportedPath || resolvedForProjection) &&
+      current.attempt === projected.view.attempt &&
+      current.commit === projected.view.commit &&
+      current.commitFrozenAt === projected.view.commitFrozenAt &&
+      current.planSlug === projected.view.planSlug &&
+      (current.kind === "implementation" ||
+        projected.view.branch === null ||
+        current.branch === projected.view.branch);
+    if (sameIdentity && projected.view.reason === "provider_pending") {
+      if (
+        current.availability === "pending" &&
+        !resolvedForProjection
+      ) {
+        this.schedulePipelineWorkspaceRefresh(sessionId, input);
+      }
+      const view = current.providerRevision === projected.view.providerRevision
+        ? current
+        : { ...current, providerRevision: projected.view.providerRevision };
+      return {
+        root: view.availability === "available" ? currentSession?.workspaceRoot ?? null : null,
+        view,
+      };
+    }
+    this.schedulePipelineWorkspaceRefresh(sessionId, input);
+    return { root: null, view: projected.view };
+  }
+
+  /** Revalidate the exact Pipeline workspace before a route reads or mutates it. */
+  async resolveSessionWorkspace(sessionId: string): Promise<{
+    root: string | null;
+    view: PipelineWorkspaceView | null;
+    repoRoot: string | null;
+  }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { root: null, view: null, repoRoot: null };
+    const task = this.activeTaskFor(session.id, session.cwd);
+    if (session.runtime !== "sdk" || task?.kind !== "pipeline" || task.sessionId !== session.id) {
+      const resolved = this.workspaceFor(session.id, session.cwd, session.runtime);
+      return { ...resolved, repoRoot: session.repoRoot };
+    }
+    const commission = task.pipelineCommissionId
+      ? this.pipelineCommission(task.pipelineCommissionId)
+      : null;
+    if (!commission) return { root: null, view: null, repoRoot: task.repoRoot };
+    const link = task.pipelineRun;
+    const linkedRun = link
+      ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug)) ?? null
+      : null;
+    const resolved = await resolvePipelineWorkspace({ task, commission, linkedRun });
+    this.pipelineWorkspaceResolvedKeys.set(
+      session.id,
+      this.pipelineWorkspaceRefreshKey({ task, commission: resolved.commission, linkedRun }),
+    );
+    this.applyPipelineWorkspaceResolution(session.id, commission, resolved);
+    return {
+      root: resolved.liveRoot,
+      view: resolved.view,
+      repoRoot: task.repoRoot,
+    };
+  }
+
+  private pipelineWorkspaceRefreshKey(input: {
+    task: Task;
+    commission: PipelineCommission;
+    linkedRun: PipelineRun | null;
+  }): string {
+    const attempt = input.commission.attempts.find(
+      (candidate) => candidate.attempt === input.commission.activeAttempt,
+    );
+    return JSON.stringify({
+      taskId: input.task.id,
+      lifecycle: input.commission.lifecycle,
+      attempt: input.commission.activeAttempt,
+      engineerRunId: attempt?.engineerRunId ?? null,
+      providerRevision: attempt?.providerRevision ?? null,
+      evidenceCommit: attempt?.evidenceCommit ?? null,
+      evidenceFrozenAt: attempt?.evidenceFrozenAt ?? null,
+      authoringWorktree: input.commission.authoringWorktree ?? input.task.pipelineWorkspacePath ?? null,
+      authoringBranch: input.commission.authoringBranch,
+      planSlug: input.commission.planSlug,
+      implementationWorktree: input.linkedRun?.worktree ?? null,
+    });
+  }
+
+  private schedulePipelineWorkspaceRefresh(
+    sessionId: string,
+    input: { task: Task; commission: PipelineCommission; linkedRun: PipelineRun | null },
+  ): void {
+    const key = this.pipelineWorkspaceRefreshKey(input);
+    if (this.pipelineWorkspaceRefreshes.get(sessionId)?.key === key) return;
+    let promise!: Promise<void>;
+    promise = resolvePipelineWorkspace(input)
+      .then((resolved) => {
+        const session = this.sessions.get(sessionId);
+        if (!session) return;
+        const task = this.activeTaskFor(session.id, session.cwd);
+        const commission = task?.pipelineCommissionId
+          ? this.pipelineCommission(task.pipelineCommissionId)
+          : null;
+        if (!task || !commission) return;
+        const link = task.pipelineRun;
+        const linkedRun = link
+          ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug)) ?? null
+          : null;
+        if (this.pipelineWorkspaceRefreshKey({ task, commission, linkedRun }) !== key) return;
+        this.pipelineWorkspaceResolvedKeys.set(
+          sessionId,
+          this.pipelineWorkspaceRefreshKey({ task, commission: resolved.commission, linkedRun }),
+        );
+        this.applyPipelineWorkspaceResolution(sessionId, commission, resolved);
+      })
+      .catch(() => {
+        // The resolver returns named degraded states. This catches only an unexpected failure.
+      })
+      .finally(() => {
+        if (this.pipelineWorkspaceRefreshes.get(sessionId)?.promise === promise) {
+          this.pipelineWorkspaceRefreshes.delete(sessionId);
+        }
+      });
+    this.pipelineWorkspaceRefreshes.set(sessionId, { key, promise });
+  }
+
+  private applyPipelineWorkspaceResolution(
+    sessionId: string,
+    previousCommission: PipelineCommission,
+    resolved: PipelineWorkspaceResolution,
+  ): void {
+    if (JSON.stringify(resolved.commission) !== JSON.stringify(previousCommission)) {
+      this.pipelineCommissions.set(
+        pipelineCommissionKey(resolved.commission.id),
+        resolved.commission,
+      );
+      this.emitEvent({ type: "pipeline_commission_upsert", commission: resolved.commission });
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session || (
+      session.workspaceRoot === resolved.liveRoot &&
+      JSON.stringify(session.workspace ?? null) === JSON.stringify(resolved.view)
+    )) return;
+    const next = {
+      ...session,
+      workspaceRoot: resolved.liveRoot,
+      workspace: resolved.view,
+    };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
   }
 
   /**
@@ -6566,9 +6751,12 @@ export class Registry extends EventEmitter {
     const key = pipelineRunKey(provider, repoRoot, slug);
     for (const session of [...this.sessions.values()]) {
       if (session.runtime === "sdk") {
-        const workspaceRoot = this.workspaceRootFor(session.id, session.cwd, session.runtime);
-        if (session.workspaceRoot === workspaceRoot) continue;
-        const next = { ...session, workspaceRoot };
+        const workspace = this.workspaceFor(session.id, session.cwd, session.runtime);
+        if (
+          session.workspaceRoot === workspace.root &&
+          JSON.stringify(session.workspace ?? null) === JSON.stringify(workspace.view)
+        ) continue;
+        const next = { ...session, workspaceRoot: workspace.root, workspace: workspace.view };
         this.sessions.set(session.id, next);
         this.emitSession(next);
         continue;
@@ -6619,12 +6807,13 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s) return;
     const summary = this.taskSummaryFor(id, s.cwd);
-    const workspaceRoot = this.workspaceRootFor(id, s.cwd, s.runtime);
+    const workspace = this.workspaceFor(id, s.cwd, s.runtime);
     if (
       JSON.stringify(s.task) === JSON.stringify(summary) &&
-      s.workspaceRoot === workspaceRoot
+      s.workspaceRoot === workspace.root &&
+      JSON.stringify(s.workspace ?? null) === JSON.stringify(workspace.view)
     ) return;
-    const next = { ...s, task: summary, workspaceRoot };
+    const next = { ...s, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
   }
@@ -8612,6 +8801,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   state: byValue,
   cwd: byValue,
   workspaceRoot: byValue,
+  workspace: byJson,
   gitBranch: byValue,
   gitRoot: byValue,
   repoRoot: byValue,

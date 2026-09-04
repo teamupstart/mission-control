@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { dirname, join, posix, resolve } from "node:path";
 import { MEMORY_INDEX_PATH } from "@shared/memory.ts";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
-import { utf8Bytes } from "./util/utf8.ts";
+import { run } from "./util/exec.ts";
+import { decodeUtf8Whole, utf8Bytes } from "./util/utf8.ts";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
 // against when it asks "was this actually finished, to this repo's bar?".
@@ -205,4 +207,157 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
     docs.push(doc);
   }
   return { docs, truncated: truncated || droppedPaths || droppedDirs };
+}
+
+interface GitTreeEntry {
+  mode: string;
+  oid: string;
+  size: number;
+}
+
+async function gitTreeEntries(
+  repoRoot: string,
+  commit: string,
+): Promise<Map<string, GitTreeEntry> | null> {
+  // One tree walk replaces a synchronous process per possible standards path. The
+  // changed-path climb can deliberately produce thousands of candidates; almost all
+  // of them are absent, so asking Git once and indexing only matching blobs keeps the
+  // daemon responsive and makes missing documents free.
+  const result = await run("git", ["-C", repoRoot, "ls-tree", "-r", "-z", "--long", commit], {
+    timeoutMs: 15_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.code !== 0 || result.overflowed) return null;
+  const entries = new Map<string, GitTreeEntry>();
+  for (const raw of result.stdout.split("\0")) {
+    if (!raw) continue;
+    const match = raw.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t([\s\S]+)$/);
+    if (!match || !match[1] || !match[2] || !match[3] || !match[4]) continue;
+    const size = Number(match[3]);
+    if (!Number.isSafeInteger(size) || size < 0) continue;
+    entries.set(match[4], { mode: match[1], oid: match[2], size });
+  }
+  return entries;
+}
+
+function gitBlobPrefix(repoRoot: string, oid: string, limit: number): Promise<Buffer | null> {
+  return new Promise((resolveBlob) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn("git", ["-C", repoRoot, "cat-file", "blob", oid], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      resolveBlob(null);
+      return;
+    }
+    if (!child.stdout) {
+      child.kill();
+      resolveBlob(null);
+      return;
+    }
+    const stdout = child.stdout;
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let stoppedAtLimit = false;
+    let settled = false;
+    const finish = (value: Buffer | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveBlob(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, 15_000);
+    child.on("error", () => finish(null));
+    stdout.on("data", (chunk: Buffer) => {
+      const remaining = limit - bytes;
+      if (remaining > 0) {
+        const kept = chunk.subarray(0, remaining);
+        chunks.push(kept);
+        bytes += kept.length;
+      }
+      if (bytes >= limit && chunk.length > remaining) {
+        stoppedAtLimit = true;
+        child.kill();
+      }
+    });
+    child.on("close", (code) => {
+      finish(code === 0 || stoppedAtLimit ? Buffer.concat(chunks, bytes) : null);
+    });
+  });
+}
+
+/** Read the standards visible at one immutable Pipeline evidence commit. */
+export async function readStandardsFromGitTree(
+  repoRoot: string,
+  commit: string,
+  changedPaths: string[],
+): Promise<StandardsBundle> {
+  if (!/^[0-9a-f]{40,64}$/i.test(commit)) return { docs: [], truncated: false };
+  const wanted = [...ROOT_NAMES];
+  const seenDirs = new Set<string>();
+  let droppedDirs = false;
+  const walk = changedPaths.slice(0, MAX_CHANGED_PATHS);
+  for (const rawPath of walk) {
+    if (
+      !rawPath ||
+      rawPath.includes("\0") ||
+      /[\r\n]/.test(rawPath) ||
+      rawPath.startsWith("/") ||
+      rawPath.split("/").some((part) => part === "..")
+    ) continue;
+    let dir = posix.dirname(posix.normalize(rawPath));
+    while (dir !== "." && dir !== "/") {
+      if (seenDirs.has(dir)) break;
+      if (seenDirs.size >= MAX_WALKED_DIRS) {
+        droppedDirs = true;
+        break;
+      }
+      seenDirs.add(dir);
+      for (const name of NESTED_NAMES) wanted.push(posix.join(dir, name));
+      dir = posix.dirname(dir);
+    }
+  }
+  wanted.push(...ROOT_EXTRA_PATHS);
+
+  const entries = await gitTreeEntries(repoRoot, commit);
+  if (!entries) return { docs: [], truncated: true };
+
+  const requested = new Set<string>();
+  const identity = new Set<string>();
+  const docs: RepoDoc[] = [];
+  let total = 0;
+  let truncated = false;
+  for (const filePath of wanted) {
+    if (requested.has(filePath)) continue;
+    requested.add(filePath);
+    const entry = entries.get(filePath);
+    if (!entry || entry.mode === "120000" || identity.has(entry.oid)) continue;
+    identity.add(entry.oid);
+    const expectedBytes = Math.min(entry.size, MAX_FILE_BYTES);
+    if (total + expectedBytes > MAX_TOTAL_BYTES) {
+      truncated = true;
+      continue;
+    }
+    const content = await gitBlobPrefix(repoRoot, entry.oid, MAX_FILE_BYTES);
+    if (!content) {
+      truncated = true;
+      continue;
+    }
+    const doc: RepoDoc = {
+      path: filePath,
+      realPath: `git:${commit}:${entry.oid}`,
+      text: decodeUtf8Whole(content),
+      truncated: entry.size > MAX_FILE_BYTES,
+    };
+    total += utf8Bytes(doc.text);
+    docs.push(doc);
+  }
+  return {
+    docs,
+    truncated: truncated || droppedDirs || changedPaths.length > MAX_CHANGED_PATHS,
+  };
 }

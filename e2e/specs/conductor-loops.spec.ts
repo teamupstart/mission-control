@@ -27,7 +27,10 @@ import {
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expect, test } from "../fixtures/test.ts";
-import { PIPELINE_CALLER_CREDENTIAL_HEADER } from "../../src/shared/pipeline.ts";
+import {
+  PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
+  PIPELINE_CALLER_CREDENTIAL_HEADER,
+} from "../../src/shared/pipeline.ts";
 
 /**
  * The three loops added around an external pipeline: dispatch, Inspector adoption, and
@@ -215,8 +218,22 @@ function codexPipelineCallerCredential(daemon: DaemonHandle): string | null {
   const records = recordsIn<{ argv?: string[] }>(join(daemon.recordDir, "codex"));
   for (const record of records) {
     for (const arg of record.argv ?? []) {
-      const match = arg.match(/"MISSION_PIPELINE_CALLER_CREDENTIAL"="([A-Za-z0-9_-]{43})"/);
-      if (match) return match[1]!;
+      const match = arg.match(
+        new RegExp(`"${PIPELINE_CALLER_CREDENTIAL_FILE_ENV}"="([^"]+)"`),
+      );
+      if (!match || !existsSync(match[1]!)) continue;
+      const parsed = JSON.parse(readFileSync(match[1]!, "utf8")) as {
+        credential?: unknown;
+        expiresAt?: unknown;
+      };
+      if (
+        typeof parsed.credential === "string" &&
+        typeof parsed.expiresAt === "number" &&
+        parsed.expiresAt > Date.now() &&
+        !(record.argv ?? []).some((argument) => argument.includes(parsed.credential as string))
+      ) {
+        return parsed.credential;
+      }
     }
   }
   return null;
@@ -387,7 +404,26 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     ],
     { stdio: "pipe" },
   );
-  writeFileSync(join(authoring, "pipeline-change.html"), "<h1>Pipeline workspace</h1>\n");
+  writeFileSync(
+    join(authoring, "pipeline-change.html"),
+    "<h1>Pipeline workspace</h1>\n<p>Draft target</p>\n",
+  );
+  execFileSync("git", ["-C", authoring, "add", "pipeline-change.html"], { stdio: "pipe" });
+  execFileSync(
+    "git",
+    [
+      "-C",
+      authoring,
+      "-c",
+      "user.name=Mission Control E2E",
+      "-c",
+      "user.email=mission-control-e2e@example.invalid",
+      "commit",
+      "-qm",
+      "add pipeline workspace proof",
+    ],
+    { stdio: "pipe" },
+  );
 
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   let callerCredential: string | null = null;
@@ -459,7 +495,70 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       name: "Pipeline workspace",
     }),
   ).toBeVisible();
+  const comment = await request<{ thread: { id: string } }>(
+    daemon,
+    `/api/sessions/${encodeURIComponent(task!.sessionId!)}/file-comments`,
+    "POST",
+    {
+      path: "pipeline-change.html",
+      startLine: 1,
+      endLine: 1,
+      quote: "<h1>Pipeline workspace</h1>",
+      revision: null,
+      surface: "editor",
+      body: "Retained Pipeline comment",
+    },
+  );
+  await request(
+    daemon,
+    `/api/file-comments/${encodeURIComponent(comment.thread.id)}/queue`,
+    "POST",
+  );
+  await expect(detail.getByRole("button", { name: "Comments" })).toContainText("(1)");
+  await detail.getByRole("button", { name: "Comment mode" }).click();
+  const preview = detail.frameLocator('iframe[title="Preview of pipeline-change.html"]');
+  await preview.getByText("Draft target").click();
+  const activeComposer = detail.getByRole("textbox", { name: "Comment on line 2" });
+  await expect(activeComposer).toBeVisible();
   await shoot(dashboard, "10-managed-workspace-files", detail);
+
+  execFileSync("git", ["-C", daemon.repo, "worktree", "remove", "--force", authoring], {
+    stdio: "pipe",
+  });
+  await request(daemon, `/api/sessions/${encodeURIComponent(task!.sessionId!)}/diff`);
+  await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
+  await expect(activeComposer).toHaveCount(0);
+  await tabs.getByRole("tab", { name: /Diff$/ }).click();
+  await expect(detail.getByRole("region", { name: "Session diff" })).toContainText(
+    "pipeline-change.html",
+  );
+  await tabs.getByRole("tab", { name: /Files$/ }).click();
+  await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
+  await expect(
+    detail
+      .getByRole("listbox", { name: "Session files" })
+      .getByRole("option", { name: "pipeline-change.html" }),
+  ).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Editor" })).toBeDisabled();
+  await dashboard.keyboard.press("e");
+  await expect(detail.getByRole("button", { name: "Preview" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(detail.getByRole("button", { name: "Editor" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(detail.getByRole("button", { name: "Comment mode" })).toHaveCount(0);
+  await detail.getByRole("button", { name: "Comments" }).click();
+  const comments = detail.getByRole("complementary", { name: "Comments on pipeline-change.html" });
+  await comments.getByRole("button", { name: /Retained Pipeline comment/ }).click();
+  const retainedThread = detail.getByRole("region", { name: /Comment MC-\w+ on line 1/ });
+  await expect(retainedThread).toContainText("Retained Pipeline comment");
+  await expect(retainedThread.getByRole("textbox")).toHaveCount(0);
+  await expect(retainedThread.getByRole("button", { name: "Reply" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Open in" })).toBeDisabled();
+  await shoot(dashboard, "11-retired-workspace-read-only-files", detail);
 });
 
 test.describe("managed Pipeline worker separation", () => {

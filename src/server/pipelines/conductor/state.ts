@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -62,6 +63,52 @@ function readJsonFile(path: string): unknown {
   if (text === null || text.trim() === "") return null;
   try {
     return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export interface EngineerRunMarkerReading {
+  schemaVersion: 1;
+  engineerRunId: string;
+  repoRoot: string;
+  planSlug: string;
+  branch: string;
+}
+
+/** Corroborating identity written inside an Engineer authoring worktree. */
+function engineerRunMarker(value: unknown): EngineerRunMarkerReading | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.engineerRunId !== "string" ||
+    typeof record.repoRoot !== "string" ||
+    typeof record.planSlug !== "string" ||
+    typeof record.branch !== "string"
+  ) return null;
+  return {
+    schemaVersion: 1,
+    engineerRunId: record.engineerRunId,
+    repoRoot: record.repoRoot,
+    planSlug: record.planSlug,
+    branch: record.branch,
+  };
+}
+
+export function readEngineerRunMarker(worktree: string): EngineerRunMarkerReading | null {
+  return engineerRunMarker(readJsonFile(join(worktree, ".pipeline", "engineer-run.json")));
+}
+
+/** Async sibling for request paths that must not block the daemon event loop. */
+export async function readEngineerRunMarkerAsync(
+  worktree: string,
+): Promise<EngineerRunMarkerReading | null> {
+  try {
+    const file = join(worktree, ".pipeline", "engineer-run.json");
+    const info = await stat(file);
+    if (!info.isFile() || info.size > MAX_STATE_BYTES) return null;
+    return engineerRunMarker(JSON.parse(await readFile(file, "utf8")));
   } catch {
     return null;
   }

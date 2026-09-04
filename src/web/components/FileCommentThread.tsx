@@ -141,6 +141,7 @@ export function FileCommentComposer({
 export function FileCommentThreadCard({
   thread,
   displayQuote,
+  readOnly = false,
   busy,
   error,
   onReply,
@@ -151,6 +152,8 @@ export function FileCommentThreadCard({
   thread: FileCommentThreadModel;
   /** Human-readable projection; durable anchor markup stays on `thread`. */
   displayQuote: string;
+  /** Retained evidence remains readable without exposing comment-authoring controls. */
+  readOnly?: boolean;
   busy: boolean;
   error: string | null;
   /** Resolves true when the reply reached the thread. False keeps the text to retry. */
@@ -218,51 +221,55 @@ export function FileCommentThreadCard({
         ))}
       </ol>
       {error && <p className="file-comment-error" role="alert">{error}</p>}
-      <textarea
-        className="file-comment-box"
-        value={reply}
-        placeholder="Reply…"
-        aria-label={`Reply to comment ${thread.shortId}`}
-        // Frozen while the reply is out, for the reason the composer is - a reply in flight
-        // owns this box. Typing into it during a slow request meant the success handler
-        // emptied a sentence that had never been sent. Read-only rather than disabled, so
-        // the words stay selectable and stay readable while the reader waits.
-        readOnly={sending}
-        onChange={(event) => setReply(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-            return;
-          }
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && reply.trim() && !sending) {
-            event.preventDefault();
-            void send();
-          }
-        }}
-      />
-      <footer className="file-comment-panel-foot">
-        {resolvable ? (
-          <Tooltip label="Close this thread. Only a person closes a comment">
-            <button className="btn" disabled={busy} onClick={onResolve}>Resolve</button>
-          </Tooltip>
-        ) : (
-          <Tooltip label="Put this thread back in play">
-            <button className="btn" disabled={busy} onClick={onReopen}>Reopen</button>
-          </Tooltip>
-        )}
-        <span className="file-comment-panel-spacer" />
-        <Tooltip label="Add this reply to the thread">
-          <button
-            className="btn btn-primary"
-            disabled={busy || sending || reply.trim().length === 0}
-            onClick={() => { void send(); }}
-          >
-            Reply
-          </button>
-        </Tooltip>
-      </footer>
+      {!readOnly && (
+        <>
+          <textarea
+            className="file-comment-box"
+            value={reply}
+            placeholder="Reply…"
+            aria-label={`Reply to comment ${thread.shortId}`}
+            // Frozen while the reply is out, for the reason the composer is - a reply in flight
+            // owns this box. Typing into it during a slow request meant the success handler
+            // emptied a sentence that had never been sent. Read-only rather than disabled, so
+            // the words stay selectable and stay readable while the reader waits.
+            readOnly={sending}
+            onChange={(event) => setReply(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                onClose();
+                return;
+              }
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && reply.trim() && !sending) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <footer className="file-comment-panel-foot">
+            {resolvable ? (
+              <Tooltip label="Close this thread. Only a person closes a comment">
+                <button className="btn" disabled={busy} onClick={onResolve}>Resolve</button>
+              </Tooltip>
+            ) : (
+              <Tooltip label="Put this thread back in play">
+                <button className="btn" disabled={busy} onClick={onReopen}>Reopen</button>
+              </Tooltip>
+            )}
+            <span className="file-comment-panel-spacer" />
+            <Tooltip label="Add this reply to the thread">
+              <button
+                className="btn btn-primary"
+                disabled={busy || sending || reply.trim().length === 0}
+                onClick={() => { void send(); }}
+              >
+                Reply
+              </button>
+            </Tooltip>
+          </footer>
+        </>
+      )}
     </section>
   );
 }

@@ -99,6 +99,12 @@ export function agentLaunchBlockedReason(s: LaunchableSession): string | null {
  * harness, because a shell is not the agent's. Kept beside its sibling so the two refusals
  * are written in one vocabulary.
  */
-export function shellLaunchBlockedReason(s: { cwd: string | null }): string | null {
+export function shellLaunchBlockedReason(s: {
+  cwd: string | null;
+  workspace?: { authority: "provider"; capabilities: { shell: boolean } } | null;
+}): string | null {
+  if (s.workspace?.authority === "provider" && !s.workspace.capabilities.shell) {
+    return "Pinned Pipeline evidence is read-only";
+  }
   return s.cwd ? null : "this session has no checkout to open a terminal in";
 }

@@ -165,22 +165,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
           setOpen((value) => !value);
         }}
       >
-        <span className="rt-think-glyph" aria-hidden>
-          ✦
-        </span>
-        {pending && level && (
-          <>
-            <span className="rt-think-was">{level}</span>
-            <span className="rt-think-arrow" aria-hidden>
-              →
-            </span>
-          </>
-        )}
-        {/* Its own element so the console header's ladder can shed the WORD and leave the
-            glyph, which keeps the pill's accent (`rt-think-{level}`), its tooltip and its
-            `aria-label` - see `detailHeadLadder.ts`, rung 2. */}
-        <span className="rt-think-word">{shown}</span>
-        {pending && <span className="rt-think-next">next turn</span>}
+        <EffortReading level={shown} supersedes={pending ? level : null} pending={pending !== null} />
         <span className="mode-caret" aria-hidden>
           ⌄
         </span>
@@ -241,6 +226,57 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
   );
 }
 
+/**
+ * What an effort pill READS, and the one place that is decided.
+ *
+ * Three components draw this pill: the interactive picker above, `EffortChip` below it for a
+ * session that cannot be picked for, and `RuntimeMetaRow`'s static spelling in
+ * `session-bits.tsx`. All three printed the mark, the level and the next-turn tag themselves,
+ * and the level's own element is load-bearing rather than decorative - the console header's
+ * ladder sheds `.rt-think-word` at rung 2 and keeps the glyph, so the pill collapses to its
+ * mark while its accent, tooltip and `aria-label` survive (`detailHeadLadder.ts`).
+ *
+ * That is exactly the kind of fact that must not be spelled three times, and it was: the
+ * `EffortChip` copy was left as a bare text node when the other two were wrapped, a reviewer
+ * caught it, and the fix wrote the same span a third time. This component is the repair - the
+ * rule now has an owner, so the next call site inherits it and a change to what the wrap
+ * carries is one edit.
+ *
+ * Deliberately NOT here: the pill's own `className`, and the caret. The class differs per host
+ * (the picker adds `rt-think-btn` and an `open` state), and the caret is the PICKER's
+ * affordance rather than anything the level says - a static pill that grew one would be
+ * promising a menu it does not have.
+ */
+export function EffortReading({
+  level,
+  supersedes = null,
+  pending = false,
+}: {
+  /** The level the pill prints - the pending one when there is one, else the live one. */
+  level: ThinkingLevel;
+  /**
+   * The level `level` replaces, struck through before an arrow. Only the picker has this:
+   * a turn already running cannot be moved onto a new level, so it says both.
+   */
+  supersedes?: ThinkingLevel | null;
+  /** Whether the level applies from the NEXT turn rather than this one. */
+  pending?: boolean;
+}): React.JSX.Element {
+  return (
+    <>
+      <span className="rt-think-glyph" aria-hidden>✦</span>
+      {supersedes && (
+        <>
+          <span className="rt-think-was">{supersedes}</span>
+          <span className="rt-think-arrow" aria-hidden>→</span>
+        </>
+      )}
+      <span className="rt-think-word">{level}</span>
+      {pending && <span className="rt-think-next">next turn</span>}
+    </>
+  );
+}
+
 function EffortChip({
   level,
   pending = false,
@@ -257,14 +293,7 @@ function EffortChip({
       }
     >
       <span className={`rt-pill rt-think rt-think-${level}${pending ? " rt-think-pending" : ""}`}>
-        <span className="rt-think-glyph" aria-hidden>✦</span>
-        {/* Wrapped like the other two spellings of this pill, and this is the THIRD: the
-            interactive one above, `RuntimeMetaRow`'s static one, and this fallback for a
-            session that cannot be picked for (exited, stopping, or offering no levels). A
-            bare text node here is a level the console header's ladder cannot shed at rung 2,
-            so the same session drew a wider pill than a live one at the same width. */}
-        <span className="rt-think-word">{level}</span>
-        {pending && <span className="rt-think-next">next turn</span>}
+        <EffortReading level={level} pending={pending} />
       </span>
     </Tooltip>
   );

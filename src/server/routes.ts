@@ -149,6 +149,8 @@ import {
   RestartFullWorkflowSchema,
   ResubmitWorkflowSchema,
   RetryWorkflowRunSchema,
+  RetryWorkflowEvidenceReadinessSchema,
+  OverrideWorkflowEvidenceReadinessSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
   RemoveWorkflowPersonaDirectiveSchema,
@@ -2296,6 +2298,41 @@ export function buildApp(
       return workflowImageFailure(c, error, "Workflow evidence could not be staged");
     }
   });
+  app.post(
+    "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = await manager.retryEvidenceReadiness(
+        c.req.param("id"),
+        c.req.param("submissionId"),
+        parsed.data.requestId,
+      );
+      return result.ok
+        ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+        : workflowRuntimeFailure(c, result);
+    },
+  );
+  app.post(
+    "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/override",
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, OverrideWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = manager.overrideEvidenceReadiness(
+        c.req.param("id"),
+        c.req.param("submissionId"),
+        parsed.data.requestId,
+        parsed.data.reason,
+      );
+      if (result.ok) return c.json({ override: result.override, idempotent: result.idempotent });
+      const status = result.reason === "not_found" ? 404 : 409;
+      return c.json({ error: `Workflow evidence readiness override refused: ${result.reason}` }, status);
+    },
+  );
   app.post("/api/workflow-runs/:id/retry", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

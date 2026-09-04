@@ -5,6 +5,7 @@ import type {
   EvidenceRef,
   PersonaVerdict,
   WorkflowNodeAttempt,
+  WorkflowEvidenceReadinessResult,
   WorkflowRun,
   WorkflowSubmission,
   WorkflowVersion,
@@ -157,6 +158,17 @@ export interface UnchangedEvidenceNudgeInput {
   workflowEvidence: boolean;
 }
 
+export interface EvidenceReadinessPacketInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  repository: string;
+  round: number;
+  segment: number;
+  readiness: WorkflowEvidenceReadinessResult;
+  workflowEvidence: boolean;
+}
+
 /** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
 export function sanitizeWorkflowFeedback(value: string): string {
   return value
@@ -257,6 +269,69 @@ function finalizePacket(
     payload,
     payloadSha256: createHash("sha256").update(Buffer.from(payload, "utf8")).digest("hex"),
     truncated,
+  };
+}
+
+const READINESS_ACTIONS: Record<string, string> = {
+  missing_coverage: "Declare and link an author-controlled coverage claim for this criterion.",
+  ambiguous_mapping: "Make the criterion match exactly one author-controlled coverage claim.",
+  evidence_not_frozen: "Register the linked evidence item again so it freezes with the repair segment.",
+  scope_conflict: "Link evidence issued for this repository scope or for all repositories.",
+  missing_execution: "Register and link exact completed focused command output with role execution.",
+  missing_rendered_output: "Register and link a gitignored rendered image with role rendered_output.",
+  missing_baseline_measurement: "Register and link the comparable baseline with role baseline_measurement.",
+  missing_result_measurement: "Register and link the measured result with role result_measurement.",
+  missing_deliverable_or_rendered_output: "Register and link the deliverable or its rendered output.",
+  missing_state_snapshot: "Register and link a bounded state snapshot with role state_snapshot.",
+};
+
+/** Render deterministic structural gaps without exposing internal evidence ids or local paths. */
+export function renderEvidenceReadinessPacket(
+  input: EvidenceReadinessPacketInput,
+): RenderedWorkflowFeedback {
+  let truncated = false;
+  const bounded = (value: string): string => {
+    const result = field(value);
+    truncated ||= result.truncated;
+    return result.value;
+  };
+  const lines = [
+    "# Evidence preflight needs repair",
+    "",
+    `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+    `Repository: ${bounded(input.repository)}`,
+    `Round: ${input.round}, segment: ${input.segment}`,
+  ];
+  for (const criterion of input.readiness.criteria.filter((item) => item.gaps.length > 0)) {
+    lines.push("", `## ${bounded(criterion.criterion)}`);
+    lines.push(`Author proof class: ${criterion.authorProofClass?.replaceAll("_", " ") ?? "not declared"}`);
+    if (criterion.links.length > 0) {
+      lines.push("Linked evidence:");
+      for (const link of criterion.links) {
+        lines.push(`- ${link.role.replaceAll("_", " ")}: ${bounded(link.clientItemId)}`);
+      }
+    } else {
+      lines.push("Linked evidence: none");
+    }
+    lines.push("Required repair:");
+    for (const gap of criterion.gaps) lines.push(`- ${READINESS_ACTIONS[gap] ?? gap}`);
+    if (criterion.warnings.length > 0) {
+      lines.push("Advisory model warning: the suggested proof class differs from the author's declaration. The author declaration controls structural requirements.");
+    }
+  }
+  lines.push(
+    "",
+    "Register the missing proof and updated coverage through `submit_workflow_evidence` using the issued repository scope. Mission Control will freeze a new immutable segment in this same round when applicable evidence changes.",
+  );
+  return {
+    ...finalizePacket(
+      lines.join("\n"),
+      truncated,
+      "Repair only the gaps named above, verify the work, confirm evidence registration succeeded, and stop. Mission Control owns resubmission.",
+      input.workflowEvidence,
+    ),
+    failedPersonaCount: 0,
   };
 }
 

@@ -482,13 +482,13 @@ export class WorkflowEngine {
       this.blockSubmission(submission, "invalid_version", "Published workflow has no Session node");
       return;
     }
-    // A CONTINUATION segment does not re-submit from Session. Its evidence was captured
-    // because one action finished, and the only work it authorizes is that action's own
-    // downstream route - already seeded as a receipt by the continuation transaction.
-    // Seeding Session here would activate the whole first wave again on the child evidence,
-    // which is exactly the "restart the graph" behaviour a repair round means and a
-    // continuation must not.
-    const seedSession = submission.segment === 0;
+    // A session-action continuation does not re-submit from Session. Its evidence was
+    // captured because one action finished, and it authorizes only that action's downstream
+    // route, already seeded by the continuation transaction. An evidence-preflight segment
+    // is different: it is a same-round replacement packet and must run the graph from Session
+    // once its structure is ready.
+    const seedSession = submission.segment === 0
+      || submission.refinementReason === "evidence_preflight";
     let changed = true;
     while (changed) {
       changed = false;

@@ -106,6 +106,7 @@ export const WORKFLOW_LIMITS = {
   repairRoundsMax: 20,
   feedbackFieldBytes: 4_000,
   feedbackPayloadBytes: 8_000,
+  readinessOverrideReason: 2_000,
   externalSourceId: 200,
   externalSourceSegment: 200,
   externalSourceKey: 1_000,
@@ -288,6 +289,19 @@ export type WorkflowEvidenceReadinessPolicy =
   (typeof WORKFLOW_EVIDENCE_READINESS_POLICIES)[number];
 export const DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY: WorkflowEvidenceReadinessPolicy = "off";
 
+/** Browser-safe ownership of which append-only policy values enforce the preflight gate. */
+export function workflowEvidenceReadinessPolicyEnforces(
+  policy: WorkflowEvidenceReadinessPolicy | null | undefined,
+): boolean {
+  if (policy == null) return false;
+  switch (policy) {
+    case "off":
+      return false;
+    case "criterion_mapped_v1":
+      return true;
+  }
+}
+
 export const WORKFLOW_EVIDENCE_READINESS_STATUSES = [
   "not_evaluated",
   "ready",
@@ -414,6 +428,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   evidence: readonly WorkflowFrozenEvidenceIdentity[];
   unavailableReason?: string | null;
+  enforceCoverage?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
     ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
@@ -429,9 +444,20 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       unavailableReason,
     };
   }
+  const canonicalCriteria = input.enforceCoverage
+      && input.coverage.length === 0
+      && !input.canonicalCriteria.some((criterion) => criterion.material)
+    ? [...input.canonicalCriteria, {
+        id: "evidence-coverage",
+        text: "Material acceptance criteria",
+        material: true,
+        suggestedProofClass: null,
+        matchedClientCriterionIds: [],
+      }]
+    : input.canonicalCriteria;
   const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
   const evidence = new Map(input.evidence.map((item) => [item.clientItemId, item]));
-  const criteria = input.canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
+  const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
     const matchedIds = [...new Set(canonical.matchedClientCriterionIds)]
       .filter((id) => claims.has(id))
       .sort();
@@ -1901,6 +1927,7 @@ export const WORKFLOW_RUN_STATUSES = [
   "cancelled",
   "failed",
   "waiting_for_action",
+  "waiting_for_evidence_readiness",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
@@ -2215,8 +2242,17 @@ export const WORKFLOW_SUBMISSION_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "waiting_for_evidence_readiness",
 ] as const;
 export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[number];
+
+/** APPEND-ONLY: why a nonzero immutable evidence segment exists. */
+export const WORKFLOW_SUBMISSION_REFINEMENT_REASONS = [
+  "session_action",
+  "evidence_preflight",
+] as const;
+export type WorkflowSubmissionRefinementReason =
+  (typeof WORKFLOW_SUBMISSION_REFINEMENT_REASONS)[number];
 
 /**
  * Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict.
@@ -2269,6 +2305,7 @@ export const WORKFLOW_DELIVERY_KINDS = [
   // actually made; this one answers a silence, and the two have to stay distinguishable in a
   // ledger a person reads to work out why a run sat still.
   "parked_repair_reminder",
+  "evidence_readiness",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -3470,6 +3507,8 @@ export interface WorkflowSubmission {
    * the store admits.
    */
   continuationNodeAttemptId: WorkflowNodeAttemptId | null;
+  /** Null at segment zero; identifies which lifecycle authorized a child segment. */
+  refinementReason?: WorkflowSubmissionRefinementReason | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
   /**
@@ -3634,6 +3673,8 @@ export interface WorkflowLlmCall {
 
 export interface WorkflowEvent {
   id: number;
+  /** Optional replay identity. Historical and unrelated events omit it. */
+  eventId?: string | null;
   runId: WorkflowRunId;
   timestamp: number;
   kind: string;
@@ -4003,6 +4044,8 @@ export interface WorkflowRunDetail {
   evidenceImages?: WorkflowSubmissionEvidenceImages[];
   /** Ordered immutable author coverage grouped by the submission that froze it. */
   evidenceCoverage?: WorkflowSubmissionEvidenceCoverage[];
+  /** Durable operator exceptions, newest last, without changing the frozen readiness result. */
+  readinessOverrides?: WorkflowSubmissionReadinessOverride[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];
@@ -4049,6 +4092,15 @@ export interface WorkflowRunDetail {
    */
   externalSource?: WorkflowExternalSource | null;
   inspectorGate: WorkflowInspectorGateDetail | null;
+}
+
+export interface WorkflowSubmissionReadinessOverride {
+  id: string;
+  submissionId: WorkflowSubmissionId;
+  requestId: string;
+  actor: "operator";
+  reason: string;
+  createdAt: number;
 }
 
 /**

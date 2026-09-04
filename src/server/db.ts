@@ -1398,6 +1398,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       parent_submission_id TEXT,
       continuation_node_id TEXT,
       continuation_node_attempt_id TEXT,
+      refinement_reason    TEXT,
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
@@ -1679,6 +1680,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS workflow_events (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id     TEXT,
       run_id       TEXT NOT NULL,
       ts           INTEGER NOT NULL,
       event_kind   TEXT NOT NULL,
@@ -1691,6 +1693,17 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- aggregate would otherwise scan the busiest table this subsystem writes on every poll.
     CREATE INDEX IF NOT EXISTS idx_workflow_events_kind
       ON workflow_events(event_kind, id);
+
+    CREATE TABLE IF NOT EXISTS workflow_submission_readiness_overrides (
+      id             TEXT PRIMARY KEY,
+      submission_id  TEXT NOT NULL,
+      request_id     TEXT NOT NULL UNIQUE,
+      actor          TEXT NOT NULL,
+      reason         TEXT NOT NULL,
+      created_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_readiness_overrides_submission
+      ON workflow_submission_readiness_overrides(submission_id, created_at);
 
     -- One external orchestrator's durable claim on exactly one Workflow binding.
     --
@@ -3878,6 +3891,10 @@ function migrate(d: DatabaseSync): void {
     "TEXT NOT NULL DEFAULT 'off'",
   );
   addColumn(d, "workflow_submissions", "readiness_json", "TEXT");
+  addColumn(d, "workflow_submissions", "refinement_reason", "TEXT");
+  addColumn(d, "workflow_events", "event_id", "TEXT");
+  d.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_event_id
+            ON workflow_events(event_id) WHERE event_id IS NOT NULL;`);
 
   // Which provider handed a check its worktree. Editing the CREATE TABLE block above is not
   // enough - it is IF NOT EXISTS, so an operator upgrading into this build keeps the table

@@ -172,6 +172,7 @@ export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
     "waiting_for_pr",
     "waiting_for_inspector",
     "waiting_for_new_head",
+    "waiting_for_evidence_readiness",
   ].includes(run.status)) return "waiting";
   if (run.status === "blocked") return "blocked";
   if (run.status === "failed" || run.status === "cancelled") return "failed";
@@ -191,6 +192,7 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   // not a review in progress, and `Preview · R1` beside a session that has just been handed
   // an instruction tells an operator nothing about why nothing is moving.
   if (run.status === "waiting_for_action") return "Session action";
+  if (run.status === "waiting_for_evidence_readiness") return "Evidence preflight";
   return `Preview · R${run.round}`;
 }
 

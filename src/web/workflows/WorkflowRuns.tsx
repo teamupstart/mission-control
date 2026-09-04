@@ -22,6 +22,7 @@ import {
   isVerdictNode,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
+  workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
@@ -296,10 +297,23 @@ function SubmissionImageEvidence({
 function SubmissionEvidenceReadiness({
   coverage,
   readiness,
+  enforced = false,
+  waiting = false,
+  overrideReason = null,
+  onRetry,
+  onOverride,
 }: {
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   readiness: WorkflowEvidenceReadinessResult | null | undefined;
+  enforced?: boolean;
+  waiting?: boolean;
+  overrideReason?: string | null;
+  onRetry?: () => Promise<void>;
+  onOverride?: (reason: string) => Promise<void>;
 }): React.JSX.Element {
+  const [reason, setReason] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState<"retry" | "override" | null>(null);
   return (
     <section className="wf-run-section wf-evidence-readiness" aria-label="Evidence readiness">
       <header className="wf-run-section-head">
@@ -308,7 +322,9 @@ function SubmissionEvidenceReadiness({
           {readiness?.status.replaceAll("_", " ") ?? "not evaluated"}
         </span>
       </header>
-      <p className="wf-run-meta">Advisory only. This result did not block workflow execution.</p>
+      <p className="wf-run-meta">{enforced
+        ? "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient."
+        : "Advisory only. This result did not block workflow execution."}</p>
       {coverage.length === 0 ? (
         <p className="wf-run-empty">No acceptance criterion coverage was frozen for this submission.</p>
       ) : (
@@ -359,6 +375,65 @@ function SubmissionEvidenceReadiness({
               </div>
             </article>
           ))}
+        </div>
+      )}
+      {overrideReason && (
+        <p className="wf-run-notice" role="status">
+          Operator continued despite gaps: {overrideReason}
+        </p>
+      )}
+      {waiting && onOverride && (
+        <div className="wf-readiness-override" role="region" aria-label="Evidence readiness override">
+          <h5>Continue despite gaps</h5>
+          <label>
+            Reason
+            <textarea
+              value={reason}
+              maxLength={2000}
+              placeholder="Why this structurally incomplete packet should continue"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <label className="wf-checkbox-label">
+            <Tooltip label="Acknowledge that readiness gaps remain visible to the Test Evidence Auditor">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+            </Tooltip>
+            Test Evidence Auditor may still reject this packet.
+          </label>
+          <div className="wf-run-actions">
+            {onRetry && (
+              <Tooltip label="Capture newly staged evidence and evaluate this round again">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setBusy("retry");
+                    void onRetry().finally(() => setBusy(null));
+                  }}
+                >
+                  {busy === "retry" ? "Retrying…" : "Retry evidence preflight"}
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label="Record this reason and continue the current submission despite readiness gaps">
+              <button
+                type="button"
+                className="btn"
+                disabled={busy !== null || !acknowledged || reason.trim().length === 0}
+                onClick={() => {
+                  setBusy("override");
+                  void onOverride(reason.trim()).finally(() => setBusy(null));
+                }}
+              >
+                {busy === "override" ? "Continuing…" : "Continue despite gaps"}
+              </button>
+            </Tooltip>
+          </div>
         </div>
       )}
     </section>
@@ -1633,6 +1708,8 @@ export function WorkflowRunView({
   onRestartFull = async () => {},
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
+  onRetryEvidenceReadiness = async () => {},
+  onOverrideEvidenceReadiness = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
   onToggleNodesDisabled,
@@ -1702,6 +1779,8 @@ export function WorkflowRunView({
     resolution: "mark_delivered" | "discard_and_new_round",
     confirmation?: string,
   ) => Promise<void>;
+  onRetryEvidenceReadiness?: (submissionId: string) => Promise<void>;
+  onOverrideEvidenceReadiness?: (submissionId: string, reason: string) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
   /**
@@ -2556,8 +2635,18 @@ export function WorkflowRunView({
       )}
       {viewed && (submissionCoverage.length > 0 || viewed.readiness != null) && (
         <SubmissionEvidenceReadiness
+          key={viewed.id}
           coverage={submissionCoverage}
           readiness={viewed.readiness}
+          enforced={workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy)}
+          waiting={isLatest
+            && detail.run.status === "waiting_for_evidence_readiness"
+            && viewed.status === "waiting_for_evidence_readiness"}
+          overrideReason={(detail.readinessOverrides ?? [])
+            .filter((entry) => entry.submissionId === viewed.id)
+            .at(-1)?.reason ?? null}
+          onRetry={() => onRetryEvidenceReadiness(viewed.id)}
+          onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
         />
       )}
       {detail.contextState === "corrupt" && (
@@ -3617,6 +3706,18 @@ export function WorkflowRuns({
                       : {}),
                   }),
                 }));
+            }}
+            onRetryEvidenceReadiness={async (submissionId) => {
+              await mutate(
+                `/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-readiness/retry`,
+                { requestId: crypto.randomUUID() },
+              );
+            }}
+            onOverrideEvidenceReadiness={async (submissionId, reason) => {
+              await mutate(
+                `/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-readiness/override`,
+                { requestId: crypto.randomUUID(), reason },
+              );
             }}
             onToggleNodesDisabled={(nodeIds, disabled) => {
               // One action id per target set AND direction. The action store retains a

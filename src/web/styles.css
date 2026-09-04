@@ -19836,11 +19836,23 @@ select.foreman-model-input {
 }
 /* Six short readings as two columns rather than six full-width rows. Three of them are
    single digits and two are timestamps; a row spanning the whole column to say "0" is what
-   made this the tallest card below the fold. Collapses to one column when a track would go
-   under 260px, where the label and the value start colliding. */
+   made this the tallest card below the fold.
+
+   TWO columns at most, and one when a track would go under 260px where the label and the
+   value start colliding. The track floor is the larger of those two constraints, which is
+   what bounds the count at both ends without a media query - a media query would be keyed on
+   the VIEWPORT while this grid's width comes from the readings column, so the two would
+   disagree at any window where the panel is not the width the query assumed.
+
+   `50% - 11px` is half the container less half the 22px gap, so two tracks exactly fill it
+   and a third can never be placed. That upper bound was previously implicit: with a bare
+   `minmax(260px, 1fr)` the count was held at two only by `.settings-page`'s own 1400px cap,
+   which leaves the pane 1116px and this grid 708px - below the 824px a third 260px track
+   needs. Raising that unrelated cap would silently have made this six counters in two rows of
+   three. Measured at 1280 to 3440px: two tracks, three lines, throughout. */
 .wf-health-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(max(260px, calc(50% - 11px)), 1fr));
   column-gap: 22px;
 }
 .wf-health-grid .sc-health-row {
@@ -19907,11 +19919,21 @@ select.foreman-model-input {
 .settings-pane > .settings-section.wf-settings {
   max-width: 1240px;
 }
-/* Readings earn the width; the controls keep the measure.
+/* Readings earn the width; the controls keep the measure - and the control column is PLACED
+   into grid column 1 rather than being left to source order, because the readings come first
+   in the DOM.
+
+   That DOM order is the accessibility fix, not a detail. The first cut had the controls first
+   in the markup and gave `.wf-readings` `order: -1` under 1081px so the readings would lead
+   the collapsed layout. `order` moves boxes and never moves focus, so at those widths the
+   readings looked first while the tab sequence still entered the policy switches first (WCAG
+   2.4.3), and the relationship between what you saw and what you tabbed into INVERTED at the
+   breakpoint. Leading with the readings in the DOM and placing the controls here makes the
+   reading and focus order the same sequence at every width, with no `order` anywhere.
 
    Gated on `min-width` rather than written unconditionally, and that is load-bearing. The
    shared collapse above is `.sc-split` inside a `max-width` query - ONE class - so this
-   two-class selector outranks it at every width regardless of the query, and the first cut
+   two-class selector outranks it at every width regardless of the query, and an earlier cut
    of this rule stopped Workflows collapsing at all: at an 820px window it squeezed the two
    columns into 320px and a sliver and ran the panel to 3345px, four screens, which is worse
    than the single column it replaced. A media query does not raise specificity. */
@@ -19919,15 +19941,13 @@ select.foreman-model-input {
   .wf-settings > .sc-split {
     grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
   }
-}
-/* Collapsed, the READINGS lead. The shared comment above says the controls lead on a narrow
-   window because you came to change something, which is right for a panel whose wide half is
-   a ledger you were only consulting. It is wrong here: the strip's first two tiles are the
-   ones that mean "somebody must look", and putting five policy cards above them rebuilds, at
-   narrow widths, exactly the panel this rework replaced. */
-@media (max-width: 1080px) {
+  .wf-settings > .sc-split > .sc-controls {
+    grid-column: 1;
+    grid-row: 1;
+  }
   .wf-settings > .sc-split > .wf-readings {
-    order: -1;
+    grid-column: 2;
+    grid-row: 1;
   }
 }
 .sc-controls {

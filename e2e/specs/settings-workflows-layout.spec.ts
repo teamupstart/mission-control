@@ -160,12 +160,22 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
   // what a used-width measurement can see and markup cannot: two counters on one line have
   // the same `top`.
   //
-  // Bounded rather than pinned to exactly three lines. `.wf-health-grid` is
-  // `repeat(auto-fit, minmax(260px, 1fr))`, so the track count follows the column's used
-  // width - three tracks on a wide window is two lines, and equally correct. What must not
-  // happen is six lines, which is the full-width stack this replaced.
+  // Two claims, because they fail for different reasons. The counters must SHARE lines
+  // rather than stack one per line, and the grid must never place more than TWO tracks.
+  //
+  // The upper bound is asserted because it used to be accidental. With a bare
+  // `minmax(260px, 1fr)` the count was held at two only by `.settings-page`'s unrelated
+  // 1400px cap, which leaves this grid 708px - under the 824px a third 260px track needs.
+  // Lifting that cap gives the grid 832px and, before the fix, a third track: six counters
+  // in two rows of three. The floor is now `max(260px, calc(50% - 11px))`, so two tracks
+  // exactly fill the container and a third cannot be placed at any width.
   const rows = panel.locator('.sc-card[data-anchor="workflows/health"] .sc-health-row');
   await expect(rows).toHaveCount(6);
+  const grid = panel.locator('.sc-card[data-anchor="workflows/health"] .wf-health-grid');
+  const tracks = await grid.evaluate(
+    (node) => getComputedStyle(node).gridTemplateColumns.split(" ").length,
+  );
+  expect(tracks, "the health grid placed more than two columns").toBeLessThanOrEqual(2);
   const tops = await rows.evaluateAll((nodes) =>
     nodes.map((node) => Math.round(node.getBoundingClientRect().top)),
   );
@@ -229,10 +239,10 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
   // not raise specificity - so the first cut of the width rule outranked the collapse at
   // every width and Workflows never folded at all: at an 820px window it squeezed both
   // columns into 320px and a sliver and ran to 3345px, four screens. The fix gates the
-  // two-column rule on `min-width` and gives the readings `order: -1` when folded, because
-  // the shared "controls lead on narrow" default would put five policy cards above the two
-  // tiles that mean "somebody must look" - rebuilding this panel's original defect at the
-  // one size where scrolling costs most.
+  // two-column rule on `min-width`, and the readings lead the collapsed layout because they
+  // come first in the DOM - the shared "controls lead on narrow" default would put five
+  // policy cards above the two tiles that mean "somebody must look", rebuilding this panel's
+  // original defect at the one size where scrolling costs most.
   await dashboard.setViewportSize({ width: 900, height: 900 });
   await expect(strip).toBeVisible();
   const folded = {
@@ -252,6 +262,49 @@ test("Settings Workflows draws policy beside its readings, with the strip above 
     folded.strip.bottom - folded.readings.top,
     "the escalation strip is not the first thing in the collapsed panel",
   ).toBeLessThan(200);
+
+  // FOCUS ORDER, at the width where the layout is a single linear column.
+  //
+  // This is the assertion the `order: -1` version could not have passed. `order` moves boxes
+  // and never moves focus, so that version showed the readings first here while the tab
+  // sequence still entered the policy switches first - and the relationship between the two
+  // inverted at the breakpoint, which is worse than either order consistently applied. The
+  // panel now leads with the readings in the DOM and places the control column into grid
+  // column 1 at desktop widths, so one sequence serves both layouts.
+  //
+  // A collapsed panel is a linear stack, so here the visual order is unambiguous and focus
+  // must agree with it. Both facts are read from the live document rather than from the
+  // markup, because the whole failure mode is CSS disagreeing with the DOM.
+  const focus = await panel.evaluate((root) => {
+    const controlsEl = root.querySelector(".sc-controls")!;
+    const readingsEl = root.querySelector(".wf-readings")!;
+    const tabbable = [...root.querySelectorAll<HTMLElement>(
+      'a[href], button, input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])',
+    )].filter((el) => !(el as HTMLInputElement).disabled && el.offsetParent !== null);
+    const seq = tabbable.map((el) => (readingsEl.contains(el) ? "readings" : "controls"));
+    return {
+      first: seq[0] ?? null,
+      // Each column's tabbables must be contiguous. A sequence that ping-pongs between the
+      // columns would preserve neither column's meaning.
+      blocks: seq.filter((column, i) => i === 0 || seq[i - 1] !== column).length,
+      readingsTop: readingsEl.getBoundingClientRect().top,
+      controlsTop: controlsEl.getBoundingClientRect().top,
+      count: seq.length,
+    };
+  });
+  expect(focus.count, "the panel has no tabbable controls to order").toBeGreaterThan(4);
+  expect(
+    focus.readingsTop,
+    "the readings are not visually first in the collapsed panel",
+  ).toBeLessThan(focus.controlsTop);
+  expect(
+    focus.first,
+    "focus enters the control column first while the readings are drawn above it",
+  ).toBe("readings");
+  expect(
+    focus.blocks,
+    "the tab sequence alternates between the two columns instead of completing each",
+  ).toBe(2);
 
   await shoot(dashboard, "workflows-collapsed-viewport");
 });

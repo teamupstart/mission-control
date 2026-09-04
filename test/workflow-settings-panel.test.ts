@@ -587,13 +587,24 @@ test("policy sits in the control column and every live reading in the readings c
   // are sibling divs full of nested divs, so no regex for "up to the matching close" is
   // right, and a non-greedy one silently truncates the readings column mid-card - which is
   // how the first version of this test passed a panel it had only half read.
-  const CONTROLS = '<div class="sc-split"><div class="sc-controls">';
-  const READINGS = '<div class="wf-readings">';
-  assert.ok(html.includes(CONTROLS), "the panel is not drawn as a split with a control column");
-  const boundary = html.indexOf(READINGS);
-  assert.ok(boundary > html.indexOf(CONTROLS), "the readings column is missing or comes first");
-  const controls = html.slice(html.indexOf(CONTROLS) + CONTROLS.length, boundary);
-  const readings = html.slice(boundary + READINGS.length);
+  // The READINGS column comes first in the markup, and that order is the accessibility
+  // contract rather than an accident of authoring: the DOM is the focus order, so the panel
+  // leads with the readings in the source and places the control column into grid column 1
+  // at desktop widths. An earlier cut had the controls first and reordered the readings
+  // visually with `order: -1` when the split collapsed, which made the collapsed layout show
+  // the readings first while focus still entered the switches first (WCAG 2.4.3).
+  //
+  // Asserted here, in the cheap layer, because it is the half of that fix a browser test
+  // cannot see going wrong: `settings-workflows-layout.spec.ts` measures the rendered focus
+  // sequence, but if someone swaps these two blocks back the geometry stays identical and
+  // only the source order - this - changes.
+  const READINGS = '<div class="sc-split"><div class="wf-readings">';
+  const CONTROLS = '<div class="sc-controls">';
+  assert.ok(html.includes(READINGS), "the split does not lead with the readings column");
+  const boundary = html.indexOf(CONTROLS);
+  assert.ok(boundary > html.indexOf(READINGS), "the control column is missing or comes first");
+  const readings = html.slice(html.indexOf(READINGS) + READINGS.length, boundary);
+  const controls = html.slice(boundary + CONTROLS.length);
 
   for (const anchor of [
     "workflows/dispatch-default",

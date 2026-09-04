@@ -65,6 +65,21 @@ const COMMANDS_LIBRARY_HASH = missionRouteHash({ page: "library", shelf: "comman
 //   - Right, `.wf-readings`: everything carrying a live number - the escalation strip, the
 //     health counters, and the Test Evidence Auditor's rates.
 //
+// **`.wf-readings` is rendered FIRST and placed second.** The DOM is the focus order, and the
+// panel is a single linear stack under 1081px where the visual sequence is unambiguous - so
+// the readings lead the markup and `styles.css` puts `.sc-controls` in grid column 1 at
+// desktop widths. Do not "tidy" this by restoring source order and reordering visually: an
+// earlier cut did exactly that with `order: -1`, and because `order` moves boxes and never
+// moves focus, the collapsed layout drew the readings first while the tab sequence still
+// entered the policy switches first (WCAG 2.4.3) - with the relationship between the two
+// INVERTING at the breakpoint. One sequence now serves both layouts.
+//
+// The honest cost: at desktop widths focus completes the readings column before entering the
+// controls, so it traverses the right column before the left. That is the ordinary
+// two-column tradeoff - each column's tabbables stay contiguous, which
+// `settings-workflows-layout.spec.ts` asserts - and it is preferable to an order that depends
+// on the window width.
+//
 // Run retention sits in the RIGHT column, which reads as a control in a readings column
 // until you look at what it is measured against. Its three limits are meaningless without
 // the readout under them ("31 of 1000 finished runs ranked by this limit", what the last
@@ -458,186 +473,17 @@ export function WorkflowSettingsPanel({
         </p>
       )}
 
-      {/* Left half: what Workflows is AUTHORIZED to do. Set once and then left alone. */}
+      {/* The READINGS come first in the DOM, and the control column is placed into grid
+          column 1 beside them at desktop widths. Reading order is therefore identical at
+          every window size.
+
+          The first cut had the controls first in the DOM and gave `.wf-readings`
+          `order: -1` when the split collapsed, so the readings LOOKED first under 1081px
+          while focus still entered the policy switches first - WCAG 2.4.3, and worse, the
+          relationship between the visual and focus order flipped at the breakpoint. Visual
+          reordering with `order` never moves focus; only the DOM does. See `.sc-split`
+          placement in `styles.css`. */}
       <div className="sc-split">
-        <div className="sc-controls">
-        <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
-          <p className="settings-hint">
-            Arm every new single-agent dispatch with a published Workflow. The dispatch form
-            shows this choice inline and can override it per task.
-          </p>
-          <div className="wf-default-row">
-            <span className="wf-default-flow" aria-hidden>task → workflow</span>
-            <Tooltip label="Workflow preselected for every new single-agent dispatch">
-              <select
-                className="field-input wf-default-select"
-                value={config?.defaultWorkflowId ?? ""}
-                disabled={!config || busy}
-                aria-label="Default after-work Workflow for dispatched tasks"
-                onChange={(event) => {
-                  if (!config) return;
-                  void save({
-                    ...config,
-                    defaultWorkflowId: event.target.value || null,
-                  });
-                }}
-              >
-                <option value="">None</option>
-                {publishedWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name} · v{workflow.publishedVersion}
-                  </option>
-                ))}
-                {config?.defaultWorkflowId
-                  && !publishedWorkflows.some(
-                    (workflow) => workflow.id === config.defaultWorkflowId,
-                  )
-                  && (
-                    <option value={config.defaultWorkflowId}>
-                      Unavailable Workflow
-                    </option>
-                  )}
-              </select>
-            </Tooltip>
-          </div>
-          {config?.defaultWorkflowId && !foremanEnabled && (
-            <p className="settings-warn wf-default-warning">
-              Foreman is off. Turn it on before dispatching with this default, or choose None
-              in the dispatch form.
-            </p>
-          )}
-          {publishedWorkflows.length === 0 && (
-            <p className="settings-hint wf-settings-empty">
-              Publish a Workflow before choosing a dispatch default.
-            </p>
-          )}
-        </ConsoleCard>
-
-        <ConsoleCard
-          title="Live delivery"
-          anchor="workflows/live-delivery"
-          action={(
-            <ConsoleSwitch
-              label="Enable Live workflow delivery"
-              tooltip="Allow repair packets to be typed into sessions in the repos granted in Trust"
-              checked={liveEnabled}
-              disabled={!config || busy}
-              // The one switch in this app that types into a live agent's terminal. Its
-              // blast radius is a keystroke in somebody's composer, not a comment on a pull
-              // request, and the tone is what says so before the confirm dialog does.
-              tone="danger"
-              onChange={toggleLive}
-            />
-          )}
-        >
-          {!config ? (
-            <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
-          ) : liveEnabled ? (
-            <ConsoleState tone="danger">
-              Live - repairs are typed into agent sessions
-            </ConsoleState>
-          ) : (
-            <ConsoleState tone="off">Off - nothing is delivered</ConsoleState>
-          )}
-
-          {liveEnabled && (
-            <p className="settings-warn wf-settings-live-warn">
-              Live bindings write into a real terminal pane. A repair packet is typed into the
-              agent's own composer, in the repositories granted the Workflows cell in Trust
-              and nowhere else.
-            </p>
-          )}
-        </ConsoleCard>
-
-        <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
-          {/* The editor moved to Trust, and this became the summary the other three
-              grant-consuming panels already show. The comment that used to sit here argued
-              Workflows was not a Trust column and that making it one would MOVE this list
-              rather than summarise it; that is exactly what happened.
-
-              The card stays rather than the anchor disappearing: `workflows/allowlist` is a
-              settings-search target, and a live subsystem's consent scope is worth stating
-              where its switches are even when it is not editable here. */}
-          {/* The scope-of-consent sentence sits with the count, not with the switch: it is
-              about the grant. "I turned Live on and it still previews" reads as a bug
-              without it. */}
-          <p className="settings-hint">
-            Live delivery only sends in the repositories granted the Workflows cell in Trust
-            - their worktrees count too, wherever they live on disk. Revoking one keeps
-            existing bindings visible and refuses their next delivery; nothing is silently
-            downgraded to Preview. The same grant is what lets a Command node run a command.
-          </p>
-          <TrustGrantSummary
-            configured={Boolean(config)}
-            count={allowlist.length}
-            subject="Workflows may act in"
-            onNavigate={onNavigate}
-          />
-        </ConsoleCard>
-
-        {/* Authorization, and nothing else. The catalog of argvs this switch governs moved to
-            Library › Commands, where a command is authored once and reused - what stays here
-            is the machine-wide decision to let one run at all, which is policy and belongs
-            beside the other policy switches. */}
-        <ConsoleCard
-          title="Workflow Commands"
-          anchor="workflows/checks"
-          action={(
-            <ConsoleSwitch
-              label="Allow workflow Commands"
-              tooltip="Allow a workflow's Command node to run the argv configured in Library"
-              checked={checksEnabled}
-              disabled={!config || busy}
-              // Branch-authored code with the daemon's filesystem authority. The tone says so
-              // before the confirm dialog does, exactly as Live delivery's does.
-              tone="danger"
-              onChange={toggleChecks}
-            />
-          )}
-        >
-          {!config ? (
-            <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
-          ) : checksEnabled ? (
-            <ConsoleState tone="danger">
-              Allowed - a Command runs branch-authored code
-            </ConsoleState>
-          ) : (
-            <ConsoleState tone="off">Paused - every Command passes with a note</ConsoleState>
-          )}
-          {/* ONE sentence, stated whether the switch is on or off, replacing the persistent
-              red banner that repeated the enable dialog to an operator who had already read
-              and accepted it. It says what is authorized rather than shouting that something
-              is dangerous: the argv is the operator's, and everything that argv loads belongs
-              to whoever wrote the branch under review. */}
-          <p className="settings-hint">
-            A Command runs in a commit-pinned checkout of the branch under review, without a
-            shell, with this daemon's filesystem authority - so it executes that branch's
-            scripts, dependencies and build steps. It is not a sandbox. Only repositories
-            granted the Workflows cell in Trust can run one.
-          </p>
-        </ConsoleCard>
-
-        {/* Where the commands went, said in the place an operator who remembers the old table
-            will look for it. A link rather than a smaller copy of the editor: two surfaces
-            authoring one catalog is how they start disagreeing. */}
-        <ConsoleCard title="What each Command runs" anchor="workflows/command-catalog">
-          <p className="settings-hint">
-            A workflow names a portable slot - <code>test</code>, <code>lint</code>,{" "}
-            <code>typecheck</code>, <code>build</code> - never an argv, so the same workflow
-            travels between repositories. Library › Commands is where this machine says what
-            each slot runs: one global default per slot, plus any repository or subdirectory
-            exceptions. A slot with nothing configured passes with a note rather than failing.
-          </p>
-          <p className="wf-settings-commands-link">
-            <Tooltip label="Open the Commands shelf in Library, where each slot's argv is set">
-              <a className="btn btn-ghost" href={COMMANDS_LIBRARY_HASH}>
-                Open Commands in Library →
-              </a>
-            </Tooltip>
-          </p>
-        </ConsoleCard>
-        </div>
-
         {/* Right half: everything carrying a live number. The strip leads it, because the
             two tiles that can mean "somebody must look" are the reason this panel is opened
             after a run goes wrong, and they used to be the last thing on it.
@@ -795,6 +641,183 @@ export function WorkflowSettingsPanel({
             had a submission rejected opens this panel to ask the first question, so it is in
             the readings column and last, where the deepest detail belongs. */}
           <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
+        </div>
+        <div className="sc-controls">
+          <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
+            <p className="settings-hint">
+              Arm every new single-agent dispatch with a published Workflow. The dispatch form
+              shows this choice inline and can override it per task.
+            </p>
+            <div className="wf-default-row">
+              <span className="wf-default-flow" aria-hidden>task → workflow</span>
+              <Tooltip label="Workflow preselected for every new single-agent dispatch">
+                <select
+                  className="field-input wf-default-select"
+                  value={config?.defaultWorkflowId ?? ""}
+                  disabled={!config || busy}
+                  aria-label="Default after-work Workflow for dispatched tasks"
+                  onChange={(event) => {
+                    if (!config) return;
+                    void save({
+                      ...config,
+                      defaultWorkflowId: event.target.value || null,
+                    });
+                  }}
+                >
+                  <option value="">None</option>
+                  {publishedWorkflows.map((workflow) => (
+                    <option key={workflow.id} value={workflow.id}>
+                      {workflow.name} · v{workflow.publishedVersion}
+                    </option>
+                  ))}
+                  {config?.defaultWorkflowId
+                    && !publishedWorkflows.some(
+                      (workflow) => workflow.id === config.defaultWorkflowId,
+                    )
+                    && (
+                      <option value={config.defaultWorkflowId}>
+                        Unavailable Workflow
+                      </option>
+                    )}
+                </select>
+              </Tooltip>
+            </div>
+            {config?.defaultWorkflowId && !foremanEnabled && (
+              <p className="settings-warn wf-default-warning">
+                Foreman is off. Turn it on before dispatching with this default, or choose None
+                in the dispatch form.
+              </p>
+            )}
+            {publishedWorkflows.length === 0 && (
+              <p className="settings-hint wf-settings-empty">
+                Publish a Workflow before choosing a dispatch default.
+              </p>
+            )}
+          </ConsoleCard>
+
+          <ConsoleCard
+            title="Live delivery"
+            anchor="workflows/live-delivery"
+            action={(
+              <ConsoleSwitch
+                label="Enable Live workflow delivery"
+                tooltip="Allow repair packets to be typed into sessions in the repos granted in Trust"
+                checked={liveEnabled}
+                disabled={!config || busy}
+                // The one switch in this app that types into a live agent's terminal. Its
+                // blast radius is a keystroke in somebody's composer, not a comment on a pull
+                // request, and the tone is what says so before the confirm dialog does.
+                tone="danger"
+                onChange={toggleLive}
+              />
+            )}
+          >
+            {!config ? (
+              <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
+            ) : liveEnabled ? (
+              <ConsoleState tone="danger">
+                Live - repairs are typed into agent sessions
+              </ConsoleState>
+            ) : (
+              <ConsoleState tone="off">Off - nothing is delivered</ConsoleState>
+            )}
+
+            {liveEnabled && (
+              <p className="settings-warn wf-settings-live-warn">
+                Live bindings write into a real terminal pane. A repair packet is typed into the
+                agent's own composer, in the repositories granted the Workflows cell in Trust
+                and nowhere else.
+              </p>
+            )}
+          </ConsoleCard>
+
+          <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
+            {/* The editor moved to Trust, and this became the summary the other three
+                grant-consuming panels already show. The comment that used to sit here argued
+                Workflows was not a Trust column and that making it one would MOVE this list
+                rather than summarise it; that is exactly what happened.
+
+                The card stays rather than the anchor disappearing: `workflows/allowlist` is a
+                settings-search target, and a live subsystem's consent scope is worth stating
+                where its switches are even when it is not editable here. */}
+            {/* The scope-of-consent sentence sits with the count, not with the switch: it is
+                about the grant. "I turned Live on and it still previews" reads as a bug
+                without it. */}
+            <p className="settings-hint">
+              Live delivery only sends in the repositories granted the Workflows cell in Trust
+              - their worktrees count too, wherever they live on disk. Revoking one keeps
+              existing bindings visible and refuses their next delivery; nothing is silently
+              downgraded to Preview. The same grant is what lets a Command node run a command.
+            </p>
+            <TrustGrantSummary
+              configured={Boolean(config)}
+              count={allowlist.length}
+              subject="Workflows may act in"
+              onNavigate={onNavigate}
+            />
+          </ConsoleCard>
+
+          {/* Authorization, and nothing else. The catalog of argvs this switch governs moved to
+              Library › Commands, where a command is authored once and reused - what stays here
+              is the machine-wide decision to let one run at all, which is policy and belongs
+              beside the other policy switches. */}
+          <ConsoleCard
+            title="Workflow Commands"
+            anchor="workflows/checks"
+            action={(
+              <ConsoleSwitch
+                label="Allow workflow Commands"
+                tooltip="Allow a workflow's Command node to run the argv configured in Library"
+                checked={checksEnabled}
+                disabled={!config || busy}
+                // Branch-authored code with the daemon's filesystem authority. The tone says so
+                // before the confirm dialog does, exactly as Live delivery's does.
+                tone="danger"
+                onChange={toggleChecks}
+              />
+            )}
+          >
+            {!config ? (
+              <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
+            ) : checksEnabled ? (
+              <ConsoleState tone="danger">
+                Allowed - a Command runs branch-authored code
+              </ConsoleState>
+            ) : (
+              <ConsoleState tone="off">Paused - every Command passes with a note</ConsoleState>
+            )}
+            {/* ONE sentence, stated whether the switch is on or off, replacing the persistent
+                red banner that repeated the enable dialog to an operator who had already read
+                and accepted it. It says what is authorized rather than shouting that something
+                is dangerous: the argv is the operator's, and everything that argv loads belongs
+                to whoever wrote the branch under review. */}
+            <p className="settings-hint">
+              A Command runs in a commit-pinned checkout of the branch under review, without a
+              shell, with this daemon's filesystem authority - so it executes that branch's
+              scripts, dependencies and build steps. It is not a sandbox. Only repositories
+              granted the Workflows cell in Trust can run one.
+            </p>
+          </ConsoleCard>
+
+          {/* Where the commands went, said in the place an operator who remembers the old table
+              will look for it. A link rather than a smaller copy of the editor: two surfaces
+              authoring one catalog is how they start disagreeing. */}
+          <ConsoleCard title="What each Command runs" anchor="workflows/command-catalog">
+            <p className="settings-hint">
+              A workflow names a portable slot - <code>test</code>, <code>lint</code>,{" "}
+              <code>typecheck</code>, <code>build</code> - never an argv, so the same workflow
+              travels between repositories. Library › Commands is where this machine says what
+              each slot runs: one global default per slot, plus any repository or subdirectory
+              exceptions. A slot with nothing configured passes with a note rather than failing.
+            </p>
+            <p className="wf-settings-commands-link">
+              <Tooltip label="Open the Commands shelf in Library, where each slot's argv is set">
+                <a className="btn btn-ghost" href={COMMANDS_LIBRARY_HASH}>
+                  Open Commands in Library →
+                </a>
+              </Tooltip>
+            </p>
+          </ConsoleCard>
         </div>
       </div>
 

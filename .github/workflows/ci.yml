@@ -12,8 +12,8 @@ name: CI
 #
 # ## Runner policy
 #
-# `gates` uses the standard GitHub-hosted `ubuntu-latest` runner. CPU-heavy jobs use the
-# shared `frontend-platform` group granted to this repository in
+# `dependencies` and `gates` use standard GitHub-hosted `ubuntu-latest` runners. CPU-heavy
+# jobs use the shared `frontend-platform` group granted to this repository in
 # `teamupstart/Github_Org_Settings_TF#131`: unit runs on its 8-core label with eight test
 # workers, while each E2E shard runs on its reliability-tested 4-core label with four
 # Playwright workers. The test matrices split both suites far enough that every test step
@@ -39,6 +39,43 @@ permissions:
   contents: read
 
 jobs:
+  # `setup-node` caches npm's package tarballs, not the installed dependency tree. In a
+  # measured 21-job run every job restored the same warm 385 MB npm cache, but `npm ci`
+  # still varied from 12 seconds to 5 minutes. Prepare one exact `node_modules` tree per
+  # supported Node release so a lockfile change installs twice, not once per test shard,
+  # and a warm run skips installation entirely.
+  #
+  # The key deliberately has no fallback prefix. A stale dependency tree is worse than a
+  # cold install, so OS, architecture, Node release, and exact lockfile bytes must all match.
+  dependencies:
+    name: dependencies (node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['24', '26']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Cache node_modules
+        id: dependencies
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
+
   # The gates that do not care which Node runs them: `tsc` typechecks the same source
   # whatever interpreter drives it, and so does the linter. They used to run inside every
   # matrix leg, which paid for them twice on metered hardware.
@@ -46,12 +83,11 @@ jobs:
   # Lint is new to CI. It was previously a local-only check, which meant it was a required
   # standard nothing enforced. It costs under a second, so the honest place for it is here.
   #
-  # ## Why no job in this file has `needs:`
-  #
-  # The jobs remain independent so one broken layer does not hide failures in another and
-  # every failing gate is visible in the same run.
+  # Every Linux consumer waits only for the two dependency trees. Once those exact caches
+  # exist, test layers remain independent and expose their failures in the same run.
   gates:
     name: gates (typecheck, lint)
+    needs: dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,10 +98,13 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '24'
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
 
       - name: Typecheck
         run: npm run typecheck
@@ -82,7 +121,8 @@ jobs:
   # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
   # after every test shard so each check remains self-contained and exercises its own output.
   unit:
-    name: unit (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/3)
+    name: unit (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
+    needs: dependencies
     runs-on:
       group: frontend-platform
       labels: ubuntu-8cpu-32ram-300ssd
@@ -91,12 +131,12 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ['24', '26']
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
 
     env:
       # Match the selected runner's eight CPUs without changing the six-worker local default.
       MISSION_TEST_CONCURRENCY: '8'
-      MISSION_TEST_SHARDS: '3'
+      MISSION_TEST_SHARDS: '4'
 
     steps:
       - name: Checkout
@@ -106,10 +146,13 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
 
       # Keyed on the version the lockfile actually installed rather than the range in
       # package.json, because the cache holds one exact binary. `runner.arch` is in the key
@@ -123,7 +166,7 @@ jobs:
       # cache: whichever downloads it first serves the other, and in practice that has been
       # the leg whose network worked.
       - name: Cache the Electron runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
@@ -186,6 +229,7 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: dependencies
     runs-on:
       group: frontend-platform
       labels: ubuntu-4cpu-32ram-150ssd
@@ -208,10 +252,13 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '24'
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
 
       # Keyed on the resolved Playwright version, because a browser build is only valid for
       # the version that asked for it. `runner.arch` is in the key so an x64 cache can never
@@ -222,7 +269,7 @@ jobs:
 
       - name: Cache Playwright browser
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.v }}

@@ -19,7 +19,7 @@ test("CI directly uses available frontend runners at their bounded capacities", 
   const jobs = Object.fromEntries(
     [
       ...workflow.matchAll(
-        /^([ \t]*)(gates|unit|e2e):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
+        /^([ \t]*)(dependencies|gates|unit|e2e):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
       ),
     ].map(([, , job, body]) => [job, body]),
   );
@@ -35,12 +35,14 @@ test("CI directly uses available frontend runners at their bounded capacities", 
     group: capture(jobs[job], /^[ \t]+group:[ \t]*(.+?)[ \t]*$/m),
     label: capture(jobs[job], /^[ \t]+labels:[ \t]*(.+?)[ \t]*$/m),
   });
-  const shardList = (job: "unit" | "e2e") => capture(
+  const list = (job: "dependencies" | "unit" | "e2e", key: string) => capture(
     jobs[job],
-    /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m,
+    new RegExp(`^[ \\t]+${key}:[ \\t]*\\[([^\\]]+)\\]`, "m"),
   )
     ?.split(",")
-    .map((value) => Number(value.trim()));
+    .map((value) => value.trim().replaceAll("'", ""));
+  const shardList = (job: "unit" | "e2e") =>
+    list(job, "shard")?.map(Number);
   const stepTimeout = (job: "unit" | "e2e", step: string) => capture(
     jobs[job],
     new RegExp(`- name: ${step}[\\s\\S]*?^[ \\t]+timeout-minutes:[ \\t]*(\\d+)`, "m"),
@@ -75,12 +77,35 @@ test("CI directly uses available frontend runners at their bounded capacities", 
   assert.deepEqual(
     {
       runners: {
+        dependencies: runner("dependencies"),
         gates: runner("gates"),
         unit: runner("unit"),
         e2e: runner("e2e"),
       },
       hasBlacksmithLabel: /blacksmith/i.test(workflow),
       hasRunnerVariable: /MISSION_CONTROL_CI_RUNNER/.test(workflow),
+      dependencyNodes: list("dependencies", "node-version"),
+      dependencyCacheAction: capture(
+        jobs.dependencies,
+        /- name: Cache node_modules[\s\S]*?uses: actions\/cache@(v\d+)/,
+      ),
+      dependencyInstallCondition: capture(
+        jobs.dependencies,
+        /- name: Install dependencies\r?\n[ \t]+if:[ \t]*(.+?)[ \t]*$/m,
+      ),
+      dependencyInstallCommand: capture(
+        jobs.dependencies,
+        /- name: Install dependencies[\s\S]*?^[ \t]+run:[ \t]*(.+?)[ \t]*$/m,
+      ),
+      consumerNeeds: ["gates", "unit", "e2e"].map((job) => jobValue(job, "needs")),
+      consumerRestores: ["gates", "unit", "e2e"].map((job) => ({
+        action: capture(jobs[job], /- name: Restore node_modules[\s\S]*?uses: (actions\/cache\/restore@v\d+)/),
+        failOnMiss: capture(jobs[job], /^[ \t]+fail-on-cache-miss:[ \t]*(.+?)[ \t]*$/m),
+        repeatsInstall: /- name: Install dependencies/.test(jobs[job] ?? ""),
+      })),
+      cacheActionVersions: [
+        ...workflow.matchAll(/uses: actions\/cache@(v\d+)/g),
+      ].map(([, version]) => version),
       unitWorkers: jobValue("unit", "MISSION_TEST_CONCURRENCY"),
       unitShardTotal: jobValue("unit", "MISSION_TEST_SHARDS"),
       unitShards: shardList("unit"),
@@ -102,6 +127,7 @@ test("CI directly uses available frontend runners at their bounded capacities", 
     },
     {
       runners: {
+        dependencies: { scalar: "ubuntu-latest", group: null, label: null },
         gates: { scalar: "ubuntu-latest", group: null, label: null },
         unit: {
           scalar: null,
@@ -116,9 +142,20 @@ test("CI directly uses available frontend runners at their bounded capacities", 
       },
       hasBlacksmithLabel: false,
       hasRunnerVariable: false,
+      dependencyNodes: ["24", "26"],
+      dependencyCacheAction: "v5",
+      dependencyInstallCondition: "steps.dependencies.outputs.cache-hit != 'true'",
+      dependencyInstallCommand: "npm ci --prefer-offline --no-audit --no-fund",
+      consumerNeeds: ["dependencies", "dependencies", "dependencies"],
+      consumerRestores: [
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
+      ],
+      cacheActionVersions: ["v5", "v5", "v5"],
       unitWorkers: "'8'",
-      unitShardTotal: "'3'",
-      unitShards: [1, 2, 3],
+      unitShardTotal: "'4'",
+      unitShards: [1, 2, 3, 4],
       unitShardEnv: "${{ matrix.shard }}/${{ env.MISSION_TEST_SHARDS }}",
       unitTestTimeout: "3",
       e2eWorkerVariable: null,

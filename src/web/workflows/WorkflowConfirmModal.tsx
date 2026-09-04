@@ -124,7 +124,7 @@ export function WorkflowConfirmModal({
             </button>
           </Tooltip>
         </header>
-        <div className="workflow-confirm-body">
+        <div className="modal-bleed workflow-confirm-body">
           <p>{request.body}</p>
           {request.captureEvidence && evidence && (
             <WorkflowEvidenceComposer

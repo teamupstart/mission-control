@@ -2537,7 +2537,7 @@ function DispatchModal({
         />
       )}
 
-      <div className="dispatch-body">
+      <div className="modal-bleed dispatch-body">
         {editing?.scheduleId && (
           <div className="rm-provenance-note">
             <span className="rm-provenance-text">

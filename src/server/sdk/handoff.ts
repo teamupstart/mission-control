@@ -118,7 +118,13 @@ async function transfer(
   // The mode rides along because an embedded session's mode lived only in the driver's
   // options - there is nothing on disk for the reopened CLI to restore it from, and
   // without it a session running in auto reopens in the CLI's own default mode.
-  const argv = resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
+  let argv: string[] | null;
+  try {
+    argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: why };
+  }
   if (!argv) return { ok: false, error: `${session.agent} cannot reopen a conversation` };
 
   // Before the stop, deliberately. See the ordering note above.

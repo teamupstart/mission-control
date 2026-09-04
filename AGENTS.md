@@ -103,10 +103,14 @@ MISSION_TEST_CONCURRENCY=8 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI defines three jobs and reports eight checks. `gates` (typecheck and lint) uses GitHub-hosted
-`ubuntu-latest`; `unit (node 24)` and `unit (node 26)` (tests, build, and bundle smoke) use the
-`frontend-platform` 8-core runner with eight workers; and five `e2e` shards (the Playwright
-suite, on Node.js 24 only) use the same group's 4-core runner with four workers each. The separate
+CI reports thirty non-package checks. Two independent `dependencies` checks use GitHub-hosted
+`ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
+`gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
+producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
+release does not hide checks for the other. Unit tests, builds, and bundle smoke use the
+`frontend-platform` 8-core runner with eight workers across six shards per Node release. Fifteen
+`e2e` shards use the same group's 4-core runner with four workers each. The shared unit steps live
+in `.github/actions/run-unit-shard/action.yml`. The separate
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns
 CI red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
@@ -188,6 +192,34 @@ if (session.tmux || session.wezterm || session.runtime === "sdk") {
 }
 ```
 
+A modal's content inset belongs to the shell, never to its children. `.modal` declares
+`--modal-inset` once and applies it as `padding-inline`, so anything rendered into a modal at
+any depth clears the border without asking. A band that must reach the border - it draws a
+background, a divider, or its own scrollport - carries `.modal-bleed` and keeps its own
+padding; `.modal-head`, `.modal-body` and `.modal-foot` already do. Never re-declare the
+horizontal inset on a child, and never assume a wrapper supplies it.
+
+Correct:
+
+```tsx
+<Overlay className="modal si-session-modal" /* … */>
+  <h3>Standing instructions this session received</h3>
+  <div className="modal-bleed dispatch-body">{fields}</div>
+  <footer className="modal-foot">{actions}</footer>
+</Overlay>
+```
+
+Incorrect:
+
+```tsx
+// Flush against the border: the inset was opt-in per region, and `.modal-actions`
+// never had a CSS rule at all.
+<Overlay className="modal workflow-binding-dialog" /* … */>
+  <p>Bind an immutable version.</p>
+  <footer className="modal-actions">{actions}</footer>
+</Overlay>
+```
+
 Tests use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
 
 Browser end-to-end tests are the one exception, and they live apart: `e2e/` uses `@playwright/test` and runs under `npm run test:e2e`, never `npm test`. Everything in `test/` runs against `src/` and must pass on a fresh checkout; `e2e/` drives the BUILT dashboard served by the BUILT daemon, so it needs `npm run build` first. That is the same line `scripts/smoke-bundles.mjs` already draws.
@@ -242,6 +274,10 @@ Two standing constraints:
 - **Never add `data-testid`.** Select by role, label, or placeholder. The app has 229
   `aria-label`s and 155 `role`s already, and selecting through them keeps the accessible
   names honest.
+
+A spec that opens a new modal calls `expectContentClearsBorder` from
+`e2e/fixtures/modal-inset.ts`. It measures laid-out rectangles, which is the only layer that
+can see text printed onto a panel border.
 
 ## Boundaries
 

@@ -94,7 +94,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Six ready-made review roles ship with the application. Nothing has to be
+Seven ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -104,6 +104,7 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Slop Filter | Low-signal code, tests, comments, and prose that add no trustworthy behavior or useful explanation |
 | Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 | Code Design Reviewer | The design of the change: appropriate abstractions, SOLID without Liskov, DRY, composition over inheritance, encapsulation, unrepresentable illegal states, and explicit dependencies. Scoped to the submitted change, and never style or types |
 

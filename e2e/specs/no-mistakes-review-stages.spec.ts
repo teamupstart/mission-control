@@ -69,6 +69,15 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   });
   expect(contained, "stage 3 overflows its pipeline strip").toBe(true);
 
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await dashboard.screenshot({
+      path: `${EVIDENCE}stage-3-code-review.png`,
+      fullPage: true,
+    });
+  }
+
   await stage4.evaluate((element) => {
     const strip = element.closest(".wf-pipeline-strip");
     if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
@@ -84,13 +93,6 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   expect(stage4Contained, "stage 4 overflows its pipeline strip").toBe(true);
 
   if (!process.env.MC_E2E_EVIDENCE) return;
-  mkdirSync(EVIDENCE, { recursive: true });
-  await dashboard.mouse.move(0, 0);
-  await dashboard.screenshot({
-    path: `${EVIDENCE}stage-3-code-review.png`,
-    fullPage: true,
-  });
-
   await dashboard.screenshot({
     path: `${EVIDENCE}stage-4-before-pull-request.png`,
     fullPage: true,

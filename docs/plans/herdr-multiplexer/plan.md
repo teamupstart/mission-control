@@ -198,9 +198,14 @@ Create `src/server/terminal/herdr-client.ts` with a deliberately small surface:
 - Validate every consumed response with narrow Zod schemas. Ignore additive fields but reject
   missing identities, type changes, mismatched IDs, protocol incompatibility, truncated lines, and
   response-size overflow.
-- Preserve `TerminalResult.outcomeUnknown`: a timeout or socket close after a mutation is unknown;
-  a parsed Herdr error is a confirmed refusal. Reads degrade to no panes or no capture without
-  poisoning other terminal backends.
+- Treat a deadline, disconnect, framing error, partial final line, duplicate or unknown response ID,
+  and schema failure as a terminal batch failure. Settle every unresolved request exactly once,
+  clear timers and listeners, mark the batch closed, destroy the socket, and ignore late events.
+- Preserve `TerminalResult.outcomeUnknown` by tracking whether each mutation request was written.
+  Any terminal batch failure after its bytes were written is unknown, including malformed,
+  mismatched, or invalid responses; only pre-write failures and parsed Herdr application refusals
+  are confirmed non-delivery. Reads still degrade to no panes or no capture without poisoning other
+  terminal backends.
 - Keep operation-specific timeouts below the 1.5-second discovery cadence for reads; give workspace
   creation and teardown their existing user-action budget.
 - Pin the supported stable protocol/version in one exported constant and return an actionable
@@ -219,6 +224,9 @@ leave a real daemon running.
 
 Create `src/server/terminal/herdr.ts`:
 
+- Scope the initial adapter to POSIX hosts. It uses Herdr's Unix socket and a POSIX `env -u`
+  full-client attach wrapper; Windows named-pipe transport and environment scrubbing are separate
+  compatibility work and must not be presented as supported.
 - `HERDR_BIN` follows `CMUX_BIN`: an override plus `herdr` on PATH. For the recommended default-only
   scope, remove ambient `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`,
   and `HERDR_PANE_ID` from adapter subprocesses so starting Mission Control inside a Herdr pane does
@@ -235,7 +243,7 @@ Create `src/server/terminal/herdr.ts`:
   submits it to the returned root pane, and optionally creates a no-focus side split rooted at the
   same `spec.cwd`. If the command cannot be submitted after the workspace was created, close that
   exact workspace and preserve unknown-outcome semantics.
-- `sessions.attachArgv` returns a portable `env -u ...` wrapper followed by the resolved Herdr binary,
+- `sessions.attachArgv` returns a POSIX `env -u ...` wrapper followed by the resolved Herdr binary,
   attaching the full client to the default server even when the daemon inherited named-session
   selectors. `rename` and `kill` target workspace ID, not label. Use `PLAIN_NAMES` unless live v0.8.2
   validation proves a stricter label rule.
@@ -248,9 +256,13 @@ self-hosting cmux GUI when neither is nested.
 
 ### 5. Cover the adapter and existing user surfaces
 
-Add `test/herdr-client.test.ts` for framing, response correlation, schema validation, timeouts,
-outcome uncertainty, batched snapshot/process requests, and server-start races. Use fake Unix socket
-servers and injected process spawners only.
+Add `test/herdr-client.test.ts` for framing, response correlation, schema validation, deadlines,
+terminal-failure settlement, outcome uncertainty, batched snapshot/process requests, and
+server-start races. Use fake Unix socket servers and injected process spawners only. Include a
+non-responsive server and an unterminated partial line, and assert that every operation settles,
+every pending request settles exactly once, and every socket closes. Cover malformed, duplicate-ID,
+unknown-ID, and schema-mismatched mutation responses both before and after request write so the
+`outcomeUnknown` boundary is exact.
 
 Add `test/herdr-adapter.test.ts` for:
 
@@ -304,8 +316,10 @@ Do not edit `CHANGELOG.md`.
 | Herdr installed, server stopped | Discovery and existing-target operations do not start it; workspace creation starts and awaits the headless server |
 | Installed client and server incompatible | Fail that backend with an actionable restart/update message; never stop the server automatically |
 | Socket response invalid or mismatched | Reject the operation; never guess a pane or mutation result |
+| Terminal socket failure | Settle pending requests once, clear resources, destroy the socket, and ignore late events |
 | Discovery socket timeout | Return no Herdr panes for that tick; tmux/cmux/emulator discovery continues |
-| Mutation socket timeout or disconnect | `outcomeUnknown: true`; callers do not replay a possibly delivered paste/create/close |
+| Mutation failure after request write | `outcomeUnknown: true` for timeout, disconnect, framing, ID, or schema failure; callers do not replay |
+| Mutation failure before request write | Confirmed non-delivery; `outcomeUnknown: false` |
 | Pane has no tty | Pair only through actual shell-PID ancestry; otherwise leave the session handleless |
 | Agent focus unavailable | Return the Herdr refusal; do not call an undocumented fallback silently |
 | Command launch fails after workspace creation | Close only the newly created workspace when delivery is a confirmed refusal |
@@ -324,7 +338,8 @@ Implementation is complete only when:
   multiline paste without submission, capture, focus, rename, detach/reattach, and close. Evidence
   stays gitignored and is attached to the implementation pull request, not committed.
 - The test proves Mission Control launched no real agent binary and left no test Herdr server.
-- README and terminal architecture docs match the implemented version and limitations.
+- README and terminal architecture docs match the implemented version and limitations, including the
+  initial POSIX-only boundary.
 - No caller outside the adapter branches on the Herdr ID.
 
 ## Decisions taken

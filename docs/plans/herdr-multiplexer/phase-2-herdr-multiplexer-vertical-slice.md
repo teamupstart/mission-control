@@ -91,6 +91,10 @@ Create `src/server/terminal/herdr-client.ts` with a narrow dependency-injected A
 implementation uses Node's local socket support and existing Zod, while tests inject connection,
 clock or timeout, CLI execution, and detached-spawn behavior.
 
+Scope this phase to POSIX hosts. The supported transport is Herdr's Unix socket, and full-client
+attach uses POSIX `env -u` environment scrubbing. Windows named-pipe transport and Windows-compatible
+environment scrubbing are explicit future compatibility work, not an implied part of this phase.
+
 For each logical operation:
 
 1. Run and validate `herdr status server --json` to establish running state, socket address,
@@ -102,8 +106,12 @@ For each logical operation:
 5. Validate only fields Mission Control consumes with strict-enough Zod schemas that accept additive
    fields but reject missing IDs, identity type changes, incompatible status, truncated lines,
    duplicate response IDs, and unknown response IDs.
-6. Close the socket after the bounded batch settles. Do not create a daemon-wide persistent
-   connection or a discovery cache.
+6. On normal completion, close the socket after the bounded batch settles. On a deadline,
+   disconnect, framing or parse error, partial final line, duplicate or unknown response ID, or
+   schema failure, atomically mark the batch terminal, settle every unresolved request exactly once,
+   clear all deadline and per-request timers and socket listeners, destroy the socket exactly once,
+   and ignore every late response or event. Do not create a daemon-wide persistent connection or a
+   discovery cache.
 
 Expose typed helpers only for the operations the adapter needs: session snapshot, pane process info,
 pane read, raw text, keys, bracket-aware input, agent focus, workspace create, workspace rename,
@@ -114,9 +122,12 @@ Classify outcomes deliberately:
 - Parsed Herdr application errors are confirmed refusals with `outcomeUnknown: false`.
 - A read timeout, invalid response, or disconnect returns no panes or null capture for this backend
   and leaves other terminal enumeration untouched.
-- A mutation timeout or disconnect after bytes may have been delivered returns
-  `outcomeUnknown: true`; callers must not replay it.
-- A pre-connect or pre-write refusal is known not to have landed.
+- Track whether each mutation request was written to the socket. Every subsequent terminal response,
+  framing, correlation, or validation failure returns `outcomeUnknown: true`, including a deadline,
+  disconnect, truncated line, malformed JSON, duplicate or unknown response ID, and schema mismatch;
+  callers must not replay it.
+- A pre-connect or pre-write refusal is known not to have landed and returns
+  `outcomeUnknown: false`.
 - Error messages name Herdr, the operation, and the operator action when compatibility or startup is
   the issue, without exposing raw socket payloads.
 
@@ -205,7 +216,11 @@ Create `test/herdr-client.test.ts` with fake Unix socket servers and injected pr
   from request order;
 - unique and matching IDs, duplicate or unknown IDs, truncated JSON, schema violations, size bounds,
   deadlines, and socket close;
-- read degradation versus mutation `outcomeUnknown` classification;
+- a non-responsive server and an unterminated partial line, asserting every operation settles, every
+  pending request settles exactly once, timers and listeners are cleared, the socket is destroyed,
+  and late responses are ignored;
+- read degradation versus exact mutation `outcomeUnknown` classification before and after request
+  write, including malformed, duplicate-ID, unknown-ID, and schema-mismatched mutation responses;
 - compatible running server reuse, stopped-server start and poll, concurrent starter race,
   startup timeout, and incompatible server refusal;
 - one socket batch for snapshot plus per-pane process info;
@@ -325,6 +340,10 @@ Herdr version and compatibility status in the pull request evidence, not in comm
 - `MULTIPLEXER_IDS` is exactly ordered `tmux`, `herdr`, `cmux`; every exhaustive registry and request
   schema admits the same ID.
 - Herdr discovery uses one bounded socket batch and never starts a stopped server.
+- Every terminal socket failure settles pending requests once, clears timers and listeners, destroys
+  the socket, and ignores late responses.
+- Every mutation response, framing, correlation, or validation failure after request write preserves
+  `outcomeUnknown: true`; only pre-write failures and parsed application refusals are confirmed.
 - Null tty panes bind only through Phase 1's exact PID ancestry.
 - Background dispatch records `select: false`; operator launch records `select: true`.
 - Workspace creation and any requested side split receive the exact worktree cwd from the launch
@@ -335,6 +354,8 @@ Herdr version and compatibility status in the pull request evidence, not in comm
 - No direct attach takeover, named-server scope, vendor branch outside the adapter, new persistence,
   real-agent E2E spend, committed evidence, generated-file edit, or `CHANGELOG.md` edit lands.
 - README and terminal documentation match the shipped compatibility and limitations.
+- README and terminal documentation state the initial POSIX-only boundary and do not imply Windows
+  named-pipe or environment-scrubbing support.
 
 ## Downstream handoff
 
@@ -357,8 +378,10 @@ identity work.
   source ID tuple; no persistence migration or second source of truth is introduced.
 - Reconciliation audit: current spawn contracts required the namespace-scrubbing attach wrapper,
   target-liveness semantics required narrowing server auto-start to workspace creation, and terminal
-  launch correctness required carrying `spec.cwd` into workspace creation and any side split. These
-  corrections are owned here and are reflected in the root plan and phased index.
+  launch correctness required carrying `spec.cwd` into workspace creation and any side split.
+  Review also made terminal-failure settlement, post-write mutation uncertainty, and the POSIX-only
+  platform boundary explicit. These corrections are owned here and are reflected in the root plan
+  and phased index.
 - Final audit: the approved socket architecture, default-session scope, new-client focus fallback,
   validation bar, and explicit exclusions are all represented in implementation steps and exit
   criteria.

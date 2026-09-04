@@ -168,8 +168,13 @@ may merge a temporary Herdr-specific correlation or creation branch.
   and pane selectors from adapter-owned subprocesses.
 - One bounded newline-delimited JSON socket connection per logical batch, unique request IDs, narrow
   Zod validation, response and line-size bounds, and explicit read-versus-mutation timeout behavior.
-- Read failures degrade only Herdr for the current tick. Mutation disconnects after delivery preserve
-  `outcomeUnknown` so callers do not replay an operation that may have landed.
+- Any terminal batch failure settles pending requests exactly once, clears timers and listeners,
+  destroys the socket, and ignores late events.
+- Read failures degrade only Herdr for the current tick. Every mutation protocol failure after its
+  request was written preserves `outcomeUnknown` so callers do not replay an operation that may have
+  landed; pre-write failures and parsed application refusals remain confirmed.
+- Initial support is POSIX-only: Unix socket transport and `env -u` attach are supported, while
+  Windows named pipes and environment scrubbing remain future compatibility work.
 - `clients: null` and `paneMode: null` are honest capability declarations, not missing work.
 - Full-client attach clears Herdr namespace selectors in argv and never uses direct-attach takeover.
 

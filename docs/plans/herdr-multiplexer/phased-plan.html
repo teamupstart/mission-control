@@ -135,8 +135,11 @@
     <ul>
       <li>Source: <a href="plan.md"><code>docs/plans/herdr-multiplexer/plan.md</code></a> and its <a href="plan.html">rendered page</a>.</li>
       <li>Use a socket-backed Herdr adapter behind the existing <code>Multiplexer</code> registry.</li>
+      <li>Make terminal socket failures settle pending requests once, clear resources, destroy the socket, and ignore late events.</li>
+      <li>Classify every mutation protocol failure after request write as outcome-unknown; pre-write failures and parsed refusals remain confirmed.</li>
       <li>Support only Herdr's default local server session in the first release.</li>
       <li>Select inside Herdr, declare <code>clients: null</code>, and use the existing new-client fallback without direct-attach takeover.</li>
+      <li>Scope initial support to POSIX Unix sockets and <code>env -u</code>; Windows named-pipe support is future work.</li>
       <li>Create merge-aware phases and dependency-linked tasks.</li>
     </ul>
     <div class="callout good"><strong>Requirements, not questions.</strong> Agents may adapt the proposed route where repository evidence demands it, but the selected behavior remains fixed and deviations must be explained in the implementation pull request.</div>

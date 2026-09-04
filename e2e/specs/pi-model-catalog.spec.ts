@@ -159,3 +159,35 @@ test.describe("login-shell Pi installation", () => {
     await shoot(page, "login-shell-catalog");
   });
 });
+
+test.describe("version-manager Pi installation", () => {
+  test.use({
+    setupReminder: true,
+    daemonEnv: { MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY: "1" },
+  });
+
+  test("model discovery survives an unavailable login shell through the mise shim", async ({
+    page,
+    daemon,
+  }) => {
+    await openHarnesses(page, daemon.baseURL);
+
+    const settingsModel = page.getByRole("combobox", { name: PI_DEFAULT });
+    await expect(settingsModel).toBeEnabled();
+    await expect
+      .poll(() =>
+        settingsModel
+          .locator("optgroup")
+          .evaluateAll((groups) => groups.map((group) => group.getAttribute("label"))),
+      )
+      .toEqual(["openai", "anthropic", "openrouter"]);
+    await expect(page.getByText(/Showing built-in Pi models/)).not.toBeVisible();
+
+    const records = recordsIn<PiProbeRecord>(join(daemon.recordDir, "pi"));
+    expect(records).toHaveLength(1);
+    expect(records[0]!.request.type).toBe("get_available_models");
+    await settingsModel.selectOption("openrouter/meta-llama/llama-4-maverick");
+    await expect(settingsModel).toHaveValue("openrouter/meta-llama/llama-4-maverick");
+    await shoot(page, "version-manager-shim-catalog");
+  });
+});

@@ -112,12 +112,14 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
     }),
   );
   writeFileSync(join(tsxDir, "index.mjs"), "export const register = () => {};\n");
+  // The daemon record is the parent's readiness signal, so publish it only after the fixture
+  // can handle the SIGTERM the parent sends immediately after observing that record.
   writeFileSync(
     server,
     `import { appendFileSync } from "node:fs";\n` +
       `const record = (event) => appendFileSync(process.env.SERVICE_EVENT_LOG, JSON.stringify(event) + "\\n");\n` +
-      `record({ stage: "daemon", pid: process.pid, args: process.argv.slice(1) });\n` +
       `process.on("SIGTERM", () => { record({ stage: "signal", pid: process.pid, signal: "SIGTERM" }); process.exit(0); });\n` +
+      `record({ stage: "daemon", pid: process.pid, args: process.argv.slice(1) });\n` +
       `setInterval(() => {}, 1_000);\n`,
   );
 

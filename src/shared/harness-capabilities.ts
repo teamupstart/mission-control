@@ -435,6 +435,26 @@ export interface HarnessCapabilities {
    * justify a boolean nobody can set.
    */
   resumes: boolean;
+  /**
+   * Does this harness answer a live model catalog, rather than only its shipped rows?
+   *
+   * The pure half of `Harness.models.discover` (`src/server/harness/types.ts`), and here
+   * for the reason `runtimes` and `resumes` are: the BROWSER asks it. The catalog notice
+   * beside every picker - "checking", "showing built-in rows", and the retry button - is
+   * meaningful only for a harness that has something to check, and the browser cannot
+   * import a spec that spawns a subprocess to find out.
+   *
+   * ONE FACT IN TWO FILES with `HARNESSES[a].models.discover !== null`, the treatment
+   * `runtimes` / `resumes` get: `harness-model-catalog.test.ts` fails until they agree, so
+   * a probe cannot ship with no way to report its failure and the browser cannot offer to
+   * retry a discovery that does not exist.
+   *
+   * This replaced a proxy that asked whether any row reported a provider. That happened to
+   * be true for Pi and false for everything else, so it read correctly while Pi was the
+   * only harness that discovered - and then silently hid Codex's degraded state, because
+   * Codex reports no provider per row and discovers anyway.
+   */
+  discoversModels: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
   workQueue: WorkQueueSpec | null;
@@ -487,6 +507,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // `claude --resume <id>`. Already shipping - this is the argv the embedded handoff
     // has spawned since the first driver landed.
     resumes: true,
+    // Claude's SDK does report a live list, but it is account-shaped aliases, two of which
+    // `ModelIdSchema` rejects for their long-context marker and one of which is a MODE
+    // rather than a model. Adopting it is a persisted-vocabulary decision, so it is
+    // deliberately deferred: see `docs/plans/claude-codex-live-model-catalog/plan.md`.
+    discoversModels: false,
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It
@@ -571,6 +596,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // non-null resume beside a terminal-only runtime demonstrates why this flag could not
     // stay on `SdkSpec`.
     resumes: true,
+    // `model/list` over `codex app-server`, behind `HARNESSES.codex.models.discover`.
+    discoversModels: true,
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -700,6 +727,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // interactive PICKER rather than taking an id, and not `--fork`, which would branch the
     // conversation instead of continuing it - three neighbouring flags, one right answer.
     resumes: true,
+    // `get_available_models` over pi's RPC mode, behind `HARNESSES.pi.models.discover`.
+    discoversModels: true,
     // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
     // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
     // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does

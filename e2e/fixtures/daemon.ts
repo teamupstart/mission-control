@@ -20,6 +20,7 @@ import {
   productConsentScriptPath,
   writeProductConsentBin,
   ghPullRequestsPath,
+  codexCatalogControlPath,
   piCatalogControlPath,
   writeFakeAgents,
 } from "./fake-agents.ts";
@@ -397,6 +398,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Re-read on every prompt-free Pi catalog probe so a spec can move from live discovery
     // to failure across a daemon restart without ever allowing a launch-shaped invocation.
     MC_E2E_PI_CATALOG_CONTROL: piCatalogControlPath(home),
+    // The same seam for Codex's `model/list` probe, re-read per request.
+    MC_E2E_CODEX_CATALOG_CONTROL: codexCatalogControlPath(home),
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.

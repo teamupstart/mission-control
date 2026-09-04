@@ -211,6 +211,36 @@ test("native option groups mirror every provider while static catalogs stay flat
   assert.doesNotMatch(staticHtml, /<optgroup/);
 });
 
+test("a discovering harness reports its degraded catalog even when it groups nothing", () => {
+  // The regression this pins: the notice used to be gated on some row reporting a
+  // provider, which is true for Pi and false for Codex - so a failed Codex probe fell back
+  // silently, with no message and no way to retry. Codex declares discovery and reports no
+  // provider, which is exactly the combination the old proxy could not represent.
+  const codexFellBack: HarnessModelCatalogs = {
+    ...shippedModelCatalogs(),
+    codex: {
+      choices: [...shippedModelCatalogs().codex.choices],
+      source: "fallback",
+      refreshedAt: null,
+      problem: "rpc_failed",
+    },
+  };
+  const codex = modelCatalogNoticeContent(snapshot(codexFellBack), "codex");
+  assert.equal(codex?.retry, true);
+  assert.equal(codex?.tone, "degraded");
+  assert.match(codex?.message ?? "", /^Showing built-in Codex models because/);
+  // Nothing in that catalog groups, so the notice cannot have come from provider metadata.
+  assert.equal(
+    codexFellBack.codex.choices.every((choice) => choice.provider === null),
+    true,
+  );
+
+  // Claude does not discover, so it has nothing to report and offers no retry. Flipping
+  // `discoversModels` for Claude is what would break this, which is the same edit that
+  // would resurrect the defect above.
+  assert.equal(modelCatalogNoticeContent(snapshot(codexFellBack), "claude"), null);
+});
+
 test("bounded degraded notices expose retry without leaking discovery output", () => {
   const stale = catalogs(LIVE_CHOICES, "cached", "timeout");
   const content = modelCatalogNoticeContent(snapshot(stale), "pi");

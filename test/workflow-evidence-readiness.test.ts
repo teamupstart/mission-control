@@ -113,6 +113,15 @@ test("one policy predicate and evaluator own enforced zero-coverage readiness", 
     gaps: ["missing_coverage"],
     warnings: [],
   }]);
+
+  const advisory = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: [],
+    coverage: [],
+    evidence: [],
+  });
+  assert.equal(advisory.status, "ready");
+  assert.deepEqual(advisory.criteria, []);
+  assert.deepEqual(advisory.gapCodes, []);
 });
 
 test("the proof matrix and readiness evaluator preserve author authority", () => {

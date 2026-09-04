@@ -9,7 +9,12 @@ import {
 } from "../src/shared/workflow.ts";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
-import { WorkflowChip, WorkflowChips, workflowRunTone } from "../src/web/components/session-bits.tsx";
+import {
+  WorkflowChip,
+  WorkflowChips,
+  workflowRunLabel,
+  workflowRunTone,
+} from "../src/web/components/session-bits.tsx";
 import { heldByRun, newestSessionRun } from "../src/web/lib/held.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
@@ -58,6 +63,7 @@ test("workflow status vocabulary remains shared", () => {
   assert.equal(workflowRunTone(run), "waiting");
   assert.equal(workflowRunTone({ ...run, status: "completed" }), "passed");
   assert.equal(workflowRunTone({ ...run, status: "blocked" }), "blocked");
+  assert.equal(workflowRunLabel({ ...run, status: "waiting_for_evidence_readiness" }), "Evidence preflight");
 });
 
 test("an open run withholds the bind chip from the Console and Board detail", () => {

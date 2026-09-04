@@ -18,6 +18,7 @@ import type {
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
 import {
+  WORKFLOW_LIMITS,
   formatCheckCommand,
   isVerdictNode,
   sessionActionCompletionLabel,
@@ -389,7 +390,7 @@ function SubmissionEvidenceReadiness({
             Reason
             <textarea
               value={reason}
-              maxLength={2000}
+              maxLength={WORKFLOW_LIMITS.readinessOverrideReason}
               placeholder="Why this structurally incomplete packet should continue"
               onChange={(event) => setReason(event.target.value)}
             />

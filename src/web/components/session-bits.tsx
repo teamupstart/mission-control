@@ -185,6 +185,7 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   if (run.gate === "waiting_pr") return "Waiting for PR";
   if (run.gate === "waiting_inspector") return "GitHub Inspector gate";
   if (run.gate === "findings") return "GitHub Inspector findings";
+  if (run.status === "waiting_for_evidence_readiness") return "Evidence preflight";
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
@@ -192,7 +193,6 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   // not a review in progress, and `Preview · R1` beside a session that has just been handed
   // an instruction tells an operator nothing about why nothing is moving.
   if (run.status === "waiting_for_action") return "Session action";
-  if (run.status === "waiting_for_evidence_readiness") return "Evidence preflight";
   return `Preview · R${run.round}`;
 }
 

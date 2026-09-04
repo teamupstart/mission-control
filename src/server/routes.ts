@@ -2330,8 +2330,28 @@ export function buildApp(
         parsed.data.acknowledgedRisk,
       );
       if (result.ok) return c.json({ override: result.override, idempotent: result.idempotent });
-      const status = result.reason === "not_found" ? 404 : 409;
-      return c.json({ error: `Workflow evidence readiness override refused: ${result.reason}` }, status);
+      switch (result.reason) {
+        case "not_found":
+          return c.json({
+            error: "The workflow run or submission was not found.",
+            code: "workflow_evidence_readiness_override_not_found",
+          }, 404);
+        case "policy_off":
+          return c.json({
+            error: "This workflow version does not enforce evidence readiness.",
+            code: "workflow_evidence_readiness_override_policy_off",
+          }, 409);
+        case "request_conflict":
+          return c.json({
+            error: "That request id already names a different evidence readiness override.",
+            code: "workflow_evidence_readiness_override_request_conflict",
+          }, 409);
+        case "conflict":
+          return c.json({
+            error: "This submission is no longer waiting for an evidence readiness override.",
+            code: "workflow_evidence_readiness_override_conflict",
+          }, 409);
+      }
     },
   );
   app.post("/api/workflow-runs/:id/retry", async (c) => {

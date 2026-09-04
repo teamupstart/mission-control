@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,7 +68,7 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
   }
 }
 
-async function harness(id: string, beforeReadContext?: () => Promise<void>) {
+async function harness(t: TestContext, id: string, beforeReadContext?: () => Promise<void>) {
   const registry = new Registry();
   registry.applyDiscovery([discovered(id)]);
   const store = new WorkflowStore(openDb());
@@ -189,19 +189,20 @@ async function harness(id: string, beforeReadContext?: () => Promise<void>) {
     },
   });
   manager.start();
+  t.after(() => manager.stop());
   const binding = manager.createBinding({ workflowVersionId: published.version.id, sessionId: id });
   assert.equal(binding.ok, true);
   if (!binding.ok) throw new Error("binding was refused");
   return { registry, store, manager, binding: binding.value, injected };
 }
 
-test("automatic readiness sweep does not join a live manual preflight capture", async () => {
+test("automatic readiness sweep does not join a live manual preflight capture", async (t) => {
   let holdCapture = false;
   let signalCaptureStarted!: () => void;
   const captureStarted = new Promise<void>((resolve) => { signalCaptureStarted = resolve; });
   let releaseCapture!: () => void;
   const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
-  const h = await harness("live-evidence-preflight", async () => {
+  const h = await harness(t, "live-evidence-preflight", async () => {
     if (!holdCapture) return;
     signalCaptureStarted();
     await captureReleased;
@@ -281,8 +282,8 @@ test("automatic readiness sweep does not join a live manual preflight capture", 
   assert.equal(retried.ok, true);
 });
 
-test("enforced gaps wait, and in-round capture and override replays recover activation", async () => {
-  const h = await harness("evidence-preflight");
+test("enforced gaps wait, and in-round capture and override replays recover activation", async (t) => {
+  const h = await harness(t, "evidence-preflight");
   const execution = {
     kind: "command" as const,
     clientItemId: "browser-run",
@@ -313,6 +314,14 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
     "run did not wait for evidence readiness",
   );
   assert.equal(h.store.listAttempts(submitted.value.submission.id).length, 0);
+  const unchangedRetry = await h.manager.retryEvidenceReadiness(
+    runId,
+    submitted.value.submission.id,
+    "unchanged-retry",
+  );
+  assert.equal(unchangedRetry.ok, false);
+  if (!unchangedRetry.ok) assert.equal(unchangedRetry.reason, "unchanged_evidence");
+  assert.equal(h.store.listSubmissions(runId).length, 1);
   assert.deepEqual(h.store.getSubmission(submitted.value.submission.id)?.readiness?.gapCodes, [
     "missing_rendered_output",
   ]);
@@ -433,7 +442,8 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
   );
   assert.equal(replay.ok, true);
   if (replay.ok) assert.equal(replay.idempotent, true);
-  assert.equal(activationCalls, 3, "completed replay must remain safe to re-drive");
+  assert.equal(activationCalls, 2, "a replay after activation progressed must preserve run state");
+  assert.equal(h.store.getRun(second.value.run.id)?.status, "completed");
   assert.deepEqual(h.store.listReadinessOverrides(second.value.run.id).map((entry) => ({
     reason: entry.reason,
     acknowledgedRisk: entry.acknowledgedRisk,
@@ -446,7 +456,37 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
       .filter((event) => event.kind === "evidence_readiness_overridden").length,
     1,
   );
-  await h.manager.stop();
+
+  await h.manager.stageAgentEvidence("evidence-preflight", {
+    images: [],
+    commandOutputs: [{ ...execution, clientItemId: "second-override-run" }],
+    coverage: [{
+      ...claim,
+      clientCriterionId: "second-override-state",
+      links: [{ clientItemId: "second-override-run", role: "execution" }],
+    }],
+  });
+  const third = await h.manager.submit(h.binding.id, { requestId: "second-override" });
+  assert.equal(third.ok, true);
+  if (!third.ok) return;
+  await waitFor(
+    () => h.store.getRun(third.value.run.id)?.status === "waiting_for_evidence_readiness",
+    "second override run did not wait",
+  );
+  const scopedOverride = h.manager.overrideEvidenceReadiness(
+    third.value.run.id,
+    third.value.submission.id,
+    "override-request",
+    "The operator accepts the missing rendered output for this separate run.",
+    true,
+  );
+  assert.equal(scopedOverride.ok, true, "the same client request id is reusable on another run");
+  if (scopedOverride.ok) assert.equal(scopedOverride.idempotent, false);
+  assert.equal(activationCalls, 3);
+  await waitFor(
+    () => h.store.getRun(third.value.run.id)?.status === "completed",
+    "second overridden submission did not activate",
+  );
 });
 
 test("workflow event ids replay exact writes and reject conflicting reuse", () => {

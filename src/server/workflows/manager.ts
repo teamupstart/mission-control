@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -195,6 +195,15 @@ import {
   requiredSkillCommand,
   type RequiredSkillCommand,
 } from "../skills/invoke.ts";
+
+/** Bound the caller's idempotency key while scoping it to the run that owns the decision. */
+function evidenceReadinessOverrideRequestKey(runId: string, requestId: string): string {
+  return `readiness-override:${createHash("sha256")
+    .update(runId)
+    .update("\0")
+    .update(requestId)
+    .digest("hex")}`;
+}
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -2042,7 +2051,9 @@ export class WorkflowManager {
           ? "The evidence-readiness packet is still being delivered"
           : reserved.reason === "request_conflict"
             ? "That request id already names a different evidence refinement"
-            : "The submission is no longer waiting for evidence readiness",
+            : reserved.reason === "no_change"
+              ? "Stage new evidence before retrying evidence preflight"
+              : "The submission is no longer waiting for evidence readiness",
       };
     }
     const currentRun = this.store.getRun(runId) ?? run;
@@ -2074,14 +2085,19 @@ export class WorkflowManager {
       id: randomUUID(),
       runId,
       submissionId,
-      requestId,
+      requestId: evidenceReadinessOverrideRequestKey(runId, requestId),
       reason,
       acknowledgedRisk,
       now,
     });
     if (!recorded.ok) return recorded;
-    // The override row commits before graph activation. Replay every idempotent step so a
-    // retry repairs an interruption anywhere between that durable commit and the engine wake.
+    const durableRun = this.store.getRun(runId);
+    const shouldActivate = !recorded.idempotent
+      || (durableRun?.status === "running" && durableRun.currentPhase === "activating");
+    if (!shouldActivate) return recorded;
+    // The override row commits before graph activation. A retry while the durable handoff is
+    // still in `activating` repairs an interruption, but a later replay must preserve whatever
+    // state Persona or Session action processing has reached.
     this.store.appendEvent(runId, "evidence_readiness_overridden", {
       submissionId,
       requestId,

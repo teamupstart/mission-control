@@ -74,11 +74,16 @@ test("evidence readiness overrides require explicit risk acknowledgement", async
     reason: "Accept the gaps",
     acknowledgedRisk: false,
   })).status, 400);
-  assert.equal((await override({
+  const acceptedShape = await override({
     requestId: "true-ack",
     reason: "Accept the gaps",
     acknowledgedRisk: true,
-  })).status, 404);
+  });
+  assert.equal(acceptedShape.status, 404);
+  assert.deepEqual(await acceptedShape.json(), {
+    error: "The workflow run or submission was not found.",
+    code: "workflow_evidence_readiness_override_not_found",
+  });
 });
 
 test("definition CAS conflicts are 409 and validation failures are 422", async () => {

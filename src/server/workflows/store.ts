@@ -7473,7 +7473,7 @@ export class WorkflowStore {
         binding.noteKey,
         binding.repoRoot || binding.sessionCwd || "",
       );
-      if (!input.manualRetry && generation <= (parent.stagedImageGeneration ?? 0)) {
+      if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
       }
       const inFlight = this.db.prepare(

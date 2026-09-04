@@ -313,7 +313,41 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "03-waiting-for-readiness", readiness);
 
-  stageLaterPacket(daemon, noteKey, session!.cwd, 2, "repair", true);
+  const consoleLayout = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  expect(consoleLayout.ok).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  const sessionsRail = dashboard.getByRole("navigation", { name: "Sessions" });
+  await sessionsRail.locator("button.rail-row").first().click();
+  await expect(dashboard.locator("header.detail-head")
+    .getByRole("button", { name: "Evidence preflight" })).toBeVisible();
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${accepted.run.id}`);
+  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+
+  const submissionsBeforeUnchangedRetry = (await api<{ submissions: Array<{ id: string }> }>(
+    daemon,
+    `/api/workflow-runs/${accepted.run.id}`,
+  )).submissions.length;
+  const unchangedRetry = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith("/evidence-readiness/retry"));
+  await readiness.getByRole("button", { name: "Retry evidence preflight" }).click();
+  const unchangedRetryResponse = await unchangedRetry;
+  expect(unchangedRetryResponse.status()).toBe(409);
+  expect(await unchangedRetryResponse.json()).toMatchObject({ code: "workflow_unchanged_evidence" });
+  await expect(dashboard.getByRole("alert")).toContainText(
+    "Stage new evidence before retrying evidence preflight",
+  );
+  await expect.poll(async () => (
+    await api<{ submissions: Array<{ id: string }> }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
+  ).submissions.length).toBe(submissionsBeforeUnchangedRetry);
+
+  // Saving the initial criterion mapping advanced this scope to generation 2. A retry may
+  // refine only from a strictly newer staging generation.
+  stageLaterPacket(daemon, noteKey, session!.cwd, 3, "repair", true);
   await readiness.getByRole("button", { name: "Retry evidence preflight" }).click();
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
@@ -326,7 +360,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "04-repaired-same-round", readiness);
 
-  stageLaterPacket(daemon, noteKey, session!.cwd, 3, "override", false);
+  stageLaterPacket(daemon, noteKey, session!.cwd, 4, "override", false);
   const overrideRun = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding!.id}/submit`,

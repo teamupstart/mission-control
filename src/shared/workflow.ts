@@ -4097,6 +4097,7 @@ export interface WorkflowRunDetail {
 export interface WorkflowSubmissionReadinessOverride {
   id: string;
   submissionId: WorkflowSubmissionId;
+  /** Opaque, server-derived run-scoped idempotency key. Never parsed by a reader. */
   requestId: string;
   actor: "operator";
   reason: string;

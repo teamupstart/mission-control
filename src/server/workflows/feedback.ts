@@ -5,6 +5,7 @@ import type {
   EvidenceRef,
   PersonaVerdict,
   WorkflowNodeAttempt,
+  WorkflowEvidenceReadinessGapCode,
   WorkflowEvidenceReadinessResult,
   WorkflowRun,
   WorkflowSubmission,
@@ -272,7 +273,7 @@ function finalizePacket(
   };
 }
 
-const READINESS_ACTIONS: Record<string, string> = {
+const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_coverage: "Declare and link an author-controlled coverage claim for this criterion.",
   ambiguous_mapping: "Make the criterion match exactly one author-controlled coverage claim.",
   evidence_not_frozen: "Register the linked evidence item again so it freezes with the repair segment.",

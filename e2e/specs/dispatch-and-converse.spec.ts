@@ -1101,6 +1101,7 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
     cwd: string;
     tmuxPane: string | null;
     weztermPane: string | null;
+    itermSession: string | null;
     termProgram: string | null;
     entrypoint: string | null;
     missionHome: string | null;
@@ -1170,6 +1171,7 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
   for (const [key, sentinel, actual] of [
     ["TMUX_PANE", DAEMON_TERMINAL_IDENTITY.TMUX_PANE, record.tmuxPane],
     ["WEZTERM_PANE", DAEMON_TERMINAL_IDENTITY.WEZTERM_PANE, record.weztermPane],
+    ["ITERM_SESSION_ID", DAEMON_TERMINAL_IDENTITY.ITERM_SESSION_ID, record.itermSession],
     ["TERM_PROGRAM", DAEMON_TERMINAL_IDENTITY.TERM_PROGRAM, record.termProgram],
   ] as const) {
     expect(actual, `${key} leaked the daemon's own terminal identity into a dispatched session`)

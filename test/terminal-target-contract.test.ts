@@ -126,6 +126,7 @@ test("every registered backend gets a row, multiplexers first, unavailable ones 
         // menu built by filtering would drop, leaving a human who knows Ghostty is running to
         // conclude the feature is broken rather than that this backend cannot do it.
         ghostty: fakeEmulator({ id: "ghostty", label: "Ghostty" }),
+        iterm: recordingEmu({ emulator: { id: "iterm", label: "iTerm2" } }).backend,
       },
     }),
   );

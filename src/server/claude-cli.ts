@@ -4,7 +4,11 @@ import { unwrapEnvelope } from "./llm/structured.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
 import { validateLlmImages } from "./llm/images.ts";
-import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
+import {
+  agentSubprocessEnv,
+  cleanupAgentSubprocessEnv,
+  dropPaneIdentityEnv,
+} from "./agent-subprocess-env.ts";
 import type { LlmImageInput } from "@shared/llm.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
@@ -419,8 +423,8 @@ export async function runClaudeToolTrace(
  *
  * A headless `claude -p` is Claude Code, so it fires the SAME hooks a human's session
  * does. `hooks/harness-hook.mjs` binds an event to a card using `captureTerminalEnv()`,
- * which reads TMUX_PANE / WEZTERM_PANE out of its own process - and the hook is a child
- * of `claude`, which is a child of US. So inheriting the spawner's pane env makes every
+ * which reads pane identity out of its own process - and the hook is a child of `claude`,
+ * which is a child of US. So inheriting the spawner's pane env makes every
  * headless run impersonate whichever card sits in the pane the daemon or `npm run
  * foreman` was launched from.
  *
@@ -431,7 +435,7 @@ export async function runClaudeToolTrace(
  * note and work queue keyed on the real one, repointing `transcriptPath` at the headless
  * run's own transcript, and overwriting `activity` with our prompt.
  *
- * Only the pane ids are dropped: `overlayKeyFromEnv` keys on those two alone, and they
+ * Only pane identity is dropped: `overlayKeyFromEnv` keys on it, and those variables
  * are the terminal identity a headless run has no business claiming. TERM_PROGRAM is
  * captured by the hook but identifies a terminal *type*, not a card, so it stays.
  *
@@ -446,8 +450,7 @@ function headlessEnv(): NodeJS.ProcessEnv {
   // compiling.
   const env: NodeJS.ProcessEnv = agentSubprocessEnv(process.env, { loopbackAccess: true });
   env.MISSION_HEADLESS = "1";
-  delete env.TMUX_PANE;
-  delete env.WEZTERM_PANE;
+  dropPaneIdentityEnv(env);
   return env;
 }
 

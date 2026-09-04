@@ -24,6 +24,9 @@ import {
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
 
+/** Terminal pane identifiers that a headless or SDK child must never inherit. */
+const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"] as const;
+
 const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const TERMINAL_CLEANUP_WRAPPER = "launch-and-cleanup.sh";
@@ -102,6 +105,11 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
 /** Release the disposable home named by a child environment. */
 export function cleanupAgentSubprocessEnv(env: NodeJS.ProcessEnv | undefined): void {
   cleanupDisposableAgentStateHome(env?.MISSION_HOME);
+}
+
+/** Remove inherited pane ownership while preserving unrelated terminal metadata. */
+export function dropPaneIdentityEnv(env: Record<string, string | undefined>): void {
+  for (const name of PANE_IDENTITY_ENV_NAMES) delete env[name];
 }
 
 export interface AgentSubprocessEnvOptions {

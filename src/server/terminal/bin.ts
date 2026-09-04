@@ -145,3 +145,10 @@ export const GHOSTTY_BIN: BinSpec = {
   candidates: ["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
   dropEnv: [],
 };
+
+/** iTerm2 is detected from its macOS app bundle and driven through Apple Events. */
+export const ITERM_BIN: BinSpec = {
+  env: "ITERM_BIN",
+  candidates: ["/Applications/iTerm.app/Contents/MacOS/iTerm2"],
+  dropEnv: [],
+};

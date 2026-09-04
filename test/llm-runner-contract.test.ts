@@ -75,7 +75,7 @@ cat > "$RUN_STDIN"
 : > "$RUN_ARGS"
 for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
 pwd > "$RUN_CWD"
-printf '%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS" > "$RUN_ENV"
+printf '%s\\n%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS" > "$RUN_ENV"
 printf '{"result":"the model text"}'
 `,
 );
@@ -101,7 +101,7 @@ for a in "$@"; do
   fi
 done
 pwd > "$RUN_CWD"
-printf '%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS" > "$RUN_ENV"
+printf '%s\\n%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS" > "$RUN_ENV"
 if [ "$RUN_CODEX_FAIL" = "1" ]; then
   printf '%s\\n' 'STDERR OPERATOR BRIEF MUST NOT LEAK' >&2
   printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OPERATOR BRIEF MUST NOT LEAK"}}'
@@ -401,7 +401,7 @@ test("Codex passes a materialized schema, cleans it up, and keeps command tools 
   for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
     assert.equal(args.includes(forbidden), false);
   }
-  assert.equal(lines(RUN_ENV)[2], "1");
+  assert.equal(lines(RUN_ENV)[3], "1");
 });
 
 // The test above proves the plumbing with a schema written by hand, which is exactly the gap
@@ -743,9 +743,10 @@ test("Codex refuses Inspector-style tool grants instead of weakening their deny 
 });
 
 test("a run cannot be attributed to the card the daemon was launched from", async () => {
-  const prev = { tmux: process.env.TMUX_PANE, wez: process.env.WEZTERM_PANE };
+  const prev = { tmux: process.env.TMUX_PANE, wez: process.env.WEZTERM_PANE, iterm: process.env.ITERM_SESSION_ID };
   process.env.TMUX_PANE = "%42";
   process.env.WEZTERM_PANE = "7";
+  process.env.ITERM_SESSION_ID = "w0t0p0:UUID";
   try {
     await withPrintTransport(() =>
       claudeRunner.run("summarise this session", { timeoutMs: 5000 })
@@ -755,13 +756,16 @@ test("a run cannot be attributed to the card the daemon was launched from", asyn
     else process.env.TMUX_PANE = prev.tmux;
     if (prev.wez === undefined) delete process.env.WEZTERM_PANE;
     else process.env.WEZTERM_PANE = prev.wez;
+    if (prev.iterm === undefined) delete process.env.ITERM_SESSION_ID;
+    else process.env.ITERM_SESSION_ID = prev.iterm;
   }
-  const [tmuxPane, weztermPane, marker] = lines(RUN_ENV);
+  const [tmuxPane, weztermPane, itermSession, marker] = lines(RUN_ENV);
   // The pane ids are what `overlayKeyFromEnv` binds a hook event on; the marker is the
   // independent second layer, letting a hook decline to report the run at all. Both,
   // because the hook script is installed globally from a checkout that may lag this code.
   assert.equal(tmuxPane, "", "the run inherited a tmux pane and would impersonate that card");
   assert.equal(weztermPane, "", "the run inherited a wezterm pane and would impersonate that card");
+  assert.equal(itermSession, "", "the run inherited an iTerm2 session and would impersonate that card");
   assert.equal(marker, "1", "the run is not marked headless for the hook to see");
 });
 

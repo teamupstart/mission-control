@@ -230,6 +230,7 @@ export function captureTerminalEnv() {
   return {
     tmuxPane: process.env.TMUX_PANE || undefined,
     weztermPane: process.env.WEZTERM_PANE || undefined,
+    itermSession: process.env.ITERM_SESSION_ID || undefined,
     termProgram: process.env.TERM_PROGRAM || undefined,
   };
 }

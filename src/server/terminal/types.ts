@@ -118,6 +118,7 @@ const KEYS = {
   down: true,
   left: true,
   right: true,
+  tab: true,
   "shift-up": true,
   "shift-down": true,
   "shift-tab": true,
@@ -230,7 +231,9 @@ export interface EmulatorPane extends EmulatorTarget {
  */
 export interface HostProcessSpec {
   /**
-   * argv0 basenames of the GUI process, matched exactly. Not substrings: a command line
+   * argv0 basenames of the GUI process, matched exactly. Besides correlating a backend
+   * that cannot report TTYs, this declaration gates application-addressed enumeration so
+   * passive discovery cannot launch a closed GUI. Not substrings: a command line
    * carrying an operator's paths must never be read as a terminal (the lesson
    * `DetectSpec.background` learned the expensive way).
    */

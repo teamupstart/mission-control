@@ -58,8 +58,8 @@ if [ "$stream_output" = "1" ]; then
     '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}' \\
     '{"type":"result","result":"model summary"}'
 else
-  printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
-    "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS"
+  printf '{"tmuxPane":"%s","weztermPane":"%s","itermSession":"%s","marker":"%s"}' \\
+    "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS"
 fi
 `,
 );
@@ -78,9 +78,10 @@ function argv(): string[] {
 
 /** Run the fake bin with a spawner env standing in for a pane-attached daemon/worker. */
 async function envSeenByHook(): Promise<Record<string, string>> {
-  const prev = { tmux: process.env.TMUX_PANE, wez: process.env.WEZTERM_PANE };
+  const prev = { tmux: process.env.TMUX_PANE, wez: process.env.WEZTERM_PANE, iterm: process.env.ITERM_SESSION_ID };
   process.env.TMUX_PANE = "%42";
   process.env.WEZTERM_PANE = "7";
+  process.env.ITERM_SESSION_ID = "w0t0p0:UUID";
   try {
     return JSON.parse(await runClaudeText("summarise this session", { timeoutMs: 5000 }));
   } finally {
@@ -88,6 +89,8 @@ async function envSeenByHook(): Promise<Record<string, string>> {
     else process.env.TMUX_PANE = prev.tmux;
     if (prev.wez === undefined) delete process.env.WEZTERM_PANE;
     else process.env.WEZTERM_PANE = prev.wez;
+    if (prev.iterm === undefined) delete process.env.ITERM_SESSION_ID;
+    else process.env.ITERM_SESSION_ID = prev.iterm;
   }
 }
 
@@ -99,6 +102,7 @@ test("a headless run cannot be bound to the spawner's pane", async () => {
   const key = overlayKeyFromEnv({
     tmuxPane: seen.tmuxPane || undefined,
     weztermPane: seen.weztermPane || undefined,
+    itermSession: seen.itermSession || undefined,
     termProgram: undefined,
   });
   assert.equal(key, null, `headless run inherited a pane key (${key}) and would impersonate that card`);

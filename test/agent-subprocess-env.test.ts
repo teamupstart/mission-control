@@ -22,6 +22,7 @@ process.env.HARNESS_HOME = operatorState;
 const {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
+  dropPaneIdentityEnv,
   isolatedAgentArgv,
 } = await import("../src/server/agent-subprocess-env.ts");
 const {
@@ -44,6 +45,24 @@ test("the subprocess helper resolves the shared runtime port export", () => {
   } finally {
     cleanupAgentSubprocessEnv(env);
   }
+});
+
+test("pane identity scrubbing removes only terminal pane ownership", () => {
+  const env: Record<string, string | undefined> = {
+    TMUX_PANE: "%3",
+    WEZTERM_PANE: "7",
+    ITERM_SESSION_ID: "w0t0p0:UUID",
+    TERM_PROGRAM: "iTerm.app",
+    ORDINARY_TOOL_SETTING: "kept",
+  };
+
+  dropPaneIdentityEnv(env);
+
+  assert.equal(env.TMUX_PANE, undefined);
+  assert.equal(env.WEZTERM_PANE, undefined);
+  assert.equal(env.ITERM_SESSION_ID, undefined);
+  assert.equal(env.TERM_PROGRAM, "iTerm.app");
+  assert.equal(env.ORDINARY_TOOL_SETTING, "kept");
 });
 
 test("agent launch env replaces every inherited state alias and preserves loopback access", () => {

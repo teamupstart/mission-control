@@ -57,6 +57,7 @@ interface IdentityEnv {
   CLAUDE_SESSION_ID: string;
   TMUX_PANE: string;
   WEZTERM_PANE: string;
+  ITERM_SESSION_ID: string;
   TERM_PROGRAM: string;
 }
 
@@ -117,7 +118,7 @@ async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<str
     // where it happened to be running. Deleting rather than pinning an expected value keeps
     // the test's point intact: the child reports the identity it was GIVEN and nothing the
     // machine underneath it happened to export.
-    for (const name of ["TMUX_PANE", "WEZTERM_PANE", "TERM_PROGRAM"] as const) {
+    for (const name of ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID", "TERM_PROGRAM"] as const) {
       if (!(name in identityEnv)) delete childEnv[name];
     }
     transport = new StdioClientTransport({
@@ -157,6 +158,7 @@ test("request_input prefers the Mission Control session identity", { timeout: CA
     CLAUDE_SESSION_ID: "claude:legacy",
     TMUX_PANE: "%3",
     WEZTERM_PANE: "19",
+    ITERM_SESSION_ID: "w0t0p0:mission",
     TERM_PROGRAM: "WezTerm",
   });
 
@@ -179,6 +181,7 @@ test("request_input preserves terminal identity without a Mission session", { ti
     CLAUDE_SESSION_ID: "claude:terminal",
     TMUX_PANE: "%4",
     WEZTERM_PANE: "20",
+    ITERM_SESSION_ID: "w0t0p0:terminal",
     TERM_PROGRAM: "WezTerm",
   });
 
@@ -192,7 +195,7 @@ test("request_input preserves terminal identity without a Mission session", { ti
     },
     {
       sessionId: "claude:terminal",
-      env: { tmuxPane: "%4", weztermPane: "20", termProgram: "WezTerm" },
+      env: { tmuxPane: "%4", weztermPane: "20", itermSession: "w0t0p0:terminal", termProgram: "WezTerm" },
     },
   );
 });

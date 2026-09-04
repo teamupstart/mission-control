@@ -41,7 +41,7 @@ export type MultiplexerId = (typeof MULTIPLEXER_IDS)[number];
  * to "what is this session's terminal home?". That is today's tmux-beats-wezterm precedence
  * stated once as a rule rather than open-coded as a branch.
  */
-export const EMULATOR_IDS = ["wezterm", "ghostty"] as const;
+export const EMULATOR_IDS = ["wezterm", "ghostty", "iterm"] as const;
 
 export type EmulatorId = (typeof EMULATOR_IDS)[number];
 

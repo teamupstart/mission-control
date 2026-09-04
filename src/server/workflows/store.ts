@@ -7324,9 +7324,10 @@ export class WorkflowStore {
           const inspectorOnly =
             version?.completionPolicy.kind === "inspector"
             && version.completionPolicy.onFindings === "inspector_only";
-          const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
-            ? "waiting_for_new_head"
-            : "waiting_for_session";
+          const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
+            ?? (delivery.kind === "inspector_feedback" && inspectorOnly
+              ? "waiting_for_new_head"
+              : "waiting_for_session");
           this.setRunState(
             delivery.runId,
             nextStatus,

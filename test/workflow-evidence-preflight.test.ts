@@ -434,7 +434,7 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
   assert.equal(h.store.getRun(second.value.run.id)?.status, "running");
   assert.equal(h.store.listAttempts(second.value.submission.id).length, 0);
 
-  h.manager.stop();
+  await h.manager.stop();
   h.manager.start();
   await h.manager.sweepResumptions(Date.now() + 180_000);
   assert.equal(activationCalls, 2, "startup recovery must re-drive interrupted override activation");

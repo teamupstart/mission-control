@@ -198,12 +198,14 @@ async function harness(t: TestContext, id: string, beforeReadContext?: () => Pro
 
 test("automatic readiness sweep does not join a live manual preflight capture", async (t) => {
   let holdCapture = false;
+  let liveCaptureCalls = 0;
   let signalCaptureStarted!: () => void;
   const captureStarted = new Promise<void>((resolve) => { signalCaptureStarted = resolve; });
   let releaseCapture!: () => void;
   const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
   const h = await harness(t, "live-evidence-preflight", async () => {
     if (!holdCapture) return;
+    liveCaptureCalls += 1;
     signalCaptureStarted();
     await captureReleased;
   });
@@ -266,20 +268,37 @@ test("automatic readiness sweep does not join a live manual preflight capture", 
     "live-manual-retry",
   );
   await captureStarted;
+  const replay = h.manager.retryEvidenceReadiness(
+    submitted.value.run.id,
+    submitted.value.submission.id,
+    "live-manual-retry",
+  );
+  const replaySettledWhileCaptureWasLive = await Promise.race([
+    replay.then(() => true),
+    new Promise<false>((resolve) => setImmediate(() => resolve(false))),
+  ]);
   const sweep = h.manager.sweepResumptions(Date.now() + 60_000);
   const settledWhileCaptureWasLive = await Promise.race([
     sweep.then(() => true),
     new Promise<false>((resolve) => setImmediate(() => resolve(false))),
   ]);
   releaseCapture();
-  const [retried] = await Promise.all([retry, sweep]);
+  const [retried, replayed] = await Promise.all([retry, replay, sweep]);
 
+  assert.equal(
+    replaySettledWhileCaptureWasLive,
+    true,
+    "an idempotent request replay must not join its own live evidence capture",
+  );
   assert.equal(
     settledWhileCaptureWasLive,
     true,
     "the sweep must not wait behind an evidence capture that is still live in this process",
   );
   assert.equal(retried.ok, true);
+  assert.equal(replayed.ok, true);
+  if (replayed.ok) assert.equal(replayed.idempotent, true);
+  assert.equal(liveCaptureCalls, 1, "only the first request may enter evidence capture");
 });
 
 test("enforced gaps wait, and in-round capture and override replays recover activation", async (t) => {

@@ -2058,7 +2058,10 @@ export class WorkflowManager {
       };
     }
     const currentRun = this.store.getRun(runId) ?? run;
-    if (reserved.idempotent && reserved.submission.status !== "capturing") {
+    // Request retries observe the durable reservation but never become a second capture owner.
+    // If the first owner disappears, the resumption sweep re-drives the capturing child after
+    // restart while its process-local capture lock is absent.
+    if (reserved.idempotent) {
       return { ok: true, value: { run: currentRun, submission: reserved.submission }, idempotent: true };
     }
     this.publishRun(runId);

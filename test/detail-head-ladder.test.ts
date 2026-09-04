@@ -500,16 +500,40 @@ test("every control the ladder strips to a mark still draws one, and still says 
   assert.match(html, /mode-btn/, "the permission-mode picker left this header");
 });
 
-test("every spelling of the effort pill puts its level in an element", () => {
-  // Three components draw this pill and the ladder has to reach the level in all three: the
-  // interactive picker, `RuntimeMetaRow`'s static span, and `EffortPicker`'s own fallback for a
-  // session it cannot pick for - exited, stopping, or offering no levels. That third one held a
-  // bare text node, which no rule can select, so a finished session drew a wider pill than a
-  // live one at the same width and the header's rung 2 silently did nothing for it. Reported by
-  // a reviewer on #890.
+test("one component owns what an effort pill reads, and every host goes through it", () => {
+  // Rung 2 sheds `.rt-think-word` and keeps the mark, so the level's own element is load-bearing
+  // rather than decorative. Three components draw this pill - the interactive picker,
+  // `EffortPicker`'s `EffortChip` fallback for a session it cannot pick for, and
+  // `RuntimeMetaRow`'s static spelling - and the rule was written out in all three. It drifted
+  // immediately: the fallback was left as a bare text node when the other two were wrapped, a
+  // reviewer caught that, and the first fix wrote the same span a third time. `EffortReading` is
+  // the owner, and this test is what keeps it the only one.
   //
-  // Asserted on rendered markup rather than by reading the components, because "the level is in
-  // an element" is a fact about output and the three call sites are free to reach it differently.
+  // Counted in SOURCE, because "there is one place this is decided" is a fact about the source
+  // and cannot be seen in output - three hand-written spans render exactly like three calls to
+  // one component, which is why the drift was invisible until someone read the diff.
+  const owners = [
+    ["src/web/components/EffortPicker.tsx", read("src/web/components/EffortPicker.tsx")],
+    ["src/web/components/session-bits.tsx", read("src/web/components/session-bits.tsx")],
+  ] as const;
+  for (const mark of ["rt-think-word", "rt-think-glyph", "rt-think-next", "rt-think-was"]) {
+    const spellings = owners.flatMap(([path, source]) =>
+      [...source.matchAll(new RegExp(`className="${mark}"`, "g"))].map(() => path),
+    );
+    assert.deepEqual(
+      spellings,
+      ["src/web/components/EffortPicker.tsx"],
+      `\`.${mark}\` is written in ${spellings.length} places (${spellings.join(", ")}). ` +
+        `\`EffortReading\` owns what an effort pill prints - a second copy is a second thing to ` +
+        `remember when the ladder's rung 2 changes what it needs, and forgetting one is the ` +
+        `defect a reviewer already had to catch here.`,
+    );
+  }
+
+  // And the hosts really route through it, on both paths a session can take - a live session
+  // reaches the picker, an exited one reaches the fallback, and the static spelling has no
+  // session at all. Rendered rather than read, because "this host draws the owner's output" is
+  // the half a source count cannot see.
   for (const [what, over] of [
     ["a live session", {}],
     ["a session that cannot be picked for", { state: "exited" as const }],

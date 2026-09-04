@@ -4,6 +4,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectSpotlight } from "../fixtures/tour-spotlight.ts";
 
 /**
  * The engine's own guarantees, as a browser can see them.
@@ -12,6 +13,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * exactly as it did. This file asserts what the engine adds underneath it: entry points drawn
  * from one registry, one active run whichever doorway asks, and a restoration that replays the
  * complete route rather than a per-tour list of fields.
+ *
+ * The automatic first-launch tour is Set up this machine, so the two fresh-profile cases below
+ * read its first stop; `setup-banner-and-tour.spec.ts` walks the whole of it.
  */
 const TOUR_COMMAND = /Start See the work tour, command/;
 const EVIDENCE = artifactsDir("guided-tour-default");
@@ -40,6 +44,8 @@ async function shoot(target: Page): Promise<void> {
   console.log("CAPTURED e2e/.artifacts/guided-tour-default/fresh-profile-tour.png");
 }
 
+const FIRST_RUN_STOP = "Settings live behind the gear";
+
 test("a fresh profile enables and starts the guided tour by default", async ({ page, daemon }) => {
   const initial = await api<{ configured: boolean; config: { guidedTour: boolean } }>(
     daemon,
@@ -50,9 +56,12 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
 
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${daemon.baseURL}/#/fleet`);
-  const first = step(page, "Fleet and the Line");
+  const first = step(page, FIRST_RUN_STOP);
   await expect(first).toBeVisible();
-  await expect(first).toContainText("Step 1 of 14");
+  await expect(first).toContainText("Step 1 of 4");
+  // The stop that teaches where Settings is spotlights the gear, and the gear only reads
+  // "Settings" from somewhere else - so the automatic tour opens on the fleet.
+  await expectSpotlight(page.locator(".gear-btn"));
   await shoot(page);
 
   // The default is one-time: starting the orientation records it before a later dashboard
@@ -62,6 +71,13 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   ).config.guidedTour).toBe(false);
   await first.getByRole("button", { name: "Exit tour" }).click();
   await expect(first).toBeHidden({ timeout: 30_000 });
+  // Exiting this tour LEAVES the operator on Setup rather than replaying the route it
+  // started from. Introducing the panel and then taking it away would undo the whole point.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  // Focus ARRIVES here rather than being here already: the coachmark's teardown leaves the
+  // document root focused, and the landing pass puts the keyboard on Setup's one action once
+  // the panel has committed. `toBeFocused` waits for that, which is the guarantee.
+  await expect(page.getByRole("button", { name: "Re-check" })).toBeFocused();
   await expectToursCleaned(daemon);
 });
 
@@ -77,7 +93,7 @@ test("a rejected tour-consumption write stays consumed after reload", async ({ p
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${daemon.baseURL}/#/fleet`);
-  const first = step(page, "Fleet and the Line");
+  const first = step(page, FIRST_RUN_STOP);
   await expect(first).toBeVisible();
   await expect.poll(() => rejectedWrites).toBeGreaterThan(0);
   await first.getByRole("button", { name: "Exit tour" }).click();
@@ -85,7 +101,7 @@ test("a rejected tour-consumption write stays consumed after reload", async ({ p
   await expectToursCleaned(daemon);
 
   await page.reload();
-  await expect(step(page, "Fleet and the Line")).toBeHidden();
+  await expect(step(page, FIRST_RUN_STOP)).toBeHidden();
 });
 
 /**

@@ -103,6 +103,13 @@ function scan(source: string): { uncovered: string[]; staleExemptions: string[] 
       /position:\s*fixed/.test(rule.body) ||
       Number(/z-index:\s*(-?\d+)/.exec(rule.body)?.[1] ?? "0") > topbarZ;
     if (!floats) continue;
+    // A rule that subtracts ITSELF from the drag region is covered by definition. The index
+    // above answers that for a subject carrying a class, and cannot for one that does not -
+    // the tour skin frames its active element by `[aria-controls="driver-popover-content"]`
+    // as well as by Driver's class, because React rewrites `className` on a target whose
+    // classes come from state the stop it is spotlighting just changed. Reading the rule's
+    // own body is the same question the class index is a shortcut for.
+    if (/-webkit-app-region:\s*no-drag/.test(rule.body)) continue;
 
     for (const selector of rule.selectors) {
       const classes = subjectClasses(selector);

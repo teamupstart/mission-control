@@ -404,9 +404,13 @@ is refused before any task is created rather than falling through to general dis
 cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
 
 Three tours are registered, and none stores progress or resumes. A fresh profile starts
-**See the work** once automatically, then records that the orientation has been shown so it
-does not reopen over later work. Exiting one restores the page, the asset, and the control it
-started from, and each tour can always be started manually at stop one.
+**Set up this machine** once automatically - nothing else in the product works until this
+machine has the tools the work needs - then records that the orientation has been shown so it
+does not reopen over later work. Which tour that is lives in one place, `FIRST_RUN_TOUR` beside
+the entries, rather than in the effect that starts it. Exiting a tour restores the page, the
+asset, and the control it started from, unless its entry declares an `exit` route because
+handing that page over is the point; see **Set up this machine** below. Each tour can always be
+started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md),
@@ -419,8 +423,8 @@ TypeScript definition because they are executable tour behavior rather than edit
 
 #### See the work
 
-**See the work** starts automatically once for a fresh profile, or from the Settings rail's
-**Help & tours** footer and **Start See the work tour** in the palette's **Do** group. It teaches
+**See the work** starts from the Settings rail's **Help & tours** footer or **Start See the
+work tour** in the palette's **Do** group. It teaches
 the operating half of the product and runs an isolated evaluation of `driver.js@1.8.0`. It has
 no resume state, new top-bar control, or chapter beyond this one guided sequence:
 
@@ -556,15 +560,46 @@ no tour active.
 
 #### Set up this machine
 
-**Set up this machine** starts from the Settings rail's **Help & tours** footer or **Start Set
-up this machine tour** in the palette. It opens **Settings → Setup** and walks six concise stops:
-the panel, dependency families, status meanings, remedies, **Re-check**, and a centered close.
-Every spotlight is page-scoped because the panel has one rendered owner.
+**Set up this machine** is the tour a fresh profile receives automatically, and it can be
+started again from the Settings rail's **Help & tours** footer or **Start Set up this machine
+tour** in the palette. Its subject is finding and using Setup, not reading it, so it is four
+stops and deliberately does not walk the dependency families:
+
+1. **Settings live behind the gear** opens on the FLEET and spotlights the ⚙ gear. The tour
+   starts here rather than on the page it is about because the gear reads "Settings" from
+   everywhere except the Settings page itself, where the same control is **Return to Fleet**.
+   Its Next reads **Open Settings**.
+2. **Open Setup** opens Settings on the same category the gear opens - not on Setup - and
+   spotlights the **Setup** row in the rail while it is still unselected. Its Next reads
+   **Open Setup**.
+3. **Install what you will use** selects Setup and spotlights the family rail and its rows
+   together, and asks the operator to install or configure the tools they expect to use and
+   skip the rest.
+4. **Re-check once they are installed** spotlights **Re-check** and finishes.
+
+**It ends on Setup and stays there.** Every other tour replays the route it snapshotted;
+this one declares an `exit` route on its entry and hands the panel over instead, because
+introducing Setup and then taking the page away would undo the point of it. Layout,
+selection, Board drill-in, filter, and the open Line drawer are still restored, and the exit
+route applies however the tour ends - Exit at stop one lands on Setup too. Focus goes back to
+the control that started the tour when it survived the move, and to **Re-check** when it did
+not, which is the automatic first-run case. Those two never compete: the landing pass waits
+for a focus vacuum, and a vacuum is also what an ordinary click on a non-focusable area
+leaves, so it is not started at all when the invoker took focus back.
 
 The tour is explanatory and read-only. It does not click a remedy, execute a command, install a
-tool, or write progress. Its status language matches the live panel: **Ready** reports evidence,
-**Missing** reports an absent tool, **Needs setup** reports a present but unusable tool, and
-**Unknown** means the check could not finish.
+tool, or write progress. Two of its four spotlights are outside the panel, in the top bar and
+the Settings rail, which is the whole point: an operator who has never opened Setup has to be
+shown where it is before its rows mean anything.
+
+**A spotlight is framed by Driver's class or its `aria-controls` wiring, whichever survives.**
+Driver adds both to the active element and clears both on the same transition. React owns
+`className` on any target whose classes are derived from state, so a stop whose own `prepare`
+changes that state - this tour leaving Settings for the fleet to point at the gear - schedules
+a commit that rewrites the attribute after Driver touched it and takes the amber frame with
+it. Nothing in the app renders `aria-controls="driver-popover-content"`, so the skin frames by
+that as well. Interaction still keys off Driver's own class: a stop that wants its target
+clickable says so, and a stripped class leaving a spotlight inert is the safe direction.
 
 **Comparison finding:** Driver.js supplies spotlight geometry, bounded `waitForElement`
 progression, a centered missing-target fallback, labelled dialog semantics, and initial focus,

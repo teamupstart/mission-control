@@ -18,12 +18,19 @@ workflow, model, context, effort, permission mode, cost, branch, worktree, last 
 live preview card beside the checklist. The flags that ask for you stay on whatever you
 choose, and the defaults draw the card the previous release drew.
 
-Fresh profiles automatically start the **See the work** guided tour once, then remember that
-the orientation has been shown. Guided tours can later start from the **Help & tours** footer
-in the Settings rail, which lists one row per registered tour, or from that tour's command in
-the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and two are registered.
-Their names and stage copy are edited in [`tours/see-work.md`](tours/see-work.md) and
-[`tours/library.md`](tours/library.md); see [`tours/README.md`](tours/README.md) for the format.
+Fresh profiles automatically start the **Set up this machine** guided tour once, then remember
+that the orientation has been shown. Guided tours can later start from the **Help & tours**
+footer in the Settings rail, which lists one row per registered tour, or from that tour's
+command in the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and three are
+registered. Their names and stage copy are edited in
+[`tours/see-work.md`](tours/see-work.md), [`tours/library.md`](tours/library.md) and
+[`tours/setup.md`](tours/setup.md); see [`tours/README.md`](tours/README.md) for the format.
+
+**Set up this machine** is the one a fresh profile receives, because nothing else works until
+this machine has the tools the work needs. Four stops: the ⚙ gear, **Setup** in the Settings
+rail, the dependency list to install what you will use from, and **Re-check** to confirm it.
+It installs nothing and runs no remedy, and it is the one tour that leaves you on the page it
+opened rather than returning you to where you started - being on Setup is the point of it.
 
 **See the work** teaches the operating half - the Line, the Board, one session's desk, and a
 task from dispatch through review to completion.
@@ -42,8 +49,8 @@ on shipped built-ins, ends on **No-Mistakes Review**, and then follows one alrea
 that workflow - completed, cancelled or failed alike - into the Runs page and its session's
 **Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
 run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
-same two stops against the built-in graph instead. Tours do not store progress, and both restore
-the page, the asset, and the control you started from when you exit.
+same two stops against the built-in graph instead. Tours do not store progress, and these two
+restore the page, the asset, and the control you started from when you exit.
 
 For Files workspace behavior and controls, see the
 [UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).

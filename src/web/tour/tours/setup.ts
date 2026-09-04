@@ -1,4 +1,3 @@
-import type { SetupFamilyId } from "@shared/setup-catalog.ts";
 import {
   assertTourDefinition,
   refresh,
@@ -7,51 +6,58 @@ import {
 } from "../contracts.ts";
 import { assertTourContentStages, tourStageContent } from "../content.ts";
 
+/**
+ * The three route moves this tour makes, in the order it makes them.
+ *
+ * All three are transitions the dashboard already performs for a link. The tour clicks no
+ * control, selects no family, and runs no remedy: it shows an operator who has never opened
+ * Setup how to reach it, then leaves them on it.
+ */
 export interface SetupTourNavigation {
-  showSetup: () => boolean;
   /**
-   * Open Setup with one family selected.
+   * Leave Settings for the fleet.
    *
-   * The panel shows a single family at a time, so a step whose copy is about statuses and
-   * remedies has to say which family it means - otherwise it spotlights whichever one the
-   * rail happened to open on, which on a fully-configured machine has no remedy to point at.
+   * The first stop points at the gear, and the gear only READS "Settings" from somewhere
+   * else: on the Settings page the same control is "Return to Fleet", which is the opposite
+   * of what that stop is teaching.
    */
-  showSetupFamily: (family: SetupFamilyId) => boolean;
+  showFleet: () => boolean;
+  /** Open Settings on its ordinary landing category, with Setup still unselected. */
+  showSettings: () => boolean;
+  /** Open Settings, Setup selected - the page this tour hands over when it ends. */
+  showSetup: () => boolean;
 }
 
 type Step = TourStep<null, SetupTourNavigation>;
 
 const STEPS: readonly Step[] = [
   {
-    id: "overview",
-    ...tourStageContent("setup", "overview"),
-    targets: [{ target: "setup:panel", side: "left" }],
+    id: "settings",
+    ...tourStageContent("setup", "settings"),
+    targets: [{ target: "setup:settings-gear", side: "bottom" }],
+    prepare: (context) => context.navigation.showFleet(),
+    nextLabel: () => "Open Settings",
+    reconcile: refresh,
+  },
+  {
+    // Settings deliberately opens on its ordinary landing category here rather than straight
+    // onto Setup: this stop teaches where Setup is in the rail, and a row that was already
+    // selected before Next was pressed says nothing about how it got there.
+    id: "setup",
+    ...tourStageContent("setup", "setup"),
+    targets: [{ target: "setup:settings-tab", side: "right" }],
+    prepare: (context) => context.navigation.showSettings(),
+    nextLabel: () => "Open Setup",
+    reconcile: refresh,
+  },
+  {
+    // The rail and the rows together, not one family: which tools this machine is missing
+    // decides which family is worth reading, and that is the operator's call rather than
+    // the tour's.
+    id: "dependencies",
+    ...tourStageContent("setup", "dependencies"),
+    targets: [{ target: "setup:dependencies", side: "left" }],
     prepare: (context) => context.navigation.showSetup(),
-    reconcile: refresh,
-  },
-  {
-    // "Read by family" is now literally the rail, so it is the rail this points at rather
-    // than one family's rows.
-    id: "families",
-    ...tourStageContent("setup", "families"),
-    targets: [{ target: "setup:rail", side: "left" }],
-    prepare: (context) => context.navigation.showSetup(),
-    reconcile: refresh,
-  },
-  {
-    // GitHub, deliberately: both of its rows are `required`, so this step and the next have
-    // a status ramp and a real remedy to point at on any machine.
-    id: "statuses",
-    ...tourStageContent("setup", "statuses"),
-    targets: [{ target: "setup:pane", side: "left" }],
-    prepare: (context) => context.navigation.showSetupFamily("github"),
-    reconcile: refresh,
-  },
-  {
-    id: "remedies",
-    ...tourStageContent("setup", "remedies"),
-    targets: [{ target: "setup:pane", side: "left" }],
-    prepare: (context) => context.navigation.showSetupFamily("github"),
     reconcile: refresh,
   },
   {
@@ -59,13 +65,6 @@ const STEPS: readonly Step[] = [
     ...tourStageContent("setup", "recheck"),
     targets: [{ target: "setup:recheck", side: "bottom" }],
     prepare: (context) => context.navigation.showSetup(),
-    reconcile: refresh,
-  },
-  {
-    id: "close",
-    ...tourStageContent("setup", "close"),
-    targets: [],
-    centered: true,
     nextLabel: () => "Finish tour",
     reconcile: refresh,
   },
@@ -80,7 +79,9 @@ export const SETUP_TOUR: TourDefinition<null, SetupTourNavigation> = assertTourD
   documentFlags: [],
   stopping: {
     title: "Closing the tour...",
-    description: "Returning to the page and control where you started.",
+    // This tour ends on the page it just opened rather than putting one back; see the
+    // `exit` route on its entry.
+    description: "Leaving you on Setup.",
   },
   runtimeKey: () => "setup",
 });

@@ -3,14 +3,14 @@
 Every persona document Mission Control ships, in one directory. Two kinds live here, and
 they reach the running app by different routes.
 
-## The six workflow persona sources
+## The seven workflow persona sources
 
 `code-design-reviewer.md`, `code-quality-judge.md`, `code-risk-reviewer.md`,
-`documentation-steward.md`, `intent-conformance-judge.md`, and `test-evidence-auditor.md` are
-the built-in review roles. They are **compiled into the build**: `npm run personas` embeds their exact bytes in
-`src/server/workflows/builtin-personas.generated.ts`, which is the only copy that survives
-bundling and packaging. Edit the Markdown here and run the generator; never hand-edit the
-generated module.
+`documentation-steward.md`, `intent-conformance-judge.md`, `slop-filter.md`, and
+`test-evidence-auditor.md` are the built-in review roles. They are **compiled into the build**:
+`npm run personas` embeds their exact bytes in `src/server/workflows/builtin-personas.generated.ts`,
+which is the only copy that survives bundling and packaging. Edit the Markdown here and run the
+generator; never hand-edit the generated module.
 
 Each document's first level-one heading becomes the Persona's name and the paragraph under
 it becomes the description.
@@ -35,7 +35,7 @@ the point of them being Markdown is that they can be read and edited without a r
 ## Filenames are durable ids
 
 A workflow persona's filename slug is the durable half of its `builtin:<slug>` id, and
-published workflow versions reference those ids. Renaming one of the six documents strands
+published workflow versions reference those ids. Renaming one of the seven documents strands
 them. Add and remove freely; rename only with a migration.
 
 `scripts/builtin-personas.ts` therefore globs `personas/*.md` and excludes the two briefs

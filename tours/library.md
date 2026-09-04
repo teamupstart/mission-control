@@ -64,12 +64,12 @@ Pipeline and Graph are two views of one workflow, and the toolbar offers both fo
 ## No-Mistakes Review
 <!-- stage: workflow-no-mistakes -->
 
-Five stages, in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence and Documentation in parallel; then the verified Pull Request action before End. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
+Five stages, in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
 
 ## Binding it
 <!-- stage: workflow-bind -->
 
-Binding attaches a published version to one session's work in one repository. Version 11 ships Foreman-complete as its trigger, live delivery of each repair packet into the session, and five repair rounds before it stops asking.
+Binding attaches a published version to one session's work in one repository. Version 12 ships Foreman-complete as its trigger, live delivery of each repair packet into the session, and five repair rounds before it stops asking.
 
 ## A run, moving
 <!-- stage: run-moving -->

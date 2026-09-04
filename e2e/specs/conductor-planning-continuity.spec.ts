@@ -246,6 +246,22 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
       },
     )
     .toBe(1);
+  seedConductorRun(daemon.repo, "unrelated-implementation", {
+    tier: "L",
+    track: "technical",
+    steps: { worktree: "done", build: "done", build_review: "failed" },
+    lastStep: "build_review",
+    halt: "an unrelated feature needs attention",
+    haltClass: "needs-human",
+  });
+  await expect
+    .poll(async () => {
+      const view = (await (await request(daemon, "/api/pipelines/config")).json()) as {
+        status: Array<{ runs: number }>;
+      };
+      return view.status.reduce((total, repo) => total + repo.runs, 0);
+    })
+    .toBe(2);
   const pipelineRail = dashboard.locator("aside.pipelines-rail");
   await expect(
     pipelineRail.getByRole("button", { name: /visible-pipeline-continuity/i }),
@@ -294,6 +310,17 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await expect(
     directReader.getByRole("group", { name: "Pipeline for visible-pipeline-continuity" }),
   ).toBeVisible();
+
+  await pipelineRail
+    .locator("button.pipelines-row")
+    .filter({ hasText: "unrelated-implementation" })
+    .click();
+  const unrelatedReader = dashboard.getByRole("region", { name: "Pipeline run detail" });
+  await expect(unrelatedReader.getByRole("heading", { name: "unrelated-implementation" }))
+    .toBeVisible();
+  await expect(unrelatedReader.getByRole("heading", { name: "Engineer attempts" })).toHaveCount(0);
+  await expect(unrelatedReader.getByRole("heading", { name: "Specification handoff" }))
+    .toHaveCount(0);
 
   await planningRow.locator("button.pipelines-row").click();
   await expect(dashboard).toHaveURL(/\/#\/runs\/pipeline$/);

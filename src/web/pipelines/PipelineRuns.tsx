@@ -84,7 +84,8 @@ export function PipelineRuns({
   // first one that has anything - see `pipelineLeadRun`. Selecting nothing at all would make
   // the common case (one run in flight) a page with an empty reader beside a rail of one.
   const fallback = pipelineLeadRun(sections);
-  const run = addressed ?? (selected === null ? fallback : null);
+  const run =
+    addressed ?? (selected === null && selectedCommissionId === null ? fallback : null);
   const commission =
     commissions.find((entry) => entry.id === selectedCommissionId) ??
     (selected === null && !run ? commissions[0] ?? null : null);
@@ -93,8 +94,9 @@ export function PipelineRuns({
   // The two provider records describe one feature on opposite sides of specification handoff.
   // Resolve both directions so selection changes address, not which evidence the reader hides.
   const activeRun = run ?? commissionRun;
-  const activeCommission =
-    commission ?? featureRecordForRun(commissions, (entry) => entry.linkedRun, activeRun);
+  const activeCommission = activeRun
+    ? featureRecordForRun(commissions, (entry) => entry.linkedRun, activeRun)
+    : commission;
   const detail = usePipelineRunDetail(
     activeRun?.provider ?? null,
     activeRun?.repoRoot ?? null,

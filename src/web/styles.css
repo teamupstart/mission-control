@@ -14510,7 +14510,10 @@ a.pipelines-chip.is-link:focus-visible {
   gap: 8px;
   color: var(--fg);
   cursor: pointer;
-  list-style-position: inside;
+  list-style: none;
+}
+.pipelines-disclosure > summary::-webkit-details-marker {
+  display: none;
 }
 .pipelines-disclosure > summary::before {
   content: "›";

@@ -207,6 +207,86 @@ test("a linked feature composes commission and run evidence from either selectio
   }
 });
 
+test("a directly selected run ignores a stale commission selection", () => {
+  const selectedRun = run({
+    slug: "other-feature",
+    worktree: "/repo/demo/.worktrees/other-feature",
+  });
+  const selectedCommission = commission({
+    id: "commission-2",
+    taskId: "task-2",
+    correlationId: "correlation-2",
+    planSlug: "other-feature",
+    authoringBranch: "plan/other-feature",
+    handoff: {
+      planSlug: "other-feature",
+      branch: "plan/other-feature",
+      prUrl: "https://github.com/example/repo/pull/43",
+      outcome: "pr_opened",
+    },
+    linkedRun: {
+      provider: selectedRun.provider,
+      repoRoot: selectedRun.repoRoot,
+      slug: selectedRun.slug,
+    },
+  });
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [run(), selectedRun],
+    commissions: [commission(), selectedCommission],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: {
+      repoKey: pipelineRepoKey(selectedRun.provider, selectedRun.repoRoot),
+      slug: selectedRun.slug,
+    },
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  assert.match(html, /<h3 class="pipelines-run-title">other-feature<\/h3>/);
+  assert.match(html, /<code>plan\/other-feature<\/code>/);
+  assert.doesNotMatch(html, /<code>plan\/add-widgets<\/code>/);
+});
+
+test("linked feature identity must match provider, repository, and slug", () => {
+  const implementation = run();
+  const mismatches: Array<Pick<PipelineRun, "provider" | "repoRoot" | "slug">> = [
+    {
+      provider: "future-provider" as PipelineRun["provider"],
+      repoRoot: implementation.repoRoot,
+      slug: implementation.slug,
+    },
+    {
+      provider: implementation.provider,
+      repoRoot: "/repo/other",
+      slug: implementation.slug,
+    },
+    {
+      provider: implementation.provider,
+      repoRoot: implementation.repoRoot,
+      slug: "other-feature",
+    },
+  ];
+
+  for (const linkedRun of mismatches) {
+    const html = renderToStaticMarkup(createElement(PipelineRuns, {
+      runs: [implementation],
+      commissions: [commission({ linkedRun })],
+      selectedCommissionId: null,
+      onSelectCommission: () => undefined,
+      selected: {
+        repoKey: pipelineRepoKey(implementation.provider, implementation.repoRoot),
+        slug: implementation.slug,
+      },
+      onSelect: () => undefined,
+      onOpenSettings: () => undefined,
+    }));
+
+    assert.doesNotMatch(html, /aria-label="Engineer attempts"/);
+    assert.doesNotMatch(html, /aria-label="Specification handoff"/);
+  }
+});
+
 test("commission disclosures stay reachable but collapse after implementation begins", () => {
   const beforeHandoff = renderToStaticMarkup(createElement(PipelineRuns, {
     runs: [],

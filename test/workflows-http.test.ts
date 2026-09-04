@@ -86,6 +86,27 @@ test("evidence readiness overrides require explicit risk acknowledgement", async
   });
 });
 
+test("evidence readiness mutations reject oversized bodies before parsing", async () => {
+  const { request } = fixture();
+  const oversized = JSON.stringify({
+    requestId: "oversized-readiness-request",
+    reason: "Accept the gaps",
+    acknowledgedRisk: true,
+    padding: "x".repeat(64 * 1024),
+  });
+  const mutation = (action: "retry" | "override") => request(
+    `/api/workflow-runs/missing/submissions/missing/evidence-readiness/${action}`,
+    { method: "POST", body: oversized },
+  );
+
+  const retry = await mutation("retry");
+  assert.equal(retry.status, 413);
+  assert.deepEqual(await retry.json(), { error: "Workflow evidence readiness retry is too large" });
+  const override = await mutation("override");
+  assert.equal(override.status, 413);
+  assert.deepEqual(await override.json(), { error: "Workflow evidence readiness override is too large" });
+});
+
 test("definition CAS conflicts are 409 and validation failures are 422", async () => {
   const { request } = fixture();
   const invalid = await request("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Incomplete" }) });

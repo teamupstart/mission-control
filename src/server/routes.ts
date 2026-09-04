@@ -585,6 +585,14 @@ const WORKFLOW_COMMAND_BODY_MAX_BYTES =
  */
 const REVISION_ONLY_BODY_MAX_BYTES = 1024;
 /**
+ * The readiness action schemas accept one 200-character request id, plus the override's
+ * bounded reason. The multiplier admits JSON's six-byte unicode escape spelling and the
+ * fixed allowance covers property names, punctuation, booleans, and whitespace.
+ */
+const WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES = 200 * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024;
+const WORKFLOW_READINESS_OVERRIDE_BODY_MAX_BYTES =
+  (200 + WORKFLOW_LIMITS.readinessOverrideReason) * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024;
+/**
  * An import body is one absolute path, so it is bounded from the PATH ceiling.
  *
  * `PersonaSourcePathSchema` accepts 4096 code units. JSON escaping can spend six bytes on one
@@ -2300,6 +2308,10 @@ export function buildApp(
   });
   app.post(
     "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence readiness retry is too large" }, 413),
+    }),
     async (c) => {
       const manager = workflowManager();
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -2317,6 +2329,10 @@ export function buildApp(
   );
   app.post(
     "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/override",
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_OVERRIDE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence readiness override is too large" }, 413),
+    }),
     async (c) => {
       const manager = workflowManager();
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

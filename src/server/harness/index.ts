@@ -31,6 +31,7 @@ import { codexControl } from "./codex/control.ts";
 import { codexHooks } from "./codex/hooks.ts";
 import { codexUsage } from "./codex/usage.ts";
 import { codexSdk, codexResumeModeArgs } from "./codex/sdk.ts";
+import { discoverCodexModels } from "./codex/model-catalog.ts";
 import { piTranscript } from "./pi/transcript.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
@@ -143,7 +144,12 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: codexHooks,
     detect: codexDetect,
     bin: codexBin,
-    models: { shipped: MODEL_CATALOG.codex, discover: null },
+    // Resolve inside the closure for the same reason Pi's does: every probe observes the
+    // current override chain rather than one captured when this module loaded.
+    models: {
+      shipped: MODEL_CATALOG.codex,
+      discover: (signal) => discoverCodexModels(resolveAgentBin("codex"), { signal }),
+    },
     tui: codexTui,
     control: codexControl,
     // `codex app-server` over stdio - the only Codex interface whose approvals are

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude and Codex live model catalog proposal</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#151b23; --panel2:#1c2430; --line:#303a48; --text:#f0f4f8; --muted:#a9b4c2; --blue:#66a3ff; --green:#42c98a; --amber:#e7b64c; --red:#e8798a; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  @media (prefers-color-scheme: light) { :root { color-scheme:light; --bg:#f5f7fa; --panel:#fff; --panel2:#edf2f7; --line:#d5dde7; --text:#15202d; --muted:#586779; --blue:#246fc2; --green:#157a50; --amber:#986b08; --red:#b4384c; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:15px/1.62 var(--sans); } main { max-width:1050px; margin:0 auto; padding:56px 28px 110px; }
+  header { padding-bottom:32px; border-bottom:1px solid var(--line); margin-bottom:36px; } .eyebrow { color:var(--muted); font:11px var(--mono); letter-spacing:.13em; text-transform:uppercase; } h1 { margin:10px 0 14px; font-size:clamp(32px,5vw,44px); line-height:1.08; letter-spacing:-.025em; } .status { color:var(--amber); font:12px var(--mono); }
+  h2 { margin:56px 0 10px; padding-top:22px; border-top:1px solid var(--line); font-size:24px; } h3 { margin:31px 0 8px; font-size:18px; } p { max-width:82ch; margin:0 0 14px; } a { color:var(--blue); } code { font:.88em var(--mono); background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  ul,ol { max-width:84ch; padding-left:24px; } li { margin:7px 0; } .call { max-width:86ch; padding:16px 18px; margin:22px 0; background:var(--panel); border-left:3px solid var(--green); border-radius:0 8px 8px 0; } .call.warn { border-left-color:var(--amber); } .call.stop { border-left-color:var(--red); }
+  .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:9px; margin:20px 0; } table { width:100%; border-collapse:collapse; background:var(--panel); } th,td { padding:10px 13px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; } th { background:var(--panel2); color:var(--muted); font:10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; } tr:last-child td { border-bottom:0; }
+  figure { overflow-x:auto; margin:27px 0; padding:18px; background:var(--panel); border:1px solid var(--line); border-radius:10px; } svg { display:block; min-width:900px; width:100%; height:auto; } .box { fill:var(--panel2); stroke:var(--line); stroke-width:1.5; } .live { stroke:var(--green); } .fallback { stroke:var(--amber); } .t { fill:var(--text); font:600 13.5px var(--sans); } .s { fill:var(--muted); font:11.5px var(--sans); } .lbl { fill:var(--muted); font:600 11px var(--mono); letter-spacing:.1em; text-transform:uppercase; } .arrow { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arr); } .arrow.dim { stroke-dasharray:5 4; } figcaption { color:var(--muted); font-size:12px; margin-top:12px; }
+  .step { margin:20px 0; padding:17px 19px; background:var(--panel); border:1px solid var(--line); border-radius:9px; } .step h3 { margin:0 0 8px; } .rec { border-left:3px solid var(--green); } footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; font:10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:99px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+  .pill.ok { border-color:var(--green); color:var(--green); } .pill.no { border-color:var(--red); color:var(--red); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Technical proposal &middot; 3 September 2026</p>
+    <h1>Claude and Codex live model catalog</h1>
+    <p class="status">APPROVED &middot; Codex discovery implementing now &middot; Claude discovery deferred</p>
+    <p>Predecessor: <a href="../pi-live-model-catalog/plan.html">Pi live model catalog</a>, which built the spine this plan fills in and explicitly deferred these two harnesses.</p>
+  </header>
+
+  <h2>Approved human decisions</h2>
+  <ul>
+    <li><strong>Catalog scope:</strong> Codex goes live now; Claude stays on its shipped rows. Codex's rows are wire-id shaped, schema-passing, and a strict superset of what ships today, so it carries no contract question. Claude's are account-shaped aliases, two of which <code>ModelIdSchema</code> rejects, so that question belongs to a change that can weigh the persisted vocabulary properly.</li>
+    <li><strong><code>ModelIdSchema</code> stays untouched</strong> by this change.</li>
+    <li><strong>Implementation follow-up:</strong> implement the approved phase directly rather than scheduling phase tasks.</li>
+  </ul>
+
+  <h2>Outcome</h2>
+  <div class="call">Mission Control should source Claude and Codex model choices from the CLI installation and account it will actually launch, the same way it already sources Pi's, while remaining usable when discovery is unsupported or fails. Selecting a model must continue to persist and launch a value the target CLI accepts.</div>
+
+  <h2>Why now</h2>
+  <p><code>MODEL_CATALOG</code> in <code>src/shared/model.ts</code> is hand-maintained, so a new Claude or Codex model reaches the picker only when someone edits that file and ships a build. That is already observably stale for Codex: the installed CLI offers six models and Mission Control offers four.</p>
+
+  <h2>Evidence</h2>
+  <p>Measured on this machine, 3 September 2026, against <code>claude</code> 2.1.260 with the installed <code>@anthropic-ai/claude-agent-sdk</code>, and <code>codex-cli</code> 0.146.0. Probe scripts were run outside the repository and are not committed.</p>
+
+  <h3>The spine already exists</h3>
+  <div class="table-wrap"><table><thead><tr><th>Piece</th><th>Location</th><th>State</th></tr></thead><tbody>
+    <tr><td><code>ModelCatalogSpec { shipped, discover }</code> on every harness</td><td><code>src/server/harness/types.ts:1129</code></td><td><span class="pill ok">built</span></td></tr>
+    <tr><td>Freshness, in-flight dedup, abort-on-stop, degraded-with-last-success</td><td><code>src/server/harness/model-catalog-service.ts</code></td><td><span class="pill ok">built</span></td></tr>
+    <tr><td><code>GET /api/harnesses/models?refresh=1</code></td><td><code>src/server/routes.ts:5622</code></td><td><span class="pill ok">built</span></td></tr>
+    <tr><td>Browser store with local/loading/ready/failed phases and degraded notices</td><td><code>src/web/model-catalog.tsx</code></td><td><span class="pill ok">built</span></td></tr>
+    <tr><td><code>discover</code> for Claude and Codex</td><td><code>src/server/harness/index.ts:99,146</code></td><td><span class="pill no">null</span></td></tr>
+  </tbody></table></div>
+  <p>So this change is two adapters and two registry slots, not new architecture. <code>HarnessModelCatalogService.readOne</code> returns the shipped list without probing whenever <code>spec.discover</code> is null, which is why both harnesses can only ever report <code>source: "shipped"</code> today.</p>
+
+  <h3>Codex: a clean, verified discovery path</h3>
+  <p><code>model/list</code> exists in the app-server v2 protocol of the installed binary, confirmed by generating the bindings from that binary with <code>codex app-server generate-ts</code>.</p>
+  <ul>
+    <li>Handshake <code>initialize</code> 593ms cold, about 480ms total on a warm repeat. <code>model/list</code> itself 2ms.</li>
+    <li>6 visible rows, 8 with <code>includeHidden: true</code>. 6035-byte result payload, 14472 bytes of stdout across the whole probe, 0 bytes of stderr, <code>nextCursor: null</code>.</li>
+    <li>No thread was started and no turn was run, so nothing was spent.</li>
+    <li>Live rows: <code>gpt-5.6-sol</code> (<code>isDefault: true</code>), <code>gpt-5.6-terra</code>, <code>gpt-5.6-luna</code>, <code>gpt-5.5</code>, <code>gpt-5.4</code>, <code>gpt-5.4-mini</code>. <strong><code>gpt-5.4</code> and <code>gpt-5.4-mini</code> are absent from Mission Control's shipped Codex catalog.</strong></li>
+    <li>All 6 ids pass <code>ModelIdSchema</code>.</li>
+    <li>Each row carries <code>id</code>, <code>model</code>, <code>displayName</code>, <code>description</code>, <code>hidden</code>, <code>supportedReasoningEfforts</code>, <code>defaultReasoningEffort</code>, <code>inputModalities</code>, <code>serviceTiers</code>, <code>isDefault</code> and upgrade fields. On every row observed, <code>id</code> and <code>model</code> held the same string; two fields exist, so the adapter must pick one deliberately.</li>
+    <li>No context-window field is reported, so <code>contextWindow</code> stays null for Codex rows.</li>
+  </ul>
+
+  <h3>Claude: a verified path whose shape collides with a persisted contract</h3>
+  <p>The Agent SDK exposes <code>supportedModels()</code>, and the rows also ride along on the initialize response as <code>SDKControlInitializeResponse.models</code>.</p>
+  <ul>
+    <li><code>initializationResult()</code> 5874ms on a cold first run, then 1018ms, 1466ms and 1629ms warm. <code>supportedModels()</code> 0ms afterwards, because the data already arrived with the handshake. 5 rows, 1306 bytes.</li>
+    <li><strong>No session file was created.</strong> The probe project directory held 0 files before and after, so the Pi rule "never create a session during discovery" holds here too.</li>
+    <li><strong>The cold 5874ms exceeds Pi's 5000ms timeout bound</strong>, so that constant cannot simply be reused.</li>
+  </ul>
+  <div class="table-wrap"><table><thead><tr><th><code>value</code></th><th><code>resolvedModel</code></th><th><code>displayName</code></th><th>Passes <code>ModelIdSchema</code></th></tr></thead><tbody>
+    <tr><td><code>default</code></td><td><code>claude-sonnet-5</code></td><td>Default (recommended)</td><td><span class="pill ok">yes</span></td></tr>
+    <tr><td><code>opus[1m]</code></td><td><code>claude-opus-5[1m]</code></td><td>Opus (1M context)</td><td><span class="pill no">no</span></td></tr>
+    <tr><td><code>sonnet</code></td><td><code>claude-sonnet-5</code></td><td>Sonnet</td><td><span class="pill ok">yes</span></td></tr>
+    <tr><td><code>haiku</code></td><td><code>claude-haiku-4-5-20251001</code></td><td>Haiku</td><td><span class="pill ok">yes</span></td></tr>
+    <tr><td><code>opusplan</code></td><td><code>claude-sonnet-5</code></td><td>Opus Plan Mode</td><td><span class="pill ok">yes</span></td></tr>
+  </tbody></table></div>
+  <div class="call stop"><strong><code>opus[1m]</code> and <code>claude-opus-5[1m]</code> are rejected by <code>ModelIdSchema</code></strong>, verified by running the schema against them. <code>src/shared/model.ts:136</code> excludes <code>[1m]</code> markers deliberately, because these ids are pasted onto a command line. <code>opusplan</code> is a mode rather than a model, and <code>default</code> is an alias the organization resolves. The live list also omits <code>claude-fable-5</code> and <code>claude-opus-4-8</code>, which ship today, so a naive cutover <em>shrinks</em> the Claude picker and swaps wire ids for aliases.</div>
+  <p>The handshake also returns <code>account</code> (email, organization, subscriptionType, apiProvider). None of it may reach the browser.</p>
+
+  <h3>What else moves</h3>
+  <ul>
+    <li><code>test/harness-model-catalog.test.ts:86-87</code> asserts <code>discover === null</code> for both harnesses. Those two lines are where the current decision is written down, and they are the pins that flip.</li>
+    <li><code>e2e/fixtures/fake-codex.mjs</code> answers unknown app-server methods with an empty result, so <code>model/list</code> needs a real case rather than silently returning nothing.</li>
+    <li><code>e2e/fixtures/fake-claude.mjs</code> answers every <code>control_request</code> subtype with a bare <code>{}</code>, so the handshake needs a <code>models</code> payload.</li>
+    <li><code>docs/models.md:79</code> currently states that Claude and Codex remain on shipped static rows.</li>
+    <li><code>src/server/harness/codex/pricing.ts</code> prices only the four current models, and <code>estimateStandardApiUsage</code> returns null for anything else. Making <code>gpt-5.4</code> and <code>gpt-5.4-mini</code> selectable means those sessions get no cost estimate until verified public rates are added. It degrades safely and must not be fixed by inventing prices.</li>
+    <li>The vendored bindings say <code>codex-cli 0.145.0</code> while the installed binary is 0.146.0. Regenerating to add the new roots absorbs that version bump, so the diff has to be read rather than assumed empty.</li>
+  </ul>
+
+  <h2>The deferred question: what the Claude picker shows</h2>
+  <div class="call">Resolved for now by deferring: <strong>option D was adopted</strong>, so Claude keeps its shipped rows and this change touches only Codex. The options below are retained because the question itself is still open and this table is the input to the follow-up change, not a record of a settled choice.</div>
+  <p>Codex needed no such decision. Its rows are wire-id shaped, schema-passing, and strictly a superset of what ships today. Claude's are not, so this is a product choice equivalent to Pi's approved "mirror every model, grouped by provider".</p>
+  <div class="table-wrap"><table><thead><tr><th>Option</th><th>What the picker shows</th><th>Cost</th></tr></thead><tbody>
+    <tr><td><strong>A. Mirror the aliases</strong></td><td>Default, Opus (1M context), Sonnet, Haiku, Opus Plan Mode; persist the alias</td><td><code>opus[1m]</code> fails <code>ModelIdSchema</code>, so the persisted vocabulary must widen. <code>opusplan</code> and <code>default</code> are not models. A persisted alias silently changes meaning when the org default moves, which is a footgun for a task scheduled last week</td></tr>
+    <tr><td><strong>B. Resolve to wire ids</strong></td><td>Sonnet 5, Opus 5 (1M), Haiku 4.5, deduplicated from <code>resolvedModel</code></td><td>Still hits <code>[1m]</code>. Collapses Default, Sonnet and Opus Plan Mode into one row, losing labels operators recognize. Still drops Fable 5 and Opus 4.8</td></tr>
+    <tr><td><strong>C. Union live over shipped</strong></td><td>Everything shipped, plus any live row not already present, with live rows marked</td><td>Nothing currently selectable disappears and discovery becomes a signal rather than a replacement. The picker can still list a model this account cannot run, which is the mirror image of today's bug, so the distinction has to be visible</td></tr>
+    <tr><td><strong>D. Codex now, Claude later</strong></td><td>Codex goes live; Claude stays shipped</td><td>Ships the unambiguous half immediately and leaves the alias and <code>[1m]</code> question to a change that can weigh <code>ModelIdSchema</code> properly. Claude's staleness persists until then</td></tr>
+  </tbody></table></div>
+  <div class="call"><strong>Adopted: D, with C as the recommended shape for the follow-up.</strong> Codex is a measured gap with a clean fix and no contract question. Claude forces a decision about <code>ModelIdSchema</code>, which governs persisted task and config values, and a persisted-vocabulary change deserves its own change rather than riding along with a catalog refresh. When Claude is picked up, option C is the starting recommendation because it cannot regress the picker.</div>
+
+  <h2>Changed request flow</h2>
+  <p>Today, for Claude and Codex, the service short-circuits to the shipped table. After this change Codex joins Pi on a bounded probe subprocess, with the shipped table as fallback, and Claude keeps the short-circuit until the deferred question is answered. Nothing downstream of choice production changes.</p>
+  <figure>
+    <svg viewBox="0 0 980 470" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Model catalog request flow, before and after</title>
+      <desc id="flow-desc">Before: the browser asks the models API, which asks the registry; Pi runs a no-session RPC probe while Claude and Codex short-circuit to the shipped catalog because their discover slot is null. After: Codex joins Pi on a bounded probe, calling app-server model/list, with results held in an in-memory last-success cache and the shipped catalog used only when a probe fails with no cache. Claude keeps the short-circuit to the shipped catalog because its discover slot stays null in this change.</desc>
+      <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+
+      <text class="lbl" x="20" y="24">Before</text>
+      <rect class="box" x="20" y="38" width="150" height="58" rx="9"/><text class="t" x="36" y="62">Browser store</text><text class="s" x="36" y="80">all pickers</text>
+      <rect class="box" x="206" y="38" width="150" height="58" rx="9"/><text class="t" x="222" y="62">Models API</text><text class="s" x="222" y="80">generic route</text>
+      <rect class="box" x="392" y="38" width="150" height="58" rx="9"/><text class="t" x="408" y="62">Registry</text><text class="s" x="408" y="80">models capability</text>
+      <rect class="box live" x="640" y="16" width="320" height="44" rx="9"/><text class="t" x="658" y="36">pi &rarr; no-session RPC probe</text><text class="s" x="658" y="52">get_available_models &middot; live</text>
+      <rect class="box fallback" x="640" y="74" width="320" height="44" rx="9"/><text class="t" x="658" y="94">claude, codex &rarr; shipped catalog</text><text class="s" x="658" y="110">discover is null, so no probe runs</text>
+      <path class="arrow" d="M170 67 H206"/><path class="arrow" d="M356 67 H392"/>
+      <path class="arrow" d="M542 60 L640 38"/><path class="arrow" d="M542 74 L640 96"/>
+
+      <line x1="20" y1="158" x2="960" y2="158" stroke="var(--line)" stroke-width="1"/>
+
+      <text class="lbl" x="20" y="192">After</text>
+      <rect class="box" x="20" y="206" width="150" height="58" rx="9"/><text class="t" x="36" y="230">Browser store</text><text class="s" x="36" y="248">unchanged</text>
+      <rect class="box" x="206" y="206" width="150" height="58" rx="9"/><text class="t" x="222" y="230">Models API</text><text class="s" x="222" y="248">unchanged</text>
+      <rect class="box" x="392" y="206" width="150" height="58" rx="9"/><text class="t" x="408" y="230">Registry</text><text class="s" x="408" y="248">three probes now</text>
+      <rect class="box fallback" x="640" y="176" width="320" height="40" rx="9"/><text class="t" x="658" y="194">claude &rarr; shipped catalog</text><text class="s" x="658" y="209">discover stays null, deferred</text>
+      <rect class="box live" x="640" y="226" width="320" height="40" rx="9"/><text class="t" x="658" y="244">codex &rarr; app-server model/list</text><text class="s" x="658" y="259">new: initialize, one request, exit</text>
+      <rect class="box live" x="640" y="276" width="320" height="40" rx="9"/><text class="t" x="658" y="294">pi &rarr; no-session RPC probe</text><text class="s" x="658" y="309">unchanged</text>
+      <path class="arrow" d="M170 235 H206"/><path class="arrow" d="M356 235 H392"/>
+      <path class="arrow" d="M542 228 L640 198"/><path class="arrow" d="M542 240 L640 246"/><path class="arrow" d="M542 252 L640 294"/>
+
+      <rect class="box" x="392" y="352" width="150" height="58" rx="9"/><text class="t" x="408" y="376">Last-success</text><text class="s" x="408" y="394">memory only</text>
+      <rect class="box fallback" x="640" y="352" width="320" height="58" rx="9"/><text class="t" x="658" y="376">Shipped catalog</text><text class="s" x="658" y="394">only when a probe fails with no cache</text>
+      <path class="arrow" d="M800 316 V352"/><path class="arrow dim" d="M640 381 H542"/><path class="arrow" d="M467 352 V265"/>
+      <text class="s" x="20" y="452">A chosen value still continues through ModelIdSchema, config and task persistence, and the existing --model launch path.</text>
+    </svg>
+    <figcaption>The daemon produces choices. It does not change what a choice means. One harness gains a subprocess in the catalog request path; nothing gains one in the dispatch path.</figcaption>
+  </figure>
+
+  <h2>Scope</h2>
+  <div class="table-wrap"><table><thead><tr><th>In scope</th><th>Out of scope</th></tr></thead><tbody><tr>
+    <td>A Codex adapter over <code>model/list</code>, spawned through the path the embedded driver already uses; regenerating the vendored bindings with two new roots; Codex-specific measured bounds in their own constant beside Pi's; fake, Playwright and unit coverage for framing, mapping, bounds and every failure mode; documentation that matches the result and says which of the two now discovers</td>
+    <td><strong>Claude discovery</strong>, deferred by the adopted decision, with the measurements kept here so the follow-up starts from evidence rather than repeating the probe; feeding live effort metadata into <code>levelsFor</code>, which both CLIs now report per model and which would replace the hardcoded narrowing at <code>src/shared/harness-capabilities.ts:641</code>; adding pricing rows for newly discoverable models, since prices must be verified rather than inferred; changing how models are persisted or passed; persisting catalogs in SQLite; widening <code>ModelIdSchema</code>, which the adopted decision keeps untouched</td>
+  </tr></tbody></table></div>
+  <div class="call warn">Codex reports an <code>ultra</code> effort level, which is not in <code>THINKING_LEVELS</code>. Effort mapping is out of scope here, but whenever it lands it must drop unknown levels rather than fail.</div>
+
+  <h2>Implementation sequence</h2>
+  <section class="step rec"><h3>Phase 1. Codex discovery</h3>
+    <ol>
+      <li>Add <code>v2/ModelListParams</code> and <code>v2/ModelListResponse</code> to <code>ROOTS</code> in <code>scripts/codex-app-server-bindings.mjs</code>, regenerate, and review the closure it pulls in along with the version bump.</li>
+      <li>Write the failing tests first, against a scripted transport with no <code>codex</code> on the machine, mirroring <code>test/pi-model-catalog.test.ts</code>: valid response, notifications before the response, malformed JSON, wrong correlation id, timeout, oversized output, duplicate and unsafe ids, an empty list, a non-zero exit, and a paginated second page.</li>
+      <li>Implement <code>src/server/harness/codex/model-catalog.ts</code> reusing the existing app-server spawn and JSON-RPC client rather than adding a second spawn path, so the probe and the driver keep one resolver.</li>
+      <li>Map only allowlisted fields: <code>id</code> for the launch value, <code>displayName</code> for the label, bounded <code>description</code> for the hint, <code>inputModalities</code> filtered to text and image, reasoning derived from a non-empty effort list, <code>provider</code> and <code>contextWindow</code> null because Codex reports neither. Exclude <code>hidden</code> rows so the list matches the picker Codex itself shows. Follow <code>nextCursor</code> under a bounded page count.</li>
+      <li>Wire <code>discover</code> at <code>src/server/harness/index.ts:146</code> and flip the pin at <code>test/harness-model-catalog.test.ts:87</code>.</li>
+      <li>Teach <code>e2e/fixtures/fake-codex.mjs</code> to answer <code>model/list</code>, and add a Playwright spec proving a dynamically returned Codex model appears, can be selected, reaches the exact persisted id, survives reload, and falls back without losing a saved value.</li>
+    </ol>
+  </section>
+  <section class="step"><h3>Phase 2. Documentation and gates</h3>
+    <p>Rewrite the <code>docs/models.md</code> passage that says Claude and Codex stay static, so it says Codex discovers and Claude does not, when catalogs refresh, and what fallback means per harness. Then run the focused tests, typecheck, lint, build, smoke, and the Playwright suite.</p>
+  </section>
+  <section class="step"><h3>Deferred. Claude discovery</h3>
+    <p>Not part of this change. When it is picked up, the sequence is: resolve the presentation option, and if option A is selected settle <code>ModelIdSchema</code> and audit its consumers first; write failing tests against an injected fake query object covering rows returned, an aborted handshake, a handshake that never resolves, rows failing the id schema, alias and mode rows, and an empty list; implement <code>src/server/harness/claude/model-catalog.ts</code> on the existing <code>sdk-deps</code> seam with a streaming-input prompt that never yields, taking the rows off the handshake and aborting without sending a message; set the bound from the measured cold handshake with headroom; assert no <code>account</code> field can reach the browser; then wire <code>discover</code> at <code>src/server/harness/index.ts:99</code>, flip the pin at <code>test/harness-model-catalog.test.ts:86</code>, extend <code>e2e/fixtures/fake-claude.mjs</code> to return <code>models</code> from the handshake, and add the matching Playwright spec.</p>
+  </section>
+
+  <h2>Compatibility and safety rules</h2>
+  <ul>
+    <li>Use the configured binary for each harness, including <code>MISSION_CLAUDE_BIN</code> and <code>MISSION_CODEX_BIN</code> overrides, through the existing single resolver.</li>
+    <li>Never invoke a model, start a thread, start a turn, or create a session during discovery. Both probes were measured to satisfy this.</li>
+    <li>Never expose raw vendor rows, account identity, subscription state, headers or credentials to the browser. Map an allowlist.</li>
+    <li>Never load project-local settings while probing from an arbitrary repository.</li>
+    <li>Apply a per-harness timeout, byte cap, row cap, id schema check and deterministic deduplication before returning any collection.</li>
+    <li>Preserve the harness-default row and any saved off-catalog value, which the browser resolver already merges.</li>
+    <li>Treat discovery as capability quality, not availability. A failed probe must never block dispatch.</li>
+  </ul>
+
+  <h2>Verification</h2>
+  <ul>
+    <li>Unit tests prove framing, allowlisted mapping, bounds, subprocess cleanup and fallback on every failure mode, with no agent binary present.</li>
+    <li>Contract and HTTP tests prove registry ownership and response status for all three harnesses.</li>
+    <li>Static React tests prove loading, live, fallback and retained-selection markup.</li>
+    <li>Playwright proves the visible option to route to persisted value loop against the fakes.</li>
+    <li>No test may invoke a real provider or spend model tokens.</li>
+    <li>The Codex claim is verified by re-running the probe against the pinned binary after the bindings regenerate.</li>
+  </ul>
+
+  <h2>Effort</h2>
+  <div class="table-wrap"><table><thead><tr><th>Phase</th><th>Size</th><th>What dominates</th></tr></thead><tbody>
+    <tr><td>Phase 1, Codex</td><td>Small to medium</td><td>Not the adapter, which mirrors Pi's. Reviewing the regenerated bindings diff across a version bump, and the failure-mode test matrix</td></tr>
+    <tr><td>Phase 2, docs and gates</td><td>Small</td><td>Playwright is the long pole in wall-clock terms</td></tr>
+    <tr><td>Deferred, Claude</td><td>Medium when picked up</td><td>The presentation decision and, under option A, the <code>ModelIdSchema</code> audit. The adapter itself is smaller than Codex's because the SDK seam already exists</td></tr>
+  </tbody></table></div>
+  <p>The deferred Claude work stays merge-aware against this change: it lands in a different adapter file, a different registry slot, a different fake and a different spec. The one thing this change should leave ready for it is a bounds constant that sits beside Pi's rather than pretending one number fits every harness.</p>
+
+  <h2>Claims and assumptions</h2>
+  <ul>
+    <li><strong>Verified, high confidence:</strong> the spine is built and only the two <code>discover</code> slots are null; Codex <code>model/list</code> returns six schema-passing rows in milliseconds after a sub-second handshake; the shipped Codex catalog is missing two models the CLI offers; Claude's rows arrive on the handshake, are alias shaped, create no session, and include two values <code>ModelIdSchema</code> rejects; the cold Claude handshake exceeds Pi's 5s bound.</li>
+    <li><strong>Verified, high confidence:</strong> <code>test/harness-model-catalog.test.ts:86-87</code>, both e2e fakes, and <code>docs/models.md:79</code> are the places the current decision is recorded.</li>
+    <li><strong>Verified during implementation:</strong> the shipped adapter returns the six live rows through the real binary, and the two failure shapes an operator can actually hit degrade in about 15ms with no hang - a binary that is not installed and one that exits without speaking the protocol both report <code>process_failed</code>, which the service turns into the shipped fallback. A Codex too old to know <code>model/list</code> answers JSON-RPC <code>-32601</code>, which maps to <code>unsupported</code>; that path is covered by unit tests rather than by an old binary.</li>
+    <li><strong>Verified during implementation:</strong> the end-to-end probe cost varies far more than the wire cost - 974ms, 1936ms, 2714ms and 4079ms across four consecutive runs, all spawn time. The bound was raised to 15s because of it; a bound sized to the 593ms handshake would have failed the slowest run.</li>
+    <li><strong>Still unverified:</strong> behavior when the operator is logged out of Codex. Not tested because doing so would have disturbed the operator's live login state. It reaches the same fallback as any other <code>rpc_failed</code>, but which problem code Codex returns is unconfirmed.</li>
+    <li><strong>Unverified, low impact:</strong> whether Codex's <code>id</code> and <code>model</code> fields ever diverge. They matched on all six rows. The adapter picks <code>id</code> and a test pins that choice.</li>
+    <li><strong>Found during implementation, fixed here:</strong> the browser gated its catalog notice and retry button on whether any row reported a provider, which was true only for Pi. Codex reports no provider per row, so its degraded state would have been silent and un-retryable. The gate now reads a declared <code>discoversModels</code> capability, kept in agreement with the server's <code>models.discover</code> by a test, in the same "one fact in two files" shape <code>runtimes</code> / <code>sdk</code> and <code>resumes</code> / <code>resume</code> already use.</li>
+    <li><strong>Deferred decision, blocking nothing in this change:</strong> the Claude presentation option above.</li>
+  </ul>
+
+  <footer>Source of truth: <code>docs/plans/claude-codex-live-model-catalog/plan.md</code>. This page is a rendering of it, not a fork.</footer>
+</main>
+</body>
+</html>

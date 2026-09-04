@@ -45,6 +45,19 @@ export function writePiCatalogMode(home: string, mode: FakePiCatalogMode): void 
   writeFileSync(piCatalogControlPath(home), `${mode}\n`);
 }
 
+/** The Codex catalog probe reads the same two modes, from its own control file. */
+export type FakeCodexCatalogMode = FakePiCatalogMode;
+
+/** Where the Codex fake reads its per-request `model/list` behavior. */
+export function codexCatalogControlPath(home: string): string {
+  return join(home, "fake-codex-catalog-mode.txt");
+}
+
+/** Switch the next and later Codex catalog probes without changing daemon environment. */
+export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode): void {
+  writeFileSync(codexCatalogControlPath(home), `${mode}\n`);
+}
+
 /**
  * One pull request `FAKE_GH` will report, in the shape `gh pr list --json …` prints.
  *
@@ -410,6 +423,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   const codex = join(binDir, "fake-codex");
   copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), codex);
   chmodSync(codex, 0o755);
+  writeCodexCatalogMode(home, "success");
 
   const pi = join(binDir, "fake-pi");
   copyFileSync(fileURLToPath(new URL("./fake-pi.mjs", import.meta.url)), pi);

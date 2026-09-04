@@ -19,7 +19,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("no-mistakes-review-stages");
 
-test("the shipped No-Mistakes Review groups code review before evidence and documentation", async ({
+test("the shipped No-Mistakes Review groups code review before evidence, docs, and slop", async ({
   dashboard,
   daemon,
 }) => {
@@ -45,13 +45,14 @@ test("the shipped No-Mistakes Review groups code review before evidence and docu
   await expect(stage4.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Test Evidence Auditor",
     "Documentation Steward",
+    "Slop Filter",
   ]);
 
   const pullRequest = stages.nth(4);
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
   await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
 
-  // A three-member stage still has to FIT. A card that overflows its strip is drawn, passes
+  // Each three-member stage still has to FIT. A card that overflows its strip is drawn, passes
   // every membership assertion above, and is unreadable - which is the one fault no graph or
   // markup check can see.
   await stage3.evaluate((element) => {
@@ -68,6 +69,20 @@ test("the shipped No-Mistakes Review groups code review before evidence and docu
   });
   expect(contained, "stage 3 overflows its pipeline strip").toBe(true);
 
+  await stage4.evaluate((element) => {
+    const strip = element.closest(".wf-pipeline-strip");
+    if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
+    strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+  });
+  const stage4Contained = await stage4.evaluate((element) => {
+    const strip = element.closest(".wf-pipeline-strip");
+    if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
+    const card = element.getBoundingClientRect();
+    const bounds = strip.getBoundingClientRect();
+    return card.left >= bounds.left && card.right <= bounds.right;
+  });
+  expect(stage4Contained, "stage 4 overflows its pipeline strip").toBe(true);
+
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await dashboard.mouse.move(0, 0);
@@ -76,11 +91,6 @@ test("the shipped No-Mistakes Review groups code review before evidence and docu
     fullPage: true,
   });
 
-  await stage4.evaluate((element) => {
-    const strip = element.closest(".wf-pipeline-strip");
-    if (!(strip instanceof HTMLElement)) throw new Error("Stage 4 left its pipeline strip");
-    strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
-  });
   await dashboard.screenshot({
     path: `${EVIDENCE}stage-4-before-pull-request.png`,
     fullPage: true,

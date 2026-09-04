@@ -40,6 +40,7 @@ const { openDb, getForemanInvite } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
@@ -218,7 +219,12 @@ test("with both toggles off, Claude and Codex stay on the terminal branch", asyn
     );
   }
   const supervisor = fakeSupervisor(registry);
-  const dispatcher = new Dispatcher(registry, async () => {}, { supervisor });
+  const worktrees = new WorktreeManager(undefined, {
+    // Native allocation precedes the runtime fork and has separate coverage. Keep this
+    // branch test on a real disposable Git worktree so it reaches the behavior under test.
+    resolvePolicy: () => ({ enabled: false, maxSlots: 1, setupArgv: null }),
+  });
+  const dispatcher = new Dispatcher(registry, async () => {}, { supervisor, worktrees });
 
   // Required Mission MCP tools with no bundle on disk is the terminal path's own refusal,
   // and it fires while it is assembling the argv - BEFORE it would open a terminal home.

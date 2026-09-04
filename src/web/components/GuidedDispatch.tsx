@@ -85,7 +85,7 @@ export function GuidedRail({
 }): React.JSX.Element {
   const done = pass.answered.length;
   return (
-    <nav className="dispatch-guided-rail" aria-label="Guided dispatch">
+    <nav className="modal-bleed dispatch-guided-rail" aria-label="Guided dispatch">
       <ol className="dispatch-guided-rungs">
         {GUIDED_STEPS.map((step, index) => {
           const answered = pass.answered.includes(step.id);

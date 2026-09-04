@@ -652,7 +652,7 @@ export function WorkflowBindingDialog({
         disabled={busy}
       />
       {error && <p className="wf-error" role="alert">{error}</p>}
-      <footer className="modal-actions">
+      <footer className="modal-foot">
         <Tooltip label="Attach the workflow to this session without starting a run">
           <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>
             {existing?.state === "active" ? "Update binding" : existing ? "Reattach only" : "Bind only"}

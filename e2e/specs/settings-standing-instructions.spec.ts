@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { seedRepo, type DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * The Standing instructions settings category, end to end.
@@ -334,6 +335,10 @@ test("the session chip shows what that session received, and does not change whe
   });
   await expect(modal).toBeVisible();
   await expect(modal).toContainText(RULE);
+  // The rule is only legible if it is not printed onto the border. This dialog puts its
+  // heading, its hint and the delivery block straight into `.modal` with no region wrapper,
+  // so it is the surface that proved `.modal` had to own the inset itself.
+  await expectContentClearsBorder(modal);
   await shoot(dashboard, "session-chip-open");
   await dashboard.keyboard.press("Escape");
 

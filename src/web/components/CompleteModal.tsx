@@ -211,7 +211,7 @@ export function CompleteModal({
           </Tooltip>
         </header>
 
-        <div className="complete-body">
+        <div className="modal-bleed complete-body">
           <p className="complete-lead">
             <AgentDot agent={session.agent} />
             <span className="complete-name">{session.name || "(unnamed)"}</span>

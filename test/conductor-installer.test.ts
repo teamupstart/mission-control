@@ -16,6 +16,7 @@ import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 
 import { stubRun } from "../src/server/util/exec.ts";
+import { MAX_PIPELINE_INSTALLER_CANDIDATES } from "../src/shared/pipeline.ts";
 import {
   conductorInstallerCandidates,
   conductorInstallerRuntimePreparation,
@@ -32,12 +33,10 @@ function git(cwd: string, ...args: string[]): void {
   execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
 }
 
-function checkout(name: string, remote = "https://github.com/mancej/ai-conductor.git"): string {
+function installerFixture(name: string): string {
   const repo = join(root, name);
   mkdirSync(join(repo, "bin"), { recursive: true });
   mkdirSync(join(repo, "src/conductor"), { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "pipe" });
-  if (remote) git(repo, "remote", "add", "origin", remote);
   writeFileSync(join(repo, "bin/install"), "#!/bin/sh\necho ran > installer-ran\n");
   chmodSync(join(repo, "bin/install"), 0o755);
   writeFileSync(
@@ -48,6 +47,13 @@ function checkout(name: string, remote = "https://github.com/mancej/ai-conductor
     }),
   );
   writeFileSync(join(repo, "VERSION"), "0.101.1\n");
+  return repo;
+}
+
+function checkout(name: string, remote = "https://github.com/mancej/ai-conductor.git"): string {
+  const repo = installerFixture(name);
+  execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "pipe" });
+  if (remote) git(repo, "remote", "add", "origin", remote);
   git(repo, "add", "-A");
   git(
     repo,
@@ -290,9 +296,22 @@ test("discovery deduplicates physical candidates and never executes checkout cod
 });
 
 test("discovery returns no more than the shared candidate bound", async () => {
-  const repos = Array.from({ length: 9 }, (_, index) => checkout(`bounded-${index}`));
-  const candidates = await conductorInstallerCandidates(repos);
-  assert.equal(candidates.length, 8);
+  // This is a collection-bound test, not another git-process integration test. Under the
+  // full suite's process contention, the real 2-second git probes can time out and turn a
+  // valid fixture into a skipped candidate, making an exact ceiling assertion nondeterministic.
+  const repos = Array.from(
+    { length: MAX_PIPELINE_INSTALLER_CANDIDATES + 1 },
+    (_, index) => installerFixture(`bounded-${index}`),
+  );
+  const candidates = await conductorInstallerCandidates(repos, {
+    mainRepoRoot: (path) => path,
+    gitConfig: async () => stubRun({
+      code: 0,
+      stdout: "remote.origin.url https://github.com/mancej/ai-conductor.git\n",
+      stderr: "",
+    }),
+  });
+  assert.equal(candidates.length, MAX_PIPELINE_INSTALLER_CANDIDATES);
 });
 
 test("terminal composition reverifies and returns only the exact executable with no flags", async () => {

@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.0](https://github.com/teamupstart/mission-control/compare/v1.4.0...v1.5.0) (2026-09-04)
+
+
+### Features
+
+* **fleet:** search sessions by pull request number ([#877](https://github.com/teamupstart/mission-control/issues/877)) ([269a0c8](https://github.com/teamupstart/mission-control/commit/269a0c83ca49cc027f49e5689501b561322773e1))
+* **setup:** read machine setup one family at a time ([#864](https://github.com/teamupstart/mission-control/issues/864)) ([b5bb1cd](https://github.com/teamupstart/mission-control/commit/b5bb1cdcc71402991963852bfb8f6ed3448a18a9))
+* **workflows:** review code design in No-Mistakes Review ([#868](https://github.com/teamupstart/mission-control/issues/868)) ([14c59dc](https://github.com/teamupstart/mission-control/commit/14c59dc444eeace9961da6c75cd551a28bc726c5))
+
+
+### Bug Fixes
+
+* **ensembles:** judge Best-of-N artifacts only ([#871](https://github.com/teamupstart/mission-control/issues/871)) ([a4b0916](https://github.com/teamupstart/mission-control/commit/a4b0916aed01c49d49abbefcb434effbfd915c0d))
+* **pi:** discover models through login-shell PATH ([#869](https://github.com/teamupstart/mission-control/issues/869)) ([5579590](https://github.com/teamupstart/mission-control/commit/55795900d84d6111bdf722a353e0d9b19151b47e))
+* **reports:** require dark-scheme contrast checks so new reports stay readable ([#866](https://github.com/teamupstart/mission-control/issues/866)) ([892b8a7](https://github.com/teamupstart/mission-control/commit/892b8a71421f738deb493de22d5977bbaee0d2b6))
+* **scouts:** bound the prompt ledger instead of each prompt body ([#874](https://github.com/teamupstart/mission-control/issues/874)) ([486c85d](https://github.com/teamupstart/mission-control/commit/486c85d1cfceacfee4277838bc78077f3cc88fb8))
+* **sessions:** resolve agent binary before terminal handoff ([#878](https://github.com/teamupstart/mission-control/issues/878)) ([c07f723](https://github.com/teamupstart/mission-control/commit/c07f7234dbb436655e5ea2ef8c9212e4f30a3e0b))
+* **web:** give every modal its content inset from the shell ([#876](https://github.com/teamupstart/mission-control/issues/876)) ([4b6467e](https://github.com/teamupstart/mission-control/commit/4b6467e4bf45c73dd295554fb77248594fe9c622))
+
 ## [1.4.0](https://github.com/teamupstart/mission-control/compare/v1.3.4...v1.4.0) (2026-09-03)
 
 

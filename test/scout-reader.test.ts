@@ -116,11 +116,19 @@ test("the scout reader swaps its title for the shared inline rename editor", () 
   assert.match(html, /aria-label="Cancel rename"/);
 });
 
-test("the scout reader caps each prompt at a scrollable eight lines", () => {
+test("the scout reader bounds the whole prompt ledger in one scroll container", () => {
   const html = render(detail());
 
-  // The cap and the scroll live in `.scouts-prompt-text`; what the markup has to carry is
+  // The cap and the scroll live in `.scouts-prompt-scroll`; what the markup has to carry is
   // the keyboard reach into that scroll container, which CSS cannot add.
-  const texts = html.match(/<p class="scouts-prompt-text" tabindex="0">/g) ?? [];
-  assert.equal(texts.length, 2, "every prompt body is its own focusable scroll box");
+  const scrollers = html.match(/<div class="scouts-prompt-scroll" tabindex="0">/g) ?? [];
+  assert.equal(scrollers.length, 1, "the ledger is one focusable scroll box, not one per prompt");
+
+  const texts = html.match(/<p class="scouts-prompt-text">/g) ?? [];
+  assert.equal(texts.length, 2, "each prompt body flows at its natural height inside it");
+  assert.doesNotMatch(
+    html,
+    /class="scouts-prompt-text"[^>]*tabindex/,
+    "no nested focusable scroller per prompt",
+  );
 });

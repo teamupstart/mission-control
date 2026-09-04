@@ -89,7 +89,7 @@ export function KillModal({
           </Tooltip>
         </header>
 
-        <div className="kill-body">
+        <div className="modal-bleed kill-body">
           <p className="kill-lead">
             <AgentDot agent={session.agent} />
             <span className="kill-name">{session.name || "(unnamed)"}</span>

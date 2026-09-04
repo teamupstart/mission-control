@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
@@ -33,8 +32,6 @@ import {
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
-  PIPELINE_CALLER_CREDENTIAL_ENV,
-  PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
 import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
@@ -43,6 +40,7 @@ import {
   daemonHealthSupports,
   workflowEvidenceNeedsCriterionMappedCapability,
 } from "@shared/daemon-protocol.ts";
+import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -52,27 +50,6 @@ import {
 const MISSION_SESSION_ID = process.env[MISSION_SESSION_ID_ENV];
 const ENV = MISSION_SESSION_ID === undefined ? captureTerminalEnv() : {};
 const SESSION_ID = MISSION_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
-function readPipelineCallerCredential(): string | null {
-  const file = process.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV];
-  if (file) {
-    try {
-      const stat = statSync(file);
-      if (!stat.isFile() || stat.size > 4096 || (stat.mode & 0o077) !== 0) return null;
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-      if (
-        typeof parsed.credential === "string" &&
-        parsed.credential.length >= 32 &&
-        typeof parsed.expiresAt === "number" &&
-        Number.isSafeInteger(parsed.expiresAt) &&
-        parsed.expiresAt > Date.now()
-      ) return parsed.credential;
-    } catch {
-      return null;
-    }
-  }
-  // Rolling compatibility for a daemon that launches an older bundled MCP process.
-  return process.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? null;
-}
 const PIPELINE_CALLER_CREDENTIAL = readPipelineCallerCredential();
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],

@@ -12,7 +12,7 @@ name: CI
 #
 # ## Runner policy
 #
-# `dependencies` and `gates` use standard GitHub-hosted `ubuntu-latest` runners. CPU-heavy
+# Dependency producers and `gates` use standard GitHub-hosted `ubuntu-latest` runners. CPU-heavy
 # jobs use the shared `frontend-platform` group granted to this repository in
 # `teamupstart/Github_Org_Settings_TF#131`: unit runs on its 8-core label with eight test
 # workers, while each E2E shard runs on its reliability-tested 4-core label with four
@@ -44,26 +44,23 @@ jobs:
   # measured 21-job run every job restored the same warm 385 MB npm cache, but `npm ci`
   # still varied from 12 seconds to 5 minutes. Prepare one exact `node_modules` tree per
   # supported Node release so a lockfile change installs twice, not once per test shard,
-  # and a warm run skips installation entirely.
+  # and a warm run skips installation entirely. Node 24 and Node 26 intentionally have
+  # separate job ids so each consumer can depend only on the tree it actually restores.
   #
   # The key deliberately has no fallback prefix. A stale dependency tree is worse than a
   # cold install, so OS, architecture, Node release, and exact lockfile bytes must all match.
-  dependencies:
-    name: dependencies (node ${{ matrix.node-version }})
+  dependencies-node-24:
+    name: dependencies (node 24)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ['24', '26']
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up Node ${{ matrix.node-version }}
+      - name: Set up Node 24
         uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '24'
           cache: npm
 
       - name: Cache node_modules
@@ -71,7 +68,32 @@ jobs:
         uses: actions/cache@v5
         with:
           path: node_modules
-          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('package-lock.json') }}
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+  dependencies-node-26:
+    name: dependencies (node 26)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 26
+        uses: actions/setup-node@v5
+        with:
+          node-version: '26'
+          cache: npm
+
+      - name: Cache node_modules
+        id: dependencies
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-26-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.dependencies.outputs.cache-hit != 'true'
@@ -84,11 +106,11 @@ jobs:
   # Lint is new to CI. It was previously a local-only check, which meant it was a required
   # standard nothing enforced. It costs under a second, so the honest place for it is here.
   #
-  # Every Linux consumer waits only for the two dependency trees. Once those exact caches
-  # exist, test layers remain independent and expose their failures in the same run.
+  # Each Linux consumer waits only for the dependency tree it restores. Once that exact
+  # cache exists, test layers remain independent and expose unrelated failures in the same run.
   gates:
     name: gates (typecheck, lint)
-    needs: dependencies
+    needs: dependencies-node-24
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -124,9 +146,9 @@ jobs:
   # Six shards leave practical headroom below the three-minute target. Four shards put the
   # slowest partition at 179.7 seconds before its required posttest, which was too close to
   # the target to absorb ordinary runner variance.
-  unit:
-    name: unit (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/6)
-    needs: dependencies
+  unit-node-24:
+    name: unit (node 24, shard ${{ matrix.shard }}/6)
+    needs: dependencies-node-24
     runs-on:
       group: frontend-platform
       labels: ubuntu-8cpu-32ram-300ssd
@@ -134,7 +156,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['24', '26']
         shard: [1, 2, 3, 4, 5, 6]
 
     env:
@@ -146,68 +167,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up Node ${{ matrix.node-version }}
-        uses: actions/setup-node@v5
+      - name: Run unit shard
+        uses: ./.github/actions/run-unit-shard
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '24'
+          shard: ${{ matrix.shard }}
+          shard-total: 6
 
-      - name: Restore node_modules
-        uses: actions/cache/restore@v5
+  unit-node-26:
+    name: unit (node 26, shard ${{ matrix.shard }}/6)
+    needs: dependencies-node-26
+    runs-on:
+      group: frontend-platform
+      labels: ubuntu-8cpu-32ram-300ssd
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+
+    env:
+      # Match the selected runner's eight CPUs without changing the six-worker local default.
+      MISSION_TEST_CONCURRENCY: '8'
+      MISSION_TEST_SHARDS: '6'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run unit shard
+        uses: ./.github/actions/run-unit-shard
         with:
-          path: node_modules
-          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('package-lock.json') }}
-          fail-on-cache-miss: true
-
-      # Keyed on the version the lockfile actually installed rather than the range in
-      # package.json, because the cache holds one exact binary. `runner.arch` is in the key
-      # for the reason the Playwright cache further down has it: an x64 artifact must never
-      # restore onto another architecture.
-      - name: Resolve Electron version
-        id: electron
-        run: echo "v=$(node -p "require('./node_modules/electron/package.json').version")" >> "$GITHUB_OUTPUT"
-
-      # Deliberately NOT keyed on the Node version, so the two legs of this matrix share one
-      # cache: whichever downloads it first serves the other, and in practice that has been
-      # the leg whose network worked.
-      - name: Cache the Electron runtime
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/electron
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron.outputs.v }}
-
-      # Electron 42+ downloads its runtime on first use instead of during npm install.
-      # Provision it explicitly so GUI fixtures only exercise the application under test.
-      #
-      # `electron/install.js` reads the cache above and reaches the network only on a miss,
-      # which is what stops this step depending on a third party being reachable on every
-      # run. The retry covers the cold path that remains.
-      #
-      # Both exist because this one download has reddened this job four times in an
-      # afternoon - once `503`, three times an immediate `TypeError: fetch failed` - always
-      # on the node 26 leg, always on a diff with nothing to do with Electron, and always
-      # BEFORE a single test executed. The retry alone was not enough: all three attempts
-      # failed inside a second each, so the outage outlasts any backoff worth putting in a
-      # job. Caching is the part that actually removes the dependency.
-      - name: Install Electron test runtime
-        run: |
-          for attempt in 1 2 3; do
-            if npm exec -- install-electron --no; then exit 0; fi
-            echo "::warning::Electron runtime download failed (attempt ${attempt}/3)"
-            sleep $((attempt * 10))
-          done
-          exit 1
-
-      - name: Test
-        run: xvfb-run -a npm test
-        env:
-          MISSION_TEST_SHARD: ${{ matrix.shard }}/${{ env.MISSION_TEST_SHARDS }}
-
-      - name: Build
-        run: npm run build
-
-      # Runs the bundles Build just produced. Ordered after it because it needs `dist/`.
-      - name: Smoke the built bundles
-        run: npm run smoke
+          node-version: '26'
+          shard: ${{ matrix.shard }}
+          shard-total: 6
 
   # Browser-level end-to-end tests, sharded. This suite drives the BUILT dashboard served
   # by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both have to exist, which
@@ -233,7 +226,7 @@ jobs:
   # This job runs even when `unit` is red so both failures are visible in the same run.
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: dependencies
+    needs: dependencies-node-24
     runs-on:
       group: frontend-platform
       labels: ubuntu-4cpu-32ram-150ssd

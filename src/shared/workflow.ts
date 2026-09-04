@@ -230,6 +230,9 @@ export const WORKFLOW_EVIDENCE_COVERAGE_LIMITS = {
   clientCriterionIdChars: 200,
   linksPerClaim: 32,
   aggregateJsonBytes: 256 * 1_024,
+  // Readiness repeats canonical text and expands every frozen link. This bound covers the
+  // worst-case JSON escaping accepted by the field schemas, not just typical UTF-8 output.
+  readinessJsonBytes: 16 * 1_024 * 1_024,
 } as const;
 
 export type WorkflowEvidenceRepositoryScope = "all" | `repo-${string}`;

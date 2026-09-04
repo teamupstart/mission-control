@@ -95,6 +95,11 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
     output: "ok 1 - focused behavior\n",
   };
   const content = workflowCommandEvidenceContent(command);
+  const secondaryContent = workflowCommandEvidenceContent({
+    command: "node --test integration.test.ts",
+    exitCode: 0,
+    output: "ok 1 - integrated behavior\n",
+  });
   const now = Date.now();
   withDaemonDb(daemon, (db) => {
     db.prepare(
@@ -102,15 +107,15 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
          note_key, generation, all_generation, updated_at
        ) VALUES (?, 1, 0, ?)`,
     ).run(noteKey, now);
-    db.prepare(
+    const insertEvidence = db.prepare(
       `INSERT INTO workflow_evidence_staging (
          id, note_key, client_item_id, source_kind, evidence_kind, source_root,
          source_locator, inline_content, command_exit_code, episode_key, display_name, caption,
          repository_scope, mime_type, bytes, sha256, generation, state,
          reserved_group_key, created_at, updated_at
        ) VALUES (?, ?, ?, 'command', 'text', ?, ?, ?, ?, NULL, ?, ?, 'repo-01',
-         'text/plain', ?, ?, 1, 'staged', NULL, ?, ?)`,
-    ).run(
+         'text/plain', ?, ?, 1, 'staged', NULL, ?, ?)`);
+    insertEvidence.run(
       "e2e-focused-command",
       noteKey,
       "focused-command",
@@ -125,6 +130,42 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
       now,
       now,
     );
+    insertEvidence.run(
+      "e2e-secondary-command",
+      noteKey,
+      "secondary-command",
+      session!.cwd,
+      "node --test integration.test.ts",
+      secondaryContent,
+      0,
+      "integration.test.ts",
+      "Secondary command passed",
+      Buffer.byteLength(secondaryContent),
+      createHash("sha256").update(secondaryContent).digest("hex"),
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO workflow_evidence_coverage_staging (
+         id, note_key, client_criterion_id, criterion, proof_class, repository_scope,
+         source_root, links_json, episode_key, generation, state, reserved_group_key,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 'focused_execution', 'repo-01', ?, ?, NULL, 1,
+         'staged', NULL, ?, ?)`,
+    ).run(
+      "e2e-focused-coverage",
+      noteKey,
+      "criterion-focused",
+      "The focused behavior remains correct",
+      session!.cwd,
+      JSON.stringify([
+        { clientItemId: "focused-command", role: "execution" },
+        { clientItemId: "secondary-command", role: "execution" },
+        { clientItemId: "focused-command", role: "state_snapshot" },
+      ]),
+      now,
+      now,
+    );
   });
 
   await dashboard.goto(`${daemon.baseURL}/#/runs`);
@@ -136,14 +177,26 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
   await expectContentClearsBorder(dialog);
   const composer = dialog.getByRole("region", { name: "Workflow evidence" });
   await expect(composer).toContainText("focused.test.ts");
-
-  await composer.getByPlaceholder("What must be true for this work to be accepted?")
-    .fill("The focused behavior remains correct");
-  await composer.getByLabel("Execution evidence for acceptance criterion")
-    .selectOption("execution:focused-command");
-  await expect(composer).toContainText("A screenshot is not requested.");
-  await composer.getByRole("button", { name: "Save criterion mapping" }).click();
   await expect(composer).toContainText("1 saved");
+  const focusedClaim = composer.locator(".workflow-coverage-claim")
+    .filter({ hasText: "The focused behavior remains correct" });
+  await focusedClaim.getByRole("button", { name: "Edit" }).click();
+  await expect(composer).toContainText("A screenshot is not requested.");
+  const focusedUpdate = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && /\/api\/(?:workflow-bindings\/[^/]+\/evidence|sessions\/[^/]+\/workflow-evidence)\/coverage$/
+      .test(new URL(response.url()).pathname));
+  await composer.getByRole("button", { name: "Save criterion mapping" }).click();
+  const focusedCoverage = await (await focusedUpdate).json() as {
+    coverage: Array<{ clientCriterionId: string; links: Array<{ clientItemId: string; role: string }> }>;
+  };
+  expect(focusedCoverage.coverage.find(
+    (claim) => claim.clientCriterionId === "criterion-focused",
+  )?.links).toEqual([
+    { clientItemId: "focused-command", role: "execution" },
+    { clientItemId: "secondary-command", role: "execution" },
+    { clientItemId: "focused-command", role: "state_snapshot" },
+  ]);
   await capture(dashboard, "01-focused-execution-no-screenshot");
 
   await composer.getByPlaceholder("What must be true for this work to be accepted?")
@@ -152,9 +205,27 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
   await composer.getByLabel("Execution evidence for acceptance criterion")
     .selectOption("execution:focused-command");
   await expect(composer).toContainText("Provisional gaps: missing rendered output.");
+  await dashboard.route(
+    /\/api\/(?:workflow-bindings\/[^/]+\/evidence|sessions\/[^/]+\/workflow-evidence)\/coverage$/,
+    async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Temporary coverage save failure" }),
+      });
+    },
+    { times: 1 },
+  );
+  await composer.getByRole("button", { name: "Save criterion mapping" }).click();
+  await expect(composer.getByRole("alert")).toContainText("Temporary coverage save failure");
+  await expect(dialog.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
   await composer.getByRole("button", { name: "Save criterion mapping" }).click();
   await expect(composer).toContainText("2 saved");
-  await composer.getByRole("button", { name: "Edit" }).nth(1).click();
+  await expect(composer.getByRole("alert")).toHaveCount(0);
+  await composer.locator(".workflow-coverage-claim")
+    .filter({ hasText: "The dashboard result is visually correct" })
+    .getByRole("button", { name: "Edit" })
+    .click();
   await expect(composer).toContainText("Provisional gaps: missing rendered output.");
   await capture(dashboard, "02-visual-provisional-gap");
 

@@ -36,6 +36,7 @@ function controller(draft: WorkflowEvidenceDraft, over: Record<string, unknown> 
     staged: { generation: 0, images: [], artifacts: [] },
     stagedLoading: false,
     stagedError: null,
+    coverageError: null,
     ...over,
   } as Parameters<typeof workflowEvidenceSubmission>[0];
 }

@@ -6,6 +6,7 @@ import {
   workflowEvidenceMissingRoleGaps,
   workflowEvidenceRequiredRoleGroups,
   type WorkflowEvidenceCoverageClaim,
+  type WorkflowEvidenceCoverageLink,
   type WorkflowEvidenceProofClass,
   type WorkflowEvidenceProofRole,
   type WorkflowEvidenceRepositoryScope,
@@ -79,6 +80,7 @@ export interface WorkflowEvidenceDraftController {
   staged: WorkflowStagedEvidenceList;
   stagedLoading: boolean;
   stagedError: string | null;
+  coverageError: string | null;
   removingStaged: ReadonlySet<string>;
   refreshStaged: () => void;
   removeStaged: (clientItemId: string) => void;
@@ -172,6 +174,11 @@ export function useWorkflowEvidenceDraft(
   const removingStaged = removalState.ownerKey === owner
     ? removalState.ids
     : EMPTY_REMOVING;
+  const [coverageErrorState, setCoverageErrorState] = useState<{
+    ownerKey: string | null;
+    error: string | null;
+  }>(() => ({ ownerKey: owner, error: null }));
+  const coverageError = coverageErrorState.ownerKey === owner ? coverageErrorState.error : null;
   const generation = useRef(0);
   const ownerRef = useRef(owner);
   ownerRef.current = owner;
@@ -220,6 +227,9 @@ export function useWorkflowEvidenceDraft(
     setRemovalState((current) => current.ownerKey === owner
       ? current
       : { ownerKey: owner, ids: new Set() });
+    setCoverageErrorState((current) => current.ownerKey === owner
+      ? current
+      : { ownerKey: owner, error: null });
   }, [owner]);
   useEffect(() => () => revokeAttachments(draftStateRef.current.draft.attachments), []);
 
@@ -261,6 +271,7 @@ export function useWorkflowEvidenceDraft(
       revokeAttachments(current.draft.attachments);
       return { ownerKey: owner, draft: EMPTY_DRAFT };
     });
+    setCoverageErrorState({ ownerKey: owner, error: null });
     loadStaged();
   }, [loadStaged, owner]);
 
@@ -308,6 +319,7 @@ export function useWorkflowEvidenceDraft(
 
   const saveCoverage = useCallback(async (claim: WorkflowEvidenceCoverageClaim) => {
     if (!owner || !requestPath) throw new Error("No live workflow evidence owner");
+    setCoverageErrorState({ ownerKey: owner, error: null });
     try {
       const next = await workflowRequest<WorkflowStagedEvidenceList>(`${requestPath}/coverage`, {
         method: "POST",
@@ -317,12 +329,10 @@ export function useWorkflowEvidenceDraft(
       setStagedState({ ownerKey: owner, staged: next, loading: false, error: null });
     } catch (caught) {
       if (ownerRef.current === owner) {
-        setStagedState((current) => ({
+        setCoverageErrorState({
           ownerKey: owner,
-          staged: current.ownerKey === owner ? current.staged : EMPTY_STAGED,
-          loading: false,
           error: caught instanceof Error ? caught.message : "Could not save criterion coverage",
-        }));
+        });
       }
       throw caught;
     }
@@ -330,6 +340,7 @@ export function useWorkflowEvidenceDraft(
 
   const removeCoverage = useCallback(async (clientCriterionId: string) => {
     if (!owner || !requestPath) throw new Error("No live workflow evidence owner");
+    setCoverageErrorState({ ownerKey: owner, error: null });
     try {
       const next = await workflowRequest<WorkflowStagedEvidenceList>(
         `${requestPath}/coverage/${encodeURIComponent(clientCriterionId)}`,
@@ -339,12 +350,10 @@ export function useWorkflowEvidenceDraft(
       setStagedState({ ownerKey: owner, staged: next, loading: false, error: null });
     } catch (caught) {
       if (ownerRef.current === owner) {
-        setStagedState((current) => ({
+        setCoverageErrorState({
           ownerKey: owner,
-          staged: current.ownerKey === owner ? current.staged : EMPTY_STAGED,
-          loading: false,
           error: caught instanceof Error ? caught.message : "Could not remove criterion coverage",
-        }));
+        });
       }
       throw caught;
     }
@@ -357,6 +366,7 @@ export function useWorkflowEvidenceDraft(
     staged: currentStaged.staged,
     stagedLoading: currentStaged.loading || removingStaged.size > 0,
     stagedError: currentStaged.error,
+    coverageError,
     removingStaged,
     refreshStaged: loadStaged,
     removeStaged,
@@ -464,6 +474,7 @@ interface CoverageDraft {
   proofClass: WorkflowEvidenceProofClass;
   repositoryScope: WorkflowEvidenceRepositoryScope;
   selections: Record<number, string>;
+  preservedLinks: WorkflowEvidenceCoverageLink[];
 }
 
 function blankCoverageDraft(scope: WorkflowEvidenceRepositoryScope): CoverageDraft {
@@ -473,6 +484,7 @@ function blankCoverageDraft(scope: WorkflowEvidenceRepositoryScope): CoverageDra
     proofClass: "focused_execution",
     repositoryScope: scope,
     selections: {},
+    preservedLinks: [],
   };
 }
 
@@ -498,7 +510,7 @@ function CoverageComposer({
     })),
   ];
   const requiredGroups = workflowEvidenceRequiredRoleGroups(draft.proofClass);
-  const links = requiredGroups.flatMap((roles, index) => {
+  const selectedLinks = requiredGroups.flatMap((roles, index) => {
     const selection = draft.selections[index];
     if (!selection) return [];
     const splitAt = selection.indexOf(":");
@@ -507,14 +519,33 @@ function CoverageComposer({
       clientItemId: selection.slice(splitAt + 1),
     }];
   });
+  const seenLinks = new Set<string>();
+  const links = [...selectedLinks, ...draft.preservedLinks].filter((link) => {
+    const key = `${link.clientItemId}\0${link.role}`;
+    if (seenLinks.has(key)) return false;
+    seenLinks.add(key);
+    return true;
+  });
   const gaps = workflowEvidenceMissingRoleGaps(draft.proofClass, links.map((link) => link.role));
   const edit = (claim: WorkflowEvidenceCoverageClaim): void => {
     const groups = workflowEvidenceRequiredRoleGroups(claim.proofClass);
+    const selectedKeys = new Set<string>();
     const selections = Object.fromEntries(groups.flatMap((roles, index) => {
       const link = claim.links.find((candidate) => roles.includes(candidate.role));
-      return link ? [[index, `${link.role}:${link.clientItemId}`]] : [];
+      if (!link) return [];
+      selectedKeys.add(`${link.clientItemId}\0${link.role}`);
+      return [[index, `${link.role}:${link.clientItemId}`]];
     }));
-    setDraft({ ...claim, selections });
+    setDraft({
+      clientCriterionId: claim.clientCriterionId,
+      criterion: claim.criterion,
+      proofClass: claim.proofClass,
+      repositoryScope: claim.repositoryScope,
+      selections,
+      preservedLinks: claim.links.filter(
+        (link) => !selectedKeys.has(`${link.clientItemId}\0${link.role}`),
+      ),
+    });
   };
   const save = async (): Promise<void> => {
     if (!draft.criterion.trim() || saving) return;
@@ -540,6 +571,7 @@ function CoverageComposer({
         <strong>Acceptance criteria coverage</strong>
         <span>{controller.staged.coverage?.length ?? 0} saved</span>
       </div>
+      {controller.coverageError && <p role="alert">{controller.coverageError}</p>}
       {(controller.staged.coverage ?? []).map((claim) => (
         <article className="workflow-coverage-claim" key={claim.clientCriterionId}>
           <div>

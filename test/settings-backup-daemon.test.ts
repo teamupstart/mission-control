@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,6 +20,13 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
 const SNAPSHOT_TIMEOUT_MS = 15_000;
 const POLL_MS = 100;
+
+// This test starts the daemon from source, outside the npm build lifecycle, so compile the
+// native state-lock module it exercises before launching the child process.
+execFileSync(process.execPath, ["scripts/build-state-lock-native.mjs"], {
+  cwd: REPO_ROOT,
+  stdio: "pipe",
+});
 
 type HealthResponse = { service?: unknown; pid?: unknown; version?: unknown };
 

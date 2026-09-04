@@ -12,6 +12,7 @@ const { openDb } = await import("../src/server/db.ts");
 const {
   SubmitWorkflowEvidenceSchema,
   WorkflowEvidenceCoverageClaimsSchema,
+  WorkflowEvidenceReadinessResultSchema,
 } = await import("../src/shared/protocol.ts");
 const {
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -166,6 +167,29 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
     }],
   });
   assert.deepEqual(crossScope.gapCodes, ["scope_conflict"]);
+});
+
+test("maximum canonical criterion text remains a valid persisted readiness result", () => {
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: Array.from(
+      { length: WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims },
+      (_, index) => ({
+        id: `canonical-${index}`,
+        text: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+        material: true,
+        suggestedProofClass: null,
+        matchedClientCriterionIds: [],
+      }),
+    ),
+    coverage: [],
+    evidence: [],
+  });
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(readiness), "utf8")
+      > WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+    "the regression fixture must exceed the smaller authoring-packet bound",
+  );
+  assert.equal(WorkflowEvidenceReadinessResultSchema.safeParse(readiness).success, true);
 });
 
 test("compaction exposes bounded metadata and assigns stable daemon criterion ids", async () => {

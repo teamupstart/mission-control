@@ -30,7 +30,10 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-const { buildApp } = await import("../src/server/routes.ts");
+const {
+  buildApp,
+  WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+} = await import("../src/server/routes.ts");
 
 const PERSONA_GRAPH: PublishedWorkflowGraph = {
   nodes: [
@@ -234,6 +237,35 @@ test("a manually attached workflow accepts agent evidence from a scout session",
     const removedBody = await removed.text();
     assert.equal(removed.status, 200, removedBody);
     assert.deepEqual((JSON.parse(removedBody) as typeof staged).coverage, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("coverage routes reject oversized bodies before JSON parsing", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-coverage-body-limit-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const { app, session, workflows, versionId } = harness(repo, "coverage-body-limit-session");
+    const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
+    assert.equal(bound.ok, true, bound.ok ? "" : bound.message);
+    const paths = [
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage`,
+      `/api/sessions/${session.id}/workflow-evidence/coverage`,
+    ];
+    for (const path of paths) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:7317",
+          "content-type": "application/json",
+          "x-harness-token": ensureToken(),
+        },
+        body: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES + 1),
+      });
+      assert.equal(response.status, 413, path);
+      assert.match(await response.text(), /too large/);
+    }
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

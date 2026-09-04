@@ -1537,8 +1537,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       updated_at            INTEGER NOT NULL,
       PRIMARY KEY(submission_id, client_criterion_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_workflow_submission_evidence_coverage_submission
-      ON workflow_submission_evidence_coverage(submission_id, client_criterion_id);
 
     CREATE TABLE IF NOT EXISTS workflow_submission_text_artifacts (
       id                    TEXT PRIMARY KEY,

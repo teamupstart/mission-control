@@ -615,6 +615,9 @@ export const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
   + WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
   + WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES
   + 32 * 1024;
+export const WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES =
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + 8 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -2024,18 +2027,25 @@ export function buildApp(
     const staged = manager.stagedEvidence(c.req.param("id"));
     return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
   });
-  app.post("/api/workflow-bindings/:id/evidence/coverage", async (c) => {
-    const manager = workflowManager();
-    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
-    if (!parsed.ok) return parsed.res;
-    try {
-      const staged = await manager.stageCoverage(c.req.param("id"), [parsed.data]);
-      return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
-    } catch (error) {
-      return workflowImageFailure(c, error, "Workflow coverage could not be staged");
-    }
-  });
+  app.post(
+    "/api/workflow-bindings/:id/evidence/coverage",
+    bodyLimit({
+      maxSize: WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow coverage request is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
+      if (!parsed.ok) return parsed.res;
+      try {
+        const staged = await manager.stageCoverage(c.req.param("id"), [parsed.data]);
+        return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+      } catch (error) {
+        return workflowImageFailure(c, error, "Workflow coverage could not be staged");
+      }
+    },
+  );
   app.delete("/api/workflow-bindings/:id/evidence/coverage/:clientCriterionId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -2064,18 +2074,25 @@ export function buildApp(
     const staged = manager.stagedEvidenceForSession(c.req.param("id"));
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
-  app.post("/api/sessions/:id/workflow-evidence/coverage", async (c) => {
-    const manager = workflowManager();
-    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
-    if (!parsed.ok) return parsed.res;
-    try {
-      const staged = await manager.stageCoverageForSession(c.req.param("id"), [parsed.data]);
-      return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
-    } catch (error) {
-      return workflowImageFailure(c, error, "Workflow coverage could not be staged");
-    }
-  });
+  app.post(
+    "/api/sessions/:id/workflow-evidence/coverage",
+    bodyLimit({
+      maxSize: WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow coverage request is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
+      if (!parsed.ok) return parsed.res;
+      try {
+        const staged = await manager.stageCoverageForSession(c.req.param("id"), [parsed.data]);
+        return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+      } catch (error) {
+        return workflowImageFailure(c, error, "Workflow coverage could not be staged");
+      }
+    },
+  );
   app.delete("/api/sessions/:id/workflow-evidence/coverage/:clientCriterionId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

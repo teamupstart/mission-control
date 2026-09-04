@@ -4709,8 +4709,8 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     .max(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES.length),
   unavailableReason: z.string().max(8_000).nullable(),
 }).refine(
-  (value) => jsonAtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes),
-  `Workflow readiness exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes`,
+  (value) => jsonAtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.readinessJsonBytes),
+  `Workflow readiness exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.readinessJsonBytes} UTF-8 bytes`,
 );
 
 export const WorkflowEvidenceImageSchema = z.object({

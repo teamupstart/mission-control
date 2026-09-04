@@ -30,6 +30,7 @@ import {
   pipelineStrip,
   pipelineVerdictStatus,
 } from "../src/web/pipelines/pipeline-run-model.ts";
+import { resolvePipelineFeatureSelection } from "../src/web/pipelines/pipeline-feature-selection.ts";
 import { PipelineRunView } from "../src/web/pipelines/PipelineRunView.tsx";
 import { PipelineRuns } from "../src/web/pipelines/PipelineRuns.tsx";
 import { fetchPipelineRepos, fetchPipelineRunDetail } from "../src/web/lib/api.ts";
@@ -146,6 +147,75 @@ function commission(over: Partial<PipelineCommission> = {}): PipelineCommission 
     blocker: over.blocker ?? null,
   };
 }
+
+test("feature selection resolves explicit and fallback sources in precedence order", () => {
+  const featureRun = run();
+  const otherRun = run({
+    slug: "other-feature",
+    worktree: "/repo/demo/.worktrees/other-feature",
+  });
+  const featureCommission = commission();
+  const otherCommission = commission({
+    id: "commission-2",
+    taskId: "task-2",
+    correlationId: "correlation-2",
+    planSlug: "other-feature",
+    linkedRun: {
+      provider: otherRun.provider,
+      repoRoot: otherRun.repoRoot,
+      slug: otherRun.slug,
+    },
+  });
+  const common = {
+    runs: [featureRun, otherRun],
+    commissions: [featureCommission, otherCommission],
+  };
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: otherRun,
+    fallbackRun: featureRun,
+    hasSelectedRunAddress: true,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: otherRun,
+    activeCommission: otherCommission,
+  }, "an addressed run wins and re-pairs commission evidence by exact identity");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: featureCommission.id,
+  }), {
+    activeRun: featureRun,
+    activeCommission: featureCommission,
+  }, "a selected commission suppresses the fleet fallback and crosses its own handoff");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    ...common,
+    addressedRun: null,
+    fallbackRun: otherRun,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: null,
+  }), {
+    activeRun: otherRun,
+    activeCommission: otherCommission,
+  }, "the bare tab uses the fleet fallback and resolves its paired commission");
+
+  assert.deepEqual(resolvePipelineFeatureSelection({
+    runs: [],
+    commissions: [featureCommission],
+    addressedRun: null,
+    fallbackRun: null,
+    hasSelectedRunAddress: false,
+    selectedCommissionId: null,
+  }), {
+    activeRun: null,
+    activeCommission: featureCommission,
+  }, "the first commission is the final bare-tab fallback");
+});
 
 test("a commission reader continues its meter from the observed implementation run", () => {
   const implementation = run({

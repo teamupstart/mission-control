@@ -15,6 +15,10 @@ import type { PipelineRunAddress } from "../workflows/useWorkflowRoute.ts";
 import { PipelineActions } from "./PipelineActions.tsx";
 import { PipelineFeatureReader } from "./PipelineFeatureReader.tsx";
 import {
+  featureRecordForRun,
+  resolvePipelineFeatureSelection,
+} from "./pipeline-feature-selection.ts";
+import {
   PIPELINE_DAEMON_LABELS,
   PIPELINE_GROUP_LABELS,
   PIPELINE_GROUP_TONES,
@@ -26,22 +30,6 @@ import {
 } from "./pipeline-run-model.ts";
 import { usePipelineRepos } from "./usePipelineRepos.ts";
 import { usePipelineRunDetail } from "./usePipelineRunDetail.ts";
-
-/** Resolve either provider record through the same exact run key used by session views. */
-type PipelineRunIdentity = Pick<PipelineRun, "provider" | "repoRoot" | "slug">;
-
-function featureRecordForRun<T>(
-  records: readonly T[],
-  runOf: (record: T) => PipelineRunIdentity | null | undefined,
-  target: PipelineRunIdentity | null | undefined,
-): T | null {
-  if (!target) return null;
-  const key = pipelineRunKeyOf(target);
-  return records.find((record) => {
-    const candidate = runOf(record);
-    return candidate !== null && candidate !== undefined && pipelineRunKeyOf(candidate) === key;
-  }) ?? null;
-}
 
 /**
  * The Pipelines surface: a rail of what an external engine is driving, and one run in full.
@@ -84,19 +72,16 @@ export function PipelineRuns({
   // first one that has anything - see `pipelineLeadRun`. Selecting nothing at all would make
   // the common case (one run in flight) a page with an empty reader beside a rail of one.
   const fallback = pipelineLeadRun(sections);
-  const run =
-    addressed ?? (selected === null && selectedCommissionId === null ? fallback : null);
-  const commission =
-    commissions.find((entry) => entry.id === selectedCommissionId) ??
-    (selected === null && !run ? commissions[0] ?? null : null);
-  const linkedCommissionRun = commission?.linkedRun ?? null;
-  const commissionRun = featureRecordForRun(runs, (candidate) => candidate, linkedCommissionRun);
   // The two provider records describe one feature on opposite sides of specification handoff.
   // Resolve both directions so selection changes address, not which evidence the reader hides.
-  const activeRun = run ?? commissionRun;
-  const activeCommission = activeRun
-    ? featureRecordForRun(commissions, (entry) => entry.linkedRun, activeRun)
-    : commission;
+  const { activeRun, activeCommission } = resolvePipelineFeatureSelection({
+    runs,
+    commissions,
+    addressedRun: addressed,
+    fallbackRun: fallback,
+    hasSelectedRunAddress: selected !== null,
+    selectedCommissionId,
+  });
   const detail = usePipelineRunDetail(
     activeRun?.provider ?? null,
     activeRun?.repoRoot ?? null,

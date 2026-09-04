@@ -828,6 +828,9 @@ function FileWorkspaceBody({
    */
   const dismissDraft = draft.dismiss;
   useEffect(() => {
+    if (readOnlyWorkspace) dismissDraft();
+  }, [dismissDraft, readOnlyWorkspace]);
+  useEffect(() => {
     // A thread the reader asked for BY NAME survives the move that was made to reach it.
     // Opening a queued comment on another file selects that file, and this effect runs on the
     // selection - so without the handoff the walkthrough's own "take me to comment 3" would
@@ -1946,7 +1949,7 @@ function FileWorkspaceBody({
    * kept saying the same thing.
    */
   const commentPanel = useMemo((): React.ReactNode => {
-    if (composer) {
+    if (composer && !readOnlyWorkspace) {
       return (
         <FileCommentComposer
           startLine={composer.startLine}
@@ -1991,6 +1994,7 @@ function FileWorkspaceBody({
     draft.change,
     draft.submit,
     openThread,
+    readOnlyWorkspace,
     reply,
     setThreadStatus,
     threadBusy,

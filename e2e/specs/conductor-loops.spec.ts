@@ -404,7 +404,10 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     ],
     { stdio: "pipe" },
   );
-  writeFileSync(join(authoring, "pipeline-change.html"), "<h1>Pipeline workspace</h1>\n");
+  writeFileSync(
+    join(authoring, "pipeline-change.html"),
+    "<h1>Pipeline workspace</h1>\n<p>Draft target</p>\n",
+  );
   execFileSync("git", ["-C", authoring, "add", "pipeline-change.html"], { stdio: "pipe" });
   execFileSync(
     "git",
@@ -512,11 +515,20 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     "POST",
   );
   await expect(detail.getByRole("button", { name: "Comments" })).toContainText("(1)");
+  await detail.getByRole("button", { name: "Comment mode" }).click();
+  const preview = detail.frameLocator('iframe[title="Preview of pipeline-change.html"]');
+  await preview.getByText("Draft target").hover();
+  await preview.getByRole("button", { name: "Comment on line 2" }).click();
+  const activeComposer = detail.getByRole("textbox", { name: "Comment on line 2" });
+  await expect(activeComposer).toBeVisible();
   await shoot(dashboard, "10-managed-workspace-files", detail);
 
   execFileSync("git", ["-C", daemon.repo, "worktree", "remove", "--force", authoring], {
     stdio: "pipe",
   });
+  await request(daemon, `/api/sessions/${encodeURIComponent(task!.sessionId!)}/diff`);
+  await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
+  await expect(activeComposer).toHaveCount(0);
   await tabs.getByRole("tab", { name: /Diff$/ }).click();
   await expect(detail.getByRole("region", { name: "Session diff" })).toContainText(
     "pipeline-change.html",

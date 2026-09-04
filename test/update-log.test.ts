@@ -8,11 +8,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRotatingUpdateLogger, sanitizeLogLine } from "../src/main/update-log.ts";
+import { bundleShortVersion, plistShortVersion } from "../src/main/bundle-version.ts";
 import { sanitizeDiagnostic } from "../scripts/apply-update.mjs";
+import { plistVersion } from "../scripts/app-bundle-swap.mjs";
 
 /**
  * Lines a real staged build produces, each carrying something that must not reach the log.
@@ -181,4 +183,47 @@ test("the helper's copy of the rule set produces exactly the same output", () =>
     assert.equal(sanitizeDiagnostic(line), sanitizeLogLine(line), line);
   }
   assert.ok(LEAKY_LINES.every(({ line }) => line.length < 500));
+});
+
+
+test("the main process reads a bundle's version the same way the swap script does", (t) => {
+  // Two copies of the same three lines, and they have to stay one rule. Neither side can
+  // import the other: `src/` must be self-contained (test/session-contracts.test.ts compiles a
+  // copy of `src/` alone and proves it), and `scripts/app-bundle-swap.mjs` may import only
+  // `node:` builtins because it is copied beside the detached helper and outlives the app.
+  const plist = (version: string): string =>
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0">',
+      "<dict>",
+      "  <key>CFBundleName</key>",
+      "  <string>Mission Control</string>",
+      "  <key>CFBundleShortVersionString</key>",
+      `  <string>${version}</string>`,
+      "  <key>CFBundleVersion</key>",
+      "  <string>1</string>",
+      "</dict>",
+      "</plist>",
+    ].join("\n");
+
+  for (const text of [
+    plist("1.2.4"),
+    plist("10.0.0-rc.1"),
+    plist(""),
+    "<plist><dict><key>CFBundleVersion</key><string>1</string></dict></plist>",
+    "not a plist at all",
+    "",
+  ]) {
+    assert.equal(plistShortVersion(text), plistVersion(text), JSON.stringify(text.slice(0, 40)));
+  }
+
+  // And the file-reading wrapper: a real bundle, and a path with nothing at it.
+  const directory = mkdtempSync(join(tmpdir(), "mission-bundle-version-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bundle = join(directory, "Mission Control.app");
+  mkdirSync(join(bundle, "Contents"), { recursive: true });
+  writeFileSync(join(bundle, "Contents", "Info.plist"), plist("9.9.9"), "utf8");
+
+  assert.equal(bundleShortVersion(bundle), "9.9.9");
+  assert.equal(bundleShortVersion(join(directory, "Nothing.app")), null);
 });

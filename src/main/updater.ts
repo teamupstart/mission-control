@@ -8,7 +8,6 @@ import {
   isTrustedInstallRepo,
 } from "../shared/install-receipt-schema.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
-import { bundleShortVersion } from "../../scripts/app-bundle-swap.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
   isNewerVersion,
@@ -19,6 +18,7 @@ import {
   type UpdateSnapshot,
 } from "../shared/update.ts";
 import { loginShellPath } from "../server/util/path-env.ts";
+import { bundleShortVersion } from "./bundle-version.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { findSystemNode } from "./system-node.ts";

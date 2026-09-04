@@ -317,6 +317,29 @@ test("a cursor still offering pages at the page bound is refused, not truncated"
   assert.equal(server.methods.filter((m) => m === "model/list").length, 3);
 });
 
+test("a malformed cursor is refused rather than read as the end of the listing", async () => {
+  // Reading a number or an object as "done" would return page one as a complete catalog
+  // and cache it for the freshness window - the page bound's silent truncation, reached
+  // through a malformed field instead of a bound.
+  for (const nextCursor of [42, true, {}, [], 0]) {
+    assert.equal(
+      await problemOf({ "model/list": { data: [row()], nextCursor } }),
+      "invalid_response",
+      `nextCursor ${JSON.stringify(nextCursor)} must not read as end-of-listing`,
+    );
+  }
+});
+
+test("an absent cursor means the listing is done, not that it is malformed", async () => {
+  // The pinned type declares `nextCursor` non-optional, but omitting it on a last page is
+  // an ordinary shape for a paginated API. Refusing that would break discovery for every
+  // operator on an assumption nothing here has measured.
+  const { server, result } = probe({ "model/list": { data: [row()] } });
+  const settled = await result;
+  assert.deepEqual(settled.ok ? settled.choices.map((c) => c.id) : null, ["gpt-5.6-sol"]);
+  assert.equal(server.methods.filter((m) => m === "model/list").length, 1);
+});
+
 test("a listing that ends exactly on the last allowed page still succeeds", async () => {
   // The boundary the refusal above must not swallow: exhausting the pages is only a
   // failure when the server says there is more.

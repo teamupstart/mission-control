@@ -184,10 +184,28 @@ function modelChoice(
   };
 }
 
-/** An opaque cursor with another page behind it, or null when the listing is done. */
-function nextCursor(response: Record<string, unknown>): string | null {
+/** A read cursor, or a refusal when the field is not a shape the protocol allows. */
+type CursorRead = { ok: true; cursor: string | null } | { ok: false };
+
+/**
+ * The cursor for the next page, null when the listing is done, or a refusal.
+ *
+ * A value of any type other than string is REFUSED rather than read as "done". Treating a
+ * number or an object as the end of the listing would return page one as a complete
+ * catalog and cache it for the whole freshness window - the same silent truncation the
+ * page bound refuses, arrived at through a malformed field instead of a bound.
+ *
+ * Absent and null both mean done. The pinned type declares `nextCursor` non-optional, but
+ * a server omitting the field on its last page is an ordinary shape for a paginated API,
+ * and refusing it would break discovery for every operator on an assumption nothing here
+ * has measured. An empty or whitespace string is also done, because it cannot be paged
+ * with.
+ */
+function nextCursor(response: Record<string, unknown>): CursorRead {
   const cursor = response.nextCursor;
-  return typeof cursor === "string" && cursor.trim() ? cursor : null;
+  if (cursor === undefined || cursor === null) return { ok: true, cursor: null };
+  if (typeof cursor !== "string") return { ok: false };
+  return { ok: true, cursor: cursor.trim() ? cursor : null };
 }
 
 /** JSON-RPC's own "the method you asked for does not exist here". */
@@ -269,7 +287,9 @@ async function readCatalog(
       seen.add(choice.id);
       choices.push(choice);
     }
-    cursor = nextCursor(frame);
+    const read = nextCursor(frame);
+    if (!read.ok) return failure("invalid_response");
+    cursor = read.cursor;
     if (!cursor) break;
   }
 

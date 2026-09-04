@@ -80,6 +80,19 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
   const wezterm = setupRow(page, "dependency-wezterm");
   await expect(wezterm).toContainText("Missing");
   await expect(wezterm.getByRole("button", { name: "Copy" })).toBeVisible();
+  const iterm = setupRow(page, "dependency-iterm");
+  await expect(iterm).toContainText("iTerm2");
+  await expect(iterm.getByText("optional", { exact: true })).toBeVisible();
+  await expect(iterm).toContainText("brew install --cask iterm2");
+  await expect(iterm.getByRole("button", { name: "Copy" })).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("iterm-support");
+    mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: `${evidence}/setup-row.png`, fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/iterm-support/setup-row.png");
+  }
 
   await openSetupFamily(page, "pipelines");
   const conductor = setupRow(page, "dependency-ai-conductor");

@@ -29,6 +29,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "claude-plugins",
   "claude-skills",
   "ai-conductor",
+  "iterm",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -243,6 +244,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     requirement: "optional",
     enables: "Without it, Mission Control cannot commission or observe gated ai-conductor runs.",
     remedy: { kind: "provider-installer", provider: "ai-conductor" },
+  },
+  iterm: {
+    id: "iterm",
+    label: "iTerm2",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds scriptable iTerm2 windows and can raise detached tmux sessions on macOS.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "--cask", "iterm2"],
+      note: "Install iTerm2 with Homebrew.",
+    },
   },
 };
 

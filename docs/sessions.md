@@ -103,12 +103,12 @@ same observed state over the live channel. The manual verification runbook, incl
 Discovery names no terminal. It asks each registered backend what panes it can see and
 joins them to agent processes by controlling tty, so a session is named by the
 **innermost** backend holding its pane: a multiplexer session name (tmux, cmux) if there
-is one, else a terminal tab title (WezTerm, Ghostty), else `<agent> <pid>`. A session can
+is one, else a terminal tab title (WezTerm, Ghostty, iTerm2), else `<agent> <pid>`. A session can
 hold a handle from each - a tmux pane lives *inside* a WezTerm pane - and both are kept,
 because writes go to the innermost while raising a window is the outer one's job.
 
-**Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, WezTerm and
-Ghostty on the emulator axis. cmux needs one setting before the daemon can see it - it ships
+**Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, and WezTerm,
+Ghostty, and iTerm2 on the emulator axis. cmux needs one setting before the daemon can see it - it ships
 refusing socket connections from processes it did not start itself, so set
 `"automation": { "socketControlMode": "allowAll" }` in `~/.config/cmux/cmux.json` and
 restart cmux. Without it your cmux sessions still appear, named `<agent> <pid>` like any
@@ -129,8 +129,8 @@ below; for today's terminal sessions the two answers are identical.
 The same declaration decides how a session is **typed into and read**. A reply, a queued
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
 the backend holding the innermost pane, which renders them in its own convention - tmux
-takes key names, WezTerm takes escape sequences - so nothing above that layer knows which
-terminal it is talking to. Everything you send through tmux or WezTerm arrives as
+takes key names, while WezTerm and iTerm2 render exact terminal byte sequences - so nothing above that layer knows which
+terminal it is talking to. Everything you send through tmux, WezTerm, or iTerm2 arrives as
 written, including a message that begins with a dash. Those backends pipe payload text on
 stdin, so prompts carrying a whole plan or phase document are not constrained by a
 command-line size limit. The cmux and Ghostty adapters still carry text in command-line
@@ -213,6 +213,43 @@ anything built on reading a pane back is unavailable on a Ghostty session rather
 wrong: the permission-mode chip, dialog detection, and the read-back that confirms a pasted
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
 else, if you want those too.
+
+#### iTerm2 Automation and permission recovery
+
+iTerm2 is controlled through its built-in AppleScript dictionary. Mission Control uses the
+session's global unique ID for discovery, input, capture, focus, and rename, so moving or
+closing another tab cannot redirect an action by changing an index. The tab title supplies
+the session name, the TTY supplies strong process and tmux correlation, and the shell
+integration `path` variable supplies a best-effort working directory. A missing `path` keeps
+the session available with an unknown directory.
+
+Setup and passive discovery only check the app bundle and the existing process table. They
+do not send an Apple Event while iTerm2 is closed, because addressing the application would
+launch it. Choosing iTerm2 as a launch target is explicit and may start the app, open a new
+window in the selected worktree, and run the requested argv.
+
+The first action against a running iTerm2 may show a macOS prompt saying that Mission Control,
+your terminal, or another host wants to control iTerm2. Choose **OK** to allow it. If you deny
+the prompt, or later turn access off, only iTerm2 discovery and actions fail. WezTerm,
+Ghostty, tmux, and SDK sessions continue working. A denied action reports the Automation
+setting to repair; passive enumeration simply contributes no iTerm2 panes.
+
+To recover or revoke access:
+
+1. Open **System Settings → Privacy & Security → Automation**.
+2. Expand the host named by the original prompt. For the packaged application this is
+   **Mission Control**. For a source run it is usually the terminal application that started
+   the daemon.
+3. Turn **iTerm2** on to retry, or off to revoke access. Quit and reopen the host if macOS does
+   not apply the toggle to its existing processes.
+4. If the host or iTerm2 entry is missing and you need macOS to ask again, quit Mission Control
+   and run `tccutil reset AppleEvents com.mission-control.app`, then reopen it and retry an
+   explicit iTerm2 action. This resets all Apple Events decisions for the packaged Mission
+   Control app. For a source run, use the bundle ID of the terminal host instead, such as
+   `com.apple.Terminal`, understanding that this resets that host's Apple Events decisions.
+
+No permission reset is needed after installing iTerm2 or changing `ITERM_BIN`. Availability
+is not cached, so **Re-check** and the next discovery sweep see the new path.
 
 ### Session runtimes (terminal, or the Agent SDK)
 
@@ -618,8 +655,8 @@ repo):
 
 Each fired hook POSTs `{ agent, event, sessionId, cwd, env }` to
 `http://127.0.0.1:7317/hooks/<event>` with the `~/.mission-control/token`. The daemon
-binds it to the right session detail via the terminal pane env (`TMUX_PANE` /
-`WEZTERM_PANE`) and maps the event to a state (see the table below). `agent` is what says
+binds it to the right session detail via the terminal pane env (`TMUX_PANE`,
+`WEZTERM_PANE`, or `ITERM_SESSION_ID`) and maps the event to a state (see the table below). `agent` is what says
 whose event vocabulary `event` is written in: a pane outlives the agent in it, so an
 event is only ever applied to a session detail running the harness that sent it. It defaults to
 `claude` when absent, since a bridge installed by an older checkout predates any other.
@@ -770,7 +807,7 @@ picker. When the pane cannot be written the chip stays read-only.
 Above every conversation sits the worktree that session is working in, and two buttons.
 
 **Terminal** opens your login shell (`$SHELL`, else `/bin/sh`) in that worktree. Its menu
-lists the four registered backends - **tmux**, **cmux**, **WezTerm** and **Ghostty** - and
+lists the five registered backends - **tmux**, **cmux**, **WezTerm**, **Ghostty**, and **iTerm2** - and
 reports which this machine can use. An unavailable backend stays listed with a **sentence**
 saying why, because "not installed" and "installed, but nothing here can show its windows"
 are different things to go and fix. tmux is the second of those: `tmux new-session` opens

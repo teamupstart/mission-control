@@ -27,6 +27,27 @@ Multiplexer and emulator adapters can compose for one visible session. The bindi
 chooses the innermost pane for writing and capture, while focus walks outward to the
 application that can show it to the operator.
 
+The emulator registry currently contains WezTerm, Ghostty, and iTerm2 in that order. iTerm2
+uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
+windows, tabs, and split sessions, addresses every action by the session's stable unique ID,
+correlates by normalized TTY, writes text and keys, bracket-pastes prompts, captures visible
+contents, focuses an exact split, opens a titled window in a requested worktree, and retitles
+the containing tab. Working directory is best effort because iTerm2 reports it through the
+shell-integration `path` variable. A missing value leaves `cwd` unknown and does not disable
+the session.
+
+An iTerm2 session running tmux composes without a special route. Writes and captures go to
+the inner tmux pane. Focus selects that pane, joins the tmux client TTY to its outer iTerm2
+session, and raises the exact iTerm2 split. If no client is attached, the existing focus
+fallback opens a new iTerm2 window running tmux's attach argv.
+
+iTerm2's app-bundle path proves installation, while the shared host-process gate proves the
+GUI is already running before enumeration may use Apple Events. This separation is the
+no-auto-launch contract: Setup and passive discovery can report a closed installation but
+cannot open it. An explicit terminal launch is allowed to start iTerm2. See
+[iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery)
+for the macOS permission lifecycle.
+
 This is the technical counterpart to [Sessions and conversations](sessions.md). The rules
 for adding a harness, preserving browser-safe shared code, and using capability predicates
 are in the authoritative [harnesses and terminals contract](agent-guides/architecture.md#harnesses-and-terminals)

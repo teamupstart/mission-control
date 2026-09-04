@@ -78,7 +78,7 @@ import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
-import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type {
   PersonaView,
@@ -8404,6 +8404,7 @@ function preservesCompletionEvidence(task: Task | undefined, merged: boolean): b
 export function overlayKeyFromEnv(env: HookIngest["env"]): string | null {
   if (env.tmuxPane) return tmuxPaneToken(env.tmuxPane);
   if (env.weztermPane) return weztermPaneToken(env.weztermPane);
+  if (env.itermSession) return itermPaneToken(env.itermSession);
   return null;
 }
 

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { agentSubprocessEnv } from "../../agent-subprocess-env.ts";
+import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { run } from "../../util/exec.ts";
 import { resolveBinSpec } from "../bin.ts";
 import { claudeBin } from "./bin.ts";
@@ -49,11 +49,11 @@ export async function claudeExecutable(): Promise<string> {
  *
  * That subtraction is load-bearing rather than tidy. Machine-installed
  * `~/.claude/settings.json` hooks fire inside this subprocess exactly as they do in a pane,
- * and `harness-hook.mjs` reports `TMUX_PANE` / `WEZTERM_PANE` as the pane it believes it is
+ * and `harness-hook.mjs` reports inherited pane identity as the pane it believes it is
  * running in. A daemon started from a terminal would hand its own pane down to every
  * embedded session it launches, and `findSessionByEnv` prefers a pane key over every other
  * match - so every hook from every embedded session would land on whichever card holds the
- * daemon's terminal. Dropping the three vars makes those hooks fall through to their
+ * daemon's terminal. Dropping pane identity makes those hooks fall through to their
  * session-id match, which is the truthful one for a session that has no pane at all.
  */
 export function sdkSubprocessEnv(
@@ -62,8 +62,7 @@ export function sdkSubprocessEnv(
   stateHome?: string,
 ): Record<string, string | undefined> {
   const env = agentSubprocessEnv(base, { loopbackAccess: true, cwd, stateHome });
-  delete env.TMUX_PANE;
-  delete env.WEZTERM_PANE;
+  dropPaneIdentityEnv(env);
   delete env.TERM_PROGRAM;
   return env;
 }

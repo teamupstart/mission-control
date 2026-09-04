@@ -131,6 +131,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-plugins": pluginStatus,
   "claude-skills": skillStatus,
   "ai-conductor": conductorStatus,
+  iterm: (deps) => terminalStatus("iterm", deps),
 };
 
 function reasonOf(error: unknown): string {

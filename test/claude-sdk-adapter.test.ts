@@ -891,10 +891,11 @@ test("the subprocess env drops the daemon's own pane, or every hook binds to it"
   // the bridge reports TMUX_PANE as the pane it believes it is in. A daemon started from a
   // terminal would hand its own down, and `findSessionByEnv` prefers a pane key over
   // everything else - so every embedded session's hooks would land on one stranger's card.
-  const env = sdkSubprocessEnv({ PATH: "/bin", TMUX_PANE: "%3", WEZTERM_PANE: "7", TERM_PROGRAM: "x" });
+  const env = sdkSubprocessEnv({ PATH: "/bin", TMUX_PANE: "%3", WEZTERM_PANE: "7", ITERM_SESSION_ID: "w0t0p0:UUID", TERM_PROGRAM: "x" });
   assert.equal(env.PATH, "/bin");
   assert.equal(env.TMUX_PANE, undefined);
   assert.equal(env.WEZTERM_PANE, undefined);
+  assert.equal(env.ITERM_SESSION_ID, undefined);
   assert.equal(env.TERM_PROGRAM, undefined);
 });
 

@@ -226,6 +226,7 @@ if (recordDir) {
         // not wearing the daemon's terminal identity.
         tmuxPane: process.env.TMUX_PANE ?? null,
         weztermPane: process.env.WEZTERM_PANE ?? null,
+        itermSession: process.env.ITERM_SESSION_ID ?? null,
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
         missionHome: process.env.MISSION_HOME ?? null,

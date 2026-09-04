@@ -54,6 +54,17 @@ npm run test:e2e
 
 See the [browser end-to-end test guide](../e2e/README.md).
 
+## iTerm2 is installed but sessions are missing or actions are denied
+
+First confirm iTerm2 is open. Mission Control intentionally does not address a closed iTerm2
+during Setup or discovery because AppleScript application addressing would launch it. If the
+app is open, inspect **System Settings → Privacy & Security → Automation**, expand Mission
+Control or the terminal host that started a source daemon, and enable its **iTerm2** toggle.
+Then retry the action or use **Settings → Setup → Re-check**.
+
+If access was denied, the Automation entry is missing, or you need to revoke or reset access,
+follow [iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery).
+
 ## The end-to-end suite has no build to serve
 
 Run `npm run build` before `npm run test:e2e`. The daemon used by the suite serves the

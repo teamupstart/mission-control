@@ -130,9 +130,11 @@ test("the Claude hook spec surfaces a readable activity line", () => {
   assert.equal(claudeHooks.toState(evt({ event: "Notification", message: "grant access" })).activity, "grant access");
 });
 
-test("overlayKeyFromEnv prefers the tmux pane over the outer wezterm pane", () => {
-  assert.equal(overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7" }), "tmux:%3");
-  assert.equal(overlayKeyFromEnv({ weztermPane: "7" }), "wezterm:7");
+test("overlayKeyFromEnv prefers nested identities and binds iTerm2 exactly", () => {
+  assert.equal(overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7", itermSession: "w0t0p0:UUID" }), "tmux:%3");
+  assert.equal(overlayKeyFromEnv({ weztermPane: "7", itermSession: "w0t0p0:UUID" }), "wezterm:7");
+  assert.equal(overlayKeyFromEnv({ itermSession: "w0t0p0:UUID" }), "iterm:w0t0p0:UUID");
+  assert.equal(overlayKeyFromEnv({ itermSession: "  " }), null);
   assert.equal(overlayKeyFromEnv({}), null);
 });
 

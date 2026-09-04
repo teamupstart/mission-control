@@ -81,6 +81,36 @@ test("names a wezterm pane by its tab title", () => {
   assert.equal(s?.nameSource, "wezterm");
 });
 
+test("names and binds an iTerm2 session by exact TTY", () => {
+  const input: DiscoveryInput = {
+    procs: [proc({ pid: 201, ppid: 50, tty: "ttys28" })],
+    terminals: [{
+      kind: "emulator",
+      backend: "iterm",
+      panes: [emuPane({
+        paneId: "w0t0p0:UUID",
+        tabId: "1",
+        windowId: "91",
+        tty: "ttys28",
+        tabTitle: "iTerm API",
+      })],
+      hostProcess: { commands: ["iTerm2"] },
+    }],
+  };
+  const [session] = correlate(input);
+  assert.equal(session?.name, "iTerm API");
+  assert.equal(session?.nameSource, "iterm");
+  assert.deepEqual(emulatorHandle(session!), {
+    kind: "emulator",
+    backend: "iterm",
+    paneId: "w0t0p0:UUID",
+    tabId: "1",
+    windowId: "91",
+    tabTitle: "iTerm API",
+    isActive: false,
+  });
+});
+
 test("tmux wins over wezterm when a tty is in both", () => {
   const input: DiscoveryInput = {
     procs: [proc({ pid: 300, ppid: 50, tty: "ttysX" })],

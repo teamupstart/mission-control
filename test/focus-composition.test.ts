@@ -86,6 +86,65 @@ test("a multiplexer-hosted session is selected INSIDE, then its host tab is rais
   assert.deepEqual(steps, ["select:%3", "raise:2/5"]);
 });
 
+test("a tmux client hosted by iTerm2 raises the exact iTerm2 session", async () => {
+  const steps: string[] = [];
+  const mux = fakeMultiplexer({
+    sessions: sessions(),
+    clients: async () => [muxClient({ tty: "ttys044", session: "work" })],
+    select: async (target) => {
+      steps.push(`select:${target.paneId}`);
+      return OK;
+    },
+  });
+  const iterm = fakeEmulator({
+    id: "iterm",
+    label: "iTerm2",
+    list: async () => [emulatorPane({ paneId: "w0t2p1:UUID", tabId: "2", tty: "ttys044" })],
+    focus: {
+      granularity: "pane",
+      raise: async (target) => {
+        steps.push(`iterm:${target.paneId}`);
+        return OK;
+      },
+    },
+  });
+  const deps = fakeTerminals(
+    mux,
+    fakeEmulator({ id: "wezterm" }),
+    fakeMultiplexer({ id: "cmux" }),
+    fakeEmulator({ id: "ghostty" }),
+    iterm,
+  );
+
+  assert.deepEqual(await focus(mkSession(onMux), deps), { ok: true });
+  assert.deepEqual(steps, ["select:%3", "iterm:w0t2p1:UUID"]);
+});
+
+test("tmux fallback attach opens a new iTerm2 window when earlier emulators cannot spawn", async () => {
+  const opened: string[][] = [];
+  const mux = fakeMultiplexer({ sessions: sessions(), clients: async () => [], select: async () => OK });
+  const iterm = fakeEmulator({
+    id: "iterm",
+    label: "iTerm2",
+    spawn: {
+      tab: async (spec) => {
+        opened.push([...spec.argv]);
+        return { ...OK, target: { paneId: "w0t3p0:NEW", tabId: "3" } };
+      },
+    },
+  });
+  const deps = fakeTerminals(
+    mux,
+    fakeEmulator({ id: "wezterm", spawn: null }),
+    fakeMultiplexer({ id: "cmux" }),
+    fakeEmulator({ id: "ghostty", spawn: null }),
+    iterm,
+  );
+
+  assert.deepEqual(await focus(mkSession(onMux), deps), { ok: true });
+  assert.deepEqual(opened, [["fake-mux", "attach", "-t", "work"]]);
+});
+
 test("the tab raised is the one hosting a CLIENT, never the session's own emulator handle", async () => {
   // An agent inside a multiplexer sits on a multiplexer pane tty while the tab showing it
   // sits on the client tty, so a session carrying both handles must still be raised through

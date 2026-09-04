@@ -32,7 +32,7 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 0,
 });
 const launched: TerminalLaunchSpec[] = [];
-const launch = async (_backend: "tmux" | "cmux" | "wezterm" | "ghostty", spec: TerminalLaunchSpec) => {
+const launch = async (_backend: "tmux" | "cmux" | "wezterm" | "ghostty" | "iterm", spec: TerminalLaunchSpec) => {
   launched.push(spec);
   return { ok: true, label: "Test terminal", homeName: null, status: 200 };
 };

@@ -11,7 +11,8 @@ and get your decision back.
 
 - **Discovers** every terminal-backed `claude` / `codex` / `pi` session by walking process →
   controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
-  No per-session setup is required for terminal discovery.
+  No per-session setup is required for terminal discovery. First-class emulator support
+  includes WezTerm, Ghostty, and iTerm2, with tmux and cmux composition.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   session detail's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
   on the runtime, and both are durable: a **terminal** session's name IS its terminal home, so

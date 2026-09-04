@@ -27,6 +27,7 @@ export function readScoutSubmissionCredential(cwd: string): string;
 export interface TerminalEnv {
   tmuxPane: string | undefined;
   weztermPane: string | undefined;
+  itermSession: string | undefined;
   termProgram: string | undefined;
 }
 

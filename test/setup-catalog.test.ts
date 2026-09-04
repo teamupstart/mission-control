@@ -5,16 +5,19 @@ import {
   ENVIRONMENT_ROW_METADATA,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
-  SETUP_FAMILY_IDS,
   TERMINAL_PAIR_INFO,
 } from "../src/shared/setup-catalog.ts";
 
-test("the setup catalog is exhaustive, family-contiguous, and carries usable remedies", () => {
+test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  const familyIndexes = SETUP_DEPENDENCY_IDS.map((id) => SETUP_FAMILY_IDS.indexOf(SETUP_DEPENDENCY_INFO[id].family));
-  assert.deepEqual(familyIndexes, [...familyIndexes].sort((a, b) => a - b));
+  assert.equal(SETUP_DEPENDENCY_IDS.at(-1), "iterm", "new persisted ids append after existing entries");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
+  assert.deepEqual(SETUP_DEPENDENCY_INFO.iterm.remedy, {
+    kind: "command",
+    argv: ["brew", "install", "--cask", "iterm2"],
+    note: "Install iTerm2 with Homebrew.",
+  });
   for (const id of SETUP_DEPENDENCY_IDS) {
     const remedy = SETUP_DEPENDENCY_INFO[id].remedy;
     if (remedy.kind === "command") {

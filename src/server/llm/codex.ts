@@ -12,7 +12,11 @@ import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
-import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import {
+  agentSubprocessEnv,
+  cleanupAgentSubprocessEnv,
+  dropPaneIdentityEnv,
+} from "../agent-subprocess-env.ts";
 
 const CODEX_BIN = resolveAgentBin("codex");
 
@@ -48,8 +52,7 @@ const liveSchemaDirs = new Set<string>();
 function headlessEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = agentSubprocessEnv(process.env, { loopbackAccess: true });
   env.MISSION_HEADLESS = "1";
-  delete env.TMUX_PANE;
-  delete env.WEZTERM_PANE;
+  dropPaneIdentityEnv(env);
   return env;
 }
 

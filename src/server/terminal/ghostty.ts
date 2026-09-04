@@ -2,6 +2,7 @@ import { GHOSTTY_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
+import { appleScriptString } from "./applescript.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
@@ -87,6 +88,7 @@ const KEY_FORMS: Record<Key, { via: "csi"; final: string } | { via: "named"; nam
   down: { via: "csi", final: "B" },
   left: { via: "csi", final: "D" },
   right: { via: "csi", final: "C" },
+  tab: { via: "named", name: "tab" },
   "shift-up": { via: "csi", final: "1;2A" },
   "shift-down": { via: "csi", final: "1;2B" },
   "shift-tab": { via: "csi", final: "Z" },
@@ -116,7 +118,7 @@ const BUNDLE_ID = "com.mitchellh.ghostty";
  * is why `text` below never passes a multi-line body through here in one piece.
  */
 export function asQuote(s: string): string {
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r")}"`;
+  return appleScriptString(s);
 }
 
 /**

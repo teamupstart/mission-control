@@ -24,6 +24,12 @@ fixed command. The daemon owns the argv, working directory, title, and hold-open
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
+The optional iTerm2 row uses the same `/Applications/iTerm.app` or `ITERM_BIN` filesystem
+check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is
+`brew install --cask iterm2`; Automation permission is requested only when an already-running
+iTerm2 is controlled or when you explicitly launch through it. See
+[iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery).
+
 Mission Control never runs the installer inside the daemon. Provider installers such as
 ai-conductor additionally require the daemon to resolve exactly one checkout from its verified
 workspace candidates, then reverify that candidate when the button is pressed. If there is no

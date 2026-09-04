@@ -53,6 +53,7 @@ const KEY_SEQS: Record<Key, string> = {
   down: "\x1b[B",
   left: "\x1b[D",
   right: "\x1b[C",
+  tab: "\t",
   "shift-up": "\x1b[1;2A",
   "shift-down": "\x1b[1;2B",
   "shift-tab": "\x1b[Z",

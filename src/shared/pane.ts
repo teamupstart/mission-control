@@ -49,6 +49,23 @@ export function weztermPaneToken(paneId: number | string): string {
   return backendPaneToken("wezterm", paneId);
 }
 
+/**
+ * iTerm2 exports the same globally unique session id through AppleScript and
+ * `ITERM_SESSION_ID`. Trim transport whitespace and reject empty or ambiguous values so
+ * discovery and hook ingestion share one exact identity rule.
+ */
+export function normalizeItermSessionId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized || /\s/.test(normalized)) return null;
+  return normalized;
+}
+
+export function itermPaneToken(sessionId: string): string | null {
+  const normalized = normalizeItermSessionId(sessionId);
+  return normalized ? backendPaneToken("iterm", normalized) : null;
+}
+
 /** The pane handles every session-shaped thing carries: `Session`, `DiscoveredSession`. */
 export interface PaneHandles {
   /**

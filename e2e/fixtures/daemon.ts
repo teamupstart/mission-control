@@ -151,6 +151,7 @@ const POLL_MS = 100;
 export const DAEMON_TERMINAL_IDENTITY = {
   TMUX_PANE: "%e2e-daemon-tmux-pane",
   WEZTERM_PANE: "e2e-daemon-wezterm-pane",
+  ITERM_SESSION_ID: "w9t9p9:e2e-daemon-iterm-session",
   TERM_PROGRAM: "e2e-daemon-term-program",
 } as const;
 
@@ -365,6 +366,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // from CI. Specs that need one can still override it through `daemonEnv` below.
     WEZTERM_BIN: join(home, "missing-wezterm"),
     GHOSTTY_BIN: join(home, "missing-ghostty"),
+    ITERM_BIN: join(home, "missing-iterm"),
     // The keep-awake provider, redirected at a fake that records its argv. With the
     // override present this daemon is "supported" on any platform - which is the point:
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a

@@ -179,6 +179,7 @@ const EnvSchema = z
   .object({
     tmuxPane: z.string().optional(),
     weztermPane: z.string().optional(),
+    itermSession: z.string().optional(),
     termProgram: z.string().optional(),
   })
   .default({});

@@ -54,6 +54,7 @@ const KEY_NAMES: Record<Key, string> = {
   down: "Down",
   left: "Left",
   right: "Right",
+  tab: "Tab",
   "shift-up": "S-Up",
   "shift-down": "S-Down",
   "shift-tab": "BTab",

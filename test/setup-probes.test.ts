@@ -9,6 +9,7 @@ import type { TerminalTargetView } from "../src/shared/terminal.ts";
 import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
+  SETUP_FAMILY_IDS,
 } from "../src/shared/setup-catalog.ts";
 import { SETUP_PROBES, setupChecksView } from "../src/server/setup/index.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
@@ -145,6 +146,8 @@ test("one thrown probe becomes its own unknown row", async () => {
 
 test("dependency rows project their catalog requirement without adding a second opinion", async () => {
   const view = await setupChecksView(deps());
+  const familyIndexes = view.rows.map((row) => SETUP_FAMILY_IDS.indexOf(row.family));
+  assert.deepEqual(familyIndexes, [...familyIndexes].sort((a, b) => a - b), "rendered rows remain family-grouped even though stable ids append");
   for (const id of SETUP_DEPENDENCY_IDS) {
     const row = view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === id);
     assert.equal(row?.requirement, SETUP_DEPENDENCY_INFO[id].requirement, id);

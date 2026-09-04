@@ -113,6 +113,44 @@ test("Setup renders the terminal launcher's refusal sentence", async ({ page, da
   expect(terminalRecords(daemon.recordDir)).toEqual([]);
 });
 
+test.describe("with iTerm2 installed", () => {
+  test.use({ daemonEnv: { ITERM_BIN: "/usr/bin/true" } });
+
+  test("Setup offers iTerm2 as a registry-driven launch target", async ({ page, daemon }) => {
+    await page.route("**/api/setup/install", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ id: "wezterm", backend: "iterm" });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          id: "wezterm",
+          outcome: "opened",
+          label: "iTerm2",
+          detail: "iTerm2 opened the installer.",
+        }),
+      });
+    });
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+    await openSetupFamily(page, "terminals");
+    const iterm = setupRow(page, "dependency-iterm");
+    await expect(iterm.getByRole("img", { name: "Ready" })).toBeVisible();
+    const wezterm = setupRow(page, "dependency-wezterm");
+    await wezterm.getByLabel("Terminal for WezTerm").selectOption("iterm");
+    await wezterm.getByRole("button", { name: "Run in a terminal" }).click();
+    await expect(wezterm.getByRole("status")).toContainText("iTerm2 opened the installer.");
+
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidence = artifactsDir("iterm-support");
+      mkdirSync(evidence, { recursive: true });
+      await page.screenshot({ path: join(evidence, "launch-target.png"), fullPage: true });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/iterm-support/launch-target.png");
+    }
+  });
+});
+
 test.describe("with one verified local provider checkout", () => {
   test.use({
     daemonEnv: {

@@ -128,13 +128,16 @@ below; for today's terminal sessions the two answers are identical.
 
 The same declaration decides how a session is **typed into and read**. A reply, a queued
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
-the backend holding the innermost pane, which renders them in its own convention - tmux
-takes key names, while WezTerm and iTerm2 render exact terminal byte sequences - so nothing above that layer knows which
-terminal it is talking to. Everything you send through tmux, WezTerm, or iTerm2 arrives as
-written, including a message that begins with a dash. Those backends pipe payload text on
-stdin, so prompts carrying a whole plan or phase document are not constrained by a
-command-line size limit. The cmux and Ghostty adapters still carry text in command-line
-arguments and can refuse a payload that reaches the operating system's argument limit;
+the backend holding the innermost pane, which renders them in its own convention - tmux takes
+key names, while WezTerm and iTerm2 render exact terminal byte sequences - so nothing above
+that layer knows which terminal it is talking to. Everything you send through tmux, WezTerm,
+or iTerm2 arrives as written, including a message that begins with a dash. tmux and WezTerm
+pipe payload text on stdin. iTerm2 passes its AppleScript program and payload on
+`osascript`'s stdin, then delivers the resulting text through iTerm2's session-writing
+mechanism. Prompts carrying a whole plan or phase document are therefore not constrained by
+a command-line size limit on any of those three backends. The cmux and Ghostty adapters
+still carry text in command-line arguments and can refuse a payload that reaches the
+operating system's argument limit;
 that refusal is reported without claiming that any text reached the pane. A backend that
 cannot be typed into at all refuses and names itself, rather than reporting that the
 session has no terminal.

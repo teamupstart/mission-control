@@ -95,8 +95,37 @@ on encodeField(inputValue)
 end encodeField
 `;
 
+// `title` was added to iTerm2's AppleScript tab object after the long-standing
+// session `name` property. Keep the newer, exact tab-title behavior when it is
+// available, while allowing discovery and naming to work on older dictionaries.
+const TAB_TITLE_HANDLERS = `
+on readItermTabTitle(terminalTab)
+  tell application id "${BUNDLE_ID}"
+    try
+      return title of terminalTab as text
+    on error
+      try
+        return name of current session of terminalTab as text
+      on error
+        return ""
+      end try
+    end try
+  end tell
+end readItermTabTitle
+
+on setItermTabTitle(terminalTab, requestedTitle)
+  tell application id "${BUNDLE_ID}"
+    try
+      set title of terminalTab to requestedTitle
+    on error
+      set name of current session of terminalTab to requestedTitle
+    end try
+  end tell
+end setItermTabTitle
+`;
+
 function listScript(): string {
-  return `${ENCODE_HANDLERS}
+  return `${ENCODE_HANDLERS}${TAB_TITLE_HANDLERS}
 set outputText to ""
 tell application id "${BUNDLE_ID}"
   set activeWindowId to ""
@@ -105,6 +134,7 @@ tell application id "${BUNDLE_ID}"
   end try
   repeat with terminalWindow in windows
     repeat with terminalTab in tabs of terminalWindow
+      set terminalTabTitle to my readItermTabTitle(terminalTab)
       repeat with terminalSession in sessions of terminalTab
         set sessionCwd to ""
         try
@@ -114,7 +144,7 @@ tell application id "${BUNDLE_ID}"
         try
           if ((id of terminalWindow as text) is activeWindowId and (index of terminalTab) is (index of current tab of terminalWindow) and (id of terminalSession as text) is (id of current session of terminalTab as text)) then set activeFlag to "1"
         end try
-        set outputText to outputText & my encodeField(id of terminalSession) & "${US}" & my encodeField(index of terminalTab) & "${US}" & my encodeField(id of terminalWindow) & "${US}" & my encodeField(title of terminalTab) & "${US}" & my encodeField(name of terminalWindow) & "${US}" & my encodeField(tty of terminalSession) & "${US}" & my encodeField(sessionCwd) & "${US}" & activeFlag & "${RS}"
+        set outputText to outputText & my encodeField(id of terminalSession) & "${US}" & my encodeField(index of terminalTab) & "${US}" & my encodeField(id of terminalWindow) & "${US}" & my encodeField(terminalTabTitle) & "${US}" & my encodeField(name of terminalWindow) & "${US}" & my encodeField(tty of terminalSession) & "${US}" & my encodeField(sessionCwd) & "${US}" & activeFlag & "${RS}"
       end repeat
     end repeat
   end repeat
@@ -223,10 +253,11 @@ export function itermEmulator(exec: TerminalExec = defaultExec): TerminalEmulato
       async tab(spec: TabSpec): Promise<SpawnResult> {
         const argv = shellCommand(spec.argv);
         const launch = `${spec.cwd ? `cd -- ${shellCommand([spec.cwd])} && ` : ""}exec ${argv}`;
-        const script = `tell application id "${BUNDLE_ID}"
+        const script = `${TAB_TITLE_HANDLERS}
+tell application id "${BUNDLE_ID}"
   set newWindow to create window with default profile command ${appleScriptString(launch)}
   set newTab to current tab of newWindow
-  if ${appleScriptString(spec.title)} is not "" then set title of newTab to ${appleScriptString(spec.title)}
+  if ${appleScriptString(spec.title)} is not "" then my setItermTabTitle(newTab, ${appleScriptString(spec.title)})
   set newSession to current session of newTab
   return id of newSession & "${US}" & (index of newTab as text)
 end tell`;
@@ -244,8 +275,10 @@ end tell`;
       },
     },
 
-    retitle: (target, title) =>
-      command(targetScript(target, `  set title of targetTab to ${appleScriptString(title)}`), "iTerm2 could not rename that tab"),
+    retitle: (target, title) => command(
+      `${TAB_TITLE_HANDLERS}\n${targetScript(target, `  my setItermTabTitle(targetTab, ${appleScriptString(title)})`)}`,
+      "iTerm2 could not rename that tab",
+    ),
 
     names: PLAIN_NAMES,
   };

@@ -90,6 +90,11 @@ test("enumerates every window, tab, and session through one stdin script", async
   assert.match(script, /repeat with terminalTab in tabs of terminalWindow/);
   assert.match(script, /repeat with terminalSession in sessions of terminalTab/);
   assert.match(script, /variable terminalSession named "path"/);
+  assert.match(script, /on readItermTabTitle\(terminalTab\)/);
+  assert.match(script, /return title of terminalTab as text/);
+  assert.match(script, /return name of current session of terminalTab as text/);
+  assert.match(script, /set terminalTabTitle to my readItermTabTitle\(terminalTab\)/);
+  assert.match(script, /my encodeField\(terminalTabTitle\)/);
 });
 
 test("rejects malformed records and normalizes missing optional fields", () => {
@@ -212,7 +217,10 @@ test("retitle changes the containing tab found by session id", async () => {
   const run = recorder();
   await itermEmulator(run.exec).retitle!(TARGET, 'release "candidate"');
   const script = onlyScript(run.calls);
-  assert.ok(script.includes('set title of targetTab to "release \\"candidate\\""'));
+  assert.match(script, /on setItermTabTitle\(terminalTab, requestedTitle\)/);
+  assert.ok(script.includes('set title of terminalTab to requestedTitle'));
+  assert.ok(script.includes('set name of current session of terminalTab to requestedTitle'));
+  assert.ok(script.includes('my setItermTabTitle(targetTab, "release \\"candidate\\"")'));
   assert.equal(script.includes(TARGET.tabId), false);
 });
 
@@ -231,7 +239,8 @@ test("spawn preserves cwd and argv boundaries, stamps title, and returns the new
   });
   const script = onlyScript(run.calls);
   assert.ok(script.includes("cd -- '/tmp/work tree; $(not-run)' && exec '/bin/zsh' '-l' 'it'\\\"'\\\"'s $HOME; echo nope'"));
-  assert.ok(script.includes('set title of newTab to "feature tab"'));
+  assert.ok(script.includes('my setItermTabTitle(newTab, "feature tab")'));
+  assert.ok(script.includes('set name of current session of terminalTab to requestedTitle'));
 });
 
 test("definite, permission, and timeout failures retain their delivery semantics", async () => {

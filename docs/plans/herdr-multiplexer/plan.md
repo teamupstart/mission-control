@@ -249,8 +249,9 @@ Create `src/server/terminal/herdr.ts`:
 - `sessions.spawnDetached` ensures the server, creates the workspace with `cwd: spec.cwd` and the
   requested selection intent, shell-encodes the argv once through the existing `shellCommand`,
   submits it to the returned root pane, and optionally creates a no-focus side split rooted at the
-  same `spec.cwd`. If the command cannot be submitted after the workspace was created, close that
-  exact workspace and preserve unknown-outcome semantics.
+  same `spec.cwd`. Close that exact workspace only when a parsed Herdr refusal confirms the command
+  was not delivered. Preserve the workspace for every `outcomeUnknown` timeout, disconnect,
+  framing, correlation, or schema-failure path so cleanup cannot destroy work that may have started.
 - `sessions.attachArgv` returns a POSIX `env -u ...` wrapper followed by the resolved Herdr binary,
   attaching the full client to the default server even when the daemon inherited named-session
   selectors. `rename` and `kill` target workspace ID, not label. Use `PLAIN_NAMES` unless live v0.8.2

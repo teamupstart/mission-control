@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import ts from "typescript";
 
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
@@ -15,25 +16,56 @@ const TEST_DIR = join(REPO_ROOT, "test");
 // `index.ts` as text to assert startup ordering, and those never load the addon.
 const SPAWNS_THE_DAEMON = /\[[^\]]*"src\/server\/index\.ts"/;
 
-// The call, not the import. A spec can keep the import while the call is deleted, and the
-// import alone provisions nothing - its focused single-file run then fails on a clean checkout
-// exactly as before, because that command runs no npm lifecycle. A call without the import is
-// not this guard's problem: it does not compile, and `npm run typecheck` says so.
-const PROVISIONS = /ensureNativeStateLockAddon\s*\(/;
+const HELPER = "ensureNativeStateLockAddon";
+const HELPER_MODULE = "helpers/native-state-lock.ts";
 
-// Line comments are stripped before looking for the call, so a commented-out call cannot stand
-// in for making one. Only the provisioning check reads this: the spawn detector stays on raw
-// source, because stripping from `//` would also truncate a line holding a `http://` literal
-// and could drop a real spawn from the scan. Over-reporting a spawn only demands provisioning,
-// which is the safe direction; missing one is the failure this whole guard exists to prevent.
-function executableSource(source: string): string {
-  return source
-    .split("\n")
-    .map((line) => {
-      const comment = line.indexOf("//");
-      return comment === -1 ? line : line.slice(0, comment);
-    })
-    .join("\n");
+/**
+ * Does this spec import the helper and actually call it?
+ *
+ * The call is what provisions, not the import: a spec can keep the import while the call is
+ * deleted or commented out, and its focused single-file run then fails on a clean checkout
+ * exactly as before, because that command runs no npm lifecycle.
+ *
+ * This reads the syntax tree rather than matching text, because text cannot tell an executable
+ * call from a mention of one. A commented-out call is absent from the tree in any comment
+ * syntax, and a string that happens to contain the helper's name is a `StringLiteral` and never
+ * a `CallExpression` - including the assertion message a few lines below, which names the
+ * helper in prose. Requiring the import alongside the call is what pins the identifier to the
+ * shared helper: a spec cannot both import that name and declare its own, because TypeScript
+ * refuses the conflicting declaration and `npm run typecheck` fails first.
+ */
+function provisionsTheAddon(file: string, source: string): boolean {
+  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+
+  let imported = false;
+  let called = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text.endsWith(HELPER_MODULE)
+    ) {
+      const bindings = node.importClause?.namedBindings;
+      if (
+        bindings &&
+        ts.isNamedImports(bindings) &&
+        bindings.elements.some((element) => element.name.text === HELPER)
+      ) {
+        imported = true;
+      }
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === HELPER
+    ) {
+      called = true;
+    }
+    if (!imported || !called) ts.forEachChild(node, visit);
+  };
+  visit(tree);
+
+  return imported && called;
 }
 
 // Recursive because `npm test` globs `test/**/*.test.ts`: a spec in a new subdirectory is run
@@ -57,7 +89,7 @@ test("every spec that spawns the real daemon provisions the native state lock it
     const source = readFileSync(join(TEST_DIR, name), "utf8");
     if (!SPAWNS_THE_DAEMON.test(source)) continue;
     spawning.push(name);
-    if (!PROVISIONS.test(executableSource(source))) unprovisioned.push(name);
+    if (!provisionsTheAddon(name, source)) unprovisioned.push(name);
   }
 
   assert.ok(

@@ -44,3 +44,35 @@ export function stagedRevisionProblem({ expected, found }) {
   }
   return null;
 }
+
+/**
+ * Whether a finished staged build may be installed, and what to do instead when it may not.
+ *
+ * The whole decision in one place, because it is a rule about bundles rather than a step in a
+ * sequence: given what the install script reported when it verified the build, and what is at
+ * that path now, there are exactly three answers.
+ *
+ * - `installable` - the pin the script took still describes what is on disk. Carries that pin,
+ *   because everything downstream compares against it: the app before it quits, and the install
+ *   script in the instant before the swap.
+ * - `unpinnable` - the script reported no identity at all, which means a clone checked out at a
+ *   ref older than the running app. Deriving a pin here instead would pin whatever is on disk
+ *   by now, so anything rebuilt in between would be installed as though it had been verified.
+ *   There is no honest pin available, so the caller must fall back to the whole-install handoff.
+ * - `replaced` - the bundle is no longer the one that was verified. Version and revision both
+ *   have to match: a rebuild at the same tag carries the same version, and only the revision
+ *   tells that apart from the build whose contents were checked.
+ *
+ * Deciding `replaced` here rather than at the restart is the point of settling it at all: a
+ * caller that published "ready" and refused afterwards would spend a person's minutes, promise
+ * them a version, and then send them back to rebuild.
+ */
+export function stagedBuildAcceptance({ staged, found }) {
+  const reported = staged?.revision ?? null;
+  if (reported === null) return { verdict: "unpinnable" };
+  const present = found ?? { version: null, revision: null };
+  if (present.version !== staged.version || present.revision !== reported) {
+    return { verdict: "replaced" };
+  }
+  return { verdict: "installable", revision: reported };
+}

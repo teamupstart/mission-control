@@ -9,7 +9,11 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stagedBundleRevision, stagedRevisionProblem } from "../src/shared/staged-bundle.mjs";
+import {
+  stagedBuildAcceptance,
+  stagedBundleRevision,
+  stagedRevisionProblem,
+} from "../src/shared/staged-bundle.mjs";
 
 test("a bundle's revision follows the directory, not its contents' names", (t) => {
   const root = mkdtempSync(join(tmpdir(), "mission-staged-revision-"));
@@ -54,4 +58,42 @@ test("a bundle is refused when it is not the one that was pinned", () => {
   // refuse - the same latitude the version check gives a ref that names no version.
   assert.equal(stagedRevisionProblem({ expected: null, found: "11-22" }), null);
   assert.equal(stagedRevisionProblem({ expected: undefined, found: null }), null);
+});
+
+
+test("whether a finished build may be installed has three answers and one home", () => {
+  // The rule lives here rather than in `UpdateController`, which keeps the coordination: which
+  // log line, which dialog, which snapshot, and which of the two install paths to take.
+  const staged = { version: "1.2.4", revision: "42-1700000000000" };
+
+  // The pin the install script took still describes what is on disk.
+  assert.deepEqual(
+    stagedBuildAcceptance({ staged, found: { version: "1.2.4", revision: "42-1700000000000" } }),
+    { verdict: "installable", revision: "42-1700000000000" },
+  );
+
+  // No identity reported: a clone whose script predates the field. Deriving one now would pin
+  // whatever is on disk by then, so the caller has to fall back to the whole-install handoff.
+  for (const unpinnable of [null, undefined]) {
+    assert.deepEqual(
+      stagedBuildAcceptance({
+        staged: { version: "1.2.4", revision: unpinnable },
+        found: { version: "1.2.4", revision: "42-1700000000000" },
+      }),
+      { verdict: "unpinnable" },
+    );
+  }
+
+  // Replaced, in each of the ways it can be: rebuilt at the same version, a different version,
+  // and gone entirely. Version alone would have accepted the first of those.
+  for (const found of [
+    { version: "1.2.4", revision: "43-1700000009999" },
+    { version: "1.5.0", revision: "42-1700000000000" },
+    { version: null, revision: null },
+  ]) {
+    assert.deepEqual(stagedBuildAcceptance({ staged, found }), { verdict: "replaced" }, JSON.stringify(found));
+  }
+  // An absent reading is the same as nothing there, not a reason to throw.
+  assert.deepEqual(stagedBuildAcceptance({ staged, found: null }), { verdict: "replaced" });
+  assert.deepEqual(stagedBuildAcceptance({ staged: null, found: null }), { verdict: "unpinnable" });
 });

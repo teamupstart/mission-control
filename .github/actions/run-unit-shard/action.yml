@@ -57,6 +57,12 @@ runs:
         done
         exit 1
 
+    # Source-loaded daemon tests acquire the same native state lock as the shipped daemon.
+    # Build it before each shard runs so no test depends on another shard's module-load side effect.
+    - name: Build native state lock
+      shell: bash
+      run: npm run build:state-lock-native
+
     - name: Test
       shell: bash
       run: xvfb-run -a npm test

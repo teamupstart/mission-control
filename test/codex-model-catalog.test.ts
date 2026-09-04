@@ -518,6 +518,39 @@ test("an already-aborted probe never spawns anything", async () => {
   assert.equal(connected, false);
 });
 
+test("an abort while the connection is opening stops before the handshake", async () => {
+  // The window the entry check cannot see: it has already passed, and a listener added to
+  // an already-aborted signal never fires, so without an explicit recheck the probe would
+  // hand a shutting-down daemon a handshake and a request it no longer wants - and a
+  // wedged server would hold it for the full timeout.
+  const controller = new AbortController();
+  const server = new FakeServer({
+    initialize: {},
+    "model/list": { data: [row()], nextCursor: null },
+  });
+  let finishConnecting = (): void => {};
+  const connecting = new Promise<void>((resolve) => {
+    finishConnecting = resolve;
+  });
+  const result = discoverCodexModels("codex", {
+    signal: controller.signal,
+    connect: async () => {
+      await connecting;
+      return server;
+    },
+  });
+
+  controller.abort();
+  finishConnecting();
+  const settled = await result;
+
+  assert.equal(settled.ok, false);
+  assert.equal(settled.ok ? null : settled.problem, "process_failed");
+  // The proof, and the part a timeout-based pass would hide: not one frame was sent.
+  assert.deepEqual(server.methods, []);
+  assert.equal(server.closed, true);
+});
+
 test("aborting a probe in flight ends it without waiting for the server", async () => {
   const controller = new AbortController();
   const server = new FakeServer({ initialize: {}, "model/list": SILENT });

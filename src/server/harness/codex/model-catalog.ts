@@ -355,6 +355,16 @@ export async function discoverCodexModels(
     return failure("process_failed");
   }
 
+  // An abort that landed while the connection was still opening. The check above it has
+  // already passed by now, and `addEventListener` on an ALREADY-aborted signal never
+  // fires, so the race below would not see it either - the probe would run a handshake
+  // and a request on behalf of a caller that has gone away, and a wedged server would
+  // hold a shutting-down daemon for the full timeout.
+  if (deps.signal?.aborted) {
+    await transport.close();
+    return failure("process_failed");
+  }
+
   const client = new AppServerClient(transport, IGNORE_SERVER_TRAFFIC);
   // The pump's own rejection is delivered to every waiter, so the probe reads its outcome
   // from its request rather than from here. Swallowed so a dead connection cannot surface
@@ -378,6 +388,13 @@ export async function discoverCodexModels(
       new Promise((resolve) => {
         const signal = deps.signal;
         if (!signal) return;
+        // Correct on its own rather than relying on the check above it: a listener added
+        // to an already-aborted signal never fires, so a leg that only listened would
+        // silently never resolve and leave the timeout as the only way out.
+        if (signal.aborted) {
+          resolve(failure("process_failed"));
+          return;
+        }
         const onAbort = (): void => resolve(failure("process_failed"));
         signal.addEventListener("abort", onAbort, { once: true });
         removeAbortListener = () => signal.removeEventListener("abort", onAbort);

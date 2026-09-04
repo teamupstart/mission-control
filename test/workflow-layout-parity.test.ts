@@ -36,7 +36,14 @@ const run: WorkflowRunSummary = {
   updatedAt: 1,
 };
 
-const BIND_CHIP = /class="workflow-bind-chip"[^>]*>＋ workflow</;
+/**
+ * The unarmed offer, whose ＋ and word are separate elements so the console header's ladder
+ * can shed the word and leave the mark (`detailHeadLadder.ts`, rung 2). Both are still
+ * matched, in order, because what this file is about is the offer being READABLE as
+ * `＋ workflow` - a chip that kept only one of the two says something else.
+ */
+const BIND_CHIP =
+  /class="workflow-bind-chip"[^>]*><span class="wbc-glyph">＋<\/span><span class="wbc-word"> workflow<\/span>/;
 const outcomeChip = (tone: string, label: string): RegExp =>
   new RegExp(`class="workflow-chip workflow-${tone}"[^>]*>.*?${label}<`);
 

@@ -29,6 +29,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
+import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
 import { fitDetailTabs, observeDetailTabs } from "../../detailTabsLadder.ts";
 import {
   AgentDot,
@@ -212,6 +213,7 @@ export function ConsoleDetail({
     [session.id, view.onOpenFiles],
   );
   const paneRef = useRef<HTMLDivElement>(null);
+  const headRef = useRef<HTMLElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   /**
    * The conversation's rendering, read HERE because this detail hosts the toggle that
@@ -456,9 +458,19 @@ export function ConsoleDetail({
   // rail beside it is dragged, and anything that resizes this row's text at a fixed width.
   useEffect(() => (tabsRef.current ? observeDetailTabs(tabsRef.current) : undefined), []);
 
+  // The header above it, on the same terms and for a requirement that moves even more with the
+  // session: its identity block carries this session's own name, and the chips between that and
+  // the review badge are each drawn only when they have something to say. See
+  // `detailHeadLadder.ts` for the give-way order and for what it is never allowed to shed.
+  useLayoutEffect(() => {
+    if (headRef.current) fitDetailHead(headRef.current);
+  });
+
+  useEffect(() => (headRef.current ? observeDetailHead(headRef.current) : undefined), []);
+
   return (
     <div className={`cdetail tone-${st.tone}`}>
-      <header className="detail-head">
+      <header className="detail-head" ref={headRef}>
         <AgentDot agent={session.agent} />
         <div className="detail-title">
           <div className="detail-title-line">
@@ -545,7 +557,17 @@ export function ConsoleDetail({
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>
                 )
-                : "＋ workflow"}
+                : (
+                  <>
+                    {/* Two elements rather than one string so the header's ladder can shed the
+                        WORD and leave the mark (`detailHeadLadder.ts`, rung 2). The ＋ is not
+                        `aria-hidden`, unlike the armed chip's ⌘: it is half of this chip's
+                        accessible name, and the offer reads as `＋ workflow` to a screen
+                        reader at every rung because the shed word stays in the tree. */}
+                    <span className="wbc-glyph">＋</span>
+                    <span className="wbc-word"> workflow</span>
+                  </>
+                )}
             </button>
           </Tooltip>
         )}

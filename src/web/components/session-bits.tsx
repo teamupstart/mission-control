@@ -1754,7 +1754,13 @@ export function StateBadge({
           }}
         >
           <span className="badge-dot" />
-          {st.label} <Keycap action="review" /> →
+          {st.label} <Keycap action="review" />{" "}
+          {/* Its own element so the console header's ladder can shed it: this button is the
+              one thing that row is never allowed to hide, so what it gives up on a narrow
+              pane is the chord hint and this arrow (`detailHeadLadder.ts`, rung 1). */}
+          <span className="badge-go" aria-hidden>
+            →
+          </span>
         </button>
       </Tooltip>
     );
@@ -1906,7 +1912,9 @@ export function RuntimeMetaRow({
               <span className="rt-think-glyph" aria-hidden>
                 ✦
               </span>
-              {meta.thinkingLevel}
+              {/* Wrapped for the same reason as the picker's own level, and identically, so
+                  the two spellings of this pill stay substitutable. */}
+              <span className="rt-think-word">{meta.thinkingLevel}</span>
             </span>
           </Tooltip>
         ))}

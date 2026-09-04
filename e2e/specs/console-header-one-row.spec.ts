@@ -136,6 +136,95 @@ async function checkout(daemon: DaemonHandle): Promise<string> {
   return found;
 }
 
+/** A GET or POST against the daemon, which throws rather than returning a refusal. */
+async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
+  return (await response.json()) as T;
+}
+
+/** The dispatched session's id, once the registry has adopted it. */
+async function sessionId(daemon: DaemonHandle): Promise<string> {
+  let found = "";
+  await expect
+    .poll(
+      async () => {
+        const all = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+        found = all.find((s) => s.state !== "exited")?.id ?? "";
+        return found;
+      },
+      { message: "the dispatched session should be adopted" },
+    )
+    .not.toBe("");
+  return found;
+}
+
+/**
+ * Put a real SITUATIONAL chip on the header - one this stylesheet never names.
+ *
+ * The chips between the identity block and the review badge are the case rung 7 exists for, and
+ * the only one of them a spec can seed without a GitHub pull request, an Inspector verdict or a
+ * correlated engine is a workflow run. So this publishes a one-reviewer workflow whose persona
+ * carries the fake's fail marker, binds it and submits: the reviewer returns the work, the run
+ * parks OPEN in `waiting_for_session`, and the session draws a `.workflow-chip` for as long as
+ * nobody touches it. Same recipe as `workflow-bind-chip-returns.spec.ts`, and no model tokens -
+ * the verdict is chosen by a marker the fake agent reads out of the persona's guidance.
+ *
+ * One chip rather than the six the Inspector's report names, and that is deliberate: what a
+ * browser adds here is that the rung fires on a chip the CSS does not mention. That it fires on
+ * ALL of them is a property of the rule's shape, which is pinned in
+ * `test/detail-head-ladder.test.ts` instead - an allowlist cannot miss a chip, and a browser
+ * test that enumerated six would have said nothing about the seventh.
+ */
+async function seedWorkflowChip(daemon: DaemonHandle, session: string): Promise<void> {
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "E2E header reviewer",
+    guidanceMarkdown: "# E2E header reviewer\n\nE2E_FAIL_VERDICT",
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E header chip",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "reviewer", kind: "persona", personaId: persona.id, position: { x: 220, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+      ],
+      edges: [
+        { id: "submit", source: "session", sourcePort: "submitted", target: "reviewer", targetPort: "activate" },
+        { id: "pass", source: "reviewer", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "fail", source: "reviewer", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id,
+    sessionId: session,
+    deliveryMode: "preview",
+  });
+  const submitted = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: "e2e-header-chip" },
+  );
+  await expect
+    .poll(
+      async () =>
+        (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${submitted.run.id}`))
+          .run.status,
+      { message: "the seeded run should park open so its chip stays on the header", timeout: 60_000 },
+    )
+    .toBe("waiting_for_session");
+}
+
 /**
  * The pieces of the header this spec reads, by the class the ladder acts on.
  *
@@ -146,6 +235,7 @@ async function checkout(daemon: DaemonHandle): Promise<string> {
  */
 const PARTS = {
   review: ".badge-btn",
+  chip: ".workflow-chip",
   keycap: ".badge-btn .kb-hint",
   arrow: ".badge-go",
   name: ".detail-title h2",
@@ -442,6 +532,69 @@ test("the review button survives every width, and the readouts go before it", as
   ).toBeLessThan(spent(narrowest));
   expect(drawn(back, "review"), "the review button never came back").toBe(true);
   expect(drawn(back, "model"), "the model pill never came back").toBe(true);
+});
+
+test("a header carrying a situational chip still fits the narrowest supported pane", async ({
+  dashboard,
+  daemon,
+}) => {
+  // GitHub Inspector on #890, round 1: rungs 1 to 6 shed what the header ALWAYS draws, and a
+  // fixed set cannot answer a row whose width moves with the session. A conversation carrying
+  // the conditional chips - a pull request, an Inspector verdict, a workflow run per repository,
+  // an ensemble, a pipeline link - spent every rung and wrapped anyway, which is this change's
+  // own defect arriving through a different door. Rung 7 is the answer, and this is its proof at
+  // a real width.
+  const head = await asking(dashboard, daemon);
+  await seedWorkflowChip(daemon, await sessionId(daemon));
+
+  // Present first, and DRAWN rather than merely in the markup, so the sheds below are shedding
+  // something. An open run also withdraws the bind offer, so this chip is what replaces it.
+  await expect(head.locator(".workflow-chip")).toBeVisible({ timeout: 30_000 });
+  await dashboard.setViewportSize({ width: 1560, height: 900 });
+  const wide = await readHead(dashboard);
+  expect(wide.rows, "the wide header wrapped with a chip on it").toBe(1);
+  expect(drawn(wide, "chip"), "precondition: the situational chip is on the wide header")
+    .toBe(true);
+
+  // The same sweep the invariants use, with a chip on the row this time.
+  const samples: (Head & { window: number })[] = [];
+  for (let window = 1900; window >= 400; window -= 20) {
+    await dashboard.setViewportSize({ width: window, height: 900 });
+    samples.push({ window, ...(await readHead(dashboard)) });
+  }
+  const spent = (state: Head): number => state.rung.split(" ").filter(Boolean).length;
+  const where = (state: Head & { window: number }): string => `${state.window}px ("${state.rung}")`;
+
+  // The finding itself: no width leaves this header stacked. Not "stacked with rungs in hand" -
+  // stacked at all. That is the stronger form of the first sweep's claim 1, and it is only
+  // available because past the last rung the row's requirement stops depending on the chips.
+  expect(
+    samples.filter((state) => state.rows === 2).map(where),
+    "a header carrying a situational chip wrapped at some width",
+  ).toEqual([]);
+  expect(
+    samples.filter((state) => !drawn(state, "review")).map(where),
+    "the review button was not drawn",
+  ).toEqual([]);
+
+  // And the chip is what paid for the row, at the last rung and not before: a chip shed early
+  // would be a header giving up a fact it had the room to draw.
+  const shed = samples.filter((state) => !drawn(state, "chip"));
+  expect(shed.length, "the situational chip was never shed, so no width needed rung 7")
+    .toBeGreaterThan(0);
+  for (const state of shed) {
+    expect(spent(state), `${where(state)} shed the situational chip before the last rung`).toBe(7);
+  }
+
+  const narrowest = samples[samples.length - 1]!;
+  expect(spent(narrowest), "the narrowest header did not reach the last rung").toBe(7);
+  await shot(
+    dashboard,
+    head,
+    "header-chip-narrowest",
+    `a ${narrowest.container}px header carrying a workflow chip, at rung "${narrowest.rung}": ` +
+      `one row, the chip shed, the review button still drawn`,
+  );
 });
 
 test("a collapsed control is still the control it was, and still names itself", async ({

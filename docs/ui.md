@@ -699,10 +699,14 @@ available:
   would come straight off the conversation underneath. What goes, in order: the review
   button's chord hint and arrow, then the words beside marks that already say the same thing
   (`Agent SDK` to its ◈, the effort level to its ✦, `＋ workflow` to its ＋), then the context
-  percentage, then cost and the context meter, then the model, and last the mode and effort
-  pickers - every one of which the board's card still draws for the same session. **The review
-  button is never given up**: it is the one control there that means an agent has stopped and
-  is waiting on you, so it only ever gets smaller. Nothing collapsed loses its tooltip or its
+  percentage, then cost and the context meter, then the model, and then the mode and effort
+  pickers - every one of which the board's card still draws for the same session. Last of all,
+  on a pane narrow enough to need it, the chips that are only there when they have something to
+  say - a pull request, an Inspector verdict, a review, an ensemble, a pipeline - which is what
+  keeps a session carrying several of them on one row too. **The review button is never given
+  up**: it is the one control there that means an agent has stopped and is waiting on you, so it
+  only ever gets smaller. Neither is the offer to bind a workflow, which keeps its `＋` because
+  the conversation header is the only place it is made. Nothing collapsed loses its tooltip or its
   name for a screen reader, and the `e` chord still opens the queue at any width.
 - **Cards are grouped by the repository they belong to, and it ships on.** Each column
   collects its cards under a heading naming the repository's directory, with a colour drawn

@@ -24296,6 +24296,36 @@ span.line-run-prov {
   display: none;
 }
 
+/* Rung 7: everything this row does not have a reason to keep, stated as what it KEEPS.
+   Written as an allowlist rather than a list of chips, and that is the whole point of it.
+   Rungs 1 to 6 shed the things the header always draws, which is a fixed set - and a fixed
+   set cannot answer the case this rung exists for: the chips BETWEEN the identity block and
+   the review badge are conditional on the session, so a conversation carrying a pull request,
+   an Inspector verdict, a workflow run per repository, an ensemble and a pipeline link needs
+   several hundred px this row was never measured with. A ladder that had spent all six rungs
+   had nothing left to do about it and wrapped, which is the same operator-visible defect this
+   change exists to remove, arriving through a different door.
+   An enumeration would have closed today's doors and left the next one open: the eighth chip
+   somebody adds here would inherit nothing, and the row would quietly start wrapping again on
+   the sessions that carry it. Inverted, a new chip is covered on the day it lands, and opting
+   one OUT is a deliberate edit to this list rather than an omission.
+   What stays, and why each one:
+     - `.agent-dot` and `.detail-title`, which are the session's identity;
+     - `.badge`, which is the review button and is never shed at any rung;
+     - `.workflow-bind-chip`, at its mark from rung 2 - the console detail is the ONLY
+       surface that offers it, so hiding it removes the affordance rather than moving it;
+     - `.si-session-chip`, a 14px mark whose width does not move with the session;
+     - `.detail-head-spacer`, which is zero width and holds the cluster's edge;
+     - `.tt-desc`, which is Tooltip's hidden sentence and is what `aria-describedby` RESOLVES
+       TO. `display: none` on those would take every explanation in this row out of the
+       accessibility tree - the row would still fit and would stop saying anything.
+   Everything on that list is either the session's identity or a fixed width, so past this
+   rung the header's requirement no longer depends on what the session is carrying at all.
+   That is what makes the fit provable rather than measured per fixture. */
+.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
+  display: none;
+}
+
 .detail-pipeline-meter {
   flex: none;
   padding: 9px 22px 10px;

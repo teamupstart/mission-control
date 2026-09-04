@@ -31,9 +31,25 @@
  *   4. Cost and the context meter go. Both are ticking estimates rather than facts about what
  *      the session IS, and the board's card draws both.
  *   5. The model pill goes.
- *   6. The mode and effort pickers go - last, because they are CONTROLS rather than readouts.
- *      Both are reachable on the board card, which mounts the same two shared leaves
- *      (`SessionTile`), and the mode is also cycled with ⇧⇥ in a session's own terminal.
+ *   6. The mode and effort pickers go - last of the things this row ALWAYS draws, because they
+ *      are CONTROLS rather than readouts. Both are reachable on the board card, which mounts
+ *      the same two shared leaves (`SessionTile`), and the mode is also cycled with ⇧⇥ in a
+ *      session's own terminal.
+ *   7. Everything left that is neither the session's identity nor a fixed width, which is the
+ *      run of SITUATIONAL chips between the identity block and the review badge - a pull
+ *      request, an Inspector verdict, a workflow run per repository, an ensemble, a pipeline
+ *      commission, a pipeline link. Rungs 1 to 6 shed what the header ALWAYS draws, and a
+ *      fixed set cannot answer a row whose width moves with what the session happens to be
+ *      carrying: a conversation holding several of those chips exhausted the ladder and
+ *      wrapped anyway, which is this change's own defect arriving through a different door.
+ *      The rung is written as an ALLOWLIST in `styles.css` - hide every child except a named
+ *      few - so a chip added to this header later is covered on the day it lands rather than
+ *      reopening the hole. That rule says what stays and why.
+ *
+ * PAST RUNG 7 THE ROW'S REQUIREMENT IS A CONSTANT. Everything the allowlist keeps is either
+ * the session's identity or a fixed width, so the deepest header measures the same on every
+ * session - which is what turns "does this fit at the narrow widths the app is used at" from
+ * a question about one fixture into a property of the row.
  *
  * WHAT NEVER GOES is the review button. It is the one control here that says an agent has
  * stopped dead waiting on a person, so the ladder is allowed to make it smaller (rung 1) and
@@ -54,7 +70,7 @@
 import { fitLadder, observeLadder, type Ladder } from "./measuredLadder.ts";
 
 /** How many rungs `styles.css` defines for this row. Rung 0 is the full header. */
-export const DETAIL_HEAD_RUNGS = 6;
+export const DETAIL_HEAD_RUNGS = 7;
 
 /**
  * Nothing is sized against this row's height, so it publishes none - unlike the topbar, whose

@@ -94,12 +94,30 @@ function parts(selector: string): string[] {
   return selector.split(",").map((s) => s.trim());
 }
 
+/**
+ * A selector with its `:not(...)` groups emptied, which is what the "never hides" scans have to
+ * read.
+ *
+ * The deepest rung is an ALLOWLIST - `> *:not(.badge):not(.detail-title)...` - so the classes
+ * it protects appear inside the selector that hides everything else. Scanned raw, that rule
+ * reads as "hides `.badge`" and means the exact opposite. Emptying the groups rather than
+ * dropping the rule keeps the scans looking at what the selector really matches.
+ */
+function withoutNot(selector: string): string {
+  return selector.replaceAll(/:not\([^()]*\)/g, ":not()");
+}
+
+/** The classes a rung's allowlist protects, e.g. `badge` for `:not(.badge)`. */
+function allowlisted(selector: string): string[] {
+  return [...selector.matchAll(/:not\(\.([\w-]+)\)/g)].map((m) => m[1]!);
+}
+
 /** The first rung that hides a control matching `pattern` outright, or Infinity. */
 function hiddenAt(pattern: RegExp): number {
   for (const rung of [...LADDER.keys()].sort((a, b) => a - b)) {
     for (const [selector, body] of LADDER.get(rung)!) {
       if (!/display:\s*none/.test(body)) continue;
-      if (parts(selector).some((part) => pattern.test(part))) return rung;
+      if (parts(selector).map(withoutNot).some((part) => pattern.test(part))) return rung;
     }
   }
   return Number.POSITIVE_INFINITY;
@@ -303,7 +321,7 @@ test("no rung ever hides the review badge, the session's name, or the bind chip"
   for (const [rung, rules] of LADDER) {
     for (const [selector, body] of rules) {
       if (!/display:\s*none|clip-path/.test(body)) continue;
-      for (const part of parts(selector)) {
+      for (const part of parts(selector).map(withoutNot)) {
         for (const [pattern, what] of KEPT) {
           assert.doesNotMatch(part, pattern, `rung ${rung} hides ${what} ("${part}")`);
         }
@@ -315,6 +333,75 @@ test("no rung ever hides the review badge, the session's name, or the bind chip"
   const first = (LADDER.get(1) ?? []).map(([s]) => s).join(" ");
   assert.match(first, /\.kb-hint/, "rung 1 no longer sheds the review badge's chord hint");
   assert.match(first, /\.badge-go/, "rung 1 no longer sheds the review badge's arrow");
+});
+
+test("the deepest rung is an allowlist, so a chip added later cannot reopen the wrap", () => {
+  // The failure this rung exists for, and the reason it is inverted.
+  //
+  // Rungs 1 to 6 shed what the header ALWAYS draws, which is a fixed set - and a fixed set
+  // cannot answer the row this header actually has. The chips between the identity block and
+  // the review badge are conditional on the session: a pull request, an Inspector verdict, one
+  // workflow chip per repository under review, an ensemble, a pipeline commission, a pipeline
+  // link. A conversation carrying several of them spent all six rungs and wrapped anyway,
+  // which is this change's own defect arriving through a different door.
+  //
+  // An ENUMERATION of those chips would close today's doors and leave the next one open: the
+  // chip somebody adds to this header next would inherit nothing, and the row would quietly
+  // start wrapping again on the sessions that carry it. So the rule is written the other way
+  // round, and that shape is what this test pins - not the list.
+  const deepest = LADDER.get(DETAIL_HEAD_RUNGS) ?? [];
+  const rules = deepest.filter(([, body]) => /display:\s*none/.test(body));
+  assert.equal(
+    rules.length,
+    1,
+    `rung ${DETAIL_HEAD_RUNGS} should hide with exactly one rule; it has ${rules.length}`,
+  );
+  const [selector] = rules[0]!;
+  assert.match(
+    selector,
+    />\s*\*:not\(/,
+    `rung ${DETAIL_HEAD_RUNGS} is "${selector}", which enumerates what it hides. It has to ` +
+      `hide every child EXCEPT a named few, or the next chip added to this header inherits ` +
+      `nothing and the row starts wrapping again on the sessions that carry it.`,
+  );
+
+  // And what the allowlist protects. Each of these is either the session's identity or a fixed
+  // width, which is what makes the deepest header measure the same on every session.
+  const kept = allowlisted(selector);
+  for (const [name, why] of [
+    ["agent-dot", "the session's agent mark"],
+    ["detail-title", "the session's name and objective"],
+    ["badge", "the REVIEW BUTTON, which no rung may ever hide"],
+    ["workflow-bind-chip", "the bind offer, which no other surface in the app makes"],
+    ["si-session-chip", "the standing-instructions mark, a fixed 14px"],
+    ["detail-head-spacer", "the zero-width spacer that holds the cluster's edge"],
+    [
+      "tt-desc",
+      "Tooltip's hidden sentence - `display: none` on it takes every explanation in this " +
+        "row out of the accessibility tree, so the row fits and stops saying anything",
+    ],
+  ] as const) {
+    assert.ok(
+      kept.includes(name),
+      `rung ${DETAIL_HEAD_RUNGS} hides \`.${name}\` - ${why}`,
+    );
+  }
+
+  // Nothing else is protected. A chip that talked its way onto this list would be back to
+  // widening the row with the session, which is the whole failure.
+  assert.deepEqual(
+    kept.filter((name) => !name.startsWith("tt-")).sort(),
+    [
+      "agent-dot",
+      "badge",
+      "detail-head-spacer",
+      "detail-title",
+      "si-session-chip",
+      "workflow-bind-chip",
+    ],
+    "the allowlist grew an entry. Anything kept here is width the deepest header carries on " +
+      "some sessions and not others, which is what this rung exists to remove.",
+  );
 });
 
 test("the pickers only go once the readouts have, and they go last", () => {

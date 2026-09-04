@@ -1,43 +1,17 @@
 // The macOS application menu. Electron's default menu has no Settings item, so we
-// install a full template that keeps the standard roles (edit/view/window - the
-// source of copy-paste, reload, devtools, etc.) and adds the conventional
-// App → Settings… entry bound to ⌘,. Choosing it just forwards to a handler; the
-// actual editor lives in the renderer (see App / SettingsPage).
+// install a full template that keeps the standard roles (edit/window - the source of
+// copy-paste, minimize, close) and adds the conventional App → Settings… entry bound to
+// ⌘,. Choosing it just forwards to a handler; the actual editor lives in the renderer
+// (see App / SettingsPage).
+//
+// The template itself is `./menu-template.ts`, which imports no electron runtime and is
+// therefore unit-testable. This file is the install.
 
 import { app, Menu } from "electron";
-import type { MenuItemConstructorOptions } from "electron";
+import { appMenuTemplate, type AppMenuHandlers } from "./menu-template.ts";
 
-export interface AppMenuHandlers {
-  onOpenSettings: () => void;
-  onCheckForUpdates: () => void;
-}
+export type { AppMenuHandlers };
 
 export function installAppMenu(handlers: AppMenuHandlers): void {
-  const template: MenuItemConstructorOptions[] = [
-    {
-      label: app.name,
-      submenu: [
-        { role: "about" },
-        { label: "Check for Updates…", click: () => handlers.onCheckForUpdates() },
-        { type: "separator" },
-        {
-          label: "Settings…",
-          accelerator: "CmdOrCtrl+,",
-          click: () => handlers.onOpenSettings(),
-        },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        { role: "quit" },
-      ],
-    },
-    { role: "editMenu" },
-    { role: "viewMenu" },
-    { role: "windowMenu" },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.name, handlers)));
 }

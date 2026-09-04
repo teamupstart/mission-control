@@ -2873,12 +2873,21 @@ export const UI_CONFIG_DEFAULTS = {
    * NOT empty, and this is the one place the reason is written down.
    *
    * The default is "the card this build's predecessor drew", not "every item this build
-   * knows about". Every other id in the registry names something a card already drew, so
+   * knows about". Almost every id in the registry names something a card already drew, so
    * its absence here means visible and an upgrade moves nothing. `worktree` is the one
-   * item that is NEW to the card, so shipping it visible would put a fact on every card
+   * FACT that is new to the card, so shipping it visible would put a fact on every card
    * in every column on upgrade without anyone asking - which is exactly what defaulting
    * to today's rendering exists to prevent. It is hidden until an operator opts in, and
    * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
+   *
+   * `cardShortcut` is absent from this list, and it is the one new item that is absent on
+   * purpose rather than by inheritance. It is not a fact about the session: it is the
+   * keycap for a CAPABILITY - ⌘1 … ⌘= open a card's console - and the rule above exists to
+   * stop a card quietly growing a new sentence about its agent, not to stop the app
+   * shipping a way to reach a card. Hiding it by default would ship twelve chords that do
+   * nothing until an operator finds a checkbox they have no reason to look for, which is
+   * the same as not shipping them. Unchecking it stands both the keycaps and the chords
+   * down together; see the registry entry.
    */
   hiddenDisplayItems: ["worktree"],
   /**

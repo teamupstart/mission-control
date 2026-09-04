@@ -74,6 +74,12 @@ import { toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { useDisplayItems } from "./lib/board-card.ts";
+import {
+  assignCardShortcuts,
+  cardShortcutTarget,
+  NO_CARD_SHORTCUTS,
+} from "./lib/card-shortcuts.ts";
 import { useUiConfig } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
@@ -1924,6 +1930,27 @@ export function App(): React.JSX.Element {
     [fleet, foldedIds],
   );
 
+  // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the Board's cards, derived from the arrays directly above.
+  //
+  // Off the SAME `boardColumns` the arrow keys walk, deliberately: the numbering has to cross
+  // the tone columns in reading order and skip whatever a folded repository frame is hiding,
+  // and both of those are already true of these arrays. Deriving it from a second pass over
+  // the fleet would be a second opinion about the board's order, and the symptom would be a
+  // keycap that opens its neighbour.
+  //
+  // Board only. The Console rail draws no keycaps, and a chord that silently opened the
+  // fourth row of a rail nobody had numbered would be a shortcut with no affordance.
+  //
+  // The registry item gates BOTH halves - see `board-card.ts` - so an operator who unchecks
+  // it gets ⌘0/⌘-/⌘= back for whatever else they use them for, rather than keeping twelve
+  // invisible chords.
+  const shownDisplayItem = useDisplayItems();
+  const cardShortcutsOn = layout === "board" && shownDisplayItem("cardShortcut");
+  const cardShortcuts = useMemo(
+    () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
+    [cardShortcutsOn, boardColumns],
+  );
+
   // Console's detail is its selection. Board keeps its detail separate from the arrow-key
   // cursor; Enter or a click opens it, and what it opens is the cursor's session.
   const boardOpenId = boardOpen ? selectedId : null;
@@ -2227,6 +2254,7 @@ export function App(): React.JSX.Element {
     onOpenPipelineCommission: openPipelineCommission,
     pipelineRunByKey,
     pipelineCommissionById,
+    cardShortcutBySession: cardShortcuts,
   };
 
   /**
@@ -2462,6 +2490,33 @@ export function App(): React.JSX.Element {
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
       // session merely because its state remains mounted in App.
       if (route.page !== "fleet") return;
+
+      // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= open a Board card's console. The keycap in each card's top
+      // corner is the same derivation this reads (`lib/card-shortcuts.ts`), so the key a
+      // card prints is the key that opens it.
+      //
+      // ABOVE the overlay stand-down below and gated on its own `anyOpen` check, because it
+      // is also above the typing guard: every chord here carries ⌘, which is the rule this
+      // handler already applies to the palette and to interrupt - ⌘4 is unambiguous
+      // mid-sentence, and a jump you have to click out of the composer for is a jump you
+      // would have made with the mouse. It still stands down for an open overlay: a dispatch
+      // dialog or Files owns the screen, and re-pointing the board behind one is not what
+      // the keystroke means there.
+      //
+      // Claims the key only when a card actually holds the slot, which is what leaves ⌘-/⌘=
+      // to the browser on a fleet of three cards instead of swallowing zoom for nothing. The
+      // map is empty whenever the operator has the item switched off, so that case is the
+      // same "not ours" answer rather than a second guard.
+      const jumpToId = cardShortcutTarget(chord, cardShortcuts);
+      if (jumpToId && !overlaysRef.current.anyOpen && !renamingId) {
+        e.preventDefault();
+        setSelectedId(jumpToId);
+        // The same two steps Enter on a tile performs, in the same order - the drill-in opens
+        // whatever the cursor is on, so this must not be reversed. Already drilled in, this
+        // re-points the open detail at the new card, which is what a click on a rail row does.
+        setBoardOpen(true);
+        return;
+      }
 
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
@@ -2912,7 +2967,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, cardShortcuts, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

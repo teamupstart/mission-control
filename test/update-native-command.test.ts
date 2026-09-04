@@ -7,7 +7,11 @@ const source = (path: string): string =>
   readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
 test("the app menu and tray expose the same native update command seam", () => {
-  const menu = source("../src/main/menu.ts");
+  // The menu's ITEMS live in `menu-template.ts` - `menu.ts` is now only the install, so the
+  // Check for Updates item is looked for where it is declared. Splitting the template out is
+  // what made the desktop menu's accelerators unit-testable (`app-menu-template.test.ts`);
+  // this seam is unchanged by it, and reads the same handler through the same interface.
+  const menu = source("../src/main/menu-template.ts");
   const tray = source("../src/main/tray.ts");
   const index = source("../src/main/index.ts");
 

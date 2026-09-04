@@ -385,6 +385,71 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await expect(dashboard.locator(".cdetail")).toBeVisible();
 });
 
+test("the desktop shell is told to keep zoom's keys whenever no card can answer them", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The desktop half of this feature, from the only side a browser can see it.
+  //
+  // A menu accelerator is registered with the OS and handled before the renderer sees the
+  // keystroke, so ⌘0/⌘-/⌘= cannot be both zoom's and the board's - the View menu hands them
+  // over while the dashboard is claiming them and takes them back when it is not. Which of
+  // those two states the shell is in is not observable from a browser at all. What IS
+  // observable is the report the dashboard sends, and that report is the whole input to the
+  // decision, so this stubs the bridge and reads it.
+  //
+  // The three cases below are three different ways for "no card can answer this key" to be
+  // true, and each of them shipped broken at some point in this branch: the preference off,
+  // a layout with no cards, and a PAGE with no cards under a layout that still says `board`.
+  await dashboard.addInitScript(() => {
+    const reports: boolean[] = [];
+    Object.defineProperty(window, "__cardJumpKeyReports", {
+      configurable: true,
+      get: () => reports,
+    });
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        onOpenSettings: () => () => {},
+        setCardJumpKeys: async (claimed: boolean) => void reports.push(claimed),
+      },
+    });
+  });
+
+  const latest = (): Promise<boolean | undefined> =>
+    dashboard.evaluate(() => {
+      const reports = (window as unknown as { __cardJumpKeyReports: boolean[] })
+        .__cardJumpKeyReports;
+      return reports.at(-1);
+    });
+
+  await dispatchIdleAgent(dashboard, daemon, IDLE_CARD);
+  await useBoardLayout(dashboard, daemon);
+  await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
+  // Claimed: a Board card is on screen with a key printed on it.
+  await expect.poll(latest, { message: "the Board claims the number row" }).toBe(true);
+
+  // Released on another PAGE, though the layout is still Board. The keydown handler returns
+  // early for every non-fleet route, so a claim here would take ⌘0/⌘-/⌘= from zoom on the
+  // Library, on Runs, and on the Settings page that carries this feature's own checkbox.
+  for (const page of ["library", "runs", "settings/display"]) {
+    await dashboard.goto(`${daemon.baseURL}/#/${page}`);
+    await expect.poll(latest, { message: `${page} releases the number row` }).toBe(false);
+  }
+
+  // Claimed again on the way back, so this is a live report rather than a one-way trim.
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await expect.poll(latest, { message: "returning to the fleet reclaims it" }).toBe(true);
+
+  // Released by the preference, which is what the item's own description promises.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  await dashboard.getByRole("checkbox", { name: "Jump shortcut", exact: true }).uncheck();
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
+  await expect.poll(latest, { message: "the preference releases the number row" }).toBe(false);
+});
+
 test("the shortcut is not a rebindable action in the Keyboard panel", async ({
   dashboard,
   daemon,

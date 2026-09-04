@@ -1377,9 +1377,10 @@ browser tabs to select, and the View menu hands <kbd>⌘</kbd><kbd>0</kbd>,
 them - a menu accelerator is registered with the system and would otherwise be handled before
 the dashboard ever saw the keystroke. Page zoom keeps its **Zoom In**, **Zoom Out** and
 **Actual Size** items throughout, so it is always one click away, and **it gets its keyboard
-shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, or switch
-to the Console layout, and <kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd>
-zoom again exactly as they always did.
+shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, switch to
+the Console layout, or simply leave Fleet for the Library, Runs or Settings, and
+<kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd> zoom again exactly as
+they always did. The keys are the Board's only while a Board card is there to answer them.
 
 That follows the *preference*, not the card count. While the feature is on, the number row
 belongs to the Board even where it has no card to give a key to - so on a board of three

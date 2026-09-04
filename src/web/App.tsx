@@ -1945,7 +1945,15 @@ export function App(): React.JSX.Element {
   // it gets ⌘0/⌘-/⌘= back for whatever else they use them for, rather than keeping twelve
   // invisible chords.
   const shownDisplayItem = useDisplayItems();
-  const cardShortcutsOn = layout === "board" && shownDisplayItem("cardShortcut");
+  // The SAME three conditions the keydown arm needs to act, in one place, because this value
+  // is also what tells the desktop shell whether to keep zoom's accelerators. The fleet route
+  // is part of it rather than only a guard inside the handler: `layout` stays `"board"` while
+  // an operator is on Library, Runs or Settings, so a condition that asked only about the
+  // layout claimed ⌘0/⌘-/⌘= from the View menu on every one of those pages while the handler
+  // returned early and no card could answer them. Dead keys, and most visibly on the Settings
+  // page that carries this very checkbox.
+  const cardShortcutsOn =
+    route.page === "fleet" && layout === "board" && shownDisplayItem("cardShortcut");
   const cardShortcuts = useMemo(
     () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
     [cardShortcutsOn, boardColumns],

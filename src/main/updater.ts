@@ -18,6 +18,9 @@ import {
   type UpdatePrepareStage,
   type UpdateSnapshot,
 } from "../shared/update.ts";
+// Still used here, by `runGh` below: the `gh` CLI lives on the login shell's PATH, which is not
+// Electron's. What moved to `update-build.ts` was a different consumer - the environment handed
+// to the staged build and the detached helper, which needed the same PATH for git and npm.
 import { loginShellPath } from "../server/util/path-env.ts";
 import { bundleShortVersion } from "./bundle-version.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";

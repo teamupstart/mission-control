@@ -9,6 +9,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const TASK = "prepare an HTML artifact preview";
 const REPORT = "docs/reports/conversation-card/report.html";
+const LONG_REPORT = "docs/reports/conversation-card/a-very-long-artifact-name-that-must-stay-inside-the-preview-header.html";
 const OTHER = "docs/reports/conversation-card/other.html";
 const CSS = "docs/reports/conversation-card/report.css";
 const REPORT_TURN = `The artifact is ready.\nReport: ${REPORT}`;
@@ -95,12 +96,16 @@ async function setPresentation(
   await page.reload();
 }
 
-function artifactCard(page: Page): Locator {
+function artifactCard(
+  page: Page,
+  report = REPORT,
+  reportTurn = REPORT_TURN,
+): Locator {
   return page
     .getByRole("article", { name: "claude" })
-    .filter({ hasText: REPORT_TURN })
+    .filter({ hasText: reportTurn })
     .last()
-    .getByRole("region", { name: `Preview of ${REPORT}` });
+    .getByRole("region", { name: `Preview of ${report}` });
 }
 
 async function capture(page: Page, target: Locator, name: string): Promise<void> {
@@ -266,15 +271,16 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
 }) => {
   await dispatch(page, daemon);
   const live = await session(daemon);
-  write(live.cwd, REPORT, REPORT_SOURCE);
+  const reportTurn = `The artifact is ready.\nReport: ${LONG_REPORT}`;
+  write(live.cwd, LONG_REPORT, REPORT_SOURCE);
   write(live.cwd, CSS, "#finding { font-weight: 700; }\n");
-  await inject(daemon, live.id, REPORT_TURN);
+  await inject(daemon, live.id, reportTurn);
   await setPresentation(page, daemon, "board", "terminal");
 
   const tile = page.getByRole("button", { name: /Prepare an HTML Artifact Preview/i });
   await tile.focus();
   await tile.press("Enter");
-  let card = artifactCard(page);
+  let card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card).toBeVisible();
   await expect(card.frameLocator("iframe.artifact-preview").getByRole("heading", {
     name: "Conversation artifact",
@@ -286,8 +292,15 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   await capture(page, card, "board-dark.png");
 
   await page.setViewportSize({ width: 720, height: 900 });
-  card = artifactCard(page);
+  card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card.locator(".artifact-head")).toHaveCSS("flex-wrap", "wrap");
+  const name = card.locator(".artifact-name");
+  await expect(name).toHaveCSS("text-overflow", "ellipsis");
+  const nameWidths = await name.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(nameWidths.scrollWidth).toBeGreaterThan(nameWidths.clientWidth);
   await expect(card.locator(".artifact-dir")).not.toHaveCSS("width", "0px");
   await capture(page, card, "board-narrow.png");
 });

@@ -32308,8 +32308,11 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 
 .artifact-name {
+  min-width: 0;
+  overflow: hidden;
   font-size: 12.5px;
   font-weight: 600;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

@@ -471,7 +471,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       authorProofClass: claim?.proofClass ?? null,
       suggestedProofClass: canonical.suggestedProofClass,
       links,
-      gaps: [...new Set(gaps)].sort(),
+      gaps: canonical.material ? [...new Set(gaps)].sort() : [],
       warnings,
     };
   });

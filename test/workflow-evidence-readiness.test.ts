@@ -167,6 +167,33 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
     }],
   });
   assert.deepEqual(crossScope.gapCodes, ["scope_conflict"]);
+
+  const supportingCriterion = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: [{
+      id: "canonical-supporting",
+      text: "Supporting visual context",
+      material: false,
+      suggestedProofClass: "visual",
+      matchedClientCriterionIds: ["criterion-supporting"],
+    }],
+    coverage: [{
+      ...focusedClaim,
+      clientCriterionId: "criterion-supporting",
+      criterion: "Supporting visual context",
+      proofClass: "visual",
+    }],
+    evidence: [{
+      clientItemId: command.clientItemId,
+      evidenceId: "artifact-supporting",
+      repositoryScope: "repo-01",
+    }],
+  });
+  assert.equal(supportingCriterion.status, "ready");
+  assert.deepEqual(
+    supportingCriterion.criteria[0]?.gaps,
+    [],
+    "supporting criteria must not create readiness gaps",
+  );
 });
 
 test("maximum canonical criterion text remains a valid persisted readiness result", () => {

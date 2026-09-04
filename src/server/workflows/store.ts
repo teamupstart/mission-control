@@ -1272,11 +1272,15 @@ const WorkflowEvidenceStagingRowSchema = z.object({
       message: "Only command evidence carries inline content, and command evidence must carry it",
     });
   }
-  if ((row.source_kind === "command") !== (row.command_exit_code !== null)) {
+  // Command evidence existed before exit status gained a dedicated column. Those rows still
+  // carry the status in their integrity-checked inline artifact, but NULL is the only honest
+  // structured value for a field their writer never recorded. New writes remain strict in
+  // stageWorkflowEvidence, while non-command rows may never claim command status.
+  if (row.source_kind !== "command" && row.command_exit_code !== null) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["command_exit_code"],
-      message: "Only command evidence carries an exit code, and command evidence must carry it",
+      message: "Only command evidence carries an exit code",
     });
   }
   if (row.source_kind === "command" && row.inline_content !== null) {

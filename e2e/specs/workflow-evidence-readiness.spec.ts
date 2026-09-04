@@ -207,6 +207,11 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     output: "ok 1 - focused behavior\n",
   };
   const content = workflowCommandEvidenceContent(command);
+  const secondaryContent = workflowCommandEvidenceContent({
+    command: "node --test integration.test.ts",
+    exitCode: 0,
+    output: "ok 1 - integrated behavior\n",
+  });
   const now = Date.now();
   withDaemonDb(daemon, (db) => {
     db.prepare(
@@ -242,6 +247,21 @@ test("criterion readiness waits, repairs in the same round, and records an opera
       now,
       now,
     );
+    insertEvidence.run(
+      "e2e-secondary-command",
+      noteKey,
+      "secondary-command",
+      session!.cwd,
+      "node --test integration.test.ts",
+      secondaryContent,
+      null,
+      "legacy-command-output.txt",
+      "Legacy command evidence remains readable",
+      Buffer.byteLength(secondaryContent),
+      createHash("sha256").update(secondaryContent).digest("hex"),
+      now,
+      now,
+    );
   });
 
   await dashboard.goto(`${daemon.baseURL}/#/runs`);
@@ -253,7 +273,15 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await expectContentClearsBorder(dialog);
   const composer = dialog.getByRole("region", { name: "Workflow evidence" });
   await expect(composer).toContainText("focused.test.ts");
+  await expect(composer).toContainText("legacy-command-output.txt");
+  await expect(composer).not.toContainText("Registered evidence is unavailable");
   await expect(composer).toContainText("0 saved");
+  const executionEvidence = composer.getByLabel("Execution evidence for acceptance criterion");
+  await executionEvidence.selectOption("execution:secondary-command");
+  await expect(executionEvidence).toHaveValue("execution:secondary-command");
+  await executionEvidence.scrollIntoViewIfNeeded();
+  await capture(dashboard, "01-legacy-command-evidence-visible");
+  await executionEvidence.selectOption("");
 
   await composer.getByPlaceholder("What must be true for this work to be accepted?")
     .fill("The dashboard result is visually correct");

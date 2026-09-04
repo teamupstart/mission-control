@@ -362,6 +362,12 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     sha256: (await import("node:crypto")).createHash("sha256").update(inlineContent).digest("hex"),
   };
   const claim = { ...focusedClaim, id: "staged-claim", sourceRoot: "/repo" };
+  assert.throws(
+    () => store.stageWorkflowEvidence("missing-command-status", [{
+      ...item,
+      commandExitCode: null,
+    }], 2),
+  );
   assert.equal(store.stageWorkflowEvidence("readiness-note", [item], 2, null, [claim]).generation, 1);
   assert.equal(store.stageWorkflowEvidence("readiness-note", [item], 3, null, [claim]).generation, 1);
   assert.throws(

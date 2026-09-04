@@ -6541,6 +6541,10 @@ export class Registry extends EventEmitter {
       ? this.pipelineRuns.get(pipelineRunKey(link.provider, link.repoRoot, link.slug)) ?? null
       : null;
     const resolved = await resolvePipelineWorkspace({ task, commission, linkedRun });
+    this.pipelineWorkspaceResolvedKeys.set(
+      session.id,
+      this.pipelineWorkspaceRefreshKey({ task, commission: resolved.commission, linkedRun }),
+    );
     this.applyPipelineWorkspaceResolution(session.id, commission, resolved);
     return {
       root: resolved.liveRoot,

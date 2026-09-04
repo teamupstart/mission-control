@@ -27,7 +27,8 @@ Control's existing new-client fallback. It never takes over an existing direct a
 - Register `herdr` after `tmux` and before `cmux`.
 - Preserve shell PID and null tty so Phase 1 correlation can bind real sessions.
 - Support the default Herdr server namespace only and isolate inherited namespace selectors.
-- Gate all Herdr runtime availability on POSIX host support without a vendor branch in callers.
+- Gate all Herdr runtime availability on an explicit macOS/Linux host allowlist without a vendor
+  branch in callers.
 - Extend generic HTTP, setup, menu, home, focus, launch, test-helper, and serialization coverage.
 - Add fake-only browser E2E coverage and stable-Herdr manual verification.
 - Document supported behavior, minimum compatibility, and known focus and namespace limits.
@@ -84,13 +85,13 @@ Use `resolveBin`, `binEnv`, and `binPresent` rather than adding another binary r
 must not cache the result so installing or changing Herdr does not require a Mission Control restart.
 
 Extend the server-side `BinSpec` availability contract with one generic host-support check that
-returns an optional actionable reason. Herdr reports
-`Herdr integration is supported on POSIX hosts only` for `win32` and null for supported POSIX hosts.
-Keep `herdr` in the exhaustive registry on every host, but make `binPresent`, terminal enumeration,
-home selection, target availability and launch revalidation, and setup checks consume this shared
-result before filesystem or process work. On an unsupported host, the target row remains visible and
-disabled with that reason, and no Herdr CLI, socket, or server-start seam runs. Do not add a
-`backend.id === "herdr"` branch outside the adapter or generic availability helper.
+returns an optional actionable reason. Herdr returns null only when `process.platform` is `darwin`
+or `linux`, and returns `Herdr integration is supported on macOS and Linux only` for every other
+value. Keep `herdr` in the exhaustive registry on every host, but make `binPresent`, terminal
+enumeration, home selection, target availability and launch revalidation, and setup checks consume
+this shared result before filesystem or process work. On an unsupported host, the target row remains
+visible and disabled with that reason, and no Herdr CLI, socket, or server-start seam runs. Do not
+add a `backend.id === "herdr"` branch outside the adapter or generic availability helper.
 
 Choose a single-character glyph consistent with existing multiplexer rows. Keep the accessible and
 visible name `Herdr`; do not add an image or vendor-specific CSS.
@@ -101,9 +102,11 @@ Create `src/server/terminal/herdr-client.ts` with a narrow dependency-injected A
 implementation uses Node's local socket support and existing Zod, while tests inject connection,
 clock or timeout, CLI execution, and detached-spawn behavior.
 
-Scope this phase to POSIX hosts. The supported transport is Herdr's Unix socket, and full-client
-attach uses POSIX `env -u` environment scrubbing. Windows named-pipe transport and Windows-compatible
-environment scrubbing are explicit future compatibility work, not an implied part of this phase.
+Scope this phase to the explicit Node platform allowlist `darwin` and `linux`. The supported
+transport is Herdr's Unix socket, and full-client attach now applies POSIX `env -u` separately to
+all five selectors listed above. Windows named-pipe transport and only the Windows-compatible
+environment-scrubbing mechanism are explicit future compatibility work. Every other platform is
+unsupported until it is separately validated and added to the allowlist.
 
 For each logical operation:
 
@@ -242,18 +245,24 @@ Create `test/herdr-adapter.test.ts` and cover:
 - null tty with preserved shell PID and cwd fallback;
 - all shared key names, raw text, bracket-aware paste, capture, and documented agent focus;
 - default-session environment isolation on every CLI and server start;
+- separate assertions that every adapter-owned CLI and server-start environment omits each of
+  `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`;
 - workspace creation with exact cwd and both selection intents, shell-safe argv, optional same-cwd
   no-focus side split, confirmed-refusal rollback, uncertain-delivery preservation, rename, close,
   and attach argv;
 - `clients: null`, `paneMode: null`, plain name rules, label, glyph, binary override, and registry
   completeness;
-- supported POSIX and unsupported `win32` host results from the Herdr binary contract.
+- supported `darwin` and `linux` results plus unsupported `win32` and `freebsd` results from the
+  Herdr binary contract;
+- attach argv assertions that each of `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`,
+  `HERDR_TAB_ID`, and `HERDR_PANE_ID` has its own `env -u` entry before the resolved binary.
 
 Extend existing registry, enumeration, correlation, home, target, focus-composition, setup, HTTP,
-and shared-protocol tests where Herdr changes an exhaustive result. Add an installed-binary,
-unsupported-host case proving the chooser and setup row carry the POSIX-only reason, launch
-revalidation refuses, enumeration and home selection skip Herdr, and no CLI, socket, or server-start
-seam is called. Keep every unit test independent from an installed Herdr binary.
+and shared-protocol tests where Herdr changes an exhaustive result. Add installed-binary cases for
+`win32` and an additional unallowlisted platform such as `freebsd`, proving the chooser and setup
+row carry the macOS/Linux-only reason, launch revalidation refuses, enumeration and home selection
+skip Herdr, and no CLI, socket, or server-start seam is called. Keep every unit test independent
+from an installed Herdr binary.
 
 ### 7. Add built-dashboard E2E coverage
 
@@ -283,8 +292,9 @@ otherwise do not add unrelated geometry coverage.
 Update `README.md` and `docs/harnesses-and-terminals.md` to state:
 
 - Herdr is a supported multiplexer through the same adapter registry as tmux and cmux;
-- initial support is POSIX-only; Windows named-pipe transport and environment scrubbing are not yet
-  supported, and the disabled target/setup state says so;
+- initial support is allowlisted to macOS and Linux; Windows named-pipe transport and
+  Windows-compatible environment scrubbing are not yet supported, other platforms are unvalidated,
+  and the disabled target/setup state says so;
 - the supported stable compatibility floor and `HERDR_BIN` override;
 - v1 controls only the default local Herdr server session;
 - Mission Control supports create, discover, write, paste, capture, internal focus, rename, close,
@@ -309,8 +319,9 @@ gitignored evidence location and attach them to the implementation pull request.
 - The adapter speaks only the validated stable protocol reported compatible by Herdr status. Additive
   response fields are tolerated; missing or changed consumed fields are rejected.
 - Default namespace isolation is explicit on CLI probes, server startup, and full-client attach.
-- The generic binary/availability contract gates Herdr on POSIX hosts before installation, discovery,
-  home, launch, CLI, server-start, or socket work; shared IDs remain exhaustive on every host.
+- The generic binary/availability contract allows Herdr only on `darwin` and `linux` and gates every
+  other platform before installation, discovery, home, launch, CLI, server-start, or socket work;
+  shared IDs remain exhaustive on every host.
 - Passive discovery and existing-target operations are non-starting. All server startup is owned by
   workspace creation readiness.
 - Unknown mutation outcomes are preserved through `TerminalResult`; no caller retries or cleans up an
@@ -361,8 +372,9 @@ Herdr version and compatibility status in the pull request evidence, not in comm
   the socket, and ignores late responses.
 - Every mutation response, framing, correlation, or validation failure after request write preserves
   `outcomeUnknown: true`; only pre-write failures and parsed application refusals are confirmed.
-- On `win32`, Herdr remains registered but unavailable with the POSIX-only reason, and no CLI,
-  server-start, discovery, home, launch, or socket operation is invoked.
+- On `win32` and another unallowlisted platform such as `freebsd`, Herdr remains registered but
+  unavailable with the macOS/Linux-only reason, and no CLI, server-start, discovery, home, launch,
+  or socket operation is invoked.
 - Null tty panes bind only through Phase 1's exact PID ancestry.
 - Background dispatch records `select: false`; operator launch records `select: true`.
 - Workspace creation and any requested side split receive the exact worktree cwd from the launch
@@ -373,8 +385,8 @@ Herdr version and compatibility status in the pull request evidence, not in comm
 - No direct attach takeover, named-server scope, vendor branch outside the adapter, new persistence,
   real-agent E2E spend, committed evidence, generated-file edit, or `CHANGELOG.md` edit lands.
 - README and terminal documentation match the shipped compatibility and limitations.
-- README and terminal documentation state the initial POSIX-only boundary and do not imply Windows
-  named-pipe or environment-scrubbing support.
+- README and terminal documentation state the initial macOS/Linux allowlist and do not imply
+  Windows named-pipe or Windows-compatible environment-scrubbing support.
 
 ## Downstream handoff
 
@@ -398,10 +410,10 @@ identity work.
 - Reconciliation audit: current spawn contracts required the namespace-scrubbing attach wrapper,
   target-liveness semantics required narrowing server auto-start to workspace creation, and terminal
   launch correctness required carrying `spec.cwd` into workspace creation and any side split.
-  Review also made terminal-failure settlement, post-write mutation uncertainty, and the POSIX-only
-  platform boundary explicit, including the generic availability gate that enforces it before any
-  Herdr operation. These corrections are owned here and are reflected in the root plan and phased
-  index.
+  Review also made terminal-failure settlement, post-write mutation uncertainty, and the explicit
+  macOS/Linux platform allowlist clear, including the generic availability gate that enforces it
+  before any Herdr operation and the requirement to scrub all five selectors now on supported
+  hosts. These corrections are owned here and are reflected in the root plan and phased index.
 - Final audit: the approved socket architecture, default-session scope, new-client focus fallback,
   validation bar, and explicit exclusions are all represented in implementation steps and exit
   criteria.

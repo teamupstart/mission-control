@@ -14,9 +14,10 @@ needs a bounded local-socket transport inside its adapter:
 2. `spawnDetached` cannot distinguish a background dispatch from an operator opening a terminal.
    Herdr and cmux both expose an explicit focus flag. Add a backend-neutral selection intent so
    dispatch stays in the background while a requested terminal becomes visible.
-3. Binary presence is treated as runtime support. The initial Herdr adapter is POSIX-only, so the
-   generic binary availability contract must expose an actionable unsupported-host reason and gate
-   discovery, home selection, target launch, and setup before any process or socket work.
+3. Binary presence is treated as runtime support. The initial Herdr adapter validates only macOS and
+   Linux, so the generic binary availability contract must expose an actionable unsupported-host
+   reason and gate discovery, home selection, target launch, and setup before any process or socket
+   work on every platform outside that explicit allowlist.
 4. Herdr's CLI is a wrapper over its newline-delimited JSON socket. A CLI-only discovery pass would
    spawn one process for the snapshot plus one process per pane every 1.5 seconds, and it cannot use
    Herdr's bracket-aware `pane.send_input` operation for a safe multiline paste. A small, validated
@@ -96,6 +97,10 @@ source:
   paste rather than manufacture unconditional escape markers.
 - Documented: workspace and tab creation do not select the new layout unless `focus` is requested.
   That is the distinction Mission Control needs between background dispatch and an operator launch.
+- Documented: stable Herdr binaries are published for Linux, macOS, and Windows, while the official
+  Unix installer supports Linux and Darwin. This adapter validates its Unix-socket and `env -u`
+  path only on Node platforms `linux` and `darwin`; Windows and every other platform remain outside
+  the initial adapter allowlist.
 - Documented: `herdr status server --json` reports whether the server is running and whether the
   installed client is protocol-compatible. Running `herdr` starts the detached server when needed,
   but the noninteractive workspace commands do not. Mission Control must therefore start and await a
@@ -111,6 +116,8 @@ Primary sources:
 - [Herdr socket API](https://herdr.dev/docs/socket-api/)
 - [Herdr CLI reference](https://herdr.dev/docs/cli-reference/)
 - [Herdr session persistence](https://herdr.dev/docs/session-state/)
+- [Herdr install documentation](https://herdr.dev/docs/install/)
+- [v0.8.2 Unix installer source](https://github.com/herdrdev/herdr/blob/v0.8.2/website/install.sh)
 - [v0.8.2 pane process implementation](https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api/panes.rs#L203-L249)
 - [v0.8.2 bracket-aware input encoding](https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api_helpers.rs#L69-L106)
 
@@ -227,14 +234,16 @@ leave a real daemon running.
 
 Create `src/server/terminal/herdr.ts`:
 
-- Scope the initial adapter to POSIX hosts. It uses Herdr's Unix socket and a POSIX `env -u`
-  full-client attach wrapper; Windows named-pipe transport and environment scrubbing are separate
+- Scope the initial adapter to the explicit Node platform allowlist `darwin` and `linux`. It uses
+  Herdr's Unix socket and a POSIX `env -u` full-client attach wrapper; Windows named-pipe transport,
+  Windows-compatible environment scrubbing, and every other unvalidated platform are separate
   compatibility work and must not be presented as supported.
 - Extend the generic server-side `BinSpec` availability contract with a host-support check and an
-  actionable reason, rather than branching on `herdr` in callers. The Herdr spec reports unsupported
-  on `win32`; `binPresent`, discovery, home selection, target launch, and setup consume that same
-  result. Keep the ID registered for exhaustive schemas, but render its target row disabled as
-  `Herdr integration is supported on POSIX hosts only` and run no Herdr process or socket operation.
+  actionable reason, rather than branching on `herdr` in callers. The Herdr spec returns supported
+  only for `darwin` and `linux` and returns `Herdr integration is supported on macOS and Linux only`
+  for every other platform; `binPresent`, discovery, home selection, target launch, and setup
+  consume that same result. Keep the ID registered for exhaustive schemas, but render its target
+  row disabled with that reason and run no Herdr process or socket operation.
 - `HERDR_BIN` follows `CMUX_BIN`: an override plus `herdr` on PATH. For the recommended default-only
   scope, remove ambient `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`,
   and `HERDR_PANE_ID` from adapter subprocesses so starting Mission Control inside a Herdr pane does
@@ -252,10 +261,11 @@ Create `src/server/terminal/herdr.ts`:
   same `spec.cwd`. Close that exact workspace only when a parsed Herdr refusal confirms the command
   was not delivered. Preserve the workspace for every `outcomeUnknown` timeout, disconnect,
   framing, correlation, or schema-failure path so cleanup cannot destroy work that may have started.
-- `sessions.attachArgv` returns a POSIX `env -u ...` wrapper followed by the resolved Herdr binary,
-  attaching the full client to the default server even when the daemon inherited named-session
-  selectors. `rename` and `kill` target workspace ID, not label. Use `PLAIN_NAMES` unless live v0.8.2
-  validation proves a stricter label rule.
+- `sessions.attachArgv` returns a POSIX wrapper that applies `env -u` separately to
+  `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`,
+  followed by the resolved Herdr binary. That attaches the full client to the default server even
+  when the daemon inherited namespace selectors. `rename` and `kill` target workspace ID, not
+  label. Use `PLAIN_NAMES` unless live v0.8.2 validation proves a stricter label rule.
 - Declare `clients: null` and `paneMode: null` with comments that state the measured reason.
 
 Append `herdr` to `MULTIPLEXER_IDS` after `tmux` and before `cmux`, add it to the exhaustive factory
@@ -285,9 +295,10 @@ Add `test/herdr-adapter.test.ts` for:
 - default-session environment isolation, host support, and names.
 
 Extend binary, enumeration, home, terminal-target, setup, and launch contract tests with an installed
-Herdr binary on an injected unsupported host. They must prove the row remains visible but disabled
-with the POSIX-only reason, launch revalidation refuses it, discovery and home enumeration skip it,
-and no CLI, socket, or server-start seam is invoked.
+Herdr binary on injected `win32` and another unallowlisted platform such as `freebsd`. They must
+prove each row remains visible but disabled with the macOS/Linux-only reason, launch revalidation
+refuses it, discovery and home enumeration skip it, and no CLI, socket, or server-start seam is
+invoked. Adapter tests must also cover both allowlisted values, `darwin` and `linux`.
 
 Extend registry, enumeration, home, target, focus-composition, and setup tests so adding the third
 multiplexer changes no generic behavior accidentally. In particular, pin that an installed but
@@ -312,6 +323,9 @@ Update `README.md` and `docs/harnesses-and-terminals.md`:
 
 - List Herdr as a supported multiplexer.
 - State the required stable Herdr version/protocol and `HERDR_BIN` override.
+- State that the initial adapter supports macOS and Linux only. Windows named-pipe transport and
+  Windows-compatible environment scrubbing are future work, and other Node platforms have not been
+  validated.
 - Explain that v1 controls the default local Herdr session only.
 - Explain that Mission Control can create, discover, write, capture, focus internally, rename, and
   close Herdr workspaces.
@@ -327,7 +341,7 @@ Do not edit `CHANGELOG.md`.
 | Failure | Required behavior |
 |---|---|
 | Herdr not installed | Registry row is unavailable by name; no subprocess on the discovery tick |
-| Herdr installed on an unsupported host | Target and setup rows show the POSIX-only reason; discovery, home, launch, CLI, and socket paths do not run |
+| Herdr installed outside the `darwin`/`linux` allowlist | Target and setup rows show the macOS/Linux-only reason; discovery, home, launch, CLI, and socket paths do not run |
 | Herdr installed, server stopped | Discovery and existing-target operations do not start it; workspace creation starts and awaits the headless server |
 | Installed client and server incompatible | Fail that backend with an actionable restart/update message; never stop the server automatically |
 | Socket response invalid or mismatched | Reject the operation; never guess a pane or mutation result |
@@ -354,9 +368,10 @@ Implementation is complete only when:
   stays gitignored and is attached to the implementation pull request, not committed.
 - The test proves Mission Control launched no real agent binary and left no test Herdr server.
 - README and terminal architecture docs match the implemented version and limitations, including the
-  initial POSIX-only boundary.
-- An installed Herdr binary on `win32` remains unavailable with an actionable reason and cannot
-  reach discovery, home, launch, CLI, server-start, or socket work.
+  initial macOS/Linux allowlist.
+- An installed Herdr binary on `win32` or another unallowlisted platform such as `freebsd` remains
+  unavailable with an actionable reason and cannot reach discovery, home, launch, CLI, server-start,
+  or socket work.
 - No caller outside the adapter branches on the Herdr ID.
 
 ## Decisions taken

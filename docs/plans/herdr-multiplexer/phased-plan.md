@@ -66,10 +66,11 @@ change in the pull request.
   protocol contract. Mission Control never stops, replaces, or silently speaks to an incompatible
   Herdr server.
 - The full `herdr` client is the attach target. Because the current attach contract carries argv but
-  not environment, the adapter returns a POSIX `env -u ...` wrapper that clears every Herdr
-  namespace selector before executing the resolved binary. The adapter first selects the target
-  inside Herdr, then generic focus opens that wrapper through an installed emulator when no host can
-  be found because `clients` is unavailable.
+  not environment, the adapter returns a POSIX wrapper that applies `env -u` separately to
+  `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`
+  before executing the resolved binary. The adapter first selects the target inside Herdr, then
+  generic focus opens that wrapper through an installed emulator when no host can be found because
+  `clients` is unavailable.
 - Workspace creation carries `spec.cwd` into Herdr's create request, and an optional side split is
   rooted at the same cwd. Command injection alone is not allowed to inherit Herdr's default directory.
 - No phase adds named Herdr server discovery, client-tty inference, an undocumented pane-focus call,
@@ -80,8 +81,9 @@ change in the pull request.
 1. The draft originally described `attachArgv` as returning only the resolved Herdr binary. Current
    code proves that `attachArgv` carries no environment and every emulator runs the supplied argv in
    an inherited environment. The approved default-session guarantee therefore requires the Herdr
-   adapter to return an `env -u ...` wrapper for every namespace selector before the binary. This is
-   owned by Phase 2 and is now reflected in the root plan.
+   adapter to apply `env -u` to all five selectors before the binary. This POSIX behavior is owned by
+   Phase 2 and is now reflected in the root plan; only a Windows-compatible scrubbing mechanism is
+   deferred.
 2. The draft originally allowed a stopped server to be started before any mutation. Reads and
    mutations such as write, focus, rename, and close address state that cannot be live when the
    server is stopped, while auto-starting can restore or create state the operator did not request.
@@ -173,13 +175,15 @@ may merge a temporary Herdr-specific correlation or creation branch.
 - Read failures degrade only Herdr for the current tick. Every mutation protocol failure after its
   request was written preserves `outcomeUnknown` so callers do not replay an operation that may have
   landed; pre-write failures and parsed application refusals remain confirmed.
-- Initial support is POSIX-only: Unix socket transport and `env -u` attach are supported, while
-  Windows named pipes and environment scrubbing remain future compatibility work.
+- Initial support is explicitly allowlisted to Node platforms `darwin` and `linux`: Unix socket
+  transport and `env -u` attach are implemented now, while Windows named pipes and only the
+  Windows-compatible environment-scrubbing mechanism remain future compatibility work.
 - A generic server-side binary/availability host check keeps the exhaustive Herdr ID registered but
-  makes it visibly unavailable on `win32` before discovery, home, launch, CLI, server-start, or
-  socket work. Callers do not branch on the Herdr ID.
+  makes it visibly unavailable on every platform outside `darwin` and `linux` before discovery,
+  home, launch, CLI, server-start, or socket work. Callers do not branch on the Herdr ID.
 - `clients: null` and `paneMode: null` are honest capability declarations, not missing work.
-- Full-client attach clears Herdr namespace selectors in argv and never uses direct-attach takeover.
+- Full-client attach applies `env -u` to all five selectors named above, tests each one, and never
+  uses direct-attach takeover.
 
 ### Compatibility and ownership
 

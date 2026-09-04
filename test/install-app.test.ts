@@ -20,11 +20,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,6 +52,7 @@ import {
   resolveTargetRef,
 } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 
 const FORK = "someone-else/ai-harness";
 
@@ -377,6 +380,7 @@ test("install arguments parse, and an unknown one stops the install", () => {
       progress: false,
       stageOnly: false,
       fromStaged: null,
+      stagedRevision: null,
     },
     help: false,
     problem: null,
@@ -397,13 +401,23 @@ test("the two halves of an update are selected by flags, and never both at once"
   assert.equal(staged.options.progress, true);
   assert.equal(staged.options.fromStaged, null);
 
-  const install = parseArgs(["--from-staged", "/state/app-src/release/mac-arm64/Mission Control.app"]);
+  const install = parseArgs([
+    "--from-staged",
+    "/state/app-src/release/mac-arm64/Mission Control.app",
+    "--staged-revision",
+    "8675309-1700000000000",
+  ]);
   assert.equal(install.problem, null);
   assert.equal(
     install.options.fromStaged,
     "/state/app-src/release/mac-arm64/Mission Control.app",
   );
   assert.equal(install.options.stageOnly, false);
+  // The pin the app took when it verified that bundle, checked again in the instant before the
+  // swap because the app cannot look any later than its own quit.
+  assert.equal(install.options.stagedRevision, "8675309-1700000000000");
+  assert.equal(parseArgs(["--staged-revision"]).problem, "--staged-revision needs a value");
+  assert.equal(parseArgs(["--from-staged", "/tmp/a.app"]).options.stagedRevision, null);
 
   assert.equal(parseArgs(["--from-staged"]).problem, "--from-staged needs a value");
   assert.equal(
@@ -431,6 +445,66 @@ test("a staged bundle is refused unless its version is the one the ref names", (
   assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "origin/main" }), null);
   assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "9f2c1ab" }), null);
   assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: null }), null);
+});
+
+test("the real staged install refuses a bundle replaced after it was pinned", async (t) => {
+  // Asserted by running `install-app.mjs` rather than its predicates, because the defect this
+  // guards is a missing CALL: the pure rule can be perfect while nothing consults it. The app
+  // takes this pin when the build is verified and cannot look again after it quits, so the
+  // script is the last reader before the swap.
+  const root = await mkdtemp(join(tmpdir(), "mission-staged-pin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle = join(root, "staged", "Mission Control.app");
+  const appsDir = join(root, "apps");
+  const stateDirectory = join(root, "state");
+  await mkdir(join(bundle, "Contents"), { recursive: true });
+  await mkdir(appsDir, { recursive: true });
+  await mkdir(stateDirectory, { recursive: true });
+  await writeFile(
+    join(bundle, "Contents", "Info.plist"),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0">',
+      "<dict><key>CFBundleShortVersionString</key><string>9.9.9</string></dict>",
+      "</plist>",
+    ].join("\n"),
+  );
+
+  const run = (revision: string): { code: number | null; output: string } => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(process.cwd(), "scripts", "install-app.mjs"),
+        "--from-staged",
+        bundle,
+        "--ref",
+        "v9.9.9",
+        "--staged-revision",
+        revision,
+        "--apps-dir",
+        appsDir,
+      ],
+      { encoding: "utf8", env: { ...process.env, MISSION_HOME: stateDirectory } },
+    );
+    return { code: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  };
+
+  const pinned = stagedBundleRevision(statSync(bundle));
+  assert.ok(pinned, "the staged bundle should have an identity to pin");
+
+  // A pin that does not match what is there - the shape a rebuild of the shared clone leaves,
+  // same version and all.
+  const refused = run("1-1");
+  assert.equal(refused.code, 1);
+  assert.match(refused.output, /replaced after it was prepared/);
+  assert.deepEqual(readdirSync(appsDir), [], "nothing may reach the apps dir");
+  assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), false);
+
+  // The bundle the app actually verified still installs, so the guard is not simply refusing.
+  const installed = run(pinned!);
+  assert.equal(installed.code, 0, installed.output);
+  assert.equal(existsSync(join(appsDir, "Mission Control.app")), true);
+  assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
 });
 
 test("a missing install directory stops the install before the copy invents one", () => {

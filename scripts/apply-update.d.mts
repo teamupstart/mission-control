@@ -10,6 +10,11 @@ export interface ApplyUpdateArgs {
    * clone as the helper always did.
    */
   stagedBundle?: string | null;
+  /**
+   * What that bundle was when the app verified it, forwarded to the install script so the last
+   * reader before the swap can refuse a bundle that changed in between.
+   */
+  stagedRevision?: string | null;
 }
 
 /**
@@ -52,6 +57,7 @@ export interface ApplyOperations {
     tag: string,
     appsDir: string,
     stagedBundle?: string | null,
+    stagedRevision?: string | null,
   ): void;
   restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   bundleVersion(path: string): string | null;

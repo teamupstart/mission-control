@@ -139,8 +139,11 @@ function operations(
       tag: string,
       appsDir: string,
       stagedBundle: string | null = null,
+      stagedRevision: string | null = null,
     ) => {
-      actions.push(`install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}`);
+      actions.push(
+        `install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}:rev=${stagedRevision ?? "none"}`,
+      );
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
     },
     restoreApp: (backupApp: string, appPath: string, pid: number) => {
@@ -206,7 +209,7 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
-        action.endsWith("/scripts/install-app.mjs:v1.2.4:/Applications:staged=none"),
+        action.endsWith("/scripts/install-app.mjs:v1.2.4:/Applications:staged=none:rev=none"),
     ),
   );
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
@@ -231,7 +234,7 @@ test("the rebuild targets the directory the receipt names, not /Applications by 
   assert.ok(
     f.actions.some((action) =>
       action.endsWith(
-        "/scripts/install-app.mjs:v1.2.4:/Users/someone/phase4-sandbox/Applications:staged=none",
+        "/scripts/install-app.mjs:v1.2.4:/Users/someone/phase4-sandbox/Applications:staged=none:rev=none",
       ),
     ),
     `no install action carried the receipt's apps dir: ${f.actions.join(", ")}`,
@@ -290,9 +293,10 @@ test("helper argv is explicit and complete", () => {
     ]),
     {
       args: {
-        // The one optional argument, absent: a handoff from an app that predates staging
-        // carries no bundle and still has to be applied.
+        // The optional arguments, absent: a handoff from an app that predates staging carries
+        // neither a bundle nor a pin, and still has to be applied.
         stagedBundle: null,
+        stagedRevision: null,
         sourceClone: "/clone",
         targetTag: "v1.2.4",
         appPath: "/Applications/Mission Control.app",
@@ -1026,16 +1030,23 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   const bundle = "/state/app-src/release/mac-arm64/Mission Control.app";
   const f = operations();
 
-  const result = await runApplyUpdate({ ...args(state), stagedBundle: bundle }, f.ops);
+  const result = await runApplyUpdate(
+    { ...args(state), stagedBundle: bundle, stagedRevision: "4242-1700000000000" },
+    f.ops,
+  );
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.deepEqual(result, { ok: true, message: null });
   assert.equal(outcome.result, "success");
+  // The bundle AND the pin the app took when it verified it. This helper forwards both without
+  // interpreting either: the script that performs the swap is the last reader that can check.
   assert.ok(
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
-        action.endsWith(`/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}`),
+        action.endsWith(
+          `/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}:rev=4242-1700000000000`,
+        ),
     ),
     f.actions.join("\n"),
   );
@@ -1065,6 +1076,19 @@ test("a staged install is bounded in minutes and forwards the bundle to the inst
   const bundle = join(root, "Mission Control.app");
 
   const ops = realApplyOperations(join(root, "update.log"), 5_000, 5_000);
+  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle, "99-1700000000000");
+  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+    "--ref",
+    "v1.2.4",
+    "--apps-dir",
+    "/Applications",
+    "--from-staged",
+    bundle,
+    "--staged-revision",
+    "99-1700000000000",
+  ]);
+
+  // A handoff from an app that predates the pin carries no token, and must still install.
   ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle);
   assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
     "--ref",

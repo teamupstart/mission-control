@@ -16,6 +16,7 @@
 //   --progress            also emit machine-readable stage markers for the app to render
 //   --stage-only          build and verify, then stop before touching the installed app
 //   --from-staged <path>  install an already-staged bundle: swap and receipt only
+//   --staged-revision <t> refuse that bundle unless it is still the one this token identifies
 //
 // ## Why the run splits in two
 //
@@ -78,6 +79,10 @@ import {
   UPDATE_PROGRESS_MARKER,
   UPDATE_STAGED_MARKER,
 } from "../src/shared/update-stages.mjs";
+import {
+  stagedBundleRevision,
+  stagedRevisionProblem,
+} from "../src/shared/staged-bundle.mjs";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
@@ -468,7 +473,8 @@ const USAGE = `Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-ori
   --apps-dir <dir>      install into <dir> instead of ${DEFAULT_APPS_DIR}
   --progress            emit machine-readable stage markers alongside the human output
   --stage-only          build and verify, then stop before touching the installed app
-  --from-staged <path>  install an already-staged bundle: swap and receipt only`;
+  --from-staged <path>  install an already-staged bundle: swap and receipt only
+  --staged-revision <t> refuse that bundle unless it is still the one this token identifies`;
 
 export function parseArgs(argv) {
   const options = {
@@ -479,6 +485,7 @@ export function parseArgs(argv) {
     progress: false,
     stageOnly: false,
     fromStaged: null,
+    stagedRevision: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -487,13 +494,19 @@ export function parseArgs(argv) {
     else if (arg === "--progress") options.progress = true;
     else if (arg === "--stage-only") options.stageOnly = true;
     else if (arg === "--help" || arg === "-h") return { options, help: true, problem: null };
-    else if (arg === "--ref" || arg === "--apps-dir" || arg === "--from-staged") {
+    else if (
+      arg === "--ref" ||
+      arg === "--apps-dir" ||
+      arg === "--from-staged" ||
+      arg === "--staged-revision"
+    ) {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) {
         return { options, help: false, problem: `${arg} needs a value` };
       }
       if (arg === "--ref") options.ref = value;
       else if (arg === "--from-staged") options.fromStaged = resolve(value);
+      else if (arg === "--staged-revision") options.stagedRevision = value;
       else options.appsDir = resolve(value);
       i += 1;
     } else return { options, help: false, problem: `unknown argument: ${arg}` };
@@ -584,6 +597,7 @@ function swapAndRecord({
   source,
   clone,
   sourceVersion,
+  stagedRevision = null,
   progress,
 }) {
   progress("install");
@@ -598,6 +612,16 @@ function swapAndRecord({
   if (dryRun) {
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
+    // The last look before the bundle is copied, and deliberately here rather than earlier in
+    // the run: the app checked this before it quit, and the minutes since then are exactly the
+    // window a rebuild of the shared clone can land in. A version equal to the ref's is not
+    // enough - a rebuild at the same tag carries the same version - so this compares the
+    // directory the app pinned.
+    const changed = stagedRevisionProblem({
+      expected: stagedRevision,
+      found: stagedBundleRevision(statSync(bundle, { throwIfNoEntry: false })),
+    });
+    if (changed) fail(changed);
     const swap = replaceAppBundle({
       sourceBundle: bundle,
       appPath,
@@ -721,6 +745,7 @@ function installApp(options) {
       source: "flag",
       clone,
       sourceVersion: stagedVersion,
+      stagedRevision: options.stagedRevision,
       progress,
     });
     console.log("\n\x1b[1m─ summary ─\x1b[0m");
@@ -855,7 +880,10 @@ function installApp(options) {
     console.log(`  bundle: ${packagedApp}`);
     console.log(`  source: ${clone}  (nothing was installed: --stage-only)`);
     console.log("\nNext:");
-    console.log(`  node scripts/install-app.mjs --ref ${ref} --from-staged "${packagedApp}"`);
+    const revision = stagedBundleRevision(statSync(packagedApp, { throwIfNoEntry: false }));
+    console.log(
+      `  node scripts/install-app.mjs --ref ${ref} --from-staged "${packagedApp}"${revision ? ` --staged-revision ${revision}` : ""}`,
+    );
     return 0;
   }
 

@@ -112,6 +112,8 @@ export function parseArgs(argv: string[]): {
     stageOnly: boolean;
     /** Install this already-built bundle: swap and receipt only. */
     fromStaged: string | null;
+    /** Refuse that bundle unless it is still the one this token identifies. */
+    stagedRevision: string | null;
   };
   help: boolean;
   problem: string | null;

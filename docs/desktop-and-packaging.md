@@ -155,10 +155,20 @@ in between - an operator running `make install ARGS="--ref ..."`, a late helper 
 perfectly valid app at the same path. So the bundle's version AND its revision (the directory's
 inode and mtime, both of which change when `npm run package` recreates it) must match what was
 built. A bundle that is missing, a different version, or the same version rebuilt is refused in
-the banner with a retry, before anything quits, and the same mismatch is refused a second time by
-`install-app.mjs --from-staged`, which compares the bundle's own version against the version its
-`--ref` names. Neither surface will install a version nobody accepted under a receipt naming the
-tag they did. Quitting Mission Control while a build
+the banner with a retry, before anything quits.
+
+That check cannot be the last one, because the swap happens in another process up to two minutes
+later - the helper waits for the app to exit first - and a rebuild can land in that window. So the
+revision travels: the app hands it over as `--staged-revision`, the detached helper forwards it
+without interpreting it, and `install-app.mjs --from-staged` re-reads the bundle's identity in the
+instant before `replaceAppBundle` and refuses a mismatch there. The version is checked too, against
+the version its `--ref` names. `src/shared/staged-bundle.mjs` owns the one formula all three read,
+and a handoff carrying no pin - an install driven by hand, or one from an app that predates this -
+still installs, exactly as a ref that names no version still installs.
+
+What remains open, deliberately: a rebuild that lands during the copy itself. Closing that means
+moving the bundle out of the shared clone before the swap rather than checking it, which is a
+separate change with its own cleanup lifetime. Quitting Mission Control while a build
 is running cancels it, along with the `npm` and `electron-builder` children it spawned, so nothing
 keeps writing into the clone that the next attempt will check out.
 

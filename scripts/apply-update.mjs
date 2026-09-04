@@ -346,7 +346,7 @@ export function rollbackIsNeeded({ installedVersion, backupVersion }) {
 }
 
 export function parseArgs(argv) {
-  const values = { stagedBundle: null };
+  const values = { stagedBundle: null, stagedRevision: null };
   const names = new Map([
     ["--source-clone", "sourceClone"],
     ["--target-tag", "targetTag"],
@@ -355,10 +355,11 @@ export function parseArgs(argv) {
     ["--state-dir", "stateDirectory"],
     ["--log-path", "logPath"],
     ["--staged-bundle", "stagedBundle"],
+    ["--staged-revision", "stagedRevision"],
   ]);
-  // The one optional argument, and optional rather than required because a handoff from an app
-  // that predates staging carries no bundle and must still be applied.
-  const optional = new Set(["stagedBundle"]);
+  // Optional rather than required, because a handoff from an app that predates staging carries
+  // neither and must still be applied.
+  const optional = new Set(["stagedBundle", "stagedRevision"]);
   for (let index = 0; index < argv.length; index += 2) {
     const key = names.get(argv[index]);
     const value = argv[index + 1];
@@ -387,7 +388,9 @@ export function parseArgs(argv) {
  */
 export function sanitizeDiagnostic(value) {
   return String(value)
-    .replace(/Authorization\s*:\s*[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
+    // `(?!<redacted>)`: see the note beside the same rule in `src/main/update-log.ts`. Without
+    // it a second pass over this function's own output consumed the following word.
+    .replace(/Authorization\s*:\s*(?!<redacted>)[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
     .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "<redacted-token>")
     .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
     .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
@@ -475,7 +478,7 @@ export function realApplyOperations(
       }
       throw new Error("the app did not quit before the update timeout");
     },
-    install: (node, script, tag, appsDir, stagedBundle = null) => {
+    install: (node, script, tag, appsDir, stagedBundle = null, stagedRevision = null) => {
       // SIGKILL, not the default SIGTERM: this child is the last thing standing between the
       // person and a rollback, and it must be gone before one starts. Its own grandchildren
       // (npm, electron-builder) do outlive it, but they only ever write inside the
@@ -501,6 +504,10 @@ export function realApplyOperations(
           "--apps-dir",
           appsDir,
           ...(staged ? ["--from-staged", stagedBundle] : []),
+          // Forwarded, never inspected here: this helper's job is to outlive the app, and the
+          // script that performs the swap is the last reader that can check the bundle against
+          // what the app verified.
+          ...(staged && stagedRevision ? ["--staged-revision", stagedRevision] : []),
         ],
         {
           encoding: "utf8",
@@ -690,6 +697,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       args.targetTag,
       dirname(args.appPath),
       args.stagedBundle ?? null,
+      args.stagedRevision ?? null,
     );
     record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
     try {

@@ -677,6 +677,9 @@ test("an update is built while the app stays open, and only installs when asked"
   assert.equal(f.handoffs.length, 1);
   assert.equal(f.handoffs[0]?.stagedBundle, STAGED_BUNDLE);
   assert.equal(f.handoffs[0]?.targetTag, "v1.2.4");
+  // The pin travels with the path: this app's check happened before it quit, and the install
+  // script is the last reader that can refuse a bundle replaced in between.
+  assert.equal(f.handoffs[0]?.stagedRevision, "staged-1");
   assert.equal(f.controller.getSnapshot().phase, "applying");
   f.controller.stop();
 });
@@ -793,6 +796,9 @@ test("an installed version that cannot stage still applies through the detached 
   assert.equal(await f.controller.apply(), true);
   assert.equal(f.controller.getSnapshot().phase, "applying");
   assert.equal(f.handoffs[0]?.stagedBundle, null);
+  // Nothing was staged, so there is nothing to pin either, and the helper builds as it always
+  // did rather than being handed a token for a bundle that does not exist.
+  assert.equal(f.handoffs[0]?.stagedRevision, null);
   assert.deepEqual(
     f.events.filter((event) => event === "handoff" || event === "quit"),
     ["handoff", "quit"],
@@ -1017,4 +1023,54 @@ test("a rebuilt clone is not reused as a prepared update, it is built again", as
   assert.equal(await f.controller.apply(), true);
   assert.equal(f.stageRequests.length, 2);
   f.controller.stop();
+});
+
+
+test("a bundle whose identity cannot be read is refused, not thrown at the caller", async () => {
+  // `statSync` suppresses only ENOENT with `throwIfNoEntry: false`; EACCES on a parent and
+  // ELOOP on a replaced symlink still throw. Both callers evaluate the identity check OUTSIDE
+  // a try - the reuse shortcut before `apply()`'s async body exists, and `install()` before
+  // its promise is assigned - so an escape would reject the IPC call with the snapshot still
+  // reading `ready`: no dialog, no banner error, nothing for the person to act on.
+  let identity: () => { version: string | null; revision: string | null } = () => ({
+    version: "1.2.4",
+    revision: "staged-1",
+  });
+  const f = fixture({ stagedBundleIdentity: () => identity() });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+
+  identity = () => {
+    throw Object.assign(new Error("EACCES: permission denied, stat"), { code: "EACCES" });
+  };
+
+  // Resolves false rather than rejecting, and the person gets the error and the retry.
+  assert.equal(await f.controller.install(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") assert.equal(snapshot.retryable, true);
+  assert.deepEqual(f.events.filter((event) => event === "quit"), []);
+  assert.ok(
+    f.events.some((event) => event.startsWith("log:could not identify the prepared update: EACCES")),
+    f.events.join("\n"),
+  );
+  f.controller.stop();
+
+  // The reuse shortcut takes the same route: it rebuilds rather than throwing out of apply().
+  const reuse = fixture({
+    stagedBundleIdentity: () => {
+      throw new Error("ELOOP: too many symbolic links");
+    },
+  });
+  await reuse.controller.start();
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), true);
+  assert.equal(reuse.controller.getSnapshot().phase, "ready");
+  reuse.controller.defer();
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), true);
+  assert.equal(reuse.stageRequests.length, 2, "an unreadable bundle must be rebuilt, not reused");
+  reuse.controller.stop();
 });

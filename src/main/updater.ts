@@ -8,6 +8,7 @@ import {
   isTrustedInstallRepo,
 } from "../shared/install-receipt-schema.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
+import { stagedBundleRevision } from "../shared/staged-bundle.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
   isNewerVersion,
@@ -84,6 +85,14 @@ export interface HelperHandoff {
    * `--stage-only` cannot stage, and an update is better applied blind than not at all.
    */
   stagedBundle: string | null;
+  /**
+   * What that bundle was when it was verified, for the install script to check again.
+   *
+   * The app's own check happens before it quits, and the swap happens up to two minutes later
+   * in another process - long enough for a rebuild of the shared clone to land in between. The
+   * token travels so the last reader before the swap can refuse a bundle that changed.
+   */
+  stagedRevision: string | null;
 }
 
 /**
@@ -365,6 +374,9 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
             "--log-path",
             args.logPath,
             ...(args.stagedBundle ? ["--staged-bundle", args.stagedBundle] : []),
+            ...(args.stagedBundle && args.stagedRevision
+              ? ["--staged-revision", args.stagedRevision]
+              : []),
           ],
           {
             detached: true,
@@ -772,8 +784,10 @@ export class UpdateController {
             version: outcome.staged.version,
             bundlePath: outcome.staged.bundlePath,
             // Read now, while this is still the bundle the build just verified, so a later
-            // rebuild of the shared clone can be told apart from it.
-            revision: this.port.stagedBundleIdentity(outcome.staged.bundlePath).revision,
+            // rebuild of the shared clone can be told apart from it. A path that cannot be
+            // identified leaves this null, which the checks below read as "not intact" - the
+            // build is still offered, and installing it will simply rebuild instead.
+            revision: this.identify(outcome.staged.bundlePath).revision,
           };
           this.publish(ready());
           return true;
@@ -831,10 +845,38 @@ export class UpdateController {
       });
       return Promise.resolve(false);
     }
-    this.installPromise = this.handOff(target, staged.bundlePath).finally(() => {
+    // The revision travels with the path. This app's check above is the last one it can make -
+    // the swap happens after it has quit - so the install script gets what to compare against.
+    this.installPromise = this.handOff(target, staged.bundlePath, staged.revision).finally(() => {
       this.installPromise = null;
     });
     return this.installPromise;
+  }
+
+  /**
+   * Ask the port what is at a path, and never throw at the caller.
+   *
+   * Every caller sits somewhere a throw would be worse than an answer. `stagedBundleIsIntact`
+   * is evaluated OUTSIDE a try by both of its callers - the reuse shortcut runs before
+   * `apply()`'s async body exists, and `install()` runs before `installPromise` is assigned -
+   * so an escape would reject an IPC call with the snapshot still reading `ready`, leaving no
+   * dialog, no banner error, and nothing for the person to act on. Recording the revision after
+   * a successful build sits INSIDE that try, where an escape is worse in the other direction:
+   * it would report a build that actually succeeded as a failure.
+   *
+   * `statSync` is what makes this real rather than defensive. `throwIfNoEntry: false` suppresses
+   * only ENOENT; EACCES on a parent directory and ELOOP on a replaced symlink still throw.
+   * Unidentifiable is treated as "not the bundle I built", which is what null already means.
+   */
+  private identify(bundlePath: string): StagedBundleIdentity {
+    try {
+      return this.port.stagedBundleIdentity(bundlePath);
+    } catch (error) {
+      this.port.log(
+        `could not identify the prepared update: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { version: null, revision: null };
+    }
   }
 
   /**
@@ -855,7 +897,7 @@ export class UpdateController {
     bundlePath: string;
     revision: string | null;
   }): boolean {
-    const found = this.port.stagedBundleIdentity(staged.bundlePath);
+    const found = this.identify(staged.bundlePath);
     if (found.version === null) return false;
     if (found.version !== staged.version) return false;
     // A port that cannot produce a revision (an unreadable directory) fails closed rather than
@@ -883,6 +925,7 @@ export class UpdateController {
       lastOutcome: UpdateApplyOutcome | null;
     },
     stagedBundle: string | null,
+    stagedRevision: string | null = null,
   ): Promise<boolean> {
     this.publish({
       phase: "applying",
@@ -904,6 +947,7 @@ export class UpdateController {
         stateDirectory: this.port.stateDirectory(),
         logPath: join(this.port.stateDirectory(), "update.log"),
         stagedBundle,
+        stagedRevision,
       });
       this.publish({
         phase: "applying",
@@ -1027,11 +1071,23 @@ export function createDefaultUpdaterPort(options: {
       // `mtimeMs` and the inode together: electron-builder removes and recreates this
       // directory, so a rebuild changes both, while a bundle sitting untouched for hours
       // changes neither.
-      const stats = statSync(path, { throwIfNoEntry: false });
+      //
+      // Wrapped, because `throwIfNoEntry: false` suppresses only ENOENT. EACCES on a parent
+      // directory and ELOOP on a replaced symlink still throw, and this runs on the path that
+      // builds `install()`'s promise - an escape would reject the IPC call with the snapshot
+      // still reading `ready`, leaving no banner error and no way forward. Unreadable is
+      // "not the bundle I built", which is what the callers already do with null.
+      let stats;
+      try {
+        stats = statSync(path, { throwIfNoEntry: false });
+      } catch {
+        return { version: null, revision: null };
+      }
       if (!stats?.isDirectory()) return { version: null, revision: null };
       return {
         version: bundleShortVersion(path),
-        revision: `${stats.ino}-${stats.mtimeMs}`,
+        // One formula, shared with the install script that checks it again before the swap.
+        revision: stagedBundleRevision(stats),
       };
     },
     requestQuit: options.requestQuit,

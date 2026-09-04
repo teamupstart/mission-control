@@ -135,16 +135,33 @@ test("a broken log directory never breaks the update", (t) => {
 
 test("redaction is idempotent, so a line may pass through it twice on its way to disk", () => {
   // The staged build redacts at the boundary where a child's output arrives, and the writer
-  // redacts again. That is only safe because the second pass is a no-op.
+  // redacts again. That is only safe because the second pass is a no-op - and it was not:
+  // the Authorization rule takes an optional second token so `Bearer <token>` goes in one
+  // piece, and on its own output that second token was the next word of the diagnostic.
+  // `Authorization: Bearer gho_x at line 3` lost "at" by the time it reached disk.
   for (const line of [
     "npm error path /Users/person/.mission-control/app-src/node_modules/.bin",
     "Authorization: Bearer gho_abcdef1234",
     "token=hush at file:///private/tmp/install-app.mjs:13",
+    // The regression cases: text AFTER the credential, which is where a real npm or git line
+    // puts it.
+    "npm notice Authorization: Bearer gho_abcdef1234 at line 3",
+    "npm warn Authorization: Bearer gho_abcdef1234 and then more words",
+    "fatal: Authorization: token abc failed for https://example.internal/repo.git",
     ...LEAKY_LINES.map(({ line: leaky }) => leaky),
   ]) {
     const once = sanitizeLogLine(line);
     assert.equal(sanitizeLogLine(once), once, line);
+    // And the same for the helper's copy, which shares the rule set.
+    assert.equal(sanitizeDiagnostic(once), once, line);
   }
+
+  // The words after a credential are diagnostics and have to survive, twice over.
+  const twice = sanitizeLogLine(
+    sanitizeLogLine("npm notice Authorization: Bearer gho_abcdef1234 at line 3"),
+  );
+  assert.equal(twice, "npm notice Authorization: <redacted> at line 3");
+  assert.doesNotMatch(twice, /gho_abcdef1234|Bearer/);
 });
 
 test("remote URLs are redacted, in both spellings of a git remote and in a registry line", () => {

@@ -29,7 +29,9 @@ const MAX_LOG_BYTES = 1_000_000;
  * does not.
  *
  * Idempotent over its own output - `<path>`, `<url>` and `<redacted-token>` match none of
- * these patterns - so a line may safely pass through it more than once on its way to the log.
+ * these patterns, and the Authorization rule refuses to match its own `<redacted>` - so a line
+ * may safely pass through it more than once on its way to the log, which the staged build's
+ * output does.
  *
  * `scripts/apply-update.mjs` keeps a deliberate copy of this rule set as `sanitizeDiagnostic`,
  * because the detached helper is copied to a temp directory with exactly one sibling module
@@ -38,7 +40,14 @@ const MAX_LOG_BYTES = 1_000_000;
  */
 export function sanitizeLogLine(line: string): string {
   return line
-    .replace(/Authorization\s*:\s*[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
+    // `(?!<redacted>)` is what makes this idempotent, and it is load-bearing rather than
+    // tidy: the value match takes an optional SECOND token so that `Bearer <token>` goes in
+    // one piece, and on a second pass over its own output that second token was the next word
+    // of the diagnostic. `Authorization: Bearer gho_x at line 3` became
+    // `Authorization: <redacted> at line 3` and then `Authorization: <redacted> line 3` -
+    // over-redacting, never leaking, but a staged build line passes through this twice on its
+    // way to disk, so "at" was disappearing from real logs.
+    .replace(/Authorization\s*:\s*(?!<redacted>)[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
     .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "<redacted-token>")
     .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
     // Before the general rule, and left as `file://<path>`: a local file URL says nothing

@@ -224,6 +224,9 @@ test("submit_workflow_evidence publishes bounded evidence and criterion coverage
   assert.match(registration, /WORKFLOW_EVIDENCE_PROOF_ROLES/);
   assert.match(registration, /unique by evidence item and proof role/);
   assert.match(registration, /coverage claim\(s\)/);
+  assert.match(registration, /daemonSupportsCriterionMappedWorkflowEvidence/);
+  assert.match(registration, /workflowEvidenceNeedsCriterionMappedCapability/);
+  assert.match(registration, /Restart Mission Control/);
   assert.match(registration, /exact command, exit/);
   assert.match(registration, /Do not commit evidence artifacts/);
   assert.match(registration, /text artifact\(s\)/);

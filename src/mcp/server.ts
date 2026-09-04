@@ -38,6 +38,11 @@ import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
 import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import {
+  DAEMON_PROTOCOL_CAPABILITIES,
+  daemonHealthSupports,
+  workflowEvidenceNeedsCriterionMappedCapability,
+} from "@shared/daemon-protocol.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -96,6 +101,15 @@ async function http(
     body: body ? JSON.stringify(body) : undefined,
     signal,
   });
+}
+
+async function daemonSupportsCriterionMappedWorkflowEvidence(): Promise<boolean> {
+  const res = await http("/api/health", "GET");
+  if (!res.ok) return false;
+  return daemonHealthSupports(
+    await res.json() as unknown,
+    DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence,
+  );
 }
 
 async function createReview(
@@ -1039,6 +1053,17 @@ server.registerTool(
   },
   async ({ images, artifacts, commandOutputs, coverage }) => {
     try {
+      const needsCurrentDaemon = workflowEvidenceNeedsCriterionMappedCapability({
+        coverage,
+        commandOutputs,
+      });
+      if (needsCurrentDaemon && !await daemonSupportsCriterionMappedWorkflowEvidence()) {
+        return textResult(
+          "Mission Control's running daemon does not support criterion-mapped workflow evidence. "
+          + "Restart Mission Control so the daemon and agent evidence tool use the same build.",
+          true,
+        );
+      }
       const res = await http("/mcp/workflow-evidence", "POST", {
         env: ENV,
         sessionId: SESSION_ID,

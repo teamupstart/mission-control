@@ -168,6 +168,7 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
 import type {
   ForemanInstructionsConflict,
   ResolveFindingsResult,
@@ -1058,7 +1059,13 @@ export function buildApp(
   app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
-    c.json({ ok: true, service: "mission-control", version: SERVICE_VERSION, pid: process.pid }),
+    c.json({
+      ok: true,
+      service: "mission-control",
+      version: SERVICE_VERSION,
+      pid: process.pid,
+      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+    }),
   );
 
   // --- public product issue preflight/preview for the future dashboard form ---

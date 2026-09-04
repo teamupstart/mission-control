@@ -113,10 +113,16 @@ test("normTty normalizes every discovery source's no-tty sentinels + strips /dev
 test("/api/health surfaces the shared runtime identity + package version", async () => {
   const res = await app.request("/api/health", { headers: LOOPBACK });
   assert.equal(res.status, 200);
-  const body = (await res.json()) as { ok: boolean; service: string; version: string };
+  const body = (await res.json()) as {
+    ok: boolean;
+    service: string;
+    version: string;
+    capabilities: string[];
+  };
   assert.equal(body.ok, true);
   assert.equal(body.service, "mission-control");
   assert.equal(body.version, pkgVersion);
+  assert.deepEqual(body.capabilities, ["criterion-mapped-workflow-evidence-v1"]);
 });
 
 test("a hook event (correct token) binds to the session and drives its state", async () => {

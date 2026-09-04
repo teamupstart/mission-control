@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herdr multiplexer implementation phases</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --panel-soft: #eef3f9;
+      --text: #172033;
+      --muted: #526078;
+      --line: #cbd5e1;
+      --accent: #155e75;
+      --accent-soft: #cffafe;
+      --good: #166534;
+      --good-soft: #dcfce7;
+      --warn: #92400e;
+      --warn-soft: #ffedd5;
+      --code: #e8eef6;
+      --shadow: 0 18px 46px rgba(15, 23, 42, 0.10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1120;
+        --panel: #111a2c;
+        --panel-soft: #17233a;
+        --text: #e6edf7;
+        --muted: #a8b5ca;
+        --line: #34445f;
+        --accent: #67e8f9;
+        --accent-soft: #123848;
+        --good: #86efac;
+        --good-soft: #143925;
+        --warn: #fdba74;
+        --warn-soft: #422512;
+        --code: #1c2940;
+        --shadow: 0 20px 54px rgba(0, 0, 0, 0.34);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 30rem),
+        var(--bg);
+      font: 16px/1.62 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-x: hidden;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 32px auto 72px; }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: clamp(22px, 4vw, 42px);
+      margin-bottom: 20px;
+    }
+    header { border-top: 5px solid var(--accent); }
+    h1, h2, h3, h4 { line-height: 1.2; letter-spacing: -0.02em; }
+    h1 { font-size: clamp(2rem, 5vw, 3.4rem); margin: 0 0 14px; }
+    h2 { font-size: clamp(1.42rem, 3vw, 2rem); margin: 0 0 18px; color: var(--accent); }
+    h3 { margin: 24px 0 8px; font-size: 1.18rem; }
+    h4 { margin: 18px 0 6px; font-size: 1rem; }
+    p, li { max-width: 84ch; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    code {
+      background: var(--code);
+      border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+      border-radius: 6px;
+      padding: 0.08em 0.35em;
+      font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    pre {
+      overflow-x: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    pre code { border: 0; padding: 0; background: transparent; }
+    .eyebrow { color: var(--accent); font-weight: 750; text-transform: uppercase; letter-spacing: 0.09em; font-size: 0.78rem; }
+    .lede { color: var(--muted); font-size: 1.12rem; max-width: 78ch; }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+    .metric { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .metric strong { display: block; font-size: 1.25rem; color: var(--accent); }
+    .metric span { color: var(--muted); font-size: 0.9rem; }
+    .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
+    .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+    .callout.good { border-color: var(--good); background: var(--good-soft); }
+    .table-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: 12px; }
+    table { border-collapse: collapse; width: 100%; min-width: 760px; background: var(--panel); }
+    th, td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    th { background: var(--panel-soft); color: var(--accent); font-size: 0.9rem; }
+    tr:last-child td { border-bottom: 0; }
+    .phase-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .phase-card { border: 1px solid var(--line); background: var(--panel-soft); border-radius: 14px; padding: 18px; }
+    .phase-card h3 { margin-top: 0; }
+    .phase-card p { margin-bottom: 0; }
+    .flow { overflow-x: auto; border: 1px solid var(--line); background: var(--panel-soft); border-radius: 14px; padding: 18px; }
+    svg { display: block; min-width: 780px; width: 100%; height: auto; }
+    .node { fill: var(--panel); stroke: var(--line); stroke-width: 2; }
+    .node-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .node-good { fill: var(--good-soft); stroke: var(--good); stroke-width: 2; }
+    .svg-title { fill: var(--text); font-size: 18px; font-weight: 750; }
+    .svg-small { fill: var(--muted); font-size: 14px; }
+    .arrow { stroke: var(--muted); stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    footer { color: var(--muted); text-align: center; padding: 10px; }
+    @media (max-width: 760px) {
+      main { width: min(100% - 20px, 1120px); margin-top: 12px; }
+      header, section { border-radius: 13px; padding: 20px; }
+      .metrics, .phase-links { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Approved plan to implementation graph</div>
+    <h1>Herdr multiplexer implementation phases</h1>
+    <p class="lede">Two merge units preserve the existing multiplexer abstraction: first harden exact process correlation and session-selection intent, then ship the complete default-session Herdr adapter as one vertical slice.</p>
+    <div class="metrics">
+      <div class="metric"><strong>2 phases</strong><span>Strictly serialized</span></div>
+      <div class="metric"><strong>700 to 950</strong><span>Estimated non-test production lines</span></div>
+      <div class="metric"><strong>1 repository</strong><span>Mission Control only</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Source of truth and approved decisions</h2>
+    <ul>
+      <li>Source: <a href="plan.md"><code>docs/plans/herdr-multiplexer/plan.md</code></a> and its <a href="plan.html">rendered page</a>.</li>
+      <li>Use a socket-backed Herdr adapter behind the existing <code>Multiplexer</code> registry.</li>
+      <li>Support only Herdr's default local server session in the first release.</li>
+      <li>Select inside Herdr, declare <code>clients: null</code>, and use the existing new-client fallback without direct-attach takeover.</li>
+      <li>Create merge-aware phases and dependency-linked tasks.</li>
+    </ul>
+    <div class="callout good"><strong>Requirements, not questions.</strong> Agents may adapt the proposed route where repository evidence demands it, but the selected behavior remains fixed and deviations must be explained in the implementation pull request.</div>
+  </section>
+
+  <section>
+    <h2>Repository findings that shape the split</h2>
+    <ol>
+      <li><code>src/shared/terminal.ts</code> is the sole backend vocabulary. Its ordered multiplexer tuple drives wire enums, naming priority, target ordering, setup choices, and exhaustive records.</li>
+      <li>The current interface already separates stable session address from display name and carries nullable <code>panePid</code>, capture, paste, pane mode, clients, selection, and lifecycle capabilities.</li>
+      <li><code>correlate.ts</code> indexes multiplexer panes only by tty. Its host-process and cwd uniqueness fallback is emulator-only and must remain separate from exact PID ancestry.</li>
+      <li><code>DetachedSessionSpec</code> lacks selection intent. Background home creation and explicit operator launch are the two owners that must state it.</li>
+      <li>Browser and setup surfaces are registry-driven. Registration should activate them without a Herdr branch in React.</li>
+      <li>The E2E daemon explicitly installs fake cmux and suppresses other terminal binaries. Herdr must be equally controlled to keep the suite machine-independent.</li>
+      <li>Adding <code>herdr</code> widens shared Zod request enums and <code>NameSource</code>, but requires no SQLite migration.</li>
+      <li>Stable Herdr exposes the workspace, pane, shell PID, I/O, focus, and lifecycle primitives needed here, but no attached-client tty list.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Design clarifications</h2>
+    <ul>
+      <li>All Herdr protocol mechanism stays in <code>src/server/terminal/herdr*.ts</code>.</li>
+      <li>PID ancestry uses the same process snapshot as discovery, never shells out, never guesses from proximity or cwd, and never competes with a reported tty.</li>
+      <li>Only workspace creation may start a stopped server. Reads and existing-target mutations do not create background state.</li>
+      <li>Status JSON and narrow response schemas gate compatibility. Mission Control never replaces an incompatible server.</li>
+      <li>The full client is launched through an argv wrapper that removes every Herdr namespace selector before executing the resolved binary.</li>
+      <li>Named servers, client-tty inference, unpublished pane focus, direct takeover, persistence, and a second registry remain out of scope.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Resolved discrepancies from the root draft</h2>
+    <ol>
+      <li><strong>Attach environment.</strong> Current <code>attachArgv</code> carries no environment, so a bare Herdr binary could inherit a named-session selector from the daemon. Phase 2 returns an <code>env -u ...</code> wrapper for the default-session guarantee.</li>
+      <li><strong>Server start scope.</strong> The draft allowed startup before any mutation. Existing-target operations cannot act on live state when the server is stopped, and auto-start could restore state the operator did not request. Startup is limited to workspace creation.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Sizing and phase-count rationale</h2>
+    <p>Expected non-test production change: <strong>700 to 950 lines</strong>.</p>
+    <ul>
+      <li>100 to 170 lines for ancestry correlation, selection intent, current adapter changes, and contract comments.</li>
+      <li>350 to 500 lines for socket framing, schemas, compatibility, error classification, and server readiness.</li>
+      <li>230 to 300 lines for the Herdr adapter, registration, environment isolation, lifecycle mapping, and small generic-surface adjustments.</li>
+    </ul>
+    <p>Combining these would mix shipped tmux/cmux behavior, process-correlation safety, socket protocol work, daemon-start races, a new backend, and all UI/E2E coverage in one large review. A third phase would split the Herdr vertical slice and leave dead code or a visible partial backend, so two is the smallest safe graph.</p>
+  </section>
+
+  <section>
+    <h2>Phase table</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phase</th><th>Outcome</th><th>Direct dependency</th><th>Production lines</th></tr></thead>
+        <tbody>
+          <tr><td><a href="phase-1-generic-multiplexer-foundation.md">1 - Generic multiplexer foundation</a></td><td>Exact PID ancestry and explicit background-versus-visible creation, with tmux/cmux behavior pinned</td><td>Planning PR</td><td>100 to 170</td></tr>
+          <tr><td><a href="phase-2-herdr-multiplexer-vertical-slice.md">2 - Herdr vertical slice</a></td><td>Complete Herdr transport, adapter, registry, lifecycle, focus fallback, UI/E2E surface, and docs</td><td>Phase 1</td><td>600 to 780</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="phase-links" style="margin-top: 16px">
+      <div class="phase-card"><h3><a href="phase-1-generic-multiplexer-foundation.md">Phase 1 detail</a></h3><p>Leaves the repository operable with current backends and exposes no partial Herdr row.</p></div>
+      <div class="phase-card"><h3><a href="phase-2-herdr-multiplexer-vertical-slice.md">Phase 2 detail</a></h3><p>Registers Herdr only when its complete user-visible vertical slice is ready.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Dependency graph</h2>
+    <div class="flow">
+      <svg viewBox="0 0 1040 250" role="img" aria-label="Planning PR flows to Phase 1, then Phase 2">
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)" /></marker></defs>
+        <rect x="30" y="70" width="250" height="105" rx="14" class="node" />
+        <text x="155" y="110" text-anchor="middle" class="svg-title">Planning PR merged</text>
+        <text x="155" y="138" text-anchor="middle" class="svg-small">publishes every task path</text>
+        <rect x="395" y="70" width="250" height="105" rx="14" class="node-accent" />
+        <text x="520" y="110" text-anchor="middle" class="svg-title">Phase 1</text>
+        <text x="520" y="138" text-anchor="middle" class="svg-small">generic foundation</text>
+        <rect x="760" y="70" width="250" height="105" rx="14" class="node-good" />
+        <text x="885" y="110" text-anchor="middle" class="svg-title">Phase 2</text>
+        <text x="885" y="138" text-anchor="middle" class="svg-small">Herdr vertical slice</text>
+        <path d="M280 122 H395" class="arrow" />
+        <path d="M645 122 H760" class="arrow" />
+      </svg>
+    </div>
+    <p>Every task also depends directly on the planning session. There is no concurrent group because Phase 2 consumes both contracts Phase 1 owns.</p>
+  </section>
+
+  <section>
+    <h2>Merge order and operable states</h2>
+    <ol>
+      <li>Merge the planning PR so all task paths exist on the default branch.</li>
+      <li>Merge Phase 1. Current tmux and cmux remain fully operable, exact tty-less correlation is available, operator cmux launch requests focus, and no Herdr ID is exposed.</li>
+      <li>Rebase and merge Phase 2. Herdr enters the registry only with discovery, I/O, lifecycle, focus, launch, tests, and documentation complete together.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <h3>Process correlation</h3>
+    <ul>
+      <li>TTY remains strongest. PID fallback is limited to null-tty multiplexer panes with an actual shell PID on the representative agent's current parent chain.</li>
+      <li>The closest same-backend ancestor wins only when unique. Registry order still names across backends.</li>
+    </ul>
+    <h3>Session creation intent</h3>
+    <ul>
+      <li><code>DetachedSessionSpec.select</code> selects internally and never promises to raise an operating-system window.</li>
+      <li>Background dispatch passes false; operator launch passes true; tmux may ignore it; cmux and Herdr map it natively.</li>
+    </ul>
+    <h3>Herdr boundary</h3>
+    <ul>
+      <li>Default namespace only, with CLI, server-start, and attach environment isolation.</li>
+      <li>One bounded newline-delimited JSON connection per operation or batch, narrow Zod schemas, explicit size and time limits, and exact unknown-outcome behavior.</li>
+      <li><code>clients: null</code> and <code>paneMode: null</code> are honest capabilities. Full-client attach never uses takeover.</li>
+    </ul>
+    <h3>Compatibility and ownership</h3>
+    <ul>
+      <li>No SQLite migration and no React vendor branch.</li>
+      <li>No real Herdr server or agent process in automated tests.</li>
+      <li>No generated file or <code>CHANGELOG.md</code> edit.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Final verification strategy</h2>
+    <p>Each phase runs focused tests plus typecheck, lint, the full unit suite, a production build, smoke where runtime surfaces change, and Playwright because terminal behavior is visible. Phase 2 also performs disposable live verification with stable Herdr.</p>
+    <ul>
+      <li>No vendor branch exists outside the adapter and every widened enum parses and renders consistently.</li>
+      <li>Missing Herdr costs no subprocess; discovery and existing-target operations never start a stopped server.</li>
+      <li>Background dispatch preserves focus and operator launch requests it.</li>
+      <li>Repeated Focus may open another normal client but never evicts an attachment.</li>
+      <li>Named Herdr sessions remain out of scope and automated tests launch no real agent or server.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Complete cross-phase audit</h2>
+    <ul>
+      <li>Phase 1 uniquely owns correlation and selection intent. Phase 2 uniquely owns Herdr transport, adapter, registration, lifecycle, UI/E2E surface, and docs.</li>
+      <li>Phase 2 consumes Phase 1's exact contracts without redefining them.</li>
+      <li>No concurrent phase, duplicate file owner, temporary registry, migration, generated output, or cleanup-only follow-up exists.</li>
+      <li>Both intermediate and final repository states are buildable, testable, and honest to the operator.</li>
+    </ul>
+  </section>
+
+  <footer>Authoritative source: <a href="phased-plan.md"><code>docs/plans/herdr-multiplexer/phased-plan.md</code></a></footer>
+</main>
+</body>
+</html>

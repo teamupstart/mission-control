@@ -287,7 +287,7 @@ test("a detached session is followed by the raise that makes it visible", async 
     // `sidePane: false` is the deliberate difference from a dispatch: that splits off a pane
     // for the operator to watch the agent from, and this IS the operator, who asked for a
     // terminal and not for a terminal plus a spare.
-    { name: "Fix the login bug-abc123", cwd: "/w/api", argv: SPEC.argv, sidePane: false },
+    { name: "Fix the login bug-abc123", cwd: "/w/api", argv: SPEC.argv, sidePane: false, select: true },
   ]);
   assert.deepEqual(emu.opened, [
     {
@@ -383,6 +383,7 @@ test("a multiplexer launch uses a fresh name and retries one confirmed collision
 
   assert.equal(outcome.ok, true);
   assert.equal(created.length, 2);
+  assert.deepEqual(created.map((spec) => spec.select), [true, true]);
   assert.match(created[0]?.name ?? "", /-abc123$/);
   assert.match(created[1]?.name ?? "", /-def456$/);
   assert.notEqual(created[0]?.name, created[1]?.name);
@@ -409,6 +410,7 @@ test("a backend that draws its own window is launched without asking an emulator
   assert.equal(outcome.ok, true);
   assert.equal(outcome.label, "cmux");
   assert.equal(mux.created[0]?.sidePane, false);
+  assert.equal(mux.created[0]?.select, true);
 });
 
 test("a launch that never reported back is not called a failure", async () => {

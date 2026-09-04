@@ -31,8 +31,8 @@ import type {
  *   - **`MuxSessions.attachArgv` is nullable** - "a session needs a terminal to attach to it"
  *     is true of tmux and false of any multiplexer that draws its own window. See
  *     `attachArgv` below.
- *   - **`MuxPane.panePid` is nullable** - the tty is the join key; the pid was tmux offering
- *     it for free. See `panePid` below.
+ *   - **`MuxPane.panePid` is nullable** - tty is the strongest join, while a tty-less pane
+ *     may use an exact shell-ancestry fallback. See `panePid` below.
  *
  * Nothing else needed changing: discovery, `bindPane`, the copy-mode refusal, the pane lock,
  * the paste settle and the submit read-back all drive this adapter unmodified.
@@ -479,11 +479,12 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 
     sessions: {
       /**
-       * `new-workspace`, unfocused, running the agent.
+       * `new-workspace`, with explicit selection intent, running the agent.
        *
        * "Detached" is the interface's word for tmux's `new-session -d`, and cmux's nearest
-       * honest equivalent is `--focus false` - the workspace is created and the app does not
-       * switch to it. It is NOT detached in tmux's sense and cannot be: cmux workspaces do
+       * honest equivalent is `--focus <select>` - background dispatch preserves the current
+       * workspace while an operator launch selects the new one. It is NOT detached in tmux's
+       * sense and cannot be: cmux workspaces do
        * not outlive the app. Verified by killing it - the workspace list comes back from a
        * snapshot on relaunch, with fresh shells, and every child process is gone. Anything
        * that needs a session to survive its window still needs tmux, which is exactly what
@@ -514,7 +515,7 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
             "--command",
             shellCommand(spec.argv),
             "--focus",
-            "false",
+            String(spec.select),
           ],
           "cmux new-workspace failed",
           SESSION_TIMEOUT_MS,

@@ -347,41 +347,44 @@ test("cmux name rules are cmux's, not tmux's", () => {
   assert.ok(validate("   ")?.includes("blank"));
 });
 
-test("spawnDetached runs the agent, unfocused, and does not split", async () => {
-  const rec = recorder();
+test("spawnDetached maps selection intent and does not split", async () => {
   const argv = ["pi", "--session-id", "pi-id", "it's $HOME; $(printf injected)\nnext"];
-  await cmuxMultiplexer(rec.exec).sessions!.spawnDetached({
-    name: "api-worktree",
-    cwd: "/repo",
-    argv,
-    sidePane: true,
-  });
+  for (const select of [false, true]) {
+    const rec = recorder();
+    await cmuxMultiplexer(rec.exec).sessions!.spawnDetached({
+      name: "api-worktree",
+      cwd: "/repo",
+      argv,
+      sidePane: true,
+      select,
+    });
 
-  // The CLI, against the preference everywhere else in this file: `workspace.create`
-  // silently ignores both `name` and `command` (the workspace comes back titled "Terminal"
-  // with nothing running), and a socket method that drops params is worse than a flag that
-  // errors.
-  assert.deepEqual(rec.calls[0]!.args, [
-    "new-workspace",
-    "--name",
-    "api-worktree",
-    "--cwd",
-    "/repo",
-    "--command",
-    shellCommand(argv),
-    "--focus",
-    "false",
-  ]);
+    // The CLI, against the preference everywhere else in this file: `workspace.create`
+    // silently ignores both `name` and `command` (the workspace comes back titled "Terminal"
+    // with nothing running), and a socket method that drops params is worse than a flag that
+    // errors.
+    assert.deepEqual(rec.calls[0]!.args, [
+      "new-workspace",
+      "--name",
+      "api-worktree",
+      "--cwd",
+      "/repo",
+      "--command",
+      shellCommand(argv),
+      "--focus",
+      String(select),
+    ]);
+
+    // `sidePane` is asked for and deliberately not delivered. cmux can split, but a second
+    // terminal surface is exactly what triggers the tty mis-attribution above - so the
+    // convenience pane would cost the session its card. The contract already says a backend
+    // that cannot deliver it still reports the session it created as a success.
+    assert.equal(rec.calls.length, 1, "no split is attempted");
+  }
   assert.equal(
     shellCommand(["two words", "it's", "$HOME;"]),
     `'two words' 'it'"'"'s' '$HOME;'`,
   );
-
-  // `sidePane` is asked for and deliberately not delivered. cmux can split, but a second
-  // terminal surface is exactly what triggers the tty mis-attribution above - so the
-  // convenience pane would cost the session its card. The contract already says a backend
-  // that cannot deliver it still reports the session it created as a success.
-  assert.equal(rec.calls.length, 1, "no split is attempted");
 });
 
 test("rename and kill address the workspace, not its title", async () => {

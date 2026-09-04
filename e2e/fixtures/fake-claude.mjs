@@ -400,7 +400,21 @@ function headlessAnswer(prompt) {
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
     && prompt.includes("Compact workflow intent without rewriting it.")
   ) {
-    return JSON.stringify({ constraints: [], acceptanceCriteria: [] });
+    return JSON.stringify({ constraints: [], acceptanceCriteria: [], canonicalCriteria: [] });
+  }
+  if (prompt.includes("Compact workflow intent without rewriting it.")) {
+    const input = JSON.parse(prompt.slice(prompt.lastIndexOf("\n\n") + 2));
+    const claims = Array.isArray(input.authorCoverage) ? input.authorCoverage : [];
+    return JSON.stringify({
+      constraints: [],
+      acceptanceCriteria: claims.map((claim) => claim.criterion),
+      canonicalCriteria: claims.map((claim) => ({
+        text: claim.criterion,
+        material: true,
+        suggestedProofClass: claim.declaredProofClass,
+        matchedClientCriterionIds: [claim.clientCriterionId],
+      })),
+    });
   }
   // This marker proves a run-scoped directive reached the Persona prompt in the promised
   // position. The published Persona still carries E2E_FAIL_VERDICT, so only checking this

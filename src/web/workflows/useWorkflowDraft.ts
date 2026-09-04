@@ -420,6 +420,8 @@ export function useWorkflowDraft(
           // `manual` workflow - every shipped built-in before version 7 - into one that
           // resubmits its own repair rounds.
           resumptionPolicy: current.resumptionPolicy,
+          // Phase 1 duplicates always remain advisory and cannot publish enforcement.
+          evidenceReadinessPolicy: "off",
           bindingDefaults: current.bindingDefaults,
         }),
       });

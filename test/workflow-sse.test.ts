@@ -102,7 +102,6 @@ test("workflow summary snapshot, upsert, archive, and reconnect converge without
     description: "",
     draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Complete", position: { x: 360, y: 0 } }], edges: [] },
     completionPolicy: { kind: "none" },
-    resumptionPolicy: "manual",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   }, 100);
   assert.equal(created.ok, true);

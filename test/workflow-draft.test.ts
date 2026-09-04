@@ -21,6 +21,7 @@ const workflow = (description: string, revision = 1): WorkflowDefinition => ({
   draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 0 } }], edges: [] },
   completionPolicy: { kind: "none" },
   resumptionPolicy: "manual",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   draftRevision: revision, currentVersionId: null, archivedAt: null, createdAt: 1, updatedAt: revision, builtin: false,
 });

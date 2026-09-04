@@ -387,6 +387,12 @@ test("compaction preserves raw intent and visibly degrades on infrastructure fai
         value: {
           constraints: ["Keep compatibility"],
           acceptanceCriteria: ["Tests pass"],
+          canonicalCriteria: [{
+            text: "Tests pass",
+            material: true,
+            suggestedProofClass: "focused_execution",
+            matchedClientCriterionIds: [],
+          }],
         },
       };
     },

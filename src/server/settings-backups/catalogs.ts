@@ -12,6 +12,7 @@ import {
   WorkflowCommandOverrideSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
+  WorkflowEvidenceReadinessPolicySchema,
   WorkflowResumptionPolicySchema,
 } from "@shared/protocol.ts";
 import {
@@ -81,6 +82,7 @@ export const SettingsBackupWorkflowDefinitionSchema = z.object({
   draft: WorkflowDraftGraphSchema,
   completionPolicy: WorkflowCompletionPolicySchema,
   resumptionPolicy: WorkflowResumptionPolicySchema,
+  evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicySchema.default("off"),
   bindingDefaults: WorkflowBindingDefaultsSchema,
   draftRevision: z.number().int().positive(),
   currentVersionId: id.nullable(),
@@ -98,6 +100,7 @@ export const SettingsBackupWorkflowVersionSchema = z.object({
   graph: PublishedWorkflowGraphSchema,
   completionPolicy: WorkflowCompletionPolicySchema,
   resumptionPolicy: WorkflowResumptionPolicySchema,
+  evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicySchema.default("off"),
   bindingDefaults: WorkflowBindingDefaultsSchema,
   publishedAt: timestamp,
 }).strict();

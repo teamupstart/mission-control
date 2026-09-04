@@ -223,8 +223,269 @@ export const WORKFLOW_TEXT_EVIDENCE_LIMITS = {
   locatorJsonBytes: 64 * 1_024,
 } as const;
 
+/** Shared bounds for criterion coverage at every authoring and storage boundary. */
+export const WORKFLOW_EVIDENCE_COVERAGE_LIMITS = {
+  maxClaims: 100,
+  criterionBytes: 4_000,
+  clientCriterionIdChars: 200,
+  linksPerClaim: 32,
+  aggregateJsonBytes: 256 * 1_024,
+  // Readiness repeats canonical text and expands every frozen link. This bound covers the
+  // worst-case JSON escaping accepted by the field schemas, not just typical UTF-8 output.
+  readinessJsonBytes: 16 * 1_024 * 1_024,
+} as const;
+
 export type WorkflowEvidenceRepositoryScope = "all" | `repo-${string}`;
 export type WorkflowEvidenceImageAvailability = "retained" | "pruned";
+
+/**
+ * APPEND-ONLY: these values are persisted in coverage and readiness records.
+ * Authors own the class. Model suggestions never replace it.
+ */
+export const WORKFLOW_EVIDENCE_PROOF_CLASSES = [
+  "focused_execution",
+  "integration",
+  "visual",
+  "performance",
+  "rendered_artifact",
+  "state_confirmation",
+] as const;
+export type WorkflowEvidenceProofClass = (typeof WORKFLOW_EVIDENCE_PROOF_CLASSES)[number];
+
+/** APPEND-ONLY: persisted on immutable evidence links. */
+export const WORKFLOW_EVIDENCE_PROOF_ROLES = [
+  "execution",
+  "rendered_output",
+  "baseline_measurement",
+  "result_measurement",
+  "deliverable",
+  "state_snapshot",
+] as const;
+export type WorkflowEvidenceProofRole = (typeof WORKFLOW_EVIDENCE_PROOF_ROLES)[number];
+
+export interface WorkflowEvidenceCoverageLink {
+  clientItemId: string;
+  role: WorkflowEvidenceProofRole;
+}
+
+export interface WorkflowEvidenceCoverageClaim {
+  clientCriterionId: string;
+  criterion: string;
+  proofClass: WorkflowEvidenceProofClass;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  links: WorkflowEvidenceCoverageLink[];
+}
+
+/** A staged claim uses the same generation and ownership lifecycle as staged evidence. */
+export interface WorkflowStagedEvidenceCoverageClaim extends WorkflowEvidenceCoverageClaim {
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const WORKFLOW_EVIDENCE_READINESS_POLICIES = ["off", "criterion_mapped_v1"] as const;
+export type WorkflowEvidenceReadinessPolicy =
+  (typeof WORKFLOW_EVIDENCE_READINESS_POLICIES)[number];
+export const DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY: WorkflowEvidenceReadinessPolicy = "off";
+
+export const WORKFLOW_EVIDENCE_READINESS_STATUSES = [
+  "not_evaluated",
+  "ready",
+  "gaps",
+  "unavailable",
+  "overridden",
+] as const;
+export type WorkflowEvidenceReadinessStatus =
+  (typeof WORKFLOW_EVIDENCE_READINESS_STATUSES)[number];
+
+/** APPEND-ONLY: Phase 2 consumes these persisted codes without reinterpretation. */
+export const WORKFLOW_EVIDENCE_READINESS_GAP_CODES = [
+  "missing_coverage",
+  "ambiguous_mapping",
+  "evidence_not_frozen",
+  "scope_conflict",
+  "missing_execution",
+  "missing_rendered_output",
+  "missing_baseline_measurement",
+  "missing_result_measurement",
+  "missing_deliverable_or_rendered_output",
+  "missing_state_snapshot",
+] as const;
+export type WorkflowEvidenceReadinessGapCode =
+  (typeof WORKFLOW_EVIDENCE_READINESS_GAP_CODES)[number];
+
+export const WORKFLOW_EVIDENCE_READINESS_WARNING_CODES = [
+  "model_proof_class_disagreement",
+] as const;
+export type WorkflowEvidenceReadinessWarningCode =
+  (typeof WORKFLOW_EVIDENCE_READINESS_WARNING_CODES)[number];
+
+export interface WorkflowCanonicalCriterion {
+  id: string;
+  text: string;
+  material: boolean;
+  suggestedProofClass: WorkflowEvidenceProofClass | null;
+  matchedClientCriterionIds: string[];
+}
+
+export interface WorkflowEvidenceReadinessLink {
+  clientItemId: string;
+  evidenceId: string;
+  role: WorkflowEvidenceProofRole;
+}
+
+export interface WorkflowEvidenceReadinessCriterion {
+  criterionId: string;
+  criterion: string;
+  material: boolean;
+  matchedClientCriterionId: string | null;
+  authorProofClass: WorkflowEvidenceProofClass | null;
+  suggestedProofClass: WorkflowEvidenceProofClass | null;
+  links: WorkflowEvidenceReadinessLink[];
+  gaps: WorkflowEvidenceReadinessGapCode[];
+  warnings: WorkflowEvidenceReadinessWarningCode[];
+}
+
+export interface WorkflowEvidenceReadinessResult {
+  evaluatorVersion: "criterion_mapped_v1";
+  status: WorkflowEvidenceReadinessStatus;
+  criteria: WorkflowEvidenceReadinessCriterion[];
+  gapCodes: WorkflowEvidenceReadinessGapCode[];
+  warningCodes: WorkflowEvidenceReadinessWarningCode[];
+  unavailableReason: string | null;
+}
+
+export interface WorkflowFrozenEvidenceIdentity {
+  clientItemId: string;
+  evidenceId: string;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+}
+
+interface WorkflowEvidenceProofRequirement {
+  alternatives: readonly WorkflowEvidenceProofRole[];
+  missingGap: WorkflowEvidenceReadinessGapCode;
+}
+
+const PROOF_ROLE_REQUIREMENTS: Record<
+  WorkflowEvidenceProofClass,
+  readonly WorkflowEvidenceProofRequirement[]
+> = {
+  focused_execution: [{ alternatives: ["execution"], missingGap: "missing_execution" }],
+  integration: [{ alternatives: ["execution"], missingGap: "missing_execution" }],
+  visual: [
+    { alternatives: ["execution"], missingGap: "missing_execution" },
+    { alternatives: ["rendered_output"], missingGap: "missing_rendered_output" },
+  ],
+  performance: [
+    { alternatives: ["baseline_measurement"], missingGap: "missing_baseline_measurement" },
+    { alternatives: ["result_measurement"], missingGap: "missing_result_measurement" },
+  ],
+  rendered_artifact: [{
+    alternatives: ["deliverable", "rendered_output"],
+    missingGap: "missing_deliverable_or_rendered_output",
+  }],
+  state_confirmation: [{ alternatives: ["state_snapshot"], missingGap: "missing_state_snapshot" }],
+};
+
+/** Each inner array is an alternative set where any one role satisfies that requirement. */
+export function workflowEvidenceRequiredRoleGroups(
+  proofClass: WorkflowEvidenceProofClass,
+): readonly (readonly WorkflowEvidenceProofRole[])[] {
+  return PROOF_ROLE_REQUIREMENTS[proofClass].map((requirement) => requirement.alternatives);
+}
+
+/** Pure browser-safe proof-shape validation selected only by the author's declaration. */
+export function workflowEvidenceMissingRoleGaps(
+  proofClass: WorkflowEvidenceProofClass,
+  roles: readonly WorkflowEvidenceProofRole[],
+): WorkflowEvidenceReadinessGapCode[] {
+  const present = new Set(roles);
+  return PROOF_ROLE_REQUIREMENTS[proofClass]
+    .filter((requirement) => !requirement.alternatives.some((role) => present.has(role)))
+    .map((requirement) => requirement.missingGap);
+}
+
+/**
+ * Reconcile one immutable coverage packet with daemon-assigned canonical criteria.
+ * Semantic sufficiency remains entirely with the Persona workflow.
+ */
+export function evaluateWorkflowEvidenceReadiness(input: {
+  canonicalCriteria: readonly WorkflowCanonicalCriterion[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  evidence: readonly WorkflowFrozenEvidenceIdentity[];
+  unavailableReason?: string | null;
+}): WorkflowEvidenceReadinessResult {
+  const unavailableReason = input.unavailableReason
+    ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
+      ? "Context compaction returned no canonical acceptance criteria"
+      : null);
+  if (unavailableReason) {
+    return {
+      evaluatorVersion: "criterion_mapped_v1",
+      status: "unavailable",
+      criteria: [],
+      gapCodes: [],
+      warningCodes: [],
+      unavailableReason,
+    };
+  }
+  const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
+  const evidence = new Map(input.evidence.map((item) => [item.clientItemId, item]));
+  const criteria = input.canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
+    const matchedIds = [...new Set(canonical.matchedClientCriterionIds)]
+      .filter((id) => claims.has(id))
+      .sort();
+    const claim = matchedIds.length === 1 ? claims.get(matchedIds[0]!)! : null;
+    const gaps: WorkflowEvidenceReadinessGapCode[] = [];
+    const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
+    if (canonical.material && matchedIds.length === 0) gaps.push("missing_coverage");
+    if (matchedIds.length > 1) gaps.push("ambiguous_mapping");
+    const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
+      const item = evidence.get(link.clientItemId);
+      if (!item) {
+        gaps.push("evidence_not_frozen");
+        return [];
+      }
+      const scopeMatches = item.repositoryScope === "all"
+        || (claim.repositoryScope !== "all"
+          && item.repositoryScope === claim.repositoryScope);
+      if (!scopeMatches) {
+        gaps.push("scope_conflict");
+      }
+      return [{ clientItemId: link.clientItemId, evidenceId: item.evidenceId, role: link.role }];
+    }) ?? [];
+    if (claim) gaps.push(...workflowEvidenceMissingRoleGaps(
+      claim.proofClass,
+      links.map((link) => link.role),
+    ));
+    if (
+      claim
+      && canonical.suggestedProofClass
+      && canonical.suggestedProofClass !== claim.proofClass
+    ) warnings.push("model_proof_class_disagreement");
+    return {
+      criterionId: canonical.id,
+      criterion: canonical.text,
+      material: canonical.material,
+      matchedClientCriterionId: claim?.clientCriterionId ?? null,
+      authorProofClass: claim?.proofClass ?? null,
+      suggestedProofClass: canonical.suggestedProofClass,
+      links,
+      gaps: canonical.material ? [...new Set(gaps)].sort() : [],
+      warnings,
+    };
+  });
+  const gapCodes = [...new Set(criteria.flatMap((criterion) => criterion.gaps))].sort();
+  const warningCodes = [...new Set(criteria.flatMap((criterion) => criterion.warnings))].sort();
+  return {
+    evaluatorVersion: "criterion_mapped_v1",
+    status: gapCodes.length > 0 ? "gaps" : "ready",
+    criteria,
+    gapCodes,
+    warningCodes,
+    unavailableReason: null,
+  };
+}
 
 /** Browser-safe audit metadata. Storage and source paths never enter this record. */
 export interface WorkflowEvidenceImage {
@@ -300,6 +561,7 @@ export interface WorkflowStagedEvidenceList {
   generation: number;
   images: WorkflowStagedEvidenceImage[];
   artifacts: WorkflowStagedEvidenceTextArtifact[];
+  coverage?: WorkflowStagedEvidenceCoverageClaim[];
 }
 
 export interface WorkflowAgentEvidenceLocator {
@@ -369,6 +631,11 @@ export interface WorkflowRetainedEvidenceLocator {
 export interface WorkflowSubmissionEvidenceImages {
   submissionId: WorkflowSubmissionId;
   images: WorkflowEvidenceImage[];
+}
+
+export interface WorkflowSubmissionEvidenceCoverage {
+  submissionId: WorkflowSubmissionId;
+  coverage: WorkflowEvidenceCoverageClaim[];
 }
 
 export const WORKFLOW_PERSONA_MODEL_ENV = "WORKFLOW_PERSONA_MODEL";
@@ -1525,6 +1792,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_session_action",
   "archived_session_action",
   "session_action_runtime_unavailable",
+  "evidence_readiness_not_enforced",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -2889,6 +3157,8 @@ export interface WorkflowDefinition {
   completionPolicy: WorkflowCompletionPolicy;
   /** Frozen into every version this draft publishes. See `WORKFLOW_RESUMPTION_POLICIES`. */
   resumptionPolicy: WorkflowResumptionPolicy;
+  /** Frozen into every version. Phase 1 can persist but cannot publish a non-off value. */
+  evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicy;
   bindingDefaults: WorkflowBindingDefaults;
   draftRevision: number;
   currentVersionId: WorkflowVersionId | null;
@@ -2918,6 +3188,7 @@ export interface WorkflowVersion {
    * workflow can never change how a run already in flight behaves.
    */
   resumptionPolicy: WorkflowResumptionPolicy;
+  evidenceReadinessPolicy: WorkflowEvidenceReadinessPolicy;
   bindingDefaults: WorkflowBindingDefaults;
   publishedAt: number;
 }
@@ -3224,6 +3495,8 @@ export interface WorkflowSubmission {
   repositoryFingerprint?: string | null;
   context: WorkflowJson;
   evidence: WorkflowJson;
+  /** Null for historical submissions and policy-off captures with no authored coverage. */
+  readiness?: WorkflowEvidenceReadinessResult | null;
   prHeadSha: string | null;
   status: WorkflowSubmissionStatus;
   createdAt: number;
@@ -3438,6 +3711,8 @@ export interface WorkflowContextSnapshot {
   humanDecisions: WorkflowHumanDecision[];
   constraints: string[];
   acceptanceCriteria: string[];
+  /** Defaults to an empty list for snapshots written before criterion reconciliation. */
+  canonicalCriteria?: WorkflowCanonicalCriterion[];
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: {
     agent: string;
@@ -3726,6 +4001,8 @@ export interface WorkflowRunDetail {
   submissions: WorkflowSubmission[];
   /** Ordered immutable image metadata grouped by the submission that owns it. */
   evidenceImages?: WorkflowSubmissionEvidenceImages[];
+  /** Ordered immutable author coverage grouped by the submission that froze it. */
+  evidenceCoverage?: WorkflowSubmissionEvidenceCoverage[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];

@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
@@ -11,6 +10,9 @@ import {
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
+  WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EVIDENCE_PROOF_ROLES,
   workflowCommandEvidenceContent,
 } from "@shared/workflow.ts";
 import {
@@ -30,11 +32,11 @@ import {
 } from "@shared/product-issues.ts";
 import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
-  PIPELINE_CALLER_CREDENTIAL_ENV,
-  PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { readPipelineCallerCredential } from "./pipeline-credential.ts";
+import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -44,27 +46,6 @@ import { MAX_TASK_EXTRA_REPOS } from "@shared/protocol.ts";
 const MISSION_SESSION_ID = process.env[MISSION_SESSION_ID_ENV];
 const ENV = MISSION_SESSION_ID === undefined ? captureTerminalEnv() : {};
 const SESSION_ID = MISSION_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
-function readPipelineCallerCredential(): string | null {
-  const file = process.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV];
-  if (file) {
-    try {
-      const stat = statSync(file);
-      if (!stat.isFile() || stat.size > 4096 || (stat.mode & 0o077) !== 0) return null;
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-      if (
-        typeof parsed.credential === "string" &&
-        parsed.credential.length >= 32 &&
-        typeof parsed.expiresAt === "number" &&
-        Number.isSafeInteger(parsed.expiresAt) &&
-        parsed.expiresAt > Date.now()
-      ) return parsed.credential;
-    } catch {
-      return null;
-    }
-  }
-  // Rolling compatibility for a daemon that launches an older bundled MCP process.
-  return process.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? null;
-}
 const PIPELINE_CALLER_CREDENTIAL = readPipelineCallerCredential();
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],
@@ -899,7 +880,8 @@ server.registerTool(
     description:
       "Register gitignored screenshots, focused UTF-8 text/log artifacts, or the exact command, exit " +
       "code, and output from a completed focused check for the Persona workflow that will run when " +
-      "this task completes. Mission Control freezes applicable evidence into the immutable submission. " +
+      "this task completes. Optionally map acceptance criteria to that evidence with proof classes and " +
+      "roles. Mission Control freezes applicable evidence and coverage into the immutable submission. " +
       "Do not commit evidence artifacts.",
     inputSchema: {
       images: z.array(z.object({
@@ -953,7 +935,7 @@ server.registerTool(
           .describe("Stable caller id used to make an identical registration idempotent."),
         command: z.string().trim().min(1).max(WORKFLOW_LIMITS.checkCommandLength)
           .describe("The exact focused command that completed."),
-        exitCode: z.number().int().min(0).max(2_147_483_647)
+        exitCode: WorkflowCommandExitCodeSchema
           .describe("The completed command's process exit code."),
         output: z.string().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact)
           .describe("The exact completed stdout/stderr output. Empty is allowed when the command printed nothing."),
@@ -989,34 +971,57 @@ server.registerTool(
         )
         .optional()
         .describe("Optional exact output from completed focused commands, without creating a temporary file."),
+      coverage: z.array(z.object({
+        clientCriterionId: z.string().min(1)
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars)
+          .describe("Stable caller id for this acceptance criterion."),
+        criterion: z.string().trim().min(1)
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes)
+          .refine(
+            (value) => Buffer.byteLength(value)
+              <= WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes,
+            `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
+          )
+          .describe("The material acceptance criterion the linked evidence is intended to prove."),
+        proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES)
+          .describe("The author's proof class, which selects deterministic required evidence roles."),
+        repositoryScope: z.union([
+          z.literal("all"),
+          z.string().regex(/^repo-\d{2}$/),
+        ]).describe("An issued repository slot such as repo-01, or all."),
+        links: z.array(z.object({
+          clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
+            .describe("A staged evidence client item id."),
+          role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES)
+            .describe("How this evidence item contributes to the criterion."),
+        })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim).refine(
+          (links) => new Set(
+            links.map((link) => `${link.clientItemId}\0${link.role}`),
+          ).size === links.length,
+          "Workflow coverage links must be unique by evidence item and proof role",
+        ),
+      }))
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+        .refine(
+          (value) => new Set(value.map((claim) => claim.clientCriterionId)).size === value.length,
+          "Workflow coverage criterion ids must be unique",
+        )
+        .refine(
+          (value) => Buffer.byteLength(JSON.stringify(value))
+            <= WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+          `Workflow coverage exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes`,
+        )
+        .optional()
+        .describe("Optional acceptance criteria mapped to registered evidence and proof roles."),
     },
   },
-  async ({ images, artifacts, commandOutputs }) => {
-    try {
-      const res = await http("/mcp/workflow-evidence", "POST", {
-        env: ENV,
-        sessionId: SESSION_ID,
-        cwd: process.cwd(),
-        images: (images ?? []).map((image) => ({ kind: "agent", ...image })),
-        artifacts: (artifacts ?? []).map((artifact) => ({ kind: "text", ...artifact })),
-        commandOutputs: (commandOutputs ?? []).map((artifact) => ({ kind: "command", ...artifact })),
-      });
-      if (!res.ok) {
-        return textResult(
-          `Mission Control refused the workflow evidence (${res.status}): ${await res.text()}`,
-          true,
-        );
-      }
-      const body = (await res.json()) as { images?: unknown[]; artifacts?: unknown[]; generation?: number };
-      return textResult(
-        `Registered ${body.images?.length ?? images?.length ?? 0} image(s) and `
-        + `${body.artifacts?.length ?? ((artifacts?.length ?? 0) + (commandOutputs?.length ?? 0))} `
-        + `text artifact(s) at workflow evidence `
-        + `generation ${body.generation ?? 0}.`,
-      );
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
+  async ({ images, artifacts, commandOutputs, coverage }) => {
+    const result = await submitWorkflowEvidenceToDaemon(
+      { images, artifacts, commandOutputs, coverage },
+      { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
+      http,
+    );
+    return textResult(result.text, result.isError);
   },
 );
 

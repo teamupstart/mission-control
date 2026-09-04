@@ -163,10 +163,12 @@ import {
   WorktreesConfigPatchSchema,
   SubmitWorkflowSchema,
   SubmitWorkflowEvidenceSchema,
+  WorkflowEvidenceCoverageClaimSchema,
   WorkflowRetainedEvidenceLocatorSchema,
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import { DAEMON_PROTOCOL_CAPABILITIES } from "@shared/daemon-protocol.ts";
 import type {
   ForemanInstructionsConflict,
   ResolveFindingsResult,
@@ -466,6 +468,7 @@ import type {
 } from "./workflows/manager.ts";
 import {
   JSON_UTF8_MAX_BYTES_PER_CHAR,
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_RUN_STATUSES,
@@ -610,8 +613,12 @@ export const WORKFLOW_EVIDENCE_BODY_MAX_BYTES =
   WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
   + (WORKFLOW_IMAGE_LIMITS.locatorJsonBytes + WORKFLOW_TEXT_EVIDENCE_LIMITS.locatorJsonBytes)
     * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
   + WORKFLOW_COMMAND_EVIDENCE_METADATA_MAX_BYTES
   + 32 * 1024;
+export const WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES =
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes * JSON_UTF8_MAX_BYTES_PER_CHAR
+  + 8 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -1052,7 +1059,13 @@ export function buildApp(
   app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
-    c.json({ ok: true, service: "mission-control", version: SERVICE_VERSION, pid: process.pid }),
+    c.json({
+      ok: true,
+      service: "mission-control",
+      version: SERVICE_VERSION,
+      pid: process.pid,
+      capabilities: Object.values(DAEMON_PROTOCOL_CAPABILITIES),
+    }),
   );
 
   // --- public product issue preflight/preview for the future dashboard form ---
@@ -2021,14 +2034,46 @@ export function buildApp(
     const staged = manager.stagedEvidence(c.req.param("id"));
     return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
   });
+  app.post(
+    "/api/workflow-bindings/:id/evidence/coverage",
+    bodyLimit({
+      maxSize: WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow coverage request is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
+      if (!parsed.ok) return parsed.res;
+      try {
+        const staged = await manager.stageCoverage(c.req.param("id"), [parsed.data]);
+        return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+      } catch (error) {
+        return workflowImageFailure(c, error, "Workflow coverage could not be staged");
+      }
+    },
+  );
+  app.delete("/api/workflow-bindings/:id/evidence/coverage/:clientCriterionId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.removeStagedCoverage(
+      c.req.param("id"),
+      c.req.param("clientCriterionId"),
+    );
+    return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+  });
   app.delete("/api/workflow-bindings/:id/evidence/:clientItemId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.removeStagedEvidence(
-      c.req.param("id"),
-      c.req.param("clientItemId"),
-    );
-    return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+    try {
+      const staged = manager.removeStagedEvidence(
+        c.req.param("id"),
+        c.req.param("clientItemId"),
+      );
+      return staged ? c.json(staged) : c.json({ error: "no such workflow binding" }, 404);
+    } catch (error) {
+      return workflowImageFailure(c, error, "Remove criterion links before removing evidence");
+    }
   });
   app.get("/api/sessions/:id/workflow-evidence", (c) => {
     const manager = workflowManager();
@@ -2036,14 +2081,46 @@ export function buildApp(
     const staged = manager.stagedEvidenceForSession(c.req.param("id"));
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
+  app.post(
+    "/api/sessions/:id/workflow-evidence/coverage",
+    bodyLimit({
+      maxSize: WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow coverage request is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, WorkflowEvidenceCoverageClaimSchema);
+      if (!parsed.ok) return parsed.res;
+      try {
+        const staged = await manager.stageCoverageForSession(c.req.param("id"), [parsed.data]);
+        return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+      } catch (error) {
+        return workflowImageFailure(c, error, "Workflow coverage could not be staged");
+      }
+    },
+  );
+  app.delete("/api/sessions/:id/workflow-evidence/coverage/:clientCriterionId", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const staged = manager.removeStagedCoverageForSession(
+      c.req.param("id"),
+      c.req.param("clientCriterionId"),
+    );
+    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+  });
   app.delete("/api/sessions/:id/workflow-evidence/:clientItemId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.removeStagedEvidenceForSession(
-      c.req.param("id"),
-      c.req.param("clientItemId"),
-    );
-    return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+    try {
+      const staged = manager.removeStagedEvidenceForSession(
+        c.req.param("id"),
+        c.req.param("clientItemId"),
+      );
+      return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
+    } catch (error) {
+      return workflowImageFailure(c, error, "Remove criterion links before removing evidence");
+    }
   });
   app.post("/api/workflow-bindings/:id/evidence/reattach", async (c) => {
     const manager = workflowManager();
@@ -4107,6 +4184,7 @@ export function buildApp(
         images: parsed.data.images,
         artifacts: parsed.data.artifacts,
         commandOutputs: parsed.data.commandOutputs,
+        coverage: parsed.data.coverage,
       }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;

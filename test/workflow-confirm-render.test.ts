@@ -94,11 +94,14 @@ const evidenceController = (
   staged: { generation: 2, images: [], artifacts: [] },
   stagedLoading: false,
   stagedError: null,
+  coverageError: null,
   removingStaged: new Set(),
   setAttachments: () => {},
   update: () => {},
   refreshStaged: () => {},
   removeStaged: () => {},
+  saveCoverage: async () => {},
+  removeCoverage: async () => {},
   clear: () => {},
 });
 

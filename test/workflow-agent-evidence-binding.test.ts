@@ -30,7 +30,10 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
-const { buildApp } = await import("../src/server/routes.ts");
+const {
+  buildApp,
+  WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES,
+} = await import("../src/server/routes.ts");
 
 const PERSONA_GRAPH: PublishedWorkflowGraph = {
   nodes: [
@@ -172,6 +175,13 @@ test("a manually attached workflow accepts agent evidence from a scout session",
         caption: "Focused Playwright regression for the narrow files toolbar",
         repositoryScope: "repo-01",
       }],
+      coverage: [{
+        clientCriterionId: "focused-files-toolbar",
+        criterion: "The narrow files toolbar remains usable",
+        proofClass: "focused_execution",
+        repositoryScope: "repo-01",
+        links: [{ clientItemId: "focused-regression", role: "execution" }],
+      }],
     });
 
     const body = await response.text();
@@ -179,16 +189,83 @@ test("a manually attached workflow accepts agent evidence from a scout session",
     const staged = JSON.parse(body) as {
       generation: number;
       artifacts: Array<{ clientItemId: string; sourceKind: string }>;
+      coverage: Array<{ clientCriterionId: string; criterion: string }>;
     };
     assert.equal(staged.generation, 1);
     assert.deepEqual(
       staged.artifacts.map((entry) => [entry.clientItemId, entry.sourceKind]),
       [["focused-regression", "command"]],
     );
+    assert.deepEqual(
+      staged.coverage.map((entry) => entry.clientCriterionId),
+      ["focused-files-toolbar"],
+    );
     assert.equal(
       workflows.store.listWorkflowEvidence(noteKeyFor(session)).artifacts?.length,
       1,
     );
+    const update = await app.request(
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage`,
+      {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:7317",
+          "content-type": "application/json",
+          "x-harness-token": ensureToken(),
+        },
+        body: JSON.stringify({
+          clientCriterionId: "focused-files-toolbar",
+          criterion: "The narrow files toolbar remains usable after a focused run",
+          proofClass: "focused_execution",
+          repositoryScope: "repo-01",
+          links: [{ clientItemId: "focused-regression", role: "execution" }],
+        }),
+      },
+    );
+    const updateBody = await update.text();
+    assert.equal(update.status, 200, updateBody);
+    const updated = JSON.parse(updateBody) as typeof staged;
+    assert.equal(updated.coverage.length, 1);
+    assert.match(updated.coverage[0]?.criterion ?? "", /after a focused run/);
+    const removed = await app.request(
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage/focused-files-toolbar`,
+      {
+        method: "DELETE",
+        headers: { host: "127.0.0.1:7317", "x-harness-token": ensureToken() },
+      },
+    );
+    const removedBody = await removed.text();
+    assert.equal(removed.status, 200, removedBody);
+    assert.deepEqual((JSON.parse(removedBody) as typeof staged).coverage, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("coverage routes reject oversized bodies before JSON parsing", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-coverage-body-limit-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const { app, session, workflows, versionId } = harness(repo, "coverage-body-limit-session");
+    const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
+    assert.equal(bound.ok, true, bound.ok ? "" : bound.message);
+    const paths = [
+      `/api/workflow-bindings/${bound.ok ? bound.value.id : "missing"}/evidence/coverage`,
+      `/api/sessions/${session.id}/workflow-evidence/coverage`,
+    ];
+    for (const path of paths) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:7317",
+          "content-type": "application/json",
+          "x-harness-token": ensureToken(),
+        },
+        body: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES + 1),
+      });
+      assert.equal(response.status, 413, path);
+      assert.match(await response.text(), /too large/);
+    }
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

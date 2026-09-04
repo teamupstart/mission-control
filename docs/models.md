@@ -66,7 +66,7 @@ passes through untouched, because model ids are free text.
 | Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
 | Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Reconciles each instruction with the durable objective and derives the card sentence and tactical focus |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
-| Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
+| Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence, canonically reconciles authored criterion ids, and suggests proof classes without replacing the preserved goal, human decisions, author declarations, or deterministic readiness rules |
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
 
 Each resolves the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
@@ -85,6 +85,12 @@ The title, goal, digest, and Workflow-context jobs are best-effort calls with a 
 fallback, so a missing or logged-out provider degrades their output rather than failing a
 dispatch. An Ensemble evaluation is different: a provider failure or invalid reply fails its
 durable, bounded attempt, and the engine never invents a recommendation or a question set.
+
+Workflow-context compaction receives bounded change metadata, evidence metadata, and authored
+coverage, never evidence bodies, source locators, or absolute paths. Its criterion text,
+materiality, proof-class suggestion, and author-id matches are advisory semantic output. The
+daemon assigns canonical criterion ids and applies the fixed proof-role matrix. A failed call
+records readiness as unavailable when coverage exists, but never blocks Phase 1 execution.
 
 ## Foreman's four roles
 

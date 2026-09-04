@@ -67,6 +67,7 @@ import type {
   WorkflowAgentEvidenceLocator,
   WorkflowAgentCommandEvidenceLocator,
   WorkflowAgentTextEvidenceLocator,
+  WorkflowEvidenceCoverageClaim,
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
@@ -83,6 +84,7 @@ import {
   workflowRoundLimitParkedPhase,
   workflowRunGaveUp,
   workflowRunResumesItself,
+  evaluateWorkflowEvidenceReadiness,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
@@ -822,7 +824,11 @@ export class WorkflowManager {
     }
   }
 
-  create(input: CreateWorkflow, now = Date.now()): WorkflowMutation {
+  create(
+    input: Omit<CreateWorkflow, "resumptionPolicy" | "evidenceReadinessPolicy"> &
+      Partial<Pick<CreateWorkflow, "resumptionPolicy" | "evidenceReadinessPolicy">>,
+    now = Date.now(),
+  ): WorkflowMutation {
     const result = this.store.insertWorkflow({
       ...input,
       id: randomUUID(),
@@ -1323,6 +1329,7 @@ export class WorkflowManager {
       images: readonly WorkflowAgentEvidenceLocator[];
       artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
       commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
+      coverage?: readonly WorkflowEvidenceCoverageClaim[];
     },
     now = Date.now(),
   ): Promise<WorkflowStagedEvidenceList> {
@@ -1354,6 +1361,7 @@ export class WorkflowManager {
       images: evidence.images,
       artifacts: evidence.artifacts,
       commandOutputs: evidence.commandOutputs,
+      coverage: evidence.coverage,
       now,
       episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
@@ -1362,6 +1370,52 @@ export class WorkflowManager {
   stagedEvidence(bindingId: string): WorkflowStagedEvidenceList | null {
     const binding = this.store.getBinding(bindingId);
     return binding ? this.store.listWorkflowEvidence(binding.noteKey) : null;
+  }
+
+  private async stageCoverageForLiveSession(
+    session: Session,
+    noteKey: string,
+    coverage: readonly WorkflowEvidenceCoverageClaim[],
+    now: number,
+  ): Promise<WorkflowStagedEvidenceList> {
+    const activeTask = this.registry.taskForSession(session.id, session.cwd);
+    const task = activeTask ?? {
+      repoRoot: session.repoRoot ?? session.cwd ?? "",
+      worktreePath: session.cwd,
+      baseSha: null,
+      extraRepos: [],
+    };
+    return stageAgentWorkflowEvidence({
+      store: this.store,
+      noteKey,
+      task,
+      fallbackRoot: session.cwd,
+      images: [],
+      coverage,
+      now,
+      episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
+    });
+  }
+
+  async stageCoverage(
+    bindingId: string,
+    coverage: readonly WorkflowEvidenceCoverageClaim[],
+    now = Date.now(),
+  ): Promise<WorkflowStagedEvidenceList | null> {
+    const binding = this.store.getBinding(bindingId);
+    const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    if (!binding || binding.state !== "active" || !session || session.state === "exited") return null;
+    return this.stageCoverageForLiveSession(session, binding.noteKey, coverage, now);
+  }
+
+  async stageCoverageForSession(
+    sessionId: string,
+    coverage: readonly WorkflowEvidenceCoverageClaim[],
+    now = Date.now(),
+  ): Promise<WorkflowStagedEvidenceList | null> {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") return null;
+    return this.stageCoverageForLiveSession(session, noteKeyFor(session), coverage, now);
   }
 
   /**
@@ -1398,6 +1452,28 @@ export class WorkflowManager {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
       ? this.store.removeWorkflowEvidence(noteKeyFor(session), clientItemId, now)
+      : null;
+  }
+
+  removeStagedCoverage(
+    bindingId: string,
+    clientCriterionId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList | null {
+    const binding = this.store.getBinding(bindingId);
+    return binding
+      ? this.store.removeWorkflowEvidenceCoverage(binding.noteKey, clientCriterionId, now)
+      : null;
+  }
+
+  removeStagedCoverageForSession(
+    sessionId: string,
+    clientCriterionId: string,
+    now = Date.now(),
+  ): WorkflowStagedEvidenceList | null {
+    const session = this.registry.getSession(sessionId);
+    return session && session.state !== "exited"
+      ? this.store.removeWorkflowEvidenceCoverage(noteKeyFor(session), clientCriterionId, now)
       : null;
   }
 
@@ -5698,6 +5774,8 @@ export class WorkflowManager {
       // The reservation was frozen with the submission. Re-open those sources and copy their
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
+      const frozenCoverage = this.store.listSubmissionCoverage(submission.id);
+      const reservedEvidence = this.store.listReservedWorkflowEvidence(submission.id);
       const submissionImages = await captureSubmissionImages(this.store, submission.id);
       const submissionArtifacts = await captureSubmissionTextArtifacts(this.store, submission.id);
       const reservedSubmission = this.store.getSubmission(submission.id) ?? submission;
@@ -5707,6 +5785,14 @@ export class WorkflowManager {
         artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
+      captured.raw.coverage = frozenCoverage;
+      captured.raw.evidenceMetadata = reservedEvidence.map((item) => ({
+        clientItemId: item.clientItemId,
+        kind: item.evidenceKind === "image" ? "image" : "artifact",
+        caption: item.caption,
+        repositoryScope: item.repositoryScope,
+        exitCode: item.commandExitCode ?? null,
+      }));
       captured.context.evidence = {
         ...captured.context.evidence,
         images: submissionImages,
@@ -5801,11 +5887,22 @@ export class WorkflowManager {
       }
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
+      const readiness = frozenCoverage.length === 0
+        ? null
+        : evaluateWorkflowEvidenceReadiness({
+            canonicalCriteria: context.canonicalCriteria ?? [],
+            coverage: frozenCoverage,
+            evidence: this.store.submissionFrozenEvidenceIdentities(submission.id),
+            unavailableReason: context.compaction.status === "fallback"
+              ? context.compaction.error ?? "Workflow context compaction was unavailable"
+              : null,
+          });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
         evidence: workflowJson(context.evidence),
         fingerprint,
         repositoryFingerprint,
+        readiness,
         status: "running",
       }, Date.now());
       /*
@@ -5879,6 +5976,7 @@ export class WorkflowManager {
         evidenceFingerprint: fingerprint,
         previousFingerprint: previousFingerprint ?? null,
         compaction: context.compaction.status,
+        readiness: readiness?.status ?? "not_evaluated",
       }, Date.now());
       if (beforeActivate && !(await beforeActivate(runnable))) {
         this.publishRun(run.id);

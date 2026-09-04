@@ -21,6 +21,7 @@ import type {
   WorkflowAgentCommandEvidenceLocator,
   WorkflowAgentTextEvidenceLocator,
   WorkflowEvidenceImage,
+  WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceTextArtifact,
   WorkflowEvidenceRepositoryScope,
   WorkflowRetainedEvidenceLocator,
@@ -46,6 +47,7 @@ import { validateLlmImages } from "../llm/images.ts";
 import type {
   WorkflowReservedEvidence,
   WorkflowStagedEvidenceWrite,
+  WorkflowStagedEvidenceCoverageWrite,
   WorkflowStore,
   WorkflowSubmissionImageWrite,
   WorkflowSubmissionTextArtifactWrite,
@@ -323,11 +325,13 @@ export async function stageAgentWorkflowEvidence(input: {
   images: readonly WorkflowAgentEvidenceLocator[];
   artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
+  coverage?: readonly WorkflowEvidenceCoverageClaim[];
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const writes: WorkflowStagedEvidenceWrite[] = [];
+  const coverageWrites: WorkflowStagedEvidenceCoverageWrite[] = [];
   let aggregate = 0;
   for (const image of input.images) {
     const selected = rootForScope(roots, image.repositoryScope);
@@ -435,6 +439,7 @@ export async function stageAgentWorkflowEvidence(input: {
       // command remains only in the bounded captured artifact the agent explicitly registered.
       sourceLocator: `command:${commandOutput.clientItemId}`,
       inlineContent: content,
+      commandExitCode: commandOutput.exitCode,
       displayName: cleanDisplayName(`${commandOutput.clientItemId}-command-output.txt`),
       caption: commandOutput.caption.trim(),
       repositoryScope: commandOutput.repositoryScope,
@@ -443,7 +448,21 @@ export async function stageAgentWorkflowEvidence(input: {
       sha256: createHash("sha256").update(data).digest("hex"),
     });
   }
-  return input.store.stageWorkflowEvidence(input.noteKey, writes, input.now, input.episodeKey ?? null);
+  for (const claim of input.coverage ?? []) {
+    const selected = rootForScope(roots, claim.repositoryScope);
+    coverageWrites.push({
+      ...claim,
+      id: randomUUID(),
+      sourceRoot: selected.realRoot,
+    });
+  }
+  return input.store.stageWorkflowEvidence(
+    input.noteKey,
+    writes,
+    input.now,
+    input.episodeKey ?? null,
+    coverageWrites,
+  );
 }
 
 export async function stageUploadedWorkflowEvidence(input: {

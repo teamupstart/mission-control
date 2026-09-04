@@ -162,6 +162,7 @@ test("the pipeline rail states validation as a sentence, with no diagnostic code
     draft: EMPTY,
     completionPolicy: { kind: "none" },
     resumptionPolicy: "manual",
+    evidenceReadinessPolicy: "off",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 3 },
     draftRevision: 1,
     currentVersionId: null,

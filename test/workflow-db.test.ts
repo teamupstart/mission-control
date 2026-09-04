@@ -14,6 +14,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const {
+  WorkflowStore,
   WORKFLOW_TABLES,
   WorkflowRowError,
   clearWorkflowTables,
@@ -33,6 +34,10 @@ const {
   parseWorkflowSubmissionTextArtifactRow,
   parseWorkflowVersionRow,
 } = await import("../src/server/workflows/store.ts");
+const {
+  WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
+  evaluateWorkflowEvidenceReadiness,
+} = await import("../src/shared/workflow.ts");
 
 const db = openDb();
 const graph = JSON.stringify({
@@ -140,6 +145,44 @@ test("submission trigger keys and rounds cannot multiply on retry", () => {
   insert.run("s1", "r1", 1, "manual:b:req1");
   assert.throws(() => insert.run("s2", "r2", 1, "manual:b:req1"));
   assert.throws(() => insert.run("s3", "r1", 1, "manual:b:req2"));
+});
+
+test("submission capture round-trips readiness above the coverage authoring bound", () => {
+  db.prepare(
+    `INSERT INTO workflow_submissions (
+       id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
+       context_json, evidence_json, status, created_at, updated_at
+     ) VALUES ('s1', 'r1', 1, 'full_workflow', 'manual', 'manual:b:req1', 'fp',
+               '{}', '{}', 'capturing', 1, 1)`,
+  ).run();
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: Array.from(
+      { length: WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims },
+      (_, index) => ({
+        id: `canonical-${index}`,
+        text: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+        material: true,
+        suggestedProofClass: null,
+        matchedClientCriterionIds: [],
+      }),
+    ),
+    coverage: [],
+    evidence: [],
+  });
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(readiness), "utf8")
+      > WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+    "the fixture must exercise the readiness-only storage allowance",
+  );
+
+  const store = new WorkflowStore(db);
+  const updated = store.updateSubmissionCapture("s1", {
+    context: {},
+    evidence: {},
+    readiness,
+  }, 2);
+  assert.deepEqual(updated.readiness, readiness);
+  assert.deepEqual(store.getSubmission("s1")?.readiness, readiness);
 });
 
 test("an external claim is unique by source key and owns at most one binding", () => {
@@ -485,18 +528,28 @@ test("workflow evidence rows preserve old image defaults and validate text artif
     evidence_kind: "text",
     source_locator: "command:command-client",
     inline_content: commandContent,
+    command_exit_code: 0,
     display_name: "command-output.txt",
     mime_type: "text/plain",
     bytes: Buffer.byteLength(commandContent),
     sha256: createHash("sha256").update(commandContent).digest("hex"),
   };
   assert.equal(parseWorkflowEvidenceStagingRow(command).source_kind, "command");
+  assert.equal(parseWorkflowEvidenceStagingRow(command).command_exit_code, 0);
+  assert.equal(
+    parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: -9 }).command_exit_code,
+    -9,
+  );
   assert.throws(
     () => parseWorkflowEvidenceStagingRow({ ...command, sha256: "c".repeat(64) }),
     WorkflowRowError,
   );
   assert.throws(
     () => parseWorkflowEvidenceStagingRow({ ...command, inline_content: null }),
+    WorkflowRowError,
+  );
+  assert.throws(
+    () => parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: null }),
     WorkflowRowError,
   );
   assert.throws(

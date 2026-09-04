@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import {
+  WORKFLOW_EVIDENCE_PROOF_CLASSES,
   WORKFLOW_IMAGE_LIMITS,
+  workflowEvidenceMissingRoleGaps,
+  workflowEvidenceRequiredRoleGroups,
+  type WorkflowEvidenceCoverageClaim,
+  type WorkflowEvidenceCoverageLink,
+  type WorkflowEvidenceProofClass,
+  type WorkflowEvidenceProofRole,
   type WorkflowEvidenceRepositoryScope,
   type WorkflowStagedEvidenceList,
   type WorkflowUploadEvidenceLocator,
@@ -73,14 +80,22 @@ export interface WorkflowEvidenceDraftController {
   staged: WorkflowStagedEvidenceList;
   stagedLoading: boolean;
   stagedError: string | null;
+  coverageError: string | null;
   removingStaged: ReadonlySet<string>;
   refreshStaged: () => void;
   removeStaged: (clientItemId: string) => void;
+  saveCoverage: (claim: WorkflowEvidenceCoverageClaim) => Promise<void>;
+  removeCoverage: (clientCriterionId: string) => Promise<void>;
   clear: () => void;
 }
 
 const EMPTY_DRAFT: WorkflowEvidenceDraft = { attachments: [], metadata: {} };
-const EMPTY_STAGED: WorkflowStagedEvidenceList = { generation: 0, images: [], artifacts: [] };
+const EMPTY_STAGED: WorkflowStagedEvidenceList = {
+  generation: 0,
+  images: [],
+  artifacts: [],
+  coverage: [],
+};
 const EMPTY_REMOVING = new Set<string>();
 
 export interface WorkflowEvidenceOwner {
@@ -159,6 +174,11 @@ export function useWorkflowEvidenceDraft(
   const removingStaged = removalState.ownerKey === owner
     ? removalState.ids
     : EMPTY_REMOVING;
+  const [coverageErrorState, setCoverageErrorState] = useState<{
+    ownerKey: string | null;
+    error: string | null;
+  }>(() => ({ ownerKey: owner, error: null }));
+  const coverageError = coverageErrorState.ownerKey === owner ? coverageErrorState.error : null;
   const generation = useRef(0);
   const ownerRef = useRef(owner);
   ownerRef.current = owner;
@@ -207,6 +227,9 @@ export function useWorkflowEvidenceDraft(
     setRemovalState((current) => current.ownerKey === owner
       ? current
       : { ownerKey: owner, ids: new Set() });
+    setCoverageErrorState((current) => current.ownerKey === owner
+      ? current
+      : { ownerKey: owner, error: null });
   }, [owner]);
   useEffect(() => () => revokeAttachments(draftStateRef.current.draft.attachments), []);
 
@@ -248,6 +271,7 @@ export function useWorkflowEvidenceDraft(
       revokeAttachments(current.draft.attachments);
       return { ownerKey: owner, draft: EMPTY_DRAFT };
     });
+    setCoverageErrorState({ ownerKey: owner, error: null });
     loadStaged();
   }, [loadStaged, owner]);
 
@@ -293,6 +317,48 @@ export function useWorkflowEvidenceDraft(
     });
   }, [loadStaged, owner, removingStaged, requestPath]);
 
+  const saveCoverage = useCallback(async (claim: WorkflowEvidenceCoverageClaim) => {
+    if (!owner || !requestPath) throw new Error("No live workflow evidence owner");
+    setCoverageErrorState({ ownerKey: owner, error: null });
+    try {
+      const next = await workflowRequest<WorkflowStagedEvidenceList>(`${requestPath}/coverage`, {
+        method: "POST",
+        body: JSON.stringify(claim),
+      });
+      if (ownerRef.current !== owner) return;
+      setStagedState({ ownerKey: owner, staged: next, loading: false, error: null });
+    } catch (caught) {
+      if (ownerRef.current === owner) {
+        setCoverageErrorState({
+          ownerKey: owner,
+          error: caught instanceof Error ? caught.message : "Could not save criterion coverage",
+        });
+      }
+      throw caught;
+    }
+  }, [owner, requestPath]);
+
+  const removeCoverage = useCallback(async (clientCriterionId: string) => {
+    if (!owner || !requestPath) throw new Error("No live workflow evidence owner");
+    setCoverageErrorState({ ownerKey: owner, error: null });
+    try {
+      const next = await workflowRequest<WorkflowStagedEvidenceList>(
+        `${requestPath}/coverage/${encodeURIComponent(clientCriterionId)}`,
+        { method: "DELETE" },
+      );
+      if (ownerRef.current !== owner) return;
+      setStagedState({ ownerKey: owner, staged: next, loading: false, error: null });
+    } catch (caught) {
+      if (ownerRef.current === owner) {
+        setCoverageErrorState({
+          ownerKey: owner,
+          error: caught instanceof Error ? caught.message : "Could not remove criterion coverage",
+        });
+      }
+      throw caught;
+    }
+  }, [owner, requestPath]);
+
   return {
     draft,
     setAttachments,
@@ -300,9 +366,12 @@ export function useWorkflowEvidenceDraft(
     staged: currentStaged.staged,
     stagedLoading: currentStaged.loading || removingStaged.size > 0,
     stagedError: currentStaged.error,
+    coverageError,
     removingStaged,
     refreshStaged: loadStaged,
     removeStaged,
+    saveCoverage,
+    removeCoverage,
     clear,
   };
 }
@@ -381,6 +450,245 @@ export function workflowEvidenceSubmission(
   };
 }
 
+const PROOF_CLASS_LABELS: Record<WorkflowEvidenceProofClass, string> = {
+  focused_execution: "Focused execution",
+  integration: "Integration",
+  visual: "Visual",
+  performance: "Performance",
+  rendered_artifact: "Rendered artifact",
+  state_confirmation: "State confirmation",
+};
+
+const PROOF_ROLE_LABELS: Record<WorkflowEvidenceProofRole, string> = {
+  execution: "Execution evidence",
+  rendered_output: "Rendered output",
+  baseline_measurement: "Baseline measurement",
+  result_measurement: "Result measurement",
+  deliverable: "Deliverable",
+  state_snapshot: "State snapshot",
+};
+
+interface CoverageDraft {
+  clientCriterionId: string;
+  criterion: string;
+  proofClass: WorkflowEvidenceProofClass;
+  repositoryScope: WorkflowEvidenceRepositoryScope;
+  selections: Record<number, string>;
+  preservedLinks: WorkflowEvidenceCoverageLink[];
+}
+
+function blankCoverageDraft(scope: WorkflowEvidenceRepositoryScope): CoverageDraft {
+  return {
+    clientCriterionId: `criterion-${crypto.randomUUID()}`,
+    criterion: "",
+    proofClass: "focused_execution",
+    repositoryScope: scope,
+    selections: {},
+    preservedLinks: [],
+  };
+}
+
+function CoverageComposer({
+  controller,
+  scopes,
+  disabled,
+}: {
+  controller: WorkflowEvidenceDraftController;
+  scopes: readonly WorkflowEvidenceScopeOption[];
+  disabled: boolean;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState<CoverageDraft>(() => blankCoverageDraft(scopes[0]?.value ?? "repo-01"));
+  const [saving, setSaving] = useState(false);
+  const evidence = [
+    ...controller.staged.artifacts.map((item) => ({
+      clientItemId: item.clientItemId,
+      label: `${item.displayName} (${item.sourceKind})`,
+    })),
+    ...controller.staged.images.map((item) => ({
+      clientItemId: item.clientItemId,
+      label: `${item.displayName} (${item.sourceKind})`,
+    })),
+  ];
+  const requiredGroups = workflowEvidenceRequiredRoleGroups(draft.proofClass);
+  const selectedLinks = requiredGroups.flatMap((roles, index) => {
+    const selection = draft.selections[index];
+    if (!selection) return [];
+    const splitAt = selection.indexOf(":");
+    return [{
+      role: selection.slice(0, splitAt) as WorkflowEvidenceProofRole,
+      clientItemId: selection.slice(splitAt + 1),
+    }];
+  });
+  const seenLinks = new Set<string>();
+  const links = [...selectedLinks, ...draft.preservedLinks].filter((link) => {
+    const key = `${link.clientItemId}\0${link.role}`;
+    if (seenLinks.has(key)) return false;
+    seenLinks.add(key);
+    return true;
+  });
+  const gaps = workflowEvidenceMissingRoleGaps(draft.proofClass, links.map((link) => link.role));
+  const edit = (claim: WorkflowEvidenceCoverageClaim): void => {
+    const groups = workflowEvidenceRequiredRoleGroups(claim.proofClass);
+    const selectedKeys = new Set<string>();
+    const selections = Object.fromEntries(groups.flatMap((roles, index) => {
+      const link = claim.links.find((candidate) => roles.includes(candidate.role));
+      if (!link) return [];
+      selectedKeys.add(`${link.clientItemId}\0${link.role}`);
+      return [[index, `${link.role}:${link.clientItemId}`]];
+    }));
+    setDraft({
+      clientCriterionId: claim.clientCriterionId,
+      criterion: claim.criterion,
+      proofClass: claim.proofClass,
+      repositoryScope: claim.repositoryScope,
+      selections,
+      preservedLinks: claim.links.filter(
+        (link) => !selectedKeys.has(`${link.clientItemId}\0${link.role}`),
+      ),
+    });
+  };
+  const save = async (): Promise<void> => {
+    if (!draft.criterion.trim() || saving) return;
+    setSaving(true);
+    try {
+      await controller.saveCoverage({
+        clientCriterionId: draft.clientCriterionId,
+        criterion: draft.criterion.trim(),
+        proofClass: draft.proofClass,
+        repositoryScope: draft.repositoryScope,
+        links,
+      });
+      setDraft(blankCoverageDraft(scopes[0]?.value ?? "repo-01"));
+    } catch {
+      // The controller publishes the bounded daemon error beside the composer.
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="workflow-coverage-composer">
+      <div className="workflow-evidence-registered-head">
+        <strong>Acceptance criteria coverage</strong>
+        <span>{controller.staged.coverage?.length ?? 0} saved</span>
+      </div>
+      {controller.coverageError && <p role="alert">{controller.coverageError}</p>}
+      {(controller.staged.coverage ?? []).map((claim) => (
+        <article className="workflow-coverage-claim" key={claim.clientCriterionId}>
+          <div>
+            <strong>{claim.criterion}</strong>
+            <small>{PROOF_CLASS_LABELS[claim.proofClass]} · {claim.repositoryScope} · {claim.links.length} link{claim.links.length === 1 ? "" : "s"}</small>
+          </div>
+          <Tooltip label={`Edit coverage for ${claim.criterion}`}>
+            <button type="button" className="text-btn" disabled={disabled || saving} onClick={() => edit(claim)}>Edit</button>
+          </Tooltip>
+          <Tooltip label={`Remove coverage for ${claim.criterion}`}>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={`Remove criterion mapping ${claim.criterion}`}
+              disabled={disabled || saving}
+              onClick={() => void controller.removeCoverage(claim.clientCriterionId).catch(() => undefined)}
+            >
+              ✕
+            </button>
+          </Tooltip>
+        </article>
+      ))}
+      <div className="workflow-coverage-fields">
+        <label>
+          Acceptance criterion
+          <textarea
+            value={draft.criterion}
+            placeholder="What must be true for this work to be accepted?"
+            maxLength={4_000}
+            disabled={disabled || saving}
+            onChange={(event) => setDraft((current) => ({ ...current, criterion: event.target.value }))}
+          />
+        </label>
+        <label>
+          Proof class
+          <Tooltip label="Choose the structural proof required for this criterion">
+            <select
+              aria-label="Proof class for acceptance criterion"
+              value={draft.proofClass}
+              disabled={disabled || saving}
+              onChange={(event) => setDraft((current) => ({
+                ...current,
+                proofClass: event.target.value as WorkflowEvidenceProofClass,
+                selections: {},
+              }))}
+            >
+              {WORKFLOW_EVIDENCE_PROOF_CLASSES.map((proofClass) => (
+                <option key={proofClass} value={proofClass}>{PROOF_CLASS_LABELS[proofClass]}</option>
+              ))}
+            </select>
+          </Tooltip>
+        </label>
+        <label>
+          Repository scope
+          <Tooltip label="Choose which issued repository this criterion covers">
+            <select
+              aria-label="Repository scope for acceptance criterion"
+              value={draft.repositoryScope}
+              disabled={disabled || saving}
+              onChange={(event) => setDraft((current) => ({
+                ...current,
+                repositoryScope: event.target.value as WorkflowEvidenceRepositoryScope,
+              }))}
+            >
+              {scopes.map((scope) => <option key={scope.value} value={scope.value}>{scope.label}</option>)}
+            </select>
+          </Tooltip>
+        </label>
+        {requiredGroups.map((roles, index) => (
+          <label key={roles.join("-")}>
+            {roles.map((role) => PROOF_ROLE_LABELS[role]).join(" or ")}
+            <Tooltip label="Link registered evidence in the required proof role">
+              <select
+                aria-label={`${roles.map((role) => PROOF_ROLE_LABELS[role]).join(" or ")} for acceptance criterion`}
+                value={draft.selections[index] ?? ""}
+                disabled={disabled || saving}
+                onChange={(event) => setDraft((current) => ({
+                  ...current,
+                  selections: { ...current.selections, [index]: event.target.value },
+                }))}
+              >
+                <option value="">Not linked yet</option>
+                {roles.flatMap((role) => evidence.map((item) => (
+                  <option key={`${role}:${item.clientItemId}`} value={`${role}:${item.clientItemId}`}>
+                    {roles.length > 1 ? `${PROOF_ROLE_LABELS[role]}: ` : ""}{item.label}
+                  </option>
+                )))}
+              </select>
+            </Tooltip>
+          </label>
+        ))}
+      </div>
+      {gaps.length > 0 && (
+        <p className="workflow-coverage-gaps" role="status">
+          Provisional gaps: {gaps.map((gap) => gap.replaceAll("_", " ")).join(", ")}.
+        </p>
+      )}
+      {draft.proofClass === "focused_execution" && (
+        <p className="workflow-coverage-hint">Focused execution requires execution evidence only. A screenshot is not requested.</p>
+      )}
+      <div className="workflow-coverage-actions">
+        <Tooltip label="Save this criterion and its current evidence links">
+          <button
+            type="button"
+            className="btn"
+            disabled={disabled || saving || !draft.criterion.trim()}
+            onClick={() => void save()}
+          >
+            {saving ? "Saving…" : "Save criterion mapping"}
+          </button>
+        </Tooltip>
+        <small>Incomplete mappings can be saved. Canonical reconciliation happens during capture and remains advisory in this phase.</small>
+      </div>
+    </div>
+  );
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -407,10 +715,14 @@ export function WorkflowEvidenceComposer({
     disabled,
   });
   const registeredCount = controller.staged.images.length + controller.staged.artifacts.length;
+  const linkedEvidenceIds = new Set(
+    (controller.staged.coverage ?? []).flatMap((claim) =>
+      claim.links.map((link) => link.clientItemId)),
+  );
   return (
     <section
       className={`workflow-evidence-composer${drop.dropping ? " is-dropping" : ""}`}
-      aria-label="Image evidence"
+      aria-label="Workflow evidence"
       {...drop.dropProps}
       onPaste={drop.onPaste}
     >
@@ -515,6 +827,7 @@ export function WorkflowEvidenceComposer({
           )}
           {controller.staged.images.map((item) => {
             const removing = controller.removingStaged.has(item.clientItemId);
+            const linked = linkedEvidenceIds.has(item.clientItemId);
             return (
               <div key={item.clientItemId} className="workflow-evidence-registered-item">
                 <span className="workflow-evidence-source">{item.sourceKind}</span>
@@ -523,12 +836,14 @@ export function WorkflowEvidenceComposer({
                   <p>{item.caption}</p>
                   <small>{item.repositoryScope} · {item.mimeType} · {formatBytes(item.bytes)}</small>
                 </div>
-                <Tooltip label={`Remove ${item.displayName} from the next workflow submission`}>
+                <Tooltip label={linked
+                  ? `Remove criterion links before removing ${item.displayName}`
+                  : `Remove ${item.displayName} from the next workflow submission`}>
                   <button
                     type="button"
                     className="icon-btn"
                     aria-label={`Remove registered image ${item.displayName}`}
-                    disabled={disabled || removing}
+                    disabled={disabled || removing || linked}
                     onClick={() => controller.removeStaged(item.clientItemId)}
                   >
                     {removing ? "…" : "✕"}
@@ -544,6 +859,8 @@ export function WorkflowEvidenceComposer({
           )}
         </div>
       )}
+
+      <CoverageComposer controller={controller} scopes={scopes} disabled={disabled} />
 
       {submission.errors.length > 0 && (
         <ul className="workflow-evidence-errors" aria-label="Evidence requirements">

@@ -58,6 +58,13 @@ function asDraft(graph: PublishedWorkflowGraph): WorkflowDraftGraph {
   };
 }
 
+test("every built-in workflow version keeps Phase 1 evidence readiness off", () => {
+  for (const builtin of BUILTIN_WORKFLOWS) {
+    assert.equal(builtin.definition.evidenceReadinessPolicy, "off");
+    assert.equal(builtin.versions.every((version) => version.evidenceReadinessPolicy === "off"), true);
+  }
+});
+
 test("the shipped graph validates clean against the real built-in Persona catalog", () => {
   assert.ok(BUILTIN_WORKFLOWS.length > 0);
   for (const builtin of BUILTIN_WORKFLOWS) {

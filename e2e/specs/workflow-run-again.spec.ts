@@ -223,7 +223,10 @@ test("a finished run offers to run the review again, and lands the reader on the
   const confirm = dashboard.getByRole("dialog", { name: "Preview this review again" });
   await expect(confirm).toContainText("spends model tokens");
   await expect(confirm).toContainText("this finished run stays in history");
-  await expect(confirm.getByRole("textbox")).toHaveCount(0);
+  // Fresh evidence includes criterion authoring; only the destructive typed-phrase gate is absent.
+  await expect(
+    confirm.getByRole("textbox", { name: /^Type .* to confirm$/ }),
+  ).toHaveCount(0);
   const go = confirm.getByRole("button", { name: "Preview again" });
   await expect(go).toBeEnabled();
   // The whole viewport rather than the dialog element: the confirm autofocuses, and a focused

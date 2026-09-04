@@ -12,6 +12,11 @@
 // this supervisor; `dev:server` owns that daemon lifecycle.
 
 import { BASE_URL } from "@shared/harness-runtime.mjs";
+import {
+  DAEMON_PROTOCOL_CAPABILITIES,
+  daemonHealthCompatibility,
+  type DaemonCompatibility,
+} from "@shared/daemon-protocol.ts";
 import { loginShellPath } from "../server/util/path-env.ts";
 import { serveProductIssueConsent } from "./product-issue-consent.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
@@ -23,22 +28,32 @@ export interface DaemonController {
 }
 
 const HEALTH_URL = `${BASE_URL}/api/health`;
+const REQUIRED_DAEMON_CAPABILITY =
+  DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** One health probe: true only when our daemon answers with its service id. */
-export async function daemonHealthy(timeoutMs = 800): Promise<boolean> {
+/**
+ * One health probe that distinguishes an absent daemon from an older running daemon.
+ * Treating both as merely unhealthy would make Electron spawn into an occupied port.
+ */
+export async function daemonCompatibility(timeoutMs = 800): Promise<DaemonCompatibility> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(HEALTH_URL, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) return false;
-    const j = (await res.json()) as { service?: string };
-    return j.service === "mission-control";
+    if (!res.ok) return "unreachable";
+    return daemonHealthCompatibility(await res.json() as unknown, REQUIRED_DAEMON_CAPABILITY);
   } catch {
-    return false;
+    return "unreachable";
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/** True only when the daemon is healthy and speaks this desktop build's wire contract. */
+export async function daemonHealthy(timeoutMs = 800): Promise<boolean> {
+  return await daemonCompatibility(timeoutMs) === "compatible";
 }
 
 /** Poll health until it passes or `totalMs` elapses. */
@@ -67,8 +82,14 @@ export interface StartDaemonOptions {
  * tmux/wezterm/git) and MISSION_WEB_DIR.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
-  if (await daemonHealthy()) {
+  const compatibility = await daemonCompatibility();
+  if (compatibility === "compatible") {
     return { adopted: true, stop: () => {} };
+  }
+  if (compatibility === "incompatible") {
+    throw new Error(
+      "A running Mission Control daemon is from an older build. Stop it before opening this version.",
+    );
   }
 
   const controller = superviseUtilityProcess({

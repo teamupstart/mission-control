@@ -94,6 +94,7 @@ const version = (policy: WorkflowVersion["completionPolicy"] = { kind: "none" })
   },
   completionPolicy: policy,
   resumptionPolicy: "auto",
+  evidenceReadinessPolicy: "off",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "live", maxRepairRounds: 5 },
   publishedAt: 1,
 });

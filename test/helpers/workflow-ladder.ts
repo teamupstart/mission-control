@@ -57,6 +57,7 @@ export const LADDER_VERSION: WorkflowVersion = {
   version: 4,
   sourceDraftRevision: 4,
   resumptionPolicy: "manual",
+  evidenceReadinessPolicy: "off",
   graph: {
     nodes: [
       { id: LADDER_NODE.session, kind: "session", position: { x: 0, y: 0 } },

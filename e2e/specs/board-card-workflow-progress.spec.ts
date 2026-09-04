@@ -45,12 +45,21 @@ async function dispatchIdleAgent(page: Page, daemon: DaemonHandle): Promise<stri
 
 async function seedNoMistakesRun(page: Page, daemon: DaemonHandle): Promise<string> {
   const sessionId = await dispatchIdleAgent(page, daemon);
-  const workflows = await api<Array<{ id: string; currentVersionId: string | null }>>(
+  const workflows = await api<Array<{ id: string }>>(
     daemon,
     "/api/workflows",
   );
-  const versionId = workflows.find((workflow) => workflow.id === NO_MISTAKES)?.currentVersionId;
-  expect(versionId, "this build ships a published No-Mistakes Review").toBeTruthy();
+  const workflow = workflows.find((candidate) => candidate.id === NO_MISTAKES);
+  expect(workflow, "this build ships a published No-Mistakes Review").toBeTruthy();
+  // This spec needs the stable post-Persona blocked boundary to inspect Board progress. Version
+  // 13's enforcing evidence preflight has its own end-to-end lifecycle spec, so use the last
+  // advisory version here rather than manufacturing unrelated evidence in this fixture.
+  const versions = await api<Array<{ id: string; version: number }>>(
+    daemon,
+    `/api/workflows/${workflow!.id}/versions`,
+  );
+  const versionId = versions.find((version) => version.version === 12)?.id;
+  expect(versionId, "this build retains immutable No-Mistakes Review v12").toBeTruthy();
 
   const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
     workflowVersionId: versionId,

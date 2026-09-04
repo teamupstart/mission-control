@@ -73,6 +73,7 @@ test("workflow limits are finite front-door contracts", () => {
     repairRoundsMax: 20,
     feedbackFieldBytes: 4_000,
     feedbackPayloadBytes: 8_000,
+    readinessOverrideReason: 2_000,
     externalSourceId: 200,
     externalSourceSegment: 200,
     externalSourceKey: 1_000,

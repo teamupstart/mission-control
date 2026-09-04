@@ -18,6 +18,7 @@ const {
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
   evaluateWorkflowEvidenceReadiness,
+  workflowEvidenceReadinessPolicyEnforces,
   workflowEvidenceMissingRoleGaps,
   workflowEvidenceRequiredRoleGroups,
   workflowCommandEvidenceContent,
@@ -86,6 +87,41 @@ test("coverage schemas preserve legacy calls and bound criterion mappings", () =
       links: [],
     }),
   )).success, false, "aggregate coverage JSON must remain bounded");
+});
+
+test("one policy predicate and evaluator own enforced zero-coverage readiness", () => {
+  assert.equal(workflowEvidenceReadinessPolicyEnforces(undefined), false);
+  assert.equal(workflowEvidenceReadinessPolicyEnforces("off"), false);
+  assert.equal(workflowEvidenceReadinessPolicyEnforces("criterion_mapped_v1"), true);
+
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: [],
+    coverage: [],
+    evidence: [],
+    enforceCoverage: true,
+  });
+  assert.equal(readiness.status, "gaps");
+  assert.deepEqual(readiness.gapCodes, ["missing_coverage"]);
+  assert.deepEqual(readiness.criteria, [{
+    criterionId: "evidence-coverage",
+    criterion: "Material acceptance criteria",
+    material: true,
+    matchedClientCriterionId: null,
+    authorProofClass: null,
+    suggestedProofClass: null,
+    links: [],
+    gaps: ["missing_coverage"],
+    warnings: [],
+  }]);
+
+  const advisory = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: [],
+    coverage: [],
+    evidence: [],
+  });
+  assert.equal(advisory.status, "ready");
+  assert.deepEqual(advisory.criteria, []);
+  assert.deepEqual(advisory.gapCodes, []);
 });
 
 test("the proof matrix and readiness evaluator preserve author authority", () => {

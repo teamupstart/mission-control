@@ -468,6 +468,7 @@ export interface RoundView {
    * completion authorized it, when the version can supply one.
    */
   continuedFrom: string | null;
+  refinementReason: WorkflowSubmission["refinementReason"];
 }
 
 /**
@@ -504,6 +505,7 @@ export function runRounds(
       continuedFrom: submission.continuationNodeId === null
         ? null
         : nameOfNode(submission.continuationNodeId),
+      refinementReason: submission.refinementReason ?? null,
     };
   });
 }
@@ -549,6 +551,9 @@ export function submissionRoundLabel(
  */
 export function segmentProvenanceSentence(round: RoundView): string | null {
   if (round.segment === 0) return null;
+  if (round.refinementReason === "evidence_preflight") {
+    return `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preflight gaps. This refinement does not spend a Persona repair round.`;
+  }
   const source = round.continuedFrom ?? "a session action";
   return `Evidence ${round.segment + 1} of round ${round.round}, captured after ${source}`
     + " finished. Continuing after an action does not spend a repair round, and only the"
@@ -570,6 +575,8 @@ export function submissionStatus(
       return changesRequested
         ? { tone: "failed", label: "Changes requested" }
         : { tone: "waiting", label: "Waiting for the session" };
+    case "waiting_for_evidence_readiness":
+      return { tone: "waiting", label: "Waiting for evidence readiness" };
     case "completed":
       return { tone: "passed", label: "Passed" };
     case "cancelled":
@@ -840,6 +847,7 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   // finish. A reader who cannot tell them apart cannot tell whether the run owes them
   // anything.
   waiting_for_action: "Waiting for a session action",
+  waiting_for_evidence_readiness: "Waiting for evidence readiness",
 };
 
 export function runStatusLabel(status: WorkflowRunStatus): string {
@@ -1139,6 +1147,7 @@ const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   unchanged_evidence_nudge: "Nothing changed",
   session_action: "Session action",
   parked_repair_reminder: "Reminder",
+  evidence_readiness: "Evidence preflight",
 };
 
 export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {

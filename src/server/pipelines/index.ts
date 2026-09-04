@@ -12,6 +12,7 @@ import {
   type PipelineActionResult,
   type PipelineConsole,
   type PipelineCommission,
+  type PipelineEngineerCapabilities,
   type PipelineInstallerCandidate,
   type PipelineInstallerCandidatesResult,
   type PipelineProbe,
@@ -57,6 +58,7 @@ import type {
   PipelineConsoleTarget,
   PipelineControlTarget,
   PipelineFeatureUsage,
+  PipelineEngineerLifecycle,
   PipelineReadOptions,
 } from "./types.ts";
 
@@ -223,6 +225,7 @@ export async function pipelineTaskLaunch(
       ok: true;
       commissioned: true;
       provider: PipelineProviderId;
+      capabilities?: PipelineEngineerCapabilities;
       launchRuntime: "agent-sdk";
       cwd: string;
     }
@@ -285,6 +288,7 @@ export async function pipelineTaskLaunch(
     ok: true,
     commissioned: true,
     provider: repo.provider,
+    capabilities: capability.value,
     launchRuntime: "agent-sdk",
     cwd: repoRoot,
   };
@@ -1244,18 +1248,126 @@ function replayError(
   sink.upsertPipelineCommission(next);
 }
 
+/** Project one exact direct successor for review without adopting or appending an attempt. */
+async function refreshPipelineSuccessorCandidate(
+  sink: PipelineProjectionSink,
+  commission: PipelineCommission,
+  lifecycle: PipelineEngineerLifecycle,
+): Promise<PipelineCommission> {
+  const active = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt);
+  if (!active?.engineerRunId) return commission;
+  const terminal = ["failed", "cancelled", "settled"].includes(active.state);
+  if (!terminal && !commission.successorCandidate) return commission;
+  const inspected = await lifecycle.inspectCorrelation({
+    repoRoot: commission.repoRoot,
+    correlationId: commission.correlationId,
+  });
+  if (!inspected.ok) return commission;
+  const successor = terminal
+    ? inspected.value.find((candidate) =>
+        candidate.attempt === active.attempt + 1 &&
+        candidate.previousEngineerRunId === active.engineerRunId &&
+        candidate.attemptKey !== active.launchKey)
+    : null;
+  const candidate = successor
+    ? {
+        engineerRunId: successor.engineerRunId,
+        attempt: successor.attempt,
+        previousEngineerRunId: successor.previousEngineerRunId!,
+        attemptKey: successor.attemptKey,
+        providerRevision: successor.eventRevision,
+        state: successor.state,
+        integrationOwner: successor.integrationOwner ?? null,
+      }
+    : null;
+  const held = getPipelineCommission(commission.id) ?? commission;
+  if (JSON.stringify(held.successorCandidate ?? null) === JSON.stringify(candidate)) return held;
+  const heldAttempt = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
+  if (!heldAttempt) return held;
+  const next = { ...held, successorCandidate: candidate, updatedAt: Date.now() };
+  upsertPipelineCommissionAttempt(next, heldAttempt);
+  sink.upsertPipelineCommission(next);
+  return next;
+}
+
+export type PipelineReadinessCheckResult =
+  | { ok: true; commission: PipelineCommission }
+  | { ok: false; error: string };
+
+/**
+ * Ask the provider for one fresh readiness reading and project that exact evidence.
+ *
+ * This is deliberately separate from dispatch. A recheck may make an initial attempt ready,
+ * but it never launches a host or creates another attempt. The initial dispatch path and the
+ * explicit post-recheck start action both consume this same projection helper.
+ */
+export async function checkPipelineCommissionReadiness(
+  sink: PipelineProjectionSink,
+  commission: PipelineCommission,
+  lifecycle: PipelineEngineerLifecycle,
+): Promise<PipelineReadinessCheckResult> {
+  await refreshPipelineCommission(sink, commission);
+  commission = getPipelineCommission(commission.id) ?? commission;
+  const attempt = commission.attempts.find(
+    (candidate) => candidate.attempt === commission.activeAttempt,
+  );
+  if (!attempt?.engineerRunId) {
+    return { ok: false, error: "the Pipeline commission has no provider run to check" };
+  }
+  if (!lifecycle.readiness) {
+    return {
+      ok: false,
+      error: "the provider advertised readiness without exposing its readiness command",
+    };
+  }
+  const checked = await lifecycle.readiness({
+    engineerRunId: attempt.engineerRunId,
+    repoRoot: commission.repoRoot,
+  });
+  if (!checked.ok) {
+    return { ok: false, error: `could not verify provider readiness: ${checked.error}` };
+  }
+  const evidence = checked.value.readiness;
+  if (!evidence) {
+    return { ok: false, error: "the provider readiness command returned no readiness evidence" };
+  }
+  const projected = applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: checked.value.engineerRunId,
+    correlationId: checked.value.correlationId,
+    attemptKey: checked.value.attemptKey,
+    attempt: checked.value.attempt,
+    previousEngineerRunId: checked.value.previousEngineerRunId,
+    repoRoot: checked.value.repoRoot,
+    revision: checked.value.eventRevision,
+    ts: evidence.checkedAt,
+    type: "engineer_readiness_checked",
+    ...evidence,
+  });
+  if (projected.outcome !== "stored" && projected.outcome !== "duplicate") {
+    return {
+      ok: false,
+      error: `provider readiness evidence could not be projected: ${projected.outcome}`,
+    };
+  }
+  if (projected.commission) sink.upsertPipelineCommission(projected.commission);
+  await refreshPipelineCommission(sink, commission);
+  const latest = getPipelineCommission(commission.id) ?? commission;
+  if (!latest.readiness || latest.readiness.fingerprint !== evidence.fingerprint) {
+    return { ok: false, error: "the latest provider readiness evidence is not available" };
+  }
+  return { ok: true, commission: latest };
+}
+
 /** Reconcile one exact active Engineer run through the provider's sanctioned replay command. */
 export async function refreshPipelineCommission(
   sink: PipelineProjectionSink,
   commission: PipelineCommission,
 ): Promise<void> {
-  if (["cancelled", "settled"].includes(commission.lifecycle)) return;
   const attempt = commission.attempts.find(
     (entry) => entry.attempt === commission.activeAttempt,
   );
-  if (!attempt?.engineerRunId || ["cancelled", "failed", "settled"].includes(attempt.state)) {
-    return;
-  }
+  if (!attempt?.engineerRunId) return;
   const consented = activePipelineRepos(getPipelinesConfig()).some(
     (repo) => repo.provider === commission.provider && repo.repoRoot === commission.repoRoot,
   );
@@ -1274,6 +1386,12 @@ export async function refreshPipelineCommission(
     );
     return;
   }
+  commission = await refreshPipelineSuccessorCandidate(sink, commission, lifecycle);
+  if (commission.retirement || attempt.state === "failed") return;
+  if (
+    ["cancelled", "settled"].includes(attempt.state) &&
+    !capability.value.worktreeRetirement
+  ) return;
   const replay = await lifecycle.replay({
     engineerRunId: attempt.engineerRunId,
     afterRevision: attempt.providerRevision,

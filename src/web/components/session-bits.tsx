@@ -19,10 +19,10 @@ import {
   fmtUsd,
   repoLeaf,
   sessionTitleDetail,
-  stateDisplay,
+  type StateDisplay,
 } from "../lib/format.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
-import { useInterrupting } from "../lib/interrupting.ts";
+import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Keycap } from "./Keycap.tsx";
@@ -1733,14 +1733,17 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
 export function StateBadge({
   session,
   onOpenReviews,
+  display,
 }: {
   session: Session;
   onOpenReviews?: () => void;
+  display?: StateDisplay;
 }): React.JSX.Element {
   // The transient stop lives beside the durable state rather than replacing it: one badge,
   // and the same one, so a card never grows a second place that says what a session is
   // doing. The Console detail draws this component, so it follows.
-  const st = stateDisplay(session, useInterrupting(session.id));
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = display ?? runtimeState;
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (
       <Tooltip

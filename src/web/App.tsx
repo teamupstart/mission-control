@@ -342,8 +342,8 @@ export function App(): React.JSX.Element {
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
   const alertScope = useMemo(
-    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries }),
-    [sessions, tasks, stalls, workflowRuns, ensembleSummaries],
+    () => ({ sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
+    [sessions, tasks, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
@@ -1750,6 +1750,16 @@ export function App(): React.JSX.Element {
   // It reaches `orderSessions` as an argument rather than being looked up inside it because
   // held-ness is a join, not a property of a Session - see `heldSessionIds`.
   const heldIds = useMemo(() => heldSessionIds(workflowRunsBySession), [workflowRunsBySession]);
+  const pipelineRunByKey = useMemo(() => {
+    const map = new Map<string, PipelineRun>();
+    for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
+    return map;
+  }, [pipelineRuns]);
+  const pipelineCommissionById = useMemo(() => {
+    const map = new Map<string, (typeof pipelineCommissions)[number]>();
+    for (const commission of pipelineCommissions) map.set(commission.id, commission);
+    return map;
+  }, [pipelineCommissions]);
 
   // Repository grouping reorders the fleet, so it belongs to this memo's inputs rather than to
   // a view: `boardColumns` below is derived from the result, and the arrow keys walk those
@@ -1759,8 +1769,8 @@ export function App(): React.JSX.Element {
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds, groupByRepo);
-  }, [sessions, filter, heldIds, groupByRepo]);
+    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey);
+  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey]);
   const visible = fleet.sessions;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
@@ -1829,16 +1839,6 @@ export function App(): React.JSX.Element {
   // pipeline - keyed by `pipelineRunKey` because that is what a session's own link
   // reconstitutes and what `orderSessions` buckets by. EMPTY on every fleet observing no
   // engine, which is the map every consumer of it is written to fall back from.
-  const pipelineRunByKey = useMemo(() => {
-    const map = new Map<string, PipelineRun>();
-    for (const run of pipelineRuns) map.set(pipelineRunKeyOf(run), run);
-    return map;
-  }, [pipelineRuns]);
-  const pipelineCommissionById = useMemo(() => {
-    const map = new Map<string, (typeof pipelineCommissions)[number]>();
-    for (const commission of pipelineCommissions) map.set(commission.id, commission);
-    return map;
-  }, [pipelineCommissions]);
   // The Ensembles tab badge: runs the DAEMON flagged as needing attention (a parked decision,
   // a failure, an unreadable row, or a member sitting on your answer). Counted here, never
   // recomputed - `ensembleNeedsAttention` is the server's derivation and the run list's dot,
@@ -1859,8 +1859,10 @@ export function App(): React.JSX.Element {
         reviews: answerableReviews,
         ensembles: ensembleSummaries,
         pipelineRuns,
+        pipelineCommissions,
+        tasks,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -3398,6 +3400,7 @@ export function App(): React.JSX.Element {
                 <PipelineRuns
                   runs={pipelineRuns}
                   commissions={pipelineCommissions}
+                  tasks={tasks}
                   selectedCommissionId={pipelineCommissionSelection}
                   onSelectCommission={openPipelineCommission}
                   selected={route.page === "runs" ? route.pipelineRun ?? null : null}
@@ -3798,6 +3801,7 @@ export function App(): React.JSX.Element {
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
+                  onOpenPipelineCommission={openPipelineCommission}
                 />
               )}
 

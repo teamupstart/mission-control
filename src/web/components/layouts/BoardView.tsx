@@ -152,6 +152,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
     groupByRepo,
+    props.pipelineCommissionById,
+    props.pipelineRunByKey,
   );
   const groups = order.groups;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather

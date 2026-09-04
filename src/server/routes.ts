@@ -6725,6 +6725,22 @@ export function buildApp(
     return c.json(r.task!);
   });
 
+  app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
+    const r = await tasks.recheckPipelineReadiness(c.req.param("id"));
+    if (!r.ok) {
+      return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
+    }
+    return c.json(r.task!);
+  });
+
+  app.post("/api/tasks/:id/pipeline/start", async (c) => {
+    const r = await tasks.startPipelineAfterReadiness(c.req.param("id"));
+    if (!r.ok) {
+      return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
+    }
+    return c.json(r.task!);
+  });
+
   // Assign a backlog task to an already-running agent. A refusal here is a 409, not a
   // 500: every way it fails (task already dispatched, agent busy, agent in another
   // repo, pane locked) is a state conflict the operator can see and resolve on the

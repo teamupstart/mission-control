@@ -55,6 +55,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
     useUiConfig().groupBoardByRepo,
+    props.pipelineCommissionById,
+    props.pipelineRunByKey,
   );
   const pending = provisioningTasks(props.tasks);
   // Keep Working mounted for the first dispatch onto an otherwise quiet fleet because its

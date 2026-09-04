@@ -3,6 +3,7 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { buildReport, renderReportMarkdown } from "../src/server/report.ts";
 import { reportBucket } from "../src/shared/session.ts";
+import type { PipelineCommission } from "../src/shared/pipeline.ts";
 import type { Session, SessionState, Task, TaskSummary } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -73,6 +74,34 @@ const shipSummary: TaskSummary = {
   ensemble: null,
   repoPrs: [],
 };
+
+function pipelineCommission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "task-run",
+    provider: "ai-conductor",
+    repoRoot: "/repo/demo",
+    correlationId: "commission-1",
+    lifecycle: "authoring",
+    attempts: [],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
 
 test("buildReport buckets sessions the same way the shared helper does", () => {
   const sessions = [
@@ -154,6 +183,41 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
   const r = buildReport({ sessions: sessions, tasks: [] }, 0);
   assert.deepEqual(r.idle.map((i) => i.sessionId).sort(), ["a", "b"]);
   assert.deepEqual(r.working.map((i) => i.sessionId), ["c"]);
+});
+
+test("provider lifecycle attention replaces the host bucket and covers a hostless commission", () => {
+  const task = mkTask({ id: "task-run", status: "running", repoRoot: "/repo/demo" });
+  const blocked = pipelineCommission({
+    readinessRequired: true,
+    readiness: {
+      status: "blocked",
+      code: "authentication_required",
+      summary: "GitHub authentication is required",
+      checkedCapabilities: ["gh"],
+      retryable: true,
+      remedy: "Authenticate GitHub",
+      diagnostic: null,
+      fingerprint: "blocked",
+      permitted: false,
+      checkedAt: "2026-09-04T12:00:00.000Z",
+    },
+  });
+  const withHost = buildReport({
+    sessions: [mkSession({ id: "host", state: "idle", task: shipSummary })],
+    tasks: [task],
+    pipelineCommissions: [blocked],
+  });
+  assert.deepEqual(withHost.needsYou.map((item) => item.sessionId), ["host"]);
+  assert.equal(withHost.idle.length, 0);
+  assert.match(withHost.needsYou[0]?.reason ?? "", /Pipeline launch blocked/);
+
+  const withoutHost = buildReport({
+    sessions: [],
+    tasks: [task],
+    pipelineCommissions: [blocked],
+  });
+  assert.deepEqual(withoutHost.needsYou.map((item) => item.sessionId), ["pipeline:commission-1"]);
+  assert.match(renderReportMarkdown(withoutHost), /GitHub authentication is required/);
 });
 
 

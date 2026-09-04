@@ -7755,6 +7755,63 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
         (blocker.kind === "step_failed" &&
           typeof blocker.step === "string" &&
           typeof blocker.reason === "string")));
+  const capabilities = row.capabilities;
+  const capabilitiesValid = capabilities === undefined || (
+    typeof capabilities === "object" && capabilities !== null &&
+    typeof capabilities.supported === "boolean" &&
+    [capabilities.readiness, capabilities.worktreeRetirement,
+      capabilities.retainedReviewWorktrees, capabilities.ownedAttempts]
+      .every((value) => value === undefined || typeof value === "boolean")
+  );
+  const readiness = row.readiness;
+  const readinessValid = readiness === undefined || readiness === null || (
+    typeof readiness === "object" &&
+    ["ready", "blocked", "inconclusive"].includes(readiness.status) &&
+    typeof readiness.code === "string" && typeof readiness.summary === "string" &&
+    Array.isArray(readiness.checkedCapabilities) &&
+    readiness.checkedCapabilities.every((value) => typeof value === "string") &&
+    typeof readiness.retryable === "boolean" && nullableString(readiness.remedy) &&
+    nullableString(readiness.diagnostic) && typeof readiness.fingerprint === "string" &&
+    typeof readiness.permitted === "boolean" && typeof readiness.checkedAt === "string"
+  );
+  const failure = row.failure;
+  const failureValid = failure === undefined || failure === null || (
+    typeof failure === "object" && typeof failure.error === "string" &&
+    ["authentication", "authorization", "remote", "workspace", "tooling", "provider", "unknown"]
+      .includes(failure.class) &&
+    typeof failure.code === "string" && typeof failure.summary === "string" &&
+    typeof failure.retryable === "boolean" && nullableString(failure.remedy) &&
+    nullableString(failure.diagnostic)
+  );
+  const retention = row.retention;
+  const retentionValid = retention === undefined || retention === null || (
+    typeof retention === "object" && typeof retention.retainedCommit === "string" &&
+    typeof retention.retainedAt === "string" && typeof retention.retentionDeadline === "string"
+  );
+  const retirement = row.retirement;
+  const retirementValid = retirement === undefined || retirement === null || (
+    typeof retirement === "object" && typeof retirement.worktreePath === "string" &&
+    typeof retirement.branch === "string" && typeof retirement.planSlug === "string" &&
+    ["spec_merged", "spec_closed", "task_cancelled", "retention_expired", "operator_cleanup"]
+      .includes(retirement.reason) && nullableString(retirement.retainedCommit) &&
+    typeof retirement.retiredAt === "string"
+  );
+  const successor = row.successorCandidate;
+  const successorValid = successor === undefined || successor === null || (
+    typeof successor === "object" && typeof successor.engineerRunId === "string" &&
+    Number.isInteger(successor.attempt) && typeof successor.previousEngineerRunId === "string" &&
+    typeof successor.attemptKey === "string" && Number.isInteger(successor.providerRevision) &&
+    typeof successor.state === "string" &&
+    ["created", "authoring", "failed", "cancelled", "awaiting_spec_merge", "settled"]
+      .includes(successor.state) &&
+    nullableString(successor.integrationOwner)
+  );
+  const projectionDrift = row.projectionDrift;
+  const projectionDriftValid = projectionDrift === undefined || projectionDrift === null || (
+    typeof projectionDrift === "object" &&
+    ["retirement_identity", "retirement_commit"].includes(projectionDrift.kind) &&
+    typeof projectionDrift.detail === "string"
+  );
   return (
     typeof row.id === "string" &&
     typeof row.taskId === "string" &&
@@ -7777,6 +7834,15 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     handoffValid &&
     linkedRunValid &&
     blockerValid &&
+    capabilitiesValid &&
+    (row.integrationOwner === undefined || nullableString(row.integrationOwner)) &&
+    (row.readinessRequired === undefined || typeof row.readinessRequired === "boolean") &&
+    readinessValid &&
+    failureValid &&
+    retentionValid &&
+    retirementValid &&
+    successorValid &&
+    projectionDriftValid &&
     nullableString(row.error) &&
     typeof row.createdAt === "number" &&
     typeof row.updatedAt === "number"
@@ -7812,6 +7878,21 @@ function fallbackCommission(row: {
     authoringBranch: null,
     planSlug: null,
     handoff: null,
+    capabilities: {
+      supported: false,
+      readiness: false,
+      worktreeRetirement: false,
+      retainedReviewWorktrees: false,
+      ownedAttempts: false,
+    },
+    integrationOwner: null,
+    readinessRequired: false,
+    readiness: null,
+    failure: null,
+    retention: null,
+    retirement: null,
+    successorCandidate: null,
+    projectionDrift: null,
     linkedRun: row.run_slug
       ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
       : null,
@@ -7974,6 +8055,21 @@ function hydratePipelineCommission(
     commission: {
       ...parsed,
       blocker: parsed.blocker ?? null,
+      capabilities: parsed.capabilities ?? {
+        supported: true,
+        readiness: false,
+        worktreeRetirement: false,
+        retainedReviewWorktrees: false,
+        ownedAttempts: false,
+      },
+      integrationOwner: parsed.integrationOwner ?? null,
+      readinessRequired: parsed.readinessRequired ?? false,
+      readiness: parsed.readiness ?? null,
+      failure: parsed.failure ?? null,
+      retention: parsed.retention ?? null,
+      retirement: parsed.retirement ?? null,
+      successorCandidate: parsed.successorCandidate ?? null,
+      projectionDrift: parsed.projectionDrift ?? null,
       authoringBranch: parsed.authoringBranch ?? parsed.handoff?.branch ?? null,
       planSlug: parsed.planSlug ?? parsed.handoff?.planSlug ?? null,
       attempts: attemptRows.map((attempt) => {

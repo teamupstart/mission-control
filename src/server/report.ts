@@ -6,6 +6,11 @@ import {
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
+import {
+  pipelineCommissionAttentionEntries,
+  type PipelineCommission,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 
 /**
  * Project the live registry snapshot into a roundup report - the `/bearings`
@@ -14,10 +19,20 @@ import {
  * task for intent + branch, and folds tasks into a backlog + recent-outcomes list.
  */
 export function buildReport(
-  snap: { sessions: Session[]; tasks: Task[] },
+  snap: { sessions: Session[]; tasks: Task[]; pipelineCommissions?: PipelineCommission[]; pipelineRuns?: PipelineRun[] },
   now: number = Date.now(),
 ): MissionReport {
   const taskById = new Map(snap.tasks.map((t) => [t.id, t]));
+  const pipelineAttentionEntries = pipelineCommissionAttentionEntries({
+    commissions: snap.pipelineCommissions,
+    tasks: snap.tasks,
+    runs: snap.pipelineRuns,
+    sessions: snap.sessions,
+  });
+  const pipelineAttentionByTask = new Map(pipelineAttentionEntries.flatMap(({ commission, attention }) =>
+    attention ? [[commission.taskId, { commission, attention }] as const] : []));
+  const pipelineAttentionByCommission = new Map(pipelineAttentionEntries.map((entry) =>
+    [entry.commission.id, entry.attention] as const));
 
   const toItem = (s: Session, reason = ""): ReportItem => {
     const task = s.task ? taskById.get(s.task.id) : undefined;
@@ -38,6 +53,7 @@ export function buildReport(
   const working: ReportItem[] = [];
   const idle: ReportItem[] = [];
   let exited = 0;
+  const representedCommissions = new Set<string>();
 
   for (const s of snap.sessions) {
     const bucket = reportBucket(s, snap.sessions);
@@ -45,9 +61,31 @@ export function buildReport(
       exited++;
       continue;
     }
-    if (bucket === "needs-you") needsYou.push(toItem(s, needsYouReason(s, snap.sessions) ?? "needs you"));
+    const pipeline = s.task ? pipelineAttentionByTask.get(s.task.id) : null;
+    if (pipeline) {
+      representedCommissions.add(pipeline.commission.id);
+      needsYou.push(toItem(s, `${pipeline.attention.title}: ${pipeline.attention.detail}`));
+    } else if (bucket === "needs-you") needsYou.push(toItem(s, needsYouReason(s, snap.sessions) ?? "needs you"));
     else if (bucket === "idle") idle.push(toItem(s));
     else working.push(toItem(s));
+  }
+
+  for (const commission of snap.pipelineCommissions ?? []) {
+    if (representedCommissions.has(commission.id)) continue;
+    const task = taskById.get(commission.taskId) ?? null;
+    const attention = pipelineAttentionByCommission.get(commission.id) ?? null;
+    if (!attention) continue;
+    needsYou.push({
+      sessionId: `pipeline:${commission.id}`,
+      name: commission.handoff?.planSlug ?? `Pipeline commission ${commission.id.slice(0, 8)}`,
+      kind: "pipeline",
+      branch: commission.authoringBranch,
+      activity: null,
+      reason: `${attention.title}: ${attention.detail}`,
+      taskTitle: task?.title ?? null,
+      outcome: task?.outcome ?? null,
+      outcomeUrl: task?.outcomeUrl ?? null,
+    });
   }
 
   const backlog = backlogTasks(snap.tasks);

@@ -8,7 +8,7 @@ import { Tooltip, type TooltipContent } from "../components/Tooltip.tsx";
 import { SegmentMeter, segmentFillPercent } from "../components/SegmentMeter.tsx";
 import {
   pipelinePhaseMeter,
-  pipelineCommissionLine,
+  pipelineFeatureProgress,
   pipelineRunForCommission,
   pipelineStepStatus,
   type PipelinePhaseSegment,
@@ -202,11 +202,14 @@ export function PipelinePhaseMeter({
   commission?: PipelineCommission | null;
 }): React.JSX.Element | null {
   if (!run && !commission) return null;
-  const meterRun = commission ? pipelineRunForCommission(commission, run) : run!;
+  const meterRun = commission ? pipelineRunForCommission(commission) : run!;
   const view = pipelinePhaseMeter(meterRun);
   if (!view) return null;
-  const caption = commission ? pipelineCommissionLine(commission, run) : view.caption;
-  const extraCount = view.extras.unknown.length + view.extras.outOfBand.length;
+  const featureProgress = commission ? pipelineFeatureProgress(commission, run) : null;
+  const caption = featureProgress?.caption ?? view.caption;
+  const captionTone = featureProgress?.captionTone ?? view.captionTone;
+  const halt = featureProgress?.halt ?? view.halt;
+  const extraCount = featureProgress ? 0 : view.extras.unknown.length + view.extras.outOfBand.length;
 
   return (
     <span
@@ -218,31 +221,31 @@ export function PipelinePhaseMeter({
         <span className="tpm-glyph" aria-hidden>
           ⇶
         </span>
-        <span className={`tpm-now workflow-${view.captionTone}`}>{caption}</span>
+        <span className={`tpm-now workflow-${captionTone}`}>{caption}</span>
         {/* THE HALT, unconditionally, as a WORD rather than only as the caption's colour.
             A halt is a fact about the run, not about a phase, so this is its home and a
             phase's popover carrying it too is an addition. Stating it here is what closes the
             case the projection's own `classifyGroup` names: a run that halted DURING a step
             has no failed phase, so before this the meter drew it as work in progress and said
             nothing about the halt anywhere. */}
-        {view.halt && (
+        {halt && (
           <Tooltip
             label={{
               content: (
                 <span className="tpm-pop">
                   <span className="tpm-pop-hd">
                     <span className="tpm-pop-name">Halted</span>
-                    <span className="tpm-pop-stat workflow-failed">{view.halt.label}</span>
+                    <span className="tpm-pop-stat workflow-failed">{halt.label}</span>
                   </span>
                   {/* Its own element rather than a `.tpm-pop-row`: a step row is one line and
                       ellipsises, which is right for a step's LABEL and wrong for prose - the
                       engine's reason is a sentence, and a halt whose reason reads "the scope
                       widened past the approved …" is the defect this marker exists to fix. */}
-                  <span className="tpm-pop-reason">{view.halt.reason}</span>
-                  <span className="tpm-pop-foot">{view.halt.blurb}</span>
+                  <span className="tpm-pop-reason">{halt.reason}</span>
+                  <span className="tpm-pop-foot">{halt.blurb}</span>
                 </span>
               ),
-              description: `Halted - ${view.halt.label}. ${view.halt.reason}. ${view.halt.blurb}`,
+              description: `Halted - ${halt.label}. ${halt.reason}. ${halt.blurb}`,
             }}
           >
             <span className="tpm-halt workflow-failed" tabIndex={0}>
@@ -262,18 +265,28 @@ export function PipelinePhaseMeter({
         {/* Finished over the run's own sequential total, so the number agrees with the bar
             beneath it. The step INDEX would be a different figure, and a caption that
             disagreed with the fill it captions is the bug this note exists to prevent. */}
-        <span className="tpm-count">{`${view.done}/${view.total}`}</span>
+        <span className="tpm-count">{featureProgress?.count ?? `${view.done}/${view.total}`}</span>
       </span>
       <SegmentMeter
-        segments={view.segments.map((segment) => ({
-          key: segment.phase,
-          tone: segment.status.tone,
-          fillPercent: segmentFillPercent(segment.finished, segment.total),
-          grow: segment.total,
-          current: segment.current,
-          degraded: segment.status.degraded,
-          tooltip: segmentPopover(segment, meterRun.lastStep),
-        }))}
+        segments={featureProgress
+          ? featureProgress.segments.map((segment) => ({
+              key: segment.kind,
+              tone: segment.tone,
+              fillPercent: segmentFillPercent(segment.finished, segment.total ?? 0),
+              grow: segment.weight,
+              current: segment.current,
+              degraded: segment.degraded,
+              tooltip: segment.detail,
+            }))
+          : view.segments.map((segment) => ({
+              key: segment.phase,
+              tone: segment.status.tone,
+              fillPercent: segmentFillPercent(segment.finished, segment.total),
+              grow: segment.total,
+              current: segment.current,
+              degraded: segment.status.degraded,
+              tooltip: segmentPopover(segment, meterRun.lastStep),
+            }))}
       />
     </span>
   );

@@ -1754,6 +1754,10 @@ export const api = {
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+  recheckPipelineReadiness: (id: string) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
+  startPipelineAfterReadiness: (id: string) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/start`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.

@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +29,41 @@ const LOOPBACK_TOKEN_FILE = "loopback-token";
 const TERMINAL_CLEANUP_WRAPPER = "launch-and-cleanup.sh";
 const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
+const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Remove only expired Pipeline caller files left by a previous daemon crash. */
+export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(DISPOSABLE_STATE_ROOT);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith("session-")) continue;
+    const stateHome = join(DISPOSABLE_STATE_ROOT, entry);
+    if (liveDisposableStateHomes.has(stateHome)) continue;
+    try {
+      const info = statSync(stateHome);
+      if (!info.isDirectory()) continue;
+      for (const name of readdirSync(stateHome)) {
+        if (!name.startsWith("pipeline-caller-") || !name.endsWith(".json")) continue;
+        const credentialPath = join(stateHome, name);
+        const credentialInfo = statSync(credentialPath);
+        let expiresAt = credentialInfo.mtimeMs + ABANDONED_CREDENTIAL_MAX_AGE_MS;
+        try {
+          const parsed = JSON.parse(readFileSync(credentialPath, "utf8")) as { expiresAt?: unknown };
+          if (typeof parsed.expiresAt === "number") expiresAt = parsed.expiresAt;
+        } catch {
+          // An unreadable credential still has a bounded lifetime from its mtime.
+        }
+        if (expiresAt <= now) unlinkSync(credentialPath);
+      }
+    } catch {
+      // Another process may be cleaning the same expired credential.
+    }
+  }
+}
 
 function hookProcessCleanup(): void {
   if (cleanupHooked) return;

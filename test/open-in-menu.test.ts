@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OpenInList } from "../src/web/components/OpenInMenu.tsx";
+import { OpenInList, OpenInMenu } from "../src/web/components/OpenInMenu.tsx";
 import type { OpenTargetView } from "../src/shared/open-targets.ts";
 
 // What is at stake: the menu is a FOLD over what the daemon reports, so a second target
@@ -54,6 +54,17 @@ test("a failed fetch says so rather than rendering an empty menu", () => {
 test("no answer yet and a genuinely empty build read differently", () => {
   assert.match(render(null), /Checking/);
   assert.match(render([]), /nowhere to open files/);
+});
+
+test("a disabled menu can explain a read-only evidence workspace", () => {
+  const html = renderToStaticMarkup(createElement(OpenInMenu, {
+    disabled: true,
+    disabledReason: "Pinned Pipeline evidence is read-only",
+    busy: false,
+    onChoose: () => {},
+  }));
+  assert.match(html, /Pinned Pipeline evidence is read-only/);
+  assert.doesNotMatch(html, /Select a file first/);
 });
 
 test("every target the daemon reports gets a row, in the order it reported them", () => {

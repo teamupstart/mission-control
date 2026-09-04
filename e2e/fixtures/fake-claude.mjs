@@ -320,6 +320,45 @@ if (process.argv.includes("--setting-sources=")) {
       // Historical text-only print calls write the prompt directly.
     }
     if (!verifyClaudeWorkflowImages(prompt, blocks)) process.exit(1);
+    if (
+      argvValue("--output-format") === "stream-json"
+      && prompt.includes("Query Upstart Jira. Mission Control reads the Jira tool results directly")
+    ) {
+      const jqlLine = prompt.split("\n").find((line) => line.startsWith("Run this exact JQL string: "));
+      const jql = jqlLine ? JSON.parse(jqlLine.slice("Run this exact JQL string: ".length)) : "";
+      process.stdout.write([
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "toolu_jira_e2e",
+              name: "mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql",
+              input: {
+                cloudId: "d30daf5c-29ad-4817-bd10-bdd85ae8455f",
+                jql,
+                maxResults: 1,
+              },
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "toolu_jira_e2e",
+              content: "one empty Jira page",
+            }],
+          },
+          tool_use_result: {
+            issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        }),
+        JSON.stringify({ type: "result", result: "Jira query completed" }),
+      ].join("\n"));
+      process.exit(0);
+    }
     const finish = () => {
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
       process.exit(0);

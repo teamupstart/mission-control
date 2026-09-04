@@ -211,7 +211,7 @@ export function detectPathTokens(text: string): PathToken[] {
  * it - and kept separate from the membership test, because `src/App.tsx:42` never appears
  * in a file listing while `src/App.tsx` does.
  */
-function located(raw: string): [string, number | null, number | null] {
+export function splitPathLocation(raw: string): [string, number | null, number | null] {
   const suffix = raw.match(/:(\d+)(?::(\d+))?$/);
   if (suffix?.index == null) return [raw, null, null];
   return [raw.slice(0, suffix.index), Number(suffix[1]), suffix[2] ? Number(suffix[2]) : null];
@@ -360,7 +360,7 @@ function matchAt(
     for (const [start, end] of candidateSpans(text, first.start, last.end)) {
       const raw = text.slice(start, end);
       // A file whose name really does end in `:12` beats reading that as a line number.
-      const hit = listed(raw, null, null, paths) ?? listed(...located(raw), paths);
+      const hit = listed(raw, null, null, paths) ?? listed(...splitPathLocation(raw), paths);
       if (hit) return { token: { ...hit, raw, start, end }, nextWord: index + span };
     }
   }

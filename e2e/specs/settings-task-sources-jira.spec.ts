@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -40,6 +41,22 @@ const NO_CREDENTIAL =
   "then `jira init`), or set JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
 const EVIDENCE = artifactsDir("jira-task-source");
+
+/** Make the isolated daemon home pass the same UpstartClaw readiness checks as an operator home. */
+function installUpstartClaw(daemon: { home: string }): void {
+  const plugins = join(daemon.home, ".claude", "plugins");
+  mkdirSync(join(plugins, "cache", "upstartclaw", "upstartclaw-core", "1.1.7"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(plugins, "installed_plugins.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: { "upstartclaw-core@upstartclaw": [{ scope: "user", version: "1.1.7" }] },
+    }),
+  );
+  writeFileSync(join(daemon.home, ".claude", "upstartclaw-core-setup"), "completed");
+}
 
 /**
  * Photograph a state this spec has already asserted on.
@@ -623,4 +640,33 @@ test("an unusable Jira source names the fix, and a healthy one names Jira rather
   await expect(note).toContainText("Looks good - Jira answered, and this JQL filter runs.");
   await expect(note).not.toContainText("gh");
   await expect(note).not.toHaveClass(/settings-error/, { timeout: 2000 });
+});
+
+test("Check it works accepts the Claude.ai Rovo Jira registration", async ({ page, daemon }) => {
+  installUpstartClaw(daemon);
+  const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: {
+      sources: [{
+        id: "jira-rovo-e2e",
+        kind: "jira",
+        label: "Rovo Jira",
+        repoRoot: daemon.repo,
+        config: {
+          site: "upstartnetwork.atlassian.net",
+          jql: JQL,
+          queryVia: "upstartclaw",
+          limit: 50,
+          priorityFromJira: true,
+        },
+      }],
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await page.getByRole("button", { name: "Check it works" }).click();
+
+  const note = page.locator("p.ts-note");
+  await expect(note).toHaveText("Looks good - Jira answered, and this JQL filter runs.");
+  await expect(note).not.toHaveClass(/settings-error/);
 });

@@ -619,8 +619,14 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
  */
 export function workflowCheckoutPath(
   binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
-  session: Pick<Session, "cwd">,
+  session: Pick<Session, "cwd" | "workspace">,
 ): string | null {
+  if (!binding.repoRoot && session.workspace?.authority === "provider") {
+    return session.workspace.availability === "available" &&
+      session.workspace.capabilities.manualWorkflow
+      ? session.workspace.reportedPath
+      : null;
+  }
   return binding.repoRoot ? binding.sessionCwd : session.cwd;
 }
 

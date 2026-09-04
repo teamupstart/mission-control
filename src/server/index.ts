@@ -27,6 +27,7 @@ import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
+import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
@@ -134,6 +135,7 @@ try {
 // and record nothing.
 warnIfSessionAttributionDisabled();
 warnRetiredTreehouseCadence();
+reconcileDisposableAgentStateHomes();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.

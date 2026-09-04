@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readStandards } from "../src/server/standards.ts";
+import { readStandards, readStandardsFromGitTree } from "../src/server/standards.ts";
 import { MEMORY_DIR, MEMORY_INDEX_PATH } from "../src/shared/memory.ts";
 import { StandardsRequestSchema } from "../src/shared/protocol.ts";
 
@@ -16,6 +17,12 @@ function mkRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "standards-"));
   mkdirSync(join(root, "packages", "app", "src"), { recursive: true });
   return root;
+}
+
+const gitBin = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+
+function git(repo: string, ...args: string[]): string {
+  return execFileSync(gitBin, ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
 const paths = (r: { docs: Array<{ path: string }> }): string[] => r.docs.map((d) => d.path).sort();
@@ -182,6 +189,47 @@ test("an oversized doc is capped, and says so", () => {
   assert.equal(out.docs.length, 1);
   assert.equal(out.docs[0]!.truncated, true);
   assert.equal(out.docs[0]!.text.length, 24 * 1024);
+});
+
+test("immutable Git standards reads yield and retain an oversized document's capped prefix", async () => {
+  const root = mkRepo();
+  git(root, "init", "-q");
+  writeFileSync(join(root, "AGENTS.md"), "x".repeat(30 * 1024));
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), "# nested contract\n");
+  git(root, "add", "-A");
+  git(
+    root,
+    "-c",
+    "user.name=Mission Control Test",
+    "-c",
+    "user.email=mission-control-test@example.invalid",
+    "commit",
+    "-qm",
+    "standards evidence",
+  );
+  const commit = git(root, "rev-parse", "HEAD");
+  const bin = join(root, "slow-bin");
+  mkdirSync(bin);
+  const slowGit = join(bin, "git");
+  writeFileSync(slowGit, `#!/bin/sh\nsleep 0.1\nexec ${JSON.stringify(gitBin)} "$@"\n`);
+  chmodSync(slowGit, 0o700);
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath ?? ""}`;
+  let settled = false;
+  try {
+    const reading = readStandardsFromGitTree(root, commit, ["packages/app/src/a.ts"])
+      .finally(() => { settled = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    assert.equal(settled, false, "the delayed Git child must not stall timers");
+    const out = await reading;
+    assert.deepEqual(paths(out), ["AGENTS.md", "packages/app/AGENTS.md"]);
+    const rootDoc = out.docs.find((doc) => doc.path === "AGENTS.md")!;
+    assert.equal(rootDoc.text.length, 24 * 1024);
+    assert.equal(rootDoc.truncated, true);
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });
 
 test("past the changed-path cap the bundle SAYS docs may be missing", () => {

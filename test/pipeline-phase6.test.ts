@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import {
   ENGINEER_STEP_NAMES,
-  PIPELINE_CALLER_CREDENTIAL_ENV,
+  PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_HALT_CLASSES,
   type PipelineActionResult,
   type PipelineCommission,
@@ -38,6 +38,7 @@ import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -247,7 +248,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     missionMcpDescriptor: async () => mcp,
     verifyMissionMcpTools: async (tools, descriptor) => {
       assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
-      callerCredential = descriptor?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      callerCredential = pipelineCredentialFromDescriptor(descriptor);
       assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       return { ok: true };
     },
@@ -296,7 +297,8 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
       ...mcp,
       env: {
         ...mcp.env,
-        [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
+        [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]:
+          supervisor.starts[0]!.mcp!.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV]!,
       },
     },
     extraDirs: [],
@@ -317,6 +319,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     taskId: "pipeline-sdk",
     sessionId: launchedSessionId,
     cwd: "/repo/sdk",
+    expiresAt: registry.managedPipelineCaller(callerCredential)!.expiresAt,
   });
 });
 
@@ -511,7 +514,7 @@ test("rejected managed Pipeline launch clears its preallocated nonexistent sessi
   let tornDown = 0;
   const supervisor = {
     start: async (input: Parameters<SdkSupervisor["start"]>[0]) => {
-      callerCredential = input.mcp?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+      callerCredential = pipelineCredentialFromDescriptor(input.mcp);
       assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
       prelaunchAttributionObserved =
         typeof input.sessionId === "string" &&
@@ -1567,12 +1570,16 @@ test("cancelling implementation preserves the successful Engineer commission", a
     lifecycle: "awaiting_spec_merge",
     attempts: [{
       attempt: 1,
+      origin: "mission_control",
       launchKey: "launch-post-handoff",
       engineerRunId: "engineer-post-handoff",
       previousEngineerRunId: null,
       providerRevision: 3,
       state: "settled",
       terminalReason: "awaiting_spec_merge",
+      evidenceCommit: null,
+      evidenceCommitProvenance: null,
+      evidenceFrozenAt: null,
       updatedAt: 1_000,
     }],
     activeAttempt: 1,
@@ -1582,6 +1589,8 @@ test("cancelling implementation preserves the successful Engineer commission", a
     track: "technical",
     project: "mission-control",
     authoringWorktree: `${repoRoot}/.worktrees/spec`,
+    authoringBranch: "plan/post-handoff-cancel",
+    planSlug: "post-handoff-cancel",
     handoff: {
       planSlug: "post-handoff-cancel",
       branch: "plan/post-handoff-cancel",

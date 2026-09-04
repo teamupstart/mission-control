@@ -23,7 +23,8 @@ import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
 import {
-  PIPELINE_CALLER_CREDENTIAL_ENV,
+  PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
+  PIPELINE_CALLER_CREDENTIAL_TTL_MS,
 } from "@shared/pipeline.ts";
 import { run } from "./util/exec.ts";
 
@@ -235,14 +236,29 @@ export function newPipelineCallerCredential(): string {
 export function missionMcpDescriptorForPipelineTask(
   descriptor: MissionMcpDescriptor | null,
   callerCredential: string,
+  launchStateHome?: string,
 ): MissionMcpDescriptor | null {
   if (!descriptor) return null;
+  const stateHome = launchStateHome ?? descriptor.env.MISSION_HOME;
+  if (!stateHome) throw new Error("managed Pipeline MCP registration has no private state home");
+  const credentialPath = join(
+    stateHome,
+    `pipeline-caller-${randomBytes(12).toString("hex")}.json`,
+  );
+  writeFileSync(
+    credentialPath,
+    JSON.stringify({
+      credential: callerCredential,
+      expiresAt: Date.now() + PIPELINE_CALLER_CREDENTIAL_TTL_MS,
+    }),
+    { mode: 0o600, flag: "wx" },
+  );
   return {
     ...descriptor,
     args: [...descriptor.args],
     env: {
       ...descriptor.env,
-      [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
+      [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]: credentialPath,
     },
   };
 }

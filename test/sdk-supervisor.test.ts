@@ -28,7 +28,8 @@ const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { PIPELINE_CALLER_CREDENTIAL_ENV } = await import("../src/shared/pipeline.ts");
+const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
+const { pipelineCredentialFromDescriptor } = await import("./helpers/pipeline-credential.ts");
 const { reportBucket } = await import("../src/shared/session.ts");
 const { stateDisplay } = await import("../src/web/lib/format.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
@@ -1117,7 +1118,7 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
       missionMcpDescriptor: async () => descriptor,
       verifyMissionMcpTools: async (tools, scoped) => {
         assert.deepEqual(tools, ["adopt_pipeline_run", "report_pipeline_workspace"]);
-        callerCredential = scoped?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+        callerCredential = pipelineCredentialFromDescriptor(scoped);
         assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
         return { ok: true };
       },
@@ -1130,7 +1131,8 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
       args: [...descriptor.args],
       env: {
         ...descriptor.env,
-        [PIPELINE_CALLER_CREDENTIAL_ENV]: callerCredential,
+        [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]:
+          fake.calls[0]!.mcp!.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV]!,
         MISSION_SESSION_ID: "sdk:restore-pipeline",
       },
     });
@@ -1141,6 +1143,7 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
       taskId: "task-restore-pipeline",
       sessionId: "sdk:restore-pipeline",
       cwd: "/repo/restore-pipeline",
+      expiresAt: registry.managedPipelineCaller(callerCredential)!.expiresAt,
     });
     handle.push({ kind: "exited", reason: "done", resumable: false });
     handle.end();
@@ -1156,12 +1159,13 @@ test("a failed managed Pipeline restore revokes its launch capability", async ()
   const registry = new Registry();
   let callerCredential = "";
   const fake = withFakeDriver(async (options) => {
-    callerCredential = options.mcp?.env[PIPELINE_CALLER_CREDENTIAL_ENV] ?? "";
+    callerCredential = pipelineCredentialFromDescriptor(options.mcp);
     assert.match(callerCredential, /^[A-Za-z0-9_-]{43}$/);
     assert.deepEqual(registry.managedPipelineCaller(callerCredential), {
       taskId: "task-restore-pipeline-failed",
       sessionId: "sdk:restore-pipeline-failed",
       cwd: "/repo/restore-pipeline-failed",
+      expiresAt: registry.managedPipelineCaller(callerCredential)!.expiresAt,
     });
     throw new Error("the managed Pipeline resume failed");
   });

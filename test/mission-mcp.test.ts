@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { mcpFixtureSpawns, writeMcpFixture } from "./helpers/mcp-fixture.ts";
+import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
 
 // What is at stake: a dispatched session told a tool exists that it cannot call.
 //
@@ -45,9 +46,7 @@ const {
   verifyMissionMcpToolsForRunningSession,
 } = await import("../src/server/mission-mcp.ts");
 const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
-const {
-  PIPELINE_CALLER_CREDENTIAL_ENV,
-} = await import("../src/shared/pipeline.ts");
+const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
 const { mcpServerPath } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
@@ -97,12 +96,12 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
 });
 
-test("Pipeline task scoping clones the descriptor and preserves the shared registration", () => {
+test("Pipeline task scoping clones the descriptor and puts its capability in a private file", () => {
   const descriptor = {
     serverName: "mission-control",
     command: "/usr/bin/node",
     args: ["/dist/mcp/server.mjs"],
-    env: { MISSION_HOME: "/state" },
+    env: { MISSION_HOME: home },
   };
   const scoped = missionMcpDescriptorForPipelineTask(
     descriptor,
@@ -111,11 +110,10 @@ test("Pipeline task scoping clones the descriptor and preserves the shared regis
   assert.notEqual(scoped, descriptor);
   assert.notEqual(scoped?.args, descriptor.args);
   assert.notEqual(scoped?.env, descriptor.env);
-  assert.deepEqual(scoped?.env, {
-    MISSION_HOME: "/state",
-    [PIPELINE_CALLER_CREDENTIAL_ENV]: "pipeline-caller-credential",
-  });
-  assert.deepEqual(descriptor.env, { MISSION_HOME: "/state" });
+  assert.equal(scoped?.env.MISSION_HOME, home);
+  assert.match(scoped?.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV] ?? "", /pipeline-caller-[0-9a-f]+\.json$/);
+  assert.equal(pipelineCredentialFromDescriptor(scoped), "pipeline-caller-credential");
+  assert.deepEqual(descriptor.env, { MISSION_HOME: home });
 });
 
 test("the launch descriptor preserves Electron client context across the Node child boundary", () => {

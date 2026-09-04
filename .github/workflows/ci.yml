@@ -16,8 +16,9 @@ name: CI
 # shared `frontend-platform` group granted to this repository in
 # `teamupstart/Github_Org_Settings_TF#131`: unit runs on its 8-core label with eight test
 # workers, while each E2E shard runs on its reliability-tested 4-core label with four
-# Playwright workers. Keep group and labels explicit so CI cannot silently move between
-# unrelated runner pools.
+# Playwright workers. The test matrices split both suites far enough that every test step
+# has a measured path under three minutes. Keep group and labels explicit so CI cannot
+# silently move between unrelated runner pools.
 #
 # The release-only package job stays pinned to `macos-14` because changing that image changes
 # the operating system used to build the shipped dmg.
@@ -78,10 +79,10 @@ jobs:
   #
   # Build and smoke stay inside this matrix rather than moving to `gates`, and that is not
   # an oversight. Smoke is the only step here that executes the built bundle, so it is
-  # exactly the step whose result can differ between Node 24 and Node 26. Running it on both
-  # costs a 5s build plus a 1s boot per leg, which is the cheapest coverage in this file.
+  # exactly the step whose result can differ between Node 24 and Node 26. Build and smoke run
+  # after every test shard so each check remains self-contained and exercises its own output.
   unit:
-    name: unit (node ${{ matrix.node-version }})
+    name: unit (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/3)
     runs-on:
       group: frontend-platform
       labels: ubuntu-8cpu-32ram-300ssd
@@ -90,10 +91,12 @@ jobs:
       fail-fast: false
       matrix:
         node-version: ['24', '26']
+        shard: [1, 2, 3]
 
     env:
       # Match the selected runner's eight CPUs without changing the six-worker local default.
       MISSION_TEST_CONCURRENCY: '8'
+      MISSION_TEST_SHARDS: '3'
 
     steps:
       - name: Checkout
@@ -149,6 +152,9 @@ jobs:
 
       - name: Test
         run: xvfb-run -a npm test
+        timeout-minutes: 3
+        env:
+          MISSION_TEST_SHARD: ${{ matrix.shard }}/${{ env.MISSION_TEST_SHARDS }}
 
       - name: Build
         run: npm run build
@@ -169,8 +175,9 @@ jobs:
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Five shards keep the 610-test browser suite below the measured two-shard bottleneck.
-  # Each shard uses four Playwright workers to match its 4-core runner.
+  # Fifteen shards keep the 688-test browser suite below three minutes even when the shard
+  # contains the suite's 1.4-minute outlier. Each shard uses four Playwright workers to
+  # match its 4-core runner, and the step timeout keeps that performance contract honest.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -191,7 +198,7 @@ jobs:
         # `--shard=X/N` partitions purely by the N it is handed and never checks it against
         # how many jobs actually ran. Hardcoding the denominator would mean editing this
         # list alone silently runs a fraction of the suite and still reports green.
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     steps:
       - name: Checkout
@@ -255,6 +262,7 @@ jobs:
 
       - name: End-to-end tests
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        timeout-minutes: 3
 
       # Artifact names have to be unique per shard: `upload-artifact@v4` refuses to write
       # the same name twice in one run.

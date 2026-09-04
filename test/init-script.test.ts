@@ -14,6 +14,8 @@ test("CI directly uses available frontend runners at their bounded capacities", 
   };
   const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
   const testCommand = pkg.scripts.test ?? "";
+  const unitShardOption = "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}";
+  const unitTestPattern = "'test/**/*.test.ts'";
   const jobs = Object.fromEntries(
     [
       ...workflow.matchAll(
@@ -33,9 +35,16 @@ test("CI directly uses available frontend runners at their bounded capacities", 
     group: capture(jobs[job], /^[ \t]+group:[ \t]*(.+?)[ \t]*$/m),
     label: capture(jobs[job], /^[ \t]+labels:[ \t]*(.+?)[ \t]*$/m),
   });
-  const shards = capture(jobs.e2e, /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m)
+  const shardList = (job: "unit" | "e2e") => capture(
+    jobs[job],
+    /^[ \t]+shard:[ \t]*\[([^\]]+)\]/m,
+  )
     ?.split(",")
     .map((value) => Number(value.trim()));
+  const stepTimeout = (job: "unit" | "e2e", step: string) => capture(
+    jobs[job],
+    new RegExp(`- name: ${step}[\\s\\S]*?^[ \\t]+timeout-minutes:[ \\t]*(\\d+)`, "m"),
+  );
   const e2eConfigUrl = pathToFileURL(join(repo, "e2e", "playwright.config.ts")).href;
   const previousCi = process.env.CI;
   const previousWorkers = process.env.MISSION_E2E_WORKERS;
@@ -73,12 +82,22 @@ test("CI directly uses available frontend runners at their bounded capacities", 
       hasBlacksmithLabel: /blacksmith/i.test(workflow),
       hasRunnerVariable: /MISSION_CONTROL_CI_RUNNER/.test(workflow),
       unitWorkers: jobValue("unit", "MISSION_TEST_CONCURRENCY"),
+      unitShardTotal: jobValue("unit", "MISSION_TEST_SHARDS"),
+      unitShards: shardList("unit"),
+      unitShardEnv: jobValue("unit", "MISSION_TEST_SHARD"),
+      unitTestTimeout: stepTimeout("unit", "Test"),
       e2eWorkerVariable: jobValue("e2e", "MISSION_E2E_WORKERS"),
-      shards,
+      e2eShards: shardList("e2e"),
+      e2eTestTimeout: stepTimeout("e2e", "End-to-end tests"),
       localUnitWorkers:
         testCommand.match(
           /--test-concurrency=\$\{MISSION_TEST_CONCURRENCY:-(\d+)\}/,
         )?.[1] ?? null,
+      unitShardOption:
+        testCommand.includes(unitShardOption) ? unitShardOption : null,
+      unitShardOptionPrecedesPattern:
+        testCommand.indexOf(unitShardOption) >= 0
+        && testCommand.indexOf(unitShardOption) < testCommand.indexOf(unitTestPattern),
       playwrightWorkers,
     },
     {
@@ -98,9 +117,16 @@ test("CI directly uses available frontend runners at their bounded capacities", 
       hasBlacksmithLabel: false,
       hasRunnerVariable: false,
       unitWorkers: "'8'",
+      unitShardTotal: "'3'",
+      unitShards: [1, 2, 3],
+      unitShardEnv: "${{ matrix.shard }}/${{ env.MISSION_TEST_SHARDS }}",
+      unitTestTimeout: "3",
       e2eWorkerVariable: null,
-      shards: [1, 2, 3, 4, 5],
+      e2eShards: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      e2eTestTimeout: "3",
       localUnitWorkers: "6",
+      unitShardOption: "${MISSION_TEST_SHARD:+--test-shard=$MISSION_TEST_SHARD}",
+      unitShardOptionPrecedesPattern: true,
       playwrightWorkers: { ci: 4, local: 4 },
     },
   );

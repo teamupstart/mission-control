@@ -61,8 +61,9 @@ npm run test:e2e -- --workers=2
 npm run test:e2e -- --workers=1
 ```
 
-The two CI shards remain concurrent because each job runs on its own machine. The lease coordinates
-processes sharing one host; it does not serialize separate runners.
+The CI shards remain concurrent because each job runs on its own machine. The lease coordinates
+processes sharing one host; it does not serialize separate runners. CI currently uses fifteen
+shards so every browser-test step stays within its enforced three-minute budget.
 
 Useful flags:
 

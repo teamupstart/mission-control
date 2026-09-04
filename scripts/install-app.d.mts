@@ -87,6 +87,10 @@ export function resolveTargetRef(input: {
 }): { ref: string; source: TargetRefSource };
 export function receiptReleaseTag(input: { ref: string; source: TargetRefSource }): string | null;
 export function plistVersion(text: string | null | undefined): string | null;
+export function stagedVersionProblem(input: {
+  stagedVersion: string | null;
+  ref: string | null;
+}): string | null;
 export function appsDirProblem(input: {
   appsDir: string;
   exists: boolean;

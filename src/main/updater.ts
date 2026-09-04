@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, copyFileSync, openSync, rmSync, statSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -8,6 +8,7 @@ import {
   isTrustedInstallRepo,
 } from "../shared/install-receipt-schema.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
+import { bundleShortVersion } from "../../scripts/app-bundle-swap.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
   isNewerVersion,
@@ -85,6 +86,21 @@ export interface HelperHandoff {
   stagedBundle: string | null;
 }
 
+/**
+ * What is at a staged bundle's path right now.
+ *
+ * Both fields are null when nothing is there. `revision` changes whenever the bundle directory
+ * is replaced, which is what separates "the build I made" from "a build that happens to carry
+ * the same version" - the updater-owned clone is shared, and `npm run package` inside it
+ * removes and recreates this directory.
+ */
+export interface StagedBundleIdentity {
+  /** CFBundleShortVersionString of the bundle now at that path. */
+  version: string | null;
+  /** An opaque token that changes when the bundle is rebuilt or replaced. */
+  revision: string | null;
+}
+
 /** What the controller asks of a staged build; the port supplies the node binary and log. */
 export interface UpdateStageRequest {
   sourceClone: string;
@@ -104,8 +120,8 @@ export interface UpdaterPort {
   stateDirectory(): string;
   handoff(args: HelperHandoff): Promise<void>;
   stage(request: UpdateStageRequest): Promise<StageOutcome>;
-  /** Whether a bundle staged earlier is still where it was left. */
-  stagedBundleExists(path: string): boolean;
+  /** What is at a staged bundle's path now, so a caller can tell it is still the same build. */
+  stagedBundleIdentity(path: string): StagedBundleIdentity;
   requestQuit(): void;
   readOutcome(): UpdateApplyOutcome | null;
   clearOutcome(): void;
@@ -421,7 +437,12 @@ export class UpdateController {
    * the closed window this whole path replaces. Pinned to the release tag it was built from,
    * so a newer release never installs the previous one's bundle.
    */
-  private staged: { releaseTag: string; version: string; bundlePath: string } | null = null;
+  private staged: {
+    releaseTag: string;
+    version: string;
+    bundlePath: string;
+    revision: string | null;
+  } | null = null;
   private preparation: AbortController | null = null;
 
   constructor(private readonly port: UpdaterPort) {
@@ -717,12 +738,12 @@ export class UpdateController {
       lastOutcome,
     });
 
-    // Already built, and still on disk. Reached by preparing an update, choosing Later, and
-    // coming back to it - the minutes were already spent, so this goes straight to the offer
-    // to restart.
+    // Already built, still there, and still the same build. Reached by preparing an update,
+    // choosing Later, and coming back to it - the minutes were already spent, so this goes
+    // straight to the offer to restart. Anything else falls through and rebuilds.
     if (
       this.staged?.releaseTag === offer.releaseTag &&
-      this.port.stagedBundleExists(this.staged.bundlePath)
+      this.stagedBundleIsIntact(this.staged)
     ) {
       this.publish(ready());
       return Promise.resolve(true);
@@ -750,6 +771,9 @@ export class UpdateController {
             releaseTag: offer.releaseTag,
             version: outcome.staged.version,
             bundlePath: outcome.staged.bundlePath,
+            // Read now, while this is still the bundle the build just verified, so a later
+            // rebuild of the shared clone can be told apart from it.
+            revision: this.port.stagedBundleIdentity(outcome.staged.bundlePath).revision,
           };
           this.publish(ready());
           return true;
@@ -791,15 +815,16 @@ export class UpdateController {
     const staged = this.staged;
     if (!staged || staged.releaseTag !== target.releaseTag) return Promise.resolve(false);
     // Checked again here, not only when it was built. A person can leave an update ready for
-    // hours, and a clone rebuilt or cleaned in between would otherwise send the helper off to
-    // swap a bundle that is not there - after the app had already quit.
-    if (!this.port.stagedBundleExists(staged.bundlePath)) {
+    // hours, and in that time the shared clone can be cleaned, or rebuilt at another ref -
+    // which would otherwise send the helper off to swap a bundle that is missing, or worse,
+    // one that is a different version than the person accepted. Both are refused here, before
+    // the app quits, and the install script refuses a version mismatch again on its own.
+    if (!this.stagedBundleIsIntact(staged)) {
       this.staged = null;
       this.publish({
         phase: "error",
         currentVersion: target.currentVersion,
-        message:
-          "The prepared update is no longer on disk. Check for updates again to prepare it once more.",
+        message: `The prepared Mission Control ${staged.version} is no longer there to install. Check for updates again to prepare it once more.`,
         manual: true,
         retryable: true,
         lastOutcome: target.lastOutcome,
@@ -810,6 +835,32 @@ export class UpdateController {
       this.installPromise = null;
     });
     return this.installPromise;
+  }
+
+  /**
+   * Whether the bundle at the staged path is still the one this app built for this release.
+   *
+   * Existence is not enough, and that was the hole: the path lives in the updater-owned clone,
+   * which is shared. Anything that rebuilds that clone between preparation and the restart -
+   * an operator running `make install ARGS="--ref ..."`, an older helper finishing late -
+   * leaves a perfectly valid app at the same path, and installing it would put a version
+   * nobody accepted into /Applications under a receipt naming the tag they did accept.
+   *
+   * So the version has to match what was built, and the revision has to match too: a rebuild
+   * at the same version is still not the bundle whose contents were verified.
+   */
+  private stagedBundleIsIntact(staged: {
+    releaseTag: string;
+    version: string;
+    bundlePath: string;
+    revision: string | null;
+  }): boolean {
+    const found = this.port.stagedBundleIdentity(staged.bundlePath);
+    if (found.version === null) return false;
+    if (found.version !== staged.version) return false;
+    // A port that cannot produce a revision (an unreadable directory) fails closed rather than
+    // letting the version alone stand in for identity.
+    return found.revision !== null && found.revision === staged.revision;
   }
 
   /** Stop a build in progress and return to the offer that started it. */
@@ -972,7 +1023,17 @@ export function createDefaultUpdaterPort(options: {
       }
       return stageUpdateBuild({ ...request, node, log });
     },
-    stagedBundleExists: (path) => existsSync(path),
+    stagedBundleIdentity: (path) => {
+      // `mtimeMs` and the inode together: electron-builder removes and recreates this
+      // directory, so a rebuild changes both, while a bundle sitting untouched for hours
+      // changes neither.
+      const stats = statSync(path, { throwIfNoEntry: false });
+      if (!stats?.isDirectory()) return { version: null, revision: null };
+      return {
+        version: bundleShortVersion(path),
+        revision: `${stats.ino}-${stats.mtimeMs}`,
+      };
+    },
     requestQuit: options.requestQuit,
     readOutcome: () => readUpdateOutcome(updateOutcomePath(options.stateDirectory)),
     clearOutcome: () => clearUpdateOutcome(updateOutcomePath(options.stateDirectory)),

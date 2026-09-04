@@ -106,7 +106,9 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       }
       return { ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE } };
     },
-    stagedBundleExists: () => true,
+    // The bundle the fake build leaves behind: the version it reported, and a revision that
+    // only changes when something rebuilds it.
+    stagedBundleIdentity: () => ({ version: "1.2.4", revision: "staged-1" }),
     requestQuit: () => events.push("quit"),
     readOutcome: () => {
       return outcome;
@@ -745,18 +747,21 @@ test("a prepared update that was deferred installs without building again", asyn
 });
 
 test("a prepared bundle that is gone is reported instead of handed off", async () => {
-  let present = true;
-  const f = fixture({ stagedBundleExists: () => present });
+  let identity = { version: "1.2.4", revision: "staged-1" } as {
+    version: string | null;
+    revision: string | null;
+  };
+  const f = fixture({ stagedBundleIdentity: () => identity });
   await f.controller.start();
   await f.controller.check(true);
   await f.controller.apply();
-  present = false;
+  identity = { version: null, revision: null };
 
   assert.equal(await f.controller.install(), false);
   const snapshot = f.controller.getSnapshot();
   assert.equal(snapshot.phase, "error");
   if (snapshot.phase === "error") {
-    assert.match(snapshot.message, /no longer on disk/);
+    assert.match(snapshot.message, /no longer there to install/);
     assert.equal(snapshot.retryable, true);
   }
   // Nothing quit, so the person still has a working app and a retry.
@@ -765,7 +770,7 @@ test("a prepared bundle that is gone is reported instead of handed off", async (
   // And that emptiness means something: the same fixture records both events as soon as an
   // install does happen. Retry rebuilds - the vanished bundle was forgotten, not reused - and
   // this time the handoff goes through.
-  present = true;
+  identity = { version: "1.2.4", revision: "staged-2" };
   await f.controller.check(true);
   assert.equal(await f.controller.apply(), true);
   assert.equal(f.stageRequests.length, 2);
@@ -944,5 +949,72 @@ test("the native path can decline the restart and keep the prepared build", asyn
   assert.equal(await f.controller.install(), true);
   assert.equal(f.stageRequests.length, 1);
   assert.deepEqual(f.events, ["handoff", "quit"]);
+  f.controller.stop();
+});
+
+
+test("a bundle that is not the one prepared is refused, however it changed", async () => {
+  // The updater-owned clone is shared. Anything that rebuilds it between preparation and the
+  // restart leaves a perfectly valid app at the staged path, and installing that would put a
+  // version nobody accepted into place under a receipt naming the tag they did accept. Version
+  // and revision both have to match, and a port that cannot answer fails closed.
+  const cases: Array<[string, { version: string | null; revision: string | null }]> = [
+    ["nothing there at all", { version: null, revision: null }],
+    ["a different version at the same path", { version: "1.5.0", revision: "rebuilt" }],
+    ["the same version, rebuilt", { version: "1.2.4", revision: "rebuilt" }],
+    ["a version but no readable revision", { version: "1.2.4", revision: null }],
+  ];
+
+  for (const [label, changed] of cases) {
+    let identity = { version: "1.2.4", revision: "staged-1" } as {
+      version: string | null;
+      revision: string | null;
+    };
+    const f = fixture({ stagedBundleIdentity: () => identity });
+    await f.controller.start();
+    await f.controller.check(true);
+    await f.controller.apply();
+    assert.equal(f.controller.getSnapshot().phase, "ready", label);
+
+    identity = changed;
+    assert.equal(await f.controller.install(), false, label);
+    const snapshot = f.controller.getSnapshot();
+    assert.equal(snapshot.phase, "error", label);
+    if (snapshot.phase === "error") {
+      assert.match(snapshot.message, /no longer there to install/, label);
+      assert.equal(snapshot.retryable, true, label);
+    }
+    // Nothing was handed off and nothing quit, so the working app is still the working app.
+    assert.deepEqual(f.events, [], label);
+    f.controller.stop();
+  }
+});
+
+test("a rebuilt clone is not reused as a prepared update, it is built again", async () => {
+  let identity = { version: "1.2.4", revision: "staged-1" } as {
+    version: string | null;
+    revision: string | null;
+  };
+  const f = fixture({ stagedBundleIdentity: () => identity });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  f.controller.defer();
+  assert.equal(f.stageRequests.length, 1);
+
+  // Something rebuilt the shared clone while the update sat deferred. Coming back to it must
+  // not take that bundle on trust, even though its version happens to match.
+  identity = { version: "1.2.4", revision: "rebuilt-by-someone-else" };
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+  assert.equal(f.stageRequests.length, 2, "the offer should have been rebuilt, not reused");
+
+  // Whereas the untouched bundle from that second build is reused, which is the whole point of
+  // keeping it: no third build.
+  f.controller.defer();
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.stageRequests.length, 2);
   f.controller.stop();
 });

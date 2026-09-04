@@ -400,6 +400,31 @@ export function receiptReleaseTag({ ref, source }) {
 }
 
 /**
+ * Why a staged bundle may not be installed for this ref, or `null` when it may.
+ *
+ * The second half of an update runs minutes after the first, against a bundle sitting in the
+ * updater-owned clone - which is shared, and which anything running `npm run package` in it
+ * rebuilds. A bundle whose version is not the one this ref names is therefore not the bundle
+ * that was prepared, and installing it would put a version nobody chose into place under a
+ * receipt naming the tag they did choose.
+ *
+ * Only a version tag can be compared, because only a version tag states an expected version.
+ * A branch or a sha names no version and is left to the caller, which is the same latitude
+ * `receiptReleaseTag` already gives those refs.
+ */
+export function stagedVersionProblem({ stagedVersion, ref }) {
+  const expected = /^v(\d+\.\d+\.\d+)$/.exec(String(ref ?? ""))?.[1];
+  if (!expected) return null;
+  if (!stagedVersion) {
+    return "could not read the staged app's version, so it cannot be checked against " + ref;
+  }
+  if (stagedVersion !== expected) {
+    return `the staged app is version ${stagedVersion} but ${ref} was requested, so this bundle is not the one that was prepared`;
+  }
+  return null;
+}
+
+/**
  * Why the app cannot be installed into this directory, or `null` when it can.
  *
  * `cp -R app dir` creates `dir` AS the bundle when `dir` does not exist, so a mistyped
@@ -679,8 +704,10 @@ function installApp(options) {
       if (!version) {
         fail("could not read CFBundleShortVersionString from the staged app's Info.plist");
       }
+      const mismatch = stagedVersionProblem({ stagedVersion: version, ref: options.ref });
+      if (mismatch) fail(mismatch);
       stagedVersion = version;
-      ok(`staged version ${version}`);
+      ok(`staged version ${version}${options.ref ? ` matches ${options.ref}` : ""}`);
     }
     const stagedApp = swapAndRecord({
       dryRun,

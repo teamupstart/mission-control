@@ -41,6 +41,7 @@ import {
   swapAppBundle,
   packagedVersionProblem,
   parseArgs,
+  stagedVersionProblem,
   parseRemote,
   plistVersion,
   receiptReleaseTag,
@@ -409,6 +410,27 @@ test("the two halves of an update are selected by flags, and never both at once"
     parseArgs(["--stage-only", "--from-staged", "/tmp/a.app"]).problem,
     "--stage-only and --from-staged cannot be combined",
   );
+});
+
+test("a staged bundle is refused unless its version is the one the ref names", () => {
+  // The second half of an update runs minutes after the first, against a bundle in the shared
+  // updater-owned clone. `--from-staged` used to read the bundle's version and install it
+  // whatever it was, so a clone rebuilt at another ref in between would be installed under a
+  // receipt naming the tag the person actually accepted.
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "v1.2.4" }), null);
+  assert.match(
+    String(stagedVersionProblem({ stagedVersion: "1.5.0", ref: "v1.2.4" })),
+    /staged app is version 1\.5\.0 but v1\.2\.4 was requested/,
+  );
+  assert.match(
+    String(stagedVersionProblem({ stagedVersion: null, ref: "v1.2.4" })),
+    /could not read the staged app's version/,
+  );
+  // A ref that names no version states no expectation, exactly as `receiptReleaseTag` treats
+  // the same refs: a branch or a sha carries no version to compare.
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "origin/main" }), null);
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "9f2c1ab" }), null);
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: null }), null);
 });
 
 test("a missing install directory stops the install before the copy invents one", () => {

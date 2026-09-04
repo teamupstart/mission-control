@@ -149,8 +149,16 @@ startup delay, every six hours with jitter, and once after returning from a long
 
 A build that has finished is kept if the person chooses **Later**, pinned to the release tag it was
 built from, so accepting it afterwards installs immediately instead of spending those minutes
-again. It is verified again at the moment of the restart: a bundle that has since been removed is
-reported in the banner with a retry, before anything quits. Quitting Mission Control while a build
+again. It is checked again at the moment of the restart, and existence is not the check. The
+staged path lives in the updater-owned clone, which is shared: anything that rebuilds that clone
+in between - an operator running `make install ARGS="--ref ..."`, a late helper - leaves a
+perfectly valid app at the same path. So the bundle's version AND its revision (the directory's
+inode and mtime, both of which change when `npm run package` recreates it) must match what was
+built. A bundle that is missing, a different version, or the same version rebuilt is refused in
+the banner with a retry, before anything quits, and the same mismatch is refused a second time by
+`install-app.mjs --from-staged`, which compares the bundle's own version against the version its
+`--ref` names. Neither surface will install a version nobody accepted under a receipt naming the
+tag they did. Quitting Mission Control while a build
 is running cancels it, along with the `npm` and `electron-builder` children it spawned, so nothing
 keeps writing into the clone that the next attempt will check out.
 

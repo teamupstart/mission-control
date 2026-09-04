@@ -4100,6 +4100,7 @@ export interface WorkflowSubmissionReadinessOverride {
   requestId: string;
   actor: "operator";
   reason: string;
+  acknowledgedRisk: boolean;
   createdAt: number;
 }
 

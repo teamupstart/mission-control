@@ -2065,6 +2065,7 @@ export class WorkflowManager {
     submissionId: string,
     requestId: string,
     reason: string,
+    acknowledgedRisk: true,
     now = Date.now(),
   ) {
     const run = this.store.getRun(runId);
@@ -2075,6 +2076,7 @@ export class WorkflowManager {
       submissionId,
       requestId,
       reason,
+      acknowledgedRisk,
       now,
     });
     if (!recorded.ok) return recorded;
@@ -2084,6 +2086,7 @@ export class WorkflowManager {
       submissionId,
       requestId,
       reason: recorded.override.reason,
+      acknowledgedRisk: recorded.override.acknowledgedRisk,
     }, now, `evidence-readiness-override:${recorded.override.id}`);
     this.engine.activateSubmission(submissionId);
     this.publishRun(runId);

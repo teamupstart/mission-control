@@ -60,6 +60,27 @@ test("every workflow mutation uses shared parseBody schemas", async () => {
   assert.equal((await request(`/api/workflows/${valid.workflow.id}`, { method: "DELETE", body: "{}" })).status, 400);
 });
 
+test("evidence readiness overrides require explicit risk acknowledgement", async () => {
+  const { request } = fixture();
+  const path = "/api/workflow-runs/missing/submissions/missing/evidence-readiness/override";
+  const override = (body: object) => request(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await override({ requestId: "missing-ack", reason: "Accept the gaps" })).status, 400);
+  assert.equal((await override({
+    requestId: "false-ack",
+    reason: "Accept the gaps",
+    acknowledgedRisk: false,
+  })).status, 400);
+  assert.equal((await override({
+    requestId: "true-ack",
+    reason: "Accept the gaps",
+    acknowledgedRisk: true,
+  })).status, 404);
+});
+
 test("definition CAS conflicts are 409 and validation failures are 422", async () => {
   const { request } = fixture();
   const invalid = await request("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Incomplete" }) });

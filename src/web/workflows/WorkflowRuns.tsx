@@ -3716,7 +3716,7 @@ export function WorkflowRuns({
             onOverrideEvidenceReadiness={async (submissionId, reason) => {
               await mutate(
                 `/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-readiness/override`,
-                { requestId: crypto.randomUUID(), reason },
+                { requestId: crypto.randomUUID(), reason, acknowledgedRisk: true },
               );
             }}
             onToggleNodesDisabled={(nodeIds, disabled) => {

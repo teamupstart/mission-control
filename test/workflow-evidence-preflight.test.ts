@@ -401,6 +401,7 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
     second.value.submission.id,
     "override-request",
     "The operator accepts the missing rendered output for this run.",
+    true,
   ), /simulated interruption after override commit/);
   assert.equal(h.store.getRun(second.value.run.id)?.status, "running");
   assert.equal(h.store.listAttempts(second.value.submission.id).length, 0);
@@ -410,6 +411,7 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
     second.value.submission.id,
     "override-request",
     "The operator accepts the missing rendered output for this run.",
+    true,
   );
   assert.equal(overridden.ok, true);
   if (overridden.ok) assert.equal(overridden.idempotent, true);
@@ -427,11 +429,18 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
     second.value.submission.id,
     "override-request",
     "The operator accepts the missing rendered output for this run.",
+    true,
   );
   assert.equal(replay.ok, true);
   if (replay.ok) assert.equal(replay.idempotent, true);
   assert.equal(activationCalls, 3, "completed replay must remain safe to re-drive");
-  assert.equal(h.store.listReadinessOverrides(second.value.run.id).length, 1);
+  assert.deepEqual(h.store.listReadinessOverrides(second.value.run.id).map((entry) => ({
+    reason: entry.reason,
+    acknowledgedRisk: entry.acknowledgedRisk,
+  })), [{
+    reason: "The operator accepts the missing rendered output for this run.",
+    acknowledgedRisk: true,
+  }]);
   assert.equal(
     h.store.listEvents(second.value.run.id)
       .filter((event) => event.kind === "evidence_readiness_overridden").length,

@@ -1700,6 +1700,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       request_id     TEXT NOT NULL UNIQUE,
       actor          TEXT NOT NULL,
       reason         TEXT NOT NULL,
+      acknowledged_risk INTEGER NOT NULL CHECK (acknowledged_risk IN (0, 1)),
       created_at     INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_readiness_overrides_submission
@@ -3893,6 +3894,15 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_submissions", "readiness_json", "TEXT");
   addColumn(d, "workflow_submissions", "refinement_reason", "TEXT");
   addColumn(d, "workflow_events", "event_id", "TEXT");
+  // Pre-release Phase 2 checkouts could already have written an override row without the
+  // acknowledgement field. Keep those rows readable as historical unacknowledged actions;
+  // every request accepted by this build must explicitly write true.
+  addColumn(
+    d,
+    "workflow_submission_readiness_overrides",
+    "acknowledged_risk",
+    "INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged_risk IN (0, 1))",
+  );
   d.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_event_id
             ON workflow_events(event_id) WHERE event_id IS NOT NULL;`);
 

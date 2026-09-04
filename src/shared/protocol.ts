@@ -5244,6 +5244,7 @@ export const RetryWorkflowEvidenceReadinessSchema = z.object({
 export const OverrideWorkflowEvidenceReadinessSchema = z.object({
   requestId: z.string().min(1).max(200),
   reason: z.string().trim().min(1).max(WORKFLOW_LIMITS.readinessOverrideReason),
+  acknowledgedRisk: z.literal(true),
 });
 
 export const CancelWorkflowRunSchema = z.object({

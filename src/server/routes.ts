@@ -2327,6 +2327,7 @@ export function buildApp(
         c.req.param("submissionId"),
         parsed.data.requestId,
         parsed.data.reason,
+        parsed.data.acknowledgedRisk,
       );
       if (result.ok) return c.json({ override: result.override, idempotent: result.idempotent });
       const status = result.reason === "not_found" ? 404 : 409;

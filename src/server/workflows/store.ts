@@ -1837,6 +1837,7 @@ const WorkflowReadinessOverrideRowSchema = z.object({
   request_id: nonempty.max(200),
   actor: z.literal("operator"),
   reason: nonempty.max(WORKFLOW_LIMITS.readinessOverrideReason),
+  acknowledged_risk: z.union([z.literal(0), z.literal(1)]),
   created_at: integer,
 });
 
@@ -1852,6 +1853,7 @@ function parseWorkflowReadinessOverrideRow(value: unknown): WorkflowSubmissionRe
     requestId: row.request_id,
     actor: row.actor,
     reason: row.reason,
+    acknowledgedRisk: row.acknowledged_risk === 1,
     createdAt: row.created_at,
   };
 }
@@ -7526,6 +7528,7 @@ export class WorkflowStore {
     submissionId: string;
     requestId: string;
     reason: string;
+    acknowledgedRisk: true;
     now: number;
   }):
     | { ok: true; override: WorkflowSubmissionReadinessOverride; idempotent: boolean }
@@ -7546,6 +7549,7 @@ export class WorkflowStore {
         return prior.submissionId === input.submissionId
             && priorRow.run_id === input.runId
             && prior.reason === normalizedReason
+            && prior.acknowledgedRisk === input.acknowledgedRisk
           ? { ok: true, override: prior, idempotent: true }
           : { ok: false, reason: "request_conflict" };
       }
@@ -7564,8 +7568,8 @@ export class WorkflowStore {
       ) return { ok: false, reason: "conflict" };
       this.db.prepare(
         `INSERT INTO workflow_submission_readiness_overrides (
-           id, submission_id, request_id, actor, reason, created_at
-         ) VALUES (?, ?, ?, 'operator', ?, ?)`,
+           id, submission_id, request_id, actor, reason, acknowledged_risk, created_at
+         ) VALUES (?, ?, ?, 'operator', ?, 1, ?)`,
       ).run(input.id, input.submissionId, input.requestId, normalizedReason, input.now);
       const readiness = submission.readiness
         ? { ...submission.readiness, status: "overridden" as const }

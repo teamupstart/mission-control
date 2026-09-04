@@ -340,7 +340,13 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
   await overrideBox.getByLabel("Reason").fill("Operator accepts the missing rendered output for this run.");
   await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
+  const overrideRequest = dashboard.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.url().includes(`/api/workflow-runs/${overrideRun.run.id}/submissions/`)
+    && request.url().endsWith("/evidence-readiness/override")
+  ));
   await overrideBox.getByRole("button", { name: "Continue despite gaps" }).click();
+  expect((await overrideRequest).postDataJSON()).toMatchObject({ acknowledgedRisk: true });
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${overrideRun.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("completed");

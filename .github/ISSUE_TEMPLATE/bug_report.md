@@ -6,6 +6,10 @@ labels: bug
 assignees: ""
 ---
 
+> [!IMPORTANT]
+> Do not report security vulnerabilities here. Use the
+> [private vulnerability reporting form](https://github.com/teamupstart/mission-control/security/advisories/new).
+
 ## Summary
 
 <!-- What went wrong, and who does it affect? -->

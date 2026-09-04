@@ -4,7 +4,7 @@ Mission Control is a local control plane for teams running Claude Code, Codex, a
 It brings the sessions, tasks, conversations, reviews, workflows, and delivery signals
 that normally live across terminal panes into one live dashboard.
 
-This repository is internal. It is not licensed for public distribution.
+Mission Control's source code is licensed under the [Apache License 2.0](LICENSE).
 
 ## See the fleet
 
@@ -382,8 +382,8 @@ There are two paths through this repository, and which one you want depends on w
 **To use it**, install the macOS app. This is the only path that receives updates.
 
 ```sh
-git clone <internal-repository-url>
-cd ai-harness
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
 make install
 ```
 
@@ -401,8 +401,8 @@ the Xcode command line tools, receives no updates, and writes no install receipt
 updater deliberately stays off for a work-in-progress build.
 
 ```sh
-git clone <internal-repository-url>
-cd ai-harness
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
 make init
 npm run dev
 ```
@@ -412,19 +412,16 @@ the full verification path, use the setup guide below.
 
 ## CI runner allocation
 
-The `gates` job runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy jobs use the shared
-`frontend-platform` runner group, which grants this repository access to both runner sizes.
-The Node 24 and Node 26 unit jobs run directly on `ubuntu-8cpu-32ram-300ssd` with eight test
-workers. Five end-to-end shards run directly on `ubuntu-4cpu-32ram-150ssd` with four
-Playwright workers each.
+The `gates` job runs on GitHub-hosted `ubuntu-latest`. CPU-heavy unit and end-to-end jobs use
+self-hosted runners configured by the project maintainers. External contributors do not need
+direct access to those runners: run the checks locally before opening a pull request, and a
+maintainer will handle any required workflow approval.
 
-The workflow names both the `frontend-platform` group and the relevant label for each job.
-There is no repository variable or fallback selector. Access is managed centrally in
-`teamupstart/Github_Org_Settings_TF`; changing the group, labels, worker counts, or shard count
-is one capacity decision and should be benchmarked together.
+The workflow keeps runner labels, worker counts, and shard counts explicit. Changes to that
+allocation are one capacity decision and should be benchmarked together.
 
 This allocation is a performance experiment, not a claim that the five-minute target has
-already been met. Accept it only after three consecutive live workflows complete all eight
+already been met. Accept it only after three consecutive live workflows complete all required
 checks green in five minutes or less, measured from workflow creation through completion.
 
 ## Choose how the app's own model calls are made
@@ -490,8 +487,8 @@ Full behavior, including why the SDK is pinned to the same binary `MISSION_CODEX
 
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and local state fit together.
-- [Contributing](CONTRIBUTING.md) - clone-to-green setup, test layers, and contribution expectations.
-- [Security policy](SECURITY.md) - security posture and internal vulnerability reporting.
+- [Contributing](CONTRIBUTING.md) - public contribution workflow, clone-to-green setup, and test expectations.
+- [Security policy](SECURITY.md) - supported versions, security posture, and private vulnerability reporting.
 
 ## Regenerate screenshots
 
@@ -502,3 +499,15 @@ After a dashboard change, rebuild and run:
 npm run build
 npm run docs:screenshots
 ```
+
+## License
+
+Copyright 2026 Jordan Mance.
+
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution
+information.
+
+Third-party dependencies remain subject to their own licenses and terms. In particular,
+`@anthropic-ai/claude-agent-sdk` is governed by
+[Anthropic's commercial terms](https://code.claude.com/docs/en/legal-and-compliance), not the
+Apache License 2.0.

@@ -1,7 +1,17 @@
 # Contributing to Mission Control
 
-Mission Control is an internal repository. Start here for a clone-to-green path,
-then use [AGENTS.md](AGENTS.md) for the agent-facing engineering contracts.
+Thank you for helping improve Mission Control. This guide covers the public contribution
+workflow and the clone-to-green path. Automated coding agents must also follow
+[AGENTS.md](AGENTS.md).
+
+## Ways to contribute
+
+- Search existing issues before filing a bug or proposing a feature.
+- Use the bug and feature request templates so maintainers receive enough context to respond.
+- Open an issue before starting a substantial behavior or architecture change. Focused fixes
+  and documentation improvements can go directly to a pull request.
+- Do not report suspected vulnerabilities in a public issue. Follow the private process in
+  [SECURITY.md](SECURITY.md).
 
 ## Clone to green
 
@@ -13,8 +23,8 @@ Prerequisites:
   is intentionally not installed by `npm install`.
 
 ```sh
-git clone <repository-url>
-cd ai-harness
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
 make init
 npx playwright install chromium
 npm run typecheck
@@ -60,10 +70,8 @@ tests with the required scoped outside-sandbox approval; do not bypass the
 preflight or add Chromium flags.
 
 `npm test` runs six test files concurrently by default. Set
-`MISSION_TEST_CONCURRENCY` to override that local worker count. CI pins eight workers
-on the `frontend-platform` 8-core runner, while each Playwright shard uses four workers
-on the group's 4-core runner. These hosted values are explicit, so CI tuning does not
-depend on the local fallback.
+`MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses an explicit worker
+and shard allocation so its behavior does not depend on the local fallback.
 
 ## Test layers
 
@@ -98,18 +106,37 @@ label, or placeholder.
   evidence. Put evidence under gitignored `e2e/.artifacts/<topic>/` and attach it
   to the pull request.
 
+## Submitting a change
+
+1. Fork the repository and create a focused branch from the latest `main`.
+2. Make one coherent change and add focused tests for behavior changes.
+3. Run the checks that cover the change. Documentation-only changes do not require the full
+   runtime suite, but links, commands, and formatting must still be verified.
+4. Open a pull request using the repository template. Explain the outcome, tradeoffs, known
+   gaps, verification, and any follow-up work.
+5. Respond to review feedback with additional commits. Maintainers will squash the pull
+   request when it is ready to merge.
+
+Please keep discussions respectful, specific, and focused on improving the project. Harassment,
+personal attacks, and discriminatory behavior are not acceptable in project spaces.
+
+## Contribution licensing
+
+Unless you explicitly state otherwise, contributions intentionally submitted for inclusion in
+Mission Control are provided under the [Apache License 2.0](LICENSE), as described in section 5
+of that license. You must have the right to submit the work. Do not include code, assets, or
+documentation whose license is incompatible with this repository.
+
 ## Pull requests
 
-Before opening a pull request, run the checks that cover your change. At minimum,
-the expected bar is `npm run typecheck`, `npm run lint`, and `npm test`. Changes to
-build or runtime surfaces also need `npm run build` and `npm run smoke`; UI changes
-also need `npm run test:e2e` with a matching spec.
+Before opening a pull request, run the checks that cover your change. At minimum, code changes
+are expected to pass `npm run typecheck`, `npm run lint`, and `npm test`. Changes to build or
+runtime surfaces also need `npm run build` and `npm run smoke`; UI changes also need
+`npm run test:e2e` with a matching spec.
 
-CI defines three jobs and reports eight checks: `gates` (typecheck and lint), `unit (node 24)`
-and `unit (node 26)` (tests, build, and smoke), and five `e2e` shards (the browser suite, on
-Node 24 only). Lint is a CI job, so it no longer passes silently when it is skipped locally.
-See [the CI runner allocation](README.md#ci-runner-allocation) before changing runner labels,
-worker counts, or shard counts.
+CI runs typechecking, linting, unit tests on the supported Node.js releases, production builds,
+bundle smoke tests, and the browser suite. See [the CI runner allocation](README.md#ci-runner-allocation)
+before changing runner labels, worker counts, or shard counts.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

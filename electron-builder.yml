@@ -10,7 +10,7 @@
 # can't read inside an asar archive, so they must be plain files on disk.
 appId: com.mission-control.app
 productName: Mission Control
-copyright: Mission Control
+copyright: Copyright © 2026 Jordan Mance
 
 asar: false
 
@@ -48,6 +48,8 @@ files:
   # detached helper's only sibling and owns the narrowly scoped macOS authorization prompt.
   - scripts/apply-update.mjs
   - scripts/app-bundle-swap.mjs
+  - LICENSE
+  - NOTICE
   - package.json
   - "!node_modules/**/*"
 

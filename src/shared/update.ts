@@ -71,6 +71,14 @@ export type UpdateSnapshot =
       newVersion: string;
       releaseTag: string;
       stage: UpdatePrepareStage;
+      /**
+       * Cancel was pressed and the build is being torn down.
+       *
+       * Still `preparing`, because the work is still happening - the difference is that it is
+       * now shutting down, nothing new can start until it has, and there is nothing left to
+       * cancel. The offer comes back when the process group is actually gone.
+       */
+      cancelling: boolean;
     })
   /** Built and verified, waiting for the person to accept the restart that installs it. */
   | (SnapshotBase & {

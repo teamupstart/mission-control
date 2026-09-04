@@ -18,6 +18,7 @@ export interface UpdatePhaseCopy {
 
 export const UPDATE_COPY: {
   preparing: UpdatePhaseCopy;
+  cancelling: UpdatePhaseCopy;
   ready: UpdatePhaseCopy;
   applying: UpdatePhaseCopy;
 } = {
@@ -25,6 +26,13 @@ export const UPDATE_COPY: {
     title: (version) => `Preparing Mission Control ${version}`,
     detail:
       "Mission Control keeps running while the new version is built, and will ask before it restarts.",
+  },
+  cancelling: {
+    title: (version) => `Cancelling the Mission Control ${version} update`,
+    // Not "cancelled": the build is being torn down, and the offer comes back when it is
+    // actually gone. Starting another one before that would put a fresh checkout and install
+    // into the directory the dying processes are still writing to.
+    detail: "Waiting for the build to stop. The update will be offered again in a moment.",
   },
   ready: {
     title: (version) => `Mission Control ${version} is ready to install`,

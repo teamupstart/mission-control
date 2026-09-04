@@ -447,7 +447,15 @@ test("a staged bundle is refused unless its version is the one the ref names", (
   assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: null }), null);
 });
 
-test("the real staged install refuses a bundle replaced after it was pinned", async (t) => {
+test(
+  "the real staged install refuses a bundle replaced after it was pinned",
+  // The script refuses a non-Apple-silicon host before it reaches anything this asserts, which
+  // is correct - a macOS bundle cannot be installed on a Linux runner - so this one case runs
+  // where the product runs. The rules it exercises (`stagedVersionProblem`,
+  // `stagedRevisionProblem`) are covered on every platform by the tests above; what only this
+  // can prove is that the swap path CALLS them.
+  { skip: process.platform !== "darwin" || process.arch !== "arm64" },
+  async (t) => {
   // Asserted by running `install-app.mjs` rather than its predicates, because the defect this
   // guards is a missing CALL: the pure rule can be perfect while nothing consults it. The app
   // takes this pin when the build is verified and cannot look again after it quits, so the
@@ -505,7 +513,8 @@ test("the real staged install refuses a bundle replaced after it was pinned", as
   assert.equal(installed.code, 0, installed.output);
   assert.equal(existsSync(join(appsDir, "Mission Control.app")), true);
   assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
-});
+  },
+);
 
 test("a missing install directory stops the install before the copy invents one", () => {
   // `cp -R app dir` creates `dir` as the bundle when it does not exist, so a mistyped

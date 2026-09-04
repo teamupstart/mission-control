@@ -154,6 +154,7 @@ test("a build in progress renders a real, valued progress bar and a way out", ()
       newVersion: "0.2.0",
       releaseTag: "v0.2.0",
       stage: "dependencies",
+      cancelling: false,
       lastOutcome: null,
     },
     onApply: () => {},
@@ -227,4 +228,33 @@ test("the phase copy has one owner, and says something for every phase that show
   assert.match(UPDATE_COPY.applying.detail, /close/);
   // And the phase that does NOT close it says that instead.
   assert.match(UPDATE_COPY.preparing.detail, /keeps running/);
+});
+
+
+test("a cancelled build says it is stopping, and offers no Cancel to press again", () => {
+  const html = renderToStaticMarkup(createElement(UpdateBanner, {
+    snapshot: {
+      phase: "preparing",
+      currentVersion: "0.1.0",
+      newVersion: "0.2.0",
+      releaseTag: "v0.2.0",
+      stage: "build",
+      cancelling: true,
+      lastOutcome: null,
+    },
+    onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
+    onDefer: () => {},
+    onCheck: () => {},
+    onDismiss: () => {},
+  }));
+
+  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes(UPDATE_COPY.cancelling.title("0.2.0")), text);
+  assert.ok(text.includes(UPDATE_COPY.cancelling.detail), text);
+  // No bar, because the value would keep claiming progress, and no Cancel, because it has
+  // already been pressed and the build is on its way out.
+  assert.doesNotMatch(html, /role="progressbar"/);
+  assert.doesNotMatch(html, /<button/);
 });

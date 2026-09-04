@@ -58,6 +58,7 @@ import {
   constants as fsConstants,
   existsSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -612,18 +613,82 @@ function swapAndRecord({
   if (dryRun) {
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
-    // The last look before the bundle is copied, and deliberately here rather than earlier in
-    // the run: the app checked this before it quit, and the minutes since then are exactly the
-    // window a rebuild of the shared clone can land in. A version equal to the ref's is not
-    // enough - a rebuild at the same tag carries the same version - so this compares the
-    // directory the app pinned.
-    const changed = stagedRevisionProblem({
-      expected: stagedRevision,
-      found: stagedBundleRevision(statSync(bundle, { throwIfNoEntry: false })),
-    });
+    // Refuse first, isolate second, then check again.
+    //
+    // The first check touches nothing, and that ordering matters: a bundle that fails the pin
+    // is somebody else's - a concurrent `make install`, or a rebuild still in progress - and
+    // moving or deleting it would break their run to protect ours.
+    //
+    // Once the pin matches, the bundle IS ours, and it comes out of the shared clone before it
+    // is copied. Checking a path in the clone and then copying from it leaves the classic
+    // time-of-check/time-of-use window, and what lands in that window is a rebuild of the very
+    // directory being copied - which tears the copy or swaps in an unverified build. The rename
+    // is atomic and preserves the inode and mtime, so whatever was at the clone path comes
+    // across whole and still answers to the pin; afterwards the path being copied is one nobody
+    // else has a name for, and the second check cannot go stale.
+    //
+    // Only when a pin was supplied, which means the app staged this. A plain `make install`
+    // built the bundle in this same process moments ago and leaves it in `release/`, where a
+    // developer expects to find it.
+    const pinProblem = (path) =>
+      stagedRevisionProblem({
+        expected: stagedRevision,
+        found: stagedBundleRevision(statSync(path, { throwIfNoEntry: false })),
+      });
+    const changed = pinProblem(bundle);
     if (changed) fail(changed);
+
+    let sourceBundle = bundle;
+    if (stagedRevision) {
+      const isolated = join(stateDir(), `staged-install-${process.pid}`);
+      let moved = null;
+      try {
+        rmSync(isolated, { recursive: true, force: true });
+        mkdirSync(isolated, { recursive: true });
+        moved = join(isolated, APP_BUNDLE_NAME);
+        renameSync(bundle, moved);
+        // Whatever happens next - a refused pin, a failed swap, a clean install - this copy is
+        // temporary. `fail()` exits the process, so a hook rather than a finally block.
+        process.on("exit", () => {
+          try {
+            rmSync(isolated, { recursive: true, force: true });
+          } catch {
+            // Nothing useful to do at exit, and it is inside the state directory.
+          }
+        });
+        // The microsecond between the first check and the rename is the only one left, and a
+        // rebuild landing in it would have been carried across by the rename. If this fails,
+        // put it back rather than keeping a build that is not ours.
+        const raced = pinProblem(moved);
+        if (raced) {
+          try {
+            renameSync(moved, bundle);
+          } catch (restoreError) {
+            warning(
+              `could not put the replaced bundle back (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+            );
+          }
+          fail(raced);
+        }
+        sourceBundle = moved;
+        ok("moved the verified bundle out of the shared clone");
+      } catch (error) {
+        // A rename across filesystems is the realistic failure, and installing in place is what
+        // this script has always done. The pin above was already checked; only the window stays
+        // open.
+        if (moved === null) {
+          rmSync(isolated, { recursive: true, force: true });
+          warning(
+            `could not move the verified bundle out of the shared clone (${error instanceof Error ? error.message : String(error)}); installing it where it is`,
+          );
+        } else {
+          throw error;
+        }
+      }
+    }
+
     const swap = replaceAppBundle({
-      sourceBundle: bundle,
+      sourceBundle,
       appPath,
       appsDir,
       pid: process.pid,
@@ -870,7 +935,15 @@ function installApp(options) {
     // Stop one step short of the installed app. The caller - the running app updating itself -
     // now holds a verified bundle it can install the moment the person says so, and this line
     // is how it learns what and where that bundle is.
-    console.log(`${UPDATE_STAGED_MARKER} ${sourceVersion} ${packagedApp}`);
+    //
+    // The revision is read HERE, in the same breath as the verification above, and not left to
+    // the caller to read once this process has exited. Between those two moments anything can
+    // rebuild this shared clone, and a caller pinning what it found afterwards would pin the
+    // replacement - which would then pass every later check while never having been verified.
+    const stagedRevision = stagedBundleRevision(statSync(packagedApp, { throwIfNoEntry: false }));
+    console.log(
+      `${UPDATE_STAGED_MARKER} ${sourceVersion}${stagedRevision ? ` ${stagedRevision}` : ""} ${packagedApp}`,
+    );
     console.log("\n\x1b[1m─ summary ─\x1b[0m");
     if (dryRun) {
       console.log("(dry-run: nothing was changed)");
@@ -880,9 +953,8 @@ function installApp(options) {
     console.log(`  bundle: ${packagedApp}`);
     console.log(`  source: ${clone}  (nothing was installed: --stage-only)`);
     console.log("\nNext:");
-    const revision = stagedBundleRevision(statSync(packagedApp, { throwIfNoEntry: false }));
     console.log(
-      `  node scripts/install-app.mjs --ref ${ref} --from-staged "${packagedApp}"${revision ? ` --staged-revision ${revision}` : ""}`,
+      `  node scripts/install-app.mjs --ref ${ref} --from-staged "${packagedApp}"${stagedRevision ? ` --staged-revision ${stagedRevision}` : ""}`,
     );
     return 0;
   }

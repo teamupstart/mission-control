@@ -19,6 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CANCEL_EXIT_TIMEOUT_MS,
   stageInstallArgs,
   stageScriptPath,
   stageUpdateBuild,
@@ -77,7 +78,7 @@ for (const stage of ["source", "release", "checkout", "dependencies", "build", "
 }
 process.stderr.write("electron-builder  building target=macOS\\n");
 process.stdout.write("${UPDATE_PROGRESS_MARKER} nonsense-from-a-future-release\\n");
-process.stdout.write("${UPDATE_STAGED_MARKER} 1.7.0 " + bundle + "\\n");
+process.stdout.write("${UPDATE_STAGED_MARKER} 1.7.0 4242-1700000000000 " + bundle + "\\n");
 `);
   try {
     const stages: string[] = [];
@@ -95,6 +96,8 @@ process.stdout.write("${UPDATE_STAGED_MARKER} 1.7.0 " + bundle + "\\n");
     if (outcome.ok) {
       assert.equal(outcome.staged.version, "1.7.0");
       assert.equal(outcome.staged.bundlePath, join(clone, BUNDLE));
+      // Read by the script when it verified the bundle, not by this process afterwards.
+      assert.equal(outcome.staged.revision, "4242-1700000000000");
     }
     assert.deepEqual(stages, [
       "prerequisites",
@@ -164,6 +167,69 @@ setInterval(() => {}, 1000);
     delete process.env.MISSION_TEST_PID_FILE;
     rmSync(clone, { recursive: true, force: true });
   }
+});
+
+test("a cancelled build is not reported cancelled until its process group is gone", async () => {
+  // The offer used to come back the instant SIGKILL was sent, so one click on Update Now
+  // could start a fresh `git checkout --force` and `npm ci` in the clone that the dying npm
+  // and electron-builder were still writing to. The grandchild here stands in for them: it
+  // holds the output pipes open, so `close` - and only `close` - proves they are gone.
+  const clone = fakeClone(`
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+// Inherits this process's stdio, so it holds the pipes the parent reads.
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });
+writeFileSync(process.env.MISSION_TEST_PID_FILE, String(child.pid));
+process.stdout.write("${UPDATE_PROGRESS_MARKER} dependencies\\n");
+setInterval(() => {}, 1000);
+`);
+  const pidFile = join(clone, "grandchild.pid");
+  process.env.MISSION_TEST_PID_FILE = pidFile;
+  try {
+    const abort = new AbortController();
+    let settled = false;
+    const running = stageUpdateBuild({
+      node: process.execPath,
+      sourceClone: clone,
+      targetTag: "v1.7.0",
+      signal: abort.signal,
+      onStage: () => abort.abort(),
+      log: () => {},
+    }).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+
+    // The signal has been sent by now, and the promise must NOT have resolved on it alone.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "cancel must wait for the group, not for the signal");
+
+    const outcome = await running;
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason, "cancelled");
+
+    // And by the time it resolved, the grandchild was gone - which is the whole point.
+    const grandchild = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : null;
+    assert.ok(grandchild, "the fake build should have recorded a grandchild pid");
+    let alive = true;
+    try {
+      process.kill(grandchild!, 0);
+    } catch (error) {
+      alive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+    if (alive) process.kill(grandchild!, "SIGKILL");
+    assert.equal(alive, false, "the group must be gone before the offer comes back");
+  } finally {
+    delete process.env.MISSION_TEST_PID_FILE;
+    rmSync(clone, { recursive: true, force: true });
+  }
+});
+
+test("the wait for a cancelled build is bounded, so a wedged one still answers", () => {
+  // SIGKILL cannot be caught, so this bound is not a grace period - it is for a process stuck
+  // in uninterruptible I/O, where waiting forever would make cancelling itself hang.
+  assert.equal(CANCEL_EXIT_TIMEOUT_MS, 10_000);
+  assert.ok(CANCEL_EXIT_TIMEOUT_MS < 60_000, "a person pressing Cancel is waiting for this");
 });
 
 test("an install script without the staging flags is reported as unsupported, not as a failure", async () => {
@@ -262,11 +328,20 @@ test("a build that outruns its limit is stopped and says so", async () => {
 });
 
 test("a bundle path with spaces survives the marker, and a plain line is not one", () => {
-  const line = `${UPDATE_STAGED_MARKER} 1.7.0 /state/app-src/${BUNDLE}`;
+  const line = `${UPDATE_STAGED_MARKER} 1.7.0 99-1700000000000 /state/app-src/${BUNDLE}`;
   assert.deepEqual(parseUpdateProgressLine(line), {
     kind: "staged",
     version: "1.7.0",
+    revision: "99-1700000000000",
     bundlePath: `/state/app-src/${BUNDLE}`,
+  });
+  // Two fields, from a clone whose script predates the revision: the path is always absolute,
+  // which is what tells the two shapes apart.
+  assert.deepEqual(parseUpdateProgressLine(`${UPDATE_STAGED_MARKER} 1.7.0 /state/${BUNDLE}`), {
+    kind: "staged",
+    version: "1.7.0",
+    revision: null,
+    bundlePath: `/state/${BUNDLE}`,
   });
   assert.equal(parseUpdateProgressLine("  npm ci  "), null);
   assert.equal(parseUpdateProgressLine(`${UPDATE_PROGRESS_MARKER}`), null);

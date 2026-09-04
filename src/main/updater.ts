@@ -733,12 +733,13 @@ export class UpdateController {
     }
     const offer = this.snapshot;
     const lastOutcome = offer.lastOutcome;
-    const preparing = (stage: UpdatePrepareStage): UpdateSnapshot => ({
+    const preparing = (stage: UpdatePrepareStage, cancelling = false): UpdateSnapshot => ({
       phase: "preparing",
       currentVersion: offer.currentVersion,
       newVersion: offer.newVersion,
       releaseTag: offer.releaseTag,
       stage,
+      cancelling,
       lastOutcome,
     });
     const ready = (): UpdateSnapshot => ({
@@ -775,19 +776,35 @@ export class UpdateController {
           // has already moved the snapshot on, and a late stage line must not drag it back
           // into a build that is over.
           onStage: (stage) => {
-            if (this.snapshot.phase === "preparing") this.publish(preparing(stage));
+            // A stage arriving after Cancel was pressed must not undo the cancelling state -
+            // the build is on its way out, and the bar advancing again would say otherwise.
+            if (this.snapshot.phase === "preparing" && !this.snapshot.cancelling) {
+              this.publish(preparing(stage));
+            }
           },
         });
         if (outcome.ok) {
+          // Whatever the install script saw at the instant it verified this bundle, not
+          // whatever is there now: between its exit and this line, anything that rebuilds the
+          // shared clone would leave a replacement to pin, and a pin taken from an unverified
+          // build passes every later check. Reading it here is the fallback for a clone whose
+          // script predates the field, and it carries that gap knowingly.
+          const disk = this.identify(outcome.staged.bundlePath);
+          const pinned = outcome.staged.revision ?? disk.revision;
+          // Settled HERE rather than at the restart. A build that cannot be pinned, or that
+          // has already been replaced, is not something to call ready: the person would spend
+          // the minutes, be told it is ready, press Restart and Install, and only then be sent
+          // back to rebuild. Saying so now costs them one retry instead of two waits.
+          if (pinned === null || disk.revision !== pinned || disk.version !== outcome.staged.version) {
+            throw new UpdateError(
+              "The new version was replaced while it was being prepared, so it was not installed. Check for updates again to prepare it once more.",
+            );
+          }
           this.staged = {
             releaseTag: offer.releaseTag,
             version: outcome.staged.version,
             bundlePath: outcome.staged.bundlePath,
-            // Read now, while this is still the bundle the build just verified, so a later
-            // rebuild of the shared clone can be told apart from it. A path that cannot be
-            // identified leaves this null, which the checks below read as "not intact" - the
-            // build is still offered, and installing it will simply rebuild instead.
-            revision: this.identify(outcome.staged.bundlePath).revision,
+            revision: pinned,
           };
           this.publish(ready());
           return true;
@@ -905,9 +922,18 @@ export class UpdateController {
     return found.revision !== null && found.revision === staged.revision;
   }
 
-  /** Stop a build in progress and return to the offer that started it. */
+  /**
+   * Stop a build in progress and return to the offer that started it.
+   *
+   * The offer comes back when the build's process group is actually gone, not when the signal
+   * is sent: `npm` and `electron-builder` write into the shared clone, and the next preparation
+   * force-checks-out and reinstalls in that same directory. Until then the phase stays
+   * `preparing` with `cancelling` set - so the banner stops offering a Cancel that has already
+   * been pressed, and `applyPromise` keeps a second build from starting.
+   */
   cancel(): void {
-    if (this.snapshot.phase !== "preparing") return;
+    if (this.snapshot.phase !== "preparing" || this.snapshot.cancelling) return;
+    this.publish({ ...this.snapshot, cancelling: true });
     this.preparation?.abort();
   }
 

@@ -27,6 +27,18 @@ import { sanitizeLogLine } from "./update-log.ts";
 export const STAGE_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
+ * How long a cancelled build is given to actually be gone.
+ *
+ * SIGKILL cannot be caught, so this is not a grace period - it is the wait for the group's
+ * `close`, which arrives only once every process holding the output pipes has exited. That is
+ * precisely the condition the caller needs: `npm` and `electron-builder` write into the shared
+ * clone, and the next preparation force-checks-out and reinstalls in that same directory. A
+ * bound exists because a process wedged in uninterruptible I/O would otherwise hang the
+ * cancellation itself, and a cancel that never returns is worse than one that reports late.
+ */
+export const CANCEL_EXIT_TIMEOUT_MS = 10_000;
+
+/**
  * Preserve the user's CLI PATH for a child that has to find git, npm, and node.
  *
  * Shared by the staged build and the detached helper: Electron's own environment is not the
@@ -42,6 +54,13 @@ export function updateChildEnvironment(
 export interface StagedBuild {
   version: string;
   bundlePath: string;
+  /**
+   * What the bundle was when the install script verified it, straight from the marker.
+   *
+   * Null only from a clone whose script predates the field, and then the caller has to read it
+   * itself and accept the gap that reading it later leaves.
+   */
+  revision: string | null;
 }
 
 export type StageFailureReason =
@@ -107,6 +126,7 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
       return;
     }
 
+
     let staged: StagedBuild | null = null;
     let settled = false;
     // Bounded on purpose: this exists to tell a missing flag apart from a broken build, and a
@@ -116,15 +136,24 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
     const tail: string[] = [];
     let child: ReturnType<typeof spawn> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let exitTimer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
+    let cancelling = false;
 
     const settle = (outcome: StageOutcome): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (exitTimer) clearTimeout(exitTimer);
       request.signal.removeEventListener("abort", onAbort);
       resolve(outcome);
     };
+
+    const cancelled = (message = "The update was cancelled."): StageOutcome => ({
+      ok: false,
+      reason: "cancelled",
+      message,
+    });
 
     /**
      * Kill the whole process group, not just the script.
@@ -147,9 +176,34 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
       }
     };
 
+    /**
+     * Kill the group, then wait for it to be gone before telling the caller.
+     *
+     * Resolving on the signal alone let the offer come straight back while `npm` and
+     * `electron-builder` were still shutting down - and one click on Update Now then started a
+     * fresh `git checkout --force` and `npm ci` in the directory those processes were still
+     * writing to. `close` is the signal that they are all gone, because it waits for every
+     * holder of the output pipes.
+     */
     function onAbort(): void {
+      if (cancelling) return;
+      cancelling = true;
       killGroup();
-      settle({ ok: false, reason: "cancelled", message: "The update was cancelled." });
+      if (!child || child.exitCode !== null || child.signalCode !== null) {
+        settle(cancelled());
+        return;
+      }
+      exitTimer = setTimeout(() => {
+        request.log(
+          `the cancelled build did not exit within ${Math.round(CANCEL_EXIT_TIMEOUT_MS / 1000)} seconds; giving up on waiting for it`,
+        );
+        settle(
+          cancelled(
+            "The update was cancelled, but its build may still be shutting down. Try again in a moment.",
+          ),
+        );
+      }, CANCEL_EXIT_TIMEOUT_MS);
+      exitTimer.unref?.();
     }
 
     const consume = (line: string): void => {
@@ -178,7 +232,11 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
         if (isUpdatePrepareStage(marker.stage)) request.onStage(marker.stage);
         return;
       }
-      staged = { version: marker.version, bundlePath: marker.bundlePath };
+      staged = {
+        version: marker.version,
+        bundlePath: marker.bundlePath,
+        revision: marker.revision,
+      };
     };
 
     /** Line-buffered, because a marker split across two chunks is not a marker. */
@@ -242,8 +300,9 @@ export function stageUpdateBuild(request: StageRequest): Promise<StageOutcome> {
     });
 
     child.once("close", (code) => {
-      if (request.signal.aborted) {
-        settle({ ok: false, reason: "cancelled", message: "The update was cancelled." });
+      if (request.signal.aborted || cancelling) {
+        // The group is gone now, which is what the caller was waiting for.
+        settle(cancelled());
         return;
       }
       if (timedOut) {

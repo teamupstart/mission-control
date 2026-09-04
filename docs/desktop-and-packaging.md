@@ -135,9 +135,12 @@ update banner, and starts no update check.
 **Update Now** does not close anything. It starts the build, and Mission Control stays open and
 usable while it runs: the banner becomes a progress bar with the stage the install script has
 reached - prerequisites, source, release, checkout, dependencies, build, verify - and a **Cancel**
-that stops the build and puts the offer back. When the new version is built and verified the banner
-reads **ready to install** and offers **Restart and Install**, which is the only part of an update
-that needs the app gone. That part takes seconds.
+that stops the build. Cancel does not return the offer straight away: `npm` and
+`electron-builder` write into the shared clone, and the next preparation force-checks-out and
+reinstalls in that same directory, so the banner reads *cancelling* until the build's whole
+process group is actually gone (bounded, in case one is wedged in uninterruptible I/O). When the
+new version is built and verified the banner reads **ready to install** and offers **Restart and
+Install**, which is the only part of an update that needs the app gone. That part takes seconds.
 
 Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
 check. A native dialog reports that the app is current or offers the same **Update Now** and **Later**
@@ -157,11 +160,17 @@ inode and mtime, both of which change when `npm run package` recreates it) must 
 built. A bundle that is missing, a different version, or the same version rebuilt is refused in
 the banner with a retry, before anything quits.
 
-That check cannot be the last one, because the swap happens in another process up to two minutes
-later - the helper waits for the app to exit first - and a rebuild can land in that window. So the
-revision travels: the app hands it over as `--staged-revision`, the detached helper forwards it
-without interpreting it, and `install-app.mjs --from-staged` re-reads the bundle's identity in the
-instant before `replaceAppBundle` and refuses a mismatch there. The version is checked too, against
+The revision is read by the install script at the instant it verifies the bundle and reported with
+the staged marker, not by the app afterwards: between the script's exit and the app's next look,
+anything rebuilding that clone would leave a replacement to pin, and a pin taken from an unverified
+build would pass every later check. A clone whose script predates the field reports no revision, and
+the app then reads it itself and carries that gap knowingly.
+
+That check cannot be the last one either, because the swap happens in another process up to two
+minutes later - the helper waits for the app to exit first - and a rebuild can land in that window.
+So the revision travels: the app hands it over as `--staged-revision`, the detached helper forwards
+it without interpreting it, and `install-app.mjs --from-staged` re-reads the bundle's identity in
+the instant before `replaceAppBundle` and refuses a mismatch there. The version is checked too, against
 the version its `--ref` names. `src/shared/staged-bundle.mjs` owns the one formula all three read,
 and a handoff carrying no pin - an install driven by hand, or one from an app that predates this -
 still installs, exactly as a ref that names no version still installs.

@@ -27,6 +27,15 @@ export const UPDATE_PREPARE_STAGES = [
 ];
 
 export const UPDATE_PROGRESS_MARKER = "##mission-update-progress";
+/**
+ * `##mission-update-staged <version> [revision] <absolute path>`
+ *
+ * The revision is optional and sits in the middle because the path is the only field that can
+ * contain spaces, so it has to be last. It is told apart from the path by the one thing a path
+ * always is here: absolute. A script old enough to predate the revision emits two fields, and
+ * this still reads it - which is the case for an updater-owned clone checked out at an older
+ * ref than the app running the build.
+ */
 export const UPDATE_STAGED_MARKER = "##mission-update-staged";
 
 export function isUpdatePrepareStage(value) {
@@ -72,8 +81,17 @@ export function parseUpdateProgressLine(line) {
     const boundary = rest.indexOf(" ");
     if (boundary < 1) return null;
     const version = rest.slice(0, boundary);
-    const bundlePath = rest.slice(boundary + 1).trim();
-    return bundlePath ? { kind: "staged", version, bundlePath } : null;
+    let remainder = rest.slice(boundary + 1).trim();
+    // The optional revision, which the script reads at the moment it verifies the bundle. A
+    // path is always absolute here, so anything else in this position is the revision.
+    let revision = null;
+    if (!remainder.startsWith("/")) {
+      const next = remainder.indexOf(" ");
+      if (next < 1) return null;
+      revision = remainder.slice(0, next);
+      remainder = remainder.slice(next + 1).trim();
+    }
+    return remainder ? { kind: "staged", version, revision, bundlePath: remainder } : null;
   }
   return null;
 }

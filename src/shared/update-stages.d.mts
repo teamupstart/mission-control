@@ -25,7 +25,7 @@ export interface UpdatePrepareProgress {
 
 export type UpdateProgressLine =
   | { kind: "stage"; stage: string }
-  | { kind: "staged"; version: string; bundlePath: string };
+  | { kind: "staged"; version: string; revision: string | null; bundlePath: string };
 
 export const UPDATE_PREPARE_STAGES: readonly UpdatePrepareStageEntry[];
 export const UPDATE_PROGRESS_MARKER: string;

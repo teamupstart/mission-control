@@ -33,6 +33,10 @@ test("desktop update banner exposes the complete update flow while the browser s
     // Stands in for the main process's own stage reports. The real ones come from the install
     // script's marker lines; what this spec proves is that they reach the bar.
     let advance: (() => void) | null = null;
+    // Hoisted out of `apply`, because `cancel` publishes the same preparing snapshot with
+    // `cancelling` set - the state the real controller holds until the build's process group
+    // is gone.
+    let report: ((cancelling?: boolean) => void) | null = null;
 
     Object.defineProperty(window, "__pushUpdateSnapshot", {
       configurable: true,
@@ -58,13 +62,14 @@ test("desktop update banner exposes the complete update flow while the browser s
           apply: async () => {
             const stages = ["starting", "dependencies", "build", "verify"] as const;
             let index = 0;
-            const report = (): void =>
+            report = (cancelling = false): void =>
               publish({
                 phase: "preparing",
                 currentVersion: "0.1.0",
                 newVersion: version,
                 releaseTag,
                 stage: stages[index]!,
+                cancelling,
                 lastOutcome: null,
               });
             report();
@@ -97,8 +102,13 @@ test("desktop update banner exposes the complete update flow while the browser s
             return true;
           },
           cancel: async () => {
+            // The real controller stays in `preparing` with `cancelling` set until the build's
+            // process group is actually gone, then returns the offer.
+            report?.(true);
             advance = null;
-            publish(initialSnapshot);
+            (window as Window & { __finishCancel(): void }).__finishCancel = () => {
+              publish(initialSnapshot);
+            };
           },
           defer: async () => {
             publish({
@@ -186,8 +196,18 @@ test("desktop update banner exposes the complete update flow while the browser s
   await expect(bar).toHaveAttribute("aria-valuenow", "55");
   await screenshot("preparing-build");
 
-  // 2. Cancelling a build returns the offer, with the app never having closed.
+  // 2. Cancelling says it is stopping first, and only then returns the offer - the build's
+  // processes are still writing into the shared clone until they are gone.
   await dashboard.getByRole("button", { name: "Cancel" }).click();
+  await expect(status).toContainText("Cancelling the Mission Control 0.2.0 update");
+  await expect(status).toContainText("Waiting for the build to stop");
+  await expect(dashboard.getByRole("progressbar")).toHaveCount(0);
+  await expect(dashboard.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  await screenshot("cancelling");
+
+  await dashboard.evaluate(() => {
+    (window as Window & { __finishCancel(): void }).__finishCancel();
+  });
   await expect(status).toContainText("Mission Control 0.2.0 is available");
   await expect(dashboard.getByRole("progressbar")).toHaveCount(0);
 

@@ -24,6 +24,17 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (!snapshot) return null;
 
+  if (snapshot.phase === "preparing" && snapshot.cancelling) {
+    return (
+      <section className="app-banner app-banner-update" role="status">
+        <div className="app-banner-copy">
+          <strong>{UPDATE_COPY.cancelling.title(snapshot.newVersion)}</strong>
+          <p>{UPDATE_COPY.cancelling.detail}</p>
+        </div>
+      </section>
+    );
+  }
+
   if (snapshot.phase === "preparing") {
     const { label, percent, step, steps } = updatePrepareProgress(snapshot.stage);
     return (

@@ -84,6 +84,12 @@ function fixture(over: Partial<UpdaterPort> = {}) {
   const handoffs: HelperHandoff[] = [];
   const stageRequests: UpdateStageRequest[] = [];
   let outcome: UpdateApplyOutcome | null = null;
+  // One source of truth for what is on disk, because in the real thing there is one: the
+  // install script reads the bundle's identity when it verifies it and reports that with the
+  // marker, so a fake whose marker and whose stat disagree is modelling a race, not a bundle.
+  // The tests that want that race override both deliberately.
+  const identity: UpdaterPort["stagedBundleIdentity"] =
+    over.stagedBundleIdentity ?? (() => ({ version: "1.2.4", revision: "staged-1" }));
   const port: UpdaterPort = {
     packaged: true,
     arch: "arm64",
@@ -104,11 +110,29 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       for (const stage of ["prerequisites", "dependencies", "build"] as UpdatePrepareStage[]) {
         request.onStage(stage);
       }
-      return { ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE } };
+      // The revision comes from the marker the install script printed when it verified the
+      // bundle, which is what the controller must pin - not whatever it reads afterwards. Here
+      // that is whatever this fixture's disk currently says, which is the consistent case.
+      return {
+        ok: true,
+        staged: {
+          version: "1.2.4",
+          bundlePath: STAGED_BUNDLE,
+          // Wrapped like the real thing: the install script reads this, so a disk this app
+          // cannot stat leaves the marker without a revision rather than failing the build.
+          revision: (() => {
+            try {
+              return identity(STAGED_BUNDLE).revision;
+            } catch {
+              return null;
+            }
+          })(),
+        },
+      };
     },
     // The bundle the fake build leaves behind: the version it reported, and a revision that
     // only changes when something rebuilds it.
-    stagedBundleIdentity: () => ({ version: "1.2.4", revision: "staged-1" }),
+    stagedBundleIdentity: identity,
     requestQuit: () => events.push("quit"),
     readOutcome: () => {
       return outcome;
@@ -531,7 +555,10 @@ test("activation preserves the startup delay and checks only after a long sleep"
 });
 
 test("a build already in flight cannot start a second one", async () => {
-  let finish!: (outcome: { ok: true; staged: { version: string; bundlePath: string } }) => void;
+  let finish!: (outcome: {
+    ok: true;
+    staged: { version: string; bundlePath: string; revision: string | null };
+  }) => void;
   const f = fixture({
     stage: () => new Promise((resolve) => (finish = resolve)),
   });
@@ -541,7 +568,7 @@ test("a build already in flight cannot start a second one", async () => {
   const second = f.controller.apply();
   assert.equal(first, second);
   assert.equal(f.controller.getSnapshot().phase, "preparing");
-  finish({ ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE } });
+  finish({ ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "staged-1" } });
   assert.equal(await first, true);
   assert.equal(f.controller.getSnapshot().phase, "ready");
   f.controller.stop();
@@ -1042,6 +1069,8 @@ test("a bundle whose identity cannot be read is refused, not thrown at the calle
   await f.controller.apply();
   assert.equal(f.controller.getSnapshot().phase, "ready");
 
+  // Readable while the build ran, unreadable now - a directory whose permissions changed under
+  // a prepared update, which is the case `install()`'s own guard exists for.
   identity = () => {
     throw Object.assign(new Error("EACCES: permission denied, stat"), { code: "EACCES" });
   };
@@ -1058,10 +1087,30 @@ test("a bundle whose identity cannot be read is refused, not thrown at the calle
   );
   f.controller.stop();
 
-  // The reuse shortcut takes the same route: it rebuilds rather than throwing out of apply().
+  // And when it is unreadable from the start, the build itself refuses rather than promising a
+  // restart it cannot honour.
+  const fromTheStart = fixture({
+    stagedBundleIdentity: () => {
+      throw Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" });
+    },
+  });
+  await fromTheStart.controller.start();
+  await fromTheStart.controller.check(true);
+  assert.equal(await fromTheStart.controller.apply(), false);
+  assert.equal(fromTheStart.controller.getSnapshot().phase, "error");
+  assert.deepEqual(
+    fromTheStart.events.filter((event) => event === "handoff" || event === "quit"),
+    [],
+  );
+  fromTheStart.controller.stop();
+
+  // The reuse shortcut takes the same route rather than throwing out of apply(): a bundle that
+  // became unreadable while it sat deferred is rebuilt, not reused.
+  let readable = true;
   const reuse = fixture({
     stagedBundleIdentity: () => {
-      throw new Error("ELOOP: too many symbolic links");
+      if (!readable) throw new Error("ELOOP: too many symbolic links");
+      return { version: "1.2.4", revision: "staged-1" };
     },
   });
   await reuse.controller.start();
@@ -1069,8 +1118,121 @@ test("a bundle whose identity cannot be read is refused, not thrown at the calle
   assert.equal(await reuse.controller.apply(), true);
   assert.equal(reuse.controller.getSnapshot().phase, "ready");
   reuse.controller.defer();
+
+  readable = false;
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), false, "an unreadable bundle cannot be reused");
+  assert.equal(reuse.controller.getSnapshot().phase, "error");
+  readable = true;
   await reuse.controller.check(true);
   assert.equal(await reuse.controller.apply(), true);
-  assert.equal(reuse.stageRequests.length, 2, "an unreadable bundle must be rebuilt, not reused");
+  // Three builds for three acceptances: the deferred bundle was never reused, not once, which
+  // is the property here - the unreadable attempt spent a build and then refused rather than
+  // installing something it could not identify.
+  assert.equal(reuse.stageRequests.length, 3);
   reuse.controller.stop();
+});
+
+
+test("a build replaced before it could be pinned is refused, and never called ready", async () => {
+  // The install script reads the bundle's identity in the same breath as it verifies it and
+  // reports it with the marker. Anything this app read afterwards could already be a
+  // replacement, which would then pass every later check while never having been verified.
+  //
+  // And the refusal belongs here, at the end of the build: calling it ready and refusing at
+  // the restart would spend the person's minutes, promise them a version, and only then send
+  // them back to rebuild.
+  const f = fixture({
+    stage: async () => ({
+      ok: true,
+      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "verified-at-build" },
+    }),
+    // What is on disk NOW disagrees, which is exactly the race: something rebuilt the clone
+    // between the script's verification and this app looking.
+    stagedBundleIdentity: () => ({ version: "1.2.4", revision: "rebuilt-since" }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") {
+    assert.match(snapshot.message, /replaced while it was being prepared/);
+    assert.equal(snapshot.retryable, true);
+  }
+  // Nothing handed off, nothing quit, and no "ready" ever published.
+  assert.deepEqual(f.events.filter((event) => event === "handoff" || event === "quit"), []);
+  f.controller.stop();
+});
+
+test("an older script that reports no revision still stages, pinned by a later read", async () => {
+  // A clone checked out at a ref older than this app has a script that predates the field.
+  // The pin is then whatever this app can read, which carries the gap knowingly rather than
+  // refusing an update outright.
+  const f = fixture({
+    stage: async () => ({
+      ok: true,
+      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: null },
+    }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.stagedRevision, "staged-1");
+  f.controller.stop();
+});
+
+test("cancelling says so, refuses a second build, and comes back only when the build is gone", async () => {
+  // Resolving on the signal let the offer return while npm and electron-builder were still
+  // shutting down, and one click on Update Now then started a fresh checkout and install in
+  // the directory they were still writing to.
+  let release!: () => void;
+  let aborted = false;
+  let started = 0;
+  const dying: { report: ((stage: UpdatePrepareStage) => void) | null } = { report: null };
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        started += 1;
+        dying.report = request.onStage;
+        request.signal.addEventListener("abort", () => {
+          aborted = true;
+          // The group is still shutting down: nothing resolves until it is gone.
+          release = () =>
+            resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." });
+        });
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  const preparing = f.controller.apply();
+
+  f.controller.cancel();
+  assert.equal(aborted, true);
+  const cancelling = f.controller.getSnapshot();
+  assert.equal(cancelling.phase, "preparing");
+  if (cancelling.phase === "preparing") assert.equal(cancelling.cancelling, true);
+
+  // While it is going: no second build, and pressing Cancel again changes nothing.
+  assert.equal(f.controller.apply(), preparing);
+  f.controller.cancel();
+  assert.equal(started, 1);
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+
+  // A stage report arriving from the dying build must not undo the cancelling state.
+  dying.report?.("build");
+  const during = f.controller.getSnapshot();
+  if (during.phase === "preparing") assert.equal(during.cancelling, true);
+
+  release();
+  assert.equal(await preparing, false);
+  assert.equal(f.controller.getSnapshot().phase, "available");
+  assert.deepEqual(f.events, []);
+
+  // And now a new build may start.
+  void f.controller.apply();
+  assert.equal(started, 2);
+  f.controller.stop();
 });

@@ -492,6 +492,26 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       name: "Pipeline workspace",
     }),
   ).toBeVisible();
+  const comment = await request<{ thread: { id: string } }>(
+    daemon,
+    `/api/sessions/${encodeURIComponent(task!.sessionId!)}/file-comments`,
+    "POST",
+    {
+      path: "pipeline-change.html",
+      startLine: 1,
+      endLine: 1,
+      quote: "<h1>Pipeline workspace</h1>",
+      revision: null,
+      surface: "editor",
+      body: "Retained Pipeline comment",
+    },
+  );
+  await request(
+    daemon,
+    `/api/file-comments/${encodeURIComponent(comment.thread.id)}/queue`,
+    "POST",
+  );
+  await expect(detail.getByRole("button", { name: "Comments" })).toContainText("(1)");
   await shoot(dashboard, "10-managed-workspace-files", detail);
 
   execFileSync("git", ["-C", daemon.repo, "worktree", "remove", "--force", authoring], {
@@ -509,8 +529,23 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
       .getByRole("option", { name: "pipeline-change.html" }),
   ).toBeVisible();
   await expect(detail.getByRole("button", { name: "Editor" })).toBeDisabled();
+  await dashboard.keyboard.press("e");
+  await expect(detail.getByRole("button", { name: "Preview" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(detail.getByRole("button", { name: "Editor" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
   await expect(detail.getByRole("button", { name: "Comment mode" })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: "Comments" })).toBeVisible();
+  await detail.getByRole("button", { name: "Comments" }).click();
+  const comments = detail.getByRole("complementary", { name: "Comments on pipeline-change.html" });
+  await comments.getByRole("button", { name: /Retained Pipeline comment/ }).click();
+  const retainedThread = detail.getByRole("region", { name: /Comment MC-\w+ on line 1/ });
+  await expect(retainedThread).toContainText("Retained Pipeline comment");
+  await expect(retainedThread.getByRole("textbox")).toHaveCount(0);
+  await expect(retainedThread.getByRole("button", { name: "Reply" })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "Open in" })).toBeDisabled();
   await shoot(dashboard, "11-retired-workspace-read-only-files", detail);
 });

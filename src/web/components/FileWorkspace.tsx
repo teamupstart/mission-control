@@ -319,9 +319,8 @@ function FileWorkspaceBody({
    * Deliberately its own predicate and not `previewable`, which answers a different
    * question and includes `image` - see `isCommentableDocument`.
    */
-  const commentable = buffer
-    ? isCommentableDocument(buffer.document) && !readOnlyWorkspace
-    : false;
+  const documentCommentable = buffer ? isCommentableDocument(buffer.document) : false;
+  const commentable = documentCommentable && !readOnlyWorkspace;
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const [showComments, setShowComments] = useState(false);
@@ -364,7 +363,7 @@ function FileWorkspaceBody({
    * reading - and a person reading a rendered plan is exactly the person with something to
    * say about line 84.
    */
-  const commentsActive = commentMode && commentable && !comparing;
+  const commentsActive = commentMode && documentCommentable && !comparing;
   /**
    * Whether the panel Comment mode opens is docked OVER the rendered document.
    *
@@ -415,7 +414,9 @@ function FileWorkspaceBody({
         isTypingTarget(event.target)
         || isOverlayOpen?.() === true
       ) return;
-      const editorAvailable = previewable && buffer?.document.editable === true;
+      const editorAvailable = previewable
+        && buffer?.document.editable === true
+        && !readOnlyWorkspace;
       if ((event.key === "p" && !previewable) || (event.key === "e" && !editorAvailable)) return;
       if (event.key === "m" && !commentable) return;
       const pageDirection = event.key === "u" ? -1 : event.key === "d" ? 1 : null;
@@ -447,6 +448,7 @@ function FileWorkspaceBody({
     isOverlayOpen,
     mode,
     previewable,
+    readOnlyWorkspace,
     session.id,
   ]);
   /*
@@ -800,7 +802,7 @@ function FileWorkspaceBody({
     setThreadError(null);
     setCommentMode(true);
     if (thread.status === "resolved") setShowResolved(true);
-    if (thread.status === "draft") {
+    if (thread.status === "draft" && !readOnlyWorkspace) {
       setOpenThreadId(null);
       draft.openDraft(thread);
     } else {
@@ -809,7 +811,7 @@ function FileWorkspaceBody({
     }
     jumpNonce.current += 1;
     setThreadJump({ id: thread.id, line: thread.startLine, nonce: jumpNonce.current });
-  }, [draft]);
+  }, [draft, readOnlyWorkspace]);
 
   /*
    * A comment belongs to the file and the session it was written on.
@@ -857,8 +859,8 @@ function FileWorkspaceBody({
     setOpenThreadId(next.id);
     // A draft IS its composer - it was never submitted, so there is nothing to read yet and
     // everything still to edit. Opening it any other way would strand it unqueueable.
-    if (next.status === "draft") draft.openDraft(next);
-  }, [draft, openThreadId, threadLines]);
+    if (next.status === "draft" && !readOnlyWorkspace) draft.openDraft(next);
+  }, [draft, openThreadId, readOnlyWorkspace, threadLines]);
 
   const commentOnLine = useCallback((line: number): void => {
     if (threadLines.has(line)) {
@@ -924,6 +926,7 @@ function FileWorkspaceBody({
       openIndexedThread(existing);
       return;
     }
+    if (!commentable) return;
     setOpenThreadId(null);
     dismissDraftForBlock();
     if (openRange({ ...anchor, surface, revision })) {
@@ -931,7 +934,7 @@ function FileWorkspaceBody({
       return;
     }
     setThreadError("That block has no source text to anchor a comment to.");
-  }, [allThreadLines, dismissDraftForBlock, openIndexedThread, openRange]);
+  }, [allThreadLines, commentable, dismissDraftForBlock, openIndexedThread, openRange]);
 
   /**
    * A block of the rendered Markdown, anchored to the source it was rendered FROM.
@@ -1971,6 +1974,7 @@ function FileWorkspaceBody({
             openThread.quote,
             openThread.htmlBlockQuote,
           )}
+          readOnly={readOnlyWorkspace}
           busy={threadBusy}
           error={threadError?.refreshable ? null : (threadError?.message ?? null)}
           onReply={(body) => reply(openThread.id, body)}
@@ -1999,7 +2003,7 @@ function FileWorkspaceBody({
    * both of which only mean something in a gutter - belong to the Editor's surface alone.
    */
   const editorComments = useMemo((): FileEditorComments | undefined => {
-    if (!commentable || !sourceShowing) return undefined;
+    if (!documentCommentable || !sourceShowing) return undefined;
     return {
       markers: [...threadLines.entries()].map(([line, threads]) => ({
         line,
@@ -2007,7 +2011,7 @@ function FileWorkspaceBody({
         tone: markerTone(threads),
       })),
       panelLine: composer?.line ?? openThread?.startLine ?? null,
-      onLineSelect: commentsActive ? commentOnLine : null,
+      onLineSelect: commentsActive && commentable ? commentOnLine : null,
       onMarkerSelect: openThreadOnLine,
       panel: commentPanel,
     };
@@ -2017,6 +2021,7 @@ function FileWorkspaceBody({
     commentable,
     commentsActive,
     composer,
+    documentCommentable,
     openThread,
     openThreadOnLine,
     sourceShowing,

@@ -140,6 +140,7 @@
       <li>Support only Herdr's default local server session in the first release.</li>
       <li>Select inside Herdr, declare <code>clients: null</code>, and use the existing new-client fallback without direct-attach takeover.</li>
       <li>Scope initial support to POSIX Unix sockets and <code>env -u</code>; Windows named-pipe support is future work.</li>
+      <li>Use a generic host-support check to keep Herdr visibly unavailable on <code>win32</code> before any runtime work, without branching on its ID.</li>
       <li>Create merge-aware phases and dependency-linked tasks.</li>
     </ul>
     <div class="callout good"><strong>Requirements, not questions.</strong> Agents may adapt the proposed route where repository evidence demands it, but the selected behavior remains fixed and deviations must be explained in the implementation pull request.</div>
@@ -168,6 +169,7 @@
       <li>Status JSON and narrow response schemas gate compatibility. Mission Control never replaces an incompatible server.</li>
       <li>The full client is launched through an argv wrapper that removes every Herdr namespace selector before executing the resolved binary.</li>
       <li>Workspace creation and any optional side split receive the exact requested worktree cwd rather than inheriting Herdr's default directory.</li>
+      <li>The shared binary availability contract keeps Herdr disabled with an actionable POSIX-only reason on unsupported hosts before any CLI or socket work.</li>
       <li>Named servers, client-tty inference, unpublished pane focus, direct takeover, persistence, and a second registry remain out of scope.</li>
     </ul>
   </section>
@@ -270,6 +272,7 @@
     <ul>
       <li>No vendor branch exists outside the adapter and every widened enum parses and renders consistently.</li>
       <li>Missing Herdr costs no subprocess; discovery and existing-target operations never start a stopped server.</li>
+      <li>An installed Herdr binary on <code>win32</code> remains visibly unavailable and cannot reach discovery, home, launch, CLI, server-start, or socket work.</li>
       <li>Background dispatch preserves focus, operator launch requests it, and workspace creation carries the exact requested worktree cwd.</li>
       <li>Repeated Focus may open another normal client but never evicts an attachment.</li>
       <li>Named Herdr sessions remain out of scope and automated tests launch no real agent or server.</li>

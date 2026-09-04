@@ -5,7 +5,7 @@ parallel Herdr integration. Herdr's workspaces, tabs, and panes map cleanly to t
 window, and pane model. The adapter can therefore reuse the same generic discovery, pane I/O,
 focus, rename, kill, home-liveness, and terminal-launch call sites already used by tmux and cmux.
 
-The fit is strong but not zero-change. Two generic assumptions need to be corrected, and Herdr
+The fit is strong but not zero-change. Three generic assumptions need to be corrected, and Herdr
 needs a bounded local-socket transport inside its adapter:
 
 1. Multiplexer correlation currently requires a pane tty even though `MuxPane` already carries the
@@ -14,7 +14,10 @@ needs a bounded local-socket transport inside its adapter:
 2. `spawnDetached` cannot distinguish a background dispatch from an operator opening a terminal.
    Herdr and cmux both expose an explicit focus flag. Add a backend-neutral selection intent so
    dispatch stays in the background while a requested terminal becomes visible.
-3. Herdr's CLI is a wrapper over its newline-delimited JSON socket. A CLI-only discovery pass would
+3. Binary presence is treated as runtime support. The initial Herdr adapter is POSIX-only, so the
+   generic binary availability contract must expose an actionable unsupported-host reason and gate
+   discovery, home selection, target launch, and setup before any process or socket work.
+4. Herdr's CLI is a wrapper over its newline-delimited JSON socket. A CLI-only discovery pass would
    spawn one process for the snapshot plus one process per pane every 1.5 seconds, and it cannot use
    Herdr's bracket-aware `pane.send_input` operation for a safe multiline paste. A small, validated
    socket client inside the adapter avoids both problems without changing the `Multiplexer` API.
@@ -25,7 +28,7 @@ named server sessions are a separate namespace problem and are outside the appro
 ## Recommendation
 
 Build a socket-backed `herdrMultiplexer` adapter, register `herdr` after `tmux` and before `cmux`,
-and make only the two generic contract changes above. Keep every Herdr command, response schema,
+and make only the three generic contract changes above. Keep every Herdr command, response schema,
 timeout, and environment rule inside `src/server/terminal/herdr*.ts`. Browser code, actions, routes,
 and dispatch code continue to ask capabilities and never branch on `backend === "herdr"`.
 
@@ -227,6 +230,11 @@ Create `src/server/terminal/herdr.ts`:
 - Scope the initial adapter to POSIX hosts. It uses Herdr's Unix socket and a POSIX `env -u`
   full-client attach wrapper; Windows named-pipe transport and environment scrubbing are separate
   compatibility work and must not be presented as supported.
+- Extend the generic server-side `BinSpec` availability contract with a host-support check and an
+  actionable reason, rather than branching on `herdr` in callers. The Herdr spec reports unsupported
+  on `win32`; `binPresent`, discovery, home selection, target launch, and setup consume that same
+  result. Keep the ID registered for exhaustive schemas, but render its target row disabled as
+  `Herdr integration is supported on POSIX hosts only` and run no Herdr process or socket operation.
 - `HERDR_BIN` follows `CMUX_BIN`: an override plus `herdr` on PATH. For the recommended default-only
   scope, remove ambient `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`,
   and `HERDR_PANE_ID` from adapter subprocesses so starting Mission Control inside a Herdr pane does
@@ -273,7 +281,12 @@ Add `test/herdr-adapter.test.ts` for:
   rollback, and attach argv;
 - absent-server creation auto-start, compatible running server reuse, and incompatible server
   refusal;
-- default-session environment isolation and names.
+- default-session environment isolation, host support, and names.
+
+Extend binary, enumeration, home, terminal-target, setup, and launch contract tests with an installed
+Herdr binary on an injected unsupported host. They must prove the row remains visible but disabled
+with the POSIX-only reason, launch revalidation refuses it, discovery and home enumeration skip it,
+and no CLI, socket, or server-start seam is invoked.
 
 Extend registry, enumeration, home, target, focus-composition, and setup tests so adding the third
 multiplexer changes no generic behavior accidentally. In particular, pin that an installed but
@@ -313,6 +326,7 @@ Do not edit `CHANGELOG.md`.
 | Failure | Required behavior |
 |---|---|
 | Herdr not installed | Registry row is unavailable by name; no subprocess on the discovery tick |
+| Herdr installed on an unsupported host | Target and setup rows show the POSIX-only reason; discovery, home, launch, CLI, and socket paths do not run |
 | Herdr installed, server stopped | Discovery and existing-target operations do not start it; workspace creation starts and awaits the headless server |
 | Installed client and server incompatible | Fail that backend with an actionable restart/update message; never stop the server automatically |
 | Socket response invalid or mismatched | Reject the operation; never guess a pane or mutation result |
@@ -340,6 +354,8 @@ Implementation is complete only when:
 - The test proves Mission Control launched no real agent binary and left no test Herdr server.
 - README and terminal architecture docs match the implemented version and limitations, including the
   initial POSIX-only boundary.
+- An installed Herdr binary on `win32` remains unavailable with an actionable reason and cannot
+  reach discovery, home, launch, CLI, server-start, or socket work.
 - No caller outside the adapter branches on the Herdr ID.
 
 ## Decisions taken

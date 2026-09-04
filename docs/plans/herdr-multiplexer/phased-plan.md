@@ -175,6 +175,9 @@ may merge a temporary Herdr-specific correlation or creation branch.
   landed; pre-write failures and parsed application refusals remain confirmed.
 - Initial support is POSIX-only: Unix socket transport and `env -u` attach are supported, while
   Windows named pipes and environment scrubbing remain future compatibility work.
+- A generic server-side binary/availability host check keeps the exhaustive Herdr ID registered but
+  makes it visibly unavailable on `win32` before discovery, home, launch, CLI, server-start, or
+  socket work. Callers do not branch on the Herdr ID.
 - `clients: null` and `paneMode: null` are honest capability declarations, not missing work.
 - Full-client attach clears Herdr namespace selectors in argv and never uses direct-attach takeover.
 

@@ -70,6 +70,8 @@ change in the pull request.
   namespace selector before executing the resolved binary. The adapter first selects the target
   inside Herdr, then generic focus opens that wrapper through an installed emulator when no host can
   be found because `clients` is unavailable.
+- Workspace creation carries `spec.cwd` into Herdr's create request, and an optional side split is
+  rooted at the same cwd. Command injection alone is not allowed to inherit Herdr's default directory.
 - No phase adds named Herdr server discovery, client-tty inference, an undocumented pane-focus call,
   direct-attach takeover, a Herdr database table, or a second terminal registry.
 
@@ -192,6 +194,7 @@ The final Phase 2 review must confirm:
 - every widened shared enum parses and renders consistently;
 - discovery never starts Herdr and missing Herdr costs no subprocess;
 - background dispatch does not steal focus while operator launch asks for it;
+- workspace creation and any optional side split receive the exact requested worktree cwd;
 - repeated Focus may open another normal Herdr client but never evicts an attachment;
 - named Herdr sessions remain deliberately out of scope;
 - all automated fakes prove no real agent binary or Herdr server was launched.

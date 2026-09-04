@@ -50,7 +50,7 @@ existing attachment, which violates Mission Control's no-yank focus rule.
 | Pane | Pane | public `pane_id` is `paneId` |
 | Pane process | Root shell | `pane.process_info.shell_pid` is `panePid` |
 | Pane tty | Not exposed | `tty: null`; correlate through shell-PID ancestry |
-| Create home | Create workspace, run command, optionally split | maps to `sessions.spawnDetached` |
+| Create home | Create workspace at the requested cwd, run command, optionally split at the same cwd | maps to `sessions.spawnDetached` |
 | Attach | Full Herdr client | `attachArgv` returns a namespace-scrubbed wrapper around the resolved Herdr binary |
 | Rename home | Rename workspace | maps to `sessions.rename` by workspace ID |
 | Kill home | Close workspace | maps to `sessions.kill` by workspace ID |
@@ -230,10 +230,11 @@ Create `src/server/terminal/herdr.ts`:
   Key mapping is exhaustive and compiled against every shared `Key`.
 - `select` uses documented `agent.focus` with the pane ID. Return the Herdr error if it cannot
   identify the agent rather than falling back to an unpublished method.
-- `sessions.spawnDetached` ensures the server, creates the workspace with the requested selection
-  intent, shell-encodes the argv once through the existing `shellCommand`, submits it to the root
-  pane, and optionally creates a no-focus side split. If the command cannot be submitted after the
-  workspace was created, close that exact workspace and preserve unknown-outcome semantics.
+- `sessions.spawnDetached` ensures the server, creates the workspace with `cwd: spec.cwd` and the
+  requested selection intent, shell-encodes the argv once through the existing `shellCommand`,
+  submits it to the returned root pane, and optionally creates a no-focus side split rooted at the
+  same `spec.cwd`. If the command cannot be submitted after the workspace was created, close that
+  exact workspace and preserve unknown-outcome semantics.
 - `sessions.attachArgv` returns a portable `env -u ...` wrapper followed by the resolved Herdr binary,
   attaching the full client to the default server even when the daemon inherited named-session
   selectors. `rename` and `kill` target workspace ID, not label. Use `PLAIN_NAMES` unless live v0.8.2
@@ -256,7 +257,8 @@ Add `test/herdr-adapter.test.ts` for:
 - snapshot mapping with multiple workspaces, tabs, and panes;
 - null tty plus shell PID preservation;
 - exact key names, raw text, bracket-aware paste, capture, and agent focus;
-- create, shell-safe argv submission, optional side split, rename, close, rollback, and attach argv;
+- create with exact cwd, shell-safe argv submission, optional same-cwd side split, rename, close,
+  rollback, and attach argv;
 - absent-server creation auto-start, compatible running server reuse, and incompatible server
   refusal;
 - default-session environment isolation and names.

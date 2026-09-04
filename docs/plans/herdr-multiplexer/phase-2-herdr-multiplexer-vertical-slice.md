@@ -163,11 +163,10 @@ Create `src/server/terminal/herdr.ts` and implement the interface from stable pu
 
 Implement `sessions`:
 
-- `spawnDetached` calls workspace-creation readiness, creates a workspace with Phase 1's
-  `spec.select`,
-  shell-encodes `spec.argv` once through the existing `shellCommand`, and submits it to the returned
-  root pane. A requested convenience split is best-effort and never steals selection from the agent
-  root.
+- `spawnDetached` calls workspace-creation readiness and creates a workspace with `cwd: spec.cwd`
+  plus Phase 1's `spec.select`. It shell-encodes `spec.argv` once through the existing `shellCommand`
+  and submits it to the returned root pane. A requested convenience split is best-effort, uses the
+  same `spec.cwd`, and never steals selection from the agent root.
 - If command delivery is a confirmed refusal after workspace creation, close only that returned
   workspace. If delivery is uncertain, preserve the workspace and unknown outcome rather than
   issuing a destructive replay or cleanup.
@@ -218,8 +217,9 @@ Create `test/herdr-adapter.test.ts` and cover:
 - null tty with preserved shell PID and cwd fallback;
 - all shared key names, raw text, bracket-aware paste, capture, and documented agent focus;
 - default-session environment isolation on every CLI and server start;
-- workspace creation with both selection intents, shell-safe argv, optional no-focus side split,
-  confirmed-refusal rollback, uncertain-delivery preservation, rename, close, and attach argv;
+- workspace creation with exact cwd and both selection intents, shell-safe argv, optional same-cwd
+  no-focus side split, confirmed-refusal rollback, uncertain-delivery preservation, rename, close,
+  and attach argv;
 - `clients: null`, `paneMode: null`, plain name rules, label, glyph, binary override, and registry
   completeness.
 
@@ -327,6 +327,8 @@ Herdr version and compatibility status in the pull request evidence, not in comm
 - Herdr discovery uses one bounded socket batch and never starts a stopped server.
 - Null tty panes bind only through Phase 1's exact PID ancestry.
 - Background dispatch records `select: false`; operator launch records `select: true`.
+- Workspace creation and any requested side split receive the exact worktree cwd from the launch
+  specification.
 - Pane I/O, safe paste, capture, documented agent focus, create, rename, close, and full-client attach
   are covered by fake-only automated tests.
 - `clients` and `paneMode` remain explicit null capabilities.
@@ -353,8 +355,9 @@ identity work.
   user-visible availability, and documentation.
 - Compatibility audit: Herdr remains behind `Multiplexer`; shared wire shapes widen only through the
   source ID tuple; no persistence migration or second source of truth is introduced.
-- Reconciliation audit: current spawn contracts required the namespace-scrubbing attach wrapper, and
-  target-liveness semantics required narrowing server auto-start to workspace creation. Both
+- Reconciliation audit: current spawn contracts required the namespace-scrubbing attach wrapper,
+  target-liveness semantics required narrowing server auto-start to workspace creation, and terminal
+  launch correctness required carrying `spec.cwd` into workspace creation and any side split. These
   corrections are owned here and are reflected in the root plan and phased index.
 - Final audit: the approved socket architecture, default-session scope, new-client focus fallback,
   validation bar, and explicit exclusions are all represented in implementation steps and exit

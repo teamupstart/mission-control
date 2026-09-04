@@ -164,6 +164,7 @@
       <li>Only workspace creation may start a stopped server. Reads and existing-target mutations do not create background state.</li>
       <li>Status JSON and narrow response schemas gate compatibility. Mission Control never replaces an incompatible server.</li>
       <li>The full client is launched through an argv wrapper that removes every Herdr namespace selector before executing the resolved binary.</li>
+      <li>Workspace creation and any optional side split receive the exact requested worktree cwd rather than inheriting Herdr's default directory.</li>
       <li>Named servers, client-tty inference, unpublished pane focus, direct takeover, persistence, and a second registry remain out of scope.</li>
     </ul>
   </section>
@@ -266,7 +267,7 @@
     <ul>
       <li>No vendor branch exists outside the adapter and every widened enum parses and renders consistently.</li>
       <li>Missing Herdr costs no subprocess; discovery and existing-target operations never start a stopped server.</li>
-      <li>Background dispatch preserves focus and operator launch requests it.</li>
+      <li>Background dispatch preserves focus, operator launch requests it, and workspace creation carries the exact requested worktree cwd.</li>
       <li>Repeated Focus may open another normal client but never evicts an attachment.</li>
       <li>Named Herdr sessions remain out of scope and automated tests launch no real agent or server.</li>
     </ul>

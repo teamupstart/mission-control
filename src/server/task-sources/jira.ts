@@ -106,12 +106,20 @@ const NO_PATH =
 /** What to say about an empty filter, which is storable but unusable. */
 const NO_JQL = "set a JQL query in this source's settings - an empty filter sweeps nothing";
 
-/** The exact skill and deferred MCP tool observed in a working Upstart Jira query. */
+/** The exact skill and compatible read-only JQL registrations shipped by Upstart extensions. */
 export const UPSTARTCLAW_JIRA_SKILL = "upstartclaw-core:working-with-jira";
-export const UPSTARTCLAW_JQL_TOOL =
-  "mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql";
+export const UPSTARTCLAW_JQL_TOOLS = [
+  "mcp__plugin_upstartclaw-core_atlassian__searchJiraIssuesUsingJql",
+  "mcp__atlassian__searchJiraIssuesUsingJql",
+  "mcp__jira__searchJiraIssuesUsingJql",
+  "mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql",
+  "mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql",
+] as const;
+/** The original registration, retained as the default in fixtures and callers. */
+export const UPSTARTCLAW_JQL_TOOL = UPSTARTCLAW_JQL_TOOLS[0];
+const UPSTARTCLAW_JQL_TOOL_SET = new Set<string>(UPSTARTCLAW_JQL_TOOLS);
 const UPSTARTCLAW_CLOUD_ID = "d30daf5c-29ad-4817-bd10-bdd85ae8455f";
-const UPSTARTCLAW_TOOLS = `Skill,ToolSearch,${UPSTARTCLAW_JQL_TOOL}`;
+const UPSTARTCLAW_TOOLS = ["Skill", "ToolSearch", ...UPSTARTCLAW_JQL_TOOLS].join(",");
 
 /** One issue, as much of Jira's JSON as we read. Everything is optional: it is a wire shape. */
 export interface JiraIssue {
@@ -1016,7 +1024,8 @@ export function upstartClawPrompt(cfg: JiraConfig, maxIssues: number): string {
   return [
     "Query Upstart Jira. Mission Control reads the Jira tool results directly, not your summary.",
     `First invoke the ${UPSTARTCLAW_JIRA_SKILL} skill.`,
-    `Then use ToolSearch to load ${UPSTARTCLAW_JQL_TOOL} and call that tool directly.`,
+    "Then use ToolSearch to load one of these approved JQL search registrations and call it directly:",
+    ...UPSTARTCLAW_JQL_TOOLS.map((tool) => `- ${tool}`),
     "Do not use Glean, web search, or any other Jira query. Do not change or augment the JQL.",
     `Use this exact cloudId: ${JSON.stringify(UPSTARTCLAW_CLOUD_ID)}`,
     `Run this exact JQL string: ${JSON.stringify(cfg.jql)}`,
@@ -1083,9 +1092,24 @@ export function walkFromUpstartClawTrace(
   cfg: JiraConfig,
   maxIssues: number,
 ): JiraWalk {
-  const calls = trace.toolCalls.filter((call) => call.name === UPSTARTCLAW_JQL_TOOL);
+  const jqlCalls = trace.toolCalls.filter((call) =>
+    call.name.endsWith("__searchJiraIssuesUsingJql")
+  );
+  const unsupported = jqlCalls.find((call) => !UPSTARTCLAW_JQL_TOOL_SET.has(call.name));
+  if (unsupported) {
+    return upstartClawFailure(
+      `UpstartClaw used an unsupported Atlassian JQL registration: ${unsupported.name}`,
+    );
+  }
+  const calls = jqlCalls.filter((call) => UPSTARTCLAW_JQL_TOOL_SET.has(call.name));
   if (calls.length === 0) {
     return upstartClawFailure("UpstartClaw did not call its Atlassian JQL search tool");
+  }
+  const selectedTool = calls[0]!.name;
+  if (calls.some((call) => call.name !== selectedTool)) {
+    return upstartClawFailure(
+      "UpstartClaw changed Atlassian JQL registrations while paginating",
+    );
   }
 
   const collected: JiraIssue[] = [];

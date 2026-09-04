@@ -1084,7 +1084,7 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
       "readiness_json",
       row.readiness_json ?? null,
       WorkflowEvidenceReadinessResultSchema,
-      WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes,
+      WORKFLOW_EVIDENCE_COVERAGE_LIMITS.readinessJsonBytes,
     ),
     prHeadSha: row.pr_head_sha,
     status: row.status,

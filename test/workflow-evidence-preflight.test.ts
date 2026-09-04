@@ -415,16 +415,10 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
   assert.equal(h.store.getRun(second.value.run.id)?.status, "running");
   assert.equal(h.store.listAttempts(second.value.submission.id).length, 0);
 
-  const overridden = h.manager.overrideEvidenceReadiness(
-    second.value.run.id,
-    second.value.submission.id,
-    "override-request",
-    "The operator accepts the missing rendered output for this run.",
-    true,
-  );
-  assert.equal(overridden.ok, true);
-  if (overridden.ok) assert.equal(overridden.idempotent, true);
-  assert.equal(activationCalls, 2, "idempotent replay must re-drive interrupted activation");
+  h.manager.stop();
+  h.manager.start();
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  assert.equal(activationCalls, 2, "startup recovery must re-drive interrupted override activation");
   await waitFor(
     () => h.store.getRun(second.value.run.id)?.status === "completed",
     "overridden submission did not activate",

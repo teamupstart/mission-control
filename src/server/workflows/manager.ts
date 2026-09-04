@@ -54,6 +54,7 @@ import type {
   WorkflowStatus,
   TestEvidenceAuditAggregate,
   WorkflowSubmission,
+  WorkflowSubmissionReadinessOverride,
   WorkflowSummary,
   WorkflowValidationResult,
   WorkflowVersion,
@@ -2098,16 +2099,32 @@ export class WorkflowManager {
     // The override row commits before graph activation. A retry while the durable handoff is
     // still in `activating` repairs an interruption, but a later replay must preserve whatever
     // state Persona or Session action processing has reached.
+    this.activateEvidenceReadinessOverride(
+      runId,
+      submissionId,
+      binding,
+      recorded.override,
+      now,
+    );
+    return recorded;
+  }
+
+  private activateEvidenceReadinessOverride(
+    runId: string,
+    submissionId: string,
+    binding: WorkflowBinding | null,
+    override: WorkflowSubmissionReadinessOverride,
+    now: number,
+  ): void {
     this.store.appendEvent(runId, "evidence_readiness_overridden", {
       submissionId,
-      requestId,
-      reason: recorded.override.reason,
-      acknowledgedRisk: recorded.override.acknowledgedRisk,
-    }, now, `evidence-readiness-override:${recorded.override.id}`);
+      requestId: override.requestId,
+      reason: override.reason,
+      acknowledgedRisk: override.acknowledgedRisk,
+    }, now, `evidence-readiness-override:${override.id}`);
     this.engine.activateSubmission(submissionId);
     this.publishRun(runId);
     if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
-    return recorded;
   }
 
   reattach(
@@ -6476,7 +6493,9 @@ export class WorkflowManager {
    * The order of the gates below is deliberate: every free in-memory question is asked before
    * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
    * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
-   * capturing child because its reservation commits before capture begins.
+   * capturing child because its reservation commits before capture begins. An overridden
+   * submission left in the durable `activating` handoff is also eligible because the override
+   * commits before graph activation.
    */
   async sweepResumptions(now = Date.now()): Promise<void> {
     if (this.resumptionRunning) return;
@@ -6484,7 +6503,11 @@ export class WorkflowManager {
     try {
       const sessions = this.registry.snapshot().sessions;
       for (const run of this.store.listRuns()) {
-        if (run.status === "waiting_for_evidence_readiness" || run.status === "capturing") {
+        if (
+          run.status === "waiting_for_evidence_readiness"
+          || run.status === "capturing"
+          || (run.status === "running" && run.currentPhase === "activating")
+        ) {
           try {
             await this.resumeEvidenceReadiness(run.id, now);
           } catch (error) {
@@ -6519,6 +6542,18 @@ export class WorkflowManager {
     const latest = run ? this.store.latestSubmission(run.id) : null;
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     if (!run || !latest || !binding || binding.state !== "active") return;
+    if (
+      run.status === "running"
+      && run.currentPhase === "activating"
+      && latest.status === "running"
+      && latest.readiness?.status === "overridden"
+    ) {
+      const override = this.store.listReadinessOverrides(run.id)
+        .findLast((candidate) => candidate.submissionId === latest.id);
+      if (!override) return;
+      this.activateEvidenceReadinessOverride(run.id, latest.id, binding, override, now);
+      return;
+    }
     // A capture lock is the live owner for this conversation. It is acquired synchronously
     // before capture yields, and disappears with the process, so skipping it prevents a sweep
     // from joining live work without weakening restart recovery for an orphaned reservation.

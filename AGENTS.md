@@ -103,11 +103,11 @@ MISSION_TEST_CONCURRENCY=8 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI defines four jobs and reports twenty-six checks. Two `dependencies` checks use GitHub-hosted
+CI defines four jobs and reports thirty checks. Two `dependencies` checks use GitHub-hosted
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26;
 `gates` (typecheck and lint) restores the Node.js 24 tree; `unit (node 24)` and `unit (node 26)`
 (tests, build, and bundle smoke) use the `frontend-platform` 8-core runner with eight workers
-across four shards each; and fifteen `e2e` shards (the Playwright suite, on Node.js 24 only) use
+across six shards each; and fifteen `e2e` shards (the Playwright suite, on Node.js 24 only) use
 the same group's 4-core runner with four workers each. The separate
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns

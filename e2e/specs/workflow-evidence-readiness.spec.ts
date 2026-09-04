@@ -137,9 +137,9 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
       session!.cwd,
       "node --test integration.test.ts",
       secondaryContent,
-      0,
-      "integration.test.ts",
-      "Secondary command passed",
+      null,
+      "legacy-command-output.txt",
+      "Legacy command evidence remains readable",
       Buffer.byteLength(secondaryContent),
       createHash("sha256").update(secondaryContent).digest("hex"),
       now,
@@ -177,11 +177,18 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
   await expectContentClearsBorder(dialog);
   const composer = dialog.getByRole("region", { name: "Workflow evidence" });
   await expect(composer).toContainText("focused.test.ts");
+  await expect(composer).toContainText("legacy-command-output.txt");
+  await expect(composer).not.toContainText("Registered evidence is unavailable");
   await expect(composer).toContainText("1 saved");
   const focusedClaim = composer.locator(".workflow-coverage-claim")
     .filter({ hasText: "The focused behavior remains correct" });
   await focusedClaim.getByRole("button", { name: "Edit" }).click();
   await expect(composer).toContainText("A screenshot is not requested.");
+  const executionEvidence = composer.getByLabel("Execution evidence for acceptance criterion");
+  await executionEvidence.selectOption("execution:secondary-command");
+  await expect(executionEvidence).toHaveValue("execution:secondary-command");
+  await capture(dashboard, "01-legacy-command-evidence-visible");
+  await executionEvidence.selectOption("execution:focused-command");
   const focusedUpdate = dashboard.waitForResponse((response) =>
     response.request().method() === "POST"
     && /\/api\/(?:workflow-bindings\/[^/]+\/evidence|sessions\/[^/]+\/workflow-evidence)\/coverage$/
@@ -197,7 +204,6 @@ test("criterion coverage stays advisory while its frozen readiness remains inspe
     { clientItemId: "secondary-command", role: "execution" },
     { clientItemId: "focused-command", role: "state_snapshot" },
   ]);
-  await capture(dashboard, "01-focused-execution-no-screenshot");
 
   await composer.getByPlaceholder("What must be true for this work to be accepted?")
     .fill("The dashboard result is visually correct");

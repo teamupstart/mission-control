@@ -28,7 +28,7 @@ import { api } from "../lib/api.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
-import { EffortPicker } from "./EffortPicker.tsx";
+import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
@@ -1909,12 +1909,11 @@ export function RuntimeMetaRow({
         ) : (
           <Tooltip label={`Reasoning effort: ${meta.thinkingLevel}`}>
             <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}>
-              <span className="rt-think-glyph" aria-hidden>
-                ✦
-              </span>
-              {/* Wrapped for the same reason as the picker's own level, and identically, so
-                  the two spellings of this pill stay substitutable. */}
-              <span className="rt-think-word">{meta.thinkingLevel}</span>
+              {/* `EffortReading` owns what an effort pill prints, including the level's own
+                  element - which the console header's ladder sheds while keeping the mark. It
+                  is imported rather than restated so this static spelling and the picker's
+                  cannot drift, which they did once. */}
+              <EffortReading level={meta.thinkingLevel!} />
             </span>
           </Tooltip>
         ))}

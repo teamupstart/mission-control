@@ -14,6 +14,13 @@ One engine is supported today, [ai-conductor](#ai-conductor), and the integratio
 a provider axis (`PIPELINE_PROVIDER_IDS` in [`src/shared/pipeline.ts`](../src/shared/pipeline.ts))
 so a second one is an append rather than a rewrite.
 
+The Pipelines tab reads a commissioned feature as one lifecycle across the specification
+handoff. Before implementation exists, the reader shows Engineer attempts and the specification
+handoff. Once the provider reports the implementation run, the same reader adds its step ladder,
+gate verdicts and control verbs while retaining the Engineer evidence in collapsed disclosures.
+Selecting either the planning commission or the implementation run resolves the other record when
+it exists, and both the handoff and the planning rail can open the directly addressed run.
+
 ## What it will and will not do
 
 Three rules, and each of them is load-bearing rather than cautious:

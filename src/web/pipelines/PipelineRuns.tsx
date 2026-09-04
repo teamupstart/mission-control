@@ -13,7 +13,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
 import type { PipelineRunAddress } from "../workflows/useWorkflowRoute.ts";
 import { PipelineActions } from "./PipelineActions.tsx";
-import { PipelineRunView } from "./PipelineRunView.tsx";
+import { PipelineFeatureReader } from "./PipelineFeatureReader.tsx";
 import {
   PIPELINE_DAEMON_LABELS,
   PIPELINE_GROUP_LABELS,
@@ -24,9 +24,24 @@ import {
   pipelineRunLine,
   pipelineCommissionLine,
 } from "./pipeline-run-model.ts";
-import { PipelinePhaseMeter } from "./PipelinePhaseMeter.tsx";
 import { usePipelineRepos } from "./usePipelineRepos.ts";
 import { usePipelineRunDetail } from "./usePipelineRunDetail.ts";
+
+/** Resolve either provider record through the same exact run key used by session views. */
+type PipelineRunIdentity = Pick<PipelineRun, "provider" | "repoRoot" | "slug">;
+
+function featureRecordForRun<T>(
+  records: readonly T[],
+  runOf: (record: T) => PipelineRunIdentity | null | undefined,
+  target: PipelineRunIdentity | null | undefined,
+): T | null {
+  if (!target) return null;
+  const key = pipelineRunKeyOf(target);
+  return records.find((record) => {
+    const candidate = runOf(record);
+    return candidate !== null && candidate !== undefined && pipelineRunKeyOf(candidate) === key;
+  }) ?? null;
+}
 
 /**
  * The Pipelines surface: a rail of what an external engine is driving, and one run in full.
@@ -74,25 +89,25 @@ export function PipelineRuns({
     commissions.find((entry) => entry.id === selectedCommissionId) ??
     (selected === null && !run ? commissions[0] ?? null : null);
   const linkedCommissionRun = commission?.linkedRun ?? null;
-  const commissionRun =
-    linkedCommissionRun
-      ? (runs.find(
-          (candidate) => pipelineRunKeyOf(candidate) === pipelineRunKeyOf(linkedCommissionRun),
-        ) ?? null)
-      : null;
+  const commissionRun = featureRecordForRun(runs, (candidate) => candidate, linkedCommissionRun);
+  // The two provider records describe one feature on opposite sides of specification handoff.
+  // Resolve both directions so selection changes address, not which evidence the reader hides.
+  const activeRun = run ?? commissionRun;
+  const activeCommission =
+    commission ?? featureRecordForRun(commissions, (entry) => entry.linkedRun, activeRun);
   const detail = usePipelineRunDetail(
-    run?.provider ?? null,
-    run?.repoRoot ?? null,
-    run?.slug ?? null,
-    run?.updatedAt ?? 0,
+    activeRun?.provider ?? null,
+    activeRun?.repoRoot ?? null,
+    activeRun?.slug ?? null,
+    activeRun?.updatedAt ?? 0,
   );
   // The daemon verbs on offer follow the daemon this run's own repository reports, which is
   // the rail's chip: three of the four are no-ops at any moment, and offering the one that
   // does nothing is what teaches an operator to stop trusting the row. `unknown` when the
   // rail has not answered yet, which offers both ends rather than guessing.
   const daemon =
-    run && repos
-      ? (repos.find((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === pipelineRepoKey(run.provider, run.repoRoot))
+    activeRun && repos
+      ? (repos.find((repo) => pipelineRepoKey(repo.provider, repo.repoRoot) === pipelineRepoKey(activeRun.provider, activeRun.repoRoot))
           ?.daemon ?? "unknown")
       : "unknown";
   // A FINISHED feature offers no feature verbs, by the same rule: the engine would accept a
@@ -106,25 +121,25 @@ export function PipelineRuns({
   // its verbs from, so the two surfaces cannot come to different conclusions about when a
   // DECIDE re-entry is a thing to offer.
   const runVerbs: PipelineAction[] =
-    !run || run.group === "processed"
+    !activeRun || activeRun.group === "processed"
       ? []
       : [
-          run.group === "parked" ? "unpark" : "park",
-          ...(pipelineGrantAllowed(run.halt) ? (["grant"] as const) : []),
+          activeRun.group === "parked" ? "unpark" : "park",
+          ...(pipelineGrantAllowed(activeRun.halt) ? (["grant"] as const) : []),
         ];
-  const runActions: PipelineAction[] = run
+  const runActions: PipelineAction[] = activeRun
     ? [...PIPELINE_DAEMON_ACTIONS[daemon], ...runVerbs]
     : [];
   // The reseal ceremony is offered where it applies rather than always: it is the way out of
   // one halt class, and a permanent button for breaking a seal invites breaking one.
   const runConsoles: PipelineConsole[] =
-    run?.halt?.class === "protected-artifact" ? ["daemon", "reseal"] : ["daemon"];
+    activeRun?.halt?.class === "protected-artifact" ? ["daemon", "reseal"] : ["daemon"];
 
   // Through the shared helper rather than joined here: a repository root and a slug
   // concatenated with nothing between them are ambiguous, so `("/repo/foo", "1-fix")` and
   // `("/repo/foo1", "-fix")` would produce one key - two different runs sharing one React key
   // and one "active" mark.
-  const activeKey = run ? pipelineRunKeyOf(run) : null;
+  const activeKey = activeRun ? pipelineRunKeyOf(activeRun) : null;
 
   return (
     <section className="pipelines">
@@ -136,27 +151,37 @@ export function PipelineRuns({
               <small>{commissions.length} commissioned</small>
             </header>
             {commissions.map((entry) => {
-              const linked = entry.linkedRun
-                ? (runs.find((candidate) => pipelineRunKeyOf(candidate) === pipelineRunKeyOf(entry.linkedRun!)) ?? null)
-                : null;
+              const linked = featureRecordForRun(runs, (candidate) => candidate, entry.linkedRun);
+              const label = entry.handoff?.planSlug ?? `commission ${entry.id.slice(0, 8)}`;
               return (
-                <Tooltip
-                  key={entry.id}
-                  label={`Open ${entry.handoff?.planSlug ?? `commission ${entry.id.slice(0, 8)}`}`}
-                >
-                  <button
-                    type="button"
-                    className={`pipelines-row${entry.id === commission?.id ? " active" : ""}`}
-                    aria-current={entry.id === commission?.id}
-                    onClick={() => onSelectCommission(entry.id)}
-                  >
-                    <span className="pipelines-row-head">
-                      <strong>{entry.handoff?.planSlug ?? `Commission ${entry.id.slice(0, 8)}`}</strong>
-                      {entry.tier && <span className="pipelines-row-tier">{entry.tier}</span>}
-                    </span>
-                    <span className="pipelines-row-line">{pipelineCommissionLine(entry, linked)}</span>
-                  </button>
-                </Tooltip>
+                <div className="pipelines-row-pair" key={entry.id}>
+                  <Tooltip label={`Open ${label}`}>
+                    <button
+                      type="button"
+                      className={`pipelines-row${entry.id === activeCommission?.id ? " active" : ""}`}
+                      aria-current={entry.id === activeCommission?.id}
+                      onClick={() => onSelectCommission(entry.id)}
+                    >
+                      <span className="pipelines-row-head">
+                        <strong>{entry.handoff?.planSlug ?? `Commission ${entry.id.slice(0, 8)}`}</strong>
+                        {entry.tier && <span className="pipelines-row-tier">{entry.tier}</span>}
+                      </span>
+                      <span className="pipelines-row-line">{pipelineCommissionLine(entry, linked)}</span>
+                    </button>
+                  </Tooltip>
+                  {linked && (
+                    <Tooltip label={`Open implementation run ${linked.slug}`}>
+                      <button
+                        type="button"
+                        className="pipelines-row-run"
+                        aria-label={`Open implementation run ${linked.slug}`}
+                        onClick={() => onSelect(linked)}
+                      >
+                        <span aria-hidden>↗</span>
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -236,65 +261,20 @@ export function PipelineRuns({
         ))}
       </aside>
       <div className="pipelines-reader">
-        {commission ? (
-          <section className="pipeline-run" aria-label="Pipeline commission detail">
-            <header className="pipeline-run-head">
-              <div>
-                <span className="workflow-eyebrow">Pipeline commission</span>
-                <h2>{commission.handoff?.planSlug ?? "Engineer planning"}</h2>
-                <p>{pipelineCommissionLine(commission, commissionRun)}</p>
-              </div>
-            </header>
-            <PipelinePhaseMeter run={commissionRun} commission={commission} />
-            <section className="pipelines-section" aria-label="Engineer attempts">
-              <h4>Engineer attempts</h4>
-              <div className="pipelines-attempt-row">
-                {commission.attempts.map((attempt) => (
-                  <article
-                    className={`pipelines-attempt${attempt.attempt === commission.activeAttempt ? " is-current" : ""}`}
-                    aria-current={attempt.attempt === commission.activeAttempt ? "true" : undefined}
-                    key={attempt.attempt}
-                  >
-                    <span className="pipelines-attempt-name">Attempt {attempt.attempt}</span>
-                    <span className="pipelines-attempt-line">{attempt.state}</span>
-                    <small>{attempt.engineerRunId ?? "run reservation pending"}</small>
-                  </article>
-                ))}
-              </div>
-            </section>
-            {commission.handoff && (
-              <section className="pipelines-section" aria-label="Specification handoff">
-                <h4>Specification handoff</h4>
-                <p>Branch <code>{commission.handoff.branch}</code></p>
-                {commission.handoff.prUrl ? (
-                  <Tooltip label="Open specification pull request">
-                    <a href={commission.handoff.prUrl} target="_blank" rel="noreferrer">Open specification pull request</a>
-                  </Tooltip>
-                ) : (
-                  <p>Local specification commit - no pull request URL was reported.</p>
-                )}
-              </section>
-            )}
-            {commission.linkedRun && (
-              <section className="pipelines-section" aria-label="Implementation run">
-                <h4>Implementation run</h4>
-                <p>{commission.linkedRun.slug}</p>
-              </section>
-            )}
-            {commission.error && <p className="pipelines-repo-error" role="alert">{commission.error}</p>}
-          </section>
-        ) : run ? (
-          <PipelineRunView
-            run={run}
+        {activeRun || activeCommission ? (
+          <PipelineFeatureReader
+            activeRun={activeRun}
+            activeCommission={activeCommission}
             detail={detail}
             actions={
-              <PipelineActions
-                run={run}
+              activeRun ? <PipelineActions
+                run={activeRun}
                 actions={runActions}
                 consoles={runConsoles}
                 onRefresh={refresh}
-              />
+              /> : null
             }
+            onSelectRun={onSelect}
           />
         ) : (
           <div className="workflow-empty">

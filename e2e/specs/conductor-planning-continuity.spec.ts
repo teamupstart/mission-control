@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -162,6 +162,10 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await expect(dashboard.getByText("engineer-card-gap", { exact: true })).toHaveCount(0);
   await expect(dashboard.getByRole("heading", { name: "Engineer planning" })).toBeVisible();
   await expect(dashboard.getByRole("heading", { name: "Engineer attempts" })).toBeVisible();
+  const authoringReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
+  await expect(
+    authoringReader.locator('details[aria-label="Engineer attempts"]'),
+  ).toHaveAttribute("open", "");
 
   appendConductorEngineerEvent(daemon.home, "engineer_run_started");
   appendConductorEngineerEvent(daemon.home, "engineer_step_started", {
@@ -211,6 +215,9 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await expect(
     dashboard.getByRole("link", { name: "Open specification pull request" }),
   ).toHaveAttribute("href", "https://github.com/example/demo/pull/42");
+  await expect(
+    authoringReader.locator('details[aria-label="Specification handoff"]'),
+  ).toHaveAttribute("open", "");
 
   await daemon.crash();
   await daemon.restart();
@@ -242,18 +249,51 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   const pipelineRail = dashboard.locator("aside.pipelines-rail");
   await expect(
     pipelineRail.getByRole("button", { name: /visible-pipeline-continuity/i }),
-  ).toHaveCount(2);
-  await pipelineRail
+  ).toHaveCount(3);
+  const planningRow = pipelineRail
     .locator(".pipelines-repo")
-    .filter({ hasText: "Planning" })
-    .getByRole("button", { name: /visible-pipeline-continuity/i })
-    .click();
+    .filter({ hasText: "Planning" });
+  await planningRow.locator("button.pipelines-row").click();
   const commissionReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
   await expect(commissionReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 13 of 22");
   await expect(
     commissionReader.getByText("Awaiting spec merge", { exact: true }),
   ).toHaveCount(0);
+  const engineerDisclosure = commissionReader.locator('details[aria-label="Engineer attempts"]');
+  const handoffDisclosure = commissionReader.locator(
+    'details[aria-label="Specification handoff"]',
+  );
+  await expect(engineerDisclosure).not.toHaveAttribute("open", "");
+  await expect(handoffDisclosure).not.toHaveAttribute("open", "");
+  await expect(commissionReader.getByRole("heading", { name: "Engineer attempts" })).toBeVisible();
+  await expect(
+    commissionReader.getByRole("group", { name: "Pipeline for visible-pipeline-continuity" }),
+  ).toBeVisible();
+  await expect(commissionReader.getByRole("heading", { name: "Gate verdicts" })).toBeVisible();
+  await expect(commissionReader.getByRole("button", { name: "Park" })).toBeVisible();
+  await expect(
+    commissionReader.getByRole("button", { name: "Open daemon console" }),
+  ).toBeVisible();
   await dashboard.screenshot({ path: join(evidenceDir, "runs-continuation.png") });
+
+  await handoffDisclosure.locator("summary").click();
+  await handoffDisclosure
+    .getByRole("button", { name: "Open implementation run visible-pipeline-continuity" })
+    .click();
+  await expect(dashboard).toHaveURL(/\/#!?\/runs\/pipeline\/.+\/visible-pipeline-continuity$/);
+  const directReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
+  await expect(directReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 13 of 22");
+  await expect(directReader.locator('details[aria-label="Engineer attempts"]')).toBeVisible();
+  await expect(
+    directReader.getByRole("group", { name: "Pipeline for visible-pipeline-continuity" }),
+  ).toBeVisible();
+
+  await planningRow.locator("button.pipelines-row").click();
+  await expect(dashboard).toHaveURL(/\/#\/runs\/pipeline$/);
+  await planningRow
+    .getByRole("button", { name: "Open implementation run visible-pipeline-continuity" })
+    .click();
+  await expect(dashboard).toHaveURL(/\/#!?\/runs\/pipeline\/.+\/visible-pipeline-continuity$/);
 
   const resumedTask = (
     (await (await request(daemon, "/api/tasks")).json()) as Array<{
@@ -368,6 +408,92 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   } finally {
     worker.cleanup();
   }
+});
+
+test("commission disclosures reset to their feature defaults when rail selection changes", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePipelines(daemon);
+
+  const dispatchCommission = async (title: string, planSlug: string): Promise<void> => {
+    const providerState = join(daemon.home, "conductor-engineer-state.json");
+    const previousRunCount = existsSync(providerState)
+      ? readConductorEngineerRuns(daemon.home).length
+      : 0;
+    const response = await request(daemon, "/api/tasks", "POST", {
+      repoRoot: daemon.repo,
+      intent: `Prepare ${planSlug}`,
+      title,
+      kind: "pipeline",
+      agent: "codex",
+      backlog: false,
+      workflowId: null,
+    });
+    expect(response.ok, await response.text()).toBe(true);
+    await expect
+      .poll(async () => {
+        const tasks = (await (await request(daemon, "/api/tasks")).json()) as Array<{
+          title: string;
+          pipelineCommissionId: string | null;
+        }>;
+        return tasks.find((task) => task.title === title)?.pipelineCommissionId ?? null;
+      })
+      .not.toBeNull();
+    await expect
+      .poll(() =>
+        existsSync(providerState) ? readConductorEngineerRuns(daemon.home).length : 0,
+      )
+      .toBe(previousRunCount + 1);
+
+    appendConductorEngineerEvent(daemon.home, "engineer_run_started");
+    appendConductorEngineerEvent(daemon.home, "engineer_land_reconciled", {
+      planSlug,
+      track: "technical",
+      tier: "M",
+      completed: ["architecture_review", "plan"],
+      skipped: ["prd", "coherence_check"],
+    });
+    appendConductorEngineerEvent(daemon.home, "engineer_spec_handoff", {
+      planSlug,
+      branch: `plan/${planSlug}`,
+      prUrl: `https://github.com/example/demo/pull/${planSlug === "disclosure-alpha" ? 51 : 52}`,
+      outcome: "pr_opened",
+      state: "awaiting_spec_merge",
+    });
+    appendConductorEngineerEvent(daemon.home, "engineer_run_settled", {
+      outcome: "awaiting_spec_merge",
+    });
+  };
+
+  await dispatchCommission("Disclosure alpha", "disclosure-alpha");
+  await dispatchCommission("Disclosure beta", "disclosure-beta");
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Runs", exact: true }).click();
+  await dashboard.getByRole("tab", { name: /Pipelines 2/ }).click();
+
+  const planningRail = dashboard
+    .locator("aside.pipelines-rail .pipelines-repo")
+    .filter({ hasText: "Planning" });
+  await planningRail.getByRole("button", { name: /disclosure-alpha/i }).click();
+  const reader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
+  const engineerDisclosure = reader.locator('details[aria-label="Engineer attempts"]');
+  const handoffDisclosure = reader.locator('details[aria-label="Specification handoff"]');
+  await expect(engineerDisclosure).toHaveAttribute("open", "");
+  await expect(handoffDisclosure).toHaveAttribute("open", "");
+  await engineerDisclosure.locator("summary").click();
+  await handoffDisclosure.locator("summary").click();
+  await expect(engineerDisclosure).not.toHaveAttribute("open", "");
+  await expect(handoffDisclosure).not.toHaveAttribute("open", "");
+
+  await planningRail.getByRole("button", { name: /disclosure-beta/i }).click();
+  await expect(reader.getByRole("heading", { name: "disclosure-beta" })).toBeVisible();
+  await expect(engineerDisclosure).toHaveAttribute("open", "");
+  await expect(handoffDisclosure).toHaveAttribute("open", "");
+
+  const evidenceDir = join("e2e", ".artifacts", "conductor-planning-continuity");
+  mkdirSync(evidenceDir, { recursive: true });
+  await dashboard.screenshot({ path: join(evidenceDir, "disclosure-selection-reset.png") });
 });
 
 test("a recoverable Engineer land refusal is visible everywhere until provider recovery", async ({

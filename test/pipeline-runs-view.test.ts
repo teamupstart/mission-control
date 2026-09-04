@@ -8,6 +8,7 @@ import {
   ENGINEER_STEP_NAMES,
   PIPELINE_RUN_GROUPS,
   PIPELINE_STEPS,
+  pipelineRepoKey,
   pipelineRunKeyOf,
   type PipelineCommission,
   type PipelineGateVerdict,
@@ -161,6 +162,69 @@ test("a commission reader continues its meter from the observed implementation r
 
   assert.match(html, /class="tpm-now workflow-running">BUILD · Build · step 2 of 3</);
   assert.doesNotMatch(html, />Awaiting spec merge</);
+});
+
+test("a linked feature composes commission and run evidence from either selection", () => {
+  const implementation = run({
+    steps: [
+      { name: "worktree", state: "done" },
+      { name: "build", state: "in_progress" },
+      { name: "finish", state: "pending" },
+    ],
+    lastStep: "build",
+  });
+  const render = (selectedCommissionId: string | null, selected: {
+    repoKey: string;
+    slug: string;
+  } | null) => renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [implementation],
+    commissions: [commission()],
+    selectedCommissionId,
+    onSelectCommission: () => undefined,
+    selected,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  for (const html of [
+    render("commission-1", null),
+    render(null, {
+      repoKey: pipelineRepoKey(implementation.provider, implementation.repoRoot),
+      slug: implementation.slug,
+    }),
+  ]) {
+    assert.match(html, /aria-label="Engineer attempts"/);
+    assert.match(html, /aria-label="Specification handoff"/);
+    assert.match(html, /aria-label="Pipeline for add-widgets"/);
+    assert.match(html, /aria-label="Gate verdicts"/);
+    assert.match(html, />Park</);
+  }
+});
+
+test("commission disclosures stay reachable but collapse after implementation begins", () => {
+  const beforeHandoff = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [],
+    commissions: [commission({ handoff: null, linkedRun: null })],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.match(beforeHandoff, /<details[^>]*open=""[^>]*aria-label="Engineer attempts"/);
+
+  const afterHandoff = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [run()],
+    commissions: [commission()],
+    selectedCommissionId: "commission-1",
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.match(afterHandoff, /<details[^>]*aria-label="Engineer attempts"/);
+  assert.doesNotMatch(afterHandoff, /<details[^>]*open=""[^>]*aria-label="Engineer attempts"/);
+  assert.match(afterHandoff, /<button[^>]*>Open implementation run/);
 });
 
 test("a synthetic commission run retains unknown provider steps after the canonical sequence", () => {
@@ -707,7 +771,7 @@ test("the header reserves its action slot without drawing a dead control", () =>
 test("attempt cards appear only once a run has been round more than once", () => {
   assert.equal(/pipelines-attempts/.test(markup()), false);
   const kicked = markup({}, [verdict({ step: "plan", kickbackFrom: "build_review" })]);
-  assert.match(kicked, /aria-label="Attempts"/);
+  assert.match(kicked, /aria-label="Kickback attempts"/);
   assert.match(kicked, /class="pipelines-attempt is-current"/);
   assert.ok(kicked.includes("Build Review sent it back to Plan"));
 });

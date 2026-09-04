@@ -14117,9 +14117,14 @@ select.ensemble-judge-persona {
   overflow: auto;
   padding: 16px;
 }
+.pipelines-feature {
+  display: grid;
+  gap: 16px;
+}
 /* A grid or flex child's `min-width` is `auto`, so one wide thing - a halt reason, an
    engine's own path - would stretch the whole ancestry and scroll the reader sideways with
    its right edge clipped. The same floor the workflow reader declares. */
+.pipelines-feature > *,
 .pipelines-run > *,
 .pipelines-section > *,
 .pipelines-run-head > * {
@@ -14178,6 +14183,29 @@ select.ensemble-judge-persona {
   padding: 9px 10px;
   text-align: left;
   cursor: pointer;
+}
+.pipelines-row-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 4px;
+}
+.pipelines-row-run {
+  align-self: stretch;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  padding: 0 9px;
+  color: var(--muted);
+  font: 14px var(--mono);
+  cursor: pointer;
+}
+.pipelines-row-run:hover,
+.pipelines-row-run:focus-visible {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--working);
 }
 .pipelines-row:hover,
 .pipelines-row.active {
@@ -14466,6 +14494,61 @@ a.pipelines-chip.is-link:focus-visible {
 .pipelines-attempts > h4,
 .pipelines-section > h4 {
   margin: 0;
+}
+.pipelines-disclosure > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  list-style-position: inside;
+}
+.pipelines-disclosure > summary::before {
+  content: "›";
+  flex: none;
+  color: var(--muted);
+  font: 16px/1 var(--mono);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+.pipelines-disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+.pipelines-disclosure > summary h4 {
+  display: inline;
+  margin: 0;
+}
+.pipelines-disclosure > summary small {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+.pipelines-disclosure > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.pipelines-handoff-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.pipelines-inline-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--working);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.pipelines-inline-link:hover,
+.pipelines-inline-link:focus-visible {
+  color: var(--fg);
 }
 .pipelines-attempt-row {
   display: flex;

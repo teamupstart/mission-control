@@ -1660,10 +1660,16 @@ opens the nearest corresponding view in the
 *Active* counts every run that has not finished - running, waiting and blocked alike - so it
 deliberately carries no status filter: no single run status means "active", and one would
 exclude rows the tile had just counted.
-The rest stay as a plain list beneath it: they are throughput and sweep bookkeeping, and
-rendering them in the same weight as "a repair may or may not have been typed into somebody's
-session" was what made the one counter that needs a human the least findable thing on the
-panel. **Delivered** is the fleet-wide count of deliveries confirmed typed into a session
+The rest sit beneath it, two across: they are throughput and sweep bookkeeping, and rendering
+them in the same weight as "a repair may or may not have been typed into somebody's session"
+was what made the one counter that needs a human the least findable thing on the panel.
+
+The panel is **two columns**: what Workflows is authorized to do on the left - the dispatch
+default, the Live delivery and Command switches, the Trust grant summary, and the route to
+Library › Commands - and everything carrying a live number on the right, led by that strip.
+Run retention is on the right with them, because its three limits are read against the
+measurement beneath them and that measurement belongs beside the health counters. It still
+holds no run list of its own; a tile opens the real one. **Delivered** is the fleet-wide count of deliveries confirmed typed into a session
 among run families retention still keeps. Compaction does not reduce it, because a compacted
 delivery keeps its state and loses only its content. Full run-family deletion does reduce it:
 once a finished family is older than `completedRunDays`, outside the newest

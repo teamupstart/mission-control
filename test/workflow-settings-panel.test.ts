@@ -30,6 +30,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  RETENTION_FIELDS,
   WorkflowSettingsPanel,
   readRetention,
   retentionShortens,
@@ -553,14 +554,138 @@ test("the allowlist card summarises the grant and points at Trust, editing nothi
   assert.doesNotMatch(card[1]!, /Add repository/);
 });
 
-// No run list. The whole reason this panel takes the leaves and the strip but not the
-// two-column split: `WorkflowRuns.tsx` already owns paging, SSE reconciliation and per-run
-// actions, and a second copy here would disagree with it the first time either changed.
+// No run list, which is the claim that survived the panel growing a second column.
+// `WorkflowRuns.tsx` already owns paging, SSE reconciliation and per-run actions, and a
+// second copy here would disagree with it the first time either changed. The panel takes
+// the split to put READINGS in the wide half; what it must never put there is a table.
+//
+// `sc-ledger` is in the prohibition on purpose even though it is only a `min-width` reset:
+// the class is what the console's vocabulary uses to say "a ledger table lives here", so a
+// wide column that adopted it would be claiming exactly the thing this test denies.
 test("the panel grows no ledger of its own", () => {
   const html = render(ANSWERED);
-  assert.doesNotMatch(html, /sc-split/, "a panel with no ledger keeps one column");
-  assert.doesNotMatch(html, /sc-ledger|sc-table|sc-row/, "no run table belongs here");
-  assert.match(html, /sc-solo/);
+  assert.doesNotMatch(html, /sc-ledger|sc-table\b|sc-row\b/, "no run table belongs here");
+  assert.doesNotMatch(html, /sc-pager|sc-when/, "no ledger chrome belongs here either");
+  // The split IS expected now, and the readings column is its own class rather than the
+  // ledger's - see the module comment in `WorkflowSettingsPanel.tsx`.
+  assert.match(html, /class="sc-split"/);
+  assert.match(html, /class="wf-readings"/);
+  assert.doesNotMatch(html, /sc-solo/, "the 760px single-column cap went with the column");
+});
+
+// Which half each anchor lands in. The panel's whole complaint was that its readings were
+// last - 2.55 screens down - so "the strip is above the policy cards" and "retention sits
+// with the counters it is measured against" are the two claims worth pinning, and neither
+// is visible in a list of anchors that happens to be in the right order.
+//
+// Split on the column boundary rather than asserting index order in the whole document:
+// reordering cards WITHIN a column is a free change, and a test that forbade it would fail
+// on edits this one does not care about.
+test("policy sits in the control column and every live reading in the readings column", () => {
+  const html = render(ANSWERED);
+  // Cut on the boundary marker rather than matching each column's closing tag: the columns
+  // are sibling divs full of nested divs, so no regex for "up to the matching close" is
+  // right, and a non-greedy one silently truncates the readings column mid-card - which is
+  // how the first version of this test passed a panel it had only half read.
+  const CONTROLS = '<div class="sc-split"><div class="sc-controls">';
+  const READINGS = '<div class="wf-readings">';
+  assert.ok(html.includes(CONTROLS), "the panel is not drawn as a split with a control column");
+  const boundary = html.indexOf(READINGS);
+  assert.ok(boundary > html.indexOf(CONTROLS), "the readings column is missing or comes first");
+  const controls = html.slice(html.indexOf(CONTROLS) + CONTROLS.length, boundary);
+  const readings = html.slice(boundary + READINGS.length);
+
+  for (const anchor of [
+    "workflows/dispatch-default",
+    "workflows/live-delivery",
+    "workflows/checks",
+    "workflows/allowlist",
+    "workflows/command-catalog",
+  ]) {
+    assert.ok(controls.includes(`data-anchor="${anchor}"`), `${anchor} left the control column`);
+    assert.ok(!readings.includes(`data-anchor="${anchor}"`), `${anchor} is in both columns`);
+  }
+  for (const anchor of [
+    "workflows/health",
+    "workflows/retention",
+    "workflows/test-evidence",
+  ]) {
+    assert.ok(readings.includes(`data-anchor="${anchor}"`), `${anchor} left the readings column`);
+    assert.ok(!controls.includes(`data-anchor="${anchor}"`), `${anchor} is in both columns`);
+  }
+
+  // The strip LEADS that column. It carries the two tiles that can mean "somebody must
+  // look", and it used to be the second-to-last thing on the panel.
+  assert.ok(
+    readings.startsWith('<div class="sc-strip sc-strip-links">'),
+    "the escalation strip is no longer the first thing in the readings column",
+  );
+});
+
+// Six readings, two across. The health card was six full-width rows to report three single
+// digits and two timestamps, and it was the tallest card below the fold.
+test("the health counters are drawn as a grid, not as six full-width rows", () => {
+  const html = render(ANSWERED);
+  const card = /<section class="sc-card" data-anchor="workflows\/health">(.*?)<\/section>/s
+    .exec(html);
+  assert.ok(card, "the health card is missing");
+  assert.match(card[1]!, /class="wf-health-grid"/);
+  assert.equal(
+    (card[1]!.match(/class="sc-health-row"/g) ?? []).length,
+    6,
+    "the health card no longer reports its six counters",
+  );
+});
+
+// The three boxes print a short label and keep the full phrase as their accessible name, so
+// the row fits without the settings search and a screen reader losing the longer wording -
+// and `readRetention`'s refusal keeps naming the field in those same full words.
+// WCAG 2.5.3, Label in Name: what a retention box PRINTS must be contained in what assistive
+// tech announces for it, or a voice-control user who reads the label cannot speak it to reach
+// the field.
+//
+// This is a regression test for a real break, not a hypothetical. An earlier cut of this row
+// printed a short label and overrode the accessible name with a longer phrase - "Run history"
+// against "Completed run days", which share no substring, and "Newest kept" against "Newest
+// completed runs kept", where the printed words are not contiguous. The fix was to stop
+// diverging them at all rather than to hunt for short strings that happen to be substrings,
+// so the assertion is the strong one: printed text and accessible name are the SAME string.
+//
+// Asserted structurally rather than per field, so a fourth retention limit cannot be added
+// with a divergent label and still pass.
+test("every retention box announces exactly the words it prints", () => {
+  const html = render(ANSWERED);
+  const row = /<div class="wf-retention-inline">(.*?)<\/div>/s.exec(html);
+  assert.ok(row, "the retention boxes are not drawn on one row");
+
+  // No `aria-label` anywhere on the row: the wrapping `<label>`'s own text is the accessible
+  // name, which is what makes the two impossible to disagree.
+  assert.doesNotMatch(
+    row[1]!,
+    /<input[^>]*aria-label=/,
+    "a retention input overrides its accessible name, which is how Label in Name breaks",
+  );
+
+  const printed = [...row[1]!.matchAll(/<label[^>]*><span>([^<]+)<\/span>/g)].map((m) => m[1]!);
+  assert.equal(printed.length, 3, "the three retention labels are not printed beside the boxes");
+  for (const field of RETENTION_FIELDS) {
+    assert.ok(
+      printed.includes(field.label),
+      `${field.label} is not printed as its own label`,
+    );
+  }
+
+  // Apply is on the row with them, not in a wrapper below it.
+  assert.match(row[1]!, /<button class="btn"[^>]*>Apply<\/button>/);
+
+  // The refusal names the field in those same words, so a rejected value points at a label
+  // the operator can actually see.
+  const refused = readRetention({
+    rawEvidenceDays: "0",
+    completedRunDays: "180",
+    maxCompletedRuns: "1000",
+  });
+  assert.ok(!refused.ok && refused.error.startsWith("Raw evidence days"));
 });
 
 test("a write refused by the daemon is reported, not swallowed", () => {

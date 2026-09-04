@@ -42,13 +42,44 @@ const COMMANDS_LIBRARY_HASH = missionRouteHash({ page: "library", shelf: "comman
 // one switch you could not find by searching for it. Same routes, same config blob, same
 // consent copy; what changed is that it is now where every other subsystem's settings are.
 //
-// It is drawn with the settings console's leaves (`settings-console.tsx`) and takes exactly
-// two of that shape's three pieces. It has NO ledger, and therefore no two-column split:
-// `WorkflowRuns.tsx` is already the run list - cursor paging, SSE reconciliation, per-run
-// actions, status chips - and the Workflows page header already links here. A run table in
-// this panel would be a second, worse copy of that one, in a third CSS vocabulary, and the
-// two would disagree the first time either changed. Its single column stays a single
-// column, and its strip navigates to the real list instead of filtering a fake one.
+// It is drawn with the settings console's leaves (`settings-console.tsx`). It still has NO
+// LEDGER, and that has not changed: `WorkflowRuns.tsx` is already the run list - cursor
+// paging, SSE reconciliation, per-run actions, status chips - and the Workflows page header
+// already links here. A run table in this panel would be a second, worse copy of that one,
+// in a third CSS vocabulary, and the two would disagree the first time either changed. So
+// the strip navigates to the real list instead of filtering a fake one, and the right column
+// carries no `sc-ledger` / `sc-table` / `sc-row` markup at all.
+//
+// What DID change is the column count. This panel kept one column on the argument that the
+// split is the ledger's shape and a panel without a ledger has nothing to put in the wide
+// half. That was wrong about what it had: it had 2115px of content in an 831px scrollport -
+// 2.55 screens - with its five health tiles and its health counters LAST, below y=1720, and
+// 640px of unused width beside them the whole way down. A wide half is earned by anything
+// worth reading at width, and readings are that; the thing it must not be filled with is a
+// duplicate of a list another surface owns.
+//
+// So the two halves are split by how often what is in them CHANGES:
+//
+//   - Left, `.sc-controls`: set-once authorization. The dispatch default, the two switches
+//     that act outside this panel, the Trust grant summary, and where Commands are authored.
+//   - Right, `.wf-readings`: everything carrying a live number - the escalation strip, the
+//     health counters, and the Test Evidence Auditor's rates.
+//
+// Run retention sits in the RIGHT column, which reads as a control in a readings column
+// until you look at what it is measured against. Its three limits are meaningless without
+// the readout under them ("31 of 1000 finished runs ranked by this limit", what the last
+// sweep removed) - that readout exists precisely because the panel used to set three limits
+// and show no measurement of the thing being limited - and that readout belongs beside the
+// health counters, not two screens away from them. Placement was measured, not assumed:
+// retention on the left gives 1411px with 487px of dead space under the readings, retention
+// on the right gives 1170px with the two columns ending 65px apart.
+//
+// The two Trust-grant cards stay SEPARATE, and a future tidy-up must not merge them.
+// `workflows/allowlist` and `workflows/command-catalog` are each a row in
+// `settings-search.ts` with its own keywords, and `settings-sidebar-render.test.ts` requires
+// every anchor to be unique and present - so one card cannot carry both, and merging them
+// retires whichever one loses. An operator searching "check commands" for a table this panel
+// no longer has is exactly who the second row exists for.
 //
 // The two confirmations go through the overlay registry (`WorkflowConfirmModal`) rather
 // than `window.confirm`, for that component's own reason: a native dialog is invisible to
@@ -73,8 +104,12 @@ function draftOf(config: WorkflowConfig): RetentionDraft {
  * The ranges the daemon's own schema enforces, restated here so the panel refuses locally
  * with a sentence instead of bouncing off a 400. Kept as one table because the number in
  * the message and the number in the `min`/`max` attributes have to be the same number.
+ *
+ * Exported so the Label-in-Name test can assert over the TABLE rather than over three
+ * hardcoded strings: a fourth retention limit added with a divergent label then fails that
+ * test instead of slipping past a list nobody remembered to extend.
  */
-const RETENTION_FIELDS = [
+export const RETENTION_FIELDS = [
   {
     key: "rawEvidenceDays",
     label: "Raw evidence days",
@@ -98,6 +133,19 @@ const RETENTION_FIELDS = [
   },
 ] as const satisfies readonly {
   key: keyof RetentionDraft;
+  /**
+   * ONE phrase per field: what is printed beside the box, what assistive tech announces,
+   * and the subject of the out-of-range message.
+   *
+   * It is deliberately not split into a short visible label and a longer accessible name.
+   * That split shipped briefly and broke WCAG 2.5.3 (Label in Name) for two of these three
+   * fields: "Run history" is not a substring of "Completed run days" at all, and "Newest
+   * kept" is not contiguous inside "Newest completed runs kept", so anyone reading the
+   * printed text and speaking it to voice control - or hearing one name while their
+   * neighbour reads another - could not reach the input. It bought nothing either: the three
+   * full phrases measure 100, 106 and 151px, so the row needs 455px and has 588 to 708px at
+   * every width where it stays one line, and wraps below that as any flex row does.
+   */
   label: string;
   hint: string;
   min: number;
@@ -390,7 +438,7 @@ export function WorkflowSettingsPanel({
   };
 
   return (
-    <section className="settings-section sc-section sc-solo">
+    <section className="settings-section sc-section wf-settings">
       <p className="settings-hint sc-lede">
         Review workflows run Personas over a session's submitted work and route their
         verdicts back to it. What is configured here is the subsystem <em>policy</em>: whether
@@ -410,7 +458,9 @@ export function WorkflowSettingsPanel({
         </p>
       )}
 
-      <div className="sc-controls">
+      {/* Left half: what Workflows is AUTHORIZED to do. Set once and then left alone. */}
+      <div className="sc-split">
+        <div className="sc-controls">
         <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
           <p className="settings-hint">
             Arm every new single-agent dispatch with a published Workflow. The dispatch form
@@ -586,13 +636,97 @@ export function WorkflowSettingsPanel({
             </Tooltip>
           </p>
         </ConsoleCard>
+        </div>
 
-        <ConsoleCard title="Run retention" anchor="workflows/retention">
+        {/* Right half: everything carrying a live number. The strip leads it, because the
+            two tiles that can mean "somebody must look" are the reason this panel is opened
+            after a run goes wrong, and they used to be the last thing on it.
+
+            NOT `sc-ledger`: that class says a ledger table lives here, and this panel still
+            has no run list. See the module comment. */}
+        <div className="wf-readings">
+          {status && (
+            <ConsoleLinkStrip
+              stats={workflowStripLinks(status)}
+              // Withheld rather than stubbed when nothing is listening, so the tiles fall
+              // back to being plain links the browser follows instead of dead ones.
+              onOpen={onOpenRuns ? openTile : undefined}
+            />
+          )}
+
+          <ConsoleCard title="Workflow health" anchor="workflows/health">
+            <p className="settings-hint">
+              Counters only, refreshed while this panel is open. No prompt, diff, transcript,
+              Persona guidance, model output or delivery payload passes through here.
+            </p>
+            {status ? (
+              /* Two across, not six full-width rows. Three of these readings are single
+                 digits and two are timestamps; a row spanning the whole column to say "0"
+                 is what made this card the tallest thing below the fold. */
+              <div className="wf-health-grid">
+                <p className="sc-health-row">
+                  <span>Retained runs</span>
+                  <span className="sc-health-value">{status.retainedRunCount}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Queued Persona calls</span>
+                  <span className="sc-health-value">{status.queuedPersonaCalls}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Running Persona calls</span>
+                  <span className="sc-health-value">{status.runningPersonaCalls}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last sweep error</span>
+                  <span
+                    className={`sc-health-value${status.lastRetentionError ? " sc-health-bad" : ""}`}
+                  >
+                    {status.lastRetentionError ?? "None"}
+                  </span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last recovery</span>
+                  <span className="sc-health-value">
+                    {status.lastRecoveryAt
+                      ? new Date(status.lastRecoveryAt).toLocaleString()
+                      : "Not yet run"}
+                  </span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last retention sweep</span>
+                  <span className="sc-health-value">
+                    {status.lastRetentionAt
+                      ? new Date(status.lastRetentionAt).toLocaleString()
+                      : "Not yet run"}
+                  </span>
+                </p>
+              </div>
+            ) : (
+              // "has not answered", not "has not answered YET": a null status is the pre-poll
+              // instant AND a daemon that has stopped answering, and the second is the one
+              // where a still-loading sentence would be read as a delay rather than a gap.
+              <p className="settings-hint wf-settings-empty">
+                Workflow health is unavailable - the daemon has not answered.
+              </p>
+            )}
+          </ConsoleCard>
+
+          <ConsoleCard title="Run retention" anchor="workflows/retention">
           <p className="settings-hint">
             Active, waiting, blocked, failed, orphaned and delivery-uncertain work is never
             age-pruned. Completed and cancelled runs go through the two stages below.
           </p>
-          <div className="wf-settings-retention-grid">
+          {/* One row: three boxes and the Apply that saves them. Stacked, this was 150px to
+              ask three questions whose answers are two to four digits each - and the button
+              needed its own wrapper to stop a `.sc-card-body` flex column stretching it to
+              the panel's width.
+
+              Each box prints its FULL label and takes its accessible name from that same
+              text, through the wrapping `<label>`. No `aria-label` here on purpose: an
+              `aria-label` that differs from the printed words is how this row briefly broke
+              WCAG 2.5.3, and the row does not need the space that bought. See
+              `RETENTION_FIELDS`. */}
+          <div className="wf-retention-inline">
             {RETENTION_FIELDS.map((field) => (
               <Tooltip key={field.key} label={field.hint}>
                 <label>
@@ -611,14 +745,9 @@ export function WorkflowSettingsPanel({
                 </label>
               </Tooltip>
             ))}
-          </div>
-          {/* Sized to its label. A `.sc-card-body` is a flex column, so a bare button
-              stretches the full width of the card and reads as the panel's primary action
-              rather than as this card's Save. */}
-          <div className="wf-settings-apply">
             <Tooltip label="Save these retention limits - shortening one asks first">
               <button className="btn" disabled={!config || busy} onClick={applyRetention}>
-                Apply retention
+                Apply
               </button>
             </Tooltip>
           </div>
@@ -660,82 +789,12 @@ export function WorkflowSettingsPanel({
           </p>
         </ConsoleCard>
 
-        {/* Sits with the health card rather than with the policy switches above, because it
-            is a READING and not a setting: nothing in it can be changed from here. It is
-            above the health group rather than inside it because the two answer different
-            questions - health is "is the subsystem working", this is "is the evidence
-            contract working" - and the second is the one an operator opens this panel to ask
-            after a run was rejected. */}
-        <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
-
-        {/* The strip sits ABOVE the health card rather than inside it: it is the escalation
-            summary, and the card under it is the residue - throughput and sweep bookkeeping
-            that never means "somebody must look". Grouped with it, and more tightly than the
-            column's own rhythm, so the tiles read as that card's headline rather than as
-            something floating between two cards. */}
-        <div className="wf-settings-health-group">
-          {status && (
-            <ConsoleLinkStrip
-              stats={workflowStripLinks(status)}
-              // Withheld rather than stubbed when nothing is listening, so the tiles fall
-              // back to being plain links the browser follows instead of dead ones.
-              onOpen={onOpenRuns ? openTile : undefined}
-            />
-          )}
-
-          <ConsoleCard title="Workflow health" anchor="workflows/health">
-            <p className="settings-hint">
-              Counters only, refreshed while this panel is open. No prompt, diff, transcript,
-              Persona guidance, model output or delivery payload passes through here.
-            </p>
-            {status ? (
-              <>
-                <p className="sc-health-row">
-                  <span>Retained runs</span>
-                  <span className="sc-health-value">{status.retainedRunCount}</span>
-                </p>
-                <p className="sc-health-row">
-                  <span>Queued Persona calls</span>
-                  <span className="sc-health-value">{status.queuedPersonaCalls}</span>
-                </p>
-                <p className="sc-health-row">
-                  <span>Running Persona calls</span>
-                  <span className="sc-health-value">{status.runningPersonaCalls}</span>
-                </p>
-                <p className="sc-health-row">
-                  <span>Last recovery</span>
-                  <span className="sc-health-value">
-                    {status.lastRecoveryAt
-                      ? new Date(status.lastRecoveryAt).toLocaleString()
-                      : "Not yet run"}
-                  </span>
-                </p>
-                <p className="sc-health-row">
-                  <span>Last retention sweep</span>
-                  <span className="sc-health-value">
-                    {status.lastRetentionAt
-                      ? new Date(status.lastRetentionAt).toLocaleString()
-                      : "Not yet run"}
-                  </span>
-                </p>
-                <p className="sc-health-row">
-                  <span>Last sweep error</span>
-                  <span
-                    className={`sc-health-value${status.lastRetentionError ? " sc-health-bad" : ""}`}
-                  >
-                    {status.lastRetentionError ?? "None"}
-                  </span>
-                </p>
-              </>
-            ) : (
-              // "has not answered", not "has not answered YET": a null status is the pre-poll
-              // instant AND a daemon that has stopped answering, and the second is the one
-              // where a still-loading sentence would be read as a delay rather than a gap.
-              <p className="settings-hint wf-settings-empty">
-                Workflow health is unavailable - the daemon has not answered.
-              </p>
-            )}
-          </ConsoleCard>
+        {/* Beside the health counters, not two screens from them. It is a READING and
+            nothing in it can be changed here; it answers "is the evidence contract working",
+            where the card above answers "is the subsystem working". An operator who has just
+            had a submission rejected opens this panel to ask the first question, so it is in
+            the readings column and last, where the deepest detail belongs. */}
+          <TestEvidenceReadinessCard aggregate={testEvidenceAudit} workflows={workflows} />
         </div>
       </div>
 

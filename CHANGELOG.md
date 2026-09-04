@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.6.0](https://github.com/teamupstart/mission-control/compare/v1.5.0...v1.6.0) (2026-09-04)
+
+
+### Features
+
+* **board:** show workflow stage progress on session cards ([#884](https://github.com/teamupstart/mission-control/issues/884)) ([79030c9](https://github.com/teamupstart/mission-control/commit/79030c957dfaf421908cca99c616d7865b71de64))
+* **conversation:** preview HTML artifacts inline ([#879](https://github.com/teamupstart/mission-control/issues/879)) ([84e09d9](https://github.com/teamupstart/mission-control/commit/84e09d9a7050aae906956576b98d5d17a51d00e0))
+* **pipelines:** preserve workspace evidence ([#872](https://github.com/teamupstart/mission-control/issues/872)) ([87fd495](https://github.com/teamupstart/mission-control/commit/87fd49585c2a706ccc6c03eaa6a3ef622e231850))
+* **pipelines:** unify feature reader across handoff ([#885](https://github.com/teamupstart/mission-control/issues/885)) ([d86a442](https://github.com/teamupstart/mission-control/commit/d86a442d76e9b0531022048c8253a63d532aebc5))
+* **terminals:** add first-class iTerm2 support ([#888](https://github.com/teamupstart/mission-control/issues/888)) ([4ff52da](https://github.com/teamupstart/mission-control/commit/4ff52da3dacbdd4b3d97bbb3811a3f7c7760c8e1))
+* **workflows:** add criterion-mapped evidence readiness ([#887](https://github.com/teamupstart/mission-control/issues/887)) ([7517cac](https://github.com/teamupstart/mission-control/commit/7517caccd3b2c892ade8a492019a7118b6ee40e3))
+* **workflows:** add Slop Filter to No-Mistakes Review ([#883](https://github.com/teamupstart/mission-control/issues/883)) ([a290aa3](https://github.com/teamupstart/mission-control/commit/a290aa33de41775165dbce97821239e0e206bf2b))
+
+
+### Bug Fixes
+
+* **conversation:** collapse the header instead of wrapping it ([#890](https://github.com/teamupstart/mission-control/issues/890)) ([3ac305d](https://github.com/teamupstart/mission-control/commit/3ac305d63aab3c8385b9cf27ff7d561bc0a1365e))
+* **jira:** support approved MCP registrations ([#881](https://github.com/teamupstart/mission-control/issues/881)) ([ddb899d](https://github.com/teamupstart/mission-control/commit/ddb899d1b6c57bd8a6aa467699b22f37dce916b6))
+
 ## [1.5.0](https://github.com/teamupstart/mission-control/compare/v1.4.0...v1.5.0) (2026-09-04)
 
 

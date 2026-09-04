@@ -296,7 +296,10 @@ test("a cursor is followed and its pages accumulate in order", async () => {
   assert.equal(server.methods.filter((m) => m === "model/list").length, 2);
 });
 
-test("a cursor that never terminates is cut off at the page bound", async () => {
+test("a cursor still offering pages at the page bound is refused, not truncated", async () => {
+  // Stopping at the bound and returning what was collected would hand the picker the first
+  // N of an unknown number and cache it as complete for the whole freshness window. The
+  // row cap refuses rather than trims for the same reason, so this path matches it.
   let served = 0;
   const { server, result } = probe(
     {
@@ -308,7 +311,34 @@ test("a cursor that never terminates is cut off at the page bound", async () => 
     { bounds: { pages: 3 } },
   );
   const settled = await result;
-  assert.equal(settled.ok ? settled.choices.length : null, 3);
+  assert.equal(settled.ok, false);
+  assert.equal(settled.ok ? null : settled.problem, "output_limit");
+  // Bounded all the same: it stops asking at the cap rather than paging forever.
+  assert.equal(server.methods.filter((m) => m === "model/list").length, 3);
+});
+
+test("a listing that ends exactly on the last allowed page still succeeds", async () => {
+  // The boundary the refusal above must not swallow: exhausting the pages is only a
+  // failure when the server says there is more.
+  let served = 0;
+  const { server, result } = probe(
+    {
+      "model/list": () => {
+        served += 1;
+        return {
+          data: [row({ id: `gpt-page-${served}` })],
+          nextCursor: served < 3 ? "more" : null,
+        };
+      },
+    },
+    { bounds: { pages: 3 } },
+  );
+  const settled = await result;
+  assert.deepEqual(settled.ok ? settled.choices.map((c) => c.id) : null, [
+    "gpt-page-1",
+    "gpt-page-2",
+    "gpt-page-3",
+  ]);
   assert.equal(server.methods.filter((m) => m === "model/list").length, 3);
 });
 

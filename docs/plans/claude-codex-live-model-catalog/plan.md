@@ -112,8 +112,8 @@ flowchart LR
     A3 -->|pi| A6[Pi no-session RPC probe]
     A5 --> A7[In-memory last-success cache]
     A6 --> A7
-    A8[Shipped catalog] -->|probe failed, no cache| A7
     A7 --> A2
+    A8[Shipped catalog] -->|probe failed, no cache| A2
   end
 ```
 

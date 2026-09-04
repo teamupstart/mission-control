@@ -125,7 +125,7 @@
       <text class="lbl" x="20" y="192">After</text>
       <rect class="box" x="20" y="206" width="150" height="58" rx="9"/><text class="t" x="36" y="230">Browser store</text><text class="s" x="36" y="248">unchanged</text>
       <rect class="box" x="206" y="206" width="150" height="58" rx="9"/><text class="t" x="222" y="230">Models API</text><text class="s" x="222" y="248">unchanged</text>
-      <rect class="box" x="392" y="206" width="150" height="58" rx="9"/><text class="t" x="408" y="230">Registry</text><text class="s" x="408" y="248">three probes now</text>
+      <rect class="box" x="392" y="206" width="150" height="58" rx="9"/><text class="t" x="408" y="230">Registry</text><text class="s" x="408" y="248">two probes now</text>
       <rect class="box fallback" x="640" y="176" width="320" height="40" rx="9"/><text class="t" x="658" y="194">claude &rarr; shipped catalog</text><text class="s" x="658" y="209">discover stays null, deferred</text>
       <rect class="box live" x="640" y="226" width="320" height="40" rx="9"/><text class="t" x="658" y="244">codex &rarr; app-server model/list</text><text class="s" x="658" y="259">new: initialize, one request, exit</text>
       <rect class="box live" x="640" y="276" width="320" height="40" rx="9"/><text class="t" x="658" y="294">pi &rarr; no-session RPC probe</text><text class="s" x="658" y="309">unchanged</text>
@@ -134,7 +134,7 @@
 
       <rect class="box" x="392" y="352" width="150" height="58" rx="9"/><text class="t" x="408" y="376">Last-success</text><text class="s" x="408" y="394">memory only</text>
       <rect class="box fallback" x="640" y="352" width="320" height="58" rx="9"/><text class="t" x="658" y="376">Shipped catalog</text><text class="s" x="658" y="394">only when a probe fails with no cache</text>
-      <path class="arrow" d="M800 316 V352"/><path class="arrow dim" d="M640 381 H542"/><path class="arrow" d="M467 352 V265"/>
+      <path class="arrow" d="M800 316 V334 H500 V352"/><path class="arrow" d="M420 352 V265"/><path class="arrow dim" d="M640 381 H600 V235 H542"/>
       <text class="s" x="20" y="452">A chosen value still continues through ModelIdSchema, config and task persistence, and the existing --model launch path.</text>
     </svg>
     <figcaption>The daemon produces choices. It does not change what a choice means. One harness gains a subprocess in the catalog request path; nothing gains one in the dispatch path.</figcaption>

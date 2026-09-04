@@ -273,6 +273,12 @@ async function readCatalog(
     if (!cursor) break;
   }
 
+  // A listing still offering pages when the page bound runs out is refused, for the same
+  // reason the row cap is refused rather than trimmed: the rows in hand are the first N of
+  // an unknown number, and returning them `ok` would cache a partial catalog as a complete
+  // one for the whole freshness window. Falling back says "could not look", which is true.
+  if (cursor) return failure("output_limit");
+
   // Order is the server's, best-first, because the picker renders the list as written and
   // Codex already returns its default first.
   return choices.length > 0 ? { ok: true, choices } : failure("unavailable");

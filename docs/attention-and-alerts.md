@@ -212,7 +212,7 @@ Away state lives in the daemon, not the browser, so it survives closing the tab 
 which is the case it exists for. The digest is read once; a refresh won't re-announce
 it. If the provider is missing or logged out, the narrative is simply absent and the
 rollup carries the summary on its own. Which model writes it is
-**Settings → [Models](models.md#models-what-the-apps-own-model-work-runs-on) → Away digest**.
+**Settings → [Models](models.md) → Away digest**.
 
 The count on the session detail comes from `GET /api/away/buffer`, a read-only look at the window
 still open - deliberately a separate route from `GET /api/away/digest`, which hands the

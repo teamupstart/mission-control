@@ -35,9 +35,80 @@ function anchors(markdown) {
   return result;
 }
 
+function maskInlineCode(line) {
+  let masked = "";
+  let cursor = 0;
+
+  while (cursor < line.length) {
+    if (line[cursor] !== "`") {
+      masked += line[cursor];
+      cursor += 1;
+      continue;
+    }
+
+    let openerEnd = cursor + 1;
+    while (line[openerEnd] === "`") openerEnd += 1;
+    const width = openerEnd - cursor;
+    let closerStart = openerEnd;
+
+    while (closerStart < line.length) {
+      if (line[closerStart] !== "`") {
+        closerStart += 1;
+        continue;
+      }
+      let closerEnd = closerStart + 1;
+      while (line[closerEnd] === "`") closerEnd += 1;
+      if (closerEnd - closerStart === width) break;
+      closerStart = closerEnd;
+    }
+
+    if (closerStart >= line.length) {
+      masked += line.slice(cursor, openerEnd);
+      cursor = openerEnd;
+      continue;
+    }
+
+    const closerEnd = closerStart + width;
+    masked += " ".repeat(closerEnd - cursor);
+    cursor = closerEnd;
+  }
+
+  return masked;
+}
+
+function withoutCode(markdown) {
+  let fence = null;
+  const visible = [];
+
+  for (const line of markdown.split("\n")) {
+    const marker = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    if (fence) {
+      if (
+        marker?.[0] === fence.character
+        && marker.length >= fence.width
+        && new RegExp(`^[ \\t]{0,3}${fence.character}{${fence.width},}[ \\t]*$`).test(line)
+      ) {
+        fence = null;
+      }
+      visible.push("");
+      continue;
+    }
+
+    if (marker) {
+      fence = { character: marker[0], width: marker.length };
+      visible.push("");
+      continue;
+    }
+
+    visible.push(line);
+  }
+
+  return maskInlineCode(visible.join("\n"));
+}
+
 function destinations(markdown) {
   const found = [];
-  for (const match of markdown.matchAll(/!?(?:\[[^\]]*\])\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)/g)) {
+  for (const match of withoutCode(markdown).matchAll(/!?(?:\[[^\]]*\])\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)/g)) {
     found.push(match[1].replace(/^<|>$/g, ""));
   }
   return found;

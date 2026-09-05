@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TITLE_MAX_CHARS, titleLine } from "@shared/title.ts";
+import { stripTitlePreamble, TITLE_MAX_CHARS, titleLine } from "@shared/title.ts";
 import { envVar } from "./config.ts";
 import { runJobStructured } from "./llm/jobs.ts";
 import { createLimiter, parseModelJson } from "./llm/structured.ts";
@@ -61,7 +61,14 @@ const INTENT_CAP = 4000;
  * the card - `Task` has `title TEXT NOT NULL` precisely because an unnamed card is useless.
  */
 export const TitleSchema = z.object({
-  title: z.string().transform((s) => titleLine(s)).pipe(z.string().min(1)),
+  title: z
+    .string()
+    // Strip BEFORE the clamp, not after: a reply that opened with "We should implement" would
+    // otherwise spend nineteen of its sixty characters on the framing and lose the tail of the
+    // name to an ellipsis. The prompt asks for the same convention; this is the tier that holds
+    // it when the model answers in a sentence anyway.
+    .transform((s) => titleLine(stripTitlePreamble(s)))
+    .pipe(z.string().min(1)),
 });
 export type TitleReply = z.infer<typeof TitleSchema>;
 
@@ -80,6 +87,11 @@ RULES:
 - Aim for three to seven words. Drop the pleasantries, the preamble and the justification - they are in
   the task text, which the human can still open.
 - Lead with the verb where there is one: Fix, Add, Remove, Migrate, Document.
+- Name the WORK, never the request for it. Drop the framing the operator dictated it in - "We should",
+  "I want", "I need", "Can you", "Please" - and never open with the bare verb "Implement", which says
+  nothing the thing after it does not already say. "We should implement the Herdr multiplexer" is named
+  "Herdr Multiplexer" or "Build the Herdr multiplexer"; "Implement Herdr Multiplexer" is named
+  "Herdr Multiplexer".
 - Plain text. No markdown, no surrounding quotes, no trailing period.
 - Keep the detail that makes it recognisable next to twenty other cards - the file, the feature, the
   symbol. Prefer "Add dark mode to the settings pane" over "UI improvements".

@@ -262,16 +262,18 @@ export interface SessionViewProps {
   /** Durable authoring-to-shipment lifecycles keyed by commission id. */
   pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>;
   /**
-   * Which ⌘-number jump slot each visible Board card holds, as `sessionId -> chord`.
+   * Which ⌘-number jump slot each visible session holds, as `sessionId -> chord`.
    *
    * App owns it because App owns the keystroke: the assignment is derived from the same
-   * ordered column arrays the arrow keys walk, so the key printed on a card and the key that
-   * opens it are one derivation rather than two that agree until a card changes tone. See
-   * `lib/card-shortcuts.ts`.
+   * ordered column arrays the arrow keys walk, so the key printed on a Board card or a
+   * Console rail row and the key that opens it are one derivation rather than two that agree
+   * until a session changes tone. See `lib/card-shortcuts.ts`.
    *
-   * EMPTY - never absent-meaning-everything - on the Console layout, and on a Board whose
-   * operator has switched the card item off. A layout arranges; it does not decide which
-   * cards get keys.
+   * Read by BOTH fleet layouts, from the one map: the rail is the board's columns read end to
+   * end, so the same twelve sessions keep the same twelve keys across a layout switch.
+   *
+   * EMPTY - never absent-meaning-everything - whenever the operator has the display item
+   * switched off. A layout arranges; it does not decide which sessions get keys.
    */
   cardShortcutBySession?: ReadonlyMap<string, string>;
 }

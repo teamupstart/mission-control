@@ -128,7 +128,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/board-card-customization/focused-playwright-transcript.txt
 ```
 
-### The ⌘-number jump keys on Board cards
+### The ⌘-number jump keys on Board cards and Console rail rows
 
 `e2e/.artifacts/board-card-jump-shortcut/` carries four frames of the same two-session fleet:
 the keycaps numbered `⌘1` in **needs you** and `⌘2` in **idle** (which is the "across the
@@ -145,6 +145,12 @@ the only fleet big enough to reach the last three slots: `05` shows all twelve k
 order - `⌘1`…`⌘9`, `⌘0`, `⌘-`, `⌘=` - with a thirteenth card plainly carrying none, and `06`
 shows the console `⌘=` opened on the twelfth. Those two exist because a two-card board cannot
 distinguish "`⌘=` opens the twelfth card" from "`⌘=` is not ours".
+
+Frames `07` and `08` are the Console rail's half of the same feature: the two rows carrying
+`⌘1` and `⌘2` beside their state words - the same two keys the cards printed a moment earlier
+in `01`, which is the "one numbering, two layouts" claim - and the conversation `⌘2` opened
+from the rail. `07` is also the only picture of the placement decision: the key sits left of
+the state word, and the state words line up so the keys read as a column.
 
 Note what that pair does and does not settle. Playwright delivers a keystroke to the renderer
 over the DevTools protocol rather than through the browser's own chrome - it cannot open a

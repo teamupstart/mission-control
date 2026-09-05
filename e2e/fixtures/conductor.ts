@@ -41,6 +41,11 @@ export function conductorEngineerStatePath(home: string): string {
   return join(home, "conductor-engineer-state.json");
 }
 
+/** Countdown used by one adoption spec to fail an exact replay invocation. */
+export function conductorEngineerReplayFailurePath(home: string): string {
+  return `${conductorEngineerStatePath(home)}.replay-failure-countdown`;
+}
+
 interface FakeEngineerRun {
   engineerRunId: string;
   correlationId: string;
@@ -303,6 +308,9 @@ const flag = (name) => {
   return at >= 0 && at + 1 < argv.length ? argv[at + 1] : null;
 };
 const engineerStatePath = process.env.MC_E2E_CONDUCTOR_ENGINEER_STATE;
+const engineerReplayFailurePath = engineerStatePath
+  ? engineerStatePath + ".replay-failure-countdown"
+  : null;
 const engineerMode = process.env.MC_E2E_CONDUCTOR_ENGINEER_MODE || "supported";
 const engineerLifecycleSupported = engineerMode === "supported" || engineerMode === "legacy-lifecycle";
 const readEngineerState = () => {
@@ -491,12 +499,28 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     process.stderr.write("Unknown Engineer run\\n");
     process.exitCode = 4;
   } else {
-    process.stdout.write(JSON.stringify({
-      schemaVersion: 1,
-      engineerRunId,
-      afterRevision,
-      events: run.events.filter((event) => event.revision > afterRevision),
-    }) + "\\n");
+    let failReplay = false;
+    if (engineerReplayFailurePath) {
+      try {
+        const remaining = Number(readFileSync(engineerReplayFailurePath, "utf8"));
+        if (remaining > 0) {
+          const next = remaining - 1;
+          writeFileSync(engineerReplayFailurePath, String(next));
+          failReplay = next === 0;
+        }
+      } catch {}
+    }
+    if (failReplay) {
+      process.stderr.write("Scripted Engineer replay failure\\n");
+      process.exitCode = 5;
+    } else {
+      process.stdout.write(JSON.stringify({
+        schemaVersion: 1,
+        engineerRunId,
+        afterRevision,
+        events: run.events.filter((event) => event.revision > afterRevision),
+      }) + "\\n");
+    }
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-cancel") {
   const engineerRunId = flag("run-id");

@@ -36,6 +36,7 @@ const {
 const {
   ENGINEER_EVENT_LIMITS,
   MAX_PIPELINE_COMMISSION_ATTEMPTS,
+  pipelineAdoptionRecoveryIsResumable,
   pipelineCommissionFrameMayReplace,
   pipelineRecoveryOutcomeFor,
   pipelineRetryRecoveryIsResumable,
@@ -983,11 +984,25 @@ test("startup does not resume a terminal recovery failure without operator actio
     cancel: async () => assert.fail("terminal recovery must not cancel"),
   };
 
-  new TaskManager(registry);
+  const manager = new TaskManager(registry);
   await new Promise<void>((resolve) => setImmediate(resolve));
 
   assert.equal(providerCalls, 0);
   assert.equal(getPipelineCommission(held.id)?.recovery?.state, "provider_outcome_unknown");
+
+  const refused = await manager.retryPipelineAttempt(held.taskId, {
+    guard: {
+      commissionId: held.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+  });
+  assert.equal(refused.ok, false);
+  if (refused.ok) assert.fail("an unknown provider reservation must not be resumed");
+  assert.equal(refused.code, "provider_outcome_unknown");
+  assert.equal(refused.outcomeUnknown, true);
+  assert.equal(providerCalls, 1, "only the read-only capability check may reach the provider");
 });
 
 test("a thrown retry launch persists failure and releases the in-process reservation", async (t) => {
@@ -1192,6 +1207,14 @@ test("readiness-blocked recovery returns an explicit refusal instead of false su
   assert.equal(
     pipelineRetryRecoveryIsResumable({ ...recovery, state: "provider_outcome_unknown" }),
     false,
+  );
+  assert.equal(
+    pipelineAdoptionRecoveryIsResumable({
+      ...recovery,
+      kind: "adoption",
+      state: "adoption_partial",
+    }),
+    true,
   );
 });
 

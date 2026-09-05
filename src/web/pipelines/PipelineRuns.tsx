@@ -2,8 +2,10 @@ import { Fragment, useMemo, useState } from "react";
 import type { Task } from "@shared/types.ts";
 import {
   PIPELINE_DAEMON_ACTIONS,
+  pipelineAdoptionRecoveryIsResumable,
   pipelineGrantAllowed,
   pipelineRecoveryIsActive,
+  pipelineRecoveryPredecessorGuard,
   pipelineRepoKey,
   pipelineRetryRecoveryIsResumable,
   pipelineRunKeyOf,
@@ -175,18 +177,22 @@ export function PipelineRuns({
         providerRevision: activeAttempt.providerRevision,
       }
     : null;
+  const predecessorGuard = activeCommission
+    ? pipelineRecoveryPredecessorGuard(activeCommission)
+    : null;
   const retryGuard = activeCommission && pipelineRetryRecoveryIsResumable(activeCommission.recovery)
-    ? {
-        commissionId: activeCommission.id,
-        activeAttempt: activeCommission.recovery.predecessorAttempt,
-        engineerRunId: activeCommission.recovery.predecessorEngineerRunId,
-        providerRevision: activeCommission.recovery.predecessorProviderRevision,
-      }
+    ? predecessorGuard
+    : recoveryGuard;
+  const adoptionGuard = activeCommission &&
+    pipelineAdoptionRecoveryIsResumable(activeCommission.recovery)
+    ? predecessorGuard
     : recoveryGuard;
   const recover = async (
     action: "retry" | "refresh" | "adopt" | "abandon" | "cancel",
   ): Promise<void> => {
-    const actionGuard = action === "retry" ? retryGuard : recoveryGuard;
+    const actionGuard = action === "retry"
+      ? retryGuard
+      : action === "adopt" ? adoptionGuard : recoveryGuard;
     if (!activeCommission || !actionGuard || recoveryBusy) return;
     setRecoveryBusy(action);
     setReadinessError(null);

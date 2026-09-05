@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   appendConductorEngineerEvent,
+  conductorEngineerReplayFailurePath,
   seedDirectConductorEngineerSuccessor,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
@@ -304,6 +305,22 @@ test("an exact direct provider successor is reviewed and adopted without rewriti
   await expect(lifecycle.getByRole("button", { name: "Adopt exact successor" })).toBeVisible({
     timeout: 60_000,
   });
+  writeFileSync(conductorEngineerReplayFailurePath(daemon.home), "2");
+  const [partialResponse] = await Promise.all([
+    dashboard.waitForResponse((response) =>
+      response.url().endsWith(`/api/tasks/${taskId}/pipeline/successor/adopt`)),
+    lifecycle.getByRole("button", { name: "Adopt exact successor" }).click(),
+  ]);
+  expect(partialResponse.ok()).toBe(false);
+  await expect(lifecycle.getByText("Recovery adoption partial", { exact: true })).toBeVisible();
+  await expect(lifecycle).toContainText("Scripted Engineer replay failure");
+  await expect(lifecycle.getByRole("button", { name: "Adopt exact successor" })).toBeVisible();
+  const evidenceDir = join("e2e", ".artifacts", "pipeline-provider-readiness");
+  mkdirSync(evidenceDir, { recursive: true });
+  await dashboard.mouse.move(0, 0);
+  await dashboard.screenshot({ path: join(evidenceDir, "adoption-partial-resume.png") });
+
+  writeFileSync(conductorEngineerReplayFailurePath(daemon.home), "0");
   const [adoptedResponse] = await Promise.all([
     dashboard.waitForResponse((response) =>
       response.url().endsWith(`/api/tasks/${taskId}/pipeline/successor/adopt`)),
@@ -327,8 +344,6 @@ test("an exact direct provider successor is reviewed and adopted without rewriti
     const sessions = await (await request(daemon, "/api/sessions")).json() as Array<{ id: string }>;
     return sessions.some((session) => session.id === predecessorSessionId);
   }, { timeout: 20_000 }).toBe(false);
-  const evidenceDir = join("e2e", ".artifacts", "pipeline-provider-readiness");
-  mkdirSync(evidenceDir, { recursive: true });
   await dashboard.screenshot({ path: join(evidenceDir, "adopt-direct-successor.png") });
 });
 

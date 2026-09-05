@@ -753,6 +753,46 @@ export function pipelineRetryRecoveryIsResumable(
   }
 }
 
+/** Adoption replay is safe to retry because it only rereads the exact retained candidate. */
+export function pipelineAdoptionRecoveryIsResumable(
+  recovery: PipelineCommissionRecovery | null | undefined,
+): recovery is PipelineCommissionRecovery & { kind: "adoption" } {
+  if (recovery?.kind !== "adoption") return false;
+  const state = recovery.state;
+  switch (state) {
+    case "provider_outcome_unknown":
+    case "adoption_partial":
+      return true;
+    case "reserved":
+    case "provider_bound":
+    case "readiness_blocked":
+    case "replacing_host":
+    case "launching_host":
+    case "host_launch_failed":
+    case "provider_reservation_failed":
+    case "adoption_replaying":
+    case "complete":
+      return false;
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`unsupported Pipeline recovery state: ${String(exhaustive)}`);
+    }
+  }
+}
+
+/** Reconstruct the immutable predecessor guard retained by an active recovery saga. */
+export function pipelineRecoveryPredecessorGuard(
+  commission: PipelineCommission,
+): PipelineRecoveryGuard | null {
+  const recovery = commission.recovery;
+  return recovery ? {
+    commissionId: commission.id,
+    activeAttempt: recovery.predecessorAttempt,
+    engineerRunId: recovery.predecessorEngineerRunId,
+    providerRevision: recovery.predecessorProviderRevision,
+  } : null;
+}
+
 export const PIPELINE_RECOVERY_RESULT_CODES = [
   "stale_guard",
   "unsupported_provider",

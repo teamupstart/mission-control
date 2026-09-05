@@ -103,6 +103,13 @@ export async function preparePipelineRetry(input: {
     recovery.predecessorAttempt === input.guard.activeAttempt &&
     recovery.predecessorEngineerRunId === input.guard.engineerRunId &&
     recovery.predecessorProviderRevision === input.guard.providerRevision;
+  if (resumesReservedRetry && recovery.state === "provider_outcome_unknown") {
+    return fail(
+      "provider_outcome_unknown",
+      recovery.error ?? "the provider reservation outcome is unknown",
+      true,
+    );
+  }
   if (!resumesReservedRetry) {
     const checked = await input.lifecycle.readinessProbe({ repoRoot: input.commission.repoRoot });
     if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);

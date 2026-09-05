@@ -537,6 +537,47 @@ test("a resumed Claude stream accepts a continuation without replaying the old i
   await handle.stop();
 });
 
+test("an authentication failure before binding exits as unresumable", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit({
+    type: "assistant",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  } as ClaudeSdkMessage);
+  query.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    errors: ["Not logged in · Please run /login"],
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await assert.rejects(
+      handle.send({ text: "retry after external login" }),
+      /authentication failed before this conversation could be resumed/,
+    );
+    const events = await Promise.race([
+      terminal,
+      new Promise<SdkEvent[]>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("unresumable authentication failure did not exit")),
+          100,
+        );
+      }),
+    ]);
+    const exited = events.find((event) => event.kind === "exited");
+    assert.equal(exited?.kind === "exited" && exited.resumable, false);
+    assert.match(exited?.kind === "exited" ? exited.reason : "", /could be resumed/);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    await handle.stop();
+  }
+});
+
 test("an authentication failure reloads credentials by resuming on the next turn", async () => {
   const starts: Harnessed[] = [];
   const deps: ClaudeSdkDeps = {
@@ -586,6 +627,15 @@ test("an authentication failure reloads credentials by resuming on the next turn
   assert.equal(
     await handle.sendIfIdle({ text: "continue after external login" }),
     "started",
+  );
+  const recoveryEvents = await collect(
+    handle.events,
+    (event) => event.kind === "state" && event.state === "working",
+  );
+  assert.equal(
+    recoveryEvents.some((event) => event.kind === "exited"),
+    false,
+    "draining the stale process must not end the session",
   );
   assert.equal(starts.length, 2, "the stale SDK process is replaced exactly once");
   assert.equal(starts[1]!.options.resume, "agent-auth-recovery");

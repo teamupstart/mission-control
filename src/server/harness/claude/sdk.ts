@@ -452,7 +452,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
     const stale = this.requireQuery();
     const draining = this.queryPump;
     if (!this.agentSessionId) {
-      throw new Error("Claude authentication failed before this conversation could be resumed");
+      const reason = "Claude authentication failed before this conversation could be resumed";
+      this.finish(reason);
+      throw new Error(reason);
     }
 
     this.recoveringQuery = stale;

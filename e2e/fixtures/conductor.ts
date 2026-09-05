@@ -253,6 +253,7 @@ const flag = (name) => {
 };
 const engineerStatePath = process.env.MC_E2E_CONDUCTOR_ENGINEER_STATE;
 const engineerMode = process.env.MC_E2E_CONDUCTOR_ENGINEER_MODE || "supported";
+const engineerLifecycleSupported = engineerMode === "supported" || engineerMode === "legacy-lifecycle";
 const readEngineerState = () => {
   if (!engineerStatePath) return { runs: [] };
   try { return JSON.parse(readFileSync(engineerStatePath, "utf8")); }
@@ -273,6 +274,12 @@ const engineerSnapshot = (run) => ({
   idea: run.idea,
   eventRevision: run.events.length,
   state: run.state,
+  readinessRequired: run.readinessRequired === true,
+  integrationOwner: run.integrationOwner || null,
+  readiness: run.readiness || null,
+  failure: run.failure || null,
+  retention: run.retention || null,
+  retirement: run.retirement || null,
 });
 
 // The documented misbehaviour, on demand. With \`.daemon/REFUSE\` present every verb answers
@@ -286,10 +293,14 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
 } else if (argv[0] === "engineer" && argv[1] === "capabilities") {
   process.stdout.write(JSON.stringify({
     schemaVersion: 1,
-    engineerLifecycleEventsV1: engineerMode === "supported",
+    engineerLifecycleEventsV1: engineerLifecycleSupported,
+    engineerReadinessV1: engineerMode === "supported",
+    engineerWorktreeRetirementV1: engineerMode === "supported",
+    engineerRetainedReviewWorktreesV1: engineerMode === "supported",
+    engineerOwnedAttemptsV1: engineerMode === "supported",
   }) + "\\n");
 } else if (argv[0] === "engineer" && argv[1] === "run-create") {
-  if (engineerMode !== "supported") {
+  if (!engineerLifecycleSupported) {
     process.stderr.write("Engineer lifecycle capability is unavailable\\n");
     process.exitCode = 2;
   } else if (process.env.MC_E2E_CONDUCTOR_ENGINEER_CREATE === "fail") {
@@ -300,6 +311,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     const idea = flag("idea");
     const correlationId = flag("correlation-id");
     const attemptKey = flag("attempt-key");
+    const integrationOwner = flag("integration-owner");
     const state = readEngineerState();
     let run = state.runs.find((candidate) =>
       candidate.repoRoot === repoRoot &&
@@ -319,6 +331,8 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
         previousEngineerRunId: previous ? previous.engineerRunId : null,
         repoRoot,
         idea,
+        readinessRequired: engineerMode === "supported",
+        integrationOwner: engineerMode === "supported" ? integrationOwner : null,
         state: "created",
         events: [],
       };
@@ -334,11 +348,60 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
         ts: new Date().toISOString(),
         type: "engineer_run_created",
         idea,
+        ...(engineerMode === "supported" ? {
+          readinessRequired: true,
+          ...(integrationOwner ? { integrationOwner } : {}),
+        } : {}),
       });
       state.runs.push(run);
       writeEngineerState(state);
     }
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
+  }
+} else if (argv[0] === "engineer" && argv[1] === "run-readiness") {
+  const engineerRunId = flag("run-id");
+  const repoRoot = flag("repo-root");
+  const expectedArgs = ["engineer", "run-readiness", "--run-id", engineerRunId, "--repo-root", repoRoot];
+  if (JSON.stringify(argv) !== JSON.stringify(expectedArgs)) {
+    process.stderr.write("Unexpected Engineer readiness arguments\\n");
+    process.exit(2);
+  }
+  const state = readEngineerState();
+  const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
+  if (!run || run.repoRoot !== repoRoot) {
+    process.stderr.write("Unknown Engineer run\\n");
+    process.exitCode = 4;
+  } else {
+    const ready = process.env.MC_E2E_CONDUCTOR_READINESS !== "blocked-until-marker" ||
+      existsSync(join(repoRoot, ".daemon", "READY"));
+    run.readiness = {
+      status: ready ? "ready" : "blocked",
+      code: ready ? "ready" : "authentication_required",
+      summary: ready ? "Provider is ready" : "GitHub authentication is required",
+      checkedCapabilities: ["git", "gh"],
+      retryable: true,
+      remedy: ready ? null : "Authenticate GitHub, then check again",
+      diagnostic: ready ? null : "gh auth status failed",
+      fingerprint: ready ? "ready-fingerprint" : "blocked-fingerprint",
+      permitted: ready,
+      checkedAt: new Date().toISOString(),
+    };
+    run.events.push({
+      schemaVersion: 1,
+      engineerRunId: run.engineerRunId,
+      correlationId: run.correlationId,
+      attemptKey: run.attemptKey,
+      attempt: run.attempt,
+      previousEngineerRunId: run.previousEngineerRunId,
+      repoRoot: run.repoRoot,
+      revision: run.events.length + 1,
+      ts: run.readiness.checkedAt,
+      type: "engineer_readiness_checked",
+      ...run.readiness,
+    });
+    writeEngineerState(state);
+    process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
+    if (!ready) process.exitCode = 1;
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-inspect") {
   const repoRoot = flag("repo-root");

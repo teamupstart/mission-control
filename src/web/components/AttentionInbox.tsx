@@ -44,6 +44,7 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   session_reviews: "Questions from agents",
   session_dialog: "Parked on a menu",
   pipeline_halt: "Pipeline halts",
+  pipeline_commission: "Pipeline lifecycle",
   session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
 };
@@ -53,6 +54,7 @@ export function AttentionInbox({
   onClose,
   onOpenEnsemble,
   onOpenSession,
+  onOpenPipelineCommission = () => undefined,
 }: {
   fold: AttentionFold;
   onClose: () => void;
@@ -60,6 +62,7 @@ export function AttentionInbox({
   onOpenEnsemble: (runId: string) => void;
   /** Focus a session on the fleet. */
   onOpenSession: (sessionId: string) => void;
+  onOpenPipelineCommission?: (commissionId: string) => void;
 }): React.JSX.Element {
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
@@ -118,6 +121,7 @@ export function AttentionInbox({
                 item={item}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
+                onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onLeave={onClose}
               />
             </div>
@@ -132,15 +136,34 @@ function InboxItem({
   item,
   onOpenEnsemble,
   onOpenSession,
+  onOpenPipelineCommission,
   onLeave,
 }: {
   item: AttentionItem;
   onOpenEnsemble: (runId: string) => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenPipelineCommission: (commissionId: string) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
   switch (item.kind) {
+    case "pipeline_commission":
+      return (
+        <section className="inbox-item inbox-halt">
+          <div className="inbox-head">
+            <span className="inbox-glyph" aria-hidden>⇶</span>
+            <strong>{item.commission.handoff?.planSlug ?? `Commission ${item.commission.id.slice(0, 8)}`}</strong>
+            <span className="inbox-meta">{item.attention.title}</span>
+            <span className="inbox-spacer" />
+            <Tooltip label="Open this Pipeline commission">
+              <button className="btn btn-ghost" onClick={() => onOpenPipelineCommission(item.commission.id)}>
+                Open Pipeline
+              </button>
+            </Tooltip>
+          </div>
+          <p className="inbox-line">{item.attention.detail}</p>
+        </section>
+      );
     case "ensemble_decision":
       return (
         <section className="inbox-item inbox-decision">

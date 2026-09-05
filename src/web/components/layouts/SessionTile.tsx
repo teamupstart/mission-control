@@ -4,10 +4,11 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
-import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
+import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
+import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
-import { useInterrupting } from "../../lib/interrupting.ts";
+import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
@@ -117,7 +118,8 @@ export function SessionTile({
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
   // it is pressed.
-  const st = stateDisplay(session, useInterrupting(session.id));
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = pipelineSessionDisplay(session, pipelineCommission, pipelineRun, runtimeState);
   const ticker = liveActivity(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule

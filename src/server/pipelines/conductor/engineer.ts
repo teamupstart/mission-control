@@ -1,5 +1,10 @@
 import {
+  ENGINEER_EVENT_LIMITS,
+  ENGINEER_OWNED_ATTEMPTS_CAPABILITY,
+  ENGINEER_READINESS_CAPABILITY,
+  ENGINEER_RETAINED_REVIEW_WORKTREES_CAPABILITY,
   ENGINEER_LIFECYCLE_CAPABILITY,
+  ENGINEER_WORKTREE_RETIREMENT_CAPABILITY,
   type EngineerLifecycleEvent,
   type UnsupportedEngineerLifecycleEvent,
   type UnknownEngineerLifecycleEvent,
@@ -32,7 +37,7 @@ const ENGINEER_STATES = new Set([
 
 let capabilityAttempt: {
   expiresAt: number;
-  promise: Promise<PipelineEngineerResult<{ supported: boolean }>>;
+  promise: ReturnType<PipelineEngineerLifecycle["capability"]>;
 } | null = null;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -65,21 +70,37 @@ function snapshot(value: unknown): PipelineEngineerRunSnapshot | null {
     !row ||
     row.schemaVersion !== 1 ||
     row.capability !== ENGINEER_LIFECYCLE_CAPABILITY ||
-    typeof row.engineerRunId !== "string" ||
-    !(typeof row.correlationId === "string" || row.correlationId === null) ||
-    typeof row.attemptKey !== "string" ||
-    !Number.isInteger(row.attempt) ||
+    !boundedString(row.engineerRunId, ENGINEER_EVENT_LIMITS.identityChars) ||
+    !(boundedString(row.correlationId, ENGINEER_EVENT_LIMITS.identityChars) || row.correlationId === null) ||
+    !boundedString(row.attemptKey, ENGINEER_EVENT_LIMITS.identityChars) ||
+    !Number.isSafeInteger(row.attempt) ||
     Number(row.attempt) < 1 ||
-    !(typeof row.previousEngineerRunId === "string" || row.previousEngineerRunId === null) ||
-    typeof row.repoRoot !== "string" ||
-    typeof row.idea !== "string" ||
-    !Number.isInteger(row.eventRevision) ||
+    !(boundedString(row.previousEngineerRunId, ENGINEER_EVENT_LIMITS.identityChars) || row.previousEngineerRunId === null) ||
+    !boundedString(row.repoRoot, ENGINEER_EVENT_LIMITS.pathChars) ||
+    !boundedString(row.idea, ENGINEER_EVENT_LIMITS.textChars) ||
+    !Number.isSafeInteger(row.eventRevision) ||
     Number(row.eventRevision) < 1 ||
     typeof row.state !== "string" ||
     !ENGINEER_STATES.has(row.state)
   ) {
     return null;
   }
+  const readinessValue = row.readiness ?? null;
+  const failureValue = row.failure ?? null;
+  const retentionValue = row.retention ?? null;
+  const retirementValue = row.retirement ?? null;
+  const readiness = parseReadiness(readinessValue);
+  const failureEvidence = parseFailure(failureValue);
+  const retention = parseRetention(retentionValue);
+  const retirement = parseRetirement(retirementValue);
+  if (
+    (readinessValue !== null && readiness === null) ||
+    (failureValue !== null && failureEvidence === null) ||
+    (retentionValue !== null && retention === null) ||
+    (retirementValue !== null && retirement === null) ||
+    !(row.readinessRequired === undefined || typeof row.readinessRequired === "boolean") ||
+    !(row.integrationOwner === undefined || boundedString(row.integrationOwner, 256) || row.integrationOwner === null)
+  ) return null;
   return {
     schemaVersion: 1,
     capability: ENGINEER_LIFECYCLE_CAPABILITY,
@@ -92,7 +113,77 @@ function snapshot(value: unknown): PipelineEngineerRunSnapshot | null {
     idea: row.idea,
     eventRevision: Number(row.eventRevision),
     state: row.state as PipelineEngineerRunSnapshot["state"],
+    readinessRequired: row.readinessRequired === true,
+    integrationOwner: typeof row.integrationOwner === "string" ? row.integrationOwner : null,
+    readiness,
+    failure: failureEvidence,
+    retention,
+    retirement,
   };
+}
+
+function boundedString(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max;
+}
+
+function stringOrNull(value: unknown, max: number): value is string | null {
+  return value === null || boundedString(value, max);
+}
+
+function timestamp(value: unknown): value is string {
+  return boundedString(value, ENGINEER_EVENT_LIMITS.identityChars) &&
+    !Number.isNaN(Date.parse(value));
+}
+
+function retainedCommit(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value);
+}
+
+function parseReadiness(value: unknown): PipelineEngineerRunSnapshot["readiness"] {
+  if (value === null) return null;
+  const row = record(value);
+  if (!row || !["ready", "blocked", "inconclusive"].includes(String(row.status)) ||
+      !boundedString(row.code, ENGINEER_EVENT_LIMITS.identityChars) ||
+      !boundedString(row.summary, 240) ||
+      !Array.isArray(row.checkedCapabilities) ||
+      row.checkedCapabilities.length < 1 || row.checkedCapabilities.length > 32 ||
+      row.checkedCapabilities.some((entry) => !boundedString(entry, 64)) ||
+      typeof row.retryable !== "boolean" || !stringOrNull(row.remedy, 512) ||
+      !stringOrNull(row.diagnostic, 2048) || !boundedString(row.fingerprint, 128) ||
+      typeof row.permitted !== "boolean" || !timestamp(row.checkedAt)) return null;
+  return row as unknown as PipelineEngineerRunSnapshot["readiness"];
+}
+
+function parseFailure(value: unknown): PipelineEngineerRunSnapshot["failure"] {
+  if (value === null) return null;
+  const row = record(value);
+  if (!row || !boundedString(row.error, 2048) ||
+      !["authentication", "authorization", "remote", "workspace", "tooling", "provider", "unknown"].includes(String(row.class)) ||
+      !boundedString(row.code, ENGINEER_EVENT_LIMITS.identityChars) ||
+      !boundedString(row.summary, 240) ||
+      typeof row.retryable !== "boolean" || !stringOrNull(row.remedy, 512) ||
+      !stringOrNull(row.diagnostic, 2048)) return null;
+  return row as unknown as PipelineEngineerRunSnapshot["failure"];
+}
+
+function parseRetention(value: unknown): PipelineEngineerRunSnapshot["retention"] {
+  if (value === null) return null;
+  const row = record(value);
+  if (!row || !retainedCommit(row.retainedCommit) || !timestamp(row.retainedAt) ||
+      !timestamp(row.retentionDeadline)) return null;
+  return row as unknown as PipelineEngineerRunSnapshot["retention"];
+}
+
+function parseRetirement(value: unknown): PipelineEngineerRunSnapshot["retirement"] {
+  if (value === null) return null;
+  const row = record(value);
+  if (!row || !boundedString(row.worktreePath, ENGINEER_EVENT_LIMITS.pathChars) ||
+      !boundedString(row.branch, ENGINEER_EVENT_LIMITS.identityChars) ||
+      !boundedString(row.planSlug, ENGINEER_EVENT_LIMITS.identityChars) ||
+      !["spec_merged", "spec_closed", "task_cancelled", "retention_expired", "operator_cleanup"].includes(String(row.reason)) ||
+      !(row.retainedCommit === null || retainedCommit(row.retainedCommit)) ||
+      !timestamp(row.retiredAt)) return null;
+  return row as unknown as PipelineEngineerRunSnapshot["retirement"];
 }
 
 async function executable(): Promise<PipelineEngineerResult<string>> {
@@ -121,12 +212,12 @@ async function execute(
   return { ok: true, value: { result, parsed } };
 }
 
-async function capability(): Promise<PipelineEngineerResult<{ supported: boolean }>> {
+async function capability(): ReturnType<PipelineEngineerLifecycle["capability"]> {
   if (capabilityAttempt && capabilityAttempt.expiresAt > Date.now()) {
     return capabilityAttempt.promise;
   }
   const promise = (async (): Promise<
-    PipelineEngineerResult<{ supported: boolean }>
+    Awaited<ReturnType<PipelineEngineerLifecycle["capability"]>>
   > => {
     const bin = await executable();
     if (!bin.ok) return bin;
@@ -138,10 +229,16 @@ async function capability(): Promise<PipelineEngineerResult<{ supported: boolean
     if (!row || row.schemaVersion !== 1 || row[ENGINEER_LIFECYCLE_CAPABILITY] !== true) {
       return {
         ok: true,
-        value: { supported: false },
+        value: { supported: false, readiness: false, worktreeRetirement: false, retainedReviewWorktrees: false, ownedAttempts: false },
       };
     }
-    return { ok: true, value: { supported: true } };
+    return { ok: true, value: {
+      supported: true,
+      readiness: row[ENGINEER_READINESS_CAPABILITY] === true,
+      worktreeRetirement: row[ENGINEER_WORKTREE_RETIREMENT_CAPABILITY] === true,
+      retainedReviewWorktrees: row[ENGINEER_RETAINED_REVIEW_WORKTREES_CAPABILITY] === true,
+      ownedAttempts: row[ENGINEER_OWNED_ATTEMPTS_CAPABILITY] === true,
+    } };
   })();
   capabilityAttempt = { expiresAt: Date.now() + CAPABILITY_CACHE_MS, promise };
   return promise;
@@ -152,6 +249,7 @@ async function create(input: {
   idea: string;
   correlationId: string;
   attemptKey: string;
+  integrationOwner?: string;
 }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>> {
   const answer = await execute([
     "engineer",
@@ -164,6 +262,7 @@ async function create(input: {
     input.correlationId,
     "--attempt-key",
     input.attemptKey,
+    ...(input.integrationOwner ? ["--integration-owner", input.integrationOwner] : []),
   ]);
   if (!answer.ok) return answer;
   const parsed = snapshot(answer.value.parsed);
@@ -173,6 +272,30 @@ async function create(input: {
     parsed.attemptKey === input.attemptKey
     ? { ok: true, value: parsed }
     : failure(answer.value.result, "provider returned a malformed Engineer run snapshot");
+}
+
+async function readiness(input: {
+  engineerRunId: string;
+  repoRoot: string;
+}): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>> {
+  const bin = await executable();
+  if (!bin.ok) return bin;
+  const result = await run(bin.value, [
+    "engineer",
+    "run-readiness",
+    "--run-id",
+    input.engineerRunId,
+    "--repo-root",
+    input.repoRoot,
+  ], { timeoutMs: COMMAND_TIMEOUT_MS });
+  const parsedJsonValue = parsedJson(result);
+  if (parsedJsonValue === null) {
+    return failure(result, result.stderr.trim() || "provider did not answer with readiness JSON");
+  }
+  const parsed = snapshot(parsedJsonValue);
+  return parsed && parsed.engineerRunId === input.engineerRunId && parsed.repoRoot === input.repoRoot
+    ? { ok: true, value: parsed }
+    : failure(result, "provider returned a malformed Engineer readiness snapshot");
 }
 
 async function inspectCorrelation(input: {
@@ -299,6 +422,7 @@ async function cancel(input: {
 export const CONDUCTOR_ENGINEER_LIFECYCLE: PipelineEngineerLifecycle = {
   capability,
   create,
+  readiness,
   inspectCorrelation,
   replay,
   cancel,

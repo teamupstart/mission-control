@@ -137,6 +137,103 @@ function SpecificationHandoff({
   );
 }
 
+function ProviderLifecycle({
+  commission,
+  checking,
+  onRecheck,
+  canStart,
+  starting,
+  onStart,
+  implementationActive,
+}: {
+  commission: PipelineCommission;
+  checking: boolean;
+  onRecheck: () => void;
+  canStart: boolean;
+  starting: boolean;
+  onStart: () => void;
+  implementationActive: boolean;
+}): React.JSX.Element {
+  const readiness = commission.readiness ?? null;
+  const failure = commission.failure ?? null;
+  const retirement = commission.retirement ?? null;
+  return (
+    <section className="pipelines-section" aria-label="Provider lifecycle">
+      <h4>Provider lifecycle</h4>
+      <p>
+        Ownership {commission.integrationOwner ? "confirmed" : "legacy provider"}
+        {commission.integrationOwner && <> · <code>{commission.integrationOwner}</code></>}
+      </p>
+      {commission.readinessRequired ? readiness ? (
+        <div className="pipelines-lifecycle-fact">
+          <strong>{readiness.status === "ready" ? "Ready" : readiness.status === "blocked" ? "Launch blocked" : "Readiness inconclusive"}</strong>
+          <p>{readiness.summary}</p>
+          {readiness.remedy && <p>Remedy: {readiness.remedy}</p>}
+          {readiness.diagnostic && (
+            <details>
+              <Tooltip label="Show provider diagnostic details">
+                <summary>Provider diagnostic</summary>
+              </Tooltip>
+              <pre>{readiness.diagnostic}</pre>
+            </details>
+          )}
+          {!readiness.permitted && readiness.retryable && (
+            <Tooltip label="Recheck provider readiness for this attempt">
+              <button type="button" className="btn btn-primary" onClick={onRecheck} disabled={checking}>
+                {checking ? "Checking…" : "Check again"}
+              </button>
+            </Tooltip>
+          )}
+          {readiness.permitted && canStart && (
+            <Tooltip label="Start the managed Engineer host for this ready attempt">
+              <button type="button" className="btn btn-primary" onClick={onStart} disabled={starting}>
+                {starting ? "Starting…" : "Start Engineer"}
+              </button>
+            </Tooltip>
+          )}
+        </div>
+      ) : <p>Readiness evidence pending.</p> : <p>Legacy provider - no readiness gate advertised.</p>}
+      {failure && (
+        <div className="pipelines-lifecycle-fact" role="alert">
+          <strong>{failure.summary}</strong>
+          <p>{failure.class} · {failure.code}{failure.retryable ? " · retryable" : ""}</p>
+          {failure.remedy && <p>Remedy: {failure.remedy}</p>}
+          {failure.diagnostic && (
+            <details>
+              <Tooltip label="Show provider failure diagnostic details">
+                <summary>Failure diagnostic</summary>
+              </Tooltip>
+              <pre>{failure.diagnostic}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      {commission.successorCandidate && (
+        <details className="pipelines-lifecycle-fact">
+          <Tooltip label="Review the exact external successor without adopting it">
+            <summary>Review successor attempt {commission.successorCandidate.attempt}</summary>
+          </Tooltip>
+          <p>
+            Provider run <code>{commission.successorCandidate.engineerRunId}</code> directly
+            follows the active attempt and is not part of Mission Control history.
+          </p>
+          <p>
+            Review only. Adoption and retry remain unavailable until Pipeline recovery is enabled.
+          </p>
+        </details>
+      )}
+      {retirement ? (
+        <p>Authoring workspace retired by the provider: {retirement.reason.replaceAll("_", " ")}.</p>
+      ) : commission.retention ? (
+        <p>Review workspace retained until {commission.retention.retentionDeadline}.</p>
+      ) : null}
+      {commission.handoff && !implementationActive && (
+        <p>Implementation remains gated on specification merge.</p>
+      )}
+    </section>
+  );
+}
+
 /**
  * One feature reader across the provider-owned specification handoff.
  *
@@ -149,12 +246,22 @@ export function PipelineFeatureReader({
   activeRun,
   detail,
   actions,
+  checkingReadiness = false,
+  onRecheckReadiness = () => undefined,
+  canStartAfterReadiness = false,
+  startingAfterReadiness = false,
+  onStartAfterReadiness = () => undefined,
   onSelectRun,
 }: {
   activeCommission: PipelineCommission | null;
   activeRun: PipelineRun | null;
   detail: PipelineRunDetailState;
   actions?: ReactNode;
+  checkingReadiness?: boolean;
+  onRecheckReadiness?: () => void;
+  canStartAfterReadiness?: boolean;
+  startingAfterReadiness?: boolean;
+  onStartAfterReadiness?: () => void;
   onSelectRun: (run: PipelineRun) => void;
 }): React.JSX.Element {
   const commissionError = activeCommission?.error?.trim() || null;
@@ -173,6 +280,17 @@ export function PipelineFeatureReader({
 
       <PipelinePhaseMeter run={activeRun} commission={activeCommission} />
 
+      {activeCommission && (
+        <ProviderLifecycle
+          commission={activeCommission}
+          checking={checkingReadiness}
+          onRecheck={onRecheckReadiness}
+          canStart={canStartAfterReadiness}
+          starting={startingAfterReadiness}
+          onStart={onStartAfterReadiness}
+          implementationActive={activeRun !== null}
+        />
+      )}
       {activeCommission && (
         <EngineerAttempts
           key={`engineer-attempts:${activeCommission.id}`}

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { agentActive } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
+import { stateDisplay, type StateDisplay } from "./format.ts";
 
 // The optimistic "interrupting" moment, and nothing else.
 //
@@ -155,4 +156,9 @@ export function useInterrupting(id: string): boolean {
     () => interrupting.has(id),
     () => false,
   );
+}
+
+/** The shared live runtime display, including Mission Control's transient interrupt state. */
+export function useSessionRuntimeDisplay(session: Session): StateDisplay {
+  return stateDisplay(session, useInterrupting(session.id));
 }

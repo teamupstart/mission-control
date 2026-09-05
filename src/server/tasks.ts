@@ -92,7 +92,10 @@ import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
-import { refreshPipelineCommission } from "./pipelines/index.ts";
+import {
+  checkPipelineCommissionReadiness,
+  refreshPipelineCommission,
+} from "./pipelines/index.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -2406,6 +2409,62 @@ export class TaskManager {
       void this.dispatcher.dispatch(id, options);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
+  }
+
+  /** Re-run readiness for the same reserved provider attempt without minting a retry. */
+  async recheckPipelineReadiness(id: string): Promise<DispatchOutcome> {
+    const task = this.registry.getTask(id);
+    if (!task) return { ok: false, error: "no such task" };
+    if (task.kind !== "pipeline" || !task.pipelineCommissionId) {
+      return { ok: false, error: "task has no Pipeline commission", task };
+    }
+    const commission = this.registry.pipelineCommission(task.pipelineCommissionId);
+    if (!commission?.readinessRequired || commission.readiness?.permitted !== false) {
+      return { ok: false, error: "Pipeline readiness is not currently blocking this task", task };
+    }
+    if (task.sessionId || task.status !== "running") {
+      return { ok: false, error: "Pipeline task is not waiting at the readiness gate", task };
+    }
+    const lifecycle = PIPELINE_PROVIDERS[commission.provider].engineerLifecycle;
+    if (!commission.capabilities?.readiness || !lifecycle) {
+      return { ok: false, error: "the provider no longer exposes Pipeline readiness", task };
+    }
+    const checked = await checkPipelineCommissionReadiness(this.registry, commission, lifecycle);
+    if (!checked.ok) return { ok: false, error: checked.error, task };
+    const current = this.registry.getTask(id) ?? task;
+    this.registry.upsertTask({
+      ...current,
+      error: checked.commission.readiness?.permitted
+        ? null
+        : checked.commission.readiness?.summary ?? "Provider readiness remains blocked",
+      updatedAt: Date.now(),
+    });
+    return { ok: true, task: this.registry.getTask(id) ?? task };
+  }
+
+  /** Launch a ready initial provider attempt after a separate, non-launching recheck. */
+  async startPipelineAfterReadiness(id: string): Promise<DispatchOutcome> {
+    const task = this.registry.getTask(id);
+    if (!task) return { ok: false, error: "no such task" };
+    if (task.kind !== "pipeline" || !task.pipelineCommissionId) {
+      return { ok: false, error: "task has no Pipeline commission", task };
+    }
+    const commission = this.registry.pipelineCommission(task.pipelineCommissionId);
+    const attempt = commission?.attempts.find(
+      (candidate) => candidate.attempt === commission.activeAttempt,
+    );
+    if (
+      !commission?.readinessRequired ||
+      commission.readiness?.permitted !== true ||
+      attempt?.state !== "created"
+    ) {
+      return { ok: false, error: "Pipeline is not ready for its initial host launch", task };
+    }
+    if (task.sessionId || task.status !== "running") {
+      return { ok: false, error: "Pipeline task is not waiting for its initial host", task };
+    }
+    void this.dispatcher.dispatch(id);
+    return { ok: true, task };
   }
 
   /**

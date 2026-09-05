@@ -123,8 +123,8 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   });
   await expect(card).toBeVisible();
   await expect(card.getByRole("group", { name: /pipeline phases$/ })).toBeVisible();
-  await expect(card.getByText("Starting Engineer")).toBeVisible();
-  await expect(card.locator(".phase-segment.current")).toHaveCount(0);
+  await expect(card.getByText(/^(Starting Engineer|Engineer authoring)$/)).toBeVisible();
+  await expect(card.locator(".tpm-seg.is-now")).toHaveCount(1);
 
   await expect
     .poll(async () => {
@@ -218,6 +218,10 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await expect(
     authoringReader.locator('details[aria-label="Specification handoff"]'),
   ).toHaveAttribute("open", "");
+  await expect(authoringReader.locator(".tile-phase-meter .tpm-seg")).toHaveCount(2);
+  await expect(authoringReader.locator(".tile-phase-meter .tpm-count")).toHaveText(
+    "Engineer 13/13 · Implementation gated",
+  );
 
   await daemon.crash();
   await daemon.restart();
@@ -272,6 +276,10 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
   await planningRow.locator("button.pipelines-row").click();
   const commissionReader = dashboard.getByRole("region", { name: "Pipeline commission detail" });
   await expect(commissionReader.locator(".tpm-now")).toHaveText("BUILD · Build · step 13 of 22");
+  await expect(commissionReader.locator(".tile-phase-meter .tpm-seg")).toHaveCount(2);
+  await expect(commissionReader.locator(".tile-phase-meter .tpm-count")).toHaveText(
+    "Engineer 13/13 · Implementation 1/22",
+  );
   await expect(
     commissionReader.getByText("Awaiting spec merge", { exact: true }),
   ).toHaveCount(0);
@@ -413,7 +421,12 @@ test("a commissioned Pipeline card is immediate and an authoring checkout is not
       name: `Open ${worker.name}`,
       exact: true,
     });
+    const workerTile = dashboard.locator(".tile").filter({ has: workerCard });
     await expect(workerCard).toBeVisible();
+    await expect(workerTile.locator(".tile-phase-meter .tpm-seg")).toHaveCount(2);
+    await expect(workerTile.locator(".tile-phase-meter .tpm-count")).toHaveText(
+      "Engineer 13/13 · Implementation 1/22",
+    );
     await workerCard.press("Enter");
     const detail = dashboard.locator(".cdetail");
     await expect(

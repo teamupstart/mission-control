@@ -1,6 +1,11 @@
 import type { Session } from "@shared/types.ts";
-import { pipelineRunKey } from "@shared/pipeline.ts";
-import { stateDisplay } from "./format.ts";
+import {
+  pipelineRunKey,
+  pipelineRunKeyOf,
+  type PipelineCommission,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
+import { pipelineSessionDisplay } from "./attention.ts";
 import { NO_HELD_SESSIONS } from "./held.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
 
@@ -174,14 +179,25 @@ export function orderSessions(
   sessions: readonly Session[],
   held: ReadonlySet<string> = NO_HELD_SESSIONS,
   byRepo = false,
+  pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>,
+  pipelineRunByKey?: ReadonlyMap<string, PipelineRun>,
 ): FleetOrder {
+  const display = (session: Session) => {
+    const commissionId = session.task?.pipelineCommissionId;
+    const commission = commissionId ? pipelineCommissionById?.get(commissionId) : null;
+    const linkedRun = commission?.linkedRun
+      ? pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null
+      : null;
+    return pipelineSessionDisplay(session, commission, linkedRun);
+  };
   const baseline = [...sessions].sort((a, b) => {
-    const ta = TONE_ORDER[stateDisplay(a).tone];
-    const tb = TONE_ORDER[stateDisplay(b).tone];
+    const ta = TONE_ORDER[display(a).tone];
+    const tb = TONE_ORDER[display(b).tone];
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline).map((group) => clusterGroup(group, held, byRepo));
+  const groups = groupByTone(baseline, (session) => display(session).tone)
+    .map((group) => clusterGroup(group, held, byRepo));
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 

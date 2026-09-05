@@ -103,6 +103,7 @@ const { loadPipelineCommissions, openDb, loadPipelineRuns, pipelineStoredRepos }
   "../src/server/db.ts"
 );
 const { getPipelinesConfig } = await import("../src/server/pipelines/config.ts");
+const { createPipelineCommission } = await import("../src/server/pipelines/commissions.ts");
 
 test("a database from before this feature opens, and keeps its settings", () => {
   const db = openDb();
@@ -206,6 +207,53 @@ test("a pre-feature database gains the empty durable commission family", () => {
     assert.equal(column.notnull, 0, `${name} must remain nullable for rolling upgrades`);
   }
   assert.deepEqual(loadPipelineCommissions(), []);
+});
+
+test("a pre-lifecycle commission normalizes each absent provider field as legacy", () => {
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO tasks
+       (id, title, intent, kind, agent, repo_root, status, created_at, updated_at)
+     VALUES ('legacy-pipeline-task', 'Legacy pipeline', 'Keep old state readable',
+             'pipeline', 'codex', '/w/demo', 'running', 1, 1)`,
+  ).run();
+  const created = createPipelineCommission({
+    id: "legacy-pipeline-commission",
+    taskId: "legacy-pipeline-task",
+    provider: "ai-conductor",
+    repoRoot: "/w/demo",
+    correlationId: "legacy-pipeline-commission",
+    launchKey: "legacy-launch",
+    now: 1,
+  });
+  const legacy = { ...created } as Record<string, unknown>;
+  for (const key of [
+    "capabilities",
+    "integrationOwner",
+    "readinessRequired",
+    "readiness",
+    "failure",
+    "retention",
+    "retirement",
+    "successorCandidate",
+    "projectionDrift",
+    "authoringBranch",
+    "planSlug",
+  ]) delete legacy[key];
+  db.prepare(`UPDATE pipeline_commissions SET state_json = ? WHERE id = ?`).run(
+    JSON.stringify(legacy),
+    created.id,
+  );
+
+  const loaded = loadPipelineCommissions().find((commission) => commission.id === created.id);
+  assert.equal(loaded?.lifecycle, "created");
+  assert.equal(loaded?.capabilities?.readiness, false);
+  assert.equal(loaded?.integrationOwner, null);
+  assert.equal(loaded?.readinessRequired, false);
+  assert.equal(loaded?.readiness, null);
+  assert.equal(loaded?.failure, null);
+  assert.equal(loaded?.retirement, null);
+  assert.equal(loaded?.projectionDrift, null);
 });
 
 test("this phase's schema depends on no table a later phase owns", () => {

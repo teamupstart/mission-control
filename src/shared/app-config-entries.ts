@@ -241,6 +241,7 @@ const uiFields = {
   guidedTour: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
+  hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 

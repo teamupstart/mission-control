@@ -2845,6 +2845,83 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  * one before it). Corrected rather than deleted, because the rule it was defending is still
  * the right rule and the breach is a defect to fix, not a licence to add a second one.
  */
+/**
+ * Display-item ids that ship HIDDEN, in the order the builds that introduced them shipped.
+ *
+ * `UI_CONFIG_DEFAULTS.hiddenDisplayItems` below is NOT sufficient on its own, and that is
+ * the defect this ladder exists to fix rather than a subtlety to remember. A stored
+ * `hiddenDisplayItems` is returned VERBATIM - the whole point of the field is that it is the
+ * operator's list, and merging a default into it would make un-hiding an item impossible.
+ * So the default reaches a record that stored no list at all, which is a fresh profile and
+ * nobody else: an operator who has ever unchecked one card item carries, say, `["cost"]`,
+ * which cannot mention an id that did not exist when they wrote it. Left at the default
+ * alone, a ships-hidden item is hidden for new profiles and ON for everyone who ever
+ * touched this panel - the opposite of what "ships off" means, and invisible in any test
+ * that starts from an empty store.
+ *
+ * Each entry is one build's worth of new ships-hidden ids, and `hiddenDisplayItemsSeed`
+ * records how many entries a record has been given. `seedHiddenDisplayItems` applies the
+ * rest exactly once and then stops, so checking the box afterwards sticks.
+ *
+ * `worktree` is deliberately NOT here - it is in `PRE_SEED_HIDDEN_DISPLAY_ITEMS` below, for
+ * the reason given there. This ladder is for items introduced from the marker on, and
+ * `workflowDetails` is the first.
+ *
+ * ADDING ONE: append an entry, and that is the whole job. A fresh profile's default list is
+ * COMPOSED from this ladder (see `UI_CONFIG_DEFAULTS.hiddenDisplayItems`), so a new id is
+ * hidden for new profiles and seeded into existing ones from the same line. The two used to
+ * be separate literals, which meant an id added here and forgotten there shipped hidden on
+ * upgrade and SHOWN on a fresh profile - the same class of bug this ladder exists to prevent,
+ * deferred one item. `test/board-card-items.test.ts` fails if the composition is unpicked.
+ */
+export const DISPLAY_ITEM_HIDDEN_SEEDS: readonly (readonly string[])[] = [
+  ["workflowDetails"],
+];
+
+/**
+ * Ids that shipped hidden BEFORE the seed marker existed, and are therefore never seeded.
+ *
+ * Separate from the ladder rather than its first entry, because the two are different
+ * promises. A ladder entry says "add this to every stored list, once". This says "hide this
+ * on a fresh profile and touch nobody else": `worktree` shipped before there was any marker
+ * to record having seeded it, so an absent id here cannot be told apart from one an operator
+ * switched on deliberately - and seeding it now would take away a cell somebody chose to
+ * keep. Nothing should be added here; new ships-hidden items belong on the ladder.
+ */
+const PRE_SEED_HIDDEN_DISPLAY_ITEMS: readonly string[] = ["worktree"];
+
+/**
+ * Give a stored UI record any ships-hidden ids it has not been offered yet.
+ *
+ * Takes and returns the RAW record rather than a parsed `UiConfig`, so it can run before
+ * schema defaults are applied - which is what lets absence of the seed marker mean "written
+ * by a build that did not have one". Returns the input unchanged when there is nothing to
+ * do, so the caller can persist on identity and write once rather than on every read.
+ *
+ * Shared, and called from both sides on purpose: `server/ui-config.ts` for the durable
+ * record, and `web/lib/uiCache.ts` for the `localStorage` copy the first paint reads. One
+ * without the other is a visible flash of the item switched on before hydration corrects it.
+ */
+export function seedHiddenDisplayItems(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  const seeded = typeof stored.hiddenDisplayItemsSeed === "number"
+    ? stored.hiddenDisplayItemsSeed
+    : 0;
+  if (seeded >= DISPLAY_ITEM_HIDDEN_SEEDS.length) return raw;
+  // A record with no list of its own needs no ids added: the schema default below already
+  // carries every ships-hidden id. It still takes the marker, so it never migrates again.
+  const list = Array.isArray(stored.hiddenDisplayItems)
+    ? stored.hiddenDisplayItems.filter((id): id is string => typeof id === "string")
+    : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems];
+  const owed = DISPLAY_ITEM_HIDDEN_SEEDS.slice(seeded).flat();
+  return {
+    ...stored,
+    hiddenDisplayItems: [...list, ...owed.filter((id) => !list.includes(id))],
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  };
+}
+
 export const UI_CONFIG_DEFAULTS = {
   layout: "console",
   conversationView: "terminal",
@@ -2879,8 +2956,37 @@ export const UI_CONFIG_DEFAULTS = {
    * in every column on upgrade without anyone asking - which is exactly what defaulting
    * to today's rendering exists to prevent. It is hidden until an operator opts in, and
    * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
+   *
+   * `workflowDetails` is the one entry that DOES change what an upgrade draws, and it is
+   * here by request rather than by that rule. A card with a bound run used to argue its own
+   * case on the board - the reviewer's objection, and a control that opened the whole
+   * ladder in place - and on a full column that is a paragraph of somebody else's reading
+   * per tile. Off, the card still states the whole stage track, which stage it is on and
+   * how much repair budget is left; what it stops doing is explaining itself. An operator
+   * who wants the reasons back checks one box, and the run's complete evidence was never
+   * further away than the card's own link to Runs.
+   *
+   * COMPOSED, not hand-written, and that is load-bearing. This list is what a FRESH profile
+   * reads; `DISPLAY_ITEM_HIDDEN_SEEDS` is what an UPGRADED profile is given. They are two
+   * questions with one answer - "which ids ship hidden" - and as two independent literals
+   * they could disagree silently in either direction: an id on the ladder but missing here
+   * ships hidden on upgrade and SHOWN on every new profile, and an id here but missing from
+   * the ladder leaves every existing profile unseeded. Deriving one from the other makes the
+   * disagreement unexpressible rather than merely tested for, so adding a ships-hidden item
+   * is one line on the ladder and nothing else.
    */
-  hiddenDisplayItems: ["worktree"],
+  hiddenDisplayItems: [
+    ...PRE_SEED_HIDDEN_DISPLAY_ITEMS,
+    ...DISPLAY_ITEM_HIDDEN_SEEDS.flat(),
+  ],
+  /**
+   * The head of `DISPLAY_ITEM_HIDDEN_SEEDS`, so a fresh profile is born fully seeded.
+   *
+   * A record parsed from nothing already has every ships-hidden id in the list above, so it
+   * is owed no seeds and must never be given any - otherwise the first `workflowDetails` the
+   * operator switches ON would be switched back off on the next read.
+   */
+  hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
   /**
    * TRUE, unlike `hiddenDisplayItems` above, and the difference is worth stating.
    *
@@ -2993,6 +3099,24 @@ export const UiConfigSchema = z.object({
   hiddenDisplayItems: z
     .array(z.string().min(1))
     .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
+  /**
+   * How many entries of `DISPLAY_ITEM_HIDDEN_SEEDS` this record has already been given.
+   *
+   * The marker that makes a ships-hidden item actually ship hidden on an UPGRADE. See that
+   * constant for the whole reasoning; the short version is that `hiddenDisplayItems` above
+   * defaults only for a record that stored no list at all, so the default alone reaches a
+   * fresh profile and nobody else.
+   *
+   * Defaults to the head, so a record parsed from nothing is already fully seeded and never
+   * migrates. Absence on a STORED record is the "never seeded" signal - the same trick
+   * `migrateGuidedTour` uses one field over, and it works for the same reason: a key this
+   * build invented cannot be in a record an older build wrote.
+   */
+  hiddenDisplayItemsSeed: z
+    .number()
+    .int()
+    .min(0)
+    .default(UI_CONFIG_DEFAULTS.hiddenDisplayItemsSeed),
   /**
    * Whether the fleet's tone-grouped surfaces collect their cards by repository.
    *

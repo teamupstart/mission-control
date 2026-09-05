@@ -580,6 +580,18 @@ export function WorkflowLadder({
 }
 
 export interface WorkflowTileDisclosureState {
+  /**
+   * Whether the tile is VISIBLY showing the expanded ladder, already resolved by the host.
+   *
+   * Not the raw disclosure state, and the distinction is the whole reason this is documented.
+   * The host owns every precondition on it - today the `workflowDetails` Display item, which
+   * an operator can switch off while a tile is already expanded - and settles them into this
+   * one boolean before handing it over. The tile's own `workflow-expanded` class, which
+   * reserves the layout space, and this panel's `is-expanded` content state have to be the
+   * SAME decision; two separately written conjunctions would be two decisions, and the first
+   * change to the condition would strand a reserved-but-empty tile behind a collapsed panel.
+   * See `SessionTile`'s `workflowVisiblyExpanded`, which is that owner.
+   */
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   /**
@@ -600,6 +612,7 @@ function WorkflowTileDisclosure({
   onExpandedChange,
   onSurfaceClick = null,
   progressMeter = false,
+  workflowDetails = true,
   regionId,
   loadError = false,
   children,
@@ -611,10 +624,22 @@ function WorkflowTileDisclosure({
   onExpandedChange: (expanded: boolean) => void;
   onSurfaceClick?: (() => void) | null;
   progressMeter?: boolean;
+  workflowDetails?: boolean;
   regionId: string;
   loadError?: boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
+  /*
+   * The section stays even with the details item off, and that is deliberate rather than
+   * left over. It is what stops a click inside the panel from bubbling to the tile - a
+   * miss would otherwise open the console - and what asks the host what its own background
+   * means. Only the row of controls and the expansion it drives are the operator's choice.
+   *
+   * `expanded` is read as given rather than re-derived against `workflowDetails`. It arrives
+   * already resolved - see `WorkflowTileDisclosureState.expanded` - so "is this tile showing
+   * the ladder" has exactly one author, the host, which is the only place every precondition
+   * on it is in scope. `workflowDetails` is still read below, for a different question.
+   */
   return (
     <section
       className={`tile-workflow-disclosure${expanded ? " is-expanded" : ""}`}
@@ -641,6 +666,7 @@ function WorkflowTileDisclosure({
                   detail={detail}
                   onOpenRun={onOpenRun}
                   progressMeter={progressMeter}
+                  workflowDetails={workflowDetails}
                 />
               )
             : (
@@ -652,26 +678,31 @@ function WorkflowTileDisclosure({
                 />
               )}
       </div>
-      <div className="tile-workflow-disclosure-row">
-        <Tooltip label={expanded
-          ? "Return to the consequential workflow rung"
-          : "Show every workflow stage and action inside this Board tile"}>
-          <button
-            className="tile-workflow-disclosure-btn"
-            type="button"
-            aria-controls={regionId}
-            aria-expanded={expanded}
-            onClick={() => onExpandedChange(!expanded)}
-          >
-            <span className="tile-workflow-chevron" aria-hidden>⌄</span>
-            <Keycap action="expand" />
-            {expanded ? "Collapse workflow" : "Show full workflow"}
-          </button>
-        </Tooltip>
-        <span className="tile-workflow-disclosure-hint">
-          {expanded ? "The active rung stays in context" : "Expand this tile in place"}
-        </span>
-      </div>
+      {/* The ROW's own question, and it is not the one `expanded` answers: the control is
+          drawn whenever the operator has the details item on, open or closed. That is why
+          `workflowDetails` still travels separately from the resolved flag above. */}
+      {workflowDetails && (
+        <div className="tile-workflow-disclosure-row">
+          <Tooltip label={expanded
+            ? "Return to the consequential workflow rung"
+            : "Show every workflow stage and action inside this Board tile"}>
+            <button
+              className="tile-workflow-disclosure-btn"
+              type="button"
+              aria-controls={regionId}
+              aria-expanded={expanded}
+              onClick={() => onExpandedChange(!expanded)}
+            >
+              <span className="tile-workflow-chevron" aria-hidden>⌄</span>
+              <Keycap action="expand" />
+              {expanded ? "Collapse workflow" : "Show full workflow"}
+            </button>
+          </Tooltip>
+          <span className="tile-workflow-disclosure-hint">
+            {expanded ? "The active rung stays in context" : "Expand this tile in place"}
+          </span>
+        </div>
+      )}
     </section>
   );
 }
@@ -682,6 +713,7 @@ export function WorkflowLadderPanel({
   tileDisclosure = null,
   stageDetail = "load",
   progressMeter = false,
+  workflowDetails = true,
   session = null,
   sectionRef,
 }: {
@@ -704,6 +736,18 @@ export function WorkflowLadderPanel({
   stageDetail?: "load" | "summary";
   /** Use the Board's whole-pipeline meter instead of its single-rung fallback. */
   progressMeter?: boolean;
+  /**
+   * Whether this host offers the run's REASONS: the expand/collapse control that opens the
+   * full ladder in place, and the peek's one sentence about what objected or what the run is
+   * waiting on.
+   *
+   * The Board card's own `workflowDetails` Display item, and true everywhere else. It is one
+   * flag rather than two because the two are one reading: a card that states no reason has
+   * nowhere useful for "why" to come from, and a card that offers no way in has no business
+   * starting the sentence. Defaults true so the session pane, which has a whole tab of
+   * height to spend, is unaffected by a preference about card density.
+   */
+  workflowDetails?: boolean;
   /**
    * The session this run is reviewing, when the host already renders it.
    *
@@ -807,6 +851,7 @@ export function WorkflowLadderPanel({
             onExpandedChange={tileDisclosure.onExpandedChange}
             onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
             progressMeter={progressMeter}
+            workflowDetails={workflowDetails}
             regionId={disclosureRegionId}
             loadError={summaryOnly}
           >
@@ -836,6 +881,7 @@ export function WorkflowLadderPanel({
             onExpandedChange={tileDisclosure.onExpandedChange}
             onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
             progressMeter={progressMeter}
+            workflowDetails={workflowDetails}
             regionId={disclosureRegionId}
             loadError
           >
@@ -983,6 +1029,7 @@ export function WorkflowLadderPanel({
               onExpandedChange={tileDisclosure.onExpandedChange}
               onSurfaceClick={tileDisclosure.onSurfaceClick ?? null}
               progressMeter={progressMeter}
+              workflowDetails={workflowDetails}
               regionId={disclosureRegionId}
             >
               {ladder}

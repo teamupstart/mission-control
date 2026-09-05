@@ -79,9 +79,9 @@ async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
   const status = await present(deps.ghBin(), deps);
   if (status.state !== "satisfied") return status;
   const result = await deps.runCommand(status.evidence, ["--version"]);
-  const atLeast = result.outcomeUnknown || result.code === null
-    ? null
-    : ghVersionAtLeast(result.stdout, GH_MINIMUM_VERSION);
+  const atLeast = !result.outcomeUnknown && result.code === 0
+    ? ghVersionAtLeast(result.stdout, GH_MINIMUM_VERSION)
+    : null;
   if (atLeast === false) {
     return {
       state: "needs-setup",

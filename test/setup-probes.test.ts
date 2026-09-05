@@ -116,6 +116,11 @@ test("an outdated GitHub CLI reports needs-setup, and a current one stays satisf
     runCommand: async () => ({ ...stubRun({ stdout: "", stderr: "timed out", code: null }), outcomeUnknown: true }),
   }));
   assert.equal(unparseable.state, "satisfied");
+
+  const nonzeroExit = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.4.0 (2021-08-10)\n", stderr: "some other error", code: 1 }),
+  }));
+  assert.deepEqual(nonzeroExit, { state: "satisfied", evidence: "/tools/gh" });
 });
 
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {

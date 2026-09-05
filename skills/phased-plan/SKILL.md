@@ -218,7 +218,8 @@ merges, which is the behavior this skill is for.
 
 For each call:
 
-- Set `title` to `Implement <plan name> - Phase <n>: <phase name>`.
+- Set `title` to `<plan name> - Phase <n>: <phase name>`. A card names the work, not the request for
+  it: no `Implement`, and no `We should`/`I want` framing carried over from the plan's prose.
 - Set `intent` to a brief containing exactly these four parts:
   1. **the goal** - one or two sentences naming the user-visible or engineering outcome this phase
      delivers, written the way the human would ask for it;
@@ -275,7 +276,7 @@ call keeps the same concise intent and adds repository scope rather than copying
 
 ```text
 create_task({
-  title: "Implement Documentation Publishing - Phase 2: Render published guides",
+  title: "Documentation Publishing - Phase 2: Render published guides",
   intent: "Render the approved guides in docs-site. Read docs/plans/documentation-publishing/plan.md, docs/plans/documentation-publishing/phased-plan.md, and docs/plans/documentation-publishing/phase-2-render-published-guides.md in the attached mission-control checkout first. The phase file is the proposed route, not a specification; adapt with judgement and record deviations in the pull request. Mission-control is context-only and must not be changed. Implement only Phase 2, preserve its contracts, run its verification, and open the reviewable docs-site pull request.",
   repository: "docs-site",
   additionalRepositories: ["mission-control"],

@@ -15,7 +15,10 @@ Mission Control refreshes `PATH` asynchronously from the user's login shell and 
 misses share one read, and repeated misses use a short negative-cache window instead of repeatedly
 sourcing shell startup files. Each explicit Setup inspection forces one fresh shared snapshot, so a
 CLI installed or moved by a version manager becomes available to both Setup and dispatch without a
-daemon restart.
+daemon restart. Mise, asdf, and Volta shim directories are always included as a backstop when shell
+startup is unavailable or times out. Their documented `XDG_DATA_HOME`, `ASDF_DATA_DIR`, and
+`VOLTA_HOME` overrides take precedence over the standard per-user locations. Mise's more
+specific `MISE_DATA_DIR` and `MISE_SHIMS_DIR` overrides take precedence over its XDG location.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's

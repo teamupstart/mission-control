@@ -499,12 +499,13 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
  * Two kinds of reservation, and they are here together because a caller only ever wants the
  * one answer "can this be bound, and if not why not".
  *
- * The Board's twelve card-jump chords are the second kind, and they are reserved for exactly
- * the reason `Enter` is above: App's jump arm runs ahead of the action dispatch, so an action
- * bound to ⌘4 keeps working in the Console, on every other page, and with the card item
- * switched off, and silently stops working on the Board. A binding that works in some
- * layouts and not others is the one promise this table makes, so the table refuses it rather
- * than accepting a chord it cannot honour. See `lib/card-shortcuts.ts`.
+ * The fleet's twelve session-jump chords are the second kind, and they are reserved for
+ * exactly the reason `Enter` is above: App's jump arm runs ahead of the action dispatch, so an
+ * action bound to ⌘4 keeps working on every other page, and with the display item switched
+ * off, and silently stops working on the fleet - on either of its layouts, now that the
+ * Console rail prints and answers the same keys. A binding that works in some places and not
+ * others is the one promise this table makes, so the table refuses it rather than accepting a
+ * chord it cannot honour. See `lib/card-shortcuts.ts`.
  *
  * Unconditional, deliberately - NOT gated on whether the operator has the card item on. What
  * this table accepts must not depend on a checkbox in another panel, or binding ⌘4 with the
@@ -512,7 +513,7 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
  */
 export function reservedChordReason(chord: string): string | null {
   if (chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key)) return "grid navigation";
-  if (CARD_SHORTCUT_CHORDS.includes(chord)) return "the Board's card jump shortcuts";
+  if (CARD_SHORTCUT_CHORDS.includes(chord)) return "the fleet's session jump shortcuts";
   return null;
 }
 

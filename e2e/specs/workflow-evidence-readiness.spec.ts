@@ -189,12 +189,12 @@ function stageLaterPacket(
   });
 }
 
-function seedOutcomeAnalytics(daemon: DaemonHandle): void {
-  const readiness = (
-    submissionId: string,
-    status: "ready" | "gaps" | "unavailable",
-    workflowVersion: number,
-  ) => ({
+function readiness(
+  submissionId: string,
+  status: "ready" | "gaps" | "unavailable",
+  workflowVersion: number,
+): Record<string, unknown> {
+  return {
     submissionKey: evidenceTelemetryKey("submission", submissionId),
     policy: "criterion_mapped_v1",
     evaluatorVersion: "criterion-mapped-v1",
@@ -213,7 +213,10 @@ function seedOutcomeAnalytics(daemon: DaemonHandle): void {
     workflowId: "analytics-workflow",
     workflowVersion,
     repositoryScope: "repository",
-  });
+  };
+}
+
+function seedOutcomeAnalytics(daemon: DaemonHandle): void {
   const audit = (
     submissionId: string,
     outcome: "pass" | "fail",
@@ -289,6 +292,29 @@ function seedOutcomeAnalytics(daemon: DaemonHandle): void {
     for (const event of events) {
       insert.run(event[0], event[1], event[2], event[3], JSON.stringify(event[4]));
     }
+  });
+}
+
+function seedUnreadableAuditorWithValidPreflight(daemon: DaemonHandle): void {
+  withDaemonDb(daemon, (db) => {
+    const insert = db.prepare(
+      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      "e2e-readiness-with-unreadable-auditor",
+      "analytics-mixed-window",
+      10,
+      "evidence_readiness_evaluated",
+      JSON.stringify(readiness("mixed-window-submission", "ready", 13)),
+    );
+    insert.run(
+      "e2e-unreadable-auditor",
+      "analytics-mixed-window",
+      11,
+      "test_evidence_audit",
+      JSON.stringify({ malformed: true }),
+    );
   });
 }
 
@@ -565,4 +591,18 @@ test("Test evidence readiness separates preflight outcomes from first Auditor ac
   expect(cardBox, "analytics card must have a rendered box at constrained width").not.toBeNull();
   expect(cardBox!.width, "analytics card must fit the constrained viewport").toBeLessThan(900);
   await capture(dashboard, "07-outcome-analytics-constrained", card);
+});
+
+test("valid preflight outcomes remain visible when Auditor telemetry is unreadable", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedUnreadableAuditorWithValidPreflight(daemon);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  const card = dashboard.locator('[data-anchor="workflows/test-evidence"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("No Test Evidence Auditor attempt could be read back");
+  await expect(card).toContainText("Preflight outcomes");
+  await expect(card).toContainText("0% (0 of 1 enforcing evaluations)");
+  await expect(card).not.toContainText("No Test Evidence Auditor attempt has been recorded yet");
 });

@@ -318,7 +318,7 @@ test("preflight activity without a first Auditor attempt reports No data, never 
   assert.doesNotMatch(html, /interception accepted/i);
 });
 
-test("malformed Auditor telemetry stays unreadable when valid preflight telemetry exists", () => {
+test("valid preflight analytics remain visible when Auditor telemetry is unreadable", () => {
   const html = render({
     ...EMPTY,
     malformed: 3,
@@ -332,6 +332,8 @@ test("malformed Auditor telemetry stays unreadable when valid preflight telemetr
   });
   assert.match(html, /No Test Evidence Auditor attempt could be read back/);
   assert.match(html, /3 recorded attempts\s+could not be read back/);
+  assert.match(html, /Preflight outcomes/);
+  assert.match(html, /Preflight interceptions.*0% \(0 of 1 enforcing evaluations\)/s);
   assert.doesNotMatch(html, /First Auditor attempt accepted/);
   assert.doesNotMatch(html, /No Test Evidence Auditor attempt has been recorded yet/);
 });

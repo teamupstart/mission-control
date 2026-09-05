@@ -224,11 +224,13 @@ export function TestEvidenceReadinessCard({
   const perRun = aggregate?.attemptsPerRun ?? null;
   const noAuditorAttempts = aggregate !== null && aggregate.attempts === 0;
   const noPreflightEvaluations = aggregate !== null && aggregate.preflight.evaluations === 0;
+  const noPreflightTelemetry = noPreflightEvaluations
+    && aggregate.preflight.malformed === 0;
   const noTelemetryRecorded = noAuditorAttempts
     && aggregate.malformed === 0
-    && noPreflightEvaluations
-    && aggregate.preflight.malformed === 0;
+    && noPreflightTelemetry;
   const auditorWindowUnreadable = noAuditorAttempts && aggregate.malformed > 0;
+  const onlyAuditorWindowUnreadable = auditorWindowUnreadable && noPreflightTelemetry;
   const acceptanceMet = meetsTarget(
     acceptance,
     TEST_EVIDENCE_TARGETS.firstPassAcceptance,
@@ -250,7 +252,7 @@ export function TestEvidenceReadinessCard({
         <ConsoleState tone="off">
           No Test Evidence Auditor attempt has been recorded yet
         </ConsoleState>
-      ) : auditorWindowUnreadable ? (
+      ) : onlyAuditorWindowUnreadable ? (
         /* Events exist and NONE of them could be read back. The empty state above is wrong
            here in the way that matters: it reports an auditor nobody has run, when what is
            actually true is that every recorded attempt is unreadable - a corrupted or
@@ -271,16 +273,22 @@ export function TestEvidenceReadinessCard({
         </>
       ) : (
         <>
-          <ConsoleState tone={targetTone(acceptanceMet)}>
-            {acceptance === null
-              ? "First Auditor attempt accepted · No data - no first Auditor attempts recorded"
-              : `First Auditor attempt accepted ${formatAuditRate(
-                  aggregate.firstAuditorAttemptAccepted,
-                  "first Auditor attempts",
-                )} · target at least ${Math.round(
-                  TEST_EVIDENCE_TARGETS.firstPassAcceptance * 100,
-                )}%`}
-          </ConsoleState>
+          {auditorWindowUnreadable ? (
+            <ConsoleState tone="attention">
+              No Test Evidence Auditor attempt could be read back
+            </ConsoleState>
+          ) : (
+            <ConsoleState tone={targetTone(acceptanceMet)}>
+              {acceptance === null
+                ? "First Auditor attempt accepted · No data - no first Auditor attempts recorded"
+                : `First Auditor attempt accepted ${formatAuditRate(
+                    aggregate.firstAuditorAttemptAccepted,
+                    "first Auditor attempts",
+                  )} · target at least ${Math.round(
+                    TEST_EVIDENCE_TARGETS.firstPassAcceptance * 100,
+                  )}%`}
+            </ConsoleState>
+          )}
 
           <Group id="wf-evidence-preflight" title="Preflight outcomes">
             <Row

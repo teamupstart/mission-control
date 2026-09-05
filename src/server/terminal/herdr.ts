@@ -1,8 +1,8 @@
 import { binEnv, binUnsupportedReason, resolveBin } from "./bin.ts";
 import {
+  asTerminal,
   createHerdrClient,
   type HerdrClientDeps,
-  type HerdrResult,
 } from "./herdr-client.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
@@ -49,12 +49,6 @@ const KEY_NAMES: Record<Key, string> = {
 function unsupported(): TerminalResult | null {
   const error = binUnsupportedReason(HERDR_BIN);
   return error ? { ok: false, error, outcomeUnknown: false } : null;
-}
-
-function terminal<T>(result: HerdrResult<T>): TerminalResult {
-  return result.ok
-    ? { ok: true, outcomeUnknown: false }
-    : { ok: false, error: result.error, outcomeUnknown: result.outcomeUnknown };
 }
 
 function uniqueBy<T>(values: readonly T[], key: (value: T) => string): Map<string, T> | null {
@@ -144,7 +138,7 @@ export function herdrMultiplexer(
           cwd: spec.cwd,
           focus: spec.select,
         });
-        if (!created.ok) return terminal(created);
+        if (!created.ok) return asTerminal(created);
 
         const workspaceId = created.value.workspace.workspace_id;
         const paneId = created.value.root_pane.pane_id;

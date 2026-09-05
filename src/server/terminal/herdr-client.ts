@@ -173,7 +173,7 @@ function failure<T>(error: string, outcomeUnknown = false): HerdrResult<T> {
   return { ok: false, error, outcomeUnknown };
 }
 
-function asTerminal(result: HerdrResult<unknown>): TerminalResult {
+export function asTerminal(result: HerdrResult<unknown>): TerminalResult {
   return result.ok
     ? { ok: true, outcomeUnknown: false }
     : { ok: false, error: result.error, outcomeUnknown: result.outcomeUnknown };
@@ -546,23 +546,22 @@ export function createHerdrClient(
     return status.ok ? withKnownSocket(status.value, timeoutMs, work) : status;
   };
 
+  const sendOne = async <T>(batch: SocketBatch, request: Request<T>): Promise<HerdrResult<T>> => {
+    const [result] = await batch.send([request]);
+    return result ?? failure(`Herdr ${request.operation} did not settle`);
+  };
+
   const oneAt = async <T>(
     socketPath: string,
     request: Request<T>,
     timeoutMs = request.mutation ? deps.actionTimeoutMs : deps.readTimeoutMs,
-  ): Promise<HerdrResult<T>> => withKnownSocket(socketPath, timeoutMs, async (batch) => {
-    const [result] = await batch.send([request]);
-    return result ?? failure(`Herdr ${request.operation} did not settle`);
-  });
+  ): Promise<HerdrResult<T>> => withKnownSocket(socketPath, timeoutMs, (batch) => sendOne(batch, request));
 
   const one = async <T>(
     request: Request<T>,
     timeoutMs = request.mutation ? deps.actionTimeoutMs : deps.readTimeoutMs,
     autoStart = false,
-  ): Promise<HerdrResult<T>> => withSocket(timeoutMs, async (batch) => {
-    const [result] = await batch.send([request]);
-    return result ?? failure(`Herdr ${request.operation} did not settle`);
-  }, autoStart);
+  ): Promise<HerdrResult<T>> => withSocket(timeoutMs, (batch) => sendOne(batch, request), autoStart);
 
   const mutate = async <T>(request: Request<T>, autoStart = false): Promise<TerminalResult> =>
     asTerminal(await one(request, deps.actionTimeoutMs, autoStart));

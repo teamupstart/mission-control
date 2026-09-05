@@ -1,506 +1,280 @@
 # Mission Control
 
-Mission Control is a local control plane for teams running Claude Code, Codex, and Pi.
-It brings the sessions, tasks, conversations, reviews, workflows, and delivery signals
-that normally live across terminal panes into one live dashboard.
+**The meta-harness and software factory that just feels good.**
+
+Most software factories ask you to adopt their agent, terminal, workflow, and worldview.
+Mission Control sits one layer above them. It is a meta-harness: one control plane for Claude
+Code, Codex, Pi, terminal and Agent SDK sessions, isolated worktrees, verification, review, and
+delivery.
+
+## Why Mission Control instead of another software factory?
+
+1. **It just feels good.** Every interaction has been obsessively tuned for a fast, calm,
+   keyboard-friendly developer experience. Running a fleet should feel as natural as running one
+   agent.
+2. **It works.** High-quality code is not left to chance. Fast checks, specialized reviewers,
+   evidence-backed repair loops, exact-head pull request review, and CI gates enforce the quality
+   bar from first diff to merge.
+3. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
+   you prefer. It coordinates the system around your tools instead of replacing them. Remote
+   sessions are next.
+4. **It is built for what comes next.** Mission Control is built and supported by Upstart. The
+   local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for
+   superpowers.
+
+**Mission Control: The software factory that just feels good.**
 
 This repository is internal. It is not licensed for public distribution.
 
-## See the fleet
-
-The fleet view turns a working directory full of agent sessions into an operational board:
-what is active, what needs a decision, and what is ready for the next step.
-
 ![Mission Control fleet board](docs/images/fleet-board.png)
 
-**Settings → Display → Board card** decides what a session card states - goal, live activity,
-workflow, model, context, effort, permission mode, cost, branch, worktree, last seen - with a
-live preview card beside the checklist. The flags that ask for you stay on whatever you
-choose, and the defaults draw the card the previous release drew.
+## Run a whole team of coding agents like one product
 
-Fresh profiles automatically start the **Set up this machine** guided tour once, then remember
-that the orientation has been shown. Guided tours can later start from the **Help & tours**
-footer in the Settings rail, which lists one row per registered tour, or from that tour's
-command in the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and three are
-registered. Their names and stage copy are edited in
-[`tours/see-work.md`](tours/see-work.md), [`tours/library.md`](tours/library.md) and
-[`tours/setup.md`](tours/setup.md); see [`tours/README.md`](tours/README.md) for the format.
+One agent is easy to watch. Five are not. Mission Control gives a fleet of coding agents a single
+control room: a board that shows who needs you, a backlog that feeds them work, an optional Foreman
+that handles routine interruptions, verification workflows that define done, a GitHub reviewer and
+merge gate for the last mile, and repository memory so the next agent does not repeat the last
+one's mistake. When an external SDLC engine drives the work, Mission Control watches that too.
 
-**Set up this machine** is the one a fresh profile receives, because nothing else works until
-this machine has the tools the work needs. Four stops: the ⚙ gear, **Setup** in the Settings
-rail, the dependency list where you install the tools you will use, and **Re-check** to confirm
-they took. It installs nothing and runs no remedy, and it is the one tour that leaves you on
-the page it opened rather than returning you to where you started - being on Setup is the
-point of it.
+- [The board](#the-board)
+- [Every agent's desk](#every-agents-desk)
+- [Dispatch and task types](#dispatch-and-task-types)
+- [Standing instructions](#standing-instructions)
+- [Scouts and the archive](#scouts-and-the-archive)
+- [Backlog and sources](#backlog-and-sources)
+- [Foreman](#foreman)
+- [Workflows and Personas](#workflows-and-personas)
+- [Shipping and the GitHub reviewer](#shipping-and-the-github-reviewer)
+- [AI Conductor](#ai-conductor)
+- [Retro and memory](#retro-and-memory)
+- [Ensembles](#ensembles)
+- [The whole loop](#the-whole-loop)
 
-**See the work** teaches the operating half - the Line, the Board, one session's desk, and a
-task from dispatch through review to completion.
-If the fleet is empty, it starts one temporary Chat conversation and uses its real Board
-drill-in to show the session desk. Its Dispatch sequence
-then fills the real task input, explains the **None** Workflow choice, and waits for the
-operator to click the highlighted **Dispatch now** button while the rest of the form stays
-visible. Its final step opens the real Complete dialog with the outcome prefilled as **Tour
-demo**, so the operator can inspect **Run a retro first** and **Complete & close**. Those dialog
-actions stay disabled during the preview; the tour owns its fixed cleanup and never runs a
-retro.
+## The board
 
-**Author what runs** teaches the authoring half, in dependency order: Personas, Actions,
-Commands, then the workflow that composes all three. It walks fifteen stops through the Library
-on shipped built-ins, ends on **No-Mistakes Review**, and then follows one already-ended run of
-that workflow - completed, cancelled or failed alike - into the Runs page and its session's
-**Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
-run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
-same two stops against the built-in graph instead. Tours do not store progress, and these two
-restore the page, the asset, and the control you started from when you exit.
+The board turns a directory full of agent sessions into an operational view. One column per state
+answers what is working, what is idle, and what needs a decision. Cards group by repository and can
+show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
+context. The signals that need a person can never be hidden.
 
-For Files workspace behavior and controls, see the
-[UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).
+Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
+support make the board useful whether you are watching closely or returning after hours away.
 
-**Comment** turns on comment mode, so you can leave a comment on a line the way you would on a
-pull request, and **Review** walks the agent through those comments one at a time - one comment
-per turn, and the next only once the agent has finished with the one before it. The agent
-answers through the bundled Mission MCP server's `respond_to_file_comments` tool, and the
-answer appears in that comment's thread, on that line, without a refresh; the **Files** tab
-raises a count of answers nobody has read yet, which expanding the thread clears. A session
-whose MCP bundle cannot serve that tool is asked to quote the comment's id back in its next
-turn instead, and its answer is recovered from the conversation. See
-[walk the agent through your review](docs/ui.md#walk-the-agent-through-your-review).
-When a paused review explains why a comment was held, **Dismiss** hides that warning without
-resuming the review or dropping the comment. Resuming re-checks the file and shows the warning
-again if the quoted text is still missing.
+Read more in [The Line and fleet UI](docs/ui.md) and
+[Attention, alerts, and Away mode](docs/attention-and-alerts.md).
 
-**Comments** opens a side rail for the selected file. It lists every thread, including resolved
-ones, with its source location and latest message. Selecting a row expands that thread and
-scrolls the current Preview or Editor to its anchored block or line; selecting a resolved thread
-also reveals its **Reopen** action. If an HTML Preview warning says the displayed file is out of
-date, **Refresh** re-reads the selected file in place and dismisses the warning. When the Files
-pane narrows, its filename, metadata, shortcut hints, spacing, and button padding compress before
-the Preview or Editor controls, so every file action remains visible.
+## Every agent's desk
 
-The **Terminal view** keeps every turn in one stream while still distinguishing who sent it.
-Foreman turns carry their purple provenance from the chat log into the terminal, and completion
-reviews separate the original request, each missing item, its suggested fix, and the safety note
-instead of presenting the whole review as one flat paste.
+Open any card to see the conversation, diff, files, review progress, and controls for that session.
+Read it as a terminal stream or a chat, queue and reorder messages, answer structured questions,
+change permission posture, interrupt a turn, and drop images directly into the composer.
 
-Every review prompt created through the bundled Mission MCP server can be dismissed from its
-card, including free-text and option-based questions, plan decisions, shared plans, and diff
-reviews. Dismiss resolves only that review, records no fabricated answer or verdict, and releases
-the blocked tool call when one is waiting. **Close (esc)** only hides the review queue and resolves
-nothing. See [the review channel MCP reference](docs/sessions.md#review-channel-mcp).
+The diff is scoped to what that agent changed. Files support pull request-style line comments and a
+guided review that walks the agent through one thread at a time. A terminal in the same working copy
+is one click away in the terminal or multiplexer you actually use.
 
-## Dispatch with context
+Read more in [Sessions and conversations](docs/sessions.md) and
+[the file review UI](docs/ui.md#walk-the-agent-through-your-review).
 
-Start a task in the right repository, choose its harness and runtime, and decide whether the
-agent should ship, investigate, plan, or simply talk through something with you. Backlog and
-review Workflow controls stay available only where that kind of work supports them.
+## Dispatch and task types
 
-<kbd>+</kbd> starts the guided pass by default. It asks for the repository, kind, harness and
-what runs after the work, then hands over the same dispatch form with those answers set and
-the caret in the task box. The choices print their one-key answers. <kbd>⇥</kbd> or the first
-<kbd>Esc</kbd> leaves the pass at any point and keeps what it has; a second <kbd>Esc</kbd>
-closes Dispatch. Closing and reopening keep the current question and every answer, while
-**Clear**, **Dispatch now**, and **Add to backlog** reset the pass for the next task.
-While the questions are active, dropping an image anywhere on the window attaches it to the
-same task without advancing the pass.
-**Guided** in the modal header and **Settings → Dispatch** control the preference, which ⌘K
-also finds by name. See
-[the guided pass](docs/dispatch-and-backlog.md#the-guided-pass).
+Describe the work, choose who does it, and Mission Control starts the agent in an isolated worktree
+so concurrent sessions do not collide. Use the guided keyboard pass or go straight to the form,
+dispatch immediately or add the work to the backlog, and attach multiple repositories when one
+change spans them. Multi-repository tasks keep one conversation while receiving one worktree and,
+when changed, one independently reviewed pull request per repository.
 
-The repository field is a searchable index of your workspace, and every row in it is the
-checkout's **directory name** rather than its path - the list is only as wide as the field,
-and a column of paths that all begin the same way ellipsizes away the one part that tells two
-repositories apart. Hovering a row reveals its full path, which is also what the field itself
-holds and what the task is dispatched against. Where two checkouts share a name, each of those
-rows adds the **name of a folder above it** underneath - still never a path - so `~/a/api` and
-`~/b/api` are told apart by `a` and `b`. A checkout with no folder above it at all is the one
-row that gets nothing added, because the only thing left to add would be a path. The same
-picker, and the same rows, appear wherever you choose a repository - **Settings → Trust**,
-**Standing instructions**, and **Task sources**.
+Mission Control supports five kinds of work:
 
-**Settings → Repositories** controls which directories feed that index. A fresh machine starts
-with `~/workspace`, `~/code`, `~/dev`, and `~/upstart`; any row can be removed, including a
-seeded one, and **Restore defaults** adds back only the missing seeded rows. The panel reports
-missing, non-directory, unreadable, and unsafe paths, and **Rescan now** makes a newly cloned
-checkout available without waiting for the discovery cache. `MISSION_WORKSPACE_DIRS` remains the
-colon-separated launch-time override. While it is set, the panel names it and keeps the saved
-list read-only.
-
-Open **Backlog details** to choose whether Foreman may automatically schedule a task added
-from Dispatch. Turning **Allow backlog autopilot** off parks the new task in the backlog until
-you enable or manually launch it. This switch affects backlog creation only: **Dispatch now**
-still launches the task immediately.
-
-When Foreman is running in **Live** mode with backlog autopilot on, an amber inline notice
-marks an otherwise eligible task whose primary or attached repositories are missing from
-Foreman's allowlist. The Board, the Line's Backlog drawer, and Sitrep use their existing task
-notification position to name the missing grants, confirm that manual launch still works,
-and link **Manage trust** to the existing
-**Settings → Trust** matrix. Granting every listed repository removes the notice on the next
-Foreman config update. Parked tasks and tasks carrying a launch error keep their existing,
-more specific explanations instead.
-
-If freezing a dispatch's Git bases or provisioning its worktrees fails before any worktree or
-agent remains, a backlog-capable task returns to the Board's Backlog with the exact error on its
-card and its normal launch control enabled. Task kinds that cannot appear in Backlog remain
-failed. Foreman leaves a card carrying that launch error out of unattended scheduling so the
-failure stays visible instead of retrying in a loop. Fix the reported condition, such as Git or
-SSH access to the repository's origin, and launch backlog-capable work again from the same place.
-
-Choose **chat** for an open-ended conversation. It requires an opening message and launches
-immediately from Dispatch, with no backlog, dependencies, generated artifact, archive, or
-automatic after-work action. The session stays yours to continue and complete unless you
-explicitly choose a Workflow for that chat.
-
-Choose **scout** for an investigation whose durable answer belongs in Scouts. Mission Control
-normally verifies that report before completion. If it is missing or incomplete, the first
-**Complete & close** attempt changes nothing and shows what the scout still owes; an explicit
-**Close without report** confirmation can close the task when preserving that answer is not
-needed.
-
-A task can attach more than one repository. Dispatch it and you get **one** agent session
-holding all of them in shared context: its working directory is the primary repo's worktree,
-each attached repo gets a worktree of its own, and the agent is granted write access to every
-one of them. The intent it receives names where each repo lives, which branch each one is on,
-and asks for one pull request per repository it actually changes. Claude and Codex
-support this; the dispatch modal offers the control only for a harness that does. Multi-repo
-tasks are dispatch-only - they cannot be dropped onto an agent that is already running,
-because the extra worktrees and the write access to them are granted when a session starts.
-
-Agents using the bundled Mission MCP server can add the same work to the backlog with
-`create_task`. Omitting repository selectors keeps the calling repository as primary.
-`repository` selects another primary and `additionalRepositories` attaches the rest; each accepts
-an absolute local checkout path or a directory name that is unique in the workspace index. Mission
-Control resolves the complete set to canonical main-checkout paths and checks the selected ship
-harness before storing anything. This local validation does not clone repositories or grant remote
-write access. Foreman's unattended-launch allowlist remains separate, and Git plus the repository
-host enforce push and pull-request authority when delivery reaches them.
-
-Each of those pull requests is tracked on its own. The card and the console list one line per
-repository with that repository's pull request and its state, so a task spanning three repos
-never collapses to a single link. **A multi-repo task completes only when every repository it
-changed has had its pull request merged** - a repo whose branch never moved off the commit it
-was cut at is exempt, and a pull request closed without merging never satisfies the rule, so
-the task stays visible for you to deal with. Merging itself is unchanged: each pull request
-still merges on its own verdict, whenever it alone is ready.
-
-**Every repository it changed gets its own full review, too.** One review run per changed
-repo, running at the same time, each reading that repo's worktree, pinning that repo's pull
-request and spending its own repair budget - so a finding in one repo restarts that repo's
-review alone and never holds up a sibling's merge. A repo the task never touched gets no run
-at all. The card shows one workflow chip per review, each naming its repository.
-
-Everything typed at the agent is per repository too. Each review's packets name the repository
-they are about, and Foreman's review follow-through - the nudge that puts a parked session back
-on unresolved comments or a red CI - tracks each pull request separately, so one repository's
-feedback is never mistaken for another's or lost behind it. They share the pane, so they take
-turns in it: one instruction at a time, never two in a turn expecting neither.
-
-The daemon owns a durable native worktree pool for every physical repository. New tasks,
-Workflow checks, and approved `make session` work use exact lease identities from that allocator
-by default. A disabled repository or positive capacity refusal degrades to a disposable Git
-worktree for tasks and checks, while ambiguous outcomes fail closed. Treehouse is not required;
-persisted legacy rows keep a narrow, conditional-return-only compatibility path.
-**Settings > Worktrees** exposes future capacity policy, native and legacy inventory, exact path
-actions, and preview-first cleanup without replacing task, check, Git, or process ownership.
+- **Ship** delivers a change and opens a pull request.
+- **Scout** investigates a question and preserves the answer as a self-contained report.
+- **Plan** produces a reviewable plan that can become ordered follow-up tasks.
+- **Pipeline** hands the work to an external SDLC engine while keeping it visible here.
+- **Chat** opens a conversation with no required deliverable or ceremony.
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
-## Give a repository standing instructions
+Read more in [Dispatch, backlog, and task sources](docs/dispatch-and-backlog.md).
 
-**Settings → Standing instructions** is one box per repository, in your own words, sent to
-every session Mission Control opens into that checkout. It fills the gap nothing else covers:
-`AGENTS.md` is per-repository but committed, so it reaches every teammate on every machine,
-and Foreman's instructions are machine-local but global and never reach a session at all.
-This is per-repository **and** local to this machine - nothing is written to `~/` and nothing
-is sent to GitHub.
+## Standing instructions
 
-Write a rule and the very next session dispatched into that repository has it. Sessions
-already running keep what they launched with; a live process's system prompt cannot be
-rewritten, so an edit reaches the next session rather than the ones already open.
+Some repository rules belong on your machine, not in every teammate's committed `AGENTS.md`. Write
+those rules once in Mission Control and every new session it launches into that repository receives
+them before work starts.
 
-A machine-wide **Every repository** box covers the checkouts with no rule of their own, and
-the longest matching path wins, so a monorepo package's rule beats the monorepo's. Two states
-that look alike are kept apart on purpose: a repository with **no** entry inherits the
-machine-wide default, while one whose box is **empty** sends nothing at all and beats that
-default. **Use global default** removes the entry; clearing the box does not.
+Instructions can be global or repository-specific, use longest-path matching for monorepos, and
+state exactly how they reach each harness and runtime. Running sessions keep the instructions they
+received at launch, so the UI shows the immutable snapshot rather than pretending a live system
+prompt changed.
 
-Each card carries a **reach** block stating, per harness and runtime, which sessions get the
-text and by which mechanism - a system prompt on Claude, developer instructions on an embedded
-Codex, turn-one prose where a harness has no channel of its own. It also names what this does
-**not** reach: sessions you started outside Mission Control, and Mission Control's own Foreman,
-Inspector and Persona review prompts. A rule that silently reached half the fleet would be
-worse than none, because it would be trusted and wrong.
+Read more in [Skills and settings](docs/skills-and-settings.md) and
+[Configuration](docs/configuration.md#repository-standing-instructions).
 
-Two read-only markers make it visible where it matters. The dispatch form says what a launch
-will send, covering **every** attached repository rather than just the primary. A live
-session's header carries a chip showing what **that** session was actually given at launch,
-which does not change when you later edit the rule. Both name the mechanism as well as the
-size: on Claude the text rides the system prompt and never appears in the transcript, so
-without the chip there would be nothing anywhere to read.
+## Scouts and the archive
 
-See [Skills and settings](docs/skills-and-settings.md).
+Not every valuable result is a code change. A Scout investigates a question and produces one
+answer-first HTML report with its evidence and limitations. The report is self-contained, opens
+without Mission Control, and must exist before normal Scout completion succeeds.
 
-## Keep local settings recoverable
+The archive makes reports and plans searchable by their question and content. They outlive the
+temporary task, agent, branch, and worktree that produced them, while preserving an honest record
+of missing or incomplete evidence.
 
-Mission Control automatically keeps versioned logical snapshots of the settings and reusable
-Library definitions that shape local behavior. **Settings → Restore** provides a redacted preview,
-exact confirmation, an automatic safety snapshot, and a draft-preserving notice in other windows.
+![Mission Control Scouts archive](docs/images/scouts.png)
 
-See [Automatic settings snapshots](docs/configuration.md#automatic-settings-snapshots) for the
-authoritative format, lifecycle, storage, scope, exclusions, and retention contract.
+Read more in [Archives](docs/archives.md).
 
-## Build the operating system around the work
+## Backlog and sources
 
-The Library centralizes reusable workflows, personas, session actions, ensemble strategies,
-mission sources, and gate commands.
+The backlog holds work that should happen but has not started. Order it with priorities and labels,
+hold individual items, express dependencies, or let backlog autopilot schedule eligible work within
+the concurrency you allow.
 
-**Library → Personas → Foreman** is the fixed System profile for Foreman's exact standing
-guidance. Its name, policy, safeguards, models, and authority remain owned by Mission Control
-and their existing Settings controls. Only the Markdown guidance is editable here, and the
-System profile is never offered to workflows or ensembles as a Persona.
+Task sources pull from GitHub issues and Jira without starting agents behind your back. Imported
+work arrives parked by default for triage. Recurring missions and agent-created follow-up tasks feed
+the same queue, so planned work, discovered work, and scheduled work share one lifecycle.
 
-![Mission Control Library](docs/images/library.png)
+Read more in [Dispatch and backlog](docs/dispatch-and-backlog.md),
+[Work queues](docs/work-queues.md), and [Recurring missions](docs/recurring-missions.md).
 
-## Design reusable review workflows
+## Foreman
 
-Workflows and Personas turn the team's review practice into reusable, inspectable building
-blocks. The Line keeps their live runs attached to the fleet. On a run, clicking a settled
-reviewer or Command tile selects that exact result in the review worklist below.
+Foreman is an optional operator for routine fleet interruptions. It reads what a blocked agent is
+actually asking, handles the low-risk calls you have authorized, and turns genuine forks into a
+short decision brief. Draft-only, one-click, and Live modes make the level of delegation explicit,
+with repository trust and hard safety boundaries beneath all three.
 
-A Persona reviews the diff, the bounded transcript, and upstream Check results, plus whatever
-evidence the agent registered through Mission Control - gitignored screenshots, focused UTF-8
-logs, or a completed command's exact output, none of it committed. The conversation's live
-binding is what authorizes that registration, so it works the same on any kind of task and
-whether the workflow was chosen at dispatch or attached by hand to a session already running.
-See [workflows](docs/workflows.md) for the channels, their limits, and what a Persona can see.
-
-On **Workflow Runs**, <kbd>↑</kbd> and <kbd>↓</kbd> select and immediately load runs.
-From the selected run, <kbd>Tab</kbd> enters the pipeline; further Tabs or any arrow key move
-between stages. Press <kbd>Enter</kbd> on a completed stage to load its recorded details in the
-Review worklist below.
-
-![Mission Control workflow library](docs/images/workflows.png)
-
-## Coordinate the fleet
-
-Foreman provides configurable operational guidance for the fleet. GitHub Inspector keeps shipping
-and remote review state visible beside the work that produced it.
+Foreman can also keep accepted work moving: verify completion, deliver focused repair gaps, follow
+pull request feedback and red CI, and schedule backlog work. It remains off until you enable it and
+never treats destructive choices as routine.
 
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
+Read more in [Foreman](docs/foreman.md).
+
+## Workflows and Personas
+
+Workflows turn a team's definition of done into reusable, inspectable automation. Cheap checks run
+before model reviewers, independent Personas review the same immutable evidence snapshot in
+parallel, and failed stages return one focused repair list to the agent before the workflow tries
+again. Published definitions are frozen, so a later edit cannot rewrite what an earlier run meant.
+
+Personas each own one reviewing concern. Session actions can send authored instructions back to the
+working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
+command output can reach reviewers without being committed to the repository.
+
+![Mission Control workflow run](docs/images/workflows.png)
+
+Read more in [Workflows and Personas](docs/workflows.md) and
+[The Library](docs/library-and-line.md).
+
+## Shipping and the GitHub reviewer
+
+The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
+answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
+code fixes them. Dry run records what it would say without publishing anything.
+
+Optional shipping automation can merge only after the current head has a clean published review,
+CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,
+and the repository has separate review and merge grants. The final merge is pinned to the exact
+head that passed those gates.
+
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
-With **Settings → Foreman → Safety → Keep pre-PR ship tasks moving** enabled, an
-invited managed ship task that completion review holds receives its reviewed blocking gaps in
-the same Foreman worker pass. The existing quiet-window shepherd remains the backstop under the
-same setting. Human-driven and task-less sessions keep their silent hold and are not nudged.
+Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
-Foreman durably carries each held verifier gap, including its kind, severity, and strike count,
-into the next completed work cycle of the same accepted prompt. Recovery delivery has a
-three-send budget for that intent episode even when the work-cycle generation advances: repeated
-holds move through attempts two and three, and the next due pass escalates to the human without
-sending again. A newly accepted human prompt begins a new episode and resets both the gap history
-and recovery budget. Existing persisted rows without episode metadata keep their former
-generation-scoped behavior. Delivery markers still identify individual attempts, preserving
-idempotency across restarts.
+## AI Conductor
 
-**Settings → Task sources** pulls work in from trackers you already keep - GitHub issues and
-Jira - on a schedule. A sweep only ever files backlog rows: it never dispatches an agent, cuts
-a worktree, or types into a session. What it files arrives **parked**, with that source's
-**Allow backlog autopilot** switched off, so a sweep's rows are a list you triage rather than
-work that starts dispatching before you have read a title; enabling a row is you saying yes to
-that row. Turn **Allow backlog autopilot** on for a source whose upstream is already curated
-and every later sweep of it files ready-to-schedule tasks instead. See
-[task sources](docs/dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog).
+Some work is driven by a complete SDLC engine rather than one long-running agent. Mission Control
+can observe ai-conductor's gated pipeline, show its agents on the same fleet, surface halts in the
+attention inbox, and invoke the engine's own control commands without becoming a second writer of
+its state.
 
-## Report a public product issue
+Detection is automatic, but reading is opt-in per repository. Pipeline tasks, costs, pull requests,
+and provenance then join the same operating view as directly dispatched work.
 
-Open **Report product feedback** from the topbar or command palette, or explicitly ask an agent to
-report a Mission Control product issue. Both paths prepare the exact GitHub title, labels, body,
-safe environment summary, and optional screenshots for review. Dashboard reports require two
-deliberate presses and native confirmation. Agent reports block until you select **Submit public
-issue**. Dismissing either confirmation publishes nothing.
+Read more in [Pipelines](docs/pipelines.md).
 
-Reports use your installed, authenticated GitHub CLI. Screenshot attachments require `gh` 2.99.0
-or newer and accept up to five PNG, JPEG, GIF, or WebP images through Mission Control's bounded
-upload store. An older CLI keeps text-only reports available and explains why screenshot input is
-disabled.
+## Retro and memory
 
-See [the MCP tool reference](docs/sessions.md#review-channel-mcp) and
-[security boundaries](docs/security.md#public-product-issue-reporting).
+A finished task can offer a retrospective when there is evidence that something worth learning
+happened. It proposes at most three grounded lessons, shows the exact text and evidence, and writes
+nothing until you approve it.
 
-## Watch a pipeline engine you already use
+Approved lessons live with the repository they describe, where future agents receive them. Repeated
+lessons can be promoted into the project's main guidance so memory stays curated instead of growing
+as an unstructured transcript archive.
 
-Some work is driven by an external SDLC engine rather than by a single agent.
-[ai-conductor](docs/pipelines.md) is one: it walks a feature through a gated 22-step pipeline
-in its own worktree and halts for a human when a gate refuses. **Settings → Conductor**
-detects it and lets you consent, per repository, to Mission Control reading its state.
+Read more in [Repository memory](docs/repository-memory.md).
 
-Detection is automatic and consent is not. Nothing is read until a repository is switched on,
-and Mission Control never writes a file the engine owns. With no engine installed and nothing
-configured, the dashboard is exactly what it was - no row, no panel, nothing in the command
-palette. [Pipelines](docs/pipelines.md) owns the exact visibility rule.
+## Ensembles
 
-Once a repository is switched on, the **Runs** page gains a second tab. **Workflows** is the
-page it always was; **Pipelines** shows what the engine is driving - a rail grouped per
-repository under its engine daemon's state, and each feature's whole gated sequence drawn in
-the same diagram grammar a workflow run uses.
+When one attempt is not enough, Mission Control can run several agents independently and help you
+choose among the results:
 
-The engine's own agents show up on the fleet too, and are marked as its rather than yours: a
-session working inside an observed feature's worktree wears the run's badge, groups under it,
-and has a sentence where its composer was, because it is a `--print` process that reads nothing
-typed at it. Its Workflows tab draws the feature's ladder. And when the engine **halts** a
-feature for a human, that halt is a row in the [attention inbox](docs/attention-and-alerts.md)
-with its class, what stopped it, and the runbook that clears it - the one thing waiting on you
-that has no session behind it.
+- **Best of N** ranks the attempts and recommends a winner.
+- **Consensus** separates settled agreement from decisions that still need you.
+- **Panel vote** assigns independent judges to correctness, maintainability, risk, evidence, scope,
+  or other dimensions.
 
-You can act on a pipeline from there, not only read it: start, stop, pause and resume the
-engine's daemon, park and unpark a feature, authorize one DECIDE re-entry with your own
-rationale, watch the daemon's console, and run the re-seal ceremony in a hosted terminal.
+Judging is blind, ties are explicit, candidates remain available, and promotion waits for your
+decision.
 
-The same integration starts at Dispatch. An enabled repository offers the **pipeline** task
-kind. Its shipped host is Claude Agent SDK, which starts a managed Claude session at the
-repository and sends `/engineer <idea>` directly as turn one. **Settings → Conductor → Launch
-runtime** can instead select the explicit Terminal compatibility host, which opens
-`conduct-ts engineer --idea` with live stdin. A failed SDK launch never falls back to Terminal.
-Either host lets conductor own the worktree and downstream agent, model, and effort, and only
-the exact provider projection completes the task. Conductor's background build daemon keeps its
-own tmux supervision. When that run opens a pull request, GitHub Inspector adopts it under
-pipeline provenance and it joins **Shipped**. **Settings → Conductor → Foreman
-triage** can also let Foreman unpark mechanical halts through the same action route the
-dashboard uses. That switch ships off, and every needs-human or unknown halt stays with the
-operator.
-Every verb spawns the engine's own CLI and is judged by what it printed, never by an exit code
-- and what a shipped feature cost lands in the [spend strip](docs/cost-and-usage.md) as
-automation, under the engine's own figures.
+Read more in [Multi-agent ensembles](docs/ensembles.md).
 
-## Quick start
+## The whole loop
 
-There are two paths through this repository, and which one you want depends on whether you are
-*using* Mission Control or *working on* it.
+Work arrives from you, an issue tracker, a recurring mission, a retrospective, or another agent. It
+waits in one backlog, starts in an isolated worktree, stays steerable while the agent works, and
+moves through checks and specialist review. Failures go back to the agent as repair work. A pull
+request is reviewed at its exact head and merges only when the gates you chose are satisfied.
 
-**To use it**, install the macOS app. This is the only path that receives updates.
+Across that loop, Mission Control follows a few durable rules:
 
-```sh
-git clone <internal-repository-url>
-cd ai-harness
-make install
-```
+- It reports what it observed, not what an agent merely claimed.
+- A reviewer outage is unavailable, not a rejection.
+- Powerful automation and outward-facing actions start off.
+- Important states are stated in words, not encoded only by color.
+- App-owned model calls use local CLIs you are already logged into, with no API key stored in
+  Mission Control.
+- Settings, Library definitions, and the product database have recovery paths.
 
-That builds Mission Control in a clone only the updater ever touches, verifies the packaged
-version, and installs `/Applications/Mission Control.app` - a menu-bar app that supervises the
-daemon and delivers alerts with the window closed. From then on it checks for new releases on
-its own and offers them in the app: accepting one builds the new version while Mission Control
-keeps running, with a progress bar and a Cancel, and only asks to restart once it is built and
-verified. Prerequisites, checked before anything long-running starts:
-an Apple Silicon Mac, Node.js 24 or newer, `git`, an authenticated `gh` (`gh auth login`), and
-the Xcode command line tools (`xcode-select --install`). See
-[Desktop app](docs/overview.md#desktop-app-macos) for what each step does, `--ref`, and the
-install receipt.
+That is the meta-harness: your agents and tools can change while the operating loop, quality bar,
+and control surface stay coherent.
 
-**To work on it**, run the dev server against this checkout. It needs Node.js 24 or newer and
-the Xcode command line tools, receives no updates, and writes no install receipt - so the
-updater deliberately stays off for a work-in-progress build.
+## Get started
 
-```sh
-git clone <internal-repository-url>
-cd ai-harness
-make init
-npm run dev
-```
+There are two paths through this repository:
 
-Open `http://127.0.0.1:5173`. For the desktop shell, demo mode, hooks, state locations, and
-the full verification path, use the setup guide below.
+- **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
+  the window closed, and receives updates. See the
+  [desktop app installation guide](docs/overview.md#desktop-app-macos).
+- **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
-## CI runner allocation
+  ```sh
+  make init
+  npm run dev
+  ```
 
-The `gates` job runs on GitHub-hosted `ubuntu-latest`. The CPU-heavy jobs use the shared
-`frontend-platform` runner group, which grants this repository access to both runner sizes.
-The Node 24 and Node 26 unit jobs run directly on `ubuntu-8cpu-32ram-300ssd` with eight test
-workers. Five end-to-end shards run directly on `ubuntu-4cpu-32ram-150ssd` with four
-Playwright workers each.
+  Then open `http://127.0.0.1:5173`. See [First-run setup](docs/setup.md) and
+  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path.
 
-The workflow names both the `frontend-platform` group and the relevant label for each job.
-There is no repository variable or fallback selector. Access is managed centrally in
-`teamupstart/Github_Org_Settings_TF`; changing the group, labels, worker counts, or shard count
-is one capacity decision and should be benchmarked together.
+Mission Control's app-owned headless calls can use either provider transport. Choose the stored
+setting in the app or use the environment variable as a process-level fallback:
 
-This allocation is a performance experiment, not a claim that the five-minute target has
-already been met. Accept it only after three consecutive live workflows complete all eight
-checks green in five minutes or less, measured from workflow creation through completion.
-
-## Choose how the app's own model calls are made
-
-Beyond the agents in the cards, Mission Control makes a few model calls of its own - naming an
-untitled dispatch, refining a Goal, narrating the away digest, reviewing a pull request. Those
-run through a local CLI you are already logged in to, so there is no API key anywhere in this
-path, and **Settings → Models** picks which provider does that work.
-
-**Every app-owned model choice with a fixed place in this app is on that one page**, in three
-groups - the background jobs, Foreman's four roles, and the GitHub Inspector's review - so one
-screen answers *what is this app spending on its own work, and on whose account?* Foreman's
-provider and its Review, Verify, Triage and Backlog models used to live in Foreman's own panel
-and the Inspector's review model in its own; both panels keep every other setting and now point
-here.
-
-A Persona's model and an Ensemble judge's are deliberately not here, and are not an exception to
-that: there is one per row and no fixed number of them, so they are a field on a definition you
-wrote rather than a setting this app owns a slot for. The page says so itself, at the bottom.
-
-Each row carries its own provider as well as its own model, and Foreman's four are no longer one
-choice: its grid leads with an **All roles** row, so the deep pair can run on one account while
-the cheap pair runs on another. A row on *Inherit* follows the row above it - a Foreman role
-follows **All roles**, and everything else follows the app-wide picker, then
-`MISSION_LLM_RUNNER`, then the shipped default. Pinning a model pins its provider, so changing
-the picker re-resolves only the rows still inheriting. That pin is recorded only by a write that
-reaches the pair - saving that row's model, or moving the row above it - so editing an unrelated
-setting never converts an inheriting row into a pinned one. A pair that turns up anyway, from an
-older blob or a hand edit, is refused when the call is resolved rather than spawned, and the row
-names the model id it had to drop.
-
-**One upgrade note.** An unset GitHub Inspector provider used to resolve to a literal `claude`,
-which made it the one subsystem that ignored the app-wide picker and `MISSION_LLM_RUNNER`. It now
-follows the same ladder as everything else, so **if you were relying on that fallback this changes
-which provider the Inspector spawns** - set its provider explicitly to keep Claude.
-
-The models Foreman *launches a backlog task with* are a different question - they choose what a
-launched agent runs as, not what Foreman itself spends - and stay under
-**Settings → Foreman → Launches**.
-
-![Mission Control model settings](docs/images/models.png)
-
-Each provider also has a *transport*: how the daemon talks to that CLI. Both are stored in the
-`llm` config, both can be pinned from the environment, and both resolve the same way - the saved
-setting first, then the environment variable, then the shipped default.
-
-| Provider | Values | Stored as | Environment | Default |
-|---|---|---|---|---|
+| Agent | Transports | Stored setting | Environment fallback | Shipped default |
+| --- | --- | --- | --- | --- |
 | Claude | `sdk`, `print` | `llm.claudeTransport` | `MISSION_CLAUDE_TRANSPORT` | `sdk` |
 | Codex | `exec`, `sdk` | `llm.codexTransport` | `MISSION_CODEX_TRANSPORT` | `exec` |
 
-For Codex, `exec` spawns `codex exec` and decodes its `--json` stream by hand; `sdk` drives the
-same binary through `@openai/codex-sdk` and reads typed thread events instead. **That is a choice
-about how a reply is parsed, not about how it is fetched.** Both transports spawn the same
-executable and pay the same model round trip, so selecting `sdk` buys typed events and a
-supported cancellation path - and does not make anything faster. Reach for it to debug or to get
-structured events, never to fix a slow dispatch.
-
-Full behavior, including why the SDK is pinned to the same binary `MISSION_CODEX_BIN` names, is in
-[configuration](docs/configuration.md) and [models](docs/models.md).
+See [Configuration](docs/configuration.md) for the complete precedence rules and transport
+tradeoffs.
 
 ## Go deeper
 
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
-- [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and local state fit together.
-- [Contributing](CONTRIBUTING.md) - clone-to-green setup, test layers, and contribution expectations.
+- [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
+  local state fit together.
+- [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries
+  that make Mission Control adaptable.
 - [Security policy](SECURITY.md) - security posture and internal vulnerability reporting.
-
-## Regenerate screenshots
-
-The screenshots above come from the built dashboard in deterministic, token-free demo mode.
-After a dashboard change, rebuild and run:
-
-```sh
-npm run build
-npm run docs:screenshots
-```

@@ -37,6 +37,7 @@ import type { SdkEvent } from "../src/server/harness/types.ts";
 /** A hand-driven query: frames go in when the test says so, controls are recorded. */
 class FakeQuery implements ClaudeSdkQuery {
   readonly control: string[] = [];
+  iterationStarts = 0;
   usageCalls = 0;
   usageResponse: ClaudeSdkUsageResponse = {
     rate_limits_available: false,
@@ -85,12 +86,19 @@ class FakeQuery implements ClaudeSdkQuery {
     this.control.push(`model:${model}`);
   }
 
+  async return(): Promise<IteratorResult<ClaudeSdkMessage, void>> {
+    this.control.push("return");
+    this.end();
+    return { value: undefined, done: true };
+  }
+
   async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse> {
     this.usageCalls += 1;
     return this.usageResponse;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<ClaudeSdkMessage> {
+    this.iterationStarts += 1;
     for (;;) {
       const next = this.queued.shift();
       if (next) {
@@ -730,6 +738,75 @@ test("overlapping sends share one authentication recovery and one resumed subpro
   );
   assert.equal(starts[1]!.options.resume, "agent-auth-overlap");
   await handle.stop();
+});
+
+test("a stop racing authentication relaunch disposes the fresh query before attachment", async () => {
+  const starts: Harnessed[] = [];
+  let observeRelaunch!: () => void;
+  const relaunchStarted = new Promise<void>((resolve) => {
+    observeRelaunch = resolve;
+  });
+  let releaseRelaunch!: () => void;
+  const relaunchReleased = new Promise<void>((resolve) => {
+    releaseRelaunch = resolve;
+  });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      if (launchIndex === 0) {
+        void (async () => {
+          for await (const turn of prompt) turns.push(turn);
+          query.end();
+        })();
+      } else {
+        observeRelaunch();
+        await relaunchReleased;
+      }
+      return query;
+    },
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const stale = starts[0]!.query;
+  stale.emit(INIT("agent-auth-stop-race"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit({
+    type: "assistant",
+    session_id: "agent-auth-stop-race",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  });
+  stale.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: "agent-auth-stop-race",
+    errors: ["Not logged in · Please run /login"],
+  });
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  const recovering = handle.send({ text: "continue after external login" });
+  await relaunchStarted;
+  try {
+    await handle.stop();
+    releaseRelaunch();
+    await assert.rejects(recovering, /this session's driver has stopped/);
+    assert.equal(starts.length, 2);
+    assert.deepEqual(starts[1]!.query.control, ["return"]);
+    assert.equal(starts[1]!.query.iterationStarts, 0, "the stopped session must not attach it");
+    const events = await terminal;
+    const exited = events.find((event) => event.kind === "exited");
+    assert.equal(exited?.kind === "exited" && exited.resumable, true);
+  } finally {
+    releaseRelaunch();
+    starts[1]?.query.end();
+    await handle.stop();
+  }
 });
 
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {

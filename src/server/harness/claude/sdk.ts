@@ -470,6 +470,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.cumulativeUsage = null;
     try {
       const fresh = await this.relaunch(this.turns, this.agentSessionId);
+      if (this.stopped) {
+        await fresh.return(undefined);
+        throw new Error("this session's driver has stopped");
+      }
       this.attach(fresh);
     } catch (error) {
       this.finish(error instanceof Error ? error.message : String(error));
@@ -654,6 +658,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   async stop(): Promise<void> {
     if (this.stopped) return;
+    if (!this.query) {
+      this.finish("Mission Control stopped this session.");
+      return;
+    }
     this.stopped = true;
     // Deny what is still parked BEFORE closing the input, or the CLI shuts down with a
     // control request it will never get an answer to and the subprocess hangs on exit.

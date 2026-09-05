@@ -60,6 +60,53 @@ test("every workflow mutation uses shared parseBody schemas", async () => {
   assert.equal((await request(`/api/workflows/${valid.workflow.id}`, { method: "DELETE", body: "{}" })).status, 400);
 });
 
+test("evidence readiness overrides require explicit risk acknowledgement", async () => {
+  const { request } = fixture();
+  const path = "/api/workflow-runs/missing/submissions/missing/evidence-readiness/override";
+  const override = (body: object) => request(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await override({ requestId: "missing-ack", reason: "Accept the gaps" })).status, 400);
+  assert.equal((await override({
+    requestId: "false-ack",
+    reason: "Accept the gaps",
+    acknowledgedRisk: false,
+  })).status, 400);
+  const acceptedShape = await override({
+    requestId: "true-ack",
+    reason: "Accept the gaps",
+    acknowledgedRisk: true,
+  });
+  assert.equal(acceptedShape.status, 404);
+  assert.deepEqual(await acceptedShape.json(), {
+    error: "The workflow run or submission was not found.",
+    code: "workflow_evidence_readiness_override_not_found",
+  });
+});
+
+test("evidence readiness mutations reject oversized bodies before parsing", async () => {
+  const { request } = fixture();
+  const oversized = JSON.stringify({
+    requestId: "oversized-readiness-request",
+    reason: "Accept the gaps",
+    acknowledgedRisk: true,
+    padding: "x".repeat(64 * 1024),
+  });
+  const mutation = (action: "retry" | "override") => request(
+    `/api/workflow-runs/missing/submissions/missing/evidence-readiness/${action}`,
+    { method: "POST", body: oversized },
+  );
+
+  const retry = await mutation("retry");
+  assert.equal(retry.status, 413);
+  assert.deepEqual(await retry.json(), { error: "Workflow evidence readiness retry is too large" });
+  const override = await mutation("override");
+  assert.equal(override.status, 413);
+  assert.deepEqual(await override.json(), { error: "Workflow evidence readiness override is too large" });
+});
+
 test("definition CAS conflicts are 409 and validation failures are 422", async () => {
   const { request } = fixture();
   const invalid = await request("/api/workflows", { method: "POST", body: JSON.stringify({ name: "Incomplete" }) });
@@ -322,7 +369,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 12, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, 13, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -331,21 +378,21 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@12`);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@13`);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
   // through the same route after the catalog gained version 8.
   assert.deepEqual(
     detailBody.versions.map((version) => version.version),
-    [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
   );
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
   assert.deepEqual(
     ((await versions.json()) as Array<{ version: number }>).map((version) => version.version),
-    [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
   );
-  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -437,7 +484,13 @@ test("the shipped workflow is readable through the existing workflow routes", as
   assert.deepEqual(slopVersion.completionPolicy, { kind: "none" });
   assert.equal(slopVersion.graph.nodes.some((node) => node.id === "nmr-code-design"), true);
   assert.equal(slopVersion.graph.nodes.some((node) => node.id === "nmr-slop-filter"), true);
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/13`)).status, 404);
+  const readinessVersion = await (await request(`/api/workflows/${BUILTIN_ID}/versions/13`)).json() as {
+    evidenceReadinessPolicy: string;
+    graph: { nodes: Array<{ id: string; kind: string }> };
+  };
+  assert.equal(readinessVersion.evidenceReadinessPolicy, "criterion_mapped_v1");
+  assert.deepEqual(readinessVersion.graph, slopVersion.graph);
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/14`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

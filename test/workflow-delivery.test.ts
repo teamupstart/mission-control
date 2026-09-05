@@ -44,12 +44,16 @@ function seededStore(suffix: string): InstanceType<typeof WorkflowStore> {
   return store;
 }
 
-function prepare(store: InstanceType<typeof WorkflowStore>, suffix: string) {
+function prepare(
+  store: InstanceType<typeof WorkflowStore>,
+  suffix: string,
+  kind: "persona_feedback" | "evidence_readiness" = "persona_feedback",
+) {
   return store.prepareDelivery({
     id: `delivery-${suffix}`,
     runId: `run-${suffix}`,
     submissionId: `submission-${suffix}`,
-    kind: "persona_feedback",
+    kind,
     sessionId: `session-${suffix}`,
     noteKey: `note-${suffix}`,
     payload: "repair exactly once",
@@ -90,6 +94,31 @@ test("daemon recovery converts sending to uncertain and blocks its run, preservi
   assert.equal(sendingStore.getDelivery(sending.id)?.state, "uncertain");
   assert.equal(sendingStore.getRun("run-recover")?.currentPhase, "delivery_uncertain");
   assert.equal(preparedStore.getDelivery(prepared.id)?.state, "prepared");
+});
+
+test("marking an uncertain readiness packet delivered restores the readiness wait", () => {
+  const store = seededStore("readiness-recovery");
+  const delivery = prepare(store, "readiness-recovery", "evidence_readiness");
+  store.setRunState(
+    "run-readiness-recovery",
+    "waiting_for_evidence_readiness",
+    "evidence_readiness",
+    { submissionId: "submission-readiness-recovery" },
+    3,
+  );
+  store.claimDeliverySend(delivery.id);
+  store.recoverSendingDeliveries(4);
+
+  const resolved = store.resolveUncertainDelivery(
+    delivery.id,
+    "mark_delivered",
+    "confirm-readiness-delivered",
+    5,
+  );
+
+  assert.equal(resolved?.delivery.state, "delivered");
+  assert.equal(store.getRun("run-readiness-recovery")?.status, "waiting_for_evidence_readiness");
+  assert.equal(store.getRun("run-readiness-recovery")?.currentPhase, "evidence_readiness");
 });
 
 test("resolving an uncertain delivery preserves an orphaned run block", () => {

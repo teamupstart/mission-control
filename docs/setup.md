@@ -44,9 +44,13 @@ raise the reminder. A dismissal is bound to the required rows in the checks resu
 if another tab observes repair or regression first, the stale dismissal is refused and asks the
 operator to re-check.
 
-The **Set up this machine** guided tour explains families, statuses, remedies, and **Re-check**
-without executing a remedy. Start it from **Help & tours** at the bottom of the Settings rail or
-from **Start Set up this machine tour** in the command palette.
+The **Set up this machine** guided tour shows you how to reach this panel and what to do with
+it, in four stops: the ⚙ gear, **Setup** in the Settings rail, the dependency list where you
+install the tools you will use, and **Re-check** to confirm they took. It runs once
+automatically on a fresh profile, and can be started again from **Help & tours** at the bottom
+of the Settings rail or from **Start Set up this machine tour** in the command palette. It
+executes no remedy, and it leaves you here on Setup rather than returning you to the page you
+started from.
 
 Install Node.js 24 or newer and verify it:
 

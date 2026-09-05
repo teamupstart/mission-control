@@ -2950,9 +2950,9 @@ export const UI_CONFIG_DEFAULTS = {
    * NOT empty, and this is the one place the reason is written down.
    *
    * The default is "the card this build's predecessor drew", not "every item this build
-   * knows about". Every other id in the registry names something a card already drew, so
+   * knows about". Almost every id in the registry names something a card already drew, so
    * its absence here means visible and an upgrade moves nothing. `worktree` is the one
-   * item that is NEW to the card, so shipping it visible would put a fact on every card
+   * FACT that is new to the card, so shipping it visible would put a fact on every card
    * in every column on upgrade without anyone asking - which is exactly what defaulting
    * to today's rendering exists to prevent. It is hidden until an operator opts in, and
    * un-hiding it is the ordinary checkbox: the id leaves this list like any other.
@@ -2974,6 +2974,15 @@ export const UI_CONFIG_DEFAULTS = {
    * the ladder leaves every existing profile unseeded. Deriving one from the other makes the
    * disagreement unexpressible rather than merely tested for, so adding a ships-hidden item
    * is one line on the ladder and nothing else.
+   *
+   * `cardShortcut` is absent from this list, and it is the one new item that is absent on
+   * purpose rather than by inheritance. It is not a fact about the session: it is the
+   * keycap for a CAPABILITY - ⌘1 … ⌘= open a card's console - and the rule above exists to
+   * stop a card quietly growing a new sentence about its agent, not to stop the app
+   * shipping a way to reach a card. Hiding it by default would ship twelve chords that do
+   * nothing until an operator finds a checkbox they have no reason to look for, which is
+   * the same as not shipping them. Unchecking it stands both the keycaps and the chords
+   * down together; see the registry entry.
    */
   hiddenDisplayItems: [
     ...PRE_SEED_HIDDEN_DISPLAY_ITEMS,
@@ -3546,6 +3555,8 @@ export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_created"),
     idea: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
+    readinessRequired: z.literal(true).optional(),
+    integrationOwner: z.string().min(1).max(256).optional(),
   }),
   EngineerEventBaseSchema.extend({ type: z.literal("engineer_run_started") }),
   EngineerEventBaseSchema.extend({
@@ -3602,6 +3613,9 @@ export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
     prUrl: z.string().url().max(ENGINEER_EVENT_LIMITS.urlChars).nullable(),
     outcome: z.enum(["pr_opened", "local_commit"]),
     state: z.literal("awaiting_spec_merge"),
+    retainedCommit: z.string().regex(/^[0-9a-f]{40,64}$/i).optional(),
+    retainedAt: z.string().datetime().optional(),
+    retentionDeadline: z.string().datetime().optional(),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_cancelled"),
@@ -3609,11 +3623,37 @@ export const EngineerLifecycleEventSchema = z.discriminatedUnion("type", [
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_failed"),
-    error: z.string().min(1).max(ENGINEER_EVENT_LIMITS.textChars),
+    error: z.string().min(1).max(2048),
+    class: z.enum(["authentication", "authorization", "remote", "workspace", "tooling", "provider", "unknown"]).optional(),
+    code: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars).optional(),
+    summary: z.string().min(1).max(240).optional(),
+    retryable: z.boolean().optional(),
+    remedy: z.string().min(1).max(512).nullable().optional(),
+    diagnostic: z.string().min(1).max(2048).nullable().optional(),
   }),
   EngineerEventBaseSchema.extend({
     type: z.literal("engineer_run_settled"),
     outcome: z.literal("awaiting_spec_merge"),
+  }),
+  EngineerEventBaseSchema.extend({
+    type: z.literal("engineer_readiness_checked"),
+    status: z.enum(["ready", "blocked", "inconclusive"]),
+    code: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    summary: z.string().min(1).max(240),
+    checkedCapabilities: z.array(z.string().min(1).max(64)).min(1).max(32),
+    retryable: z.boolean(),
+    remedy: z.string().min(1).max(512).nullable(),
+    diagnostic: z.string().min(1).max(2048).nullable(),
+    fingerprint: z.string().min(1).max(128),
+    permitted: z.boolean(),
+  }),
+  EngineerEventBaseSchema.extend({
+    type: z.literal("engineer_worktree_retired"),
+    worktreePath: z.string().min(1).max(ENGINEER_EVENT_LIMITS.pathChars),
+    branch: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    planSlug: z.string().min(1).max(ENGINEER_EVENT_LIMITS.identityChars),
+    reason: z.enum(["spec_merged", "spec_closed", "task_cancelled", "retention_expired", "operator_cleanup"]),
+    retainedCommit: z.string().regex(/^[0-9a-f]{40,64}$/i).nullable(),
   }),
 ]);
 
@@ -5360,6 +5400,16 @@ export const RetryWorkflowRunSchema = z.object({
   nodeAttemptId: WorkflowIdSchema.optional(),
 });
 export type RetryWorkflowRun = z.infer<typeof RetryWorkflowRunSchema>;
+
+export const RetryWorkflowEvidenceReadinessSchema = z.object({
+  requestId: z.string().min(1).max(200),
+}).strict();
+
+export const OverrideWorkflowEvidenceReadinessSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  reason: z.string().trim().min(1).max(WORKFLOW_LIMITS.readinessOverrideReason),
+  acknowledgedRisk: z.literal(true),
+}).strict();
 
 export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),

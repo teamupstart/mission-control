@@ -12,6 +12,7 @@ import {
   type PipelineCommissionAttempt,
   type PipelineCommissionId,
   type PipelineProviderId,
+  type PipelineEngineerCapabilities,
   type PipelineStep,
   type UnsupportedEngineerLifecycleEvent,
   type UnknownEngineerLifecycleEvent,
@@ -47,6 +48,7 @@ export function createPipelineCommission(input: {
   correlationId?: string;
   launchKey?: string;
   now?: number;
+  capabilities?: PipelineEngineerCapabilities;
 }): PipelineCommission {
   const now = input.now ?? Date.now();
   const id = input.id ?? randomUUID();
@@ -82,6 +84,21 @@ export function createPipelineCommission(input: {
     authoringBranch: null,
     planSlug: null,
     handoff: null,
+    capabilities: input.capabilities ?? {
+      supported: true,
+      readiness: false,
+      worktreeRetirement: false,
+      retainedReviewWorktrees: false,
+      ownedAttempts: false,
+    },
+    integrationOwner: null,
+    readinessRequired: false,
+    readiness: null,
+    failure: null,
+    retention: null,
+    retirement: null,
+    successorCandidate: null,
+    projectionDrift: null,
     linkedRun: null,
     blocker: null,
     error: null,
@@ -103,6 +120,8 @@ export function bindPipelineCommissionAttempt(input: {
   providerAttempt: number;
   attemptKey: string;
   previousEngineerRunId: string | null;
+  integrationOwner?: string | null;
+  readinessRequired?: boolean;
   now?: number;
 }): PipelineCommission {
   const held = getPipelineCommission(input.commissionId);
@@ -136,6 +155,10 @@ export function bindPipelineCommissionAttempt(input: {
     attempts: held.attempts.map((attempt) =>
       attempt.attempt === bound.attempt ? bound : attempt,
     ),
+    integrationOwner: input.integrationOwner === undefined
+      ? held.integrationOwner ?? null
+      : input.integrationOwner,
+    readinessRequired: input.readinessRequired ?? held.readinessRequired ?? false,
     updatedAt: now,
   };
   upsertPipelineCommissionAttempt(next, bound);
@@ -187,6 +210,12 @@ export function appendPipelineCommissionAttempt(input: {
     authoringBranch: null,
     planSlug: null,
     handoff: null,
+    readiness: null,
+    failure: null,
+    retention: null,
+    retirement: null,
+    successorCandidate: null,
+    projectionDrift: null,
     linkedRun: null,
     blocker: null,
     error: null,
@@ -351,8 +380,7 @@ function reduceKnownEvent(
 ): { commission: PipelineCommission; attempt: PipelineCommissionAttempt } {
   let next: PipelineCommission = {
     ...commission,
-    blocker: null,
-    error: null,
+    ...(event.type === "engineer_worktree_retired" ? {} : { blocker: null, error: null }),
     updatedAt: Date.parse(event.ts),
   };
   let nextAttempt: PipelineCommissionAttempt = {
@@ -363,6 +391,30 @@ function reduceKnownEvent(
   switch (event.type) {
     case "engineer_run_created":
       nextAttempt = { ...nextAttempt, state: "created" };
+      next = {
+        ...next,
+        readinessRequired: event.readinessRequired === true,
+        integrationOwner: event.integrationOwner ?? next.integrationOwner,
+      };
+      break;
+    case "engineer_readiness_checked":
+      next = {
+        ...next,
+        readinessRequired: true,
+        readiness: {
+          status: event.status,
+          code: event.code,
+          summary: event.summary,
+          checkedCapabilities: event.checkedCapabilities,
+          retryable: event.retryable,
+          remedy: event.remedy,
+          diagnostic: event.diagnostic,
+          fingerprint: event.fingerprint,
+          permitted: event.permitted,
+          checkedAt: event.ts,
+        },
+        error: event.permitted ? null : event.summary,
+      };
       break;
     case "engineer_run_started":
       next = { ...next, lifecycle: "authoring" };
@@ -465,6 +517,13 @@ function reduceKnownEvent(
         authoringBranch: event.branch,
         planSlug: event.planSlug,
         currentStep: null,
+        retention: event.retainedCommit && event.retainedAt && event.retentionDeadline
+          ? {
+              retainedCommit: event.retainedCommit,
+              retainedAt: event.retainedAt,
+              retentionDeadline: event.retentionDeadline,
+            }
+          : next.retention,
       };
       nextAttempt = {
         ...nextAttempt,
@@ -481,14 +540,82 @@ function reduceKnownEvent(
       next = { ...next, lifecycle: "cancelled", currentStep: null, error: event.reason };
       nextAttempt = { ...nextAttempt, state: "cancelled", terminalReason: event.reason };
       break;
-    case "engineer_run_failed":
-      next = { ...next, lifecycle: "failed", currentStep: null, error: event.error };
+    case "engineer_run_failed": {
+      const summary = event.summary ?? event.error;
+      next = {
+        ...next,
+        lifecycle: "failed",
+        currentStep: null,
+        error: summary,
+        failure: {
+          error: event.error,
+          class: event.class ?? "unknown",
+          code: event.code ?? "legacy_failure",
+          summary,
+          retryable: event.retryable ?? false,
+          remedy: event.remedy ?? null,
+          diagnostic: event.diagnostic ?? null,
+        },
+      };
       nextAttempt = { ...nextAttempt, state: "failed", terminalReason: event.error };
       break;
+    }
     case "engineer_run_settled":
       next = { ...next, lifecycle: "awaiting_spec_merge", currentStep: null };
       nextAttempt = { ...nextAttempt, state: "settled" };
       break;
+    case "engineer_worktree_retired": {
+      if (
+        next.authoringWorktree !== event.worktreePath ||
+        next.authoringBranch !== event.branch ||
+        next.planSlug !== event.planSlug
+      ) {
+        next = {
+          ...next,
+          projectionDrift: {
+            kind: "retirement_identity",
+            detail: "Provider retirement identity conflicts with the frozen authoring workspace.",
+          },
+        };
+        break;
+      }
+      if (
+        event.retainedCommit !== null &&
+        nextAttempt.evidenceCommit !== null &&
+        nextAttempt.evidenceCommit.toLowerCase() !== event.retainedCommit.toLowerCase()
+      ) {
+        next = {
+          ...next,
+          projectionDrift: {
+            kind: "retirement_commit",
+            detail: "Provider retirement commit conflicts with frozen workspace evidence.",
+          },
+        };
+        break;
+      }
+      next = {
+        ...next,
+        authoringWorktree: event.worktreePath,
+        retirement: {
+          worktreePath: event.worktreePath,
+          branch: event.branch,
+          planSlug: event.planSlug,
+          reason: event.reason,
+          retainedCommit: event.retainedCommit,
+          retiredAt: event.ts,
+        },
+        projectionDrift: null,
+      };
+      if (event.retainedCommit !== null && nextAttempt.evidenceCommit === null) {
+        nextAttempt = {
+          ...nextAttempt,
+          evidenceCommit: event.retainedCommit.toLowerCase(),
+          evidenceCommitProvenance: "provider_retirement",
+          evidenceFrozenAt: Date.parse(event.ts),
+        };
+      }
+      break;
+    }
   }
   next = {
     ...next,
@@ -531,11 +658,16 @@ export function applyEngineerEvent(
   ) {
     return { outcome: "mismatch", commission: null };
   }
+  const isRetirement = parsed.known && parsed.event.type === "engineer_worktree_retired";
   if (
     (TERMINAL_ATTEMPT_STATES.has(attempt.state) ||
       TERMINAL_COMMISSION_LIFECYCLES.has(held.lifecycle)) &&
-    event.revision > attempt.providerRevision
+    event.revision > attempt.providerRevision &&
+    !isRetirement
   ) {
+    return { outcome: "terminal", commission: null };
+  }
+  if (isRetirement && !["settled", "cancelled"].includes(attempt.state)) {
     return { outcome: "terminal", commission: null };
   }
   if (parsed.known && parsed.event.type === "engineer_spec_handoff") {

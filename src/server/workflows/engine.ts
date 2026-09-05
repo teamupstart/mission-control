@@ -30,6 +30,7 @@ import {
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
+  checkRunBudgetSpent,
   isVerdictNode,
   verdictAuthor,
 } from "@shared/workflow.ts";
@@ -46,7 +47,10 @@ import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges }
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
 import { getWorkflowPolicy } from "./config.ts";
-import { testEvidenceAuditEvent } from "./test-evidence-audit.ts";
+import {
+  isFirstCompletedTestEvidenceAuditorAttempt,
+  testEvidenceAuditEvent,
+} from "./test-evidence-audit.ts";
 import {
   DEFAULT_CHECK_CONCURRENCY,
   createCheckScheduler,
@@ -482,13 +486,13 @@ export class WorkflowEngine {
       this.blockSubmission(submission, "invalid_version", "Published workflow has no Session node");
       return;
     }
-    // A CONTINUATION segment does not re-submit from Session. Its evidence was captured
-    // because one action finished, and the only work it authorizes is that action's own
-    // downstream route - already seeded as a receipt by the continuation transaction.
-    // Seeding Session here would activate the whole first wave again on the child evidence,
-    // which is exactly the "restart the graph" behaviour a repair round means and a
-    // continuation must not.
-    const seedSession = submission.segment === 0;
+    // A session-action continuation does not re-submit from Session. Its evidence was
+    // captured because one action finished, and it authorizes only that action's downstream
+    // route, already seeded by the continuation transaction. An evidence-preflight segment
+    // is different: it is a same-round replacement packet and must run the graph from Session
+    // once its structure is ready.
+    const seedSession = submission.segment === 0
+      || submission.refinementReason === "evidence_preflight";
     let changed = true;
     while (changed) {
       changed = false;
@@ -862,8 +866,16 @@ export class WorkflowEngine {
         // would still have made every waiting and running check occupy one of the three
         // tool-less model-review slots, which is exactly what a separate budget is for.
         const target = this.targetNode(attempt);
-        const gate = target?.kind === "check" ? this.checkLimit : this.limit;
-        const promise = gate(() => this.runAttempt(attempt))
+        const skipCheckLimit = target?.kind === "check"
+          && this.checkBudgetAlreadySpent(attempt, target);
+        const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
+        const run = () => this.runAttempt(attempt, checkLimitHeld);
+        // A Command whose per-run allowance is already spent needs no execution capacity:
+        // `runCheck` records budget_spent without calling the executor. Starting that attempt
+        // directly prevents a repair round from sitting behind unrelated builds merely to be
+        // skipped once a slot opens. `runCheckAttempt` still gates its executor as a race-safe
+        // fallback if the budget epoch or catalog changes after this read.
+        const promise = (skipCheckLimit ? run() : checkLimitHeld ? this.checkLimit(run) : this.limit(run))
           .catch((error) => workflowLog("error", {
             event: "attempt_failed",
             call: attempt.id,
@@ -914,7 +926,32 @@ export class WorkflowEngine {
     return this.resolveAttempt(attempt)?.node ?? null;
   }
 
-  private async runAttempt(initial: WorkflowNodeAttempt): Promise<void> {
+  /**
+   * Whether this Check can be decided from an allowance a prior attempt already spent.
+   *
+   * This is an admission hint, never the verdict authority. The durable reservation inside
+   * `runCheck` remains the atomic decision, so two same-slot gates cannot overspend and a
+   * concurrent settings change cannot make an executable Command escape the shared limiter.
+   */
+  private checkBudgetAlreadySpent(
+    attempt: WorkflowNodeAttempt,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+  ): boolean {
+    const resolved = this.resolveAttempt(attempt);
+    if (!resolved) return false;
+    const command = this.workflowCommand(node.slot);
+    const spent = this.store.checkRunsSpent(
+      resolved.run.id,
+      node.slot,
+      resolved.run.checkBudgetEpochRound ?? null,
+    );
+    return checkRunBudgetSpent(
+      spent,
+      command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    );
+  }
+
+  private async runAttempt(initial: WorkflowNodeAttempt, checkLimitHeld = false): Promise<void> {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
@@ -932,7 +969,7 @@ export class WorkflowEngine {
       }
     }
     if (isCheck(node)) {
-      await this.runCheckAttempt(initial, submission, run, version, node);
+      await this.runCheckAttempt(initial, submission, run, version, node, checkLimitHeld);
       return;
     }
     if (!isPersona(node)) return;
@@ -1071,6 +1108,11 @@ export class WorkflowEngine {
     const evidenceAudit = testEvidenceAuditEvent({
       persona: node.persona,
       nodeId: node.id,
+      attemptId: claimed.id,
+      firstAuditorAttempt: isFirstCompletedTestEvidenceAuditorAttempt(
+        this.store.listAttemptsForRun(run.id),
+        claimed.id,
+      ),
       submission,
       context: context.data,
       verdict,
@@ -1079,7 +1121,13 @@ export class WorkflowEngine {
       version,
     });
     if (evidenceAudit) {
-      this.store.appendEvent(run.id, "test_evidence_audit", jsonValue(evidenceAudit), this.now());
+      this.store.appendEvent(
+        run.id,
+        "test_evidence_audit",
+        jsonValue(evidenceAudit.payload),
+        this.now(),
+        evidenceAudit.eventId,
+      );
     }
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
@@ -1155,6 +1203,7 @@ export class WorkflowEngine {
     run: WorkflowRun,
     version: WorkflowVersion,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+    checkLimitHeld: boolean,
   ): Promise<void> {
     // Null runner and model: a check is not a model call, and stamping it with a provider it
     // never used would put a fiction in front of whoever reads the run.
@@ -1171,6 +1220,20 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
       return;
     }
+
+    const attemptRef = {
+      attemptId: claimed.id,
+      submissionId: submission.id,
+      nodeId: node.id,
+    };
+    const baseDeps = this.checkDeps(attemptRef);
+    const deps = !checkLimitHeld && baseDeps.execute
+      ? {
+          ...baseDeps,
+          execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
+            this.checkLimit(() => baseDeps.execute!(request)),
+        }
+      : baseDeps;
 
     let result: Awaited<ReturnType<typeof runCheck>>;
     try {
@@ -1200,11 +1263,7 @@ export class WorkflowEngine {
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
-      }, this.checkDeps({
-        attemptId: claimed.id,
-        submissionId: submission.id,
-        nodeId: node.id,
-      }));
+      }, deps);
     } catch (error) {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.

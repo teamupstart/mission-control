@@ -150,7 +150,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 11 are preserved for bindings that already pin them, and version 12 is current. There is
+through 12 are preserved for bindings that already pin them, and version 13 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -175,9 +175,9 @@ slots.
 
 Behind it are the seven built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending deeper reviews on a
-change that has already drifted from what was asked. In versions 11 and 12, Code Risk Reviewer, Code
+change that has already drifted from what was asked. In versions 11 through 13, Code Risk Reviewer, Code
 Quality Judge and Code Design Reviewer are stage 3, running **in parallel on the same
-submission** and aggregating at an All-pass Join. In version 12, Test Evidence Auditor,
+submission** and aggregating at an All-pass Join. In versions 12 and 13, Test Evidence Auditor,
 Documentation Steward and Slop Filter are stage 4, also running in parallel and aggregating at
 their own All-pass Join. Every fail returns to the session for repair, and the Pull Request action
 does not run until both stages pass.
@@ -212,9 +212,9 @@ continuation captured. End still means the authored graph succeeded - and by the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 12 preserve that verified publication
-contract. Versions 10 through 12 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in version 12.
+would ask for one the run already has. Versions 9 through 13 preserve that verified publication
+contract. Versions 10 through 13 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 and 13.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -264,14 +264,16 @@ complete the default trigger; version 7 changes only the immutable
 stage and sets its missing-PR policy to `wait`; version 9 adds Code Quality Judge before that
 action and changes only the new version's completion policy to `none`; version 10 runs Code
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
-Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; and version 12 adds
-Slop Filter to stage 4 without changing the publication contract. Every earlier version remains in the
+Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
+Slop Filter to stage 4; and version 13 keeps that graph while enabling criterion-mapped evidence
+preflight. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
-Code Quality Judge stage unchanged, version 10 its two-member stage 3, and version 11 its
-two-member stage 4. New bindings take version 12 because it is current. Adopting the newer version on an
+Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
+two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
+take version 13 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -782,11 +784,20 @@ and persists a deterministic readiness result with `ready`, `gaps`, or `unavaila
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
-Phase 1 keeps `evidenceReadinessPolicy` at `off` for every built-in, new, and duplicated
-workflow. Publishing refuses a non-off draft until the enforcement lifecycle exists. Coverage
-under `off` still produces advisory readiness, but readiness never changes activation and
-workflow execution remains non-blocking. A null readiness value means historical data or an
-off-policy submission with no coverage; it never means ready.
+Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
+result before the engine creates any Persona or Check attempt. A structural gap parks the run at
+`waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
+original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
+same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
+The operator may instead continue through the run detail after entering a reason and acknowledging
+that Test Evidence Auditor can still reject the packet. That append-only override and the original
+gap result remain visible after activation and restart.
+
+`off` remains the default for author-created and duplicated workflows and preserves Phase 1's
+advisory behavior. An unavailable compaction result and model-suggested proof-class mismatch remain
+warnings rather than hard gaps. A null readiness value means historical data or an off-policy
+submission with no coverage; it never means ready. No-Mistakes Review v13 is the first built-in
+version that opts in; versions 1 through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
@@ -1659,15 +1670,36 @@ It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 ### Test evidence readiness
 
-**Settings → Workflows → Test evidence readiness** aggregates the `test_evidence_audit` events
-above across every retained run and refreshes on the same tick as Workflow health. It reports
-first-pass acceptance (round 1, segment 0), the failure rate over all auditor attempts, auditor
-attempts per run, the possible-overreach rate, each rejection category's share of the failing
-attempts, and evidence-readiness adoption on first submissions: how many carried no image, no text
-artifact, and no upstream Check, how many had a truncated transcript, and how many bytes Check
-retention and transcript head-clipping dropped. Attempts are also broken down by workflow version,
-Persona and guidance digest, which is what makes a guidance revision comparable with the one
-before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
+**Settings → Workflows → Test evidence readiness** reads two separate, newest-first windows across
+every retained run and refreshes on the same tick as Workflow health. The Auditor window contains
+up to 2,000 `test_evidence_audit` events. Its headline is the acceptance rate among each run's first
+completed Test Evidence Auditor attempt. Infrastructure retries do not enter that denominator, and
+packets intercepted by structural preflight are not counted as Auditor passes. The historical
+round-1, segment-0 first-submission acceptance remains visible as a separate measure so its meaning
+does not change under the new denominator. Older events that predate durable first-attempt identity
+are counted as unknown and excluded from the headline.
+
+The independent preflight window contains up to 2,000 readiness evaluations, refinement
+reservations and overrides. Interception and unavailable rates use enforcing
+`criterion_mapped_v1` evaluations as their denominator. Same-round refinement and override rates
+use distinct intercepted runs as their denominator. The panel also reports rejection among first
+Auditor attempts whose captured packet was structurally ready, and separately among those admitted
+by an operator override. These disagreement measures preserve Test Evidence Auditor as the semantic
+authority: preflight checks structure and proof-role coverage, while the Auditor decides whether
+the evidence is relevant and sufficient. Proof-class, missing-role and gap-code frequencies are
+drawn only from intercepted evaluations and are never treated as acceptance.
+
+The panel retains the all-attempt failure rate, attempts per run, possible-overreach rate, each
+rejection category's share of failing attempts, and historical evidence adoption on first
+submissions: how many carried no image, no text artifact, and no upstream Check, how many had a
+truncated transcript, and how many bytes Check retention and transcript head-clipping dropped.
+Auditor attempts are broken down by workflow version, Persona and guidance digest. Preflight
+evaluations are broken down by workflow version and readiness evaluator version. The workflow
+version is the immutable policy snapshot, including whether criterion-mapped readiness was off or
+enforcing; the evaluator version identifies the structural implementation. Neither breakdown is a
+policy-tuning recommendation, and a first sample does not change guidance or thresholds.
+
+The Persona *revision* is not part of the Auditor grouping: the digest identifies the exact
 guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
 rather than halving the population behind two identically labelled ones. A row reports the newest
 revision seen carrying its guidance, and is labelled with the workflow's name from the live
@@ -1677,16 +1709,18 @@ apart. A Persona is named on the row only when it is not the built-in auditor.
 
 It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
 and holds no state; the Persona's published judgment is unaffected by anything shown here. Only
-counts, durable enums and identifiers cross the wire - never prompt, diff, transcript, guidance,
-verdict or session content.
+counts, bounded enums, versions and opaque correlation keys cross the wire - never criterion text,
+captions, commands, file paths, prompt, diff, transcript, guidance, verdict, override reason or
+session content.
 
 An empty population is reported as **no reading**, never as 0%, so a fleet that has never run the
-auditor cannot be mistaken for one whose first-pass acceptance is zero. The aggregate reads the
-newest 2,000 events (`GET /api/workflows/test-evidence-audit`, optional `limit`); when older
-attempts fall outside that window, or an event cannot be read back, the panel says so rather than
-presenting a partial history as the whole one. A window whose events could not be read back at
-all is distinguished from one with no events: an auditor that has never run and telemetry that
-cannot be decoded lead to opposite conclusions, so neither borrows the other's wording.
+auditor cannot be mistaken for one whose first-attempt acceptance is zero. Each aggregate window
+uses the requested `limit` (`GET /api/workflows/test-evidence-audit`, newest 2,000 by default).
+Auditor and preflight truncation are reported independently. When older events fall outside either
+window, or an event cannot be read back, the panel says so rather than presenting a partial history
+as the whole one. A window whose Auditor events could not be read back at all is distinguished from
+one with no Auditor events: an auditor that has never run and telemetry that cannot be decoded lead
+to opposite conclusions, so neither borrows the other's wording.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and

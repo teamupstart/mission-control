@@ -75,6 +75,15 @@ function recordedWorkspaceCommands(daemon: DaemonHandle): string[] {
     .filter(Boolean);
 }
 
+function recordedWorkspaceArgv(daemon: DaemonHandle): string[][] {
+  return recordsIn<{ argv?: unknown }>(daemon.recordDir, (file) => file.startsWith("cmux-"))
+    .map((record) =>
+      Array.isArray(record.argv)
+        ? record.argv.filter((arg): arg is string => typeof arg === "string")
+        : [])
+    .filter((argv) => argv[0] === "new-workspace");
+}
+
 /**
  * Each harness's own spelling of "the mode rides along", as the exact shell words the
  * workspace command must contain - `shellCommand` single-quotes every argv word, so these
@@ -170,6 +179,10 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
       .poll(() => recordedWorkspaceCommands(daemon), { timeout: 15_000 })
       .toHaveLength(1);
     const [command] = recordedWorkspaceCommands(daemon);
+    const [workspaceArgv] = recordedWorkspaceArgv(daemon);
+    const focusAt = workspaceArgv?.indexOf("--focus") ?? -1;
+    expect(focusAt).toBeGreaterThan(-1);
+    expect(workspaceArgv?.[focusAt + 1]).toBe("true");
 
     // The same conversation, on the faked CLI - not a fresh agent wearing the card.
     const executable = agent === "codex"

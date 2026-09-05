@@ -14,6 +14,11 @@ import {
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 import { costPerPrToday, fmtUsd } from "@shared/cost.ts";
+import {
+  pipelineCommissionAttentionEntries,
+  type PipelineCommission,
+  type PipelineRun,
+} from "@shared/pipeline.ts";
 
 /**
  * The Line's fold: fleet state in, six stages out.
@@ -42,6 +47,8 @@ export interface LineFoldInput {
   taskSources: { source: TaskSourceInstance; status: TaskSourceStatus | undefined }[];
   workflowRuns: WorkflowRunSummary[];
   ensembles: EnsembleSummary[];
+  pipelineCommissions?: PipelineCommission[];
+  pipelineRuns?: PipelineRun[];
   /** Pull requests our agents adopted in the trailing week, from the Inspector's ledger. */
   prsThisWeek: number;
   /**
@@ -256,12 +263,30 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
  */
 function foldReview(input: LineFoldInput): LineStageSummary {
   const live = input.workflowRuns.filter((r) => workflowRunIsOpen(r.status));
-  const count = live.length;
+  const pipelineEntries = pipelineCommissionAttentionEntries({
+    commissions: input.pipelineCommissions,
+    tasks: input.tasks,
+    runs: input.pipelineRuns,
+    sessions: input.sessions,
+  });
+  const pipelineLive = pipelineEntries.filter(({ commission, attention }) =>
+    !["cancelled", "settled"].includes(commission.lifecycle) || attention !== null);
+  const pipelineAttention = pipelineLive.filter(({ attention }) => attention !== null).length;
+  const count = live.length + pipelineLive.length;
   if (count === 0) {
     return { stage: "review", count: 0, sentence: "no runs live", tone: "neutral" };
   }
 
   const attention = workflowRunAttentionParts(workflowRunAttentionSplit(live));
+  if (pipelineAttention > 0) attention.push(`${pipelineAttention} Pipeline ${plural(pipelineAttention, "needs", "need")} you`);
+  if (live.length === 0) {
+    return {
+      stage: "review",
+      count,
+      sentence: sentence(`${pipelineLive.length} Engineer ${plural(pipelineLive.length, "commission")}`, ...attention),
+      tone: pipelineAttention > 0 ? "attention" : "working",
+    };
+  }
 
   // Which workflow is doing the most of this - the run ladder's identity, condensed. Ties
   // break on the name so the sentence is stable rather than reordering with map iteration.

@@ -238,8 +238,14 @@ export function codexEffort(effort: ThinkingLevel | null): string | null {
   return effort;
 }
 
-/** The client we identify as on the wire. Codex records it as the rollout's `originator`. */
-const CLIENT_INFO = { name: "mission-control", title: "Mission Control", version: "1" };
+/**
+ * The client we identify as on the wire. Codex records it as the rollout's `originator`.
+ *
+ * Exported for `./model-catalog.ts`, the other module that opens an app-server connection.
+ * One identity for one app: a probe that introduced itself differently would show up in
+ * Codex's own records as a second client, which is not what it is.
+ */
+export const CLIENT_INFO = { name: "mission-control", title: "Mission Control", version: "1" };
 
 /**
  * Notification methods we ask the server never to send.

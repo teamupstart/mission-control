@@ -150,15 +150,16 @@ export interface MuxPane extends MuxTarget {
   /**
    * The pane's root process, usually the shell, or null when the backend does not report it.
    *
-   * Null is a declaration, and a cheap one to get wrong: nothing joins on this. The tty is
-   * what links a pane to the process in it (`correlate.ts`), and the pid is here because
-   * tmux hands it over in the same format string for free. A backend that would have to buy
-   * it separately says null instead of paying - cmux answers it only from a resource-sampling
-   * call that walks every process in every surface, which is not a thing to spend on the
-   * 1500ms discovery tick for a field no reader consults.
+   * When `tty` is null, discovery may use a positive pid as an exact fallback only when this
+   * process is the unique closest ancestor of the representative agent in the same process
+   * snapshot. Missing, unrelated, recycled, and ambiguous pids produce no handle. A backend
+   * that cannot report the root process says null instead of inviting a guess.
    */
   panePid: number | null;
-  /** Controlling tty without the `/dev/` prefix, or null. The join key to everything else. */
+  /**
+   * Controlling tty without the `/dev/` prefix, or null. The strongest correlation key;
+   * when present it always wins over `panePid` for this backend.
+   */
   tty: string | null;
   /** A plain filesystem path, never a URL. */
   cwd: string | null;
@@ -222,12 +223,11 @@ export interface EmulatorPane extends EmulatorTarget {
  * callback cannot be audited, and the audit is the point. `correlate.ts` owns the ancestry
  * walk and names no vendor; an adapter only says what its GUI is called.
  *
- * Null is the other real answer, and it is what both shipped backends declare: a pane whose
- * tty the backend already reports needs no fallback. Note a multiplexer has no slot for this
- * at all - it owns its ptys, so its panes always carry a tty, and its server is reparented
- * away from its clients so ancestry would say nothing anyway. That last fact is load-bearing
- * in the other direction too: a tmux session hosted inside a Ghostty window does NOT walk up
- * to Ghostty, so the multiplexer keeps the pane and the two axes cannot fight over it.
+ * Null is the other real answer, and it is what both shipped emulators declare. Multiplexer
+ * ancestry is a separate exact join through `MuxPane.panePid`; this emulator-only fallback
+ * never consults it. That separation is load-bearing in the other direction too: a tmux
+ * session hosted inside a Ghostty window does NOT walk up to Ghostty, so the multiplexer
+ * keeps the pane and the two axes cannot fight over it.
  */
 export interface HostProcessSpec {
   /**
@@ -296,6 +296,12 @@ export interface NameRules {
 export interface DetachedSessionSpec {
   name: string;
   cwd: string;
+  /**
+   * Whether to select the newly created surface inside the multiplexer. False preserves the
+   * operator's current selection; true requests internal selection but does not promise to
+   * raise an operating-system window.
+   */
+  select: boolean;
   /**
    * The agent binary and its arguments. The agent must land in the pane discovery binds to.
    *

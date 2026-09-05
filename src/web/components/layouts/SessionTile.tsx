@@ -4,10 +4,12 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
-import { relativeTime, repoLeaf, sessionTitleDetail, stateDisplay, uptime } from "../../lib/format.ts";
+import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
+import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
+import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
-import { useInterrupting } from "../../lib/interrupting.ts";
+import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { isDragSelection } from "../../lib/pointer.ts";
 import {
@@ -22,6 +24,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -64,6 +67,7 @@ export function SessionTile({
   pipelineRunObserved = false,
   pipelineRun = null,
   pipelineCommission = null,
+  shortcutChord = null,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -111,13 +115,28 @@ export function SessionTile({
    */
   pipelineRun?: PipelineRun | null;
   pipelineCommission?: PipelineCommission | null;
+  /**
+   * This card's ⌘-number jump chord, or null when it holds no slot.
+   *
+   * Handed down already resolved rather than derived here, because the slot is a fact about
+   * the BOARD and not about the session: it comes from the same ordered column arrays App
+   * gives the arrow keys (`lib/card-shortcuts.ts`), so the key printed on this card and the
+   * key App's handler opens it with are one derivation. A tile computing its own position
+   * could not see the columns either side of it, and the two would drift the first time a
+   * card changed tone.
+   *
+   * Null is ordinary: the thirteenth visible card, a card in a folded repository frame, the
+   * Console rail, and every card while the operator has the item switched off.
+   */
+  shortcutChord?: string | null;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
   // it is pressed.
-  const st = stateDisplay(session, useInterrupting(session.id));
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = pipelineSessionDisplay(session, pipelineCommission, pipelineRun, runtimeState);
   const ticker = liveActivity(session);
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
@@ -174,6 +193,13 @@ export function SessionTile({
   const runtimeLine =
     shown("model") || shown("context") || shown("effort") || shown("mode") || shown("cost");
   const foot = shown("branch") || shown("worktree") || shown("lastSeen");
+  // The ⌘-number jump slot, if this card holds one and the operator wants the keys.
+  //
+  // Gated here as well as where the chords are handed out, and that is not belt-and-braces:
+  // this is the gate the registry OWNS (`test/board-card-items.test.ts` scans for it), and it
+  // is what makes the settings preview honest - the preview mounts one tile with a slot and
+  // no board behind it, so unchecking the box has to be visible from the tile's own side.
+  const jump = shown("cardShortcut") ? shortcutChord : null;
   // The expand chord drives the same transition as the disclosure button, so it is offered on
   // exactly the same condition. Registering it while the button is switched off would leave a
   // key that silently expanded a panel with no control to close it again - and `App` treats an
@@ -283,7 +309,7 @@ export function SessionTile({
           because the root declines clicks that merely end a text selection. Reaching a
           session by keyboard must not depend on whether something happens to be selected
           somewhere on the page. */}
-      <Tooltip label={`Open ${openName}`}>
+      <Tooltip label={jump ? `Open ${openName} (${formatChord(jump)})` : `Open ${openName}`}>
         <button
           type="button"
           className="tile-open"
@@ -293,6 +319,11 @@ export function SessionTile({
           }}
           aria-label={`Open ${openName}`}
           aria-current={selected}
+          /* The keycap beside the name is `aria-hidden`, as every keycap in this app is, so
+             this is where the chord is actually announced - on the control it drives. It is
+             also what keeps the shortcut discoverable with keycaps switched off, since the
+             tooltip above names it too. */
+          aria-keyshortcuts={jump ? ariaKeyshortcuts(jump) : undefined}
         />
       </Tooltip>
 
@@ -311,6 +342,12 @@ export function SessionTile({
             <span className="tile-held">held</span>
           </Tooltip>
         )}
+        {/* Last in the head, which is the card's top-right corner: the name above it takes
+            the remaining width, so this lands where a reader's eye finishes the title and
+            never pushes the title's ellipsis around. `Keycap` is the shared component every
+            other printed chord in the app uses, so these switch off with the rest of them
+            and cannot come to look like a different kind of thing. */}
+        {jump && <Keycap chord={jump} />}
       </span>
 
       {shown("goal") && session.goal?.text && (

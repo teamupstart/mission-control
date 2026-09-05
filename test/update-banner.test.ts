@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { UpdateSnapshot } from "../src/shared/update.ts";
+import { updatePrepareProgress, type UpdateSnapshot } from "../src/shared/update.ts";
+import { UPDATE_COPY } from "../src/shared/update-copy.ts";
 import { UpdateBanner } from "../src/web/components/UpdateBanner.tsx";
 
 test("an available update renders its version, release summary, and actions", () => {
@@ -20,6 +21,8 @@ test("an available update renders its version, release summary, and actions", ()
   const html = renderToStaticMarkup(createElement(UpdateBanner, {
     snapshot,
     onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
     onDefer: () => {},
     onCheck: () => {},
     onDismiss: () => {},
@@ -36,6 +39,8 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
   const render = (snapshot: UpdateSnapshot): string => renderToStaticMarkup(createElement(UpdateBanner, {
     snapshot,
     onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
     onDefer: () => {},
     onCheck: () => {},
     onDismiss: () => {},
@@ -48,6 +53,7 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
 
   const applying = render({
     phase: "applying",
+    currentVersion: "0.1.0",
     newVersion: "0.2.0",
     stage: "starting",
     lastOutcome: null,
@@ -118,7 +124,8 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
   });
 
   assert.deepEqual([
-    text(applying).includes("Preparing to update Mission Control to 0.2.0."),
+    text(applying).includes(UPDATE_COPY.applying.title("0.2.0")),
+    text(applying).includes(UPDATE_COPY.applying.detail),
     text(applying).includes("administrator permission"),
     text(applying).includes("/Applications"),
     controls(applying).length === 0,
@@ -135,5 +142,119 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     idle === "",
     text(longNotes).includes("VISIBLE_RELEASE_SUMMARY"),
     !text(longNotes).includes(distinctiveSuffix),
-  ], Array.from({ length: 16 }, () => true));
+  ], Array.from({ length: 17 }, () => true));
+});
+
+
+test("a build in progress renders a real, valued progress bar and a way out", () => {
+  const html = renderToStaticMarkup(createElement(UpdateBanner, {
+    snapshot: {
+      phase: "preparing",
+      currentVersion: "0.1.0",
+      newVersion: "0.2.0",
+      releaseTag: "v0.2.0",
+      stage: "dependencies",
+      cancelling: false,
+      lastOutcome: null,
+    },
+    onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
+    onDefer: () => {},
+    onCheck: () => {},
+    onDismiss: () => {},
+  }));
+
+  const { percent, step, steps } = updatePrepareProgress("dependencies");
+  // The exact markup shape is the point of this layer: a progressbar with a real value, not a
+  // spinner, and a fill whose width is that same value.
+  assert.match(html, new RegExp(`role="progressbar"[^>]*aria-valuenow="${percent}"`));
+  assert.match(html, new RegExp(`width:${percent}%`));
+  assert.match(html, /aria-valuemin="0"[^>]*aria-valuemax="100"/);
+  assert.match(html, new RegExp(`aria-valuetext="Installing dependencies, step ${step} of ${steps}"`));
+  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes(UPDATE_COPY.preparing.title("0.2.0")), text);
+  assert.match(text, /Installing dependencies · step 6 of 8/);
+  // The exact sentence the native dialog shows for this phase, from the one owner both read.
+  assert.ok(text.includes(UPDATE_COPY.preparing.detail), text);
+  assert.match(html, /<button[^>]*>Cancel<\/button>/);
+});
+
+test("a prepared update offers the restart that installs it", () => {
+  const html = renderToStaticMarkup(createElement(UpdateBanner, {
+    snapshot: {
+      phase: "ready",
+      currentVersion: "0.1.0",
+      newVersion: "0.2.0",
+      releaseTag: "v0.2.0",
+      stagedAt: Date.parse("2026-08-19T12:04:00.000Z"),
+      lastOutcome: null,
+    },
+    onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
+    onDefer: () => {},
+    onCheck: () => {},
+    onDismiss: () => {},
+  }));
+
+  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes(UPDATE_COPY.ready.title("0.2.0")), text);
+  assert.ok(text.includes(UPDATE_COPY.ready.detail), text);
+  assert.match(text, /takes a few seconds/);
+  assert.match(text, /administrator permission/);
+  assert.match(html, /<button[^>]*>Restart and Install<\/button>/);
+  assert.match(html, /<button[^>]*>Later<\/button>/);
+  // No progress bar here: there is nothing left to wait for.
+  assert.doesNotMatch(html, /role="progressbar"/);
+});
+
+
+test("the phase copy has one owner, and says something for every phase that shows it", () => {
+  // Two surfaces show these three phases - this banner and the native dialog in
+  // src/main/index.ts - so the strings live in src/shared/update-copy.ts and both read them.
+  // This asserts the copy itself is usable; test/update-desktop-contract.test.ts asserts that
+  // neither surface hard-codes its own version of it.
+  for (const phase of ["preparing", "ready", "applying"] as const) {
+    const copy = UPDATE_COPY[phase];
+    assert.match(copy.title("1.2.3"), /Mission Control/);
+    assert.ok(copy.title("1.2.3").includes("1.2.3"), phase);
+    assert.ok(copy.detail.length > 20, phase);
+    assert.ok(copy.detail.endsWith("."), phase);
+  }
+  // The two phases that close the app both say so, because that is the thing a person was
+  // never told before.
+  assert.match(UPDATE_COPY.ready.detail, /close/);
+  assert.match(UPDATE_COPY.applying.detail, /close/);
+  // And the phase that does NOT close it says that instead.
+  assert.match(UPDATE_COPY.preparing.detail, /keeps running/);
+});
+
+
+test("a cancelled build says it is stopping, and offers no Cancel to press again", () => {
+  const html = renderToStaticMarkup(createElement(UpdateBanner, {
+    snapshot: {
+      phase: "preparing",
+      currentVersion: "0.1.0",
+      newVersion: "0.2.0",
+      releaseTag: "v0.2.0",
+      stage: "build",
+      cancelling: true,
+      lastOutcome: null,
+    },
+    onApply: () => {},
+    onInstall: () => {},
+    onCancel: () => {},
+    onDefer: () => {},
+    onCheck: () => {},
+    onDismiss: () => {},
+  }));
+
+  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes(UPDATE_COPY.cancelling.title("0.2.0")), text);
+  assert.ok(text.includes(UPDATE_COPY.cancelling.detail), text);
+  // No bar, because the value would keep claiming progress, and no Cancel, because it has
+  // already been pressed and the build is on its way out.
+  assert.doesNotMatch(html, /role="progressbar"/);
+  assert.doesNotMatch(html, /<button/);
 });

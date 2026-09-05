@@ -18,12 +18,20 @@ workflow, model, context, effort, permission mode, cost, branch, worktree, last 
 live preview card beside the checklist. The flags that ask for you stay on whatever you
 choose, and the defaults draw the card the previous release drew.
 
-Fresh profiles automatically start the **See the work** guided tour once, then remember that
-the orientation has been shown. Guided tours can later start from the **Help & tours** footer
-in the Settings rail, which lists one row per registered tour, or from that tour's command in
-the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and two are registered.
-Their names and stage copy are edited in [`tours/see-work.md`](tours/see-work.md) and
-[`tours/library.md`](tours/library.md); see [`tours/README.md`](tours/README.md) for the format.
+Fresh profiles automatically start the **Set up this machine** guided tour once, then remember
+that the orientation has been shown. Guided tours can later start from the **Help & tours**
+footer in the Settings rail, which lists one row per registered tour, or from that tour's
+command in the <kbd>⌘K</kbd> palette's **Do** group. One tour runs at a time, and three are
+registered. Their names and stage copy are edited in
+[`tours/see-work.md`](tours/see-work.md), [`tours/library.md`](tours/library.md) and
+[`tours/setup.md`](tours/setup.md); see [`tours/README.md`](tours/README.md) for the format.
+
+**Set up this machine** is the one a fresh profile receives, because nothing else works until
+this machine has the tools the work needs. Four stops: the ⚙ gear, **Setup** in the Settings
+rail, the dependency list where you install the tools you will use, and **Re-check** to confirm
+they took. It installs nothing and runs no remedy, and it is the one tour that leaves you on
+the page it opened rather than returning you to where you started - being on Setup is the
+point of it.
 
 **See the work** teaches the operating half - the Line, the Board, one session's desk, and a
 task from dispatch through review to completion.
@@ -42,8 +50,8 @@ on shipped built-ins, ends on **No-Mistakes Review**, and then follows one alrea
 that workflow - completed, cancelled or failed alike - into the Runs page and its session's
 **Workflows** tab. It writes nothing - no asset is saved, duplicated, published, or bound, no
 run is started, and no model is called - and a machine with no ended No-Mistakes run reads the
-same two stops against the built-in graph instead. Tours do not store progress, and both restore
-the page, the asset, and the control you started from when you exit.
+same two stops against the built-in graph instead. Tours do not store progress, and these two
+restore the page, the asset, and the control you started from when you exit.
 
 For Files workspace behavior and controls, see the
 [UI keyboard shortcut reference](docs/ui.md#keyboard-shortcuts).
@@ -382,7 +390,9 @@ make install
 That builds Mission Control in a clone only the updater ever touches, verifies the packaged
 version, and installs `/Applications/Mission Control.app` - a menu-bar app that supervises the
 daemon and delivers alerts with the window closed. From then on it checks for new releases on
-its own and offers them in the app. Prerequisites, checked before anything long-running starts:
+its own and offers them in the app: accepting one builds the new version while Mission Control
+keeps running, with a progress bar and a Cancel, and only asks to restart once it is built and
+verified. Prerequisites, checked before anything long-running starts:
 an Apple Silicon Mac, Node.js 24 or newer, `git`, an authenticated `gh` (`gh auth login`), and
 the Xcode command line tools (`xcode-select --install`). See
 [Desktop app](docs/overview.md#desktop-app-macos) for what each step does, `--ref`, and the

@@ -1,4 +1,5 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
+import type { Task } from "@shared/types.ts";
 import {
   PIPELINE_DAEMON_ACTIONS,
   pipelineGrantAllowed,
@@ -11,6 +12,7 @@ import {
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
+import { api } from "../lib/api.ts";
 import type { PipelineRunAddress } from "../workflows/useWorkflowRoute.ts";
 import { PipelineActions } from "./PipelineActions.tsx";
 import { PipelineFeatureReader } from "./PipelineFeatureReader.tsx";
@@ -46,6 +48,7 @@ import { usePipelineRunDetail } from "./usePipelineRunDetail.ts";
 export function PipelineRuns({
   runs,
   commissions,
+  tasks = [],
   selectedCommissionId,
   onSelectCommission,
   selected,
@@ -54,6 +57,7 @@ export function PipelineRuns({
 }: {
   runs: PipelineRun[];
   commissions: PipelineCommission[];
+  tasks?: Task[];
   selectedCommissionId: string | null;
   onSelectCommission: (commissionId: string) => void;
   /** The run the address bar names, or null for the bare tab. */
@@ -65,6 +69,9 @@ export function PipelineRuns({
   // Mounted only when the tab is showing, so the poll's `active` is unconditional here: the
   // tab itself is what gates it, and it does not exist for an operator observing nothing.
   const { repos, refresh } = usePipelineRepos(true);
+  const [checkingCommissionId, setCheckingCommissionId] = useState<string | null>(null);
+  const [startingCommissionId, setStartingCommissionId] = useState<string | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
   const sections = useMemo(() => pipelineRail(runs, repos ?? []), [runs, repos]);
 
   const addressed = findPipelineRun(runs, selected);
@@ -88,6 +95,9 @@ export function PipelineRuns({
     activeRun?.slug ?? null,
     activeRun?.updatedAt ?? 0,
   );
+  const activeTask = activeCommission
+    ? tasks.find((task) => task.id === activeCommission.taskId) ?? null
+    : null;
   // The daemon verbs on offer follow the daemon this run's own repository reports, which is
   // the rail's chip: three of the four are no-ops at any moment, and offering the one that
   // does nothing is what teaches an operator to stop trusting the row. `unknown` when the
@@ -127,6 +137,27 @@ export function PipelineRuns({
   // `("/repo/foo1", "-fix")` would produce one key - two different runs sharing one React key
   // and one "active" mark.
   const activeKey = activeRun ? pipelineRunKeyOf(activeRun) : null;
+  const recheckReadiness = async (): Promise<void> => {
+    if (!activeCommission || checkingCommissionId) return;
+    setCheckingCommissionId(activeCommission.id);
+    setReadinessError(null);
+    const result = await api.recheckPipelineReadiness(activeCommission.taskId);
+    if (!result.ok) setReadinessError(result.error ?? "Readiness could not be checked");
+    setCheckingCommissionId(null);
+  };
+  const startAfterReadiness = async (): Promise<void> => {
+    if (!activeCommission || startingCommissionId) return;
+    setStartingCommissionId(activeCommission.id);
+    setReadinessError(null);
+    const result = await api.startPipelineAfterReadiness(activeCommission.taskId);
+    if (!result.ok) setReadinessError(result.error ?? "Engineer could not be started");
+    setStartingCommissionId(null);
+  };
+  const canStartAfterReadiness = activeCommission?.readiness?.permitted === true &&
+    checkingCommissionId === null &&
+    activeCommission.lifecycle === "created" &&
+    activeTask?.status === "running" &&
+    !activeTask.sessionId;
 
   return (
     <section className="pipelines">
@@ -261,6 +292,11 @@ export function PipelineRuns({
                 onRefresh={refresh}
               /> : null
             }
+            checkingReadiness={checkingCommissionId === activeCommission?.id}
+            onRecheckReadiness={() => { void recheckReadiness(); }}
+            canStartAfterReadiness={canStartAfterReadiness}
+            startingAfterReadiness={startingCommissionId === activeCommission?.id}
+            onStartAfterReadiness={() => { void startAfterReadiness(); }}
             onSelectRun={onSelect}
           />
         ) : (
@@ -281,6 +317,7 @@ export function PipelineRuns({
             </Tooltip>
           </div>
         )}
+        {readinessError && <p className="pipelines-repo-error" role="alert">{readinessError}</p>}
       </div>
     </section>
   );

@@ -245,8 +245,10 @@ authorize commit, push, pull-request creation, merge, cleanup, another task, or 
 
 The workflow's Code Quality Judge and GitHub Inspector have different owners. Code Quality Judge
 is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 graph. The current
-v10 graph runs it alongside Code Risk Reviewer in stage 3, followed by Test Evidence Auditor and
-Documentation Steward in stage 4, all inside the local repair loop before the Pull Request action.
+v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
+Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
+repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
+readiness before that graph can create its first attempt.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.
 

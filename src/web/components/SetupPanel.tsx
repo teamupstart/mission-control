@@ -497,22 +497,19 @@ function VerdictHeader({
   loading,
   onRefresh,
   recheckRef,
-  panelRef,
 }: {
   rows: readonly SetupRowView[];
   loading: boolean;
   onRefresh(): void;
   recheckRef: (node: HTMLButtonElement | null) => void;
-  panelRef: (node: HTMLElement | null) => void;
 }): React.JSX.Element {
   const all = tally(rows);
   const read = rows.length > 0;
   const clean = read && all.requiredGaps === 0;
   return (
     // Carries `setup/recheck`, which is what the command palette's "Machine setup checks"
-    // entry deep-links to, and the tour's opening spotlight. Both used to sit on an intro
-    // paragraph that this header replaced.
-    <header className="setup-verdict" data-anchor="setup/recheck" ref={panelRef}>
+    // entry deep-links to. It used to sit on an intro paragraph that this header replaced.
+    <header className="setup-verdict" data-anchor="setup/recheck">
       <div
         className={`setup-verdict-mark is-${read ? (clean ? "ready" : "attention") : "unknown"}`}
         aria-hidden
@@ -573,9 +570,10 @@ export function SetupPanel({
   jumpAnchor?: string | null;
   jumpRequestId?: number | null;
 }): React.JSX.Element {
-  const panelTourRef = useTourTargetRef<HTMLElement>("setup:panel");
-  const railTourRef = useTourTargetRef<HTMLElement>("setup:rail");
-  const paneTourRef = useTourTargetRef<HTMLElement>("setup:pane");
+  // The family rail and the rows it selects, as one spotlight: the tour hands the whole
+  // dependency list over rather than reading a family, because which family is worth opening
+  // depends on what this machine turns out to be missing.
+  const dependenciesTourRef = useTourTargetRef<HTMLDivElement>("setup:dependencies");
   const recheckTourRef = useTourTargetRef<HTMLButtonElement>("setup:recheck");
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
@@ -630,11 +628,10 @@ export function SetupPanel({
         loading={state.loading}
         onRefresh={() => void state.refresh()}
         recheckRef={recheckTourRef}
-        panelRef={panelTourRef}
       />
       {state.error && <p className="settings-error">{state.error}</p>}
-      <div className="setup-split">
-        <nav className="setup-rail" aria-label="Setup families" ref={railTourRef}>
+      <div className="setup-split" ref={dependenciesTourRef}>
+        <nav className="setup-rail" aria-label="Setup families">
           {SETUP_FAMILY_IDS.map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
             const counts = tally(familyRows);
@@ -676,7 +673,6 @@ export function SetupPanel({
           className="setup-pane"
           id="setup-pane"
           aria-labelledby={`setup-family-${active}-title`}
-          ref={paneTourRef}
         >
           <header className="setup-pane-head">
             <h3 id={`setup-family-${active}-title`}>{info.label}</h3>

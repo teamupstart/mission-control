@@ -123,14 +123,14 @@ interface AgentTty {
 }
 
 /**
- * Index every enumerated pane by the tty it is on, over TWO keys.
+ * Index every enumerated pane by the agent tty it belongs to, over three exact or bounded
+ * keys.
  *
- * The tty a backend reports itself is the strong key and always wins. It was also the only
- * key, which quietly made "can this backend name a tty?" a precondition for existing at all -
- * and Ghostty is a backend that enumerates real, focusable, typeable surfaces and cannot name
- * one (see `HostProcessSpec`). So a pane with no tty gets a second chance through its
- * backend's GUI process, and the rule for spending it is uniqueness: pair when exactly one
- * answer is possible, decline otherwise.
+ * The tty a backend reports itself is the strong key and always wins. A tty-less
+ * multiplexer pane gets an exact second key when its root process is a unique closest
+ * ancestor of the representative agent in this same process snapshot. A tty-less emulator
+ * pane gets the separate bounded heuristic described by `HostProcessSpec` and
+ * `pairUniquely` below.
  *
  * Declining is the important half. A wrong pairing does not degrade, it MISDIRECTS - the
  * card would focus someone else's tab and type a prompt into it, which is the failure mode
@@ -142,6 +142,7 @@ function panesByTty(
   terminals: readonly TerminalEnumeration[],
   procs: readonly Proc[],
   agentTtys: readonly AgentTty[],
+  roots: ReadonlyMap<string, Proc>,
 ): Map<string, TerminalCandidate[]> {
   const byTty = new Map<string, TerminalCandidate[]>();
   const add = (tty: string | null, c: TerminalCandidate): void => {
@@ -176,7 +177,38 @@ function panesByTty(
     }
   }
 
-  // Second key, and only for panes the first one could not place. Runs after the whole first
+  // Exact second key for multiplexers that cannot report a tty. The pane's root process
+  // must be present on the representative agent's real parent chain in this same snapshot;
+  // a missing or merely nearby pid proves nothing. Within a backend the closest ancestor
+  // wins only when unique, and an existing tty candidate suppresses this fallback entirely.
+  const byPid = new Map(procs.map((proc) => [proc.pid, proc]));
+  const muxPanes = new Map<MultiplexerId, MuxPane[]>();
+  for (const terminal of terminals) {
+    if (terminal.kind !== "multiplexer") continue;
+    const panes = muxPanes.get(terminal.backend);
+    if (panes) panes.push(...terminal.panes);
+    else muxPanes.set(terminal.backend, [...terminal.panes]);
+  }
+  for (const { tty } of agentTtys) {
+    const root = roots.get(tty);
+    if (!root) continue;
+    const distances = ancestorDistances(root, byPid);
+    for (const [backend, panes] of muxPanes) {
+      if ((byTty.get(tty) ?? []).some((candidate) => candidate.backend === backend)) continue;
+      const matches = panes.flatMap((pane) => {
+        if (pane.tty !== null || pane.panePid === null || pane.panePid <= 0) return [];
+        const distance = distances.get(pane.panePid);
+        return distance === undefined ? [] : [{ pane, distance }];
+      });
+      const nearest = Math.min(...matches.map((match) => match.distance));
+      const closest = matches.filter((match) => match.distance === nearest);
+      if (closest.length !== 1) continue;
+      const pane = closest[0]!.pane;
+      add(tty, { kind: "multiplexer", backend, name: pane.sessionName, pane });
+    }
+  }
+
+  // Bounded fallback, and only for emulator panes the first key could not place. Runs after the whole first
   // pass so a backend never competes with itself, and so a tty already claimed by a pane that
   // knows its own name is never reassigned by a guess.
   for (const e of terminals) {
@@ -190,7 +222,36 @@ function panesByTty(
       add(tty, { kind: "emulator", backend: e.backend, name: pane.tabTitle, pane });
     }
   }
+
+  // Fallbacks are added after the direct-tty pass, so restore terminal enumeration order
+  // before naming and handle composition consume each list. That keeps registry priority
+  // authoritative even when an earlier backend needed a later correlation pass.
+  const order = new Map(
+    terminals.map((terminal, index) => [`${terminal.kind}:${terminal.backend}`, index]),
+  );
+  for (const candidates of byTty.values()) {
+    candidates.sort((a, b) =>
+      (order.get(`${a.kind}:${a.backend}`) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(`${b.kind}:${b.backend}`) ?? Number.MAX_SAFE_INTEGER));
+  }
   return byTty;
+}
+
+/** Every resolvable parent of `root`, keyed by its exact distance from the agent. */
+function ancestorDistances(root: Proc, byPid: ReadonlyMap<number, Proc>): Map<number, number> {
+  const distances = new Map<number, number>();
+  const visited = new Set([root.pid]);
+  let current = root;
+  let distance = 0;
+  while (true) {
+    const parent = byPid.get(current.ppid);
+    if (!parent || visited.has(parent.pid)) break;
+    visited.add(parent.pid);
+    distance += 1;
+    distances.set(parent.pid, distance);
+    current = parent;
+  }
+  return distances;
 }
 
 /**
@@ -335,8 +396,9 @@ export function representativeAgentPids(procs: Proc[]): number[] {
 /**
  * Correlate processes with terminal panes to produce one session per agent.
  *
- * The reliable join is process -> controlling tty -> pane. We group agent
- * processes by tty, pick the representative agent process on each tty
+ * The strongest join is process -> controlling tty -> pane. A multiplexer that cannot
+ * report a tty may instead join through an exact shell-PID ancestor in the same process
+ * snapshot. We group agent processes by tty, pick the representative agent process on each tty
  * (`chooseAgentRoot`), and name the session by the highest-priority terminal backend
  * holding a pane on that tty - which no longer means "tmux, else wezterm, else the pid",
  * because this function names no backend at all. It reads the enumerations the registries
@@ -365,7 +427,7 @@ export function correlate(
     agentTtys.push({ tty, cwd: procCwds.get(root.pid) ?? null });
   }
 
-  const byTty = panesByTty(input.terminals, input.procs, agentTtys);
+  const byTty = panesByTty(input.terminals, input.procs, agentTtys, roots);
   const sessions: DiscoveredSession[] = [];
 
   for (const [tty] of groups) {

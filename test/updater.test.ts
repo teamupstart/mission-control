@@ -12,9 +12,27 @@ import {
   surfacesFromBackgroundCheck,
   UpdateController,
   UPDATE_GH_ARGS,
+  type HelperHandoff,
   type ReleaseInfo,
   type UpdaterPort,
+  type UpdateStageRequest,
 } from "../src/main/updater.ts";
+import type { UpdatePrepareStage } from "../src/shared/update.ts";
+
+const STAGED_BUNDLE = "/tmp/mission-source/release/mac-arm64/Mission Control.app";
+
+/**
+ * Let the controller's own promise chain settle.
+ *
+ * An accepted update is now several awaits deep - build, then the restart question, then the
+ * handoff - where it used to be one, so a single `setImmediate` no longer reaches the end of
+ * it.
+ */
+async function flush(turns = 8): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 
 const receipt: InstallReceipt = {
   schema: 1,
@@ -63,7 +81,15 @@ test("the detached updater carries the login-shell PATH into the installer", () 
 
 function fixture(over: Partial<UpdaterPort> = {}) {
   const events: string[] = [];
+  const handoffs: HelperHandoff[] = [];
+  const stageRequests: UpdateStageRequest[] = [];
   let outcome: UpdateApplyOutcome | null = null;
+  // One source of truth for what is on disk, because in the real thing there is one: the
+  // install script reads the bundle's identity when it verifies it and reports that with the
+  // marker, so a fake whose marker and whose stat disagree is modelling a race, not a bundle.
+  // The tests that want that race override both deliberately.
+  const identity: UpdaterPort["stagedBundleIdentity"] =
+    over.stagedBundleIdentity ?? (() => ({ version: "1.2.4", revision: "staged-1" }));
   const port: UpdaterPort = {
     packaged: true,
     arch: "arm64",
@@ -73,9 +99,42 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     systemNode: () => "/opt/homebrew/bin/node",
     helperSource: () => "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
     stateDirectory: () => "/tmp/mission-state",
-    handoff: async () => {
+    handoff: async (args) => {
+      handoffs.push(args);
       events.push("handoff");
     },
+    stage: async (request) => {
+      stageRequests.push(request);
+      // The stages a real build reports, thinned to the ones that change the reading: the
+      // first, the long one, and the last before the bundle exists.
+      for (const stage of ["prerequisites", "dependencies", "build"] as UpdatePrepareStage[]) {
+        request.onStage(stage);
+      }
+      // The revision comes from the marker the install script printed when it verified the
+      // bundle, which is what the controller must pin - not whatever it reads afterwards. Here
+      // that is whatever this fixture's disk currently says, which is the consistent case.
+      return {
+        ok: true,
+        staged: {
+          version: "1.2.4",
+          bundlePath: STAGED_BUNDLE,
+          // The script reads this while it still holds the bundle it just built, so it
+          // reports an identity even when THIS app cannot stat the path afterwards - that
+          // split is the situation `install()` and the ready-time check exist for. A test
+          // that wants an install script too old to report one overrides `stage` itself.
+          revision: (() => {
+            try {
+              return identity(STAGED_BUNDLE).revision ?? "staged-1";
+            } catch {
+              return "staged-1";
+            }
+          })(),
+        },
+      };
+    },
+    // The bundle the fake build leaves behind: the version it reported, and a revision that
+    // only changes when something rebuilds it.
+    stagedBundleIdentity: identity,
     requestQuit: () => events.push("quit"),
     readOutcome: () => {
       return outcome;
@@ -91,6 +150,12 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       upToDate: async () => {
         events.push("up-to-date-dialog");
       },
+      preparing: async (version, stage) => {
+        events.push(`preparing-dialog:${version}:${stage}`);
+      },
+      // The default answer to "ready to install?" is yes, so every test that accepts an
+      // update reaches the handoff it used to reach in one step.
+      ready: async () => "install",
       applying: async (version) => {
         events.push(`applying-dialog:${version}`);
       },
@@ -104,7 +169,14 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     ...over,
   };
   const controller = new UpdateController(port);
-  return { controller, events, port, setOutcome: (value: UpdateApplyOutcome) => (outcome = value) };
+  return {
+    controller,
+    events,
+    handoffs,
+    stageRequests,
+    port,
+    setOutcome: (value: UpdateApplyOutcome) => (outcome = value),
+  };
 }
 
 test("ineligible installations disable before any release query", async () => {
@@ -400,7 +472,7 @@ test("menu and tray can share one deduplicated command that applies only after a
   const menu = f.controller.checkForUpdates();
   const tray = f.controller.checkForUpdates();
   assert.equal(menu, tray);
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   choose("apply");
   await menu;
   assert.equal(prompts, 1);
@@ -427,11 +499,11 @@ test("a background recheck cannot invalidate an update dialog awaiting acceptanc
   await f.controller.start();
 
   const command = f.controller.checkForUpdates();
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   assert.equal(f.controller.getSnapshot().phase, "available");
   now += 6 * 60 * 60 * 1000;
   f.controller.onActivate();
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   const background = await f.controller.check(false);
   choose("apply");
   const completed = await command;
@@ -484,16 +556,39 @@ test("activation preserves the startup delay and checks only after a long sleep"
   f.controller.stop();
 });
 
-test("an apply already in flight cannot spawn a second helper", async () => {
-  let finish!: () => void;
-  const f = fixture({ handoff: () => new Promise<void>((resolve) => (finish = resolve)) });
+test("a build already in flight cannot start a second one", async () => {
+  let finish!: (outcome: {
+    ok: true;
+    staged: { version: string; bundlePath: string; revision: string | null };
+  }) => void;
+  const f = fixture({
+    stage: () => new Promise((resolve) => (finish = resolve)),
+  });
   await f.controller.start();
   await f.controller.check(true);
   const first = f.controller.apply();
   const second = f.controller.apply();
   assert.equal(first, second);
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+  finish({ ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "staged-1" } });
+  assert.equal(await first, true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+  f.controller.stop();
+});
+
+test("an install already in flight cannot spawn a second helper", async () => {
+  let finish!: () => void;
+  const f = fixture({ handoff: () => new Promise<void>((resolve) => (finish = resolve)) });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  const first = f.controller.install();
+  const second = f.controller.install();
+  assert.equal(first, second);
   finish();
   assert.equal(await first, true);
+  // This fixture replaces `handoff` outright, so only the quit it triggers is recorded.
+  assert.deepEqual(f.events, ["quit"]);
   f.controller.stop();
 });
 
@@ -513,7 +608,7 @@ test("a manual command reports when an update is already being applied", async (
   await f.controller.start();
 
   const acceptedUpdateCommand = f.controller.checkForUpdates();
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   assert.equal(f.controller.getSnapshot().phase, "applying");
   const repeatedCommand = f.controller.checkForUpdates();
   assert.notEqual(repeatedCommand, acceptedUpdateCommand);
@@ -581,4 +676,577 @@ test("the release-please signature is cut from the notes, but a real horizontal 
   const authored = sanitizeReleaseNotes("### Features\n\n* a thing\n\n---\n\nUpgrade notes: migrate first.");
   assert.match(authored, /---/);
   assert.match(authored, /Upgrade notes: migrate first\./);
+});
+
+
+test("an update is built while the app stays open, and only installs when asked", async () => {
+  const stages: string[] = [];
+  const f = fixture();
+  f.controller.subscribe((snapshot) => {
+    if (snapshot.phase === "preparing") stages.push(snapshot.stage);
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), true);
+  // The whole point: the minutes of building happen with the app running, so nothing has been
+  // handed off and nothing has quit by the time the person is told it is ready.
+  assert.deepEqual(f.events, []);
+  const ready = f.controller.getSnapshot();
+  assert.equal(ready.phase, "ready");
+  if (ready.phase === "ready") assert.equal(ready.newVersion, "1.2.4");
+  assert.deepEqual(stages, ["starting", "prerequisites", "dependencies", "build"]);
+  assert.deepEqual(
+    f.stageRequests.map((request) => [request.sourceClone, request.targetTag]),
+    [["/tmp/mission-source", "v1.2.4"]],
+  );
+
+  assert.equal(await f.controller.install(), true);
+  assert.deepEqual(f.events, ["handoff", "quit"]);
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]?.stagedBundle, STAGED_BUNDLE);
+  assert.equal(f.handoffs[0]?.targetTag, "v1.2.4");
+  // The pin travels with the path: this app's check happened before it quit, and the install
+  // script is the last reader that can refuse a bundle replaced in between.
+  assert.equal(f.handoffs[0]?.stagedRevision, "staged-1");
+  assert.equal(f.controller.getSnapshot().phase, "applying");
+  f.controller.stop();
+});
+
+test("cancelling a build returns to the offer and installs nothing", async () => {
+  let signal!: AbortSignal;
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        signal = request.signal;
+        request.signal.addEventListener("abort", () =>
+          resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." }),
+        );
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  const preparing = f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+
+  f.controller.cancel();
+  assert.equal(signal.aborted, true);
+  assert.equal(await preparing, false);
+  assert.equal(f.controller.getSnapshot().phase, "available");
+  assert.deepEqual(f.events, []);
+
+  // And the offer is still live: accepting it again starts a new build.
+  void f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+  f.controller.stop();
+});
+
+test("quitting the app cancels a build rather than leaving it in the clone", async () => {
+  let signal!: AbortSignal;
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        signal = request.signal;
+        request.signal.addEventListener("abort", () =>
+          resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." }),
+        );
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  const preparing = f.controller.apply();
+  f.controller.stop();
+  assert.equal(signal.aborted, true);
+  assert.equal(await preparing, false);
+});
+
+test("a prepared update that was deferred installs without building again", async () => {
+  const f = fixture();
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  f.controller.defer();
+  assert.equal(f.controller.getSnapshot().phase, "idle");
+
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+  assert.equal(f.stageRequests.length, 1);
+
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.stagedBundle, STAGED_BUNDLE);
+  f.controller.stop();
+});
+
+test("a prepared bundle that is gone is reported instead of handed off", async () => {
+  let identity = { version: "1.2.4", revision: "staged-1" } as {
+    version: string | null;
+    revision: string | null;
+  };
+  const f = fixture({ stagedBundleIdentity: () => identity });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  identity = { version: null, revision: null };
+
+  assert.equal(await f.controller.install(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") {
+    assert.match(snapshot.message, /no longer there to install/);
+    assert.equal(snapshot.retryable, true);
+  }
+  // Nothing quit, so the person still has a working app and a retry.
+  assert.deepEqual(f.events, []);
+
+  // And that emptiness means something: the same fixture records both events as soon as an
+  // install does happen. Retry rebuilds - the vanished bundle was forgotten, not reused - and
+  // this time the handoff goes through.
+  identity = { version: "1.2.4", revision: "staged-2" };
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.stageRequests.length, 2);
+  assert.equal(await f.controller.install(), true);
+  assert.deepEqual(f.events, ["handoff", "quit"]);
+  f.controller.stop();
+});
+
+test("an installed version that cannot stage still applies through the detached helper", async () => {
+  const f = fixture({
+    stage: async () => ({
+      ok: false,
+      reason: "unsupported",
+      message: "This installed version cannot build the update in the background.",
+    }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "applying");
+  assert.equal(f.handoffs[0]?.stagedBundle, null);
+  // Nothing was staged, so there is nothing to pin either, and the helper builds as it always
+  // did rather than being handed a token for a bundle that does not exist.
+  assert.equal(f.handoffs[0]?.stagedRevision, null);
+  assert.deepEqual(
+    f.events.filter((event) => event === "handoff" || event === "quit"),
+    ["handoff", "quit"],
+  );
+  f.controller.stop();
+});
+
+test("a failed build reports itself and leaves the app running", async () => {
+  const f = fixture({
+    stage: async () => ({
+      ok: false,
+      reason: "failed",
+      message: "The update build failed (exit 1). Check the update log and try again.",
+    }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") assert.match(snapshot.message, /exit 1/);
+  assert.ok(f.events.some((event) => event.startsWith("error-dialog:")));
+  assert.ok(!f.events.includes("quit"));
+  f.controller.stop();
+});
+
+test("a failed handoff is reported exactly as a failed build is, and nothing quits", async () => {
+  // The second caller of the one failure-reporting path. Both halves of an accepted update can
+  // fail - the build while the app is open, and the handoff after the person accepts the
+  // restart - and a person must get the same treatment either way: the real reason in the log,
+  // a retryable error in the banner, a dialog for whoever started this from the menu bar, and
+  // an app still running. Pinned on both callers so the shared helper cannot be right in one
+  // place and wrong in the other.
+  const f = fixture({
+    handoff: async () => {
+      throw new Error("EACCES /Applications/Mission Control.app");
+    },
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+
+  assert.equal(await f.controller.install(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") {
+    assert.equal(snapshot.currentVersion, "1.2.3");
+    assert.equal(snapshot.manual, true);
+    assert.equal(snapshot.retryable, true);
+  }
+  // The person sees a dialog, the log keeps the real reason under the handoff prefix, and the
+  // app is still there.
+  assert.ok(f.events.some((event) => event.startsWith("error-dialog:")));
+  assert.ok(
+    f.events.some((event) => event.startsWith("log:update handoff failed: EACCES")),
+    f.events.join("\n"),
+  );
+  assert.ok(!f.events.includes("quit"));
+
+  // And the same protocol from the build half: same shaped snapshot, same dialog, only the
+  // log prefix differs. That is the whole of what the two callers are allowed to vary.
+  const build = fixture({
+    stage: async () => ({ ok: false, reason: "failed", message: "The update build failed (exit 1)." }),
+  });
+  await build.controller.start();
+  await build.controller.check(true);
+  assert.equal(await build.controller.apply(), false);
+  const buildSnapshot = build.controller.getSnapshot();
+  assert.equal(buildSnapshot.phase, "error");
+  if (buildSnapshot.phase === "error" && snapshot.phase === "error") {
+    assert.deepEqual(Object.keys(buildSnapshot).sort(), Object.keys(snapshot).sort());
+    assert.equal(buildSnapshot.manual, snapshot.manual);
+    assert.equal(buildSnapshot.currentVersion, snapshot.currentVersion);
+  }
+  assert.ok(build.events.some((event) => event.startsWith("log:update build failed: ")));
+  assert.ok(!build.events.includes("quit"));
+
+  f.controller.stop();
+  build.controller.stop();
+});
+
+test("neither a build nor a prepared update can be overwritten by a check", async () => {
+  let signal!: AbortSignal;
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        signal = request.signal;
+        request.signal.addEventListener("abort", () =>
+          resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." }),
+        );
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  const preparing = f.controller.apply();
+
+  assert.equal((await f.controller.check(true)).phase, "preparing");
+  assert.equal((await f.controller.check(false)).phase, "preparing");
+  f.controller.onActivate();
+  await flush(2);
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+
+  f.controller.cancel();
+  assert.equal(signal.aborted, true);
+  await preparing;
+
+  const ready = fixture();
+  await ready.controller.start();
+  await ready.controller.check(true);
+  await ready.controller.apply();
+  assert.equal((await ready.controller.check(true)).phase, "ready");
+  f.controller.stop();
+  ready.controller.stop();
+});
+
+test("a manual command reports the stage a build has reached", async () => {
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        request.onStage("dependencies");
+        request.signal.addEventListener("abort", () =>
+          resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." }),
+        );
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  void f.controller.apply();
+
+  assert.equal((await f.controller.checkForUpdates()).phase, "preparing");
+  assert.deepEqual(f.events, ["preparing-dialog:1.2.4:Installing dependencies"]);
+  f.controller.stop();
+});
+
+test("the native path can decline the restart and keep the prepared build", async () => {
+  const f = fixture({
+    dialogs: {
+      ...fixture().port.dialogs,
+      available: async () => "apply",
+      ready: async () => "defer",
+    },
+  });
+  await f.controller.start();
+
+  assert.equal((await f.controller.checkForUpdates()).phase, "idle");
+  assert.deepEqual(f.events, []);
+  assert.equal(f.stageRequests.length, 1);
+
+  // Coming back to it installs the bundle already built, with no second build.
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.stageRequests.length, 1);
+  assert.deepEqual(f.events, ["handoff", "quit"]);
+  f.controller.stop();
+});
+
+
+test("a bundle that is not the one prepared is refused, however it changed", async () => {
+  // The updater-owned clone is shared. Anything that rebuilds it between preparation and the
+  // restart leaves a perfectly valid app at the staged path, and installing that would put a
+  // version nobody accepted into place under a receipt naming the tag they did accept. Version
+  // and revision both have to match, and a port that cannot answer fails closed.
+  const cases: Array<[string, { version: string | null; revision: string | null }]> = [
+    ["nothing there at all", { version: null, revision: null }],
+    ["a different version at the same path", { version: "1.5.0", revision: "rebuilt" }],
+    ["the same version, rebuilt", { version: "1.2.4", revision: "rebuilt" }],
+    ["a version but no readable revision", { version: "1.2.4", revision: null }],
+  ];
+
+  for (const [label, changed] of cases) {
+    let identity = { version: "1.2.4", revision: "staged-1" } as {
+      version: string | null;
+      revision: string | null;
+    };
+    const f = fixture({ stagedBundleIdentity: () => identity });
+    await f.controller.start();
+    await f.controller.check(true);
+    await f.controller.apply();
+    assert.equal(f.controller.getSnapshot().phase, "ready", label);
+
+    identity = changed;
+    assert.equal(await f.controller.install(), false, label);
+    const snapshot = f.controller.getSnapshot();
+    assert.equal(snapshot.phase, "error", label);
+    if (snapshot.phase === "error") {
+      assert.match(snapshot.message, /no longer there to install/, label);
+      assert.equal(snapshot.retryable, true, label);
+    }
+    // Nothing was handed off and nothing quit, so the working app is still the working app.
+    assert.deepEqual(f.events, [], label);
+    f.controller.stop();
+  }
+});
+
+test("a rebuilt clone is not reused as a prepared update, it is built again", async () => {
+  let identity = { version: "1.2.4", revision: "staged-1" } as {
+    version: string | null;
+    revision: string | null;
+  };
+  const f = fixture({ stagedBundleIdentity: () => identity });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  f.controller.defer();
+  assert.equal(f.stageRequests.length, 1);
+
+  // Something rebuilt the shared clone while the update sat deferred. Coming back to it must
+  // not take that bundle on trust, even though its version happens to match.
+  identity = { version: "1.2.4", revision: "rebuilt-by-someone-else" };
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+  assert.equal(f.stageRequests.length, 2, "the offer should have been rebuilt, not reused");
+
+  // Whereas the untouched bundle from that second build is reused, which is the whole point of
+  // keeping it: no third build.
+  f.controller.defer();
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.stageRequests.length, 2);
+  f.controller.stop();
+});
+
+
+test("a bundle whose identity cannot be read is refused, not thrown at the caller", async () => {
+  // `statSync` suppresses only ENOENT with `throwIfNoEntry: false`; EACCES on a parent and
+  // ELOOP on a replaced symlink still throw. Both callers evaluate the identity check OUTSIDE
+  // a try - the reuse shortcut before `apply()`'s async body exists, and `install()` before
+  // its promise is assigned - so an escape would reject the IPC call with the snapshot still
+  // reading `ready`: no dialog, no banner error, nothing for the person to act on.
+  let identity: () => { version: string | null; revision: string | null } = () => ({
+    version: "1.2.4",
+    revision: "staged-1",
+  });
+  const f = fixture({ stagedBundleIdentity: () => identity() });
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+
+  // Readable while the build ran, unreadable now - a directory whose permissions changed under
+  // a prepared update, which is the case `install()`'s own guard exists for.
+  identity = () => {
+    throw Object.assign(new Error("EACCES: permission denied, stat"), { code: "EACCES" });
+  };
+
+  // Resolves false rather than rejecting, and the person gets the error and the retry.
+  assert.equal(await f.controller.install(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") assert.equal(snapshot.retryable, true);
+  assert.deepEqual(f.events.filter((event) => event === "quit"), []);
+  assert.ok(
+    f.events.some((event) => event.startsWith("log:could not identify the prepared update: EACCES")),
+    f.events.join("\n"),
+  );
+  f.controller.stop();
+
+  // And when it is unreadable from the start, the build itself refuses rather than promising a
+  // restart it cannot honour.
+  const fromTheStart = fixture({
+    stagedBundleIdentity: () => {
+      throw Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" });
+    },
+  });
+  await fromTheStart.controller.start();
+  await fromTheStart.controller.check(true);
+  assert.equal(await fromTheStart.controller.apply(), false);
+  assert.equal(fromTheStart.controller.getSnapshot().phase, "error");
+  assert.deepEqual(
+    fromTheStart.events.filter((event) => event === "handoff" || event === "quit"),
+    [],
+  );
+  fromTheStart.controller.stop();
+
+  // The reuse shortcut takes the same route rather than throwing out of apply(): a bundle that
+  // became unreadable while it sat deferred is rebuilt, not reused.
+  let readable = true;
+  const reuse = fixture({
+    stagedBundleIdentity: () => {
+      if (!readable) throw new Error("ELOOP: too many symbolic links");
+      return { version: "1.2.4", revision: "staged-1" };
+    },
+  });
+  await reuse.controller.start();
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), true);
+  assert.equal(reuse.controller.getSnapshot().phase, "ready");
+  reuse.controller.defer();
+
+  readable = false;
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), false, "an unreadable bundle cannot be reused");
+  assert.equal(reuse.controller.getSnapshot().phase, "error");
+  readable = true;
+  await reuse.controller.check(true);
+  assert.equal(await reuse.controller.apply(), true);
+  // Three builds for three acceptances: the deferred bundle was never reused, not once, which
+  // is the property here - the unreadable attempt spent a build and then refused rather than
+  // installing something it could not identify.
+  assert.equal(reuse.stageRequests.length, 3);
+  reuse.controller.stop();
+});
+
+
+test("a build replaced before it could be pinned is refused, and never called ready", async () => {
+  // The install script reads the bundle's identity in the same breath as it verifies it and
+  // reports it with the marker. Anything this app read afterwards could already be a
+  // replacement, which would then pass every later check while never having been verified.
+  //
+  // And the refusal belongs here, at the end of the build: calling it ready and refusing at
+  // the restart would spend the person's minutes, promise them a version, and only then send
+  // them back to rebuild.
+  const f = fixture({
+    stage: async () => ({
+      ok: true,
+      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "verified-at-build" },
+    }),
+    // What is on disk NOW disagrees, which is exactly the race: something rebuilt the clone
+    // between the script's verification and this app looking.
+    stagedBundleIdentity: () => ({ version: "1.2.4", revision: "rebuilt-since" }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") {
+    assert.match(snapshot.message, /replaced while it was being prepared/);
+    assert.equal(snapshot.retryable, true);
+  }
+  // Nothing handed off, nothing quit, and no "ready" ever published.
+  assert.deepEqual(f.events.filter((event) => event === "handoff" || event === "quit"), []);
+  f.controller.stop();
+});
+
+test("a build this app cannot pin is not staged at all, it is handed over whole", async () => {
+  // A clone checked out at a ref older than this app has a script that predates the identity
+  // field, so it reports no revision. Reading one here instead - after that process exited -
+  // would pin whatever is on disk by now, which is the very race the pin exists to close. So
+  // the whole install goes to the detached helper: no progress bar, and no claim about a
+  // bundle nobody checked.
+  const f = fixture({
+    stage: async () => ({
+      ok: true,
+      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: null },
+    }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "applying");
+  // Handed over with no bundle and no pin, which is the pre-staging path.
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]?.stagedBundle, null);
+  assert.equal(f.handoffs[0]?.stagedRevision, null);
+  assert.ok(
+    f.events.some((event) => event.startsWith("log:the installed version's install script reports no bundle identity")),
+    f.events.join("\n"),
+  );
+  // Never called ready, so nobody was promised a restart into a bundle that was not pinned.
+  assert.deepEqual(f.events.filter((event) => event === "quit"), ["quit"]);
+  f.controller.stop();
+});
+
+test("cancelling says so, refuses a second build, and comes back only when the build is gone", async () => {
+  // Resolving on the signal let the offer return while npm and electron-builder were still
+  // shutting down, and one click on Update Now then started a fresh checkout and install in
+  // the directory they were still writing to.
+  let release!: () => void;
+  let aborted = false;
+  let started = 0;
+  const dying: { report: ((stage: UpdatePrepareStage) => void) | null } = { report: null };
+  const f = fixture({
+    stage: (request) =>
+      new Promise((resolve) => {
+        started += 1;
+        dying.report = request.onStage;
+        request.signal.addEventListener("abort", () => {
+          aborted = true;
+          // The group is still shutting down: nothing resolves until it is gone.
+          release = () =>
+            resolve({ ok: false, reason: "cancelled", message: "The update was cancelled." });
+        });
+      }),
+  });
+  await f.controller.start();
+  await f.controller.check(true);
+  const preparing = f.controller.apply();
+
+  f.controller.cancel();
+  assert.equal(aborted, true);
+  const cancelling = f.controller.getSnapshot();
+  assert.equal(cancelling.phase, "preparing");
+  if (cancelling.phase === "preparing") assert.equal(cancelling.cancelling, true);
+
+  // While it is going: no second build, and pressing Cancel again changes nothing.
+  assert.equal(f.controller.apply(), preparing);
+  f.controller.cancel();
+  assert.equal(started, 1);
+  assert.equal(f.controller.getSnapshot().phase, "preparing");
+
+  // A stage report arriving from the dying build must not undo the cancelling state.
+  dying.report?.("build");
+  const during = f.controller.getSnapshot();
+  if (during.phase === "preparing") assert.equal(during.cancelling, true);
+
+  release();
+  assert.equal(await preparing, false);
+  assert.equal(f.controller.getSnapshot().phase, "available");
+  assert.deepEqual(f.events, []);
+
+  // And now a new build may start.
+  void f.controller.apply();
+  assert.equal(started, 2);
+  f.controller.stop();
 });

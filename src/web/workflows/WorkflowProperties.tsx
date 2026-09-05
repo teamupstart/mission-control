@@ -7,6 +7,7 @@ import type {
   WorkflowDiagnostic,
   WorkflowDraftGraph,
   WorkflowMissingPrAction,
+  WorkflowEvidenceReadinessPolicy,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
@@ -54,7 +55,7 @@ import { DeleteButton } from "../components/DeleteButton.tsx";
 
 type WorkflowPatch = Partial<Pick<
   WorkflowDefinition,
-  "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults"
+  "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults" | "evidenceReadinessPolicy"
 >>;
 
 /**
@@ -95,6 +96,20 @@ export function WorkflowSettingsFields({
       </label>
       <label>Maximum repair rounds
         <input disabled={readOnly} type="number" min={1} max={20} value={workflow.bindingDefaults.maxRepairRounds} onChange={(event) => onUpdate({ bindingDefaults: { ...workflow.bindingDefaults, maxRepairRounds: Number(event.target.value) } })} />
+      </label>
+      <label>Evidence preflight
+        <Tooltip label="Criterion mapped pauses structurally incomplete evidence before any Persona or Check attempt">
+          <select
+            disabled={readOnly}
+            value={workflow.evidenceReadinessPolicy}
+            onChange={(event) => onUpdate({
+              evidenceReadinessPolicy: event.target.value as WorkflowEvidenceReadinessPolicy,
+            })}
+          >
+            <option value="off">Off</option>
+            <option value="criterion_mapped_v1">Criterion mapped</option>
+          </select>
+        </Tooltip>
       </label>
       <label>Final gate
         <Tooltip label="An extra approval this workflow must clear before it completes">

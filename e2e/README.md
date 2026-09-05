@@ -128,6 +128,43 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/board-card-customization/focused-playwright-transcript.txt
 ```
 
+### The ⌘-number jump keys on Board cards
+
+`e2e/.artifacts/board-card-jump-shortcut/` carries four frames of the same two-session fleet:
+the keycaps numbered `⌘1` in **needs you** and `⌘2` in **idle** (which is the "across the
+columns" claim, and why this spec pays for two sessions), the console view that `⌘2` opened,
+the keys after the question is answered and the two cards close up into one column - the same
+two cards, their keys swapped - and the board with the **Jump shortcut** item unchecked, where
+no card carries a keycap.
+
+The third frame is the one worth reading twice: it is the only picture of the claim that the
+keys belong to positions rather than to sessions.
+
+Two further frames come from a thirteen-card fleet dispatched over `POST /api/tasks`, which is
+the only fleet big enough to reach the last three slots: `05` shows all twelve keycaps in board
+order - `⌘1`…`⌘9`, `⌘0`, `⌘-`, `⌘=` - with a thirteenth card plainly carrying none, and `06`
+shows the console `⌘=` opened on the twelfth. Those two exist because a two-card board cannot
+distinguish "`⌘=` opens the twelfth card" from "`⌘=` is not ours".
+
+Note what that pair does and does not settle. Playwright delivers a keystroke to the renderer
+over the DevTools protocol rather than through the browser's own chrome - it cannot open a
+browser tab with `⌘T` either - so these prove the dashboard's handling of the three chords, not
+whether a given browser's window shortcuts would have claimed them first. The latter has no
+page-JavaScript answer; the decision taken on it is recorded in `src/web/lib/card-shortcuts.ts`
+and stated for operators in `docs/ui.md`.
+
+Regenerate them with:
+
+```sh
+mkdir -p e2e/.artifacts/board-card-jump-shortcut
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-jump-shortcut.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/board-card-jump-shortcut/focused-playwright-transcript.txt
+```
+
 ### The Board card panel and its preview
 
 `e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Session display**
@@ -135,8 +172,8 @@ checklist beside its live preview card, twice: once at the shipped defaults - ev
 checked except the worktree, which no card drew before that feature, and the workflow
 details, which a card used to draw unconditionally - and once with Goal and Model unchecked
 and the worktree switched on, so the same frame shows what each checkbox actually costs and
-buys. Both sections are in frame, the board card's items and the conversation header's two,
-which is why the viewport is 1700px tall.
+buys. Both sections are in frame, the board card's fifteen items and the conversation
+header's two, which is why the viewport is 1860px tall.
 No agent is dispatched, so nothing runs but the settings page and a daemon.
 
 `e2e/.artifacts/conversation-band-optional/` is the other half of that feature and carries

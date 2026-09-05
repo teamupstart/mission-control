@@ -128,14 +128,69 @@ signed-in account.
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
-Applying briefly says that Mission Control is preparing the update; deferring hides the banner until
-the next scheduled check or launch. The banner is part of the Electron-only preload capability: the
-plain browser dashboard has no update bridge, renders no update banner, and starts no update check.
+Deferring hides the banner until the next scheduled check or launch. The banner is part of the
+Electron-only preload capability: the plain browser dashboard has no update bridge, renders no
+update banner, and starts no update check.
+
+**Update Now** does not close anything. It starts the build, and Mission Control stays open and
+usable while it runs: the banner becomes a progress bar with the stage the install script has
+reached - prerequisites, source, release, checkout, dependencies, build, verify - and a **Cancel**
+that stops the build. Cancel does not return the offer straight away: `npm` and
+`electron-builder` write into the shared clone, and the next preparation force-checks-out and
+reinstalls in that same directory, so the banner reads *cancelling* until the build's whole
+process group is actually gone. Both that wait and the 45-minute build timeout are bounded the
+same way, because the signal that the group is gone is the child's `close` and a descendant that
+escaped the group - or one stuck in uninterruptible I/O - can hold the output pipes open
+indefinitely. When that happens the update settles anyway, says the shutdown was uncertain, and
+writes it to the log; a cancel that never returns would be worse than one that reports late. The
+clone stays off limits until `close` finally arrives, though - the next preparation waits for it
+and refuses rather than running `git checkout --force` and `npm ci` in a directory a dying build
+may still be writing to. When the
+new version is built and verified the banner reads **ready to install** and offers **Restart and
+Install**, which is the only part of an update that needs the app gone. That part takes seconds.
 
 Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
 check. A native dialog reports that the app is current or offers the same **Update Now** and **Later**
-choice. This native path remains available while the dashboard window is hidden. The app also checks
-after a short startup delay, every six hours with jitter, and once after returning from a long sleep.
+choice, then asks about the restart once the build finishes; accepting from the menu bar also
+reveals the dashboard, because that is where the progress is drawn. A manual check made while a
+build is running reports the stage it has reached rather than starting a second one. This native
+path remains available while the dashboard window is hidden. The app also checks after a short
+startup delay, every six hours with jitter, and once after returning from a long sleep.
+
+A build that has finished is kept if the person chooses **Later**, pinned to the release tag it was
+built from, so accepting it afterwards installs immediately instead of spending those minutes
+again. It is checked again at the moment of the restart, and existence is not the check. The
+staged path lives in the updater-owned clone, which is shared: anything that rebuilds that clone
+in between - an operator running `make install ARGS="--ref ..."`, a late helper - leaves a
+perfectly valid app at the same path. So the bundle's version AND its revision (the directory's
+inode and mtime, both of which change when `npm run package` recreates it) must match what was
+built. A bundle that is missing, a different version, or the same version rebuilt is refused in
+the banner with a retry, before anything quits.
+
+The revision is read by the install script at the instant it verifies the bundle and reported with
+the staged marker, never by the app afterward: between the script's exit and the app's next look,
+anything rebuilding that clone would leave a replacement to pin, and a pin taken from an unverified
+build would pass every later check. A clone whose script predates the field reports no revision, and
+rather than inventing one after the fact the whole install goes to the detached helper - the
+pre-staging path, with no progress bar and no claim about a bundle nobody checked. A build whose
+identity does not match what was verified never reaches **ready** either: it is a retryable error at
+the end of the build, because promising a restart and refusing it afterwards spends the same minutes
+twice.
+
+That check cannot be the last one either, because the swap happens in another process up to two
+minutes later - the helper waits for the app to exit first - and a rebuild can land in that window.
+So the revision travels: the app hands it over as `--staged-revision`, the detached helper forwards
+it without interpreting it, and `install-app.mjs --from-staged` re-reads the bundle's identity in
+the instant before `replaceAppBundle` and refuses a mismatch there. The version is checked too, against
+the version its `--ref` names. `src/shared/staged-bundle.mjs` owns the one formula all three read,
+and a handoff carrying no pin - an install driven by hand, or one from an app that predates this -
+still installs, exactly as a ref that names no version still installs.
+
+What remains open, deliberately: a rebuild that lands during the copy itself. Closing that means
+moving the bundle out of the shared clone before the swap rather than checking it, which is a
+separate change with its own cleanup lifetime. Quitting Mission Control while a build
+is running cancels it, along with the `npm` and `electron-builder` children it spawned, so nothing
+keeps writing into the clone that the next attempt will check out.
 
 Background failures stay quiet and are written to the local update log, with one exception. A
 failure that will still be there in six hours and that only the operator can clear - `gh` missing,
@@ -150,17 +205,41 @@ without a system Node.js binary, or when `--from-origin` installed a non-canonic
 manual check explains the applicable reason. A release is offered only when its numeric version is
 strictly newer than the running app, so the updater never provides a downgrade path.
 
-After the user accepts, the Electron process copies
-[`scripts/apply-update.mjs`](../scripts/apply-update.mjs) out of the bundle and starts it as a
-detached system-Node process. The app marks itself as quitting before calling Electron's quit API,
-which lets the hide-on-close window guard close normally. The helper waits for the app process to
-exit, backs up the installed bundle and receipt, and invokes the updater-owned clone's existing
-`scripts/install-app.mjs --ref <tag>` path. The install script remains the only owner of checkout,
-build, version verification, and the atomic bundle swap.
+### Where the work happens, and why it splits
 
-The build is bounded by its own 45-minute timeout, separate from the two-minute wait for the app to
-quit, and reported in its own words - a wedged `npm` would otherwise leave the person with the app
-already backed up, no new app, and a helper that never returns.
+Steps 1 to 7 of [`scripts/install-app.mjs`](../scripts/install-app.mjs) - prerequisites, the
+updater-owned clone, the release, the checkout, `npm ci`, `npm run package`, and version
+verification - touch nothing but that clone. Only the bundle swap and the receipt need the
+installed app gone. The update is therefore applied in two halves, selected by flags on the one
+install script rather than by a second script:
+
+- `--stage-only` runs everything up to and including verification and stops, printing the bundle
+  it produced. `--progress` makes it emit a stage marker per step, which is what the app's progress
+  bar reads. The live app runs this, so all the minutes are visible and cancellable.
+- `--from-staged <bundle>` installs a bundle that was already built: the swap and the receipt, and
+  nothing else. The detached helper runs this after the app has quit.
+
+The install script remains the only owner of checkout, build, version verification, the atomic
+bundle swap, and the receipt; a plain `make install` still runs both halves in one pass.
+
+After the person accepts the restart, the Electron process copies
+[`scripts/apply-update.mjs`](../scripts/apply-update.mjs) out of the bundle and starts it as a
+detached system-Node process, handing it the staged bundle with `--staged-bundle`. The app marks
+itself as quitting before calling Electron's quit API, which lets the hide-on-close window guard
+close normally. The helper waits for the app process to exit, backs up the installed bundle and
+receipt, and invokes the clone's `install-app.mjs --from-staged` path.
+
+An install script that predates these flags says `unknown argument: --stage-only`, and the app then
+falls back to the single-shot handoff it has always used: the helper builds as well as installs, with
+no progress to show. That is reachable when the updater-owned clone is checked out at an older ref
+than the running app - `--ref` allows exactly that - and an update applied without a progress bar is
+better than one refused over it.
+
+Each half carries its own bound, reported in its own words. The build gets 45 minutes, in the app
+and in the helper alike; a staged install gets ten, which is generous for a copy and a receipt but
+still allows for an administrator panel waiting to be answered. Both are separate from the
+two-minute wait for the app to quit - a wedged `npm` and an app that will not close are different
+failures, and a person reading either message should be told which one happened.
 
 The helper relaunches the installed bundle by its exact path. A build, verification, swap, outcome,
 or relaunch failure restores both the previous app and its receipt before relaunching it. A failure
@@ -177,7 +256,23 @@ The result is stored in the versioned `update-outcome.json` marker. On the next 
 native dialog and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
 hides that result until update state changes. Diagnostic output remains only in the rotating
-`update.log` in the state directory, with credentials and absolute paths redacted.
+`update.log` in the state directory, with credentials, absolute paths, and remote URLs redacted
+by [`src/main/update-log.ts`](../src/main/update-log.ts) - including every line the staged build
+produced, because an `npm` or `electron-builder` failure is only ever diagnosable in its own
+words. That build's output is the one update channel whose text this app did not write, so it is
+redacted where it arrives as well as where it is written; the rule is idempotent, and neither
+place is allowed to be the only one applying it.
+
+Remote URLs are part of that rule, not an afterthought: a registry line is where a private host
+and an embedded credential turn up (`npm warn registry https://user:secret@registry.internal/`),
+and a path rule anchored on a preceding space or quote never fires on the `//` after a scheme's
+colon. Both spellings of a git remote go the same way, `scheme://host/path` and
+`git@host:path`, and whole URLs are replaced rather than just their credentials - which
+registry a build reached is the fact worth hiding, exactly as which directory it built in
+already was. `scripts/apply-update.mjs` carries a deliberate copy of the rule set, because the
+detached helper is copied out of the bundle with exactly one sibling module and can import
+nothing else; `test/update-log.test.ts` pins the two to identical output so the copy cannot
+drift.
 
 This updates only the packaged application and its updater-owned clone. A separately installed
 daemon LaunchAgent still runs from the repository path recorded in its plist and is not changed by

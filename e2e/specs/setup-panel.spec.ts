@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { writeGhProductScript } from "../fixtures/fake-agents.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 
 test.use({ daemonEnv: { MC_E2E_CONDUCTOR_STARTS_MISSING: "1" } });
@@ -113,6 +114,23 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/guided-setup/setup-panel.png");
   }
+});
+
+test("Setup warns when the installed GitHub CLI is older than the required minimum, and clears once it is current", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+
+  await openSetupFamily(page, "github");
+  const gh = setupRow(page, "dependency-gh-cli");
+  await expectRowStatus(page, "dependency-gh-cli", "Ready");
+
+  writeGhProductScript(daemon.home, { preflight: "gh-version", issueCreate: "created" });
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expectRowStatus(page, "dependency-gh-cli", "Needs setup");
+  await expect(gh).toContainText("older than the required 2.100.0");
+
+  writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
+  await page.getByRole("button", { name: "Re-check" }).click();
+  await expectRowStatus(page, "dependency-gh-cli", "Ready");
 });
 
 test.describe("login-shell binaries", () => {

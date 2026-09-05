@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { MODEL_CATALOG, modelLabel } from "@shared/model.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import type {
@@ -329,9 +330,10 @@ export function modelCatalogNoticeContent(
   agent: AgentType,
 ): ModelCatalogNoticeContent | null {
   const catalog = snapshot.catalogs[agent];
-  // Provider metadata is the browser-safe signal that this catalog has a live discovery
-  // surface. Claude and Codex stay flat and silent while their shipped catalogs are static.
-  if (!catalog.choices.some((choice) => choice.provider !== null)) return null;
+  // The harness's own declaration, not a guess from the rows it happened to return. A
+  // harness with no discovery has nothing to report and nothing to retry, so it stays
+  // silent; see `discoversModels` for what asking the rows instead used to hide.
+  if (!HARNESS_CAPABILITIES[agent].discoversModels) return null;
   const label = AGENT_IDENTITY[agent].label;
   if (snapshot.phase === "local") return null;
   if (snapshot.phase === "loading") {

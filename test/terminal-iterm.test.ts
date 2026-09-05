@@ -5,6 +5,7 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { appleScriptString, appleScriptText } from "../src/server/terminal/applescript.ts";
 import { binPresent, ITERM_BIN, resolveBin } from "../src/server/terminal/bin.ts";
 import { itermEmulator, parseItermSessions } from "../src/server/terminal/iterm.ts";
+import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 
 interface Call {
@@ -87,7 +88,9 @@ test("enumerates every window, tab, and session through one stdin script", async
   }]);
   const script = onlyScript(run.calls);
   assert.match(script, /repeat with terminalWindow in windows/);
+  assert.match(script, /set terminalTabIndex to 0/);
   assert.match(script, /repeat with terminalTab in tabs of terminalWindow/);
+  assert.match(script, /set terminalTabIndex to terminalTabIndex \+ 1/);
   assert.match(script, /repeat with terminalSession in sessions of terminalTab/);
   assert.match(script, /variable terminalSession named "path"/);
   assert.match(script, /on readItermTabTitle\(terminalTab\)/);
@@ -95,6 +98,8 @@ test("enumerates every window, tab, and session through one stdin script", async
   assert.match(script, /return name of current session of terminalTab as text/);
   assert.match(script, /set terminalTabTitle to my readItermTabTitle\(terminalTab\)/);
   assert.match(script, /my encodeField\(terminalTabTitle\)/);
+  assert.match(script, /my encodeField\(terminalTabIndex\)/);
+  assert.equal(script.includes("index of terminalTab"), false, "iTerm2 rejects reads of its tab index property");
 });
 
 test("rejects malformed records and normalizes missing optional fields", () => {
@@ -218,15 +223,15 @@ test("retitle changes the containing tab found by session id", async () => {
   await itermEmulator(run.exec).retitle!(TARGET, 'release "candidate"');
   const script = onlyScript(run.calls);
   assert.match(script, /on setItermTabTitle\(terminalTab, requestedTitle\)/);
-  assert.ok(script.includes('set title of terminalTab to requestedTitle'));
   assert.ok(script.includes('set name of current session of terminalTab to requestedTitle'));
+  assert.equal(script.includes("set title of terminalTab"), false, "iTerm2 3.6.11 declares a title setter that hangs at runtime");
   assert.ok(script.includes('my setItermTabTitle(targetTab, "release \\"candidate\\"")'));
   assert.equal(script.includes(TARGET.tabId), false);
 });
 
 test("spawn preserves cwd and argv boundaries, stamps title, and returns the new target", async () => {
-  const result = `w0t4p0:NEW-ID${US}4\n`;
-  const run = recorder([stubRun({ stdout: result, stderr: "", code: 0 })]);
+  const result = "w0t4p0:NEW-ID\n";
+  const run = recorder([stubRun({ stdout: result, stderr: "", code: 0 }), stubRun({ stdout: "", stderr: "", code: 0 })]);
   const spawned = await itermEmulator(run.exec).spawn!.tab({
     cwd: "/tmp/work tree; $(not-run)",
     argv: ["/bin/zsh", "-l", "it's $HOME; echo nope"],
@@ -235,12 +240,47 @@ test("spawn preserves cwd and argv boundaries, stamps title, and returns the new
   assert.deepEqual(spawned, {
     ok: true,
     outcomeUnknown: false,
-    target: { paneId: "w0t4p0:NEW-ID", tabId: "4" },
+    target: { paneId: "w0t4p0:NEW-ID", tabId: "1" },
   });
-  const script = onlyScript(run.calls);
-  assert.ok(script.includes("cd -- '/tmp/work tree; $(not-run)' && exec '/bin/zsh' '-l' 'it'\\\"'\\\"'s $HOME; echo nope'"));
-  assert.ok(script.includes('my setItermTabTitle(newTab, "feature tab")'));
-  assert.ok(script.includes('set name of current session of terminalTab to requestedTitle'));
+  assert.equal(run.calls.length, 2);
+  const launchScript = run.calls[0]!.input!;
+  const innerLaunch = `cd -- ${shellCommand(["/tmp/work tree; $(not-run)"])} && exec ${shellCommand(["/bin/zsh", "-l", "it's $HOME; echo nope"])}`;
+  assert.ok(launchScript.includes(appleScriptString(shellCommand(["/bin/sh", "-c", innerLaunch]))));
+  assert.ok(launchScript.includes("return id of newSession"));
+  assert.equal(launchScript.includes("setItermTabTitle"), false, "mutating a just-created iTerm2 tab reference hangs");
+  assert.equal(launchScript.includes("count of tabs of newWindow"), false, "iTerm2 hangs while counting through a newly created window reference");
+  assert.equal(launchScript.includes("index of newTab"), false, "iTerm2 rejects reads of its tab index property");
+
+  const titleScript = run.calls[1]!.input!;
+  assert.ok(titleScript.includes('my setItermTabTitle(targetTab, "feature tab")'));
+  assert.ok(titleScript.includes('set name of current session of terminalTab to requestedTitle'));
+  assert.equal(titleScript.includes("set title of terminalTab"), false, "tab naming must use iTerm2's working session-name setter");
+  assert.ok(titleScript.includes('set targetId to "w0t4p0:NEW-ID"'));
+
+  const retitleRun = recorder();
+  await itermEmulator(retitleRun.exec).retitle!({ paneId: "w0t4p0:NEW-ID", tabId: "1" }, "feature tab");
+  assert.equal(titleScript, onlyScript(retitleRun.calls), "spawn must reuse the public retitle script exactly");
+  for (const call of run.calls) {
+    assert.equal(call.bin, "/usr/bin/osascript");
+    assert.deepEqual(call.args, []);
+  }
+});
+
+test("a title failure after iTerm2 created the window does not revoke launch success", async () => {
+  const run = recorder([
+    stubRun({ stdout: "w0t4p0:NEW-ID\n", stderr: "", code: 0 }),
+    stubRun({ stdout: "", stderr: "iTerm2 session no longer exists (-1728)", code: 1 }),
+  ]);
+  const spawned = await itermEmulator(run.exec).spawn!.tab({
+    cwd: "/tmp/worktree",
+    argv: ["/bin/zsh", "-l"],
+    title: "feature tab",
+  });
+  assert.deepEqual(spawned, {
+    ok: true,
+    outcomeUnknown: false,
+    target: { paneId: "w0t4p0:NEW-ID", tabId: "1" },
+  });
 });
 
 test("definite, permission, and timeout failures retain their delivery semantics", async () => {

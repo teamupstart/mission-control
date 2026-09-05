@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -54,6 +54,7 @@ import type {
   WorkflowStatus,
   TestEvidenceAuditAggregate,
   WorkflowSubmission,
+  WorkflowSubmissionReadinessOverride,
   WorkflowSummary,
   WorkflowValidationResult,
   WorkflowVersion,
@@ -85,6 +86,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  workflowEvidenceReadinessPolicyEnforces,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
@@ -110,7 +112,10 @@ import {
 } from "../llm/review-scheduler.ts";
 import {
   TEST_EVIDENCE_AUDIT_SCAN_LIMIT,
+  TEST_EVIDENCE_PREFLIGHT_EVENT_KINDS,
   aggregateTestEvidenceAudit,
+  evidenceReadinessEvaluatedEvent,
+  type TestEvidencePreflightEventRow,
 } from "./test-evidence-audit.ts";
 import type { CheckRunDeps, CheckScheduler } from "./checks.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
@@ -162,6 +167,7 @@ import {
   renderParkedRepairReminder,
   renderUnchangedEvidenceNudge,
   renderWorkflowFeedback,
+  renderEvidenceReadinessPacket,
 } from "./feedback.ts";
 import { findingFingerprintAudit } from "./finding-audit.ts";
 import { repeatOffenders } from "./repeat-offender.ts";
@@ -193,6 +199,15 @@ import {
   requiredSkillCommand,
   type RequiredSkillCommand,
 } from "../skills/invoke.ts";
+
+/** Bound the caller's idempotency key while scoping it to the run that owns the decision. */
+function evidenceReadinessOverrideRequestKey(runId: string, requestId: string): string {
+  return `readiness-override:${createHash("sha256")
+    .update(runId)
+    .update("\0")
+    .update(requestId)
+    .digest("hex")}`;
+}
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -951,9 +966,15 @@ export class WorkflowManager {
    */
   testEvidenceAudit(limit = TEST_EVIDENCE_AUDIT_SCAN_LIMIT): TestEvidenceAuditAggregate {
     const window = this.store.listEventsOfKind("test_evidence_audit", limit);
+    const preflightWindow = this.store.listEventsOfKinds(
+      TEST_EVIDENCE_PREFLIGHT_EVENT_KINDS,
+      limit,
+    );
     return aggregateTestEvidenceAudit(window.rows, {
       scanLimit: limit,
       truncated: window.truncated,
+    }, preflightWindow.rows as TestEvidencePreflightEventRow[], {
+      truncated: preflightWindow.truncated,
     });
   }
 
@@ -2013,6 +2034,109 @@ export class WorkflowManager {
       latest.evidenceFingerprint,
       input.resubmitUnchanged,
     );
+  }
+
+  async retryEvidenceReadiness(
+    runId: string,
+    submissionId: string,
+    requestId: string,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const run = this.store.getRun(runId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (!run || !binding) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const reserved = this.store.reserveEvidenceReadinessRefinement({
+      id: randomUUID(),
+      runId,
+      waitingSubmissionId: submissionId,
+      triggerKey: `manual:${binding.id}:evidence-preflight:${requestId}`,
+      manualRetry: true,
+      now,
+    });
+    if (!reserved.ok) {
+      return {
+        ok: false,
+        reason: reserved.reason === "no_change" ? "unchanged_evidence" : "conflict",
+        message: reserved.reason === "delivery_in_flight"
+          ? "The evidence-readiness packet is still being delivered"
+          : reserved.reason === "request_conflict"
+            ? "That request id already names a different evidence refinement"
+            : reserved.reason === "no_change"
+              ? "Stage new evidence before retrying evidence preflight"
+              : "The submission is no longer waiting for evidence readiness",
+      };
+    }
+    const currentRun = this.store.getRun(runId) ?? run;
+    // Request retries observe the durable reservation but never become a second capture owner.
+    // If the first owner disappears, the resumption sweep re-drives the capturing child after
+    // restart while its process-local capture lock is absent.
+    if (reserved.idempotent) {
+      return { ok: true, value: { run: currentRun, submission: reserved.submission }, idempotent: true };
+    }
+    this.publishRun(runId);
+    const captured = await this.captureAndActivate(
+      binding,
+      currentRun,
+      reserved.submission,
+      undefined,
+      true,
+    );
+    return captured.ok && reserved.idempotent ? { ...captured, idempotent: true } : captured;
+  }
+
+  overrideEvidenceReadiness(
+    runId: string,
+    submissionId: string,
+    requestId: string,
+    reason: string,
+    acknowledgedRisk: true,
+    now = Date.now(),
+  ) {
+    const run = this.store.getRun(runId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const recorded = this.store.overrideEvidenceReadiness({
+      id: randomUUID(),
+      runId,
+      submissionId,
+      requestId: evidenceReadinessOverrideRequestKey(runId, requestId),
+      reason,
+      acknowledgedRisk,
+      now,
+    });
+    if (!recorded.ok) return recorded;
+    const durableRun = this.store.getRun(runId);
+    const shouldActivate = !recorded.idempotent
+      || (durableRun?.status === "running" && durableRun.currentPhase === "activating");
+    if (!shouldActivate) return recorded;
+    // The override row commits before graph activation. A retry while the durable handoff is
+    // still in `activating` repairs an interruption, but a later replay must preserve whatever
+    // state Persona or Session action processing has reached.
+    this.activateEvidenceReadinessOverride(
+      runId,
+      submissionId,
+      binding,
+      recorded.override,
+      now,
+    );
+    return recorded;
+  }
+
+  private activateEvidenceReadinessOverride(
+    runId: string,
+    submissionId: string,
+    binding: WorkflowBinding | null,
+    override: WorkflowSubmissionReadinessOverride,
+    now: number,
+  ): void {
+    this.store.appendEvent(runId, "evidence_readiness_overridden", {
+      submissionId,
+      requestId: override.requestId,
+      reason: override.reason,
+      acknowledgedRisk: override.acknowledgedRisk,
+    }, now, `evidence-readiness-override:${override.id}`);
+    this.engine.activateSubmission(submissionId);
+    this.publishRun(runId);
+    if (binding) this.scheduleQueuedDeliveries(binding.noteKey);
   }
 
   reattach(
@@ -4374,6 +4498,73 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  private scheduleEvidenceReadinessDelivery(submissionId: string): void {
+    this.trackBackgroundTask(this.prepareEvidenceReadinessDelivery(submissionId).catch((error) => {
+      const submission = this.store.getSubmission(submissionId);
+      if (!submission) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRunState(submission.runId, "blocked", "delivery_prepare_error", {
+        submissionId,
+        error: message,
+      });
+      this.store.appendEvent(submission.runId, "delivery_prepare_error", {
+        submissionId,
+        error: message,
+      });
+      this.publishRun(submission.runId);
+    }));
+  }
+
+  private async prepareEvidenceReadinessDelivery(submissionId: string): Promise<void> {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const summary = run ? this.store.runSummary(run.id) : null;
+    if (
+      !submission
+      || submission.status !== "waiting_for_evidence_readiness"
+      || submission.readiness?.status !== "gaps"
+      || !run
+      || run.status !== "waiting_for_evidence_readiness"
+      || !binding?.sessionId
+      || !version
+      || !summary
+    ) return;
+    const repository = (summary.repoRoot ?? binding.sessionCwd ?? "repository")
+      .split(/[\\/]/u).filter(Boolean).at(-1) ?? "repository";
+    const rendered = renderEvidenceReadinessPacket({
+      workflowName: summary.workflowName,
+      workflowVersion: version.version,
+      runId: run.id,
+      repository,
+      round: submission.round,
+      segment: submission.segment,
+      readiness: submission.readiness,
+      workflowEvidence: versionSupportsWorkflowEvidence(version),
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId: run.id,
+      submissionId: submission.id,
+      kind: "evidence_readiness",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    });
+    if (!prepared.idempotent) {
+      this.store.appendEvent(run.id, "delivery_prepared", {
+        deliveryId: prepared.delivery.id,
+        payloadSha256: rendered.payloadSha256,
+        truncated: rendered.truncated,
+        kind: "evidence_readiness",
+      });
+    }
+    this.publishRun(run.id);
+    if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
+  }
+
   private recoverWaitingDeliveries(): void {
     for (const run of this.store.listRuns()) {
       if (run.status !== "waiting_for_pr") continue;
@@ -4396,6 +4587,9 @@ export class WorkflowManager {
     const submissionRecovery = new Set(waitingSubmissions.map((submission) => submission.id));
     for (const submission of waitingSubmissions) {
       this.scheduleWaitingDelivery(submission.id);
+    }
+    for (const submission of this.store.listSubmissionsByState("waiting_for_evidence_readiness")) {
+      this.scheduleEvidenceReadinessDelivery(submission.id);
     }
     for (const delivery of this.store.listDeliveriesByState("prepared")) {
       if (submissionRecovery.has(delivery.submissionId)) continue;
@@ -5887,7 +6081,11 @@ export class WorkflowManager {
       }
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
-      const readiness = frozenCoverage.length === 0
+      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+      const enforcingReadiness = workflowEvidenceReadinessPolicyEnforces(
+        version?.evidenceReadinessPolicy,
+      );
+      const readiness = frozenCoverage.length === 0 && !enforcingReadiness
         ? null
         : evaluateWorkflowEvidenceReadiness({
             canonicalCriteria: context.canonicalCriteria ?? [],
@@ -5896,6 +6094,7 @@ export class WorkflowManager {
             unavailableReason: context.compaction.status === "fallback"
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
+            enforceCoverage: enforcingReadiness,
           });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
@@ -5986,6 +6185,48 @@ export class WorkflowManager {
           message: "The captured evidence did not satisfy this submission's activation guard",
           current: this.store.getRun(run.id),
         };
+      }
+      if (version) {
+        const evaluated = evidenceReadinessEvaluatedEvent({
+          submission: runnable,
+          readiness,
+          coverage: frozenCoverage,
+          version,
+        });
+        this.store.appendEvent(
+          run.id,
+          "evidence_readiness_evaluated",
+          evaluated.payload,
+          Date.now(),
+          evaluated.eventId,
+        );
+      }
+      if (enforcingReadiness && readiness?.status === "gaps") {
+        const waitedAt = Date.now();
+        const waitingSubmission = this.store.setSubmissionState(
+          submission.id,
+          "waiting_for_evidence_readiness",
+          waitedAt,
+        );
+        const waitingRun = this.store.setRunState(
+          run.id,
+          "waiting_for_evidence_readiness",
+          "evidence_readiness",
+          {
+            submissionId: submission.id,
+            gapCodes: readiness.gapCodes,
+          },
+          waitedAt,
+        );
+        this.store.appendEvent(run.id, "evidence_readiness_waiting", {
+          submissionId: submission.id,
+          round: submission.round,
+          segment: submission.segment,
+          gapCodes: readiness.gapCodes,
+        }, waitedAt, `evidence-readiness-wait:${submission.id}`);
+        this.publishRun(run.id);
+        this.scheduleEvidenceReadinessDelivery(submission.id);
+        return { ok: true, value: { run: waitingRun, submission: waitingSubmission } };
       }
       this.engine.activateSubmission(submission.id);
       const updatedRun = this.store.getRun(run.id) ?? run;
@@ -6277,9 +6518,11 @@ export class WorkflowManager {
    * Public so a test can drive one pass against an injected clock rather than a timer.
    *
    * The order of the gates below is deliberate: every free in-memory question is asked before
-   * the one that spawns git. `waiting_for_session` and NOTHING ELSE is the eligible status -
-   * see `resumableRun` - and the round-limit arm hands the run to the existing `blocked` /
-   * `round_limit` path rather than inventing a second way for a run to run out.
+   * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
+   * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
+   * capturing child because its reservation commits before capture begins. An overridden
+   * submission left in the durable `activating` handoff is also eligible because the override
+   * commits before graph activation.
    */
   async sweepResumptions(now = Date.now()): Promise<void> {
     if (this.resumptionRunning) return;
@@ -6287,6 +6530,22 @@ export class WorkflowManager {
     try {
       const sessions = this.registry.snapshot().sessions;
       for (const run of this.store.listRuns()) {
+        if (
+          run.status === "waiting_for_evidence_readiness"
+          || run.status === "capturing"
+          || (run.status === "running" && run.currentPhase === "activating")
+        ) {
+          try {
+            await this.resumeEvidenceReadiness(run.id, now);
+          } catch (error) {
+            workflowLog("error", {
+              event: "evidence_readiness_resumption_failed",
+              run: run.id,
+              error: error instanceof Error ? error.name : "unknown",
+            });
+          }
+          continue;
+        }
         // Cheapest possible first cut, off the rows already in hand. Everything past this
         // point re-reads the run under `resumableRun`, which is where the real gates live.
         if (run.status !== "waiting_for_session") continue;
@@ -6303,6 +6562,72 @@ export class WorkflowManager {
     } finally {
       this.resumptionRunning = false;
     }
+  }
+
+  private async resumeEvidenceReadiness(runId: string, now: number): Promise<void> {
+    const run = this.store.getRun(runId);
+    const latest = run ? this.store.latestSubmission(run.id) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (!run || !latest || !binding || binding.state !== "active") return;
+    if (
+      run.status === "running"
+      && run.currentPhase === "activating"
+      && latest.status === "running"
+      && latest.readiness?.status === "overridden"
+    ) {
+      const override = this.store.listReadinessOverrides(run.id)
+        .findLast((candidate) => candidate.submissionId === latest.id);
+      if (!override) return;
+      this.activateEvidenceReadinessOverride(run.id, latest.id, binding, override, now);
+      return;
+    }
+    // A capture lock is the live owner for this conversation. It is acquired synchronously
+    // before capture yields, and disappears with the process, so skipping it prevents a sweep
+    // from joining live work without weakening restart recovery for an orphaned reservation.
+    if (this.captureLocks.has(binding.noteKey)) return;
+
+    let parent: WorkflowSubmission;
+    let triggerKey: string;
+    let manualRetry = false;
+    if (
+      run.status === "waiting_for_evidence_readiness"
+      && latest.status === "waiting_for_evidence_readiness"
+    ) {
+      parent = latest;
+      const generation = this.store.workflowEvidenceGeneration(
+        binding.noteKey,
+        binding.repoRoot || binding.sessionCwd || "",
+      );
+      triggerKey = `evidence-preflight:${run.id}:${parent.id}:${generation}`;
+    } else if (
+      run.status === "capturing"
+      && latest.status === "capturing"
+      && latest.refinementReason === "evidence_preflight"
+      && latest.parentSubmissionId
+      && ["manual", "session"].includes(latest.triggerSource)
+    ) {
+      const recoveredParent = this.store.getSubmission(latest.parentSubmissionId);
+      if (!recoveredParent) return;
+      parent = recoveredParent;
+      triggerKey = latest.triggerKey;
+      manualRetry = latest.triggerSource === "manual";
+    } else {
+      return;
+    }
+    const reserved = this.store.reserveEvidenceReadinessRefinement({
+      id: randomUUID(),
+      runId: run.id,
+      waitingSubmissionId: parent.id,
+      triggerKey,
+      manualRetry,
+      now,
+    });
+    if (!reserved.ok) return;
+    if (reserved.idempotent && reserved.submission.status !== "capturing") return;
+    this.publishRun(run.id);
+    const current = this.store.getRun(run.id);
+    if (!current) return;
+    await this.captureAndActivate(binding, current, reserved.submission, undefined, true);
   }
 
   /**

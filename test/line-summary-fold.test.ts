@@ -6,6 +6,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import type { MissionSchedule } from "../src/shared/schedules.ts";
 import type { TaskSourceInstance, TaskSourceStatus } from "../src/shared/task-source.ts";
 import type { FleetCost, TaskDependency } from "../src/shared/types.ts";
+import type { PipelineCommission } from "../src/shared/pipeline.ts";
 import { mkEnsembleSummary, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
 // What is at stake: the Line is the fleet's front page, and every number on it is an
@@ -119,6 +120,34 @@ function mkRun(over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary {
     gatePrNumber: null,
     gateHeadShort: null,
     reviewPosture: null,
+    updatedAt: NOW,
+    ...over,
+  };
+}
+
+function mkCommission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "pipeline-task",
+    provider: "ai-conductor",
+    repoRoot: "/repo",
+    correlationId: "commission-1",
+    lifecycle: "authoring",
+    attempts: [],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: NOW,
     updatedAt: NOW,
     ...over,
   };
@@ -359,6 +388,20 @@ test("terminal runs are not live", () => {
     "review",
   );
   assert.equal(stage.count, 1);
+});
+
+test("a terminal commission with task drift remains visible and needs attention", () => {
+  const stage = fold(
+    {
+      tasks: [mkTask({ id: "pipeline-task", status: "running", repoRoot: "/repo" })],
+      pipelineCommissions: [mkCommission({ lifecycle: "cancelled" })],
+    },
+    "review",
+  );
+  assert.equal(stage.count, 1);
+  assert.equal(stage.tone, "attention");
+  assert.match(stage.sentence, /1 Engineer commission/);
+  assert.match(stage.sentence, /1 Pipeline needs you/);
 });
 
 test("only the waits a person can end turn review amber", () => {

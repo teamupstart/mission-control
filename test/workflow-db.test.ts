@@ -548,8 +548,13 @@ test("workflow evidence rows preserve old image defaults and validate text artif
     () => parseWorkflowEvidenceStagingRow({ ...command, inline_content: null }),
     WorkflowRowError,
   );
+  assert.equal(
+    parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: null }).command_exit_code,
+    null,
+    "command evidence written before structured exit codes shipped must remain readable",
+  );
   assert.throws(
-    () => parseWorkflowEvidenceStagingRow({ ...command, command_exit_code: null }),
+    () => parseWorkflowEvidenceStagingRow({ ...staged, command_exit_code: 0 }),
     WorkflowRowError,
   );
   assert.throws(

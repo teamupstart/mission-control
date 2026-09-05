@@ -6,6 +6,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { expectRowStatus, openSetupFamily } from "../fixtures/setup-panel.ts";
+import { expectSpotlight } from "../fixtures/tour-spotlight.ts";
 
 const EVIDENCE = artifactsDir("guided-setup");
 const TOUR_COMMAND = /Start Set up this machine tour, command/;
@@ -97,7 +98,7 @@ test("a dismissal transport failure stays actionable without leaking into a late
   await expect(banner.getByRole("alert")).toHaveCount(0);
 });
 
-test("the setup reminder is durable, detects a regression, and the tour stays read-only", async ({
+test("the setup reminder is durable, detects a regression, and the tour hands over Setup", async ({
   page,
   daemon,
 }) => {
@@ -142,50 +143,87 @@ test("the setup reminder is durable, detects a regression, and the tour stays re
   const beforeTour = appConfigSnapshot(daemon);
   await page.getByRole("button", { name: "Start Set up this machine tour" }).click();
 
-  let step = tourStep(page, "Setup in one place");
+  // Four stops, and the first two are outside the panel: an operator who has never opened
+  // Setup is shown how to reach it before a single status word is explained.
+  let step = tourStep(page, "Settings live behind the gear");
   await expect(step).toBeVisible();
-  await expect(page.locator(".setup-verdict")).toHaveClass(/driver-active-element/);
-  // The opening stop is the verdict, which is also where the panel now makes its
-  // read-only promise - there is no standing intro paragraph above it any more.
-  await expect(page.locator(".setup-verdict")).toContainText("visible terminal");
+  await expect(step).toContainText("Step 1 of 4");
+  // Starting it LEAVES Settings for the fleet, because the gear only reads "Settings" from
+  // somewhere else - on this page the same control is "Return to Fleet".
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/fleet");
+  await expectSpotlight(page.locator(".gear-btn"));
   await shoot(page, "setup-guided-tour");
 
-  await step.getByRole("button", { name: "Next" }).click();
-  step = tourStep(page, "Read by family");
+  await step.getByRole("button", { name: "Open Settings" }).click();
+  step = tourStep(page, "Open Setup");
   await expect(step).toBeVisible();
-  // Reading by family IS the rail now, so that is what this stop spotlights. Only the
-  // selected family's rows are mounted, so there is no per-family element to point at.
-  await expect(page.locator(".setup-rail")).toHaveClass(/driver-active-element/);
+  // Settings opens on the same category the gear itself opens, so the row this stop points
+  // at is one the operator has not selected yet. A row that was already active would teach
+  // nothing about reaching it.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/display");
+  const setupTab = page.locator("#settings-tab-setup");
+  await expectSpotlight(setupTab);
+  await expect(setupTab).toHaveAttribute("aria-selected", "false");
 
-  // The next two stops are about statuses and remedies, so they select GitHub - both of its
-  // rows are required, and gh is missing in this fixture. A stop that stayed on whatever the
-  // rail opened on could spotlight a family with no remedy to show.
-  await step.getByRole("button", { name: "Next" }).click();
-  step = tourStep(page, "Trust each status");
+  await step.getByRole("button", { name: "Open Setup" }).click();
+  step = tourStep(page, "Install what you will use");
   await expect(step).toBeVisible();
-  await expect(page.locator("#setup-pane")).toHaveClass(/driver-active-element/);
-  await expect(page.locator("#setup-pane")).toContainText("GitHub CLI");
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  // The rail and its rows as one spotlight. The tour does not walk the families: which one
+  // is worth opening depends on what this machine turns out to be missing.
+  await expectSpotlight(page.locator(".setup-split"));
+  await expect(setupTab).toHaveAttribute("aria-selected", "true");
+  await shoot(page, "setup-tour-dependencies");
 
-  for (const title of [
-    "Follow a remedy",
-    "Check again when ready",
-    "You know where to return",
-  ]) {
-    await step.getByRole("button", { name: "Next" }).click();
-    step = tourStep(page, title);
-    await expect(step).toBeVisible();
-  }
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Re-check once they are installed");
+  await expect(step).toBeVisible();
+  await expectSpotlight(page.getByRole("button", { name: "Re-check" }));
+
   await step.getByRole("button", { name: "Finish tour" }).click();
   await expect(step).toBeHidden();
+  // The tour HANDS THE PANEL OVER rather than replaying the route it started from. Showing
+  // an operator Setup and then taking it away again would undo the whole point of it, and
+  // the control that started the tour is still here to take focus back.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start Set up this machine tour" }))
+    .toBeFocused();
+  await shoot(page, "setup-tour-left-on-setup");
+
+  // The invoker survived, so the exit route's landing control has nothing to land, and the
+  // pass that would look for one must never have started. The vacuum it waits for is also
+  // what an ordinary click on a non-focusable area leaves behind, so a pass still running
+  // here would answer that click by pulling focus onto Re-check.
+  //
+  // Read the baseline BEFORE the blur - the assertion above is it - then blur the way that
+  // click does, and watch every frame. Frames rather than milliseconds deliberately: the
+  // landing pass counts its own window in animation frames, so a slower machine cannot
+  // outrun this sampler the way a wall-clock wait can. Two hundred exceeds its budget.
+  await page.getByRole("heading", { name: "Setup", exact: true }).click();
+  const hijacked = await page.evaluate(async (frames) => {
+    for (let frame = 0; frame < frames; frame += 1) {
+      await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+      if (document.activeElement !== document.body) {
+        return (document.activeElement as HTMLElement | null)?.textContent?.trim() ?? "unknown";
+      }
+    }
+    return null;
+  }, 200);
+  expect(hijacked, "a finished tour took focus back from where the operator clicked")
+    .toBeNull();
 
   await page.keyboard.press("Meta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Set up this machine");
   await palette.getByRole("option", { name: TOUR_COMMAND }).click();
-  step = tourStep(page, "Setup in one place");
+  step = tourStep(page, "Settings live behind the gear");
   await expect(step).toBeVisible();
   await step.getByRole("button", { name: "Exit tour" }).click();
   await expect(step).toBeHidden();
+  // Exiting early lands on Setup too: the exit route belongs to the tour, not to its last
+  // stop, so an operator who leaves at stop one still gets the page they were promised.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
 
   expect(appConfigSnapshot(daemon), "the tour must not write machine or UI configuration")
     .toBe(beforeTour);

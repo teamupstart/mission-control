@@ -106,6 +106,7 @@ export const WORKFLOW_LIMITS = {
   repairRoundsMax: 20,
   feedbackFieldBytes: 4_000,
   feedbackPayloadBytes: 8_000,
+  readinessOverrideReason: 2_000,
   externalSourceId: 200,
   externalSourceSegment: 200,
   externalSourceKey: 1_000,
@@ -288,6 +289,19 @@ export type WorkflowEvidenceReadinessPolicy =
   (typeof WORKFLOW_EVIDENCE_READINESS_POLICIES)[number];
 export const DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY: WorkflowEvidenceReadinessPolicy = "off";
 
+/** Browser-safe ownership of which append-only policy values enforce the preflight gate. */
+export function workflowEvidenceReadinessPolicyEnforces(
+  policy: WorkflowEvidenceReadinessPolicy | null | undefined,
+): boolean {
+  if (policy == null) return false;
+  switch (policy) {
+    case "off":
+      return false;
+    case "criterion_mapped_v1":
+      return true;
+  }
+}
+
 export const WORKFLOW_EVIDENCE_READINESS_STATUSES = [
   "not_evaluated",
   "ready",
@@ -414,6 +428,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   evidence: readonly WorkflowFrozenEvidenceIdentity[];
   unavailableReason?: string | null;
+  enforceCoverage?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
     ?? (input.coverage.length > 0 && input.canonicalCriteria.length === 0
@@ -429,9 +444,20 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       unavailableReason,
     };
   }
+  const canonicalCriteria = input.enforceCoverage
+      && input.coverage.length === 0
+      && !input.canonicalCriteria.some((criterion) => criterion.material)
+    ? [...input.canonicalCriteria, {
+        id: "evidence-coverage",
+        text: "Material acceptance criteria",
+        material: true,
+        suggestedProofClass: null,
+        matchedClientCriterionIds: [],
+      }]
+    : input.canonicalCriteria;
   const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
   const evidence = new Map(input.evidence.map((item) => [item.clientItemId, item]));
-  const criteria = input.canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
+  const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
     const matchedIds = [...new Set(canonical.matchedClientCriterionIds)]
       .filter((id) => claims.has(id))
       .sort();
@@ -1901,6 +1927,7 @@ export const WORKFLOW_RUN_STATUSES = [
   "cancelled",
   "failed",
   "waiting_for_action",
+  "waiting_for_evidence_readiness",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
@@ -2215,8 +2242,17 @@ export const WORKFLOW_SUBMISSION_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "waiting_for_evidence_readiness",
 ] as const;
 export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[number];
+
+/** APPEND-ONLY: why a nonzero immutable evidence segment exists. */
+export const WORKFLOW_SUBMISSION_REFINEMENT_REASONS = [
+  "session_action",
+  "evidence_preflight",
+] as const;
+export type WorkflowSubmissionRefinementReason =
+  (typeof WORKFLOW_SUBMISSION_REFINEMENT_REASONS)[number];
 
 /**
  * Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict.
@@ -2269,6 +2305,7 @@ export const WORKFLOW_DELIVERY_KINDS = [
   // actually made; this one answers a silence, and the two have to stay distinguishable in a
   // ledger a person reads to work out why a run sat still.
   "parked_repair_reminder",
+  "evidence_readiness",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -3470,6 +3507,8 @@ export interface WorkflowSubmission {
    * the store admits.
    */
   continuationNodeAttemptId: WorkflowNodeAttemptId | null;
+  /** Null at segment zero; identifies which lifecycle authorized a child segment. */
+  refinementReason?: WorkflowSubmissionRefinementReason | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
   /**
@@ -3634,6 +3673,8 @@ export interface WorkflowLlmCall {
 
 export interface WorkflowEvent {
   id: number;
+  /** Optional replay identity. Historical and unrelated events omit it. */
+  eventId?: string | null;
   runId: WorkflowRunId;
   timestamp: number;
   kind: string;
@@ -4003,6 +4044,8 @@ export interface WorkflowRunDetail {
   evidenceImages?: WorkflowSubmissionEvidenceImages[];
   /** Ordered immutable author coverage grouped by the submission that froze it. */
   evidenceCoverage?: WorkflowSubmissionEvidenceCoverage[];
+  /** Durable operator exceptions, newest last, without changing the frozen readiness result. */
+  readinessOverrides?: WorkflowSubmissionReadinessOverride[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];
@@ -4049,6 +4092,17 @@ export interface WorkflowRunDetail {
    */
   externalSource?: WorkflowExternalSource | null;
   inspectorGate: WorkflowInspectorGateDetail | null;
+}
+
+export interface WorkflowSubmissionReadinessOverride {
+  id: string;
+  submissionId: WorkflowSubmissionId;
+  /** Opaque, server-derived run-scoped idempotency key. Never parsed by a reader. */
+  requestId: string;
+  actor: "operator";
+  reason: string;
+  acknowledgedRisk: boolean;
+  createdAt: number;
 }
 
 /**
@@ -4171,6 +4225,45 @@ export interface TestEvidenceAuditCategoryShare {
   failures: TestEvidenceAuditRate;
 }
 
+export type TestEvidenceReadinessScopeCategory = "none" | "repository" | "all" | "mixed";
+
+export interface TestEvidenceReadinessCategoryCount<T extends string> {
+  category: T;
+  /** Total category occurrences. One evaluation can contribute more than one occurrence. */
+  occurrences: number;
+  /** Evaluations containing this category, over intercepted evaluations. Categories overlap. */
+  affectedEvaluations: TestEvidenceAuditRate;
+}
+
+export interface TestEvidenceReadinessSlice {
+  workflowId: string | null;
+  workflowVersion: number | null;
+  evaluatorVersion: string | null;
+  evaluations: number;
+  interceptions: TestEvidenceAuditRate;
+  unavailable: TestEvidenceAuditRate;
+}
+
+export interface TestEvidencePreflightAggregate {
+  evaluations: number;
+  enforcingEvaluations: number;
+  malformed: number;
+  truncated: boolean;
+  /** Enforced evaluations that entered the evidence-readiness wait. */
+  interceptions: TestEvidenceAuditRate;
+  /** Intercepted runs that produced an evidence-preflight child segment. */
+  sameRoundRefinements: TestEvidenceAuditRate;
+  /** Intercepted runs activated through the audited operator override. */
+  overrides: TestEvidenceAuditRate;
+  /** Evaluations unavailable under the enforcing policy. */
+  unavailable: TestEvidenceAuditRate;
+  gapCodes: TestEvidenceReadinessCategoryCount<WorkflowEvidenceReadinessGapCode>[];
+  proofClasses: TestEvidenceReadinessCategoryCount<WorkflowEvidenceProofClass>[];
+  missingRoles: TestEvidenceReadinessCategoryCount<WorkflowEvidenceProofRole>[];
+  slices: TestEvidenceReadinessSlice[];
+  slicesOmitted: number;
+}
+
 /**
  * One guidance-revision slice, which is the whole reason the identity fields exist.
  *
@@ -4204,6 +4297,10 @@ export interface TestEvidenceAuditSlice {
   personaRevision: number | null;
   guidanceDigest: string | null;
   attempts: number;
+  /** Passing first Auditor attempts over known first Auditor attempts in this slice. */
+  firstAuditorAttemptAccepted: TestEvidenceAuditRate;
+  /** Legacy attempts in this slice that predate explicit first-Auditor identity. */
+  firstAuditorAttemptUnknown: number;
   /** Passing first submissions over all first submissions in this slice. */
   firstSubmissionAccepted: TestEvidenceAuditRate;
   /** Failing attempts over all attempts in this slice. */
@@ -4244,7 +4341,13 @@ export interface TestEvidenceAuditAggregate {
   scanLimit: number;
   oldestAt: number | null;
   newestAt: number | null;
-  /** The report's headline: passing first submissions over all first submissions. */
+  /** Passing first Auditor attempts over all explicitly identified first Auditor attempts. */
+  firstAuditorAttemptAccepted: TestEvidenceAuditRate;
+  /** Attempts carrying the explicit first-Auditor fact, including later attempts. */
+  firstAuditorAttemptKnown: number;
+  /** Legacy attempts that predate the explicit first-Auditor fact. */
+  firstAuditorAttemptUnknown: number;
+  /** Historical compatibility metric: round-1 segment-0 acceptance. */
   firstSubmissionAccepted: TestEvidenceAuditRate;
   /** Failing attempts over all attempts. */
   attemptFailures: TestEvidenceAuditRate;
@@ -4252,6 +4355,11 @@ export interface TestEvidenceAuditAggregate {
   readiness: TestEvidenceAuditReadiness;
   /** Attempts that asked for later-stage proof the original intent never named. */
   possibleOverreach: TestEvidenceAuditRate;
+  /** Failing first Auditor attempts whose activated packet was structurally ready. */
+  postReadyAuditorRejections: TestEvidenceAuditRate;
+  /** Failing first Auditor attempts whose activated packet used an operator override. */
+  postOverrideAuditorRejections: TestEvidenceAuditRate;
+  preflight: TestEvidencePreflightAggregate;
   /** Busiest slices first. */
   slices: TestEvidenceAuditSlice[];
   /** Slices past the cap. Reported rather than silently truncated. */

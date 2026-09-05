@@ -444,6 +444,9 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 
     sessions: {
       async spawnDetached(spec: DetachedSessionSpec) {
+        // `select` intentionally changes no tmux argv. A detached session has no attached
+        // client whose current selection could move; the later attach opens on its agent
+        // pane, including after the best-effort side split below.
         // tmux 3.3+ preserves multiple trailing argv elements, but older supported versions
         // join them into shell text. Encode one command for both paths so a prompt remains
         // one literal argument everywhere. `--` keeps a binary or flag-first command out of

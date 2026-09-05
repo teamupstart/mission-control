@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Herdr multiplexer plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --panel-soft: #eef3f8;
+      --text: #172033;
+      --muted: #5c687c;
+      --border: #cbd5e1;
+      --accent: #5b4ee8;
+      --accent-soft: #eceafe;
+      --good: #0f766e;
+      --good-soft: #dff7f2;
+      --warn: #9a5b06;
+      --warn-soft: #fff2d7;
+      --bad: #b42318;
+      --bad-soft: #feeceb;
+      --code: #111827;
+      --shadow: 0 18px 45px rgba(31, 41, 55, .10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1320;
+        --panel: #171d2b;
+        --panel-soft: #202838;
+        --text: #edf1f7;
+        --muted: #a9b4c5;
+        --border: #39445a;
+        --accent: #a99cff;
+        --accent-soft: #2b2851;
+        --good: #5eead4;
+        --good-soft: #153c39;
+        --warn: #fbbf5b;
+        --warn-soft: #453214;
+        --bad: #fda29b;
+        --bad-soft: #4a201f;
+        --code: #0a0e17;
+        --shadow: 0 18px 45px rgba(0, 0, 0, .28);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.58 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--accent); }
+    code {
+      background: var(--panel-soft);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: .08rem .32rem;
+      font: .9em ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 80px; }
+    header {
+      padding: 36px;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background: linear-gradient(135deg, var(--panel), var(--accent-soft));
+      box-shadow: var(--shadow);
+    }
+    h1 { margin: 0 0 10px; font-size: clamp(2rem, 5vw, 3.6rem); line-height: 1.05; letter-spacing: -.04em; }
+    h2 { margin-top: 0; font-size: 1.65rem; }
+    h3 { margin: 28px 0 8px; font-size: 1.12rem; }
+    p { margin: 8px 0 14px; }
+    .lede { max-width: 880px; color: var(--muted); font-size: 1.12rem; }
+    .answer { margin-top: 22px; padding: 18px 20px; border-left: 5px solid var(--good); background: var(--good-soft); border-radius: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+    .metric { padding: 16px; border: 1px solid var(--border); background: var(--panel); border-radius: 12px; }
+    .metric b { display: block; font-size: 1.35rem; }
+    .metric span { color: var(--muted); font-size: .9rem; }
+    section { margin-top: 24px; padding: 28px; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
+    .callout { padding: 16px 18px; border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--border); }
+    .warning { background: var(--warn-soft); border-left: 5px solid var(--warn); }
+    .danger { background: var(--bad-soft); border-left: 5px solid var(--bad); }
+    .table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--border); border-radius: 12px; }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    th, td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+    th { background: var(--panel-soft); font-size: .86rem; letter-spacing: .03em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .45rem; }
+    pre { overflow-x: auto; padding: 16px; border-radius: 10px; background: var(--code); color: #e5edf8; }
+    .flow { overflow-x: auto; padding: 10px 0 4px; }
+    svg { display: block; min-width: 1040px; width: 100%; height: auto; }
+    .node { fill: var(--panel-soft); stroke: var(--border); stroke-width: 2; }
+    .node-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .node-good { fill: var(--good-soft); stroke: var(--good); stroke-width: 2; }
+    .svg-label { fill: var(--text); font: 600 15px ui-sans-serif, system-ui, sans-serif; }
+    .svg-small { fill: var(--muted); font: 13px ui-sans-serif, system-ui, sans-serif; }
+    .arrow { stroke: var(--muted); stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+    .steps { counter-reset: phase; }
+    .phase { position: relative; padding: 18px 18px 18px 64px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-soft); }
+    .phase + .phase { margin-top: 12px; }
+    .phase::before { counter-increment: phase; content: counter(phase); position: absolute; left: 18px; top: 18px; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: white; background: var(--accent); font-weight: 800; }
+    .phase h3 { margin: 0 0 6px; }
+    .tag { display: inline-block; margin: 0 6px 6px 0; padding: 3px 8px; border-radius: 999px; font-size: .8rem; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
+    .options { display: grid; gap: 12px; }
+    .option { padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+    .option.recommended { border-color: var(--good); background: var(--good-soft); }
+    .source-note { color: var(--muted); font-size: .9rem; }
+    footer { margin-top: 24px; color: var(--muted); text-align: center; }
+    @media (max-width: 800px) {
+      main { width: min(100% - 20px, 1180px); padding-top: 10px; }
+      header, section { padding: 20px; border-radius: 14px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="tag">Plan</span><span class="tag">Terminal registry</span><span class="tag">Herdr v0.8.2</span>
+    <h1>Add Herdr as a supported multiplexer</h1>
+    <p class="lede">An investigation-backed plan for reusing Mission Control's tmux/cmux capability interface while correcting three generic assumptions exposed by Herdr.</p>
+    <div class="answer"><strong>Answer:</strong> yes. Herdr belongs behind the existing <code>Multiplexer</code> registry. Its workspaces, tabs, and panes map to sessions, windows, and panes. The production-quality path needs PID-ancestry correlation, explicit create-selection intent, generic host-support availability, and a validated Herdr socket client inside the adapter.</div>
+    <div class="grid">
+      <div class="metric"><b>1 adapter</b><span>No parallel Herdr subsystem</span></div>
+      <div class="metric"><b>2 generic fixes</b><span>PID fallback and create intent</span></div>
+      <div class="metric"><b>0 UI branches</b><span>Callers remain capability-based</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Recommendation</h2>
+    <p>Build a socket-backed <code>herdrMultiplexer</code>, register <code>herdr</code> after <code>tmux</code> and before <code>cmux</code>, and keep Herdr commands, schemas, timeouts, and environment rules inside <code>src/server/terminal/herdr*.ts</code>.</p>
+    <p>Use Herdr's full client for attach. Select the agent pane before attach, then let the existing emulator fallback open a namespace-scrubbed wrapper around <code>herdr</code>. Declare <code>clients: null</code> because the stable API does not publish client ttys. This means Mission Control cannot raise an existing Herdr client and a repeated Focus may open another client.</p>
+    <div class="callout warning"><strong>Do not use direct-attach takeover as the default.</strong> Herdr allows only one writable direct controller per terminal. <code>--takeover</code> would evict the operator's existing attachment, violating Mission Control's no-yank focus rule.</div>
+  </section>
+
+  <section>
+    <h2>Interface fit</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Mission Control</th><th>Herdr</th><th>Mapping</th></tr></thead>
+      <tbody>
+        <tr><td>Multiplexer session</td><td>Workspace</td><td><code>workspace_id</code> addresses it; label becomes <code>sessionName</code></td></tr>
+        <tr><td>Window</td><td>Tab</td><td>tab number becomes <code>windowIndex</code>; label becomes <code>windowName</code></td></tr>
+        <tr><td>Pane</td><td>Pane</td><td>public <code>pane_id</code> becomes <code>paneId</code></td></tr>
+        <tr><td>Pane process</td><td>Root shell</td><td><code>pane.process_info.shell_pid</code> becomes <code>panePid</code></td></tr>
+        <tr><td>Pane tty</td><td>Not exposed</td><td><code>tty: null</code>; exact process ancestry is the fallback join</td></tr>
+        <tr><td>Create, rename, kill</td><td>Workspace lifecycle</td><td>Existing <code>sessions</code> capability; create carries the exact requested cwd</td></tr>
+      </tbody>
+    </table></div>
+    <p>The stable address versus human name distinction already exists because cmux required it. Herdr reuses it directly, so renaming a workspace never changes the address used for close or focus.</p>
+  </section>
+
+  <section>
+    <h2>Capability matrix</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Capability</th><th>Herdr operation</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>list</code></td><td><code>session.snapshot</code> plus batched <code>pane.process_info</code></td><td>Implemented</td></tr>
+        <tr><td><code>write.text</code></td><td><code>pane.send_text</code></td><td>Implemented</td></tr>
+        <tr><td><code>write.keys</code></td><td><code>pane.send_keys</code> with exhaustive key mapping</td><td>Implemented</td></tr>
+        <tr><td><code>write.paste</code></td><td><code>pane.send_input</code> with text and no keys</td><td>Implemented, bracket-aware</td></tr>
+        <tr><td><code>capture</code></td><td><code>pane.read</code> visible text</td><td>Implemented</td></tr>
+        <tr><td><code>paneMode</code></td><td>API writes to the owned PTY; no blocking pane-mode equivalent</td><td><code>null</code></td></tr>
+        <tr><td><code>select</code></td><td>Documented <code>agent.focus</code> by pane ID</td><td>Implemented for agent sessions</td></tr>
+        <tr><td><code>clients</code></td><td>No stable client-list plus tty operation</td><td><code>null</code></td></tr>
+        <tr><td><code>sessions</code></td><td>Workspace create, rename, close; optional pane split</td><td>Implemented</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>What the investigation confirmed</h2>
+    <ul>
+      <li>Herdr documents a background server, detachable clients, and public workspace/tab/pane socket operations.</li>
+      <li>Normal detach preserves live pane processes. A full server stop restores shape but not arbitrary processes, which matches the practical multiplexer boundary.</li>
+      <li>Herdr v0.8.2 source sets process-info tty to <code>None</code> while returning the shell PID. Mission Control's tty-only multiplexer join is therefore the first real blocker.</li>
+      <li><code>pane.send_input</code> honors live bracketed-paste state. <code>pane.send_text</code> sends raw text. A safe multiline paste should use the socket API.</li>
+      <li>Creation leaves focus unchanged unless requested. Mission Control needs that distinction for background dispatch versus an operator launch.</li>
+      <li>Stable Herdr binaries cover Linux, macOS, and Windows, while the Unix installer validates Linux and Darwin. This adapter allowlists Node platforms <code>linux</code> and <code>darwin</code> for its Unix-socket and <code>env -u</code> path.</li>
+      <li><code>status server --json</code> reports running and compatibility state. Noninteractive workspace commands do not auto-start the server.</li>
+      <li>The stable schema contains exact raw <code>pane.focus</code>, but the published method table omits it. This plan uses documented <code>agent.focus</code> instead.</li>
+    </ul>
+    <p class="source-note">Sources: <a href="https://github.com/herdrdev/herdr/releases/tag/v0.8.2">v0.8.2 release</a>, <a href="https://herdr.dev/docs/socket-api/">socket API</a>, <a href="https://herdr.dev/docs/cli-reference/">CLI reference</a>, <a href="https://herdr.dev/docs/session-state/">session persistence</a>, <a href="https://herdr.dev/docs/install/">install documentation</a>, <a href="https://github.com/herdrdev/herdr/blob/v0.8.2/website/install.sh">v0.8.2 Unix installer source</a>, <a href="https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api/panes.rs#L203-L249">stable pane process source</a>, and <a href="https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api_helpers.rs#L69-L106">stable input encoding source</a>.</p>
+  </section>
+
+  <section>
+    <h2>Architecture and data flow</h2>
+    <p>The same generic handle emerges from either exact discovery key. Herdr does not introduce a second session producer or any persisted Herdr state.</p>
+    <div class="flow">
+      <svg viewBox="0 0 1120 520" role="img" aria-label="Herdr discovery and control flow">
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)" /></marker></defs>
+        <text x="22" y="32" class="svg-label">Discovery</text>
+        <rect x="20" y="55" width="190" height="76" rx="12" class="node"/><text x="115" y="88" text-anchor="middle" class="svg-label">OS agent process</text><text x="115" y="111" text-anchor="middle" class="svg-small">PID, parent, tty</text>
+        <rect x="270" y="55" width="210" height="76" rx="12" class="node-accent"/><text x="375" y="83" text-anchor="middle" class="svg-label">Exact join</text><text x="375" y="105" text-anchor="middle" class="svg-small">tty first, then ancestry</text><text x="375" y="122" text-anchor="middle" class="svg-small">to Herdr shell PID</text>
+        <rect x="540" y="55" width="210" height="76" rx="12" class="node"/><text x="645" y="88" text-anchor="middle" class="svg-label">Generic MuxHandle</text><text x="645" y="111" text-anchor="middle" class="svg-small">workspace, tab, pane</text>
+        <rect x="810" y="55" width="210" height="76" rx="12" class="node-good"/><text x="915" y="88" text-anchor="middle" class="svg-label">Mission Control Session</text><text x="915" y="111" text-anchor="middle" class="svg-small">existing registry lifecycle</text>
+        <path d="M210 93 H270" class="arrow"/><path d="M480 93 H540" class="arrow"/><path d="M750 93 H810" class="arrow"/>
+
+        <text x="22" y="205" class="svg-label">Control</text>
+        <rect x="20" y="228" width="190" height="76" rx="12" class="node"/><text x="115" y="260" text-anchor="middle" class="svg-label">Dashboard / dispatch</text><text x="115" y="283" text-anchor="middle" class="svg-small">generic action</text>
+        <rect x="270" y="228" width="210" height="76" rx="12" class="node-accent"/><text x="375" y="260" text-anchor="middle" class="svg-label">MULTIPLEXERS.herdr</text><text x="375" y="283" text-anchor="middle" class="svg-small">capability adapter</text>
+        <rect x="540" y="228" width="210" height="76" rx="12" class="node"/><text x="645" y="260" text-anchor="middle" class="svg-label">Validated socket client</text><text x="645" y="283" text-anchor="middle" class="svg-small">bounded request batch</text>
+        <rect x="810" y="228" width="210" height="76" rx="12" class="node-good"/><text x="915" y="260" text-anchor="middle" class="svg-label">Default Herdr server</text><text x="915" y="283" text-anchor="middle" class="svg-small">workspace / tab / pane</text>
+        <path d="M210 266 H270" class="arrow"/><path d="M480 266 H540" class="arrow"/><path d="M750 266 H810" class="arrow"/>
+
+        <text x="22" y="378" class="svg-label">Focus outward</text>
+        <rect x="20" y="400" width="190" height="76" rx="12" class="node"/><text x="115" y="432" text-anchor="middle" class="svg-label">agent.focus</text><text x="115" y="455" text-anchor="middle" class="svg-small">select inside Herdr</text>
+        <rect x="270" y="400" width="210" height="76" rx="12" class="node-accent"/><text x="375" y="432" text-anchor="middle" class="svg-label">clients: null</text><text x="375" y="455" text-anchor="middle" class="svg-small">no tty list in stable API</text>
+        <rect x="540" y="400" width="210" height="76" rx="12" class="node"/><text x="645" y="432" text-anchor="middle" class="svg-label">Emulator fallback</text><text x="645" y="455" text-anchor="middle" class="svg-small">existing generic path</text>
+        <rect x="810" y="400" width="210" height="76" rx="12" class="node-good"/><text x="915" y="432" text-anchor="middle" class="svg-label">herdr full client</text><text x="915" y="455" text-anchor="middle" class="svg-small">correct pane already selected</text>
+        <path d="M210 438 H270" class="arrow"/><path d="M480 438 H540" class="arrow"/><path d="M750 438 H810" class="arrow"/>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Implementation plan</h2>
+    <div class="steps">
+      <div class="phase"><h3>Prove and add PID-ancestry correlation</h3><p>In <code>discovery/correlate.ts</code>, keep tty as the strongest key. For a mux pane with null tty, match only when its current <code>panePid</code> is in the agent's actual parent chain. Choose the closest same-backend ancestor and decline ambiguity. Update the stale type comments and add nested, recycled-PID, missing-chain, and ambiguity tests.</p></div>
+      <div class="phase"><h3>Add explicit create-selection intent</h3><p>Add <code>select: boolean</code> to <code>DetachedSessionSpec</code>. Dispatch passes false; operator launch passes true. tmux may ignore it. cmux and Herdr map it to their focus controls, with side panes created without focus.</p></div>
+      <div class="phase"><h3>Build the bounded Herdr socket client</h3><p>Create <code>herdr-client.ts</code> for status, newline framing, request IDs, Zod validation, size and time bounds, batched process-info, and exact unknown-outcome handling. Every terminal batch failure settles pending requests once, clears timers and listeners, destroys the socket, and ignores late events. Any mutation protocol failure after request write is outcome-unknown. Workspace creation ensures a compatible server, starting <code>herdr server</code> as a detached child only when absent. Reads and existing-target mutations never start it.</p></div>
+      <div class="phase"><h3>Implement and register the adapter</h3><p>Create <code>herdr.ts</code>, map snapshot records to <code>MuxPane</code>, implement pane I/O and workspace lifecycle with the exact requested cwd on workspace creation and any side split, and roll back a new workspace only after parsed confirmed non-delivery. Preserve it for every outcome-unknown path. Exhaustively map keys, use documented agent focus, declare honest null capabilities, isolate the default namespace, and register the new ID between tmux and cmux. Extend the generic binary availability contract so the ID remains exhaustive but is available only on <code>darwin</code> and <code>linux</code>, before discovery, home, launch, CLI, server-start, or socket work. Full-client attach applies <code>env -u</code> separately to <code>HERDR_SESSION</code>, <code>HERDR_SOCKET_PATH</code>, <code>HERDR_WORKSPACE_ID</code>, <code>HERDR_TAB_ID</code>, and <code>HERDR_PANE_ID</code>.</p></div>
+      <div class="phase"><h3>Cover contracts and user surfaces</h3><p>Add socket, adapter, correlation, home, target, focus, registry, and setup tests. Socket tests include a non-responsive server, an unterminated partial line, resource teardown, late events, and malformed or mismatched mutation responses before and after write. Platform tests cover both allowlisted values plus <code>win32</code> and another unallowlisted value, with each selector tested for scrubbing. Extend E2E fakes with a deterministic Herdr binary and add Playwright coverage for the menu, shell launch, selection intent, cwd, focus attach, and incompatibility message. No real agent or Herdr daemon may run in tests.</p></div>
+      <div class="phase"><h3>Document the supported boundary</h3><p>Update README and terminal docs with the version/protocol, <code>HERDR_BIN</code>, default-session scope, lifecycle features, client-raising limitation, detach versus full-stop persistence, and the initial macOS/Linux allowlist for Unix sockets and <code>env -u</code>. Windows named-pipe and Windows-compatible environment scrubbing remain future compatibility work; other platforms are unvalidated. Do not edit <code>CHANGELOG.md</code>.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Failure behavior</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Failure</th><th>Required behavior</th></tr></thead>
+      <tbody>
+        <tr><td>Not installed</td><td>Unavailable by name; no discovery subprocess</td></tr>
+        <tr><td>Installed outside <code>darwin</code>/<code>linux</code></td><td>Visible but disabled with the macOS/Linux-only reason; no discovery, home, launch, CLI, server-start, or socket work</td></tr>
+        <tr><td>Server stopped</td><td>Discovery and existing-target operations do not start it; workspace creation starts and awaits the headless server</td></tr>
+        <tr><td>Protocol mismatch</td><td>Actionable refusal; never stop or replace the existing server</td></tr>
+        <tr><td>Invalid or mismatched response</td><td>Reject; never guess identity or mutation outcome</td></tr>
+        <tr><td>Terminal socket failure</td><td>Settle pending requests once, clear resources, destroy the socket, and ignore late events</td></tr>
+        <tr><td>Discovery timeout</td><td>Only Herdr disappears for one tick; other backends continue</td></tr>
+        <tr><td>Mutation failure after write</td><td><code>outcomeUnknown: true</code> for timeout, disconnect, framing, ID, or schema failure; do not replay</td></tr>
+        <tr><td>Mutation failure before write</td><td>Confirmed non-delivery with <code>outcomeUnknown: false</code></td></tr>
+        <tr><td>No tty and no proven ancestry</td><td>Leave the session handleless</td></tr>
+        <tr><td>Focus cannot resolve agent</td><td>Return Herdr's refusal; no unpublished fallback</td></tr>
+        <tr><td>Command refused after create</td><td>Close only the new workspace on confirmed non-delivery</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Validation and done criteria</h2>
+    <ul>
+      <li>Focused contract tests pass with the required test preload, then typecheck, lint, and the full unit suite pass.</li>
+      <li>Build, smoke, and Playwright E2E pass because a visible terminal backend is added.</li>
+      <li>Live stable-Herdr verification proves create, discovery, safe multiline paste, capture, focus, rename, detach/reattach, and close in a disposable workspace.</li>
+      <li>Proof stays gitignored and attaches to the implementation PR. No test starts a real agent or leaves a Herdr server.</li>
+      <li>Installed binaries on <code>win32</code> and another unallowlisted platform remain disabled before any runtime work; <code>darwin</code> and <code>linux</code> remain enabled when the binary is present.</li>
+      <li>No generic caller branches on <code>herdr</code>. Documentation matches the shipped version and limitations.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Decisions taken</h2>
+    <ol>
+      <li><strong>Integration architecture:</strong> use a socket-backed adapter behind <code>Multiplexer</code>, with bounded polling, safe multiline paste, and exact PID-ancestry fallback when no tty is available.</li>
+      <li><strong>Server namespace:</strong> support only Herdr's default local server session in the first release and clear namespace overrides at the adapter boundary.</li>
+      <li><strong>Outward focus:</strong> return <code>clients: null</code>, select inside Herdr, and use the existing new-client fallback. Never take over an existing direct attachment.</li>
+      <li><strong>Follow-up:</strong> create merge-aware phase plans and schedule dependency-linked implementation tasks after their paths land on the default branch.</li>
+    </ol>
+  </section>
+
+  <footer>Authoritative source: <a href="plan.md">docs/plans/herdr-multiplexer/plan.md</a></footer>
+</main>
+</body>
+</html>

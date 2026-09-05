@@ -1398,6 +1398,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       parent_submission_id TEXT,
       continuation_node_id TEXT,
       continuation_node_attempt_id TEXT,
+      refinement_reason    TEXT,
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
@@ -1679,6 +1680,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS workflow_events (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id     TEXT,
       run_id       TEXT NOT NULL,
       ts           INTEGER NOT NULL,
       event_kind   TEXT NOT NULL,
@@ -1691,6 +1693,18 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- aggregate would otherwise scan the busiest table this subsystem writes on every poll.
     CREATE INDEX IF NOT EXISTS idx_workflow_events_kind
       ON workflow_events(event_kind, id);
+
+    CREATE TABLE IF NOT EXISTS workflow_submission_readiness_overrides (
+      id             TEXT PRIMARY KEY,
+      submission_id  TEXT NOT NULL,
+      request_id     TEXT NOT NULL UNIQUE,
+      actor          TEXT NOT NULL,
+      reason         TEXT NOT NULL,
+      acknowledged_risk INTEGER NOT NULL CHECK (acknowledged_risk IN (0, 1)),
+      created_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_readiness_overrides_submission
+      ON workflow_submission_readiness_overrides(submission_id, created_at);
 
     -- One external orchestrator's durable claim on exactly one Workflow binding.
     --
@@ -3878,6 +3892,19 @@ function migrate(d: DatabaseSync): void {
     "TEXT NOT NULL DEFAULT 'off'",
   );
   addColumn(d, "workflow_submissions", "readiness_json", "TEXT");
+  addColumn(d, "workflow_submissions", "refinement_reason", "TEXT");
+  addColumn(d, "workflow_events", "event_id", "TEXT");
+  // Pre-release Phase 2 checkouts could already have written an override row without the
+  // acknowledgement field. Keep those rows readable as historical unacknowledged actions;
+  // every request accepted by this build must explicitly write true.
+  addColumn(
+    d,
+    "workflow_submission_readiness_overrides",
+    "acknowledged_risk",
+    "INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged_risk IN (0, 1))",
+  );
+  d.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_event_id
+            ON workflow_events(event_id) WHERE event_id IS NOT NULL;`);
 
   // Which provider handed a check its worktree. Editing the CREATE TABLE block above is not
   // enough - it is IF NOT EXISTS, so an operator upgrading into this build keeps the table
@@ -7755,6 +7782,63 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
         (blocker.kind === "step_failed" &&
           typeof blocker.step === "string" &&
           typeof blocker.reason === "string")));
+  const capabilities = row.capabilities;
+  const capabilitiesValid = capabilities === undefined || (
+    typeof capabilities === "object" && capabilities !== null &&
+    typeof capabilities.supported === "boolean" &&
+    [capabilities.readiness, capabilities.worktreeRetirement,
+      capabilities.retainedReviewWorktrees, capabilities.ownedAttempts]
+      .every((value) => value === undefined || typeof value === "boolean")
+  );
+  const readiness = row.readiness;
+  const readinessValid = readiness === undefined || readiness === null || (
+    typeof readiness === "object" &&
+    ["ready", "blocked", "inconclusive"].includes(readiness.status) &&
+    typeof readiness.code === "string" && typeof readiness.summary === "string" &&
+    Array.isArray(readiness.checkedCapabilities) &&
+    readiness.checkedCapabilities.every((value) => typeof value === "string") &&
+    typeof readiness.retryable === "boolean" && nullableString(readiness.remedy) &&
+    nullableString(readiness.diagnostic) && typeof readiness.fingerprint === "string" &&
+    typeof readiness.permitted === "boolean" && typeof readiness.checkedAt === "string"
+  );
+  const failure = row.failure;
+  const failureValid = failure === undefined || failure === null || (
+    typeof failure === "object" && typeof failure.error === "string" &&
+    ["authentication", "authorization", "remote", "workspace", "tooling", "provider", "unknown"]
+      .includes(failure.class) &&
+    typeof failure.code === "string" && typeof failure.summary === "string" &&
+    typeof failure.retryable === "boolean" && nullableString(failure.remedy) &&
+    nullableString(failure.diagnostic)
+  );
+  const retention = row.retention;
+  const retentionValid = retention === undefined || retention === null || (
+    typeof retention === "object" && typeof retention.retainedCommit === "string" &&
+    typeof retention.retainedAt === "string" && typeof retention.retentionDeadline === "string"
+  );
+  const retirement = row.retirement;
+  const retirementValid = retirement === undefined || retirement === null || (
+    typeof retirement === "object" && typeof retirement.worktreePath === "string" &&
+    typeof retirement.branch === "string" && typeof retirement.planSlug === "string" &&
+    ["spec_merged", "spec_closed", "task_cancelled", "retention_expired", "operator_cleanup"]
+      .includes(retirement.reason) && nullableString(retirement.retainedCommit) &&
+    typeof retirement.retiredAt === "string"
+  );
+  const successor = row.successorCandidate;
+  const successorValid = successor === undefined || successor === null || (
+    typeof successor === "object" && typeof successor.engineerRunId === "string" &&
+    Number.isInteger(successor.attempt) && typeof successor.previousEngineerRunId === "string" &&
+    typeof successor.attemptKey === "string" && Number.isInteger(successor.providerRevision) &&
+    typeof successor.state === "string" &&
+    ["created", "authoring", "failed", "cancelled", "awaiting_spec_merge", "settled"]
+      .includes(successor.state) &&
+    nullableString(successor.integrationOwner)
+  );
+  const projectionDrift = row.projectionDrift;
+  const projectionDriftValid = projectionDrift === undefined || projectionDrift === null || (
+    typeof projectionDrift === "object" &&
+    ["retirement_identity", "retirement_commit"].includes(projectionDrift.kind) &&
+    typeof projectionDrift.detail === "string"
+  );
   return (
     typeof row.id === "string" &&
     typeof row.taskId === "string" &&
@@ -7777,6 +7861,15 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     handoffValid &&
     linkedRunValid &&
     blockerValid &&
+    capabilitiesValid &&
+    (row.integrationOwner === undefined || nullableString(row.integrationOwner)) &&
+    (row.readinessRequired === undefined || typeof row.readinessRequired === "boolean") &&
+    readinessValid &&
+    failureValid &&
+    retentionValid &&
+    retirementValid &&
+    successorValid &&
+    projectionDriftValid &&
     nullableString(row.error) &&
     typeof row.createdAt === "number" &&
     typeof row.updatedAt === "number"
@@ -7812,6 +7905,21 @@ function fallbackCommission(row: {
     authoringBranch: null,
     planSlug: null,
     handoff: null,
+    capabilities: {
+      supported: false,
+      readiness: false,
+      worktreeRetirement: false,
+      retainedReviewWorktrees: false,
+      ownedAttempts: false,
+    },
+    integrationOwner: null,
+    readinessRequired: false,
+    readiness: null,
+    failure: null,
+    retention: null,
+    retirement: null,
+    successorCandidate: null,
+    projectionDrift: null,
     linkedRun: row.run_slug
       ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
       : null,
@@ -7974,6 +8082,21 @@ function hydratePipelineCommission(
     commission: {
       ...parsed,
       blocker: parsed.blocker ?? null,
+      capabilities: parsed.capabilities ?? {
+        supported: true,
+        readiness: false,
+        worktreeRetirement: false,
+        retainedReviewWorktrees: false,
+        ownedAttempts: false,
+      },
+      integrationOwner: parsed.integrationOwner ?? null,
+      readinessRequired: parsed.readinessRequired ?? false,
+      readiness: parsed.readiness ?? null,
+      failure: parsed.failure ?? null,
+      retention: parsed.retention ?? null,
+      retirement: parsed.retirement ?? null,
+      successorCandidate: parsed.successorCandidate ?? null,
+      projectionDrift: parsed.projectionDrift ?? null,
       authoringBranch: parsed.authoringBranch ?? parsed.handoff?.branch ?? null,
       planSlug: parsed.planSlug ?? parsed.handoff?.planSlug ?? null,
       attempts: attemptRows.map((attempt) => {

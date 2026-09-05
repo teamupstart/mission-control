@@ -206,6 +206,27 @@ test("a registered live authoring worktree is valid without an optional marker",
   assert.equal(missing.view.capabilities.diff, true);
   assert.equal(missing.view.capabilities.files, true);
   assert.equal(missing.view.capabilities.write, false);
+
+  const retired = projectPipelineWorkspace({
+    task: { pipelineWorkspacePath: worktree },
+    commission: {
+      ...live.commission,
+      retirement: {
+        worktreePath: worktree,
+        branch: "spec/live-workspace",
+        planSlug: "live-workspace",
+        reason: "spec_merged",
+        retainedCommit: live.view.commit,
+        retiredAt: "2026-09-04T12:00:00.000Z",
+      },
+    },
+    linkedRun: null,
+  });
+  assert.equal(retired.view.availability, "retired");
+  assert.equal(retired.view.reason, "provider_retired");
+  assert.equal(retired.view.capabilities.diff, true);
+  assert.equal(retired.view.capabilities.files, true);
+  assert.equal(retired.view.capabilities.write, false);
 });
 
 test("only provider worktrees under the repository's canonical root receive live capabilities", async () => {

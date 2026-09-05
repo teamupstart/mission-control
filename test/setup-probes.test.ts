@@ -100,6 +100,29 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
 });
 
+test("an outdated GitHub CLI reports needs-setup, and a current one stays satisfied", async () => {
+  const outdated = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.4.0 (2021-08-10)\n", stderr: "", code: 0 }),
+  }));
+  assert.equal(outdated.state, "needs-setup");
+  assert.match(outdated.state === "needs-setup" ? outdated.why : "", /2\.100\.0/);
+
+  const current = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.100.0 (2024-01-01)\n", stderr: "", code: 0 }),
+  }));
+  assert.deepEqual(current, { state: "satisfied", evidence: "/tools/gh" });
+
+  const unparseable = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => ({ ...stubRun({ stdout: "", stderr: "timed out", code: null }), outcomeUnknown: true }),
+  }));
+  assert.equal(unparseable.state, "satisfied");
+
+  const nonzeroExit = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.4.0 (2021-08-10)\n", stderr: "some other error", code: 1 }),
+  }));
+  assert.deepEqual(nonzeroExit, { state: "satisfied", evidence: "/tools/gh" });
+});
+
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
   const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
   try {

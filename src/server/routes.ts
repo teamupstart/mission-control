@@ -149,6 +149,8 @@ import {
   RestartFullWorkflowSchema,
   ResubmitWorkflowSchema,
   RetryWorkflowRunSchema,
+  RetryWorkflowEvidenceReadinessSchema,
+  OverrideWorkflowEvidenceReadinessSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
   RemoveWorkflowPersonaDirectiveSchema,
@@ -582,6 +584,14 @@ const WORKFLOW_COMMAND_BODY_MAX_BYTES =
  * how one of them ends up with the wrong one.
  */
 const REVISION_ONLY_BODY_MAX_BYTES = 1024;
+/**
+ * The readiness action schemas accept one 200-character request id, plus the override's
+ * bounded reason. The multiplier admits JSON's six-byte unicode escape spelling and the
+ * fixed allowance covers property names, punctuation, booleans, and whitespace.
+ */
+const WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES = 200 * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024;
+const WORKFLOW_READINESS_OVERRIDE_BODY_MAX_BYTES =
+  (200 + WORKFLOW_LIMITS.readinessOverrideReason) * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024;
 /**
  * An import body is one absolute path, so it is bounded from the PATH ceiling.
  *
@@ -2296,6 +2306,70 @@ export function buildApp(
       return workflowImageFailure(c, error, "Workflow evidence could not be staged");
     }
   });
+  app.post(
+    "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence readiness retry is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = await manager.retryEvidenceReadiness(
+        c.req.param("id"),
+        c.req.param("submissionId"),
+        parsed.data.requestId,
+      );
+      return result.ok
+        ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+        : workflowRuntimeFailure(c, result);
+    },
+  );
+  app.post(
+    "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/override",
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_OVERRIDE_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence readiness override is too large" }, 413),
+    }),
+    async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, OverrideWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = manager.overrideEvidenceReadiness(
+        c.req.param("id"),
+        c.req.param("submissionId"),
+        parsed.data.requestId,
+        parsed.data.reason,
+        parsed.data.acknowledgedRisk,
+      );
+      if (result.ok) return c.json({ override: result.override, idempotent: result.idempotent });
+      switch (result.reason) {
+        case "not_found":
+          return c.json({
+            error: "The workflow run or submission was not found.",
+            code: "workflow_evidence_readiness_override_not_found",
+          }, 404);
+        case "policy_off":
+          return c.json({
+            error: "This workflow version does not enforce evidence readiness.",
+            code: "workflow_evidence_readiness_override_policy_off",
+          }, 409);
+        case "request_conflict":
+          return c.json({
+            error: "That request id already names a different evidence readiness override.",
+            code: "workflow_evidence_readiness_override_request_conflict",
+          }, 409);
+        case "conflict":
+          return c.json({
+            error: "This submission is no longer waiting for an evidence readiness override.",
+            code: "workflow_evidence_readiness_override_conflict",
+          }, 409);
+      }
+    },
+  );
   app.post("/api/workflow-runs/:id/retry", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -6719,6 +6793,22 @@ export function buildApp(
       if (blocked) return c.json({ error: blocked }, 409);
     }
     const r = await tasks.dispatch(id, parsed.data);
+    if (!r.ok) {
+      return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
+    }
+    return c.json(r.task!);
+  });
+
+  app.post("/api/tasks/:id/pipeline/readiness", async (c) => {
+    const r = await tasks.recheckPipelineReadiness(c.req.param("id"));
+    if (!r.ok) {
+      return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
+    }
+    return c.json(r.task!);
+  });
+
+  app.post("/api/tasks/:id/pipeline/start", async (c) => {
+    const r = await tasks.startPipelineAfterReadiness(c.req.param("id"));
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }

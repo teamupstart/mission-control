@@ -198,6 +198,7 @@ test("a body beginning with a dash is typed, not parsed as flags", async () => {
     cwd: "/w/api",
     argv: launchArgv,
     sidePane: false,
+    select: false,
   });
   assert.deepEqual(spawn.calls[0]!.args.slice(-2), ["--", shellCommand(launchArgv)]);
 
@@ -271,6 +272,7 @@ test("a detached session gets its shell pane, and the session survives a failed 
     cwd: "/w/api",
     argv,
     sidePane: true,
+    select: true,
   });
 
   // The split is a convenience; the session is what was asked for.
@@ -287,6 +289,23 @@ test("a detached session gets its shell pane, and the session survives a failed 
     shellCommand(argv),
   ]);
   assert.equal(calls[1]!.args[0], "split-window");
+});
+
+test("tmux accepts either selection intent without changing detached creation argv", async () => {
+  const calls = [];
+  for (const select of [false, true]) {
+    const recorded = recorder();
+    await tmuxMultiplexer(recorded.exec).sessions!.spawnDetached({
+      name: "api",
+      cwd: "/w/api",
+      argv: ["claude", "--model", "opus"],
+      sidePane: false,
+      select,
+    });
+    calls.push(recorded.calls[0]!.args);
+  }
+
+  assert.deepEqual(calls[0], calls[1]);
 });
 
 test("the argv that attaches a terminal honours the resolved binary", () => {

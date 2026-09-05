@@ -168,9 +168,33 @@ test("Ctrl+C stops the turn, drops the queue, and leaves the cursor in the compo
   await expect(composer).toHaveValue("");
   await shoot(dashboard, "before-interrupt");
 
+  // Hold the request at the browser boundary so the optimistic badge cannot race the fake
+  // driver's fast interrupt receipt. This is the exact interval a person sees after pressing
+  // Ctrl+C and before the durable idle reading arrives.
+  let releaseInterruptRequest = () => {};
+  const interruptMayProceed = new Promise<void>((resolve) => {
+    releaseInterruptRequest = resolve;
+  });
+  await dashboard.route("**/api/sessions/*/interrupt", async (route) => {
+    await interruptMayProceed;
+    await route.continue();
+  }, { times: 1 });
+
   // From INSIDE the composer, which is the case the typing guard would otherwise swallow.
   await composer.focus();
   await composer.press(INTERRUPT);
+
+  const badge = card.locator("span.badge").first();
+  try {
+    await expect(badge).toHaveText("interrupting", {
+      timeout: WELL_BEFORE_THE_TURN_WOULD_END,
+    });
+    await shoot(dashboard, "interrupting");
+  } finally {
+    // Let the daemon settle even when the optimistic-state assertion fails, so the focused
+    // diagnostic ends promptly instead of leaving its intercepted request open until teardown.
+    releaseInterruptRequest();
+  }
 
   // 1. The turn stopped, and early.
   //
@@ -181,7 +205,7 @@ test("Ctrl+C stops the turn, drops the queue, and leaves the cursor in the compo
   //    reading of the session, reported by the driver's own turn completion, so only a turn
   //    that genuinely ended can produce it. Inside the fake's five-second window, so it
   //    cannot be the turn finishing on its own either.
-  await expect(card.locator("span.badge").first()).toHaveText("idle", {
+  await expect(badge).toHaveText("idle", {
     timeout: WELL_BEFORE_THE_TURN_WOULD_END,
   });
 

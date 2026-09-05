@@ -2,66 +2,121 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { TOUR_ENTRIES } from "../src/web/tour/entries.ts";
+import { FIRST_RUN_TOUR, TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "../src/web/tour/tours/setup.ts";
 import { TOUR_TARGET_NAMESPACES } from "../src/web/tour/target-registry.ts";
 
-test("the Setup tour follows the panel and closes without an action", () => {
+/** The navigation the tour is driven through, recording the route moves it asks for. */
+function recorder(): { navigation: SetupTourNavigation; moves: string[] } {
+  const moves: string[] = [];
+  return {
+    moves,
+    navigation: {
+      showFleet: () => { moves.push("fleet"); return true; },
+      showSettings: () => { moves.push("settings"); return true; },
+      showSetup: () => { moves.push("setup"); return true; },
+    },
+  };
+}
+
+type SetupStop = (typeof SETUP_TOUR.steps)[number];
+
+function prepare(stop: SetupStop, navigation: SetupTourNavigation): boolean | undefined {
+  return stop.prepare?.({
+    runtime: null,
+    navigation,
+    registry: { get: () => null, register: () => () => {} },
+    stop,
+    beat: 0,
+    element: null,
+  });
+}
+
+test("the Setup tour is four stops, from the gear to Re-check", () => {
   assert.deepEqual(SETUP_TOUR.steps.map((step) => step.id), [
-    "overview",
-    "families",
-    "statuses",
-    "remedies",
+    "settings",
+    "setup",
+    "dependencies",
     "recheck",
-    "close",
   ]);
+  // Every declared target is spotlighted, and every spotlight is declared: the namespace and
+  // the tour cannot drift apart into a target nothing points at, or the reverse.
   const declared = Object.keys(TOUR_TARGET_NAMESPACES.setup).map((name) => `setup:${name}`);
-  const used = new Set(SETUP_TOUR.steps.flatMap((step) => step.targets.map((beat) => beat.target)));
-  assert.deepEqual([...used].sort(), declared.sort());
-  assert.equal(SETUP_TOUR.steps.at(-1)?.centered, true);
-  assert.equal(SETUP_TOUR.steps.at(-1)?.targets.length, 0);
+  const used = SETUP_TOUR.steps.flatMap((step) => step.targets.map((beat) => beat.target));
+  assert.deepEqual([...new Set(used)].sort(), declared.sort());
+  // One spotlight per stop. This tour teaches a path, so a stop that looked at two things
+  // would be a stop whose copy cannot say which one it means.
+  assert.deepEqual(SETUP_TOUR.steps.map((step) => step.targets.length), [1, 1, 1, 1]);
+  // No centered close: the tour ends ON the panel it just opened rather than in front of it.
+  assert.equal(SETUP_TOUR.steps.at(-1)?.centered, undefined);
+  assert.deepEqual(
+    SETUP_TOUR.steps.map((step) => step.targets[0]?.target),
+    ["setup:settings-gear", "setup:settings-tab", "setup:dependencies", "setup:recheck"],
+  );
 });
 
-test("every Setup spotlight is registered by the rendered panel owner", () => {
-  const source = readFileSync(new URL("../src/web/components/SetupPanel.tsx", import.meta.url), "utf8");
-  for (const name of Object.keys(TOUR_TARGET_NAMESPACES.setup)) {
-    assert.ok(source.includes(`useTourTargetRef<`), "the panel owns no target refs");
+test("the tour walks the fleet, Settings, then Setup, and never opens Setup early", () => {
+  const { navigation, moves } = recorder();
+  for (const stop of SETUP_TOUR.steps) assert.equal(prepare(stop, navigation), true);
+  // The gear reads "Settings" only from somewhere else, and the rail row it points at next
+  // has to be unselected for that stop to be about reaching Setup at all.
+  assert.deepEqual(moves, ["fleet", "settings", "setup", "setup"]);
+});
+
+test("the last two stops name their own labels, and the tour finishes on Re-check", () => {
+  const { navigation } = recorder();
+  const labels = SETUP_TOUR.steps.map((stop) => stop.nextLabel?.({
+    runtime: null,
+    navigation,
+    registry: { get: () => null, register: () => () => {} },
+    stop,
+    beat: 0,
+    element: null,
+  }));
+  assert.deepEqual(labels, ["Open Settings", "Open Setup", undefined, "Finish tour"]);
+});
+
+test("every Setup spotlight is registered by the surface that renders it", () => {
+  // Two of the four are outside the panel on purpose: the tour has to show an operator who
+  // has never opened Setup where it is, which is the top bar and the Settings rail.
+  const owners: Record<string, string> = {
+    "settings-gear": "src/web/App.tsx",
+    "settings-tab": "src/web/components/SettingsPage.tsx",
+    "dependencies": "src/web/components/SetupPanel.tsx",
+    "recheck": "src/web/components/SetupPanel.tsx",
+  };
+  assert.deepEqual(Object.keys(owners).sort(), Object.keys(TOUR_TARGET_NAMESPACES.setup).sort());
+  for (const [name, owner] of Object.entries(owners)) {
+    const source = readFileSync(new URL(`../${owner}`, import.meta.url), "utf8");
     assert.ok(source.includes(`"setup:${name}"`), `setup:${name} has no rendered owner`);
   }
 });
 
-test("both discovery surfaces use the Setup entry and its route", () => {
+test("the Setup entry opens on the fleet and hands the operator Setup when it ends", () => {
   const entry = TOUR_ENTRIES.find((candidate) => candidate.id === "setup");
   assert.ok(entry);
-  assert.deepEqual(entry.entryRoute, { page: "settings", category: "setup" });
+  // The page the tour is ABOUT is its exit, not its entry: it starts where the gear it points
+  // at still reads "Settings".
+  assert.deepEqual(entry.entryRoute, { page: "fleet" });
+  assert.deepEqual(entry.exit, {
+    route: { page: "settings", category: "setup" },
+    focus: "setup:recheck",
+  });
   assert.equal(entry.settings.ariaLabel, "Start Set up this machine tour");
   assert.equal(entry.palette.title, "Start Set up this machine tour");
 });
 
-test("every targeted stop prepares the Setup route, and the row stops name their family", () => {
-  let moves = 0;
-  const families: string[] = [];
-  const navigation: SetupTourNavigation = {
-    showSetup: () => { moves += 1; return true; },
-    showSetupFamily: (family) => { moves += 1; families.push(family); return true; },
-  };
-  for (const stop of SETUP_TOUR.steps.filter((candidate) => candidate.targets.length > 0)) {
-    assert.equal(stop.prepare?.({
-      runtime: null,
-      navigation,
-      registry: { get: () => null, register: () => () => {} },
-      stop,
-      beat: 0,
-      element: null,
-    }), true);
-  }
-  assert.equal(moves, 5, "every targeted stop puts the route on Setup");
-  // The panel shows one family at a time, so the two stops whose copy is about statuses and
-  // remedies have to select the family that has both. Leaving them on whatever the rail
-  // opened on is how they end up spotlighting a family with nothing to point at.
-  assert.deepEqual(families, ["github", "github"]);
-  const paneStops = SETUP_TOUR.steps
-    .filter((step) => step.targets.some((beat) => beat.target === "setup:pane"))
-    .map((step) => step.id);
-  assert.deepEqual(paneStops, ["statuses", "remedies"]);
+test("Setup is the tour a fresh profile receives automatically", () => {
+  assert.equal(FIRST_RUN_TOUR, "setup");
+  // The automatic tour is one of the registered ones rather than a fourth definition wired
+  // straight into the effect that starts it.
+  assert.ok(TOUR_ENTRIES.some((entry) => entry.id === FIRST_RUN_TOUR));
+});
+
+test("only a tour that hands a page over declares an exit route", () => {
+  assert.deepEqual(
+    TOUR_ENTRIES.filter((entry) => entry.exit).map((entry) => entry.id),
+    ["setup"],
+    "a demonstrating tour still owes back the page it borrowed",
+  );
 });
